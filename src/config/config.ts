@@ -95,6 +95,28 @@ const SecurityConfigSchema = z.object({
 					perHour: z.number().int().positive().default(60),
 				})
 				.optional(),
+			perTier: z
+				.object({
+					READ_ONLY: z
+						.object({
+							perMinute: z.number().int().positive().default(20),
+							perHour: z.number().int().positive().default(200),
+						})
+						.optional(),
+					WRITE_SAFE: z
+						.object({
+							perMinute: z.number().int().positive().default(10),
+							perHour: z.number().int().positive().default(100),
+						})
+						.optional(),
+					FULL_ACCESS: z
+						.object({
+							perMinute: z.number().int().positive().default(5),
+							perHour: z.number().int().positive().default(30),
+						})
+						.optional(),
+				})
+				.optional(),
 		})
 		.optional(),
 	audit: z

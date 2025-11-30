@@ -17,7 +17,7 @@ export type RateLimitConfig = {
 		perMinute: number;
 		perHour: number;
 	};
-	perTier?: Partial<Record<PermissionTier, { perMinute: number; perHour: number }>>;
+	perTier: Record<PermissionTier, { perMinute: number; perHour: number }>;
 };
 
 const DEFAULT_RATE_LIMITS: RateLimitConfig = {
@@ -37,13 +37,13 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 };
 
 /**
- * Rate limiter manager.
+ * Rate limiter manager with per-tier enforcement.
  */
 export class RateLimiter {
 	private globalMinute: RateLimiterMemory;
 	private globalHour: RateLimiterMemory;
-	private userMinute: RateLimiterMemory;
-	private userHour: RateLimiterMemory;
+	private tierMinuteLimiters: Map<PermissionTier, RateLimiterMemory>;
+	private tierHourLimiters: Map<PermissionTier, RateLimiterMemory>;
 	private config: RateLimitConfig;
 
 	constructor(securityConfig?: SecurityConfig) {
@@ -59,15 +59,27 @@ export class RateLimiter {
 			duration: 3600,
 		});
 
-		this.userMinute = new RateLimiterMemory({
-			points: this.config.perUser.perMinute,
-			duration: 60,
-		});
+		// Create per-tier limiters
+		this.tierMinuteLimiters = new Map();
+		this.tierHourLimiters = new Map();
 
-		this.userHour = new RateLimiterMemory({
-			points: this.config.perUser.perHour,
-			duration: 3600,
-		});
+		for (const tier of ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"] as PermissionTier[]) {
+			const tierLimits = this.config.perTier[tier];
+			this.tierMinuteLimiters.set(
+				tier,
+				new RateLimiterMemory({
+					points: tierLimits.perMinute,
+					duration: 60,
+				}),
+			);
+			this.tierHourLimiters.set(
+				tier,
+				new RateLimiterMemory({
+					points: tierLimits.perHour,
+					duration: 3600,
+				}),
+			);
+		}
 	}
 
 	private mergeConfig(securityConfig?: SecurityConfig): RateLimitConfig {
@@ -81,12 +93,16 @@ export class RateLimiter {
 				perMinute: rateLimits?.perUser?.perMinute ?? DEFAULT_RATE_LIMITS.perUser.perMinute,
 				perHour: rateLimits?.perUser?.perHour ?? DEFAULT_RATE_LIMITS.perUser.perHour,
 			},
-			perTier: DEFAULT_RATE_LIMITS.perTier,
+			perTier: {
+				READ_ONLY: rateLimits?.perTier?.READ_ONLY ?? DEFAULT_RATE_LIMITS.perTier.READ_ONLY,
+				WRITE_SAFE: rateLimits?.perTier?.WRITE_SAFE ?? DEFAULT_RATE_LIMITS.perTier.WRITE_SAFE,
+				FULL_ACCESS: rateLimits?.perTier?.FULL_ACCESS ?? DEFAULT_RATE_LIMITS.perTier.FULL_ACCESS,
+			},
 		};
 	}
 
 	/**
-	 * Check if a request is allowed.
+	 * Check if a request is allowed, enforcing per-tier limits.
 	 */
 	async checkLimit(userId: string, tier: PermissionTier): Promise<RateLimitResult> {
 		try {
@@ -115,16 +131,23 @@ export class RateLimiter {
 				};
 			}
 
-			// Check user limits
-			const tierLimits = this.config.perTier?.[tier];
-			const userMinuteLimit = tierLimits?.perMinute ?? this.config.perUser.perMinute;
+			// Check tier-specific user limits
+			const tierMinuteLimiter = this.tierMinuteLimiters.get(tier);
+			const tierHourLimiter = this.tierHourLimiters.get(tier);
+
+			if (!tierMinuteLimiter || !tierHourLimiter) {
+				logger.error({ tier }, "missing tier limiter");
+				return { allowed: true, remaining: 0, resetMs: 0 };
+			}
+
+			const tierLimits = this.config.perTier[tier];
 
 			try {
-				const minuteResult = await this.userMinute.consume(userId, 1);
-				const remaining = Math.max(0, userMinuteLimit - minuteResult.consumedPoints);
+				const minuteResult = await tierMinuteLimiter.consume(userId, 1);
+				const remaining = Math.max(0, tierLimits.perMinute - minuteResult.consumedPoints);
 
 				// Also check hour limit
-				await this.userHour.consume(userId, 1);
+				await tierHourLimiter.consume(userId, 1);
 
 				return {
 					allowed: true,
@@ -134,7 +157,7 @@ export class RateLimiter {
 				};
 			} catch (err) {
 				const rateLimitErr = err as { msBeforeNext?: number };
-				logger.info({ userId }, "user rate limit hit");
+				logger.info({ userId, tier }, "user rate limit hit for tier");
 				return {
 					allowed: false,
 					remaining: 0,
@@ -154,19 +177,30 @@ export class RateLimiter {
 	}
 
 	/**
-	 * Reset rate limits for a user.
+	 * Reset rate limits for a user across all tiers.
 	 */
 	async resetUser(userId: string): Promise<void> {
-		await this.userMinute.delete(userId);
-		await this.userHour.delete(userId);
+		for (const limiter of this.tierMinuteLimiters.values()) {
+			await limiter.delete(userId);
+		}
+		for (const limiter of this.tierHourLimiters.values()) {
+			await limiter.delete(userId);
+		}
 	}
 
 	/**
-	 * Get current usage for a user.
+	 * Get current usage for a user in a specific tier.
 	 */
-	async getUserUsage(userId: string): Promise<{ minute: number; hour: number }> {
-		const minuteRes = await this.userMinute.get(userId);
-		const hourRes = await this.userHour.get(userId);
+	async getUserUsage(
+		userId: string,
+		tier: PermissionTier,
+	): Promise<{ minute: number; hour: number }> {
+		const minuteLimiter = this.tierMinuteLimiters.get(tier);
+		const hourLimiter = this.tierHourLimiters.get(tier);
+
+		const minuteRes = await minuteLimiter?.get(userId);
+		const hourRes = await hourLimiter?.get(userId);
+
 		return {
 			minute: minuteRes?.consumedPoints ?? 0,
 			hour: hourRes?.consumedPoints ?? 0,

@@ -311,6 +311,40 @@ async function handleInboundMessage(
 			commandRunner: runCommandWithTimeout,
 		});
 
+		// Check if command failed (non-zero exit or killed)
+		const commandFailed =
+			result.meta?.exitCode !== undefined && result.meta.exitCode !== 0 && !result.payload?.text;
+		const commandKilled = result.meta?.killed && !result.payload?.text;
+
+		if (commandFailed || commandKilled) {
+			// Command failed - notify user and log as error
+			const exitInfo = result.meta?.exitCode
+				? `exit code ${result.meta.exitCode}`
+				: result.meta?.signal
+					? `signal ${result.meta.signal}`
+					: "unknown error";
+			logger.warn(
+				{ requestId, exitCode: result.meta?.exitCode, signal: result.meta?.signal },
+				"command failed",
+			);
+			await msg.reply(`Command failed (${exitInfo}). Please try again or rephrase your request.`);
+			await auditLogger.log({
+				timestamp: new Date(),
+				requestId,
+				telegramUserId: userId,
+				telegramUsername: msg.username,
+				chatId: msg.chatId,
+				messagePreview: msg.body.slice(0, 100),
+				observerClassification: observerResult.classification,
+				observerConfidence: observerResult.confidence,
+				permissionTier: tier,
+				executionTimeMs: Date.now() - startTime,
+				outcome: "error",
+				errorType: `command_failed:${exitInfo}`,
+			});
+			return;
+		}
+
 		if (result.payload?.text || result.payload?.mediaUrl) {
 			// Send reply
 			if (result.payload.mediaUrl) {
