@@ -1,5 +1,5 @@
-import { Bot, GrammyError, HttpError } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
+import { Bot, GrammyError, HttpError } from "grammy";
 import { getChildLogger } from "../logging.js";
 import type { BotInfo } from "./types.js";
 
@@ -16,9 +16,7 @@ export type TelegramBotInstance = {
 /**
  * Create and configure a Telegram bot instance.
  */
-export async function createTelegramBot(
-	options: TelegramBotOptions,
-): Promise<TelegramBotInstance> {
+export async function createTelegramBot(options: TelegramBotOptions): Promise<TelegramBotInstance> {
 	const logger = getChildLogger({ module: "telegram-client" });
 
 	const bot = new Bot(options.token);

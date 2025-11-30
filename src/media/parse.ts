@@ -15,11 +15,7 @@ function isValidMedia(candidate: string) {
 	if (!candidate) return false;
 	if (candidate.length > 1024) return false;
 	if (/\s/.test(candidate)) return false;
-	return (
-		/^https?:\/\//i.test(candidate) ||
-		candidate.startsWith("/") ||
-		candidate.startsWith("./")
-	);
+	return /^https?:\/\//i.test(candidate) || candidate.startsWith("/") || candidate.startsWith("./");
 }
 
 export function splitMediaFromOutput(raw: string): {

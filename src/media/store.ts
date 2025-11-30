@@ -13,10 +13,7 @@ export type SavedMedia = {
 /**
  * Save a buffer to a temporary file and return its path.
  */
-export async function saveMediaBuffer(
-	buffer: Buffer,
-	mimeType?: string,
-): Promise<SavedMedia> {
+export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promise<SavedMedia> {
 	await fs.promises.mkdir(MEDIA_DIR, { recursive: true });
 
 	const ext = mimeToExtension(mimeType);

@@ -1,5 +1,5 @@
 import { RateLimiterMemory } from "rate-limiter-flexible";
-import type { SecurityConfig, PermissionTier } from "../config/config.js";
+import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import type { RateLimitResult } from "./types.js";
 
@@ -88,10 +88,7 @@ export class RateLimiter {
 	/**
 	 * Check if a request is allowed.
 	 */
-	async checkLimit(
-		userId: string,
-		tier: PermissionTier,
-	): Promise<RateLimitResult> {
+	async checkLimit(userId: string, tier: PermissionTier): Promise<RateLimitResult> {
 		try {
 			// Check global limits first
 			try {

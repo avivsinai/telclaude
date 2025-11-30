@@ -1,30 +1,30 @@
 import crypto from "node:crypto";
-import type { Bot } from "grammy";
 import { run } from "@grammyjs/runner";
+import type { Bot } from "grammy";
 
-import { loadConfig, type TelclaudeConfig } from "../config/config.js";
-import {
-	loadSessionStore,
-	saveSessionStore,
-	deriveSessionKey,
-	resolveStorePath,
-	DEFAULT_IDLE_MINUTES,
-	type SessionEntry,
-} from "../config/sessions.js";
-import { getChildLogger } from "../logging.js";
 import { runCommandReply } from "../auto-reply/command-reply.js";
 import type { TemplateContext } from "../auto-reply/templating.js";
+import { type TelclaudeConfig, loadConfig } from "../config/config.js";
+import {
+	DEFAULT_IDLE_MINUTES,
+	type SessionEntry,
+	deriveSessionKey,
+	loadSessionStore,
+	resolveStorePath,
+	saveSessionStore,
+} from "../config/sessions.js";
+import { getChildLogger } from "../logging.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { createObserver, type SecurityObserver } from "../security/observer.js";
-import { getUserPermissionTier, getClaudeFlagsForTier } from "../security/permissions.js";
-import { createRateLimiter, type RateLimiter } from "../security/rate-limit.js";
-import { createAuditLogger, type AuditLogger } from "../security/audit.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { type AuditLogger, createAuditLogger } from "../security/audit.js";
+import { type SecurityObserver, createObserver } from "../security/observer.js";
+import { getClaudeFlagsForTier, getUserPermissionTier } from "../security/permissions.js";
+import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
-import type { TelegramInboundMessage } from "./types.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
+import type { TelegramInboundMessage } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
 
@@ -74,10 +74,7 @@ export async function monitorTelegramProvider(
 
 			const { bot, botInfo } = await createTelegramBot({ token, verbose });
 
-			logger.info(
-				{ botId: botInfo.id, username: botInfo.username },
-				"connected to Telegram",
-			);
+			logger.info({ botId: botInfo.id, username: botInfo.username }, "connected to Telegram");
 
 			const { close, onClose } = await monitorTelegramInbox({
 				bot,
@@ -128,13 +125,8 @@ export async function monitorTelegramProvider(
 			if (!keepAlive) break;
 
 			reconnectAttempts++;
-			if (
-				reconnectPolicy.maxAttempts > 0 &&
-				reconnectAttempts >= reconnectPolicy.maxAttempts
-			) {
-				throw new Error(
-					`Max reconnect attempts (${reconnectPolicy.maxAttempts}) reached`,
-				);
+			if (reconnectPolicy.maxAttempts > 0 && reconnectAttempts >= reconnectPolicy.maxAttempts) {
+				throw new Error(`Max reconnect attempts (${reconnectPolicy.maxAttempts}) reached`);
 			}
 
 			const delay = computeBackoff(reconnectPolicy, reconnectAttempts);
@@ -146,10 +138,7 @@ export async function monitorTelegramProvider(
 			if (!keepAlive) throw err;
 
 			reconnectAttempts++;
-			if (
-				reconnectPolicy.maxAttempts > 0 &&
-				reconnectAttempts >= reconnectPolicy.maxAttempts
-			) {
+			if (reconnectPolicy.maxAttempts > 0 && reconnectAttempts >= reconnectPolicy.maxAttempts) {
 				throw new Error(
 					`Max reconnect attempts (${reconnectPolicy.maxAttempts}) reached: ${String(err)}`,
 				);
@@ -205,10 +194,7 @@ async function handleInboundMessage(
 	});
 
 	if (observerResult.classification === "BLOCK") {
-		logger.warn(
-			{ userId, reason: observerResult.reason },
-			"message blocked by security observer",
-		);
+		logger.warn({ userId, reason: observerResult.reason }, "message blocked by security observer");
 		await auditLogger.logBlocked(
 			{
 				timestamp: new Date(),
@@ -224,17 +210,13 @@ async function handleInboundMessage(
 			observerResult.reason ?? "Blocked by security observer",
 		);
 		await msg.reply(
-			"This request was blocked for security reasons. " +
-				(observerResult.reason ? `Reason: ${observerResult.reason}` : ""),
+			`This request was blocked for security reasons. ${observerResult.reason ? `Reason: ${observerResult.reason}` : ""}`,
 		);
 		return;
 	}
 
 	if (observerResult.classification === "WARN") {
-		logger.info(
-			{ userId, reason: observerResult.reason },
-			"message flagged with warning",
-		);
+		logger.info({ userId, reason: observerResult.reason }, "message flagged with warning");
 	}
 
 	// Get reply configuration

@@ -1,8 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { Api, Bot } from "grammy";
 import { InputFile } from "grammy";
 import type { Message } from "grammy/types";
-import fs from "node:fs";
-import path from "node:path";
 
 import { getChildLogger } from "../logging.js";
 import { stringToChatId } from "../utils.js";
@@ -41,10 +41,10 @@ export async function sendMessageTelegram(
 	}
 
 	// Handle media
-	if (options.mediaUrl || options.mediaPath) {
-		const mediaSource = options.mediaPath || options.mediaUrl!;
+	const mediaSource = options.mediaPath ?? options.mediaUrl;
+	if (mediaSource) {
 		const payload = inferMediaPayload(mediaSource, body);
-		const result = await sendMediaPayload(bot.api, chatId, payload);
+		const result = await sendMediaToChat(bot.api, chatId, payload);
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
 		return { messageId: String(result.message_id), chatId };
 	}
@@ -87,7 +87,7 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 /**
  * Send media payload to a chat.
  */
-async function sendMediaPayload(
+export async function sendMediaToChat(
 	api: Api,
 	chatId: number,
 	payload: TelegramMediaPayload,
@@ -121,7 +121,7 @@ async function sendMediaPayload(
 /**
  * Create InputFile from source (path, URL, or buffer).
  */
-function createInputFile(source: string | Buffer): InputFile {
+export function createInputFile(source: string | Buffer): InputFile {
 	if (Buffer.isBuffer(source)) {
 		return new InputFile(source);
 	}
@@ -181,7 +181,7 @@ export async function sendTelegramMessage(
 	try {
 		if (options.mediaPath) {
 			const payload = inferMediaPayload(options.mediaPath, options.caption ?? options.text);
-			const result = await sendMediaPayload(
+			const result = await sendMediaToChat(
 				bot.api,
 				options.chatId,
 				payload as TelegramMediaPayload,
@@ -199,4 +199,3 @@ export async function sendTelegramMessage(
 		return { success: false, error: String(err) };
 	}
 }
-

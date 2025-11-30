@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defaultRuntime, type RuntimeEnv } from "./runtime.js";
+import { type RuntimeEnv, defaultRuntime } from "./runtime.js";
 
 const TelclaudeEnvSchema = z.object({
 	telegramBotToken: z.string().min(1),

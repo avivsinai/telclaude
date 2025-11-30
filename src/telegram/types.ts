@@ -106,47 +106,94 @@ export function buildPushName(user: User): string {
 }
 
 /**
+ * Media info extracted from a message
+ */
+export type MediaInfo = {
+	fileId: string;
+	type: TelegramMediaType;
+	mimeType: string;
+};
+
+/**
+ * Extract all media info from a message in a single pass.
+ */
+export function getMediaInfo(message: Message): MediaInfo | undefined {
+	if (message.photo?.length) {
+		return {
+			fileId: message.photo[message.photo.length - 1].file_id,
+			type: "photo",
+			mimeType: "image/jpeg",
+		};
+	}
+	if (message.document) {
+		return {
+			fileId: message.document.file_id,
+			type: "document",
+			mimeType: message.document.mime_type ?? "application/octet-stream",
+		};
+	}
+	if (message.voice) {
+		return {
+			fileId: message.voice.file_id,
+			type: "voice",
+			mimeType: message.voice.mime_type ?? "audio/ogg",
+		};
+	}
+	if (message.audio) {
+		return {
+			fileId: message.audio.file_id,
+			type: "audio",
+			mimeType: message.audio.mime_type ?? "audio/mpeg",
+		};
+	}
+	if (message.video) {
+		return {
+			fileId: message.video.file_id,
+			type: "video",
+			mimeType: message.video.mime_type ?? "video/mp4",
+		};
+	}
+	if (message.sticker) {
+		return {
+			fileId: message.sticker.file_id,
+			type: "sticker",
+			mimeType: "image/webp",
+		};
+	}
+	if (message.animation) {
+		return {
+			fileId: message.animation.file_id,
+			type: "animation",
+			mimeType: message.animation.mime_type ?? "video/mp4",
+		};
+	}
+	if (message.video_note) {
+		return {
+			fileId: message.video_note.file_id,
+			type: "video",
+			mimeType: "video/mp4",
+		};
+	}
+	return undefined;
+}
+
+/**
  * Get file ID from various message types
  */
 export function getFileIdFromMessage(message: Message): string | undefined {
-	if (message.photo?.length) {
-		// Get the largest photo
-		return message.photo[message.photo.length - 1].file_id;
-	}
-	if (message.document) return message.document.file_id;
-	if (message.voice) return message.voice.file_id;
-	if (message.audio) return message.audio.file_id;
-	if (message.video) return message.video.file_id;
-	if (message.sticker) return message.sticker.file_id;
-	if (message.animation) return message.animation.file_id;
-	if (message.video_note) return message.video_note.file_id;
-	return undefined;
+	return getMediaInfo(message)?.fileId;
 }
 
 /**
  * Get media type from message
  */
 export function getMediaTypeFromMessage(message: Message): TelegramMediaType | undefined {
-	if (message.photo?.length) return "photo";
-	if (message.document) return "document";
-	if (message.voice) return "voice";
-	if (message.audio) return "audio";
-	if (message.video) return "video";
-	if (message.sticker) return "sticker";
-	if (message.animation) return "animation";
-	return undefined;
+	return getMediaInfo(message)?.type;
 }
 
 /**
  * Get MIME type from message
  */
 export function getMimeTypeFromMessage(message: Message): string | undefined {
-	if (message.photo?.length) return "image/jpeg";
-	if (message.document) return message.document.mime_type;
-	if (message.voice) return message.voice.mime_type ?? "audio/ogg";
-	if (message.audio) return message.audio.mime_type;
-	if (message.video) return message.video.mime_type;
-	if (message.sticker) return "image/webp";
-	if (message.animation) return message.animation.mime_type ?? "video/mp4";
-	return undefined;
+	return getMediaInfo(message)?.mimeType;
 }

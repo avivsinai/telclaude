@@ -13,7 +13,7 @@ import {
 	type ClaudeJsonParseResult,
 	parseClaudeJson,
 } from "./claude.js";
-import { applyTemplate, type TemplateContext } from "./templating.js";
+import { type TemplateContext, applyTemplate } from "./templating.js";
 import type { ReplyPayload } from "./types.js";
 
 type CommandReplyConfig = NonNullable<TelclaudeConfig["inbound"]>["reply"] & {
@@ -70,17 +70,12 @@ export function summarizeClaudeMetadata(payload: unknown): string | undefined {
 
 	const usage = obj.usage;
 	if (usage && typeof usage === "object") {
-		const serverToolUse = (
-			usage as { server_tool_use?: Record<string, unknown> }
-		).server_tool_use;
+		const serverToolUse = (usage as { server_tool_use?: Record<string, unknown> }).server_tool_use;
 		if (serverToolUse && typeof serverToolUse === "object") {
-			const toolCalls = Object.values(serverToolUse).reduce<number>(
-				(sum, val) => {
-					if (typeof val === "number") return sum + val;
-					return sum;
-				},
-				0,
-			);
+			const toolCalls = Object.values(serverToolUse).reduce<number>((sum, val) => {
+				if (typeof val === "number") return sum + val;
+				return sum;
+			}, 0);
 			if (toolCalls > 0) parts.push(`tool_calls=${toolCalls}`);
 		}
 	}
@@ -100,9 +95,7 @@ export function summarizeClaudeMetadata(payload: unknown): string | undefined {
 	return parts.length ? parts.join(", ") : undefined;
 }
 
-export async function runCommandReply(
-	params: CommandReplyParams,
-): Promise<CommandReplyResult> {
+export async function runCommandReply(params: CommandReplyParams): Promise<CommandReplyResult> {
 	const {
 		reply,
 		templatingCtx,
@@ -130,14 +123,9 @@ export async function runCommandReply(
 	}
 
 	// Ensure Claude commands can emit plain text by forcing --output-format when configured.
-	if (
-		reply.claudeOutputFormat &&
-		argv.length > 0 &&
-		path.basename(argv[0]) === CLAUDE_BIN
-	) {
+	if (reply.claudeOutputFormat && argv.length > 0 && path.basename(argv[0]) === CLAUDE_BIN) {
 		const hasOutputFormat = argv.some(
-			(part) =>
-				part === "--output-format" || part.startsWith("--output-format="),
+			(part) => part === "--output-format" || part.startsWith("--output-format="),
 		);
 		const insertBeforeBody = Math.max(argv.length - 1, 0);
 		if (!hasOutputFormat) {
@@ -148,9 +136,7 @@ export async function runCommandReply(
 				...argv.slice(insertBeforeBody),
 			];
 		}
-		const hasPrintFlag = argv.some(
-			(part) => part === "-p" || part === "--print",
-		);
+		const hasPrintFlag = argv.some((part) => part === "-p" || part === "--print");
 		if (!hasPrintFlag) {
 			const insertIdx = Math.max(argv.length - 1, 0);
 			argv = [...argv.slice(0, insertIdx), "-p", ...argv.slice(insertIdx)];
@@ -166,21 +152,14 @@ export async function runCommandReply(
 		).map((part) => applyTemplate(part, templatingCtx));
 		if (sessionArgList.length) {
 			const insertBeforeBody = reply.session.sessionArgBeforeBody ?? true;
-			const insertAt =
-				insertBeforeBody && argv.length > 1 ? argv.length - 1 : argv.length;
-			argv = [
-				...argv.slice(0, insertAt),
-				...sessionArgList,
-				...argv.slice(insertAt),
-			];
+			const insertAt = insertBeforeBody && argv.length > 1 ? argv.length - 1 : argv.length;
+			argv = [...argv.slice(0, insertAt), ...sessionArgList, ...argv.slice(insertAt)];
 		}
 	}
 
 	let finalArgv = argv;
-	const isClaudeInvocation =
-		finalArgv.length > 0 && path.basename(finalArgv[0]) === CLAUDE_BIN;
-	const shouldPrependIdentity =
-		isClaudeInvocation && !(sendSystemOnce && systemSent);
+	const isClaudeInvocation = finalArgv.length > 0 && path.basename(finalArgv[0]) === CLAUDE_BIN;
+	const shouldPrependIdentity = isClaudeInvocation && !(sendSystemOnce && systemSent);
 	if (shouldPrependIdentity && finalArgv.length > 0) {
 		const bodyIdx = finalArgv.length - 1;
 		const existingBody = finalArgv[bodyIdx] ?? "";
@@ -204,9 +183,7 @@ export async function runCommandReply(
 					queuedMs = waitMs;
 					queuedAhead = ahead;
 					if (isVerbose()) {
-						logVerbose(
-							`Command auto-reply queued for ${waitMs}ms (${queuedAhead} ahead)`,
-						);
+						logVerbose(`Command auto-reply queued for ${waitMs}ms (${queuedAhead} ahead)`);
 					}
 				},
 			},
@@ -218,17 +195,12 @@ export async function runCommandReply(
 			logVerbose(`Command auto-reply stderr: ${stderr.trim()}`);
 		}
 		let parsed: ClaudeJsonParseResult | undefined;
-		if (
-			trimmed &&
-			(reply.claudeOutputFormat === "json" || isClaudeInvocation)
-		) {
+		if (trimmed && (reply.claudeOutputFormat === "json" || isClaudeInvocation)) {
 			parsed = parseClaudeJson(trimmed);
 			if (parsed?.parsed && isVerbose()) {
 				const summary = summarizeClaudeMetadata(parsed.parsed);
 				if (summary) logVerbose(`Claude JSON meta: ${summary}`);
-				logVerbose(
-					`Claude JSON raw: ${JSON.stringify(parsed.parsed, null, 2)}`,
-				);
+				logVerbose(`Claude JSON raw: ${JSON.stringify(parsed.parsed, null, 2)}`);
 			}
 			if (parsed?.text) {
 				logVerbose(
@@ -239,8 +211,7 @@ export async function runCommandReply(
 				logVerbose("Claude JSON parse failed; returning raw stdout");
 			}
 		}
-		const { text: cleanedText, mediaUrls: mediaFound } =
-			splitMediaFromOutput(trimmed);
+		const { text: cleanedText, mediaUrls: mediaFound } = splitMediaFromOutput(trimmed);
 		trimmed = cleanedText;
 		if (mediaFound?.length) {
 			mediaFromCommand = mediaFound;
@@ -268,9 +239,7 @@ export async function runCommandReply(
 					exitCode: code,
 					signal,
 					killed,
-					claudeMeta: parsed
-						? summarizeClaudeMetadata(parsed.parsed)
-						: undefined,
+					claudeMeta: parsed ? summarizeClaudeMetadata(parsed.parsed) : undefined,
 				},
 			};
 		}
@@ -287,14 +256,11 @@ export async function runCommandReply(
 					exitCode: code,
 					signal,
 					killed,
-					claudeMeta: parsed
-						? summarizeClaudeMetadata(parsed.parsed)
-						: undefined,
+					claudeMeta: parsed ? summarizeClaudeMetadata(parsed.parsed) : undefined,
 				},
 			};
 		}
-		let mediaUrls =
-			mediaFromCommand ?? (reply.mediaUrl ? [reply.mediaUrl] : undefined);
+		let mediaUrls = mediaFromCommand ?? (reply.mediaUrl ? [reply.mediaUrl] : undefined);
 
 		// If mediaMaxMb is set, skip local media paths larger than the cap.
 		if (mediaUrls?.length && reply.mediaMaxMb) {
@@ -352,17 +318,11 @@ export async function runCommandReply(
 			logVerbose(`Command auto-reply stderr: ${errorObj.stderr.trim()}`);
 		}
 		if (timeoutHit) {
-			console.error(
-				`Command auto-reply timed out after ${elapsed}ms (limit ${timeoutMs}ms)`,
-			);
-			const baseMsg =
-				"Command timed out after " +
-				`${timeoutSeconds}s${reply.cwd ? ` (cwd: ${reply.cwd})` : ""}. Try a shorter prompt or split the request.`;
+			console.error(`Command auto-reply timed out after ${elapsed}ms (limit ${timeoutMs}ms)`);
+			const baseMsg = `Command timed out after ${timeoutSeconds}s${reply.cwd ? ` (cwd: ${reply.cwd})` : ""}. Try a shorter prompt or split the request.`;
 			const partial = errorObj.stdout?.trim();
 			const partialSnippet =
-				partial && partial.length > 800
-					? `${partial.slice(0, 800)}...`
-					: partial;
+				partial && partial.length > 800 ? `${partial.slice(0, 800)}...` : partial;
 			const text = partialSnippet
 				? `${baseMsg}\n\nPartial output before timeout:\n${partialSnippet}`
 				: baseMsg;

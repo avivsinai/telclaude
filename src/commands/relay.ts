@@ -1,8 +1,9 @@
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
-import { monitorTelegramProvider } from "../telegram/auto-reply.js";
+import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
+import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
 
@@ -25,17 +26,16 @@ export function registerRelayCommand(program: Command): void {
 
 			try {
 				const cfg = loadConfig();
-				const token = process.env.TELEGRAM_BOT_TOKEN;
-
-				if (!token) {
-					console.error("Error: TELEGRAM_BOT_TOKEN environment variable not set");
-					process.exit(1);
-				}
+				readEnv(); // Validates environment variables
 
 				console.log("Starting Telclaude relay...");
-				console.log(`Security observer: ${cfg.security?.observer?.enabled !== false ? "enabled" : "disabled"}`);
-				console.log(`Rate limiting: enabled`);
-				console.log(`Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`);
+				console.log(
+					`Security observer: ${cfg.security?.observer?.enabled !== false ? "enabled" : "disabled"}`,
+				);
+				console.log("Rate limiting: enabled");
+				console.log(
+					`Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`,
+				);
 
 				if (cfg.telegram?.allowedChats?.length) {
 					console.log(`Allowed chats: ${cfg.telegram.allowedChats.join(", ")}`);

@@ -46,7 +46,7 @@ export class AuditLogger {
 				timestamp: entry.timestamp.toISOString(),
 			});
 
-			await fs.promises.appendFile(this.logFile, line + "\n", "utf-8");
+			await fs.promises.appendFile(this.logFile, `${line}\n`, "utf-8");
 
 			// Also log to the regular logger
 			logger.info(
@@ -66,10 +66,7 @@ export class AuditLogger {
 	/**
 	 * Log a blocked request.
 	 */
-	async logBlocked(
-		entry: Omit<AuditEntry, "outcome">,
-		reason: string,
-	): Promise<void> {
+	async logBlocked(entry: Omit<AuditEntry, "outcome">, reason: string): Promise<void> {
 		await this.log({
 			...entry,
 			outcome: "blocked",
@@ -80,11 +77,7 @@ export class AuditLogger {
 	/**
 	 * Log a rate-limited request.
 	 */
-	async logRateLimited(
-		telegramUserId: string,
-		chatId: number,
-		tier: string,
-	): Promise<void> {
+	async logRateLimited(telegramUserId: string, chatId: number, tier: string): Promise<void> {
 		await this.log({
 			timestamp: new Date(),
 			requestId: `rate_${Date.now()}`,

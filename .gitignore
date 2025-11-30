@@ -28,7 +28,6 @@ logs/
 coverage/
 
 # Package manager
-pnpm-lock.yaml
 yarn.lock
 
 # Telclaude data (runtime)

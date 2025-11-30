@@ -113,7 +113,8 @@ export function checkStructuralIssues(message: string): string[] {
 	const issues: string[] = [];
 
 	// Check for zero-width characters (hidden text)
-	if (/[\u200B\u200C\u200D\uFEFF]/.test(message)) {
+	// Using alternation instead of character class due to ZWJ combining behavior
+	if (/\u200B|\u200C|\u200D|\uFEFF/.test(message)) {
 		issues.push("Contains zero-width characters");
 	}
 

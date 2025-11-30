@@ -1,15 +1,14 @@
 import type { Bot, Context } from "grammy";
-import type { Message } from "grammy/types";
-import { InputFile } from "grammy";
 
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
 import { chatIdToString } from "../utils.js";
+import { sendMediaToChat } from "./outbound.js";
 import {
-	type TelegramInboundMessage,
-	type TelegramMediaPayload,
-	type TelegramListenerCloseReason,
 	type BotInfo,
+	type TelegramInboundMessage,
+	type TelegramListenerCloseReason,
+	type TelegramMediaPayload,
 	buildPushName,
 	getFileIdFromMessage,
 	getMediaTypeFromMessage,
@@ -78,7 +77,7 @@ export async function monitorTelegramInbox(
 
 		// Download media if present
 		let mediaPath: string | undefined;
-		let mediaType = getMediaTypeFromMessage(message);
+		const mediaType = getMediaTypeFromMessage(message);
 		let mediaUrl: string | undefined;
 		let mimeType = getMimeTypeFromMessage(message);
 
@@ -122,7 +121,7 @@ export async function monitorTelegramInbox(
 				await bot.api.sendMessage(chat.id, text, { parse_mode: "Markdown" });
 			},
 			sendMedia: async (payload: TelegramMediaPayload) => {
-				await sendMediaPayload(bot, chat.id, payload);
+				await sendMediaToChat(bot.api, chat.id, payload);
 			},
 			raw: message,
 		};
@@ -192,41 +191,4 @@ export async function monitorTelegramInbox(
 		},
 		onClose,
 	};
-}
-
-/**
- * Send media payload to a chat.
- */
-async function sendMediaPayload(
-	bot: Bot,
-	chatId: number,
-	payload: TelegramMediaPayload,
-): Promise<Message> {
-	const source =
-		typeof payload.source === "string"
-			? new InputFile(payload.source)
-			: new InputFile(payload.source);
-
-	switch (payload.type) {
-		case "photo":
-			return bot.api.sendPhoto(chatId, source, { caption: payload.caption });
-		case "document":
-			return bot.api.sendDocument(chatId, source, { caption: payload.caption });
-		case "voice":
-			return bot.api.sendVoice(chatId, source, { caption: payload.caption });
-		case "video":
-			return bot.api.sendVideo(chatId, source, { caption: payload.caption });
-		case "audio":
-			return bot.api.sendAudio(chatId, source, {
-				caption: payload.caption,
-				title: payload.title,
-				performer: payload.performer,
-			});
-		case "sticker":
-			return bot.api.sendSticker(chatId, source);
-		case "animation":
-			return bot.api.sendAnimation(chatId, source, { caption: payload.caption });
-		default:
-			throw new Error(`Unsupported media type: ${(payload as { type: string }).type}`);
-	}
 }

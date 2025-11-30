@@ -1,6 +1,7 @@
 import type { Command } from "commander";
-import { sendTelegramMessage } from "../telegram/outbound.js";
+import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
+import { sendTelegramMessage } from "../telegram/outbound.js";
 
 const logger = getChildLogger({ module: "cmd-send" });
 
@@ -22,12 +23,8 @@ export function registerSendCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
-				const token = process.env.TELEGRAM_BOT_TOKEN;
-
-				if (!token) {
-					console.error("Error: TELEGRAM_BOT_TOKEN environment variable not set");
-					process.exit(1);
-				}
+				const env = readEnv();
+				const token = env.telegramBotToken;
 
 				const numericChatId = Number.parseInt(chatId, 10);
 				if (Number.isNaN(numericChatId)) {

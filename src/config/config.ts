@@ -255,11 +255,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			},
 		};
 
-		await fs.promises.writeFile(
-			CONFIG_PATH,
-			JSON.stringify(defaultConfig, null, 2),
-			"utf-8",
-		);
+		await fs.promises.writeFile(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2), "utf-8");
 		return true;
 	}
 }

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import pino, { type Bindings, type LevelWithSilent, type Logger } from "pino";
-import { loadConfig, type TelclaudeConfig } from "./config/config.js";
+import { type TelclaudeConfig, loadConfig } from "./config/config.js";
 import { isVerbose } from "./globals.js";
 
 const DEFAULT_LOG_DIR = path.join(os.tmpdir(), "telclaude");
@@ -43,8 +43,7 @@ function normalizeLevel(level?: string): LevelWithSilent {
 }
 
 function resolveSettings(): ResolvedSettings {
-	const cfg: TelclaudeConfig["logging"] | undefined =
-		overrideSettings ?? loadConfig().logging;
+	const cfg: TelclaudeConfig["logging"] | undefined = overrideSettings ?? loadConfig().logging;
 	const level = normalizeLevel(cfg?.level);
 	const file = cfg?.file ?? DEFAULT_LOG_FILE;
 	return { level, file };
@@ -81,10 +80,7 @@ export function getLogger(): Logger {
 	return cachedLogger;
 }
 
-export function getChildLogger(
-	bindings?: Bindings,
-	opts?: { level?: LevelWithSilent },
-): Logger {
+export function getChildLogger(bindings?: Bindings, opts?: { level?: LevelWithSilent }): Logger {
 	return getLogger().child(bindings ?? {}, opts);
 }
 

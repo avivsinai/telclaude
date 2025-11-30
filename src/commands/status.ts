@@ -1,8 +1,8 @@
-import type { Command } from "commander";
-import { loadConfig, CONFIG_PATH } from "../config/config.js";
-import { createAuditLogger } from "../security/audit.js";
-import { getChildLogger } from "../logging.js";
 import fs from "node:fs";
+import type { Command } from "commander";
+import { CONFIG_PATH, loadConfig } from "../config/config.js";
+import { getChildLogger } from "../logging.js";
+import { createAuditLogger } from "../security/audit.js";
 
 const logger = getChildLogger({ module: "cmd-status" });
 
@@ -42,15 +42,21 @@ export function registerStatusCommand(program: Command): void {
 						telegramToken: token ? "set" : "not set",
 						anthropicKey: anthropicKey ? "set" : "not set",
 					},
-					security: cfg ? {
-						observer: cfg.security?.observer?.enabled !== false ? "enabled" : "disabled",
-						audit: cfg.security?.audit?.enabled !== false ? "enabled" : "disabled",
-						rateLimiting: "enabled",
-						permissionTiers: cfg.security?.permissions ? Object.keys(cfg.security.permissions) : [],
-					} : null,
-					telegram: cfg ? {
-						allowedChats: cfg.telegram?.allowedChats ?? [],
-					} : null,
+					security: cfg
+						? {
+								observer: cfg.security?.observer?.enabled !== false ? "enabled" : "disabled",
+								audit: cfg.security?.audit?.enabled !== false ? "enabled" : "disabled",
+								rateLimiting: "enabled",
+								permissionTiers: cfg.security?.permissions
+									? Object.keys(cfg.security.permissions)
+									: [],
+							}
+						: null,
+					telegram: cfg
+						? {
+								allowedChats: cfg.telegram?.allowedChats ?? [],
+							}
+						: null,
 					audit: auditStats,
 				};
 

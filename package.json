@@ -20,7 +20,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "keywords": [
     "telegram",
@@ -43,6 +43,7 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "packageManager": "pnpm@9.15.0",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
     "@grammyjs/auto-retry": "^2.0.2",

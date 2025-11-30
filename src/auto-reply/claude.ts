@@ -90,9 +90,7 @@ const ClaudeJsonSchema = z
 
 type ClaudeSafeParse = ReturnType<typeof ClaudeJsonSchema.safeParse>;
 
-export function parseClaudeJson(
-	raw: string,
-): ClaudeJsonParseResult | undefined {
+export function parseClaudeJson(raw: string): ClaudeJsonParseResult | undefined {
 	// Handle a single JSON blob or newline-delimited JSON; return the first parsed payload.
 	let firstParsed: unknown;
 	const candidates = [

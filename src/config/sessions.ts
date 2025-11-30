@@ -20,14 +20,11 @@ export const DEFAULT_IDLE_MINUTES = 60;
 
 export function resolveStorePath(store?: string) {
 	if (!store) return SESSION_STORE_DEFAULT;
-	if (store.startsWith("~"))
-		return path.resolve(store.replace("~", os.homedir()));
+	if (store.startsWith("~")) return path.resolve(store.replace("~", os.homedir()));
 	return path.resolve(store);
 }
 
-export function loadSessionStore(
-	storePath: string,
-): Record<string, SessionEntry> {
+export function loadSessionStore(storePath: string): Record<string, SessionEntry> {
 	try {
 		const raw = fs.readFileSync(storePath, "utf-8");
 		const parsed = JSON5.parse(raw);
@@ -40,16 +37,9 @@ export function loadSessionStore(
 	return {};
 }
 
-export async function saveSessionStore(
-	storePath: string,
-	store: Record<string, SessionEntry>,
-) {
+export async function saveSessionStore(storePath: string, store: Record<string, SessionEntry>) {
 	await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
-	await fs.promises.writeFile(
-		storePath,
-		JSON.stringify(store, null, 2),
-		"utf-8",
-	);
+	await fs.promises.writeFile(storePath, JSON.stringify(store, null, 2), "utf-8");
 }
 
 // Decide which session bucket to use (per-sender vs global).

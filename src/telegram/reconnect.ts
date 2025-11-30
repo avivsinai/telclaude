@@ -37,7 +37,7 @@ export function resolveReconnectPolicy(
  * Compute backoff delay for a given attempt.
  */
 export function computeBackoff(policy: ReconnectPolicy, attempt: number): number {
-	const base = policy.initialMs * Math.pow(policy.factor, attempt - 1);
+	const base = policy.initialMs * policy.factor ** (attempt - 1);
 	const capped = Math.min(base, policy.maxMs);
 	const jitterRange = capped * policy.jitter;
 	const jitter = (Math.random() - 0.5) * 2 * jitterRange;

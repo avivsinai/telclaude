@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { createProgram } from "./cli/program.js";
-import { registerSendCommand } from "./commands/send.js";
 import { registerRelayCommand } from "./commands/relay.js";
+import { registerSendCommand } from "./commands/send.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { getLogger } from "./logging.js";
 

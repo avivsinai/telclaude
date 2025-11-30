@@ -94,23 +94,23 @@ The security layer provides defense-in-depth:
 # Clone and install
 git clone https://github.com/avivsinai/telclaude.git
 cd telclaude
-npm install
+pnpm install
 
 # Development mode
-npm run dev relay
+pnpm dev relay
 
 # Build
-npm run build
+pnpm build
 
 # Lint and format
-npm run lint
-npm run format
+pnpm lint
+pnpm format
 
 # Type check
-npm run typecheck
+pnpm typecheck
 
 # Run tests
-npm test
+pnpm test
 ```
 
 ## Environment Variables

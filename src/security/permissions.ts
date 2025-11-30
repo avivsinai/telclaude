@@ -66,10 +66,7 @@ export function getClaudeFlagsForTier(tier: PermissionTier): string[] {
 /**
  * Check if a user has at least the specified permission tier.
  */
-export function hasMinimumTier(
-	userTier: PermissionTier,
-	requiredTier: PermissionTier,
-): boolean {
+export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {
 	const tierOrder: PermissionTier[] = ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"];
 	return tierOrder.indexOf(userTier) >= tierOrder.indexOf(requiredTier);
 }

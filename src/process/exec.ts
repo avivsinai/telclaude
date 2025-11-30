@@ -53,9 +53,7 @@ export async function runCommandWithTimeout(
 	optionsOrTimeout: number | CommandOptions,
 ): Promise<SpawnResult> {
 	const options: CommandOptions =
-		typeof optionsOrTimeout === "number"
-			? { timeoutMs: optionsOrTimeout }
-			: optionsOrTimeout;
+		typeof optionsOrTimeout === "number" ? { timeoutMs: optionsOrTimeout } : optionsOrTimeout;
 	const { timeoutMs, cwd } = options;
 
 	// Spawn with inherited stdin (TTY) so tools like `claude` don't hang.

@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { fastPathClassify, checkStructuralIssues } from "./fast-path.js";
+import { checkStructuralIssues, fastPathClassify } from "./fast-path.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
 
 export type ObserverConfig = {
@@ -119,8 +119,7 @@ export class SecurityObserver {
 
 		// Use LLM for analysis
 		try {
-			const prompt = OBSERVER_PROMPT
-				.replace("{{message}}", message)
+			const prompt = OBSERVER_PROMPT.replace("{{message}}", message)
 				.replace("{{permissionTier}}", context.permissionTier)
 				.replace("{{flaggedHistory}}", context.hasFlaggedHistory ? "yes" : "no");
 
@@ -131,10 +130,7 @@ export class SecurityObserver {
 					messages: [{ role: "user", content: prompt }],
 				}),
 				new Promise<never>((_, reject) =>
-					setTimeout(
-						() => reject(new Error("Observer timeout")),
-						this.config.maxLatencyMs,
-					),
+					setTimeout(() => reject(new Error("Observer timeout")), this.config.maxLatencyMs),
 				),
 			]);
 
