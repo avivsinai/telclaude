@@ -60,12 +60,25 @@ Claude Haiku analyzes incoming messages before processing:
 - Returns `ALLOW`, `WARN`, or `BLOCK` classification
 - Fast-path regex handles obvious safe/dangerous patterns
 - Configurable confidence thresholds
+- **Circuit breaker**: Prevents cascading failures when SDK is slow/failing
+
+### Storage
+
+All security-critical state is persisted in SQLite (`~/.telclaude/telclaude.db`):
+- **Approvals**: Pending approval requests survive restarts
+- **Rate limits**: Counter state persists across restarts
+- **Identity links**: Telegram-to-user mappings
+- **Sessions**: Conversation state for multi-turn interactions
+
+SQLite provides ACID transactions for atomic operations (e.g., consuming an approval).
 
 ### Rate Limiting
 
 - Global limits (per minute/hour)
 - Per-user limits
 - Per-tier limits (stricter for FULL_ACCESS)
+- **Fails closed**: If rate limiting errors, requests are blocked (not allowed)
+- SQLite-backed for persistence across restarts
 
 ### Identity Linking
 
@@ -121,7 +134,11 @@ src/
 ├── config/
 │   ├── config.ts         # Configuration schema (Zod)
 │   ├── path.ts           # Config path resolution
-│   ├── sessions.ts       # Session management
+│   ├── sessions.ts       # Session management (SQLite-backed)
+│   └── index.ts
+│
+├── storage/
+│   ├── db.ts             # SQLite database setup and migrations
 │   └── index.ts
 │
 ├── sdk/
@@ -140,12 +157,13 @@ src/
 ├── security/
 │   ├── types.ts          # Security types
 │   ├── fast-path.ts      # Regex-based quick decisions
-│   ├── observer.ts       # SDK-based security analysis
+│   ├── observer.ts       # SDK-based security analysis (with circuit breaker)
 │   ├── permissions.ts    # Tier system and tool arrays
-│   ├── rate-limit.ts     # Rate limiting
+│   ├── rate-limit.ts     # Rate limiting (SQLite-backed, fails closed)
+│   ├── circuit-breaker.ts # Circuit breaker for observer failures
 │   ├── audit.ts          # Audit logging
-│   ├── linking.ts        # Identity linking (out-of-band verification)
-│   ├── approvals.ts      # Command approval mechanism
+│   ├── linking.ts        # Identity linking (SQLite-backed)
+│   ├── approvals.ts      # Command approval mechanism (SQLite-backed)
 │   └── index.ts
 │
 ├── auto-reply/

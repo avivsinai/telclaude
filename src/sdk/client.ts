@@ -108,6 +108,8 @@ export type TelclaudeQueryOptions = {
 	cwd: string;
 	/** Permission tier for this query */
 	tier: PermissionTier;
+	/** Resume a previous session by ID (for conversation continuity) */
+	resumeSessionId?: string;
 	/** Custom system prompt to append */
 	systemPromptAppend?: string;
 	/** Override the model */
@@ -122,6 +124,8 @@ export type TelclaudeQueryOptions = {
 	enableSkills?: boolean;
 	/** Abort controller for cancellation */
 	abortController?: AbortController;
+	/** Timeout in milliseconds */
+	timeoutMs?: number;
 };
 
 /**
@@ -155,12 +159,20 @@ export type StreamChunk =
  * Build SDK options based on tier and configuration.
  */
 export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
+	// Create abort controller with timeout if specified
+	let abortController = opts.abortController;
+	if (opts.timeoutMs && !abortController) {
+		abortController = new AbortController();
+		setTimeout(() => abortController?.abort(), opts.timeoutMs);
+	}
+
 	const sdkOpts: SDKOptions = {
 		cwd: opts.cwd,
 		model: opts.model,
 		maxTurns: opts.maxTurns,
 		includePartialMessages: opts.includePartialMessages,
-		abortController: opts.abortController,
+		abortController,
+		resume: opts.resumeSessionId,
 	};
 
 	// Configure tools based on tier

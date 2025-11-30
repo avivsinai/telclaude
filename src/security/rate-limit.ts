@@ -1,18 +1,16 @@
-import { RateLimiterMemory, type RateLimiterRes } from "rate-limiter-flexible";
+/**
+ * SQLite-backed rate limiter with atomic operations.
+ *
+ * Uses sliding window counters stored in SQLite for persistence across restarts.
+ * Fails closed on errors - if rate limiting fails, requests are blocked.
+ */
+
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { getDb } from "../storage/db.js";
 import type { RateLimitResult } from "./types.js";
 
 const logger = getChildLogger({ module: "rate-limit" });
-
-/**
- * Type guard for rate limiter errors.
- */
-function isRateLimitError(err: unknown): err is { msBeforeNext?: number } {
-	return (
-		typeof err === "object" && err !== null && ("msBeforeNext" in err || "remainingPoints" in err)
-	);
-}
 
 /**
  * Rate limiter configuration.
@@ -45,64 +43,27 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 	},
 };
 
+// Window durations in milliseconds
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Get the start of the current window for a given duration.
+ */
+function getWindowStart(durationMs: number): number {
+	const now = Date.now();
+	return Math.floor(now / durationMs) * durationMs;
+}
+
 /**
  * Rate limiter manager with global, per-user, and per-tier enforcement.
+ * Uses SQLite for persistence and atomic operations.
  */
 export class RateLimiter {
-	private globalMinute: RateLimiterMemory;
-	private globalHour: RateLimiterMemory;
-	private userMinute: RateLimiterMemory;
-	private userHour: RateLimiterMemory;
-	private tierMinuteLimiters: Map<PermissionTier, RateLimiterMemory>;
-	private tierHourLimiters: Map<PermissionTier, RateLimiterMemory>;
 	private config: RateLimitConfig;
 
 	constructor(securityConfig?: SecurityConfig) {
 		this.config = this.mergeConfig(securityConfig);
-
-		// Global limiters (shared across all users)
-		this.globalMinute = new RateLimiterMemory({
-			points: this.config.global.perMinute,
-			duration: 60,
-		});
-
-		this.globalHour = new RateLimiterMemory({
-			points: this.config.global.perHour,
-			duration: 3600,
-		});
-
-		// Per-user limiters (keyed by userId, applies to all users regardless of tier)
-		this.userMinute = new RateLimiterMemory({
-			points: this.config.perUser.perMinute,
-			duration: 60,
-		});
-
-		this.userHour = new RateLimiterMemory({
-			points: this.config.perUser.perHour,
-			duration: 3600,
-		});
-
-		// Create per-tier limiters
-		this.tierMinuteLimiters = new Map();
-		this.tierHourLimiters = new Map();
-
-		for (const tier of ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"] as PermissionTier[]) {
-			const tierLimits = this.config.perTier[tier];
-			this.tierMinuteLimiters.set(
-				tier,
-				new RateLimiterMemory({
-					points: tierLimits.perMinute,
-					duration: 60,
-				}),
-			);
-			this.tierHourLimiters.set(
-				tier,
-				new RateLimiterMemory({
-					points: tierLimits.perHour,
-					duration: 3600,
-				}),
-			);
-		}
 	}
 
 	private mergeConfig(securityConfig?: SecurityConfig): RateLimitConfig {
@@ -125,133 +86,116 @@ export class RateLimiter {
 	}
 
 	/**
+	 * Get current points for a limiter/key/window combination.
+	 */
+	private getPoints(limiterType: string, key: string, windowStart: number): number {
+		const db = getDb();
+		const row = db
+			.prepare(
+				"SELECT points FROM rate_limits WHERE limiter_type = ? AND key = ? AND window_start = ?",
+			)
+			.get(limiterType, key, windowStart) as { points: number } | undefined;
+		return row?.points ?? 0;
+	}
+
+	/**
+	 * Atomically increment points for a limiter/key/window combination.
+	 * Returns the new point count.
+	 */
+	private incrementPoints(limiterType: string, key: string, windowStart: number): number {
+		const db = getDb();
+
+		// Use INSERT OR REPLACE with atomic increment
+		const result = db.transaction(() => {
+			db.prepare(
+				`INSERT INTO rate_limits (limiter_type, key, window_start, points)
+				 VALUES (?, ?, ?, 1)
+				 ON CONFLICT(limiter_type, key, window_start)
+				 DO UPDATE SET points = points + 1`,
+			).run(limiterType, key, windowStart);
+
+			const row = db
+				.prepare(
+					"SELECT points FROM rate_limits WHERE limiter_type = ? AND key = ? AND window_start = ?",
+				)
+				.get(limiterType, key, windowStart) as { points: number };
+
+			return row.points;
+		})();
+
+		return result;
+	}
+
+	/**
 	 * Check if a request is allowed, enforcing global, per-user, and per-tier limits.
-	 * All limits are checked BEFORE any are consumed to prevent race conditions.
+	 *
+	 * IMPORTANT: Fails closed - if any error occurs, the request is blocked.
+	 * This is a security feature to prevent abuse during failures.
 	 */
 	async checkLimit(userId: string, tier: PermissionTier): Promise<RateLimitResult> {
 		try {
-			const tierMinuteLimiter = this.tierMinuteLimiters.get(tier);
-			const tierHourLimiter = this.tierHourLimiters.get(tier);
+			const minuteWindow = getWindowStart(MINUTE_MS);
+			const hourWindow = getWindowStart(HOUR_MS);
 
-			if (!tierMinuteLimiter || !tierHourLimiter) {
-				logger.error({ tier }, "missing tier limiter");
-				return { allowed: true, remaining: 0, resetMs: 0 };
-			}
-
-			// Phase 1: Check all limits without consuming
-			const [
-				globalMinuteRes,
-				globalHourRes,
-				userMinuteRes,
-				userHourRes,
-				tierMinuteRes,
-				tierHourRes,
-			] = await Promise.all([
-				this.globalMinute.get("global"),
-				this.globalHour.get("global"),
-				this.userMinute.get(userId),
-				this.userHour.get(userId),
-				tierMinuteLimiter.get(userId),
-				tierHourLimiter.get(userId),
-			]);
-
-			// Check global limits
-			const globalMinuteConsumed = globalMinuteRes?.consumedPoints ?? 0;
-			if (globalMinuteConsumed >= this.config.global.perMinute) {
+			// Check all limits before consuming
+			// Global minute
+			const globalMinutePoints = this.getPoints("global_minute", "global", minuteWindow);
+			if (globalMinutePoints >= this.config.global.perMinute) {
 				logger.warn("global minute rate limit hit");
-				return { allowed: false, remaining: 0, resetMs: 60000, limitType: "global" };
+				return { allowed: false, remaining: 0, resetMs: MINUTE_MS, limitType: "global" };
 			}
 
-			const globalHourConsumed = globalHourRes?.consumedPoints ?? 0;
-			if (globalHourConsumed >= this.config.global.perHour) {
+			// Global hour
+			const globalHourPoints = this.getPoints("global_hour", "global", hourWindow);
+			if (globalHourPoints >= this.config.global.perHour) {
 				logger.warn("global hour rate limit hit");
-				return { allowed: false, remaining: 0, resetMs: 3600000, limitType: "global" };
+				return { allowed: false, remaining: 0, resetMs: HOUR_MS, limitType: "global" };
 			}
 
-			// Check per-user limits
-			const userMinuteConsumed = userMinuteRes?.consumedPoints ?? 0;
-			if (userMinuteConsumed >= this.config.perUser.perMinute) {
+			// Per-user minute
+			const userMinutePoints = this.getPoints("user_minute", userId, minuteWindow);
+			if (userMinutePoints >= this.config.perUser.perMinute) {
 				logger.info({ userId }, "per-user minute rate limit hit");
-				return {
-					allowed: false,
-					remaining: 0,
-					resetMs: userMinuteRes?.msBeforeNext ?? 60000,
-					limitType: "user",
-				};
+				return { allowed: false, remaining: 0, resetMs: MINUTE_MS, limitType: "user" };
 			}
 
-			const userHourConsumed = userHourRes?.consumedPoints ?? 0;
-			if (userHourConsumed >= this.config.perUser.perHour) {
+			// Per-user hour
+			const userHourPoints = this.getPoints("user_hour", userId, hourWindow);
+			if (userHourPoints >= this.config.perUser.perHour) {
 				logger.info({ userId }, "per-user hour rate limit hit");
-				return {
-					allowed: false,
-					remaining: 0,
-					resetMs: userHourRes?.msBeforeNext ?? 3600000,
-					limitType: "user",
-				};
+				return { allowed: false, remaining: 0, resetMs: HOUR_MS, limitType: "user" };
 			}
 
-			// Check tier-specific limits
+			// Per-tier minute
 			const tierLimits = this.config.perTier[tier];
-			const tierMinuteConsumed = tierMinuteRes?.consumedPoints ?? 0;
-			if (tierMinuteConsumed >= tierLimits.perMinute) {
+			const tierMinutePoints = this.getPoints(`tier_minute_${tier}`, userId, minuteWindow);
+			if (tierMinutePoints >= tierLimits.perMinute) {
 				logger.info({ userId, tier }, "tier minute rate limit hit");
-				return {
-					allowed: false,
-					remaining: 0,
-					resetMs: tierMinuteRes?.msBeforeNext ?? 60000,
-					limitType: "tier",
-				};
+				return { allowed: false, remaining: 0, resetMs: MINUTE_MS, limitType: "tier" };
 			}
 
-			const tierHourConsumed = tierHourRes?.consumedPoints ?? 0;
-			if (tierHourConsumed >= tierLimits.perHour) {
+			// Per-tier hour
+			const tierHourPoints = this.getPoints(`tier_hour_${tier}`, userId, hourWindow);
+			if (tierHourPoints >= tierLimits.perHour) {
 				logger.info({ userId, tier }, "tier hour rate limit hit");
-				return {
-					allowed: false,
-					remaining: 0,
-					resetMs: tierHourRes?.msBeforeNext ?? 3600000,
-					limitType: "tier",
-				};
+				return { allowed: false, remaining: 0, resetMs: HOUR_MS, limitType: "tier" };
 			}
 
-			// Phase 2: All limits pass - consume all atomically
-			const consumeResults = await Promise.allSettled([
-				this.globalMinute.consume("global", 1),
-				this.globalHour.consume("global", 1),
-				this.userMinute.consume(userId, 1),
-				this.userHour.consume(userId, 1),
-				tierMinuteLimiter.consume(userId, 1),
-				tierHourLimiter.consume(userId, 1),
-			]);
+			// All checks passed - consume points atomically
+			const db = getDb();
+			db.transaction(() => {
+				this.incrementPoints("global_minute", "global", minuteWindow);
+				this.incrementPoints("global_hour", "global", hourWindow);
+				this.incrementPoints("user_minute", userId, minuteWindow);
+				this.incrementPoints("user_hour", userId, hourWindow);
+				this.incrementPoints(`tier_minute_${tier}`, userId, minuteWindow);
+				this.incrementPoints(`tier_hour_${tier}`, userId, hourWindow);
+			})();
 
-			// Check if any consumption failed (shouldn't happen but handle gracefully)
-			for (const result of consumeResults) {
-				if (result.status === "rejected") {
-					const err = result.reason as unknown;
-					if (isRateLimitError(err)) {
-						logger.warn({ userId, tier }, "rate limit hit during consumption phase");
-						return {
-							allowed: false,
-							remaining: 0,
-							resetMs: err.msBeforeNext ?? 60000,
-							limitType: "tier",
-						};
-					}
-				}
-			}
-
-			// Get final tier minute result for remaining calculation
-			const finalTierMinute = consumeResults[4];
-			let remaining = 0;
-			let resetMs = 60000;
-			if (finalTierMinute.status === "fulfilled") {
-				remaining = Math.max(
-					0,
-					tierLimits.perMinute - (finalTierMinute.value as RateLimiterRes).consumedPoints,
-				);
-				resetMs = (finalTierMinute.value as RateLimiterRes).msBeforeNext;
-			}
+			// Calculate remaining based on tier minute limit (most restrictive for UX)
+			const newTierMinutePoints = tierMinutePoints + 1;
+			const remaining = Math.max(0, tierLimits.perMinute - newTierMinutePoints);
+			const resetMs = MINUTE_MS - (Date.now() - minuteWindow);
 
 			return {
 				allowed: true,
@@ -260,9 +204,17 @@ export class RateLimiter {
 				limitType: "tier",
 			};
 		} catch (err) {
-			logger.error({ error: String(err) }, "rate limit check error");
-			// On error, allow the request but log it
-			return { allowed: true, remaining: 0, resetMs: 0 };
+			// FAIL CLOSED: On any error, block the request
+			logger.error(
+				{ error: String(err), userId, tier },
+				"rate limit check error - blocking request",
+			);
+			return {
+				allowed: false,
+				remaining: 0,
+				resetMs: MINUTE_MS,
+				limitType: "global",
+			};
 		}
 	}
 
@@ -270,17 +222,9 @@ export class RateLimiter {
 	 * Reset rate limits for a user across all limiters.
 	 */
 	async resetUser(userId: string): Promise<void> {
-		// Reset per-user limiters
-		await this.userMinute.delete(userId);
-		await this.userHour.delete(userId);
-
-		// Reset per-tier limiters
-		for (const limiter of this.tierMinuteLimiters.values()) {
-			await limiter.delete(userId);
-		}
-		for (const limiter of this.tierHourLimiters.values()) {
-			await limiter.delete(userId);
-		}
+		const db = getDb();
+		db.prepare("DELETE FROM rate_limits WHERE key = ?").run(userId);
+		logger.info({ userId }, "rate limits reset for user");
 	}
 
 	/**
@@ -293,25 +237,17 @@ export class RateLimiter {
 		perUser: { minute: number; hour: number };
 		perTier: { minute: number; hour: number };
 	}> {
-		// Per-user usage
-		const userMinuteRes = await this.userMinute.get(userId);
-		const userHourRes = await this.userHour.get(userId);
-
-		// Per-tier usage
-		const tierMinuteLimiter = this.tierMinuteLimiters.get(tier);
-		const tierHourLimiter = this.tierHourLimiters.get(tier);
-
-		const tierMinuteRes = await tierMinuteLimiter?.get(userId);
-		const tierHourRes = await tierHourLimiter?.get(userId);
+		const minuteWindow = getWindowStart(MINUTE_MS);
+		const hourWindow = getWindowStart(HOUR_MS);
 
 		return {
 			perUser: {
-				minute: userMinuteRes?.consumedPoints ?? 0,
-				hour: userHourRes?.consumedPoints ?? 0,
+				minute: this.getPoints("user_minute", userId, minuteWindow),
+				hour: this.getPoints("user_hour", userId, hourWindow),
 			},
 			perTier: {
-				minute: tierMinuteRes?.consumedPoints ?? 0,
-				hour: tierHourRes?.consumedPoints ?? 0,
+				minute: this.getPoints(`tier_minute_${tier}`, userId, minuteWindow),
+				hour: this.getPoints(`tier_hour_${tier}`, userId, hourWindow),
 			},
 		};
 	}
@@ -321,6 +257,22 @@ export class RateLimiter {
 	 */
 	getConfig(): RateLimitConfig {
 		return this.config;
+	}
+
+	/**
+	 * Clean up old rate limit windows.
+	 * Called periodically to prevent database bloat.
+	 */
+	cleanup(): number {
+		const db = getDb();
+		const oneHourAgo = Date.now() - HOUR_MS;
+		const result = db.prepare("DELETE FROM rate_limits WHERE window_start < ?").run(oneHourAgo);
+
+		if (result.changes > 0) {
+			logger.debug({ cleaned: result.changes }, "cleaned old rate limit windows");
+		}
+
+		return result.changes;
 	}
 }
 

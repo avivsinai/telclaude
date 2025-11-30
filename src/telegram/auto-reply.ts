@@ -7,10 +7,10 @@ import { type PermissionTier, type TelclaudeConfig, loadConfig } from "../config
 import {
 	DEFAULT_IDLE_MINUTES,
 	type SessionEntry,
+	deleteSession,
 	deriveSessionKey,
-	loadSessionStore,
-	resolveStorePath,
-	saveSessionStore,
+	getSession,
+	setSession,
 } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -30,6 +30,7 @@ import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
 import type { SecurityClassification } from "../security/types.js";
+import { cleanupExpired } from "../storage/db.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
@@ -38,49 +39,28 @@ import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXECUTION CONTEXT TYPE
-// ═══════════════════════════════════════════════════════════════════════════════
-
 /**
  * Context for executing a message and sending the response.
- * This bundles all information needed for the executeAndReply helper.
  */
 type ExecutionContext = {
-	// Telegram message interface
 	msg: TelegramInboundMessage;
-
-	// Message content
 	prompt: string;
 	mediaPath?: string;
 	mediaType?: TelegramMediaType;
-
-	// Identity
 	from: string;
 	to: string;
 	username?: string;
-
-	// Security & config
 	tier: PermissionTier;
 	config: TelclaudeConfig;
-
-	// Observer result (from analysis or approval)
 	observerClassification: SecurityClassification;
 	observerConfidence: number;
-
-	// Tracking
 	requestId: string;
-
-	// Echo detection
 	recentlySent: Set<string>;
-
-	// Audit logging
 	auditLogger: AuditLogger;
 };
 
 /**
  * Execute a query via Claude SDK and send the response.
- * This is the shared implementation used by both regular messages and approved requests.
  */
 async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const {
@@ -98,29 +78,26 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const userId = String(msg.chatId);
 	const startTime = Date.now();
 
-	// Get reply configuration
 	const replyConfig = config.inbound?.reply;
 	if (!replyConfig?.enabled) {
 		logger.debug("reply not enabled, skipping");
 		return;
 	}
 
-	// Send typing indicator
 	await msg.sendComposing();
 
-	// Session handling
+	// Session handling with SQLite
 	const sessionConfig = replyConfig.session;
-	const storePath = resolveStorePath(sessionConfig?.store);
-	const store = loadSessionStore(storePath);
 	const scope = sessionConfig?.scope ?? "per-sender";
 	const idleMinutes = sessionConfig?.idleMinutes ?? DEFAULT_IDLE_MINUTES;
 	const resetTriggers = sessionConfig?.resetTriggers ?? ["/new"];
+	const timeoutSeconds = replyConfig.timeoutSeconds ?? 600; // Default 10 minutes
 
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
-	const existingSession = store[sessionKey];
+	const existingSession = getSession(sessionKey);
 	const now = Date.now();
 
-	// Check for reset triggers
+	// Check for reset triggers or idle timeout
 	const shouldReset =
 		resetTriggers.some((t) => msg.body.trim().toLowerCase().startsWith(t.toLowerCase())) ||
 		(existingSession && now - existingSession.updatedAt > idleMinutes * 60 * 1000);
@@ -134,12 +111,16 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 			systemSent: false,
 		};
 		isNewSession = true;
+
+		// Delete old session if resetting
+		if (existingSession && shouldReset) {
+			deleteSession(sessionKey);
+		}
 	} else {
 		sessionEntry = existingSession;
 		isNewSession = false;
 	}
 
-	// Build template context
 	const templatingCtx: TemplateContext = {
 		Body: msg.body,
 		BodyStripped: msg.body.trim(),
@@ -154,29 +135,34 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 		IsNewSession: isNewSession ? "true" : "false",
 	};
 
-	// Set up typing indicator refresh
+	// Typing indicator refresh
 	const typingInterval = (replyConfig.typingIntervalSeconds ?? 8) * 1000;
 	const typingTimer = setInterval(() => {
 		msg.sendComposing().catch(() => {});
 	}, typingInterval);
 
 	try {
-		// Execute using Claude Agent SDK
 		const queryPrompt = templatingCtx.BodyStripped ?? prompt;
 		let responseText = "";
 
-		// Skills only enabled for WRITE_SAFE and FULL_ACCESS tiers
+		// Execute with session resume for conversation continuity and timeout
 		for await (const chunk of executeQueryStream(queryPrompt, {
 			cwd: process.cwd(),
 			tier,
+			resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 			enableSkills: tier !== "READ_ONLY",
+			timeoutMs: timeoutSeconds * 1000,
 		})) {
 			if (chunk.type === "text") {
 				responseText += chunk.content;
 			} else if (chunk.type === "done") {
 				if (!chunk.result.success) {
+					const errorMsg = chunk.result.error?.includes("aborted")
+						? "Request timed out. Please try again with a simpler request."
+						: `Request failed: ${chunk.result.error ?? "Unknown error"}`;
+
 					logger.warn({ requestId, error: chunk.result.error }, "SDK query failed");
-					await msg.reply(`Request failed: ${chunk.result.error ?? "Unknown error"}`);
+					await msg.reply(errorMsg);
 					await auditLogger.log({
 						timestamp: new Date(),
 						requestId,
@@ -188,34 +174,26 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 						observerConfidence,
 						permissionTier: tier,
 						executionTimeMs: chunk.result.durationMs,
-						outcome: "error",
+						outcome: chunk.result.error?.includes("aborted") ? "timeout" : "error",
 						errorType: chunk.result.error ?? "sdk_error",
 					});
 					return;
 				}
 
-				// Use accumulated response or result
 				const finalResponse = responseText || chunk.result.response;
 
 				if (finalResponse) {
 					await msg.reply(finalResponse);
 
-					// Track for echo detection
 					recentlySent.add(finalResponse);
 					setTimeout(() => recentlySent.delete(finalResponse), 30000);
 
-					// Update session
+					// Update session in SQLite
 					sessionEntry.updatedAt = Date.now();
 					sessionEntry.systemSent = true;
-					store[sessionKey] = sessionEntry;
-					try {
-						await saveSessionStore(storePath, store);
-					} catch (err) {
-						logger.error({ error: String(err) }, "failed to save session store");
-					}
+					setSession(sessionKey, sessionEntry);
 				}
 
-				// Log audit entry
 				await auditLogger.log({
 					timestamp: new Date(),
 					requestId,
@@ -272,7 +250,6 @@ export async function monitorTelegramProvider(
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
 
-	// Initialize security components
 	const observer = createObserver({
 		enabled: cfg.security?.observer?.enabled ?? true,
 		maxLatencyMs: cfg.security?.observer?.maxLatencyMs ?? 2000,
@@ -287,7 +264,6 @@ export async function monitorTelegramProvider(
 		logFile: cfg.security?.audit?.logFile,
 	});
 
-	// Track recently sent messages for echo detection
 	const recentlySent = new Set<string>();
 
 	let reconnectAttempts = 0;
@@ -321,20 +297,18 @@ export async function monitorTelegramProvider(
 				},
 			});
 
-			// Start the bot
 			const runner = run(bot);
 
-			// Schedule periodic cleanup of expired approvals
+			// Periodic cleanup of expired entries in SQLite
 			const cleanupInterval = setInterval(() => {
 				cleanupExpiredApprovals();
+				cleanupExpired();
 			}, 60_000);
 
 			logger.info("Listening for Telegram messages. Ctrl+C to stop.");
 
-			// Reset reconnect attempts on successful connection
 			reconnectAttempts = 0;
 
-			// Wait for close or abort
 			const closeReason = await Promise.race([
 				onClose,
 				abortSignal
@@ -344,7 +318,6 @@ export async function monitorTelegramProvider(
 					: new Promise<never>(() => {}),
 			]);
 
-			// Stop the bot and cleanup
 			clearInterval(cleanupInterval);
 			runner.stop();
 			await close();
@@ -354,7 +327,6 @@ export async function monitorTelegramProvider(
 				break;
 			}
 
-			// Handle reconnection
 			if (!keepAlive) break;
 
 			reconnectAttempts++;
@@ -400,34 +372,29 @@ async function handleInboundMessage(
 	const userId = String(msg.chatId);
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// CONTROL PLANE COMMANDS - These are intercepted BEFORE any other processing
-	// and NEVER sent to Claude. This is the security boundary.
+	// CONTROL PLANE COMMANDS - Intercepted BEFORE any other processing
 	// ══════════════════════════════════════════════════════════════════════════
 
 	const trimmedBody = msg.body.trim();
 
-	// Handle /link command
 	if (trimmedBody.startsWith("/link ")) {
 		const code = trimmedBody.split(/\s+/)[1]?.trim();
 		await handleLinkCommand(msg, code, auditLogger);
 		return;
 	}
 
-	// Handle /approve command
 	if (trimmedBody.startsWith("/approve ")) {
 		const nonce = trimmedBody.split(/\s+/)[1]?.trim();
-		await handleApproveCommand(msg, nonce, cfg, observer, rateLimiter, auditLogger, recentlySent);
+		await handleApproveCommand(msg, nonce, cfg, auditLogger, recentlySent);
 		return;
 	}
 
-	// Handle /deny command
 	if (trimmedBody.startsWith("/deny ")) {
 		const nonce = trimmedBody.split(/\s+/)[1]?.trim();
 		await handleDenyCommand(msg, nonce, auditLogger);
 		return;
 	}
 
-	// Handle /unlink command
 	if (trimmedBody === "/unlink") {
 		const { removeIdentityLink } = await import("../security/linking.js");
 		const removed = removeIdentityLink(msg.chatId);
@@ -439,7 +406,6 @@ async function handleInboundMessage(
 		return;
 	}
 
-	// Handle /status command (show identity link status)
 	if (trimmedBody === "/whoami") {
 		const link = getIdentityLink(msg.chatId);
 		if (link) {
@@ -457,20 +423,17 @@ async function handleInboundMessage(
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// DATA PLANE - Regular messages that go through security checks to Claude
+	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
 
-	// Echo detection - skip if we sent this message
 	if (recentlySent.has(msg.body)) {
 		recentlySent.delete(msg.body);
 		logger.debug({ msgId: msg.id }, "echo detected, skipping");
 		return;
 	}
 
-	// Get user's permission tier
 	const tier = getUserPermissionTier(msg.chatId, cfg.security);
 
-	// Check rate limits
 	const rateLimitResult = await rateLimiter.checkLimit(userId, tier);
 	if (!rateLimitResult.allowed) {
 		logger.info({ userId, tier }, "rate limited");
@@ -481,14 +444,11 @@ async function handleInboundMessage(
 		return;
 	}
 
-	// Security observer check
 	const observerResult = await observer.analyze(msg.body, {
 		permissionTier: tier,
 	});
 
-	// Check if approval is required based on tier and classification
 	if (requiresApproval(tier, observerResult.classification, observerResult.confidence)) {
-		// Create a pending approval instead of blocking or executing
 		const nonce = createApproval({
 			requestId,
 			chatId: msg.chatId,
@@ -506,7 +466,6 @@ async function handleInboundMessage(
 			observerReason: observerResult.reason,
 		});
 
-		// Format and send the approval request
 		const approvalMessage = formatApprovalRequest({
 			nonce,
 			requestId,
@@ -529,7 +488,6 @@ async function handleInboundMessage(
 
 		await msg.reply(approvalMessage);
 
-		// Log as pending approval
 		await auditLogger.log({
 			timestamp: new Date(),
 			requestId,
@@ -555,7 +513,6 @@ async function handleInboundMessage(
 		logger.info({ userId, reason: observerResult.reason }, "message flagged with warning");
 	}
 
-	// Execute the request using shared helper
 	await executeAndReply({
 		msg,
 		prompt: msg.body.trim(),
@@ -576,13 +533,8 @@ async function handleInboundMessage(
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONTROL PLANE COMMAND HANDLERS
-// These functions handle commands that are intercepted before reaching Claude.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Handle /link command - Verify and consume a link code.
- * This command NEVER reaches Claude.
- */
 async function handleLinkCommand(
 	msg: TelegramInboundMessage,
 	code: string | undefined,
@@ -600,15 +552,14 @@ async function handleLinkCommand(
 	const result = consumeLinkCode(code, msg.chatId, msg.username ?? String(msg.chatId));
 
 	if (!result.success) {
-		await msg.reply(`❌ ${result.error}`);
+		await msg.reply(`${result.error}`);
 		return;
 	}
 
 	await msg.reply(
-		`✅ *Identity linked successfully!*\n\nThis chat is now linked to local user: *${result.data.localUserId}*\n\nYou can verify with \`/whoami\` or unlink with \`/unlink\`.`,
+		`*Identity linked successfully!*\n\nThis chat is now linked to local user: *${result.data.localUserId}*\n\nYou can verify with \`/whoami\` or unlink with \`/unlink\`.`,
 	);
 
-	// Log the successful link
 	await auditLogger.log({
 		timestamp: new Date(),
 		requestId: `link_${Date.now()}`,
@@ -622,16 +573,10 @@ async function handleLinkCommand(
 	});
 }
 
-/**
- * Handle /approve command - Approve a pending request.
- * This command NEVER reaches Claude.
- */
 async function handleApproveCommand(
 	msg: TelegramInboundMessage,
 	nonce: string | undefined,
 	cfg: TelclaudeConfig,
-	_observer: SecurityObserver,
-	_rateLimiter: RateLimiter,
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
 ): Promise<void> {
@@ -643,14 +588,12 @@ async function handleApproveCommand(
 	const result = consumeApproval(nonce, msg.chatId);
 
 	if (!result.success) {
-		await msg.reply(`❌ ${result.error}`);
+		await msg.reply(`${result.error}`);
 		return;
 	}
 
-	// Execute the approved request
-	await msg.reply("✅ Request approved. Processing...");
+	await msg.reply("Request approved. Processing...");
 
-	// Reconstruct a message-like object from the approval
 	const approval = result.data;
 	const approvedMsg: TelegramInboundMessage = {
 		...msg,
@@ -663,15 +606,9 @@ async function handleApproveCommand(
 		id: approval.messageId,
 	};
 
-	// Execute the request - this will go through the normal flow but skip approval
-	// since we already have approval
 	await executeApprovedRequest(approvedMsg, cfg, approval, auditLogger, recentlySent);
 }
 
-/**
- * Handle /deny command - Deny a pending request.
- * This command NEVER reaches Claude.
- */
 async function handleDenyCommand(
 	msg: TelegramInboundMessage,
 	nonce: string | undefined,
@@ -685,13 +622,12 @@ async function handleDenyCommand(
 	const result = denyApproval(nonce, msg.chatId);
 
 	if (!result.success) {
-		await msg.reply(`❌ ${result.error}`);
+		await msg.reply(`${result.error}`);
 		return;
 	}
 
-	await msg.reply("❌ Request denied.");
+	await msg.reply("Request denied.");
 
-	// Log the denial
 	const entry = result.data;
 	await auditLogger.log({
 		timestamp: new Date(),
@@ -708,10 +644,6 @@ async function handleDenyCommand(
 	});
 }
 
-/**
- * Execute a request that has been approved.
- * This bypasses the normal approval check since the request was already approved.
- */
 async function executeApprovedRequest(
 	msg: TelegramInboundMessage,
 	cfg: TelclaudeConfig,

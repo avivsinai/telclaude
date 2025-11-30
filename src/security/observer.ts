@@ -1,22 +1,22 @@
 /**
- * Security observer using Claude Agent SDK.
+ * Security observer using Claude Agent SDK with circuit breaker.
  *
  * Analyzes incoming messages for security risks using:
  * 1. Fast-path regex patterns (instant, no API call)
  * 2. SDK + security-gate skill (LLM-based analysis)
+ *
+ * Circuit breaker prevents cascading failures when SDK is slow/failing.
  */
 
 import { type SDKAssistantMessage, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { CircuitBreaker } from "./circuit-breaker.js";
 import { checkStructuralIssues, fastPathClassify } from "./fast-path.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
 
 const logger = getChildLogger({ module: "observer" });
 
-/**
- * Type guard for SDK assistant messages.
- */
 function isSDKAssistantMessage(msg: SDKMessage): msg is SDKAssistantMessage {
 	return (
 		msg.type === "assistant" &&
@@ -34,17 +34,20 @@ export type ObserverConfig = {
 	dangerThreshold: number;
 	fallbackOnTimeout: "allow" | "block" | "escalate";
 	cwd?: string;
+	circuitBreaker?: {
+		failureThreshold?: number;
+		resetTimeoutMs?: number;
+		successThreshold?: number;
+	};
 };
 
-/**
- * Security observer that analyzes incoming messages.
- */
 export class SecurityObserver {
-	constructor(private config: ObserverConfig) {}
+	private circuitBreaker: CircuitBreaker;
 
-	/**
-	 * Analyze a message and return security classification.
-	 */
+	constructor(private config: ObserverConfig) {
+		this.circuitBreaker = new CircuitBreaker("observer", config.circuitBreaker);
+	}
+
 	async analyze(
 		message: string,
 		context: {
@@ -89,11 +92,18 @@ export class SecurityObserver {
 			};
 		}
 
-		// 4. Use SDK with security-gate skill for LLM analysis
+		// 4. Check circuit breaker before SDK call
+		if (!this.circuitBreaker.canExecute()) {
+			logger.warn("circuit breaker open, using fallback");
+			return this.fallbackResult("Circuit breaker open", Date.now() - startTime);
+		}
+
+		// 5. Use SDK with security-gate skill for LLM analysis
 		try {
 			const result = await this.classifyWithSdk(message, context);
+			this.circuitBreaker.recordSuccess();
 
-			// Apply dangerThreshold: downgrade BLOCK to WARN if confidence is low
+			// Apply dangerThreshold adjustments
 			let finalClassification = result.classification;
 			let adjustedReason = result.reason;
 
@@ -106,7 +116,6 @@ export class SecurityObserver {
 				);
 			}
 
-			// Also downgrade WARN to ALLOW if confidence is very low
 			if (
 				result.classification === "WARN" &&
 				result.confidence < this.config.dangerThreshold * 0.5
@@ -126,14 +135,12 @@ export class SecurityObserver {
 				latencyMs: Date.now() - startTime,
 			};
 		} catch (err) {
+			this.circuitBreaker.recordFailure();
 			logger.error({ error: String(err) }, "observer SDK error");
 			return this.fallbackResult(String(err), Date.now() - startTime);
 		}
 	}
 
-	/**
-	 * Classify using SDK with security-gate skill.
-	 */
 	private async classifyWithSdk(
 		message: string,
 		context: { permissionTier: PermissionTier; hasFlaggedHistory?: boolean },
@@ -158,8 +165,8 @@ Respond with JSON only.`;
 				prompt,
 				options: {
 					cwd: this.config.cwd ?? process.cwd(),
-					settingSources: ["project"], // Load skills from .claude/skills/
-					allowedTools: ["Skill"], // Only allow Skill tool
+					settingSources: ["project"],
+					allowedTools: ["Skill"],
 					maxTurns: 1,
 					abortController,
 				},
@@ -182,9 +189,6 @@ Respond with JSON only.`;
 		}
 	}
 
-	/**
-	 * Parse classification response JSON.
-	 */
 	private parseClassificationResponse(response: string): Omit<ObserverResult, "latencyMs"> {
 		try {
 			const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -216,9 +220,6 @@ Respond with JSON only.`;
 		};
 	}
 
-	/**
-	 * Return fallback result on error.
-	 */
 	private fallbackResult(error: string, latencyMs: number): ObserverResult {
 		logger.warn(
 			{ error, fallbackMode: this.config.fallbackOnTimeout, latencyMs },
@@ -231,15 +232,15 @@ Respond with JSON only.`;
 		switch (this.config.fallbackOnTimeout) {
 			case "allow":
 				classification = "ALLOW";
-				confidence = 0.3; // Low confidence since we couldn't analyze
+				confidence = 0.3;
 				break;
 			case "escalate":
 				classification = "WARN";
-				confidence = 0.5; // Medium confidence, requires human review
+				confidence = 0.5;
 				break;
 			default:
 				classification = "BLOCK";
-				confidence = 0.5; // Moderate confidence for safety
+				confidence = 0.5;
 				break;
 		}
 
@@ -250,11 +251,16 @@ Respond with JSON only.`;
 			latencyMs,
 		};
 	}
+
+	getCircuitBreakerStatus() {
+		return this.circuitBreaker.getStatus();
+	}
+
+	resetCircuitBreaker() {
+		this.circuitBreaker.reset();
+	}
 }
 
-/**
- * Create a security observer.
- */
 export function createObserver(config: ObserverConfig): SecurityObserver {
 	return new SecurityObserver(config);
 }

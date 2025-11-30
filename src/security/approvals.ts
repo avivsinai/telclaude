@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { getDb } from "../storage/db.js";
 import type { TelegramMediaType } from "../telegram/types.js";
 import type { Result, SecurityClassification } from "./types.js";
 
@@ -32,10 +33,52 @@ export type PendingApproval = {
 };
 
 /**
- * In-memory store for pending approvals.
- * For production, consider persisting to disk/redis for restart resilience.
+ * Database row type for approvals.
  */
-const pendingApprovals = new Map<string, PendingApproval>();
+type ApprovalRow = {
+	nonce: string;
+	request_id: string;
+	chat_id: number;
+	created_at: number;
+	expires_at: number;
+	tier: string;
+	body: string;
+	media_path: string | null;
+	media_url: string | null;
+	media_type: string | null;
+	username: string | null;
+	from_user: string;
+	to_user: string;
+	message_id: string;
+	observer_classification: string;
+	observer_confidence: number;
+	observer_reason: string | null;
+};
+
+/**
+ * Convert database row to PendingApproval.
+ */
+function rowToApproval(row: ApprovalRow): PendingApproval {
+	return {
+		nonce: row.nonce,
+		requestId: row.request_id,
+		chatId: row.chat_id,
+		createdAt: row.created_at,
+		expiresAt: row.expires_at,
+		tier: row.tier as PermissionTier,
+		body: row.body,
+		mediaPath: row.media_path ?? undefined,
+		mediaUrl: row.media_url ?? undefined,
+		mediaType: row.media_type as TelegramMediaType | undefined,
+		username: row.username ?? undefined,
+		from: row.from_user,
+		to: row.to_user,
+		messageId: row.message_id,
+		observerClassification: row.observer_classification as SecurityClassification,
+		observerConfidence: row.observer_confidence,
+		observerReason: row.observer_reason ?? undefined,
+	};
+}
 
 /**
  * Create a new pending approval and return the nonce.
@@ -44,18 +87,38 @@ export function createApproval(
 	entry: Omit<PendingApproval, "nonce" | "createdAt" | "expiresAt">,
 	ttlMs: number = DEFAULT_TTL_MS,
 ): string {
+	const db = getDb();
+
 	// Generate a random 8-character nonce
 	const nonce = crypto.randomBytes(4).toString("hex").toLowerCase();
 	const now = Date.now();
+	const expiresAt = now + ttlMs;
 
-	const approval: PendingApproval = {
-		...entry,
+	db.prepare(
+		`INSERT INTO approvals (
+			nonce, request_id, chat_id, created_at, expires_at, tier, body,
+			media_path, media_url, media_type, username, from_user, to_user,
+			message_id, observer_classification, observer_confidence, observer_reason
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	).run(
 		nonce,
-		createdAt: now,
-		expiresAt: now + ttlMs,
-	};
-
-	pendingApprovals.set(nonce, approval);
+		entry.requestId,
+		entry.chatId,
+		now,
+		expiresAt,
+		entry.tier,
+		entry.body,
+		entry.mediaPath ?? null,
+		entry.mediaUrl ?? null,
+		entry.mediaType ?? null,
+		entry.username ?? null,
+		entry.from,
+		entry.to,
+		entry.messageId,
+		entry.observerClassification,
+		entry.observerConfidence,
+		entry.observerReason ?? null,
+	);
 
 	logger.info(
 		{
@@ -75,106 +138,124 @@ export function createApproval(
  * Consume an approval if valid.
  * Returns the approval entry if valid, or an error if not found/expired/wrong chat.
  *
- * NOTE: Atomically removes entry before validation to prevent race conditions
- * where two concurrent requests could both consume the same approval.
+ * Uses a transaction for atomicity - prevents race conditions where two concurrent
+ * requests could both consume the same approval.
  */
 export function consumeApproval(nonce: string, chatId: number): Result<PendingApproval> {
-	// Atomically get and delete to prevent race conditions
-	const entry = pendingApprovals.get(nonce);
-	if (!entry) {
-		logger.warn({ nonce, chatId }, "approval not found");
-		return { success: false, error: "No pending approval found for that code." };
-	}
+	const db = getDb();
 
-	// Delete immediately to prevent concurrent consumption
-	pendingApprovals.delete(nonce);
+	// Use a transaction for atomic get-and-delete
+	const result = db.transaction(() => {
+		const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
+			| ApprovalRow
+			| undefined;
 
-	// Verify chat ID matches (entry already removed, so no race)
-	if (entry.chatId !== chatId) {
-		// Re-add the entry since this wasn't a valid consumption attempt
-		pendingApprovals.set(nonce, entry);
-		logger.warn(
-			{ nonce, expectedChatId: entry.chatId, actualChatId: chatId },
-			"approval chat mismatch",
-		);
-		return { success: false, error: "This approval code belongs to a different chat." };
-	}
+		if (!row) {
+			return { success: false as const, error: "No pending approval found for that code." };
+		}
 
-	// Check expiry (entry already removed, so no race)
-	if (Date.now() > entry.expiresAt) {
-		// Don't re-add expired entries
-		logger.warn({ nonce, chatId }, "approval expired");
-		return { success: false, error: "This approval has expired. Please retry your request." };
-	}
+		// Verify chat ID matches
+		if (row.chat_id !== chatId) {
+			logger.warn(
+				{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
+				"approval chat mismatch",
+			);
+			return { success: false as const, error: "This approval code belongs to a different chat." };
+		}
 
-	logger.info({ nonce, requestId: entry.requestId, chatId }, "approval consumed");
+		// Check expiry
+		if (Date.now() > row.expires_at) {
+			// Delete expired entry
+			db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
+			logger.warn({ nonce, chatId }, "approval expired");
+			return {
+				success: false as const,
+				error: "This approval has expired. Please retry your request.",
+			};
+		}
 
-	return { success: true, data: entry };
+		// Valid - delete and return
+		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
+
+		logger.info({ nonce, requestId: row.request_id, chatId }, "approval consumed");
+
+		return { success: true as const, data: rowToApproval(row) };
+	})();
+
+	return result;
 }
 
 /**
  * Deny/cancel an approval.
  */
 export function denyApproval(nonce: string, chatId: number): Result<PendingApproval> {
-	const entry = pendingApprovals.get(nonce);
+	const db = getDb();
 
-	if (!entry) {
-		return { success: false, error: "No pending approval found for that code." };
-	}
+	const result = db.transaction(() => {
+		const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
+			| ApprovalRow
+			| undefined;
 
-	if (entry.chatId !== chatId) {
-		return { success: false, error: "This approval code belongs to a different chat." };
-	}
+		if (!row) {
+			return { success: false as const, error: "No pending approval found for that code." };
+		}
 
-	pendingApprovals.delete(nonce);
+		if (row.chat_id !== chatId) {
+			return { success: false as const, error: "This approval code belongs to a different chat." };
+		}
 
-	logger.info({ nonce, requestId: entry.requestId, chatId }, "approval denied");
+		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
 
-	return { success: true, data: entry };
+		logger.info({ nonce, requestId: row.request_id, chatId }, "approval denied");
+
+		return { success: true as const, data: rowToApproval(row) };
+	})();
+
+	return result;
 }
 
 /**
  * Get all pending approvals for a chat.
  */
 export function getPendingApprovalsForChat(chatId: number): PendingApproval[] {
+	const db = getDb();
 	const now = Date.now();
-	const results: PendingApproval[] = [];
 
-	for (const entry of pendingApprovals.values()) {
-		if (entry.chatId === chatId && entry.expiresAt > now) {
-			results.push(entry);
-		}
-	}
+	const rows = db
+		.prepare("SELECT * FROM approvals WHERE chat_id = ? AND expires_at > ?")
+		.all(chatId, now) as ApprovalRow[];
 
-	return results;
+	return rows.map(rowToApproval);
 }
 
 /**
  * Clean up expired approvals.
  */
 export function cleanupExpiredApprovals(): number {
+	const db = getDb();
 	const now = Date.now();
-	let cleaned = 0;
 
-	for (const [nonce, entry] of pendingApprovals.entries()) {
-		if (entry.expiresAt < now) {
-			pendingApprovals.delete(nonce);
-			cleaned++;
-		}
+	const result = db.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
+
+	if (result.changes > 0) {
+		logger.debug({ cleaned: result.changes }, "cleaned up expired approvals");
 	}
 
-	if (cleaned > 0) {
-		logger.debug({ cleaned }, "cleaned up expired approvals");
-	}
-
-	return cleaned;
+	return result.changes;
 }
 
 /**
  * Get the count of pending approvals.
  */
 export function getPendingApprovalCount(): number {
-	return pendingApprovals.size;
+	const db = getDb();
+	const now = Date.now();
+
+	const row = db.prepare("SELECT COUNT(*) as count FROM approvals WHERE expires_at > ?").get(now) as
+		| { count: number }
+		| undefined;
+
+	return row?.count ?? 0;
 }
 
 /**

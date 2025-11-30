@@ -1,10 +1,13 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+/**
+ * Session management with SQLite persistence.
+ */
 
-import JSON5 from "json5";
 import type { MsgContext } from "../auto-reply/templating.js";
-import { CONFIG_DIR, normalizeTelegramId } from "../utils.js";
+import { getChildLogger } from "../logging.js";
+import { getDb } from "../storage/db.js";
+import { normalizeTelegramId } from "../utils.js";
+
+const logger = getChildLogger({ module: "sessions" });
 
 export type SessionScope = "per-sender" | "global";
 
@@ -14,65 +17,78 @@ export type SessionEntry = {
 	systemSent?: boolean;
 };
 
-export const SESSION_STORE_DEFAULT = path.join(CONFIG_DIR, "sessions.json");
 export const DEFAULT_RESET_TRIGGER = "/new";
 export const DEFAULT_IDLE_MINUTES = 60;
 
-/**
- * Type guard for individual session entries.
- */
-function isValidSessionEntry(entry: unknown): entry is SessionEntry {
-	return (
-		typeof entry === "object" &&
-		entry !== null &&
-		"sessionId" in entry &&
-		typeof (entry as SessionEntry).sessionId === "string" &&
-		"updatedAt" in entry &&
-		typeof (entry as SessionEntry).updatedAt === "number"
-	);
+type SessionRow = {
+	session_key: string;
+	session_id: string;
+	updated_at: number;
+	system_sent: number;
+};
+
+function rowToEntry(row: SessionRow): SessionEntry {
+	return {
+		sessionId: row.session_id,
+		updatedAt: row.updated_at,
+		systemSent: row.system_sent === 1,
+	};
 }
 
-/**
- * Validate and filter session store entries.
- */
-function validateSessionStore(parsed: unknown): Record<string, SessionEntry> {
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return {};
-	}
+export function getSession(sessionKey: string): SessionEntry | null {
+	const db = getDb();
+	const row = db.prepare("SELECT * FROM sessions WHERE session_key = ?").get(sessionKey) as
+		| SessionRow
+		| undefined;
+
+	if (!row) return null;
+	return rowToEntry(row);
+}
+
+export function setSession(sessionKey: string, entry: SessionEntry): void {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO sessions (session_key, session_id, updated_at, system_sent)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(session_key) DO UPDATE SET
+		   session_id = excluded.session_id,
+		   updated_at = excluded.updated_at,
+		   system_sent = excluded.system_sent`,
+	).run(sessionKey, entry.sessionId, entry.updatedAt, entry.systemSent ? 1 : 0);
+
+	logger.debug({ sessionKey, sessionId: entry.sessionId }, "session updated");
+}
+
+export function deleteSession(sessionKey: string): boolean {
+	const db = getDb();
+	const result = db.prepare("DELETE FROM sessions WHERE session_key = ?").run(sessionKey);
+	return result.changes > 0;
+}
+
+export function getAllSessions(): Record<string, SessionEntry> {
+	const db = getDb();
+	const rows = db.prepare("SELECT * FROM sessions").all() as SessionRow[];
 
 	const result: Record<string, SessionEntry> = {};
-	for (const [key, value] of Object.entries(parsed)) {
-		if (isValidSessionEntry(value)) {
-			result[key] = value;
-		}
+	for (const row of rows) {
+		result[row.session_key] = rowToEntry(row);
 	}
 	return result;
 }
 
-export function resolveStorePath(store?: string) {
-	if (!store) return SESSION_STORE_DEFAULT;
-	if (store.startsWith("~")) return path.resolve(store.replace("~", os.homedir()));
-	return path.resolve(store);
-}
+export function cleanupIdleSessions(idleMinutes: number): number {
+	const db = getDb();
+	const cutoff = Date.now() - idleMinutes * 60 * 1000;
+	const result = db.prepare("DELETE FROM sessions WHERE updated_at < ?").run(cutoff);
 
-export function loadSessionStore(storePath: string): Record<string, SessionEntry> {
-	try {
-		const raw = fs.readFileSync(storePath, "utf-8");
-		const parsed = JSON5.parse(raw) as unknown;
-		return validateSessionStore(parsed);
-	} catch {
-		// ignore missing/invalid store; we'll recreate it
+	if (result.changes > 0) {
+		logger.debug({ cleaned: result.changes, idleMinutes }, "cleaned up idle sessions");
 	}
-	return {};
+
+	return result.changes;
 }
 
-export async function saveSessionStore(storePath: string, store: Record<string, SessionEntry>) {
-	await fs.promises.mkdir(path.dirname(storePath), { recursive: true });
-	await fs.promises.writeFile(storePath, JSON.stringify(store, null, 2), "utf-8");
-}
-
-// Decide which session bucket to use (per-sender vs global).
-export function deriveSessionKey(scope: SessionScope, ctx: MsgContext) {
+export function deriveSessionKey(scope: SessionScope, ctx: MsgContext): string {
 	if (scope === "global") return "global";
 	const from = ctx.From ? normalizeTelegramId(ctx.From) : "";
 	return from || "unknown";
