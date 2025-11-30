@@ -78,7 +78,7 @@ describe("Approvals", () => {
 	});
 
 	function createTestApproval(chatId: number, ttlMs = 60000): string {
-		return createApproval(
+		const result = createApproval(
 			{
 				requestId: "test-req-" + Math.random(),
 				chatId,
@@ -93,6 +93,7 @@ describe("Approvals", () => {
 			},
 			ttlMs,
 		);
+		return result.nonce;
 	}
 
 	describe("atomic consumption", () => {

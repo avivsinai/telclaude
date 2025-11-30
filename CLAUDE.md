@@ -50,6 +50,7 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
 2. **WRITE_SAFE**: Can write/edit files but restricted shell commands
    - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Write`, `Edit`, `Bash`
    - Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
+   - ⚠️ **Security Note**: WRITE_SAFE prevents *accidental* damage, not *malicious* attacks. Users can escape by writing scripts that perform blocked operations. For true isolation, run in a container.
 
 3. **FULL_ACCESS**: No restrictions (requires explicit configuration)
    - Uses `bypassPermissions` mode with `allowDangerouslySkipPermissions`

@@ -39,6 +39,82 @@ import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
 
+// Rate limiting for control commands (prevent brute-force on /approve)
+// Stricter than regular rate limits: 5 attempts per minute per user
+const controlCommandAttempts = new Map<string, { count: number; windowStart: number }>();
+const CONTROL_COMMAND_LIMIT = 5;
+const CONTROL_COMMAND_WINDOW_MS = 60_000;
+
+function checkControlCommandRateLimit(userId: string): boolean {
+	const now = Date.now();
+	const entry = controlCommandAttempts.get(userId);
+
+	if (!entry || now - entry.windowStart > CONTROL_COMMAND_WINDOW_MS) {
+		// New window
+		controlCommandAttempts.set(userId, { count: 1, windowStart: now });
+		return true;
+	}
+
+	if (entry.count >= CONTROL_COMMAND_LIMIT) {
+		return false;
+	}
+
+	entry.count++;
+	return true;
+}
+
+// Session locks to prevent race conditions on rapid messages
+const sessionLocks = new Map<string, Promise<void>>();
+
+async function withSessionLock<T>(sessionKey: string, fn: () => Promise<T>): Promise<T> {
+	// Wait for any existing operation on this session
+	const existingLock = sessionLocks.get(sessionKey);
+	if (existingLock) {
+		await existingLock;
+	}
+
+	// Create a new lock for our operation
+	let resolve: (() => void) | undefined;
+	const lock = new Promise<void>((r) => {
+		resolve = r;
+	});
+	sessionLocks.set(sessionKey, lock);
+
+	try {
+		return await fn();
+	} finally {
+		if (resolve) resolve();
+		// Only delete if we're still the current lock
+		if (sessionLocks.get(sessionKey) === lock) {
+			sessionLocks.delete(sessionKey);
+		}
+	}
+}
+
+// Input sanitization patterns
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional null byte detection for security
+const NULL_BYTE_PATTERN = /\x00/;
+const LONG_LINE_PATTERN = /[^\s]{10000,}/;
+
+function sanitizeInput(input: string): { valid: boolean; sanitized: string; reason?: string } {
+	// Check for null bytes (can cause issues in string processing)
+	if (NULL_BYTE_PATTERN.test(input)) {
+		return { valid: false, sanitized: "", reason: "Malformed input detected" };
+	}
+
+	// Check for extremely long lines without spaces (potential DoS)
+	if (LONG_LINE_PATTERN.test(input)) {
+		return { valid: false, sanitized: "", reason: "Malformed input detected" };
+	}
+
+	// Limit total length to prevent memory issues (100KB is generous for a chat message)
+	if (input.length > 100_000) {
+		return { valid: false, sanitized: "", reason: "Message too long" };
+	}
+
+	return { valid: true, sanitized: input };
+}
+
 /**
  * Context for executing a message and sending the response.
  */
@@ -61,19 +137,12 @@ type ExecutionContext = {
 
 /**
  * Execute a query via Claude SDK and send the response.
+ *
+ * Uses session locking to prevent race conditions when multiple messages
+ * arrive rapidly for the same session.
  */
 async function executeAndReply(ctx: ExecutionContext): Promise<void> {
-	const {
-		msg,
-		prompt,
-		tier,
-		config,
-		requestId,
-		observerClassification,
-		observerConfidence,
-		recentlySent,
-		auditLogger,
-	} = ctx;
+	const { msg, config } = ctx;
 
 	const userId = String(msg.chatId);
 	const startTime = Date.now();
@@ -94,6 +163,43 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const timeoutSeconds = replyConfig.timeoutSeconds ?? 600; // Default 10 minutes
 
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
+
+	// Use session lock to prevent race conditions on rapid messages
+	await withSessionLock(sessionKey, async () => {
+		await executeWithSession(ctx, sessionKey, {
+			userId,
+			startTime,
+			idleMinutes,
+			resetTriggers,
+			timeoutSeconds,
+		});
+	});
+}
+
+/**
+ * Internal session-locked execution.
+ */
+async function executeWithSession(
+	ctx: ExecutionContext,
+	sessionKey: string,
+	opts: {
+		userId: string;
+		startTime: number;
+		idleMinutes: number;
+		resetTriggers: string[];
+		timeoutSeconds: number;
+	},
+): Promise<void> {
+	const {
+		msg,
+		tier,
+		requestId,
+		observerClassification,
+		observerConfidence,
+		recentlySent,
+		auditLogger,
+	} = ctx;
+	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds } = opts;
 	const existingSession = getSession(sessionKey);
 	const now = Date.now();
 
@@ -136,13 +242,14 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	};
 
 	// Typing indicator refresh
-	const typingInterval = (replyConfig.typingIntervalSeconds ?? 8) * 1000;
+	const replyConfig = ctx.config.inbound?.reply;
+	const typingInterval = (replyConfig?.typingIntervalSeconds ?? 8) * 1000;
 	const typingTimer = setInterval(() => {
 		msg.sendComposing().catch(() => {});
 	}, typingInterval);
 
 	try {
-		const queryPrompt = templatingCtx.BodyStripped ?? prompt;
+		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
 		let responseText = "";
 
 		// Execute with session resume for conversation continuity and timeout
@@ -338,19 +445,31 @@ export async function monitorTelegramProvider(
 			logger.info({ delay, attempt: reconnectAttempts }, "reconnecting");
 			await sleepWithAbort(delay, abortSignal);
 		} catch (err) {
-			logger.error({ error: String(err) }, "monitor error");
+			const errorStr = String(err);
+			logger.error({ error: errorStr }, "monitor error");
+
+			// Fatal errors that should not retry - exit immediately
+			if (
+				errorStr.includes("401") ||
+				errorStr.includes("Unauthorized") ||
+				errorStr.includes("invalid token") ||
+				errorStr.includes("bot token")
+			) {
+				logger.fatal("Invalid or revoked Telegram bot token. Exiting.");
+				process.exit(1);
+			}
 
 			if (!keepAlive) throw err;
 
 			reconnectAttempts++;
 			if (reconnectPolicy.maxAttempts > 0 && reconnectAttempts >= reconnectPolicy.maxAttempts) {
 				throw new Error(
-					`Max reconnect attempts (${reconnectPolicy.maxAttempts}) reached: ${String(err)}`,
+					`Max reconnect attempts (${reconnectPolicy.maxAttempts}) reached: ${errorStr}`,
 				);
 			}
 
 			const delay = computeBackoff(reconnectPolicy, reconnectAttempts);
-			logger.error({ error: String(err), delay }, "reconnecting after error");
+			logger.error({ error: errorStr, delay }, "reconnecting after error");
 			await sleepWithAbort(delay, abortSignal);
 		}
 	}
@@ -376,6 +495,18 @@ async function handleInboundMessage(
 	// ══════════════════════════════════════════════════════════════════════════
 
 	const trimmedBody = msg.body.trim();
+
+	// Rate limit control commands to prevent brute-force attacks
+	const isControlCommand =
+		trimmedBody.startsWith("/link ") ||
+		trimmedBody.startsWith("/approve ") ||
+		trimmedBody.startsWith("/deny ");
+
+	if (isControlCommand && !checkControlCommandRateLimit(userId)) {
+		logger.warn({ userId }, "control command rate limited");
+		await msg.reply("Too many attempts. Please wait a minute before trying again.");
+		return;
+	}
 
 	if (trimmedBody.startsWith("/link ")) {
 		const code = trimmedBody.split(/\s+/)[1]?.trim();
@@ -426,6 +557,14 @@ async function handleInboundMessage(
 	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
 
+	// Input sanitization - reject malformed messages early
+	const sanitized = sanitizeInput(msg.body);
+	if (!sanitized.valid) {
+		logger.warn({ userId, reason: sanitized.reason }, "malformed input rejected");
+		await msg.reply(`Message rejected: ${sanitized.reason}`);
+		return;
+	}
+
 	if (recentlySent.has(msg.body)) {
 		recentlySent.delete(msg.body);
 		logger.debug({ msgId: msg.id }, "echo detected, skipping");
@@ -449,7 +588,8 @@ async function handleInboundMessage(
 	});
 
 	if (requiresApproval(tier, observerResult.classification, observerResult.confidence)) {
-		const nonce = createApproval({
+		// Create approval and get timing info to ensure display matches actual expiry
+		const { nonce, createdAt, expiresAt } = createApproval({
 			requestId,
 			chatId: msg.chatId,
 			tier,
@@ -466,12 +606,13 @@ async function handleInboundMessage(
 			observerReason: observerResult.reason,
 		});
 
+		// Use the actual timing from createApproval to avoid TTL mismatch
 		const approvalMessage = formatApprovalRequest({
 			nonce,
 			requestId,
 			chatId: msg.chatId,
-			createdAt: Date.now(),
-			expiresAt: Date.now() + 5 * 60 * 1000,
+			createdAt,
+			expiresAt,
 			tier,
 			body: msg.body,
 			mediaPath: msg.mediaPath,

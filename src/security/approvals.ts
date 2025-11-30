@@ -81,16 +81,29 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 }
 
 /**
- * Create a new pending approval and return the nonce.
+ * Result of creating an approval, includes timing info for display.
+ */
+export type CreateApprovalResult = {
+	nonce: string;
+	createdAt: number;
+	expiresAt: number;
+};
+
+/**
+ * Create a new pending approval and return the nonce with timing info.
+ *
+ * Nonce is 16 hex characters (8 bytes of entropy) to prevent brute-force attacks.
+ * With 8 bytes = 2^64 possibilities, and 5-minute TTL, brute-force is infeasible.
  */
 export function createApproval(
 	entry: Omit<PendingApproval, "nonce" | "createdAt" | "expiresAt">,
 	ttlMs: number = DEFAULT_TTL_MS,
-): string {
+): CreateApprovalResult {
 	const db = getDb();
 
-	// Generate a random 8-character nonce
-	const nonce = crypto.randomBytes(4).toString("hex").toLowerCase();
+	// Generate a random 16-character nonce (8 bytes = 64 bits of entropy)
+	// This prevents brute-force attacks even with high request rates
+	const nonce = crypto.randomBytes(8).toString("hex").toLowerCase();
 	const now = Date.now();
 	const expiresAt = now + ttlMs;
 
@@ -131,7 +144,7 @@ export function createApproval(
 		"approval request created",
 	);
 
-	return nonce;
+	return { nonce, createdAt: now, expiresAt };
 }
 
 /**

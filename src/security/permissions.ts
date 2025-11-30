@@ -2,6 +2,17 @@
  * Permission tier system for controlling Claude's capabilities.
  *
  * Uses SDK allowedTools arrays instead of CLI flags.
+ *
+ * SECURITY NOTE ON WRITE_SAFE:
+ * The WRITE_SAFE tier provides protection against *accidental* damage, NOT
+ * *malicious* attacks. A user with write access can escape the sandbox by:
+ * - Writing a Python/Node script that deletes files, then running it
+ * - Modifying shell configs that execute on next session
+ * - Using language interpreters to bypass bash restrictions
+ *
+ * For true isolation against malicious users, run the agent in a container
+ * (Docker) or VM. WRITE_SAFE is appropriate for trusted users who might
+ * accidentally run dangerous commands.
  */
 
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
@@ -39,10 +50,14 @@ export const WRITE_SAFE_BLOCKED_COMMANDS = [
 
 /**
  * Tier descriptions for display.
+ *
+ * NOTE: WRITE_SAFE prevents accidental damage, not malicious attacks.
+ * See module-level security note for details.
  */
 export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
 	READ_ONLY: "Can only read files and search. No write operations allowed.",
-	WRITE_SAFE: "Can read and write files, but cannot delete or modify permissions.",
+	WRITE_SAFE:
+		"Can read and write files, but cannot delete or modify permissions. Note: prevents accidental damage, not malicious attacks.",
 	FULL_ACCESS: "Full system access with no restrictions.",
 };
 
@@ -138,26 +153,35 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 /**
  * Check if a command contains blocked operations for WRITE_SAFE tier.
  * Returns the reason if blocked, null if allowed.
+ *
+ * Uses tokenization for more reliable detection than pure regex.
+ * Splits on shell operators and whitespace to find command tokens.
  */
 export function containsBlockedCommand(command: string): string | null {
-	const lowerCommand = command.toLowerCase();
+	// Tokenize: split by shell operators and whitespace to get individual tokens
+	// This catches commands regardless of flag ordering (e.g., "rm -rf" or "rm --force -r")
+	const tokens = command
+		.toLowerCase()
+		.split(/[\s;|&]+/)
+		.filter((t) => t.length > 0);
 
-	// Check simple blocked commands
-	for (const blocked of WRITE_SAFE_BLOCKED_COMMANDS) {
-		// Check for command at start, after &&, after ;, after |, or after whitespace
-		const patterns = [
-			new RegExp(`^${blocked}\\b`),
-			new RegExp(`&&\\s*${blocked}\\b`),
-			new RegExp(`;\\s*${blocked}\\b`),
-			new RegExp(`\\|\\s*${blocked}\\b`),
-			new RegExp(`\\s${blocked}\\b`),
-		];
-		if (patterns.some((p) => p.test(lowerCommand))) {
-			return blocked;
+	// Check if any token is a blocked command
+	for (const token of tokens) {
+		// Strip leading dashes for flag detection, but check full token for commands
+		const cleanToken = token.replace(/^-+/, "");
+		if (WRITE_SAFE_BLOCKED_COMMANDS.includes(token)) {
+			return token;
+		}
+		// Also check long-form flags like --recursive that map to rm behavior
+		if (cleanToken === "recursive" && tokens.includes("rm")) {
+			return "rm --recursive";
+		}
+		if (cleanToken === "force" && tokens.includes("rm")) {
+			return "rm --force";
 		}
 	}
 
-	// Check dangerous patterns
+	// Check dangerous patterns (these need regex for complex matching)
 	for (const { pattern, reason } of DANGEROUS_PATTERNS) {
 		if (pattern.test(command)) {
 			return reason;
