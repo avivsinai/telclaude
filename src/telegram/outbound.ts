@@ -181,11 +181,7 @@ export async function sendTelegramMessage(
 	try {
 		if (options.mediaPath) {
 			const payload = inferMediaPayload(options.mediaPath, options.caption ?? options.text);
-			const result = await sendMediaToChat(
-				bot.api,
-				options.chatId,
-				payload as TelegramMediaPayload,
-			);
+			const result = await sendMediaToChat(bot.api, options.chatId, payload);
 			return { success: true, messageId: result.message_id };
 		}
 

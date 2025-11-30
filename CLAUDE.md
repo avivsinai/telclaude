@@ -1,6 +1,13 @@
 # Telclaude
 
-Telegram-Claude bridge with comprehensive security layer. This project enables Claude CLI to respond to Telegram messages with proper security controls.
+Telegram-Claude bridge with comprehensive security layer. This project enables Claude Code to respond to Telegram messages with proper security controls.
+
+## Development Guidelines
+
+- **No backward compatibility** - This is a new OSS project. Prefer clean rewrites over migration shims.
+- **Pristine code** - Write clean, idiomatic TypeScript. No dead code, no legacy cruft.
+- **Claude Agent SDK** - Use `@anthropic-ai/claude-agent-sdk` for all Claude interactions, not CLI spawning.
+- **Skills** - Use `.claude/skills/` for Claude's behavior customization. Skills are auto-loaded by the SDK.
 
 ## Architecture Overview
 
@@ -11,8 +18,8 @@ Telegram Bot API (grammY)
 ┌─────────────────────────────────────┐
 │          Security Layer             │
 │  ┌──────────┐  ┌───────────────┐   │
-│  │Fast Path │→ │ LLM Observer  │   │
-│  │(regex)   │  │(Claude Haiku) │   │
+│  │Fast Path │→ │   Observer    │   │
+│  │(regex)   │  │(SDK + skill)  │   │
 │  └──────────┘  └───────────────┘   │
 │        │              │             │
 │        ▼              ▼             │
@@ -27,25 +34,25 @@ Telegram Bot API (grammY)
 └─────────────────────────────────────┘
          │
          ▼
-    Claude CLI
-    (with tier-specific flags)
+  Claude Agent SDK
+  (allowedTools per tier)
 ```
 
 ## Key Concepts
 
 ### Permission Tiers
 
-Three tiers control what Claude can do:
+Three tiers control what Claude can do (via SDK `allowedTools`):
 
 1. **READ_ONLY**: Claude can only read files, search, and browse the web
-   - Flags: `--allowedTools Read,Glob,Grep,WebFetch,WebSearch`
+   - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`
 
 2. **WRITE_SAFE**: Can write/edit files but restricted shell commands
-   - Flags: `--allowedTools Read,Glob,Grep,WebFetch,WebSearch,Write,Edit,Bash`
-   - Blocked: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
+   - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Write`, `Edit`, `Bash`
+   - Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
 
 3. **FULL_ACCESS**: No restrictions (requires explicit configuration)
-   - Flags: `--dangerously-skip-permissions`
+   - Uses `bypassPermissions` mode with `allowDangerouslySkipPermissions`
 
 ### Security Observer
 
@@ -59,6 +66,34 @@ Claude Haiku analyzes incoming messages before processing:
 - Global limits (per minute/hour)
 - Per-user limits
 - Per-tier limits (stricter for FULL_ACCESS)
+
+### Identity Linking
+
+Links Telegram users to authorized identities via out-of-band verification:
+
+1. Admin generates a link code: `telclaude link tg:123456789`
+2. User enters the code in Telegram: `/link abc123`
+3. If valid, their identity is linked and they receive assigned permissions
+
+Control-plane commands (handled before Claude sees them):
+- `/link <code>` - Link identity with verification code
+- `/unlink` - Remove identity link
+- `/whoami` - Show current identity link status
+
+### Command Approval
+
+Risky requests require human-in-the-loop approval:
+
+1. Security observer flags request as requiring approval
+2. User is shown the request details with approval code
+3. User replies `/approve <code>` or `/deny <code>`
+4. Approved requests execute; denied requests are logged
+
+Approval is required for:
+- FULL_ACCESS tier requests
+- BLOCK classification (can be overridden)
+- WARN classification with WRITE_SAFE tier
+- Low-confidence warnings (< 0.5)
 
 ## Project Structure
 
@@ -79,11 +114,18 @@ src/
 │   ├── send.ts           # Send message command
 │   ├── relay.ts          # Start relay command
 │   ├── status.ts         # Show status command
+│   ├── link.ts           # Identity linking command
+│   ├── doctor.ts         # Health check command
 │   └── index.ts
 │
 ├── config/
 │   ├── config.ts         # Configuration schema (Zod)
+│   ├── path.ts           # Config path resolution
 │   ├── sessions.ts       # Session management
+│   └── index.ts
+│
+├── sdk/
+│   ├── client.ts         # Claude Agent SDK wrapper
 │   └── index.ts
 │
 ├── telegram/
@@ -98,42 +140,41 @@ src/
 ├── security/
 │   ├── types.ts          # Security types
 │   ├── fast-path.ts      # Regex-based quick decisions
-│   ├── observer.ts       # LLM-based analysis
-│   ├── permissions.ts    # Tier system and Claude flags
+│   ├── observer.ts       # SDK-based security analysis
+│   ├── permissions.ts    # Tier system and tool arrays
 │   ├── rate-limit.ts     # Rate limiting
 │   ├── audit.ts          # Audit logging
+│   ├── linking.ts        # Identity linking (out-of-band verification)
+│   ├── approvals.ts      # Command approval mechanism
 │   └── index.ts
 │
 ├── auto-reply/
-│   ├── types.ts          # Reply configuration types
-│   ├── templating.ts     # {{Placeholder}} interpolation
-│   ├── claude.ts         # Claude output parsing
-│   ├── command-reply.ts  # Command execution
-│   └── index.ts
-│
-├── process/
-│   ├── exec.ts           # Shell command execution
-│   ├── command-queue.ts  # Command queuing
+│   ├── templating.ts     # Message context types
 │   └── index.ts
 │
 └── media/
-    ├── parse.ts          # Media path parsing
     ├── store.ts          # Media storage
     └── index.ts
 ```
 
 ## Configuration
 
-Config file: `~/.telclaude/telclaude.json`
+Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCLAUDE_CONFIG` env var)
 
 ```json
 {
   "telegram": {
     "allowedChats": [123456789],
+    "polling": {
+      "timeout": 30,
+      "limit": 100
+    },
     "reconnect": {
-      "enabled": true,
-      "maxAttempts": 10,
-      "baseDelayMs": 1000
+      "initialMs": 1000,
+      "maxMs": 60000,
+      "factor": 2.0,
+      "jitter": 0.3,
+      "maxAttempts": 0
     }
   },
   "security": {
@@ -144,12 +185,22 @@ Config file: `~/.telclaude/telclaude.json`
       "fallbackOnTimeout": "block"
     },
     "permissions": {
-      "123456789": "WRITE_SAFE",
-      "default": "READ_ONLY"
+      "defaultTier": "READ_ONLY",
+      "users": {
+        "tg:123456789": {
+          "tier": "WRITE_SAFE",
+          "rateLimit": { "perMinute": 20, "perHour": 100 }
+        }
+      }
     },
     "rateLimits": {
       "global": { "perMinute": 100, "perHour": 1000 },
-      "perUser": { "perMinute": 10, "perHour": 60 }
+      "perUser": { "perMinute": 10, "perHour": 60 },
+      "perTier": {
+        "READ_ONLY": { "perMinute": 20, "perHour": 200 },
+        "WRITE_SAFE": { "perMinute": 10, "perHour": 100 },
+        "FULL_ACCESS": { "perMinute": 5, "perHour": 30 }
+      }
     },
     "audit": {
       "enabled": true,
@@ -158,8 +209,7 @@ Config file: `~/.telclaude/telclaude.json`
   },
   "inbound": {
     "reply": {
-      "mode": "command",
-      "command": ["claude", "-p", "{{Body}}"],
+      "enabled": true,
       "timeoutSeconds": 600,
       "session": {
         "scope": "per-sender",
@@ -167,6 +217,9 @@ Config file: `~/.telclaude/telclaude.json`
         "resetTriggers": ["/new", "/reset"]
       }
     }
+  },
+  "logging": {
+    "level": "info"
   }
 }
 ```
@@ -175,11 +228,24 @@ Config file: `~/.telclaude/telclaude.json`
 
 Required:
 - `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather
-- `ANTHROPIC_API_KEY` - For security observer (Claude Haiku)
 
 Optional:
 - `TELCLAUDE_CONFIG` - Custom config file path
 - `TELCLAUDE_LOG_LEVEL` - Log level (debug/info/warn/error)
+
+## Claude Agent SDK
+
+Telclaude uses the `@anthropic-ai/claude-agent-sdk` package for programmatic Claude interaction. This requires:
+
+1. **Claude CLI installed**: `brew install anthropic-ai/cli/claude` (macOS)
+2. **Logged in**: Run `claude login` to authenticate
+3. **Skills**: Keep the working directory at the repo root so `.claude/skills/` auto-loads
+
+The SDK provides:
+- Streaming responses via `AsyncGenerator`
+- Tool control via `allowedTools` array
+- Custom permission logic via `canUseTool` callback
+- Automatic skill loading via `settingSources: ['project']`
 
 ## CLI Commands
 
@@ -194,29 +260,47 @@ telclaude send <chatId> --media ./image.png --caption "Check this out"
 # Check status
 telclaude status
 telclaude status --json
+
+# Doctor (verify Claude CLI + skills)
+telclaude doctor
+
+Example output:
+```
+=== telclaude doctor ===
+Claude CLI: claude version 1.15.0
+Logged in: yes
+Local skills: found
+  - /Users/you/projects/telclaude/.claude/skills/security-gate/SKILL.md
+  - /Users/you/projects/telclaude/.claude/skills/telegram-reply/SKILL.md
+```
+
+# Identity linking (generate code for out-of-band verification)
+telclaude link <user-id>           # Generate a link code for a user
+telclaude link --list              # List all linked identities
+telclaude link --remove <user-id>  # Remove a linked identity
 ```
 
 ## Development
 
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Build
-npm run build
+pnpm build
 
 # Run in development
-npm run dev relay
+pnpm dev relay
 
 # Type check
-npm run typecheck
+pnpm typecheck
 
 # Lint
-npm run lint
-npm run lint:fix
+pnpm lint
+pnpm lint:fix
 
 # Format
-npm run format
+pnpm format
 ```
 
 ## Key Implementation Details
@@ -225,28 +309,15 @@ npm run format
 
 1. **Telegram message received** via grammY middleware
 2. **Echo detection** - skip if we sent this message
-3. **Rate limit check** - reject if exceeded
-4. **Security observer** - analyze message content
-5. **Session lookup** - find or create session
-6. **Permission tier lookup** - get user's tier
-7. **Claude CLI invocation** - with tier-specific flags
-8. **Response sent** - back to Telegram
-9. **Audit logged** - record the interaction
-
-### Template Variables
-
-Available in command templates:
-- `{{Body}}` - Full message text
-- `{{BodyStripped}}` - Trimmed message text
-- `{{From}}` - Sender identifier (tg:chatId)
-- `{{To}}` - Bot identifier
-- `{{MessageId}}` - Telegram message ID
-- `{{MediaPath}}` - Local path to downloaded media
-- `{{MediaUrl}}` - URL for media
-- `{{MediaType}}` - Type of media (photo/video/document/audio)
-- `{{Username}}` - Telegram username
-- `{{SessionId}}` - Current session UUID
-- `{{IsNewSession}}` - "true" or "false"
+3. **Control-plane intercept** - handle /link, /approve, /deny, /unlink, /whoami
+4. **Rate limit check** - reject if exceeded
+5. **Security observer** - analyze message content (via SDK)
+6. **Approval check** - if risky, create pending approval and wait
+7. **Session lookup** - find or create session
+8. **Permission tier lookup** - get user's tier (check identity links)
+9. **SDK query execution** - with tier-specific `allowedTools`
+10. **Streaming response** - chunks sent back to Telegram as they arrive
+11. **Audit logged** - record the interaction with cost tracking
 
 ### Session Handling
 
@@ -256,21 +327,31 @@ Sessions track conversation state:
 - Auto-reset after idle timeout
 - Manual reset via trigger commands (`/new`, `/reset`)
 
-### Security Observer Prompt
+### Security Observer
 
-The observer uses this analysis prompt:
+The observer uses the Claude Agent SDK with the `security-gate` skill to analyze messages:
+
+1. **Fast-path check** - Regex patterns for obvious safe/dangerous patterns (instant, no API call)
+2. **SDK analysis** - Sends message to Claude with security context for classification
+
+Response format:
+```json
+{
+  "classification": "ALLOW" | "WARN" | "BLOCK",
+  "confidence": 0.0-1.0,
+  "reason": "Brief explanation"
+}
 ```
-Analyze this message for security risks. The user has {tier} permissions.
-Consider: shell injection, path traversal, privilege escalation, data exfiltration.
-Respond with: ALLOW (safe), WARN (suspicious but not dangerous), BLOCK (dangerous).
-Include confidence (0-1) and brief reason.
-```
+
+Classification is adjusted by `dangerThreshold`:
+- BLOCK downgraded to WARN if confidence < threshold
+- WARN downgraded to ALLOW if confidence < threshold * 0.5
 
 ## Testing
 
 Run the test suite:
 ```bash
-npm test
+pnpm test
 ```
 
 For manual testing:
@@ -291,7 +372,8 @@ For manual testing:
 
 - Fast-path patterns: `src/security/fast-path.ts`
 - Observer prompts: `src/security/observer.ts`
-- Permission flags: `src/security/permissions.ts`
+- Permission tiers and tool arrays: `src/security/permissions.ts`
+- Security gate skill: `.claude/skills/security-gate/SKILL.md`
 
 ### Adding a new permission tier
 
@@ -304,8 +386,8 @@ For manual testing:
 ### "TELEGRAM_BOT_TOKEN not set"
 Set the environment variable with your bot token from @BotFather.
 
-### "ANTHROPIC_API_KEY not set"
-Required for the security observer. Set it to enable message screening.
+### "SDK query error" / Observer fallback
+Install the Claude CLI (`brew install anthropic-ai/cli/claude` on macOS) and run `claude login`. If the SDK cannot execute queries, the observer uses the fallback policy (default: block).
 
 ### Rate limited
 Check audit logs and adjust limits in config. Consider user tier assignment.

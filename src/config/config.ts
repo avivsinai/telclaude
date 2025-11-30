@@ -1,41 +1,25 @@
 import fs from "node:fs";
-import path from "node:path";
 
 import JSON5 from "json5";
 import { z } from "zod";
 
 import { CONFIG_DIR } from "../utils.js";
-
-export const CONFIG_PATH = path.join(CONFIG_DIR, "telclaude.json");
+import { resolveConfigPath } from "./path.js";
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
 	scope: z.enum(["per-sender", "global"]).default("per-sender"),
 	idleMinutes: z.number().int().positive().default(60),
 	resetTriggers: z.array(z.string()).default(["/new"]),
-	sendSystemOnce: z.boolean().default(false),
-	sessionIntro: z.string().optional(),
-	sessionArgNew: z.array(z.string()).optional(),
-	sessionArgResume: z.array(z.string()).optional(),
-	sessionArgBeforeBody: z.boolean().default(true),
 	store: z.string().optional(),
 });
 
-// Reply configuration schema
+// Reply configuration schema (SDK-based)
 const ReplyConfigSchema = z.object({
-	mode: z.enum(["text", "command"]).default("command"),
-	text: z.string().optional(),
-	command: z.array(z.string()).optional(),
-	cwd: z.string().optional(),
-	template: z.string().optional(),
+	enabled: z.boolean().default(true),
 	timeoutSeconds: z.number().int().positive().default(600),
-	bodyPrefix: z.string().optional(),
 	session: SessionConfigSchema.optional(),
-	claudeOutputFormat: z.enum(["text", "json", "stream-json"]).optional(),
-	mediaMaxMb: z.number().positive().optional(),
 	typingIntervalSeconds: z.number().positive().default(8),
-	heartbeatMinutes: z.number().positive().optional(),
-	mediaUrl: z.string().optional(),
 });
 
 // Inbound (auto-reply) configuration schema
@@ -177,23 +161,29 @@ export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
+let cachedConfigPath: string | null = null;
 
 /**
  * Load and parse the configuration file.
+ * Uses resolveConfigPath() to determine the config file location.
  */
 export function loadConfig(): TelclaudeConfig {
+	const configPath = resolveConfigPath();
+
 	try {
-		const stat = fs.statSync(CONFIG_PATH);
-		if (cachedConfig && configMtime === stat.mtimeMs) {
+		const stat = fs.statSync(configPath);
+		// Invalidate cache if path changed or mtime changed
+		if (cachedConfig && cachedConfigPath === configPath && configMtime === stat.mtimeMs) {
 			return cachedConfig;
 		}
 
-		const raw = fs.readFileSync(CONFIG_PATH, "utf-8");
+		const raw = fs.readFileSync(configPath, "utf-8");
 		const parsed = JSON5.parse(raw);
 		const validated = TelclaudeConfigSchema.parse(parsed);
 
 		cachedConfig = validated;
 		configMtime = stat.mtimeMs;
+		cachedConfigPath = configPath;
 
 		return validated;
 	} catch (err) {
@@ -206,11 +196,19 @@ export function loadConfig(): TelclaudeConfig {
 }
 
 /**
+ * Get the current config file path being used.
+ */
+export function getConfigPath(): string {
+	return resolveConfigPath();
+}
+
+/**
  * Reset the config cache (useful for testing).
  */
 export function resetConfigCache() {
 	cachedConfig = null;
 	configMtime = null;
+	cachedConfigPath = null;
 }
 
 /**
@@ -229,10 +227,13 @@ export async function ensureConfigDir(): Promise<void> {
 
 /**
  * Create a default config file if it doesn't exist.
+ * Uses resolveConfigPath() for the target location.
  */
 export async function createDefaultConfigIfMissing(): Promise<boolean> {
+	const configPath = resolveConfigPath();
+
 	try {
-		await fs.promises.access(CONFIG_PATH);
+		await fs.promises.access(configPath);
 		return false; // Already exists
 	} catch {
 		await ensureConfigDir();
@@ -249,6 +250,10 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 					users: {},
 				},
 				rateLimits: {
+					global: {
+						perMinute: 100,
+						perHour: 1000,
+					},
 					perUser: {
 						perMinute: 10,
 						perHour: 60,
@@ -266,10 +271,8 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			},
 			inbound: {
 				reply: {
-					mode: "command",
-					command: ["claude", "-p", "{{BodyStripped}}"],
+					enabled: true,
 					timeoutSeconds: 600,
-					claudeOutputFormat: "json",
 				},
 			},
 			logging: {
@@ -277,7 +280,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			},
 		};
 
-		await fs.promises.writeFile(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2), "utf-8");
+		await fs.promises.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), "utf-8");
 		return true;
 	}
 }

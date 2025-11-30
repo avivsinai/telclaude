@@ -8,7 +8,7 @@ Secure Telegram-Claude bridge with LLM-based command screening and tiered permis
 ## Features
 
 - **Telegram Bot API** via grammY (stable, official API)
-- **Security Observer** using Claude Haiku for message screening
+- **Security Observer** using Claude Code CLI for message screening
 - **Tiered Permissions**: READ_ONLY, WRITE_SAFE, FULL_ACCESS
 - **Rate Limiting** per-user, per-tier, and global
 - **Session Management** with idle timeouts and reset triggers
@@ -18,13 +18,17 @@ Secure Telegram-Claude bridge with LLM-based command screening and tiered permis
 
 ```bash
 # Install globally
-npm install -g telclaude
+pnpm add -g telclaude
 
 # Set up environment
 cp .env.example .env
-# Edit .env with your TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY
+# Edit .env with your TELEGRAM_BOT_TOKEN
 
-# Start the relay
+# Install and log into Claude CLI (once)
+brew install anthropic-ai/cli/claude   # macOS example
+claude login
+
+# Start the relay from the project root so .claude/skills are auto-loaded
 telclaude relay --verbose
 ```
 
@@ -32,7 +36,7 @@ telclaude relay --verbose
 
 - Node.js 22+
 - Telegram bot token from [@BotFather](https://t.me/BotFather)
-- Anthropic API key (for security observer)
+- Claude CLI installed and logged in (`claude login`)
 
 ## Commands
 
@@ -41,6 +45,7 @@ telclaude relay --verbose
 | `telclaude relay` | Start the message relay with auto-reply |
 | `telclaude send <chatId> "message"` | Send a message to a chat |
 | `telclaude status` | Show current status and configuration |
+| `telclaude doctor` | Check Claude CLI install/login and list local skills |
 
 ## Configuration
 
@@ -70,6 +75,14 @@ Create `~/.telclaude/telclaude.json`:
   }
 }
 ```
+
+## Claude Skills
+
+This repo ships first-class Claude Code Skills under `.claude/skills/`:
+- `security-gate`: classifies inbound messages as ALLOW/WARN/BLOCK with reasons.
+- `telegram-reply`: guides reply style, media handling, and heartbeat behavior.
+
+Keep the CLI working directory at the repo root (or copy the skills into `~/.claude/skills/`) so Claude auto-loads them during `telclaude relay`.
 
 ## Permission Tiers
 
@@ -118,10 +131,8 @@ pnpm test
 | Variable | Required | Description |
 | --- | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `ANTHROPIC_API_KEY` | Yes | For security observer |
 | `TELCLAUDE_CONFIG` | No | Custom config file path |
 | `TELCLAUDE_LOG_LEVEL` | No | Log level (debug/info/warn/error) |
-
 ## License
 
 MIT - see [LICENSE](LICENSE)

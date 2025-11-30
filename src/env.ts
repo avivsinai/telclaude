@@ -3,7 +3,6 @@ import { type RuntimeEnv, defaultRuntime } from "./runtime.js";
 
 const TelclaudeEnvSchema = z.object({
 	telegramBotToken: z.string().min(1),
-	anthropicApiKey: z.string().optional(),
 });
 
 export type TelclaudeEnv = z.infer<typeof TelclaudeEnvSchema>;
@@ -25,7 +24,6 @@ export function readEnv(runtime: RuntimeEnv = defaultRuntime): TelclaudeEnv {
 
 	const env: TelclaudeEnv = {
 		telegramBotToken: token,
-		anthropicApiKey: process.env.ANTHROPIC_API_KEY,
 	};
 
 	// Validate

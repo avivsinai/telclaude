@@ -2,9 +2,8 @@ import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
 
-import { runCommandReply } from "../auto-reply/command-reply.js";
 import type { TemplateContext } from "../auto-reply/templating.js";
-import { type TelclaudeConfig, loadConfig } from "../config/config.js";
+import { type PermissionTier, type TelclaudeConfig, loadConfig } from "../config/config.js";
 import {
 	DEFAULT_IDLE_MINUTES,
 	type SessionEntry,
@@ -14,19 +13,247 @@ import {
 	saveSessionStore,
 } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
-import { runCommandWithTimeout } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { executeQueryStream } from "../sdk/client.js";
+import {
+	type PendingApproval,
+	cleanupExpiredApprovals,
+	consumeApproval,
+	createApproval,
+	denyApproval,
+	formatApprovalRequest,
+	requiresApproval,
+} from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
+import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
-import { getClaudeFlagsForTier, getUserPermissionTier } from "../security/permissions.js";
+import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
+import type { SecurityClassification } from "../security/types.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
-import type { TelegramInboundMessage } from "./types.js";
+import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXECUTION CONTEXT TYPE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Context for executing a message and sending the response.
+ * This bundles all information needed for the executeAndReply helper.
+ */
+type ExecutionContext = {
+	// Telegram message interface
+	msg: TelegramInboundMessage;
+
+	// Message content
+	prompt: string;
+	mediaPath?: string;
+	mediaType?: TelegramMediaType;
+
+	// Identity
+	from: string;
+	to: string;
+	username?: string;
+
+	// Security & config
+	tier: PermissionTier;
+	config: TelclaudeConfig;
+
+	// Observer result (from analysis or approval)
+	observerClassification: SecurityClassification;
+	observerConfidence: number;
+
+	// Tracking
+	requestId: string;
+
+	// Echo detection
+	recentlySent: Set<string>;
+
+	// Audit logging
+	auditLogger: AuditLogger;
+};
+
+/**
+ * Execute a query via Claude SDK and send the response.
+ * This is the shared implementation used by both regular messages and approved requests.
+ */
+async function executeAndReply(ctx: ExecutionContext): Promise<void> {
+	const {
+		msg,
+		prompt,
+		tier,
+		config,
+		requestId,
+		observerClassification,
+		observerConfidence,
+		recentlySent,
+		auditLogger,
+	} = ctx;
+
+	const userId = String(msg.chatId);
+	const startTime = Date.now();
+
+	// Get reply configuration
+	const replyConfig = config.inbound?.reply;
+	if (!replyConfig?.enabled) {
+		logger.debug("reply not enabled, skipping");
+		return;
+	}
+
+	// Send typing indicator
+	await msg.sendComposing();
+
+	// Session handling
+	const sessionConfig = replyConfig.session;
+	const storePath = resolveStorePath(sessionConfig?.store);
+	const store = loadSessionStore(storePath);
+	const scope = sessionConfig?.scope ?? "per-sender";
+	const idleMinutes = sessionConfig?.idleMinutes ?? DEFAULT_IDLE_MINUTES;
+	const resetTriggers = sessionConfig?.resetTriggers ?? ["/new"];
+
+	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
+	const existingSession = store[sessionKey];
+	const now = Date.now();
+
+	// Check for reset triggers
+	const shouldReset =
+		resetTriggers.some((t) => msg.body.trim().toLowerCase().startsWith(t.toLowerCase())) ||
+		(existingSession && now - existingSession.updatedAt > idleMinutes * 60 * 1000);
+
+	let sessionEntry: SessionEntry;
+	let isNewSession: boolean;
+	if (!existingSession || shouldReset) {
+		sessionEntry = {
+			sessionId: crypto.randomUUID(),
+			updatedAt: now,
+			systemSent: false,
+		};
+		isNewSession = true;
+	} else {
+		sessionEntry = existingSession;
+		isNewSession = false;
+	}
+
+	// Build template context
+	const templatingCtx: TemplateContext = {
+		Body: msg.body,
+		BodyStripped: msg.body.trim(),
+		From: ctx.from,
+		To: ctx.to,
+		MessageId: msg.id,
+		MediaPath: ctx.mediaPath,
+		MediaUrl: msg.mediaUrl,
+		MediaType: ctx.mediaType,
+		Username: ctx.username,
+		SessionId: sessionEntry.sessionId,
+		IsNewSession: isNewSession ? "true" : "false",
+	};
+
+	// Set up typing indicator refresh
+	const typingInterval = (replyConfig.typingIntervalSeconds ?? 8) * 1000;
+	const typingTimer = setInterval(() => {
+		msg.sendComposing().catch(() => {});
+	}, typingInterval);
+
+	try {
+		// Execute using Claude Agent SDK
+		const queryPrompt = templatingCtx.BodyStripped ?? prompt;
+		let responseText = "";
+
+		// Skills only enabled for WRITE_SAFE and FULL_ACCESS tiers
+		for await (const chunk of executeQueryStream(queryPrompt, {
+			cwd: process.cwd(),
+			tier,
+			enableSkills: tier !== "READ_ONLY",
+		})) {
+			if (chunk.type === "text") {
+				responseText += chunk.content;
+			} else if (chunk.type === "done") {
+				if (!chunk.result.success) {
+					logger.warn({ requestId, error: chunk.result.error }, "SDK query failed");
+					await msg.reply(`Request failed: ${chunk.result.error ?? "Unknown error"}`);
+					await auditLogger.log({
+						timestamp: new Date(),
+						requestId,
+						telegramUserId: userId,
+						telegramUsername: ctx.username,
+						chatId: msg.chatId,
+						messagePreview: msg.body.slice(0, 100),
+						observerClassification,
+						observerConfidence,
+						permissionTier: tier,
+						executionTimeMs: chunk.result.durationMs,
+						outcome: "error",
+						errorType: chunk.result.error ?? "sdk_error",
+					});
+					return;
+				}
+
+				// Use accumulated response or result
+				const finalResponse = responseText || chunk.result.response;
+
+				if (finalResponse) {
+					await msg.reply(finalResponse);
+
+					// Track for echo detection
+					recentlySent.add(finalResponse);
+					setTimeout(() => recentlySent.delete(finalResponse), 30000);
+
+					// Update session
+					sessionEntry.updatedAt = Date.now();
+					sessionEntry.systemSent = true;
+					store[sessionKey] = sessionEntry;
+					try {
+						await saveSessionStore(storePath, store);
+					} catch (err) {
+						logger.error({ error: String(err) }, "failed to save session store");
+					}
+				}
+
+				// Log audit entry
+				await auditLogger.log({
+					timestamp: new Date(),
+					requestId,
+					telegramUserId: userId,
+					telegramUsername: ctx.username,
+					chatId: msg.chatId,
+					messagePreview: msg.body.slice(0, 100),
+					observerClassification,
+					observerConfidence,
+					permissionTier: tier,
+					executionTimeMs: chunk.result.durationMs,
+					outcome: "success",
+					costUsd: chunk.result.costUsd,
+				});
+			}
+		}
+	} catch (err) {
+		logger.error({ requestId, error: String(err) }, "reply failed");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId,
+			telegramUserId: userId,
+			telegramUsername: ctx.username,
+			chatId: msg.chatId,
+			messagePreview: msg.body.slice(0, 100),
+			observerClassification,
+			observerConfidence,
+			permissionTier: tier,
+			executionTimeMs: Date.now() - startTime,
+			outcome: "error",
+			errorType: String(err),
+		});
+
+		await msg.reply("An error occurred while processing your request. Please try again.");
+	} finally {
+		clearInterval(typingTimer);
+	}
+}
 
 export type MonitorOptions = {
 	verbose: boolean;
@@ -51,7 +278,7 @@ export async function monitorTelegramProvider(
 		maxLatencyMs: cfg.security?.observer?.maxLatencyMs ?? 2000,
 		dangerThreshold: cfg.security?.observer?.dangerThreshold ?? 0.7,
 		fallbackOnTimeout: cfg.security?.observer?.fallbackOnTimeout ?? "block",
-		apiKey: process.env.ANTHROPIC_API_KEY,
+		cwd: process.cwd(),
 	});
 
 	const rateLimiter = createRateLimiter(cfg.security);
@@ -97,7 +324,12 @@ export async function monitorTelegramProvider(
 			// Start the bot
 			const runner = run(bot);
 
-			console.log("Listening for Telegram messages. Ctrl+C to stop.");
+			// Schedule periodic cleanup of expired approvals
+			const cleanupInterval = setInterval(() => {
+				cleanupExpiredApprovals();
+			}, 60_000);
+
+			logger.info("Listening for Telegram messages. Ctrl+C to stop.");
 
 			// Reset reconnect attempts on successful connection
 			reconnectAttempts = 0;
@@ -112,7 +344,8 @@ export async function monitorTelegramProvider(
 					: new Promise<never>(() => {}),
 			]);
 
-			// Stop the bot
+			// Stop the bot and cleanup
+			clearInterval(cleanupInterval);
 			runner.stop();
 			await close();
 
@@ -130,7 +363,7 @@ export async function monitorTelegramProvider(
 			}
 
 			const delay = computeBackoff(reconnectPolicy, reconnectAttempts);
-			console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts})...`);
+			logger.info({ delay, attempt: reconnectAttempts }, "reconnecting");
 			await sleepWithAbort(delay, abortSignal);
 		} catch (err) {
 			logger.error({ error: String(err) }, "monitor error");
@@ -145,7 +378,7 @@ export async function monitorTelegramProvider(
 			}
 
 			const delay = computeBackoff(reconnectPolicy, reconnectAttempts);
-			console.error(`Error: ${err}. Reconnecting in ${delay}ms...`);
+			logger.error({ error: String(err), delay }, "reconnecting after error");
 			await sleepWithAbort(delay, abortSignal);
 		}
 	}
@@ -165,7 +398,67 @@ async function handleInboundMessage(
 ): Promise<void> {
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
-	const startTime = Date.now();
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// CONTROL PLANE COMMANDS - These are intercepted BEFORE any other processing
+	// and NEVER sent to Claude. This is the security boundary.
+	// ══════════════════════════════════════════════════════════════════════════
+
+	const trimmedBody = msg.body.trim();
+
+	// Handle /link command
+	if (trimmedBody.startsWith("/link ")) {
+		const code = trimmedBody.split(/\s+/)[1]?.trim();
+		await handleLinkCommand(msg, code, auditLogger);
+		return;
+	}
+
+	// Handle /approve command
+	if (trimmedBody.startsWith("/approve ")) {
+		const nonce = trimmedBody.split(/\s+/)[1]?.trim();
+		await handleApproveCommand(msg, nonce, cfg, observer, rateLimiter, auditLogger, recentlySent);
+		return;
+	}
+
+	// Handle /deny command
+	if (trimmedBody.startsWith("/deny ")) {
+		const nonce = trimmedBody.split(/\s+/)[1]?.trim();
+		await handleDenyCommand(msg, nonce, auditLogger);
+		return;
+	}
+
+	// Handle /unlink command
+	if (trimmedBody === "/unlink") {
+		const { removeIdentityLink } = await import("../security/linking.js");
+		const removed = removeIdentityLink(msg.chatId);
+		if (removed) {
+			await msg.reply("Identity link removed for this chat.");
+		} else {
+			await msg.reply("No identity link found for this chat.");
+		}
+		return;
+	}
+
+	// Handle /status command (show identity link status)
+	if (trimmedBody === "/whoami") {
+		const link = getIdentityLink(msg.chatId);
+		if (link) {
+			await msg.reply(
+				`This chat is linked to local user: *${link.localUserId}*\n` +
+					`Linked: ${new Date(link.linkedAt).toLocaleString()}`,
+			);
+		} else {
+			await msg.reply(
+				"This chat is not linked to any local user.\n" +
+					"Use `telclaude link <user-id>` on your machine to generate a link code.",
+			);
+		}
+		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// DATA PLANE - Regular messages that go through security checks to Claude
+	// ══════════════════════════════════════════════════════════════════════════
 
 	// Echo detection - skip if we sent this message
 	if (recentlySent.has(msg.body)) {
@@ -193,24 +486,67 @@ async function handleInboundMessage(
 		permissionTier: tier,
 	});
 
-	if (observerResult.classification === "BLOCK") {
-		logger.warn({ userId, reason: observerResult.reason }, "message blocked by security observer");
-		await auditLogger.logBlocked(
-			{
-				timestamp: new Date(),
-				requestId,
-				telegramUserId: userId,
-				telegramUsername: msg.username,
-				chatId: msg.chatId,
-				messagePreview: msg.body.slice(0, 100),
-				observerClassification: observerResult.classification,
-				observerConfidence: observerResult.confidence,
-				permissionTier: tier,
-			},
-			observerResult.reason ?? "Blocked by security observer",
-		);
-		await msg.reply(
-			`This request was blocked for security reasons. ${observerResult.reason ? `Reason: ${observerResult.reason}` : ""}`,
+	// Check if approval is required based on tier and classification
+	if (requiresApproval(tier, observerResult.classification, observerResult.confidence)) {
+		// Create a pending approval instead of blocking or executing
+		const nonce = createApproval({
+			requestId,
+			chatId: msg.chatId,
+			tier,
+			body: msg.body,
+			mediaPath: msg.mediaPath,
+			mediaUrl: msg.mediaUrl,
+			mediaType: msg.mediaType,
+			username: msg.username,
+			from: msg.from,
+			to: msg.to,
+			messageId: msg.id,
+			observerClassification: observerResult.classification,
+			observerConfidence: observerResult.confidence,
+			observerReason: observerResult.reason,
+		});
+
+		// Format and send the approval request
+		const approvalMessage = formatApprovalRequest({
+			nonce,
+			requestId,
+			chatId: msg.chatId,
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 5 * 60 * 1000,
+			tier,
+			body: msg.body,
+			mediaPath: msg.mediaPath,
+			mediaUrl: msg.mediaUrl,
+			mediaType: msg.mediaType,
+			username: msg.username,
+			from: msg.from,
+			to: msg.to,
+			messageId: msg.id,
+			observerClassification: observerResult.classification,
+			observerConfidence: observerResult.confidence,
+			observerReason: observerResult.reason,
+		});
+
+		await msg.reply(approvalMessage);
+
+		// Log as pending approval
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId,
+			telegramUserId: userId,
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: msg.body.slice(0, 100),
+			observerClassification: observerResult.classification,
+			observerConfidence: observerResult.confidence,
+			permissionTier: tier,
+			outcome: "blocked",
+			errorType: `pending_approval:${nonce}`,
+		});
+
+		logger.info(
+			{ requestId, nonce, tier, classification: observerResult.classification },
+			"request requires approval",
 		);
 		return;
 	}
@@ -219,192 +555,184 @@ async function handleInboundMessage(
 		logger.info({ userId, reason: observerResult.reason }, "message flagged with warning");
 	}
 
-	// Get reply configuration
-	const replyConfig = cfg.inbound?.reply;
-	if (!replyConfig || replyConfig.mode !== "command" || !replyConfig.command?.length) {
-		logger.debug("no reply config, skipping");
+	// Execute the request using shared helper
+	await executeAndReply({
+		msg,
+		prompt: msg.body.trim(),
+		mediaPath: msg.mediaPath,
+		mediaType: msg.mediaType,
+		from: msg.from,
+		to: msg.to,
+		username: msg.username,
+		tier,
+		config: cfg,
+		observerClassification: observerResult.classification,
+		observerConfidence: observerResult.confidence,
+		requestId,
+		recentlySent,
+		auditLogger,
+	});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTROL PLANE COMMAND HANDLERS
+// These functions handle commands that are intercepted before reaching Claude.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle /link command - Verify and consume a link code.
+ * This command NEVER reaches Claude.
+ */
+async function handleLinkCommand(
+	msg: TelegramInboundMessage,
+	code: string | undefined,
+	auditLogger: AuditLogger,
+): Promise<void> {
+	if (!code) {
+		await msg.reply(
+			"Usage: `/link <code>`\n\n" +
+				"Generate a link code on your machine with:\n" +
+				"`telclaude link <your-user-id>`",
+		);
 		return;
 	}
 
-	// Send typing indicator
-	await msg.sendComposing();
+	const result = consumeLinkCode(code, msg.chatId, msg.username ?? String(msg.chatId));
 
-	// Session handling
-	const sessionConfig = replyConfig.session;
-	const storePath = resolveStorePath(sessionConfig?.store);
-	const store = loadSessionStore(storePath);
-	const scope = sessionConfig?.scope ?? "per-sender";
-	const idleMinutes = sessionConfig?.idleMinutes ?? DEFAULT_IDLE_MINUTES;
-	const resetTriggers = sessionConfig?.resetTriggers ?? ["/new"];
-
-	const sessionKey = deriveSessionKey(scope, { From: msg.from });
-	const existingSession = store[sessionKey];
-	const now = Date.now();
-
-	// Check for reset triggers
-	const shouldReset =
-		resetTriggers.some((t) => msg.body.trim().toLowerCase().startsWith(t.toLowerCase())) ||
-		(existingSession && now - existingSession.updatedAt > idleMinutes * 60 * 1000);
-
-	let sessionEntry: SessionEntry;
-	let isNewSession: boolean;
-	let isFirstTurnInSession: boolean;
-
-	if (!existingSession || shouldReset) {
-		sessionEntry = {
-			sessionId: crypto.randomUUID(),
-			updatedAt: now,
-			systemSent: false,
-		};
-		isNewSession = true;
-		isFirstTurnInSession = true;
-	} else {
-		sessionEntry = existingSession;
-		isNewSession = false;
-		isFirstTurnInSession = false;
+	if (!result.success) {
+		await msg.reply(`❌ ${result.error}`);
+		return;
 	}
 
-	// Build template context
-	const templatingCtx: TemplateContext = {
-		Body: msg.body,
-		BodyStripped: msg.body.trim(),
-		From: msg.from,
-		To: msg.to,
-		MessageId: msg.id,
-		MediaPath: msg.mediaPath,
-		MediaUrl: msg.mediaUrl,
-		MediaType: msg.mediaType,
-		Username: msg.username,
-		SessionId: sessionEntry.sessionId,
-		IsNewSession: isNewSession ? "true" : "false",
+	await msg.reply(
+		`✅ *Identity linked successfully!*\n\nThis chat is now linked to local user: *${result.data.localUserId}*\n\nYou can verify with \`/whoami\` or unlink with \`/unlink\`.`,
+	);
+
+	// Log the successful link
+	await auditLogger.log({
+		timestamp: new Date(),
+		requestId: `link_${Date.now()}`,
+		telegramUserId: String(msg.chatId),
+		telegramUsername: msg.username,
+		chatId: msg.chatId,
+		messagePreview: "(identity link)",
+		permissionTier: "READ_ONLY",
+		outcome: "success",
+		errorType: `identity_linked:${result.data.localUserId}`,
+	});
+}
+
+/**
+ * Handle /approve command - Approve a pending request.
+ * This command NEVER reaches Claude.
+ */
+async function handleApproveCommand(
+	msg: TelegramInboundMessage,
+	nonce: string | undefined,
+	cfg: TelclaudeConfig,
+	_observer: SecurityObserver,
+	_rateLimiter: RateLimiter,
+	auditLogger: AuditLogger,
+	recentlySent: Set<string>,
+): Promise<void> {
+	if (!nonce) {
+		await msg.reply("Usage: `/approve <code>`");
+		return;
+	}
+
+	const result = consumeApproval(nonce, msg.chatId);
+
+	if (!result.success) {
+		await msg.reply(`❌ ${result.error}`);
+		return;
+	}
+
+	// Execute the approved request
+	await msg.reply("✅ Request approved. Processing...");
+
+	// Reconstruct a message-like object from the approval
+	const approval = result.data;
+	const approvedMsg: TelegramInboundMessage = {
+		...msg,
+		body: approval.body,
+		mediaPath: approval.mediaPath,
+		mediaUrl: approval.mediaUrl,
+		mediaType: approval.mediaType,
+		from: approval.from,
+		to: approval.to,
+		id: approval.messageId,
 	};
 
-	// Get Claude flags for tier
-	const tierFlags = getClaudeFlagsForTier(tier);
+	// Execute the request - this will go through the normal flow but skip approval
+	// since we already have approval
+	await executeApprovedRequest(approvedMsg, cfg, approval, auditLogger, recentlySent);
+}
 
-	// Modify command to include tier restrictions
-	const modifiedCommand = [...(replyConfig.command ?? [])];
-	if (tier !== "FULL_ACCESS" && modifiedCommand.length > 0) {
-		// Insert tier flags after the command name
-		modifiedCommand.splice(1, 0, ...tierFlags);
+/**
+ * Handle /deny command - Deny a pending request.
+ * This command NEVER reaches Claude.
+ */
+async function handleDenyCommand(
+	msg: TelegramInboundMessage,
+	nonce: string | undefined,
+	auditLogger: AuditLogger,
+): Promise<void> {
+	if (!nonce) {
+		await msg.reply("Usage: `/deny <code>`");
+		return;
 	}
 
-	const timeoutSeconds = replyConfig.timeoutSeconds ?? 600;
-	const timeoutMs = timeoutSeconds * 1000;
+	const result = denyApproval(nonce, msg.chatId);
 
-	// Set up typing indicator refresh
-	const typingInterval = (replyConfig.typingIntervalSeconds ?? 8) * 1000;
-	const typingTimer = setInterval(() => {
-		msg.sendComposing().catch(() => {});
-	}, typingInterval);
-
-	try {
-		const result = await runCommandReply({
-			reply: { ...replyConfig, mode: "command", command: modifiedCommand },
-			templatingCtx,
-			sendSystemOnce: sessionConfig?.sendSystemOnce ?? false,
-			isNewSession,
-			isFirstTurnInSession,
-			systemSent: sessionEntry.systemSent ?? false,
-			timeoutMs,
-			timeoutSeconds,
-			commandRunner: runCommandWithTimeout,
-		});
-
-		// Check if command failed (non-zero exit or killed)
-		const commandFailed =
-			result.meta?.exitCode !== undefined && result.meta.exitCode !== 0 && !result.payload?.text;
-		const commandKilled = result.meta?.killed && !result.payload?.text;
-
-		if (commandFailed || commandKilled) {
-			// Command failed - notify user and log as error
-			const exitInfo = result.meta?.exitCode
-				? `exit code ${result.meta.exitCode}`
-				: result.meta?.signal
-					? `signal ${result.meta.signal}`
-					: "unknown error";
-			logger.warn(
-				{ requestId, exitCode: result.meta?.exitCode, signal: result.meta?.signal },
-				"command failed",
-			);
-			await msg.reply(`Command failed (${exitInfo}). Please try again or rephrase your request.`);
-			await auditLogger.log({
-				timestamp: new Date(),
-				requestId,
-				telegramUserId: userId,
-				telegramUsername: msg.username,
-				chatId: msg.chatId,
-				messagePreview: msg.body.slice(0, 100),
-				observerClassification: observerResult.classification,
-				observerConfidence: observerResult.confidence,
-				permissionTier: tier,
-				executionTimeMs: Date.now() - startTime,
-				outcome: "error",
-				errorType: `command_failed:${exitInfo}`,
-			});
-			return;
-		}
-
-		if (result.payload?.text || result.payload?.mediaUrl) {
-			// Send reply
-			if (result.payload.mediaUrl) {
-				await msg.sendMedia({
-					type: "document",
-					source: result.payload.mediaUrl,
-					caption: result.payload.text,
-				});
-			} else if (result.payload.text) {
-				await msg.reply(result.payload.text);
-			}
-
-			// Track for echo detection
-			if (result.payload?.text) {
-				const textToTrack = result.payload.text;
-				recentlySent.add(textToTrack);
-				// Clean up after 30 seconds
-				setTimeout(() => recentlySent.delete(textToTrack), 30000);
-			}
-
-			// Update session
-			sessionEntry.updatedAt = Date.now();
-			sessionEntry.systemSent = true;
-			store[sessionKey] = sessionEntry;
-			await saveSessionStore(storePath, store);
-		}
-
-		// Log audit entry
-		await auditLogger.log({
-			timestamp: new Date(),
-			requestId,
-			telegramUserId: userId,
-			telegramUsername: msg.username,
-			chatId: msg.chatId,
-			messagePreview: msg.body.slice(0, 100),
-			observerClassification: observerResult.classification,
-			observerConfidence: observerResult.confidence,
-			permissionTier: tier,
-			executionTimeMs: Date.now() - startTime,
-			outcome: "success",
-		});
-	} catch (err) {
-		logger.error({ requestId, error: String(err) }, "reply failed");
-		await auditLogger.log({
-			timestamp: new Date(),
-			requestId,
-			telegramUserId: userId,
-			telegramUsername: msg.username,
-			chatId: msg.chatId,
-			messagePreview: msg.body.slice(0, 100),
-			observerClassification: observerResult.classification,
-			observerConfidence: observerResult.confidence,
-			permissionTier: tier,
-			executionTimeMs: Date.now() - startTime,
-			outcome: "error",
-			errorType: String(err),
-		});
-
-		await msg.reply("An error occurred while processing your request. Please try again.");
-	} finally {
-		clearInterval(typingTimer);
+	if (!result.success) {
+		await msg.reply(`❌ ${result.error}`);
+		return;
 	}
+
+	await msg.reply("❌ Request denied.");
+
+	// Log the denial
+	const entry = result.data;
+	await auditLogger.log({
+		timestamp: new Date(),
+		requestId: entry.requestId,
+		telegramUserId: String(msg.chatId),
+		telegramUsername: msg.username,
+		chatId: msg.chatId,
+		messagePreview: entry.body.slice(0, 100),
+		observerClassification: entry.observerClassification,
+		observerConfidence: entry.observerConfidence,
+		permissionTier: entry.tier,
+		outcome: "blocked",
+		errorType: "user_denied",
+	});
+}
+
+/**
+ * Execute a request that has been approved.
+ * This bypasses the normal approval check since the request was already approved.
+ */
+async function executeApprovedRequest(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+	approval: PendingApproval,
+	auditLogger: AuditLogger,
+	recentlySent: Set<string>,
+): Promise<void> {
+	await executeAndReply({
+		msg,
+		prompt: msg.body.trim(),
+		mediaPath: approval.mediaPath,
+		mediaType: approval.mediaType,
+		from: approval.from,
+		to: approval.to,
+		username: approval.username,
+		tier: approval.tier,
+		config: cfg,
+		observerClassification: approval.observerClassification,
+		observerConfidence: approval.observerConfidence,
+		requestId: approval.requestId,
+		recentlySent,
+		auditLogger,
+	});
 }

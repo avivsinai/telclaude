@@ -1,6 +1,7 @@
+import { execSync } from "node:child_process";
 import fs from "node:fs";
 import type { Command } from "commander";
-import { CONFIG_PATH, loadConfig } from "../config/config.js";
+import { getConfigPath, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { createAuditLogger } from "../security/audit.js";
 
@@ -17,11 +18,21 @@ export function registerStatusCommand(program: Command): void {
 		.option("--json", "Output as JSON")
 		.action(async (opts: StatusOptions) => {
 			try {
-				const hasConfig = fs.existsSync(CONFIG_PATH);
+				const configPath = getConfigPath();
+				const hasConfig = fs.existsSync(configPath);
 				const cfg = hasConfig ? loadConfig() : null;
 
 				const token = process.env.TELEGRAM_BOT_TOKEN;
-				const anthropicKey = process.env.ANTHROPIC_API_KEY;
+				let claudeCli = "missing";
+				try {
+					const version = execSync("claude --version", {
+						encoding: "utf8",
+						stdio: ["ignore", "pipe", "pipe"],
+					}).trim();
+					claudeCli = version || "installed";
+				} catch {
+					// best-effort check only
+				}
 
 				// Get audit stats if enabled
 				let auditStats = null;
@@ -35,12 +46,12 @@ export function registerStatusCommand(program: Command): void {
 
 				const status = {
 					config: {
-						path: CONFIG_PATH,
+						path: configPath,
 						exists: hasConfig,
 					},
 					environment: {
 						telegramToken: token ? "set" : "not set",
-						anthropicKey: anthropicKey ? "set" : "not set",
+						claudeCli,
 					},
 					security: cfg
 						? {
@@ -72,7 +83,7 @@ export function registerStatusCommand(program: Command): void {
 
 					console.log("Environment:");
 					console.log(`  TELEGRAM_BOT_TOKEN: ${status.environment.telegramToken}`);
-					console.log(`  ANTHROPIC_API_KEY: ${status.environment.anthropicKey}`);
+					console.log(`  Claude CLI: ${status.environment.claudeCli}`);
 					console.log();
 
 					if (status.security) {

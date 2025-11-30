@@ -33,6 +33,7 @@ export type AuditEntry = {
 	executionTimeMs?: number;
 	outcome: "success" | "blocked" | "timeout" | "error" | "rate_limited";
 	errorType?: string;
+	costUsd?: number;
 };
 
 /**
@@ -44,3 +45,9 @@ export type RateLimitResult = {
 	resetMs: number;
 	limitType?: "global" | "user" | "tier";
 };
+
+/**
+ * Standardized result type for operations that can fail.
+ * Use this for functions that can return either success with data or failure with an error message.
+ */
+export type Result<T> = { success: true; data: T } | { success: false; error: string };

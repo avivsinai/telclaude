@@ -6,3 +6,5 @@ export * from "./observer.js";
 export * from "./permissions.js";
 export * from "./rate-limit.js";
 export * from "./audit.js";
+export * from "./linking.js";
+export * from "./approvals.js";
