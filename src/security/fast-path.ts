@@ -1,0 +1,144 @@
+import type { SecurityClassification } from "./types.js";
+
+/**
+ * Patterns that are clearly safe and can skip LLM review.
+ */
+export const SAFE_PATTERNS: RegExp[] = [
+	// Information requests
+	/^(what|how|why|explain|describe|help|show me|tell me)/i,
+	/^(list|read|cat|head|tail|less|more)\s/i,
+	/^(search|find|grep|look for)/i,
+
+	// Git read operations
+	/^git\s+(status|log|diff|branch|remote\s+-v|show)/i,
+
+	// Safe file operations
+	/^ls\s+-?[lahR]*\s*/i,
+	/^pwd$/i,
+	/^echo\s+[^;|&$`]+$/i, // Simple echo without injection
+	/^whoami$/i,
+	/^date$/i,
+	/^uptime$/i,
+
+	// Questions
+	/\?$/,
+];
+
+/**
+ * Patterns that are clearly dangerous and should be blocked immediately.
+ */
+export const DANGEROUS_PATTERNS: RegExp[] = [
+	// Destructive file operations
+	/rm\s+-rf?\s*\//i,
+	/rm\s+-rf?\s*~\//i,
+	/>\s*\/etc\//i,
+	/chmod\s+777/i,
+	/chown\s+.*\s+\//i,
+
+	// Shell injection attempts
+	/curl.*\|\s*(ba)?sh/i,
+	/wget.*\|\s*(ba)?sh/i,
+	/\$\([^)]+\)/i, // Command substitution
+	/`[^`]+`/, // Backtick execution
+	/;\s*(rm|chmod|chown|sudo|su\s)/i, // Command chaining to dangerous
+
+	// Dangerous flags
+	/--dangerously/i,
+	/--force/i,
+	/--no-preserve-root/i,
+
+	// Privilege escalation
+	/sudo\s+/i,
+	/su\s+-?\s*$/i,
+	/pkexec/i,
+
+	// Prompt injection attempts
+	/ignore\s+(all\s+)?previous\s+instructions?/i,
+	/disregard\s+(all\s+)?prior\s+instructions?/i,
+	/forget\s+(all\s+)?your\s+instructions?/i,
+	/you\s+are\s+now\s+/i,
+	/your\s+new\s+(role|persona|identity)/i,
+	/system\s*prompt/i,
+	/reveal\s+your\s+prompt/i,
+
+	// Network exfiltration
+	/curl\s+.*-X\s*(POST|PUT)/i,
+	/nc\s+-e/i,
+	/netcat.*-e/i,
+
+	// Process manipulation
+	/kill\s+-9\s+1$/i,
+	/killall/i,
+	/pkill\s+/i,
+];
+
+/**
+ * Fast-path classification without LLM.
+ * Returns null if LLM review is needed.
+ */
+export function fastPathClassify(message: string): {
+	classification: SecurityClassification;
+	reason: string;
+} | null {
+	const trimmed = message.trim();
+
+	// Check dangerous patterns first
+	for (const pattern of DANGEROUS_PATTERNS) {
+		if (pattern.test(trimmed)) {
+			return {
+				classification: "BLOCK",
+				reason: `Matched dangerous pattern: ${pattern.source}`,
+			};
+		}
+	}
+
+	// Check safe patterns
+	for (const pattern of SAFE_PATTERNS) {
+		if (pattern.test(trimmed)) {
+			return {
+				classification: "ALLOW",
+				reason: `Matched safe pattern: ${pattern.source}`,
+			};
+		}
+	}
+
+	// Need LLM review
+	return null;
+}
+
+/**
+ * Check for structural issues that might indicate an attack.
+ */
+export function checkStructuralIssues(message: string): string[] {
+	const issues: string[] = [];
+
+	// Check for zero-width characters (hidden text)
+	if (/[\u200B\u200C\u200D\uFEFF]/.test(message)) {
+		issues.push("Contains zero-width characters");
+	}
+
+	// Check for excessive repetition (trying to overwhelm context)
+	const words = message.toLowerCase().split(/\s+/);
+	const wordCounts = new Map<string, number>();
+	for (const word of words) {
+		wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+	}
+	const maxCount = Math.max(...wordCounts.values());
+	if (maxCount > 50 || (words.length > 10 && maxCount / words.length > 0.3)) {
+		issues.push("Excessive word repetition detected");
+	}
+
+	// Check for mixed scripts (homoglyph attacks)
+	const hasLatin = /[a-zA-Z]/.test(message);
+	const hasCyrillic = /[\u0400-\u04FF]/.test(message);
+	if (hasLatin && hasCyrillic) {
+		issues.push("Mixed Latin and Cyrillic scripts (possible homoglyph attack)");
+	}
+
+	// Check for unusually long message
+	if (message.length > 10000) {
+		issues.push("Unusually long message");
+	}
+
+	return issues;
+}
