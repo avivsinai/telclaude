@@ -133,6 +133,7 @@ pnpm test
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
 | `TELCLAUDE_CONFIG` | No | Custom config file path |
 | `TELCLAUDE_LOG_LEVEL` | No | Log level (debug/info/warn/error) |
+
 ## License
 
 MIT - see [LICENSE](LICENSE)
