@@ -1,13 +1,24 @@
 {
   "name": "telclaude",
   "version": "0.1.0",
-  "description": "Secure Telegram-Claude bridge with LLM-based command screening and tiered permissions",
+  "description": "Secure Telegram-Claude bridge with LLM-based command screening, tiered permissions, and OS-level sandboxing",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "bin": {
     "telclaude": "./bin/telclaude.js"
   },
+  "files": [
+    "dist",
+    "bin",
+    ".claude"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
@@ -20,7 +31,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "prepare": "pnpm run build"
   },
   "keywords": [
     "telegram",
@@ -28,9 +40,18 @@
     "ai",
     "bot",
     "relay",
-    "cli"
+    "cli",
+    "llm",
+    "anthropic",
+    "security",
+    "sandbox",
+    "grammY",
+    "agent"
   ],
-  "author": "Aviv Sinai",
+  "author": {
+    "name": "Aviv Sinai",
+    "url": "https://github.com/avivsinai"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -44,6 +65,10 @@
     "node": ">=22.0.0"
   },
   "packageManager": "pnpm@9.15.0",
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.55",
     "@anthropic-ai/sandbox-runtime": "^0.0.17",

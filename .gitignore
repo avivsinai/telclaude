@@ -26,9 +26,19 @@ logs/
 
 # Test coverage
 coverage/
+.vitest/
 
 # Package manager
 yarn.lock
+package-lock.json
 
 # Telclaude data (runtime)
 .telclaude/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# TypeScript
+*.tsbuildinfo
