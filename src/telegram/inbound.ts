@@ -1,9 +1,10 @@
 import type { Bot, Context } from "grammy";
 
 import { getChildLogger } from "../logging.js";
-import { saveMediaBuffer } from "../media/store.js";
+import { saveMediaStream } from "../media/store.js";
 import { chatIdToString } from "../utils.js";
 import { sendMediaToChat } from "./outbound.js";
+import { sanitizeClaudeResponse } from "./sanitize.js";
 import {
 	type BotInfo,
 	type TelegramInboundMessage,
@@ -88,8 +89,11 @@ export async function monitorTelegramInbox(
 				if (file.file_path) {
 					mediaUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
 					const response = await fetch(mediaUrl);
-					const buffer = Buffer.from(await response.arrayBuffer());
-					const saved = await saveMediaBuffer(buffer, mimeType);
+					if (!response.ok) {
+						throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+					}
+					// Stream directly to file to prevent OOM on large files
+					const saved = await saveMediaStream(response, mimeType);
 					mediaPath = saved.path;
 					mimeType = saved.contentType;
 				}
@@ -117,8 +121,17 @@ export async function monitorTelegramInbox(
 			sendComposing: async () => {
 				await bot.api.sendChatAction(chat.id, "typing");
 			},
-			reply: async (text: string) => {
-				await bot.api.sendMessage(chat.id, text, { parse_mode: "Markdown" });
+			reply: async (text: string, options?: { useMarkdown?: boolean }) => {
+				// Default to plain text for safety (prevents markdown injection)
+				// Sanitize all responses to remove dangerous characters
+				const sanitized = sanitizeClaudeResponse(text);
+				if (options?.useMarkdown) {
+					// Only use markdown when explicitly requested (for system messages)
+					await bot.api.sendMessage(chat.id, sanitized, { parse_mode: "Markdown" });
+				} else {
+					// Plain text - no injection possible
+					await bot.api.sendMessage(chat.id, sanitized);
+				}
 			},
 			sendMedia: async (payload: TelegramMediaPayload) => {
 				await sendMediaToChat(bot.api, chat.id, payload);

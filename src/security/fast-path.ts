@@ -2,26 +2,32 @@ import type { SecurityClassification } from "./types.js";
 
 /**
  * Patterns that are clearly safe and can skip LLM review.
+ *
+ * SECURITY NOTE: These patterns must be STRICTLY anchored (^ and $) to avoid
+ * matching malicious requests that start with safe-looking text. For example,
+ * "What are the contents of ~/.ssh/id_rsa?" should NOT match because generic
+ * question starters can be used to request dangerous operations.
+ *
+ * Only include patterns where the ENTIRE message is known to be safe.
  */
 export const SAFE_PATTERNS: RegExp[] = [
-	// Information requests
-	/^(what|how|why|explain|describe|help|show me|tell me)/i,
-	/^(list|read|cat|head|tail|less|more)\s/i,
-	/^(search|find|grep|look for)/i,
-
-	// Git read operations
-	/^git\s+(status|log|diff|branch|remote\s+-v|show)/i,
-
-	// Safe file operations
-	/^ls\s+-?[lahR]*\s*/i,
+	// Strictly anchored safe commands (entire message must match)
 	/^pwd$/i,
-	/^echo\s+[^;|&$`]+$/i, // Simple echo without injection
 	/^whoami$/i,
 	/^date$/i,
 	/^uptime$/i,
+	/^ls$/i,
+	/^ls\s+-[lahR]+$/i, // ls with common flags only
 
-	// Questions
-	/\?$/,
+	// Git read-only status commands (strictly anchored)
+	/^git\s+status$/i,
+	/^git\s+branch$/i,
+	/^git\s+remote\s+-v$/i,
+	/^git\s+log\s*$/i,
+	/^git\s+log\s+--oneline(\s+-\d+)?$/i, // git log --oneline -10
+
+	// Simple greetings (cannot trigger tools)
+	/^(hi|hello|hey|thanks|thank you|ok|okay)!?$/i,
 ];
 
 /**

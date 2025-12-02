@@ -5,6 +5,7 @@
  * telclaude-specific configuration and streaming support.
  */
 
+import fs from "node:fs";
 import {
 	type PermissionMode,
 	type SDKMessage,
@@ -19,6 +20,42 @@ import { isSandboxInitialized, wrapCommand } from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Security Helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Resolve symlinks to get the real path.
+ * Returns the original path if the file doesn't exist or resolution fails.
+ */
+function resolveRealPath(inputPath: string): string {
+	try {
+		return fs.realpathSync(inputPath);
+	} catch {
+		// File doesn't exist yet or other error - return original
+		return inputPath;
+	}
+}
+
+/**
+ * Check if a path (after symlink resolution) is sensitive.
+ * Defends against symlink attacks where attacker creates a symlink
+ * to bypass path checks.
+ */
+function isPathSensitive(inputPath: string): boolean {
+	// Check original path
+	if (isSensitivePath(inputPath)) {
+		return true;
+	}
+	// Resolve symlinks and check real path
+	const realPath = resolveRealPath(inputPath);
+	if (realPath !== inputPath && isSensitivePath(realPath)) {
+		logger.warn({ inputPath, realPath }, "symlink to sensitive path detected");
+		return true;
+	}
+	return false;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Type Guards for SDK Messages
@@ -225,38 +262,49 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	}
 
 	// Add canUseTool for ALL tiers to protect sensitive paths
-	// This prevents the agent from accessing TOTP secrets, database, etc.
+	// This prevents the agent from accessing TOTP secrets, database, credentials, etc.
+	// Uses symlink resolution to prevent bypass attacks
 	sdkOpts.canUseTool = async (toolName, input) => {
-		// Block access to sensitive telclaude paths (TOTP secrets, etc.)
+		// Block access to sensitive paths (telclaude internals + credentials like ~/.ssh)
 		if (toolName === "Read" && isReadInput(input)) {
-			if (isSensitivePath(input.file_path)) {
+			if (isPathSensitive(input.file_path)) {
 				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
 				return {
 					behavior: "deny",
-					message: "Access to telclaude configuration files is not permitted.",
+					message: "Access to this file is not permitted for security reasons.",
+				};
+			}
+		}
+
+		if (toolName === "Write" && isReadInput(input)) {
+			// Write uses same input shape as Read
+			if (isPathSensitive(input.file_path)) {
+				logger.warn({ path: input.file_path }, "blocked write to sensitive path");
+				return {
+					behavior: "deny",
+					message: "Writing to this location is not permitted for security reasons.",
 				};
 			}
 		}
 
 		if (toolName === "Glob" && isGlobInput(input)) {
 			const searchPath = input.path ?? input.pattern;
-			if (isSensitivePath(searchPath)) {
+			if (isPathSensitive(searchPath)) {
 				logger.warn({ path: searchPath }, "blocked glob of sensitive path");
 				return {
 					behavior: "deny",
-					message: "Searching telclaude configuration directories is not permitted.",
+					message: "Searching this location is not permitted for security reasons.",
 				};
 			}
 		}
 
 		if (toolName === "Grep" && isGrepInput(input)) {
 			const searchPath = input.path ?? "";
-			const searchPattern = input.pattern;
-			if (isSensitivePath(searchPath) || isSensitivePath(searchPattern)) {
-				logger.warn({ path: searchPath, pattern: searchPattern }, "blocked grep of sensitive path");
+			if (isPathSensitive(searchPath)) {
+				logger.warn({ path: searchPath }, "blocked grep of sensitive path");
 				return {
 					behavior: "deny",
-					message: "Searching telclaude configuration is not permitted.",
+					message: "Searching this location is not permitted for security reasons.",
 				};
 			}
 		}
@@ -267,7 +315,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				logger.warn({ command: input.command }, "blocked bash access to sensitive path");
 				return {
 					behavior: "deny",
-					message: "Access to telclaude configuration via shell is not permitted.",
+					message: "Access to sensitive paths via shell is not permitted.",
 				};
 			}
 

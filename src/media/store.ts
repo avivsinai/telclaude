@@ -2,8 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
+import { getChildLogger } from "../logging.js";
+
+const logger = getChildLogger({ module: "media-store" });
 const MEDIA_DIR = path.join(os.tmpdir(), "telclaude", "media");
+
+// Maximum media file size (20MB - Telegram bot API limit)
+const MAX_MEDIA_SIZE = 20 * 1024 * 1024;
 
 export type SavedMedia = {
 	path: string;
@@ -22,6 +30,74 @@ export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promis
 	const filepath = path.join(MEDIA_DIR, filename);
 
 	await fs.promises.writeFile(filepath, buffer);
+
+	return {
+		path: filepath,
+		contentType: mimeType ?? "application/octet-stream",
+	};
+}
+
+/**
+ * Stream a response body directly to a temporary file.
+ * Prevents OOM by not loading entire file into memory.
+ *
+ * @param response - Fetch response with body to stream
+ * @param mimeType - MIME type for the file extension
+ * @returns Path to saved file, or throws on error/size exceeded
+ */
+export async function saveMediaStream(response: Response, mimeType?: string): Promise<SavedMedia> {
+	await fs.promises.mkdir(MEDIA_DIR, { recursive: true });
+
+	// Check content-length header for size limit
+	const contentLength = response.headers.get("content-length");
+	if (contentLength) {
+		const size = Number.parseInt(contentLength, 10);
+		if (size > MAX_MEDIA_SIZE) {
+			throw new Error(`Media too large: ${size} bytes (max ${MAX_MEDIA_SIZE})`);
+		}
+	}
+
+	const ext = mimeToExtension(mimeType);
+	const randomId = crypto.randomBytes(8).toString("hex");
+	const filename = `${Date.now()}-${randomId}${ext}`;
+	const filepath = path.join(MEDIA_DIR, filename);
+
+	// Get the response body as a web stream
+	const body = response.body;
+	if (!body) {
+		throw new Error("Response has no body");
+	}
+
+	// Track size during streaming
+	let totalBytes = 0;
+	const sizeChecker = new TransformStream<Uint8Array>({
+		transform(chunk, controller) {
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAX_MEDIA_SIZE) {
+				controller.error(new Error(`Media too large: exceeded ${MAX_MEDIA_SIZE} bytes`));
+				return;
+			}
+			controller.enqueue(chunk);
+		},
+	});
+
+	// Convert web stream to Node stream for fs.createWriteStream
+	const webStream = body.pipeThrough(sizeChecker);
+	const nodeStream = Readable.fromWeb(webStream as import("stream/web").ReadableStream);
+	const writeStream = fs.createWriteStream(filepath);
+
+	try {
+		await pipeline(nodeStream, writeStream);
+		logger.debug({ filepath, bytes: totalBytes }, "media streamed to file");
+	} catch (err) {
+		// Clean up partial file on error
+		try {
+			await fs.promises.unlink(filepath);
+		} catch {
+			// Ignore cleanup errors
+		}
+		throw err;
+	}
 
 	return {
 		path: filepath,

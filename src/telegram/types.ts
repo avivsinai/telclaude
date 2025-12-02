@@ -48,7 +48,9 @@ export type TelegramInboundMessage = {
 
 	// Callbacks for responding
 	sendComposing: () => Promise<void>;
-	reply: (text: string) => Promise<void>;
+	/** Reply to the message. Uses plain text by default for safety.
+	 *  Set useMarkdown: true only for trusted system messages. */
+	reply: (text: string, options?: { useMarkdown?: boolean }) => Promise<void>;
 	sendMedia: (payload: TelegramMediaPayload) => Promise<void>;
 
 	// Raw message for advanced use

@@ -24,6 +24,84 @@ import {
 
 const logger = getChildLogger({ module: "totp-server" });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOTP Verification Rate Limiting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Rate limit configuration for TOTP verification.
+ * Prevents brute-force attacks on 6-digit codes (1M possibilities).
+ */
+const VERIFY_RATE_LIMIT = {
+	maxAttempts: 5, // Max attempts per window
+	windowMs: 60 * 1000, // 1 minute window
+	lockoutMs: 5 * 60 * 1000, // 5 minute lockout after exceeding
+};
+
+type RateLimitEntry = {
+	attempts: number;
+	windowStart: number;
+	lockedUntil?: number;
+};
+
+const verifyRateLimits = new Map<string, RateLimitEntry>();
+
+/**
+ * Check if a user is rate limited for TOTP verification.
+ * Returns true if request should be allowed, false if rate limited.
+ */
+function checkVerifyRateLimit(localUserId: string): { allowed: boolean; retryAfterMs?: number } {
+	const now = Date.now();
+	let entry = verifyRateLimits.get(localUserId);
+
+	// Check if currently locked out
+	if (entry?.lockedUntil && entry.lockedUntil > now) {
+		return { allowed: false, retryAfterMs: entry.lockedUntil - now };
+	}
+
+	// Create or reset entry if window expired
+	if (!entry || now - entry.windowStart > VERIFY_RATE_LIMIT.windowMs) {
+		entry = { attempts: 0, windowStart: now };
+		verifyRateLimits.set(localUserId, entry);
+	}
+
+	// Check if over limit
+	if (entry.attempts >= VERIFY_RATE_LIMIT.maxAttempts) {
+		// Apply lockout
+		entry.lockedUntil = now + VERIFY_RATE_LIMIT.lockoutMs;
+		logger.warn(
+			{ localUserId, lockoutMs: VERIFY_RATE_LIMIT.lockoutMs },
+			"TOTP verification locked out",
+		);
+		return { allowed: false, retryAfterMs: VERIFY_RATE_LIMIT.lockoutMs };
+	}
+
+	// Increment and allow
+	entry.attempts++;
+	return { allowed: true };
+}
+
+/**
+ * Reset rate limit for a user (called on successful verification).
+ */
+function resetVerifyRateLimit(localUserId: string): void {
+	verifyRateLimits.delete(localUserId);
+}
+
+// Clean up stale entries periodically
+setInterval(() => {
+	const now = Date.now();
+	for (const [userId, entry] of verifyRateLimits.entries()) {
+		// Remove if window expired and not locked out
+		if (
+			now - entry.windowStart > VERIFY_RATE_LIMIT.windowMs &&
+			(!entry.lockedUntil || entry.lockedUntil <= now)
+		) {
+			verifyRateLimits.delete(userId);
+		}
+	}
+}, 60 * 1000); // Every minute
+
 export type ServerOptions = {
 	socketPath?: string;
 };
@@ -175,7 +253,23 @@ async function handleRequest(request: TOTPRequest, clientId: string): Promise<TO
 		}
 
 		case "verify": {
+			// Check rate limit before verification
+			const rateLimit = checkVerifyRateLimit(request.localUserId);
+			if (!rateLimit.allowed) {
+				logger.warn({ localUserId: request.localUserId }, "TOTP verification rate limited");
+				return {
+					type: "error",
+					error: `Rate limited. Try again in ${Math.ceil((rateLimit.retryAfterMs ?? 0) / 1000)} seconds.`,
+				};
+			}
+
 			const valid = await keychain.verifyTOTP(request.localUserId, request.code);
+
+			// Reset rate limit on successful verification
+			if (valid) {
+				resetVerifyRateLimit(request.localUserId);
+			}
+
 			return {
 				type: "verify",
 				valid,

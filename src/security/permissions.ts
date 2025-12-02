@@ -15,7 +15,9 @@
  * accidentally run dangerous commands.
  */
 
+import path from "node:path";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
+import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { chatIdToString } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
@@ -148,6 +150,41 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 	{ pattern: /\bnc\s+/i, reason: "netcat" },
 	{ pattern: /\bnetcat\s+/i, reason: "netcat" },
 	{ pattern: /\bnmap\s+/i, reason: "nmap scan" },
+
+	// Additional patterns for better coverage (Grok-4 review)
+	// Sudo with blocked commands
+	{ pattern: /\bsudo\s+rm\b/i, reason: "sudo rm" },
+	{ pattern: /\bsudo\s+chmod\b/i, reason: "sudo chmod" },
+	{ pattern: /\bsudo\s+chown\b/i, reason: "sudo chown" },
+	{ pattern: /\bsudo\s+kill\b/i, reason: "sudo kill" },
+	{ pattern: /\bsudo\s+pkill\b/i, reason: "sudo pkill" },
+	{ pattern: /\bsudo\s+shutdown\b/i, reason: "sudo shutdown" },
+	{ pattern: /\bsudo\s+reboot\b/i, reason: "sudo reboot" },
+	{ pattern: /\bsudo\s+dd\b/i, reason: "sudo dd" },
+
+	// Bash -c with dangerous commands
+	{ pattern: /\bbash\s+-c\s+['"].*\brm\b/i, reason: "bash -c rm" },
+	{ pattern: /\bsh\s+-c\s+['"].*\brm\b/i, reason: "sh -c rm" },
+	{ pattern: /\bzsh\s+-c\s+['"].*\brm\b/i, reason: "zsh -c rm" },
+
+	// Python/Ruby/Node command execution
+	{
+		pattern: /\bpython[23]?\s+-c\s+['"].*(?:os\.remove|os\.system|subprocess)/i,
+		reason: "python code execution",
+	},
+	{ pattern: /\bruby\s+-e\s+['"].*(?:File\.delete|system|exec)/i, reason: "ruby code execution" },
+	{
+		pattern: /\bnode\s+-e\s+['"].*(?:child_process|unlink|rmSync)/i,
+		reason: "node code execution",
+	},
+
+	// Perl one-liners
+	{ pattern: /\bperl\s+-e\s+['"].*(?:unlink|system)/i, reason: "perl code execution" },
+
+	// Xargs with dangerous commands
+	{ pattern: /xargs\s+.*\brm\b/i, reason: "xargs rm" },
+	{ pattern: /find\s+.*-exec\s+.*\brm\b/i, reason: "find -exec rm" },
+	{ pattern: /find\s+.*-delete\b/i, reason: "find -delete" },
 ];
 
 /**
@@ -196,16 +233,74 @@ export function containsBlockedCommand(command: string): string | null {
  * These contain secrets (TOTP, etc.) that must not be exposed.
  */
 const SENSITIVE_PATH_PATTERNS = [
-	/\.telclaude\//i, // Config directory with database
+	/\.telclaude(\/|$)/i, // Config directory with database (with or without trailing slash)
 	/telclaude\.db/i, // Database file directly
+	/telclaude\.json/i, // Config file
 	/totp_secrets/i, // TOTP table name in queries
+	/totp\.sock/i, // TOTP socket
 ];
 
 /**
- * Check if a path or command accesses sensitive telclaude data.
+ * Expand ~ to home directory for path comparison.
+ */
+function expandHome(p: string): string {
+	if (p.startsWith("~/")) {
+		return path.join(process.env.HOME ?? "", p.slice(2));
+	}
+	if (p === "~") {
+		return process.env.HOME ?? "";
+	}
+	return p;
+}
+
+/**
+ * Normalize a path for comparison (resolve ~, make absolute).
+ */
+function normalizePath(inputPath: string): string {
+	const expanded = expandHome(inputPath);
+	// Handle relative paths
+	if (!path.isAbsolute(expanded)) {
+		return path.resolve(process.cwd(), expanded);
+	}
+	return path.normalize(expanded);
+}
+
+/**
+ * Check if a path matches any of the sensitive credential paths.
+ * This includes SSH keys, cloud credentials, etc.
+ */
+function matchesSensitiveCredentialPath(inputPath: string): boolean {
+	const normalizedInput = normalizePath(inputPath);
+
+	for (const sensitivePath of SENSITIVE_READ_PATHS) {
+		const normalizedSensitive = normalizePath(sensitivePath);
+		// Check if the input path is under or equals the sensitive path
+		if (
+			normalizedInput === normalizedSensitive ||
+			normalizedInput.startsWith(normalizedSensitive + path.sep)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Check if a path or command accesses sensitive data.
+ * This includes telclaude internals AND system credential paths.
  */
 export function isSensitivePath(pathOrCommand: string): boolean {
-	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(pathOrCommand));
+	// Check telclaude-specific patterns (regex-based for flexibility)
+	if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(pathOrCommand))) {
+		return true;
+	}
+
+	// Check credential paths from sandbox config (path-based for accuracy)
+	if (matchesSensitiveCredentialPath(pathOrCommand)) {
+		return true;
+	}
+
+	return false;
 }
 
 /**

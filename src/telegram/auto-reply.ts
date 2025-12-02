@@ -42,6 +42,15 @@ import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
 
+/**
+ * Generate a key for the recentlySent set.
+ * Includes chatId to prevent cross-chat collisions where the same message
+ * text in different chats could be incorrectly filtered.
+ */
+function makeRecentSentKey(chatId: number, body: string): string {
+	return `${chatId}:${body}`;
+}
+
 // Rate limiting for control commands (prevent brute-force on /approve)
 // Stricter than regular rate limits: 5 attempts per minute per user
 const controlCommandAttempts = new Map<string, { count: number; windowStart: number }>();
@@ -69,11 +78,22 @@ function checkControlCommandRateLimit(userId: string): boolean {
 // Session locks to prevent race conditions on rapid messages
 const sessionLocks = new Map<string, Promise<void>>();
 
+// Maximum time to wait for an existing lock (prevents deadlocks)
+const SESSION_LOCK_TIMEOUT_MS = 120_000; // 2 minutes
+
 async function withSessionLock<T>(sessionKey: string, fn: () => Promise<T>): Promise<T> {
-	// Wait for any existing operation on this session
+	// Wait for any existing operation on this session (with timeout)
 	const existingLock = sessionLocks.get(sessionKey);
 	if (existingLock) {
-		await existingLock;
+		const timeoutPromise = new Promise<"timeout">((resolve) =>
+			setTimeout(() => resolve("timeout"), SESSION_LOCK_TIMEOUT_MS),
+		);
+		const result = await Promise.race([existingLock.then(() => "done" as const), timeoutPromise]);
+		if (result === "timeout") {
+			logger.warn({ sessionKey }, "session lock timeout - previous operation may be stuck");
+			// Remove the stuck lock to allow this operation to proceed
+			sessionLocks.delete(sessionKey);
+		}
 	}
 
 	// Create a new lock for our operation
@@ -293,10 +313,12 @@ async function executeWithSession(
 				const finalResponse = responseText || chunk.result.response;
 
 				if (finalResponse) {
-					await msg.reply(finalResponse);
+					// Add to recentlySent BEFORE sending to prevent echo race condition
+					const recentKey = makeRecentSentKey(msg.chatId, finalResponse);
+					recentlySent.add(recentKey);
+					setTimeout(() => recentlySent.delete(recentKey), 30000);
 
-					recentlySent.add(finalResponse);
-					setTimeout(() => recentlySent.delete(finalResponse), 30000);
+					await msg.reply(finalResponse);
 
 					// Update session in SQLite
 					sessionEntry.updatedAt = Date.now();
@@ -619,8 +641,9 @@ async function handleInboundMessage(
 		return;
 	}
 
-	if (recentlySent.has(msg.body)) {
-		recentlySent.delete(msg.body);
+	const recentKey = makeRecentSentKey(msg.chatId, msg.body);
+	if (recentlySent.has(recentKey)) {
+		recentlySent.delete(recentKey);
 		logger.debug({ msgId: msg.id }, "echo detected, skipping");
 		return;
 	}

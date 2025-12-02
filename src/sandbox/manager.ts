@@ -113,22 +113,42 @@ export async function wrapCommand(command: string): Promise<string> {
 	}
 }
 
+// Cache for sandbox availability (computed once at startup)
+let sandboxAvailabilityChecked = false;
+let sandboxAvailable = false;
+
 /**
  * Check if sandboxing is available on this platform.
  *
  * Returns false on unsupported platforms (e.g., Windows) or if
  * required dependencies are missing (e.g., bubblewrap on Linux).
+ *
+ * This function is safe to call multiple times - it caches the result
+ * and short-circuits if sandbox is already initialized.
  */
 export async function isSandboxAvailable(): Promise<boolean> {
+	// If already initialized in production, it's definitely available
+	if (initialized) {
+		return true;
+	}
+
+	// Return cached result if we've already checked
+	if (sandboxAvailabilityChecked) {
+		return sandboxAvailable;
+	}
+
+	// Perform the availability check once
 	try {
-		// Try to initialize with minimal config
 		const testConfig = buildSandboxConfig({});
 		await SandboxManager.initialize(testConfig);
 		await SandboxManager.reset();
-		return true;
+		sandboxAvailable = true;
 	} catch {
-		return false;
+		sandboxAvailable = false;
 	}
+
+	sandboxAvailabilityChecked = true;
+	return sandboxAvailable;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
