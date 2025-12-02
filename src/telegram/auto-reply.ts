@@ -76,23 +76,53 @@ function checkControlCommandRateLimit(userId: string): boolean {
 }
 
 // Session locks to prevent race conditions on rapid messages
-const sessionLocks = new Map<string, Promise<void>>();
+// Track both the promise and metadata for better diagnostics
+type SessionLockEntry = {
+	promise: Promise<void>;
+	acquiredAt: number;
+	requestId?: string;
+};
+const sessionLocks = new Map<string, SessionLockEntry>();
 
 // Maximum time to wait for an existing lock (prevents deadlocks)
 const SESSION_LOCK_TIMEOUT_MS = 120_000; // 2 minutes
 
-async function withSessionLock<T>(sessionKey: string, fn: () => Promise<T>): Promise<T> {
+async function withSessionLock<T>(
+	sessionKey: string,
+	fn: () => Promise<T>,
+	requestId?: string,
+): Promise<T> {
 	// Wait for any existing operation on this session (with timeout)
 	const existingLock = sessionLocks.get(sessionKey);
 	if (existingLock) {
+		const waitStartedAt = Date.now();
 		const timeoutPromise = new Promise<"timeout">((resolve) =>
 			setTimeout(() => resolve("timeout"), SESSION_LOCK_TIMEOUT_MS),
 		);
-		const result = await Promise.race([existingLock.then(() => "done" as const), timeoutPromise]);
+		const result = await Promise.race([
+			existingLock.promise.then(() => "done" as const),
+			timeoutPromise,
+		]);
 		if (result === "timeout") {
-			logger.warn({ sessionKey }, "session lock timeout - previous operation may be stuck");
+			const lockHeldFor = Date.now() - existingLock.acquiredAt;
+			logger.warn(
+				{
+					sessionKey,
+					waitingRequestId: requestId,
+					holdingRequestId: existingLock.requestId,
+					lockHeldForMs: lockHeldFor,
+					timeoutMs: SESSION_LOCK_TIMEOUT_MS,
+				},
+				"session lock timeout - previous operation may be stuck, forcing release",
+			);
 			// Remove the stuck lock to allow this operation to proceed
 			sessionLocks.delete(sessionKey);
+		} else {
+			const waitedMs = Date.now() - waitStartedAt;
+			if (waitedMs > 5000) {
+				// Log if we had to wait more than 5 seconds
+				logger.info({ sessionKey, requestId, waitedMs }, "session lock acquired after waiting");
+			}
 		}
 	}
 
@@ -101,14 +131,19 @@ async function withSessionLock<T>(sessionKey: string, fn: () => Promise<T>): Pro
 	const lock = new Promise<void>((r) => {
 		resolve = r;
 	});
-	sessionLocks.set(sessionKey, lock);
+	const lockEntry: SessionLockEntry = {
+		promise: lock,
+		acquiredAt: Date.now(),
+		requestId,
+	};
+	sessionLocks.set(sessionKey, lockEntry);
 
 	try {
 		return await fn();
 	} finally {
 		if (resolve) resolve();
 		// Only delete if we're still the current lock
-		if (sessionLocks.get(sessionKey) === lock) {
+		if (sessionLocks.get(sessionKey) === lockEntry) {
 			sessionLocks.delete(sessionKey);
 		}
 	}
@@ -188,15 +223,19 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
 
 	// Use session lock to prevent race conditions on rapid messages
-	await withSessionLock(sessionKey, async () => {
-		await executeWithSession(ctx, sessionKey, {
-			userId,
-			startTime,
-			idleMinutes,
-			resetTriggers,
-			timeoutSeconds,
-		});
-	});
+	await withSessionLock(
+		sessionKey,
+		async () => {
+			await executeWithSession(ctx, sessionKey, {
+				userId,
+				startTime,
+				idleMinutes,
+				resetTriggers,
+				timeoutSeconds,
+			});
+		},
+		ctx.requestId,
+	);
 }
 
 /**
@@ -895,6 +934,29 @@ async function handleDenyCommand(
 	});
 }
 
+/**
+ * Order of permission tiers from least to most permissive.
+ * Used to enforce "least privilege" at execution time.
+ */
+const TIER_ORDER: Record<PermissionTier, number> = {
+	READ_ONLY: 0,
+	WRITE_SAFE: 1,
+	FULL_ACCESS: 2,
+};
+
+/**
+ * Get the more restrictive of two permission tiers.
+ */
+function minTier(a: PermissionTier, b: PermissionTier): PermissionTier {
+	return TIER_ORDER[a] <= TIER_ORDER[b] ? a : b;
+}
+
+/**
+ * Maximum age of an approval before we reject it at execution time.
+ * This prevents stale approvals from being executed long after they were granted.
+ */
+const MAX_APPROVAL_AGE_MS = 10 * 60 * 1000; // 10 minutes
+
 async function executeApprovedRequest(
 	msg: TelegramInboundMessage,
 	cfg: TelclaudeConfig,
@@ -902,6 +964,58 @@ async function executeApprovedRequest(
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
 ): Promise<void> {
+	// SECURITY: Freshness check at execution time
+	// Even though the approval was valid when consumed, we re-validate:
+	// 1. Check approval age (prevent stale execution)
+	// 2. Re-check current permissions (use least privilege)
+
+	const now = Date.now();
+	const approvalAge = now - approval.createdAt;
+
+	// Reject if approval is too old
+	if (approvalAge > MAX_APPROVAL_AGE_MS) {
+		logger.warn(
+			{
+				requestId: approval.requestId,
+				approvalAge: Math.round(approvalAge / 1000),
+				maxAge: Math.round(MAX_APPROVAL_AGE_MS / 1000),
+			},
+			"stale approval rejected at execution time",
+		);
+		await msg.reply("This approval has become stale. Please submit your request again.");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: approval.requestId,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: approval.username,
+			chatId: msg.chatId,
+			messagePreview: approval.body.slice(0, 100),
+			observerClassification: approval.observerClassification,
+			observerConfidence: approval.observerConfidence,
+			permissionTier: approval.tier,
+			outcome: "blocked",
+			errorType: "stale_approval",
+		});
+		return;
+	}
+
+	// Get current tier and use the more restrictive of stored vs current
+	// This prevents privilege escalation if user's permissions were reduced
+	const currentTier = getUserPermissionTier(msg.chatId, cfg.security);
+	const effectiveTier = minTier(approval.tier, currentTier);
+
+	if (effectiveTier !== approval.tier) {
+		logger.info(
+			{
+				requestId: approval.requestId,
+				originalTier: approval.tier,
+				currentTier,
+				effectiveTier,
+			},
+			"tier downgraded at execution time due to permission change",
+		);
+	}
+
 	await executeAndReply({
 		msg,
 		prompt: msg.body.trim(),
@@ -910,7 +1024,7 @@ async function executeApprovedRequest(
 		from: approval.from,
 		to: approval.to,
 		username: approval.username,
-		tier: approval.tier,
+		tier: effectiveTier,
 		config: cfg,
 		observerClassification: approval.observerClassification,
 		observerConfidence: approval.observerConfidence,

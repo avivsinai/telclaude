@@ -141,10 +141,23 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 
 		server.listen(socketPath, () => {
 			// Set socket permissions to owner only (0600)
+			// SECURITY: This MUST succeed - other users could connect otherwise
 			try {
 				fs.chmodSync(socketPath, 0o600);
+				// Verify the permissions were actually set
+				const stats = fs.statSync(socketPath);
+				const mode = stats.mode & 0o777;
+				if (mode !== 0o600) {
+					throw new Error(`Socket permissions are ${mode.toString(8)}, expected 600`);
+				}
 			} catch (err) {
-				logger.warn({ error: String(err) }, "failed to set socket permissions");
+				logger.error(
+					{ error: String(err), socketPath },
+					"CRITICAL: failed to secure socket permissions",
+				);
+				server.close();
+				reject(new Error(`Failed to set socket permissions: ${String(err)}`));
+				return;
 			}
 
 			logger.info({ socketPath }, "TOTP daemon listening");

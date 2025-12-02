@@ -17,9 +17,13 @@
 
 import path from "node:path";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
+import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
+import { isSandboxInitialized } from "../sandbox/index.js";
 import { chatIdToString } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
+
+const logger = getChildLogger({ module: "permissions" });
 
 /**
  * Allowed tools for each permission tier.
@@ -70,6 +74,9 @@ export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
  * 1. Check if the chatId has an identity link -> use linked localUserId
  * 2. Look up by raw chatId or tg:chatId prefix
  * 3. Fall back to default tier
+ *
+ * Security: FULL_ACCESS requires sandbox to be available.
+ * If sandbox is unavailable, FULL_ACCESS is downgraded to WRITE_SAFE.
  */
 export function getUserPermissionTier(
 	userId: string | number,
@@ -81,6 +88,8 @@ export function getUserPermissionTier(
 
 	const userPerms = securityConfig?.permissions?.users;
 
+	let tier: PermissionTier | undefined;
+
 	// 1. Check for identity link first
 	if (!Number.isNaN(numericId)) {
 		const link = getIdentityLink(numericId);
@@ -88,23 +97,36 @@ export function getUserPermissionTier(
 			// Look up by the linked localUserId
 			const linkedPerms = userPerms[link.localUserId];
 			if (linkedPerms) {
-				return linkedPerms.tier;
+				tier = linkedPerms.tier;
 			}
 		}
 	}
 
 	// 2. Check user-specific permissions by chatId
-	if (userPerms) {
+	if (tier === undefined && userPerms) {
 		if (userPerms[normalizedId]) {
-			return userPerms[normalizedId].tier;
-		}
-		if (userPerms[withPrefix]) {
-			return userPerms[withPrefix].tier;
+			tier = userPerms[normalizedId].tier;
+		} else if (userPerms[withPrefix]) {
+			tier = userPerms[withPrefix].tier;
 		}
 	}
 
 	// 3. Fall back to default tier
-	return securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
+	if (tier === undefined) {
+		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
+	}
+
+	// Security: FULL_ACCESS requires sandbox for defense-in-depth
+	// Without sandbox, downgrade to WRITE_SAFE to prevent unrestricted access
+	if (tier === "FULL_ACCESS" && !isSandboxInitialized()) {
+		logger.warn(
+			{ userId: normalizedId, originalTier: tier },
+			"FULL_ACCESS downgraded to WRITE_SAFE: sandbox unavailable",
+		);
+		return "WRITE_SAFE";
+	}
+
+	return tier;
 }
 
 /**
@@ -288,7 +310,12 @@ function matchesSensitiveCredentialPath(inputPath: string): boolean {
 
 /**
  * Build regex patterns for sensitive paths to detect them in commands.
- * Handles both ~/path and /home/user/path forms.
+ * Handles multiple forms:
+ * - ~/path (tilde expansion)
+ * - /home/user/path (expanded home)
+ * - $HOME/path (shell variable)
+ * - ${HOME}/path (brace-enclosed variable)
+ * - Just the sensitive directory name (e.g., .ssh, .aws)
  */
 function buildSensitivePathPatterns(): RegExp[] {
 	const patterns: RegExp[] = [];
@@ -297,13 +324,30 @@ function buildSensitivePathPatterns(): RegExp[] {
 	for (const sensitivePath of SENSITIVE_READ_PATHS) {
 		// Escape special regex characters in the path
 		const escaped = sensitivePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 		// Match the path with ~ prefix
 		patterns.push(new RegExp(escaped, "i"));
+
 		// Also match with expanded home directory
 		if (sensitivePath.startsWith("~/")) {
+			const pathSuffix = sensitivePath.slice(2); // Remove ~/
+			const escapedSuffix = pathSuffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+			// Expanded home path: /home/user/.ssh
 			const expandedPath = sensitivePath.replace("~", home);
 			const expandedEscaped = expandedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 			patterns.push(new RegExp(expandedEscaped, "i"));
+
+			// $HOME form: $HOME/.ssh
+			patterns.push(new RegExp(`\\$HOME/${escapedSuffix}`, "i"));
+
+			// ${HOME} form: ${HOME}/.ssh
+			patterns.push(new RegExp(`\\$\\{HOME\\}/${escapedSuffix}`, "i"));
+
+			// Just the sensitive name after any path separator or whitespace
+			// This catches: cat .ssh/id_rsa (from home dir), or paths like /foo/.ssh
+			// Use word boundary or path separator to avoid false positives
+			patterns.push(new RegExp(`(?:^|[\\s/])${escapedSuffix}(?:/|$|\\s)`, "i"));
 		}
 	}
 
@@ -314,16 +358,54 @@ function buildSensitivePathPatterns(): RegExp[] {
 const SENSITIVE_COMMAND_PATTERNS = buildSensitivePathPatterns();
 
 /**
+ * Extract path-like tokens from a command for additional checking.
+ * Looks for tokens that could be file paths.
+ */
+function extractPathTokens(command: string): string[] {
+	// Split on whitespace and common shell operators
+	const tokens = command.split(/[\s;|&`$()]+/).filter((t) => t.length > 0);
+
+	// Also extract quoted strings which might contain paths
+	const quotedMatches = command.match(/["'][^"']*["']/g) ?? [];
+	const quotedPaths = quotedMatches.map((m) => m.slice(1, -1));
+
+	return [...tokens, ...quotedPaths];
+}
+
+/**
  * Check if a command string references any sensitive paths.
- * Uses substring/regex matching rather than path normalization.
+ * Uses multiple detection strategies:
+ * 1. Regex patterns for various path forms
+ * 2. Token extraction and individual path checking
  */
 function commandContainsSensitivePath(command: string): boolean {
-	// Check against pre-computed patterns
+	// Strategy 1: Check against pre-computed patterns (catches most cases)
 	for (const pattern of SENSITIVE_COMMAND_PATTERNS) {
 		if (pattern.test(command)) {
 			return true;
 		}
 	}
+
+	// Strategy 2: Extract and check individual path-like tokens
+	// This catches edge cases where paths are constructed dynamically
+	const tokens = extractPathTokens(command);
+	for (const token of tokens) {
+		// Skip very short tokens or obvious non-paths
+		if (token.length < 3) continue;
+
+		// Check if token looks like a path (contains / or starts with ~ or .)
+		if (token.includes("/") || token.startsWith("~") || token.startsWith(".")) {
+			// Expand ~ if present and check
+			const expanded = token.startsWith("~")
+				? token.replace(/^~/, process.env.HOME ?? "/home/user")
+				: token;
+
+			if (matchesSensitiveCredentialPath(expanded)) {
+				return true;
+			}
+		}
+	}
+
 	return false;
 }
 

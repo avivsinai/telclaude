@@ -64,17 +64,64 @@ export type AuditConfig = {
 export class AuditLogger {
 	private config: AuditConfig;
 	private logFile: string;
+	private initialized = false;
 
 	constructor(config: AuditConfig) {
 		this.config = config;
 		this.logFile = config.logFile ?? DEFAULT_AUDIT_FILE;
 
 		if (config.enabled) {
-			// Ensure directory exists
-			const dir = path.dirname(this.logFile);
+			this.initializeSecurely();
+		}
+	}
+
+	/**
+	 * Initialize audit log directory and file with secure permissions.
+	 * SECURITY: Directory 0700, file 0600 to prevent other users from
+	 * reading or tampering with audit logs.
+	 */
+	private initializeSecurely(): void {
+		const dir = path.dirname(this.logFile);
+
+		try {
+			// Create directory with restricted permissions
 			if (!fs.existsSync(dir)) {
-				fs.mkdirSync(dir, { recursive: true });
+				fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 			}
+
+			// Verify/fix directory permissions
+			const dirStats = fs.statSync(dir);
+			const dirMode = dirStats.mode & 0o777;
+			if (dirMode !== 0o700) {
+				fs.chmodSync(dir, 0o700);
+				logger.info(
+					{ dir, oldMode: dirMode.toString(8), newMode: "700" },
+					"fixed audit directory permissions",
+				);
+			}
+
+			// Create or verify file permissions if file exists
+			if (fs.existsSync(this.logFile)) {
+				const fileStats = fs.statSync(this.logFile);
+				const fileMode = fileStats.mode & 0o777;
+				if (fileMode !== 0o600) {
+					fs.chmodSync(this.logFile, 0o600);
+					logger.info(
+						{ file: this.logFile, oldMode: fileMode.toString(8), newMode: "600" },
+						"fixed audit file permissions",
+					);
+				}
+			}
+
+			this.initialized = true;
+		} catch (err) {
+			// Log error but don't fail - audit logging is best-effort
+			// However, we mark as not initialized to prevent writing to insecure locations
+			logger.error(
+				{ error: String(err), dir, file: this.logFile },
+				"failed to initialize secure audit log",
+			);
+			this.initialized = false;
 		}
 	}
 
@@ -84,13 +131,32 @@ export class AuditLogger {
 	async log(entry: AuditEntry): Promise<void> {
 		if (!this.config.enabled) return;
 
+		// Don't write to insecure locations
+		if (!this.initialized) {
+			logger.warn({ requestId: entry.requestId }, "audit log not initialized - entry not written");
+			return;
+		}
+
 		try {
 			const line = JSON.stringify({
 				...entry,
 				timestamp: entry.timestamp.toISOString(),
 			});
 
-			await fs.promises.appendFile(this.logFile, `${line}\n`, "utf-8");
+			// Check if file exists to determine if we need to set permissions
+			const fileExisted = fs.existsSync(this.logFile);
+
+			await fs.promises.appendFile(this.logFile, `${line}\n`, { encoding: "utf-8", mode: 0o600 });
+
+			// Set permissions if file was just created
+			// (appendFile's mode only applies to new files, but verify anyway)
+			if (!fileExisted) {
+				try {
+					await fs.promises.chmod(this.logFile, 0o600);
+				} catch {
+					// Ignore chmod errors on append
+				}
+			}
 
 			// Also log to the regular logger
 			logger.info(
