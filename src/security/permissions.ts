@@ -268,6 +268,7 @@ function normalizePath(inputPath: string): string {
 /**
  * Check if a path matches any of the sensitive credential paths.
  * This includes SSH keys, cloud credentials, etc.
+ * Only use for single path strings, not commands.
  */
 function matchesSensitiveCredentialPath(inputPath: string): boolean {
 	const normalizedInput = normalizePath(inputPath);
@@ -286,6 +287,47 @@ function matchesSensitiveCredentialPath(inputPath: string): boolean {
 }
 
 /**
+ * Build regex patterns for sensitive paths to detect them in commands.
+ * Handles both ~/path and /home/user/path forms.
+ */
+function buildSensitivePathPatterns(): RegExp[] {
+	const patterns: RegExp[] = [];
+	const home = process.env.HOME ?? "/home/user";
+
+	for (const sensitivePath of SENSITIVE_READ_PATHS) {
+		// Escape special regex characters in the path
+		const escaped = sensitivePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		// Match the path with ~ prefix
+		patterns.push(new RegExp(escaped, "i"));
+		// Also match with expanded home directory
+		if (sensitivePath.startsWith("~/")) {
+			const expandedPath = sensitivePath.replace("~", home);
+			const expandedEscaped = expandedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			patterns.push(new RegExp(expandedEscaped, "i"));
+		}
+	}
+
+	return patterns;
+}
+
+// Pre-computed patterns for command checking (computed once at module load)
+const SENSITIVE_COMMAND_PATTERNS = buildSensitivePathPatterns();
+
+/**
+ * Check if a command string references any sensitive paths.
+ * Uses substring/regex matching rather than path normalization.
+ */
+function commandContainsSensitivePath(command: string): boolean {
+	// Check against pre-computed patterns
+	for (const pattern of SENSITIVE_COMMAND_PATTERNS) {
+		if (pattern.test(command)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Check if a path or command accesses sensitive data.
  * This includes telclaude internals AND system credential paths.
  */
@@ -295,9 +337,19 @@ export function isSensitivePath(pathOrCommand: string): boolean {
 		return true;
 	}
 
-	// Check credential paths from sandbox config (path-based for accuracy)
-	if (matchesSensitiveCredentialPath(pathOrCommand)) {
-		return true;
+	// Check if the input looks like a command (contains spaces or shell operators)
+	const looksLikeCommand = /[\s;|&<>]/.test(pathOrCommand);
+
+	if (looksLikeCommand) {
+		// For commands, use substring matching to find sensitive paths anywhere
+		if (commandContainsSensitivePath(pathOrCommand)) {
+			return true;
+		}
+	} else {
+		// For single paths, use path normalization for accurate matching
+		if (matchesSensitiveCredentialPath(pathOrCommand)) {
+			return true;
+		}
 	}
 
 	return false;
