@@ -14,7 +14,7 @@ import {
 } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { executeQueryStream } from "../sdk/client.js";
+import { executePooledQuery } from "../sdk/client.js";
 import {
 	type PendingApproval,
 	cleanupExpiredApprovals,
@@ -314,10 +314,11 @@ async function executeWithSession(
 		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
 		let responseText = "";
 
-		// Execute with session resume for conversation continuity and timeout
-		for await (const chunk of executeQueryStream(queryPrompt, {
+		// Execute with V2 session pool for connection reuse and timeout
+		for await (const chunk of executePooledQuery(queryPrompt, {
 			cwd: process.cwd(),
 			tier,
+			poolKey: sessionKey,
 			resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 			enableSkills: tier !== "READ_ONLY",
 			timeoutMs: timeoutSeconds * 1000,

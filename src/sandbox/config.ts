@@ -8,9 +8,11 @@
  * - Filesystem: Deny access to sensitive paths (~/.telclaude, ~/.ssh, etc.)
  * - Network: Permissive by default (configurable via config)
  * - All permission tiers are sandboxed for defense-in-depth
+ * - Tier-aligned configs: READ_ONLY has stricter write restrictions
  */
 
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import type { PermissionTier } from "../config/config.js";
 
 /**
  * Sensitive paths that should never be readable by sandboxed processes.
@@ -99,3 +101,50 @@ export function buildSandboxConfig(options: {
  * Uses permissive network but restricts filesystem access to sensitive paths.
  */
 export const DEFAULT_SANDBOX_CONFIG = buildSandboxConfig({});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tier-Aligned Sandbox Configs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sandbox configuration aligned with permission tiers.
+ *
+ * The sandbox enforces what Claude CAN do (enforcement),
+ * while the tier controls what Claude SHOULD do (policy).
+ * The sandbox matches the tier, not more restrictive.
+ *
+ * - READ_ONLY: No writes allowed (empty allowWrite)
+ * - WRITE_SAFE: Writes to cwd + /tmp
+ * - FULL_ACCESS: Same as WRITE_SAFE (sandbox is safety net, not policy)
+ */
+export const TIER_SANDBOX_CONFIGS: Record<PermissionTier, SandboxRuntimeConfig> = {
+	READ_ONLY: buildSandboxConfig({
+		// No writes allowed for read-only tier
+		additionalAllowWrite: [],
+	}),
+	WRITE_SAFE: buildSandboxConfig({
+		// Standard write paths for write-safe tier
+		additionalAllowWrite: [],
+	}),
+	FULL_ACCESS: buildSandboxConfig({
+		// Same as WRITE_SAFE - sandbox is safety net, tier is policy
+		additionalAllowWrite: [],
+	}),
+};
+
+// Override the allowWrite for READ_ONLY to be empty
+// (buildSandboxConfig adds DEFAULT_WRITE_PATHS, we need to remove them)
+TIER_SANDBOX_CONFIGS.READ_ONLY = {
+	...TIER_SANDBOX_CONFIGS.READ_ONLY,
+	filesystem: {
+		...TIER_SANDBOX_CONFIGS.READ_ONLY.filesystem,
+		allowWrite: [], // No writes for READ_ONLY
+	},
+};
+
+/**
+ * Get sandbox configuration for a specific permission tier.
+ */
+export function getSandboxConfigForTier(tier: PermissionTier): SandboxRuntimeConfig {
+	return TIER_SANDBOX_CONFIGS[tier];
+}

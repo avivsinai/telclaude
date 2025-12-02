@@ -2,7 +2,22 @@
  * SDK module exports.
  */
 
-export { executeQueryStream, type StreamChunk, type TelclaudeQueryOptions } from "./client.js";
+export {
+	executeQueryStream,
+	executePooledQuery,
+	type StreamChunk,
+	type TelclaudeQueryOptions,
+	type PooledQueryOptions,
+} from "./client.js";
+
+export {
+	SessionPool,
+	getSessionPool,
+	destroySessionPool,
+	type PooledSession,
+	type SessionPoolOptions,
+} from "./session-pool.js";
+
 export {
 	isAssistantMessage,
 	isBashInput,

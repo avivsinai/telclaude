@@ -89,6 +89,36 @@ export function getSandboxConfig(): SandboxRuntimeConfig | null {
 }
 
 /**
+ * Update the sandbox configuration without restarting.
+ *
+ * Uses SandboxManager.updateConfig() to hot-swap the configuration.
+ * This is useful for tier-aligned configs where different tiers
+ * have different sandbox restrictions.
+ *
+ * @param config - New configuration to apply
+ */
+export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
+	if (!initialized) {
+		logger.warn("cannot update config: sandbox not initialized");
+		return;
+	}
+
+	try {
+		SandboxManager.updateConfig(config);
+		currentConfig = config;
+		logger.debug(
+			{
+				denyRead: config.filesystem?.denyRead?.length ?? 0,
+				allowWrite: config.filesystem?.allowWrite?.length ?? 0,
+			},
+			"sandbox config updated",
+		);
+	} catch (err) {
+		logger.error({ error: String(err) }, "failed to update sandbox config");
+	}
+}
+
+/**
  * Wrap a command with sandbox isolation.
  *
  * Returns the command string prefixed with the sandbox wrapper.

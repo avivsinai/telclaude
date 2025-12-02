@@ -56,6 +56,9 @@ importers:
       sharp:
         specifier: ^0.33.5
         version: 0.33.5
+      shell-quote:
+        specifier: ^1.8.3
+        version: 1.8.3
       zod:
         specifier: ^3.25.0
         version: 3.25.76

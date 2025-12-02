@@ -1,19 +1,27 @@
 /**
  * Claude Agent SDK wrapper for telclaude.
  *
- * Provides a typed interface to the Claude Agent SDK with
- * telclaude-specific configuration and streaming support.
+ * Provides a typed interface to the Claude Agent SDK with:
+ * - V2 session pooling for performance
+ * - Tier-aligned sandbox configurations
+ * - Security enforcement via canUseTool callback
  */
 
 import fs from "node:fs";
 import {
 	type PermissionMode,
 	type Options as SDKOptions,
+	type SDKSessionOptions,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { isSandboxInitialized, wrapCommand } from "../sandbox/index.js";
+import {
+	getSandboxConfigForTier,
+	isSandboxInitialized,
+	updateSandboxConfig,
+	wrapCommand,
+} from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 import {
 	isBashInput,
@@ -28,6 +36,7 @@ import {
 	isToolUseStartEvent,
 	isWriteInput,
 } from "./message-guards.js";
+import { executeWithPool, getSessionPool } from "./session-pool.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 
@@ -313,13 +322,33 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 }
 
 /**
+ * Apply tier-aligned sandbox configuration.
+ * Updates the sandbox config to match the permission tier.
+ */
+function applyTierSandboxConfig(tier: PermissionTier): void {
+	if (!isSandboxInitialized()) {
+		return;
+	}
+
+	const tierConfig = getSandboxConfigForTier(tier);
+	updateSandboxConfig(tierConfig);
+	logger.debug({ tier }, "applied tier-aligned sandbox config");
+}
+
+/**
  * Execute a query with streaming, yielding chunks as they arrive.
+ *
+ * Applies tier-aligned sandbox configuration before execution.
  */
 export async function* executeQueryStream(
 	prompt: string,
 	opts: TelclaudeQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
+
+	// Apply tier-aligned sandbox config
+	applyTierSandboxConfig(opts.tier);
+
 	const sdkOpts = buildSdkOptions({
 		...opts,
 		includePartialMessages: true,
@@ -385,6 +414,123 @@ export async function* executeQueryStream(
 			);
 		} else {
 			logger.error({ error: String(err) }, "SDK streaming query error");
+		}
+
+		yield {
+			type: "done",
+			result: {
+				response,
+				success: false,
+				error: isAborted ? "Request was aborted" : String(err),
+				costUsd,
+				numTurns,
+				durationMs: Date.now() - startTime,
+			},
+		};
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V2 Session Pool API (Experimental)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Options for pooled queries.
+ */
+export type PooledQueryOptions = TelclaudeQueryOptions & {
+	/** Session pool key (typically derived from chat/user ID) */
+	poolKey: string;
+};
+
+/**
+ * Execute a query using the V2 session pool.
+ *
+ * Benefits over executeQueryStream:
+ * - Reuses persistent SDK connections (reduced spawn overhead)
+ * - Automatic session lifecycle management
+ * - Fallback to stable query() API if V2 fails
+ *
+ * @experimental Uses unstable V2 SDK API
+ */
+export async function* executePooledQuery(
+	prompt: string,
+	opts: PooledQueryOptions,
+): AsyncGenerator<StreamChunk, void, unknown> {
+	const startTime = Date.now();
+
+	// Apply tier-aligned sandbox config
+	applyTierSandboxConfig(opts.tier);
+
+	const sdkOpts = buildSdkOptions({
+		...opts,
+		includePartialMessages: true,
+	});
+
+	// Build V2 session options
+	const sessionOpts: SDKSessionOptions = {
+		model: opts.model ?? "claude-sonnet-4-20250514",
+		pathToClaudeCodeExecutable: undefined, // Use default
+	};
+
+	logger.debug(
+		{
+			tier: opts.tier,
+			poolKey: opts.poolKey,
+			cwd: opts.cwd,
+		},
+		"executing pooled SDK query",
+	);
+
+	const pool = getSessionPool();
+	let response = "";
+	let costUsd = 0;
+	let numTurns = 0;
+	let durationMs = 0;
+	let currentToolUse: { name: string; input: unknown } | null = null;
+
+	try {
+		for await (const msg of executeWithPool(
+			pool,
+			opts.poolKey,
+			prompt,
+			sessionOpts,
+			sdkOpts,
+			opts.resumeSessionId,
+		)) {
+			if (isStreamEvent(msg)) {
+				const event = msg.event;
+				if (isTextDeltaEvent(event)) {
+					yield { type: "text", content: event.delta.text };
+					response += event.delta.text;
+				} else if (isToolUseStartEvent(event)) {
+					currentToolUse = { name: event.content_block.name, input: {} };
+				} else if (isContentBlockStopEvent(event) && currentToolUse) {
+					yield { type: "tool_use", toolName: currentToolUse.name, input: currentToolUse.input };
+					currentToolUse = null;
+				}
+			} else if (isToolResultMessage(msg)) {
+				yield { type: "tool_result", toolName: "unknown", output: msg.tool_use_result };
+			} else if (isResultMessage(msg)) {
+				costUsd = msg.total_cost_usd;
+				numTurns = msg.num_turns;
+				durationMs = msg.duration_ms;
+
+				const success = msg.subtype === "success";
+				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
+
+				yield {
+					type: "done",
+					result: { response, success, error, costUsd, numTurns, durationMs },
+				};
+			}
+		}
+	} catch (err) {
+		const isAborted = err instanceof Error && err.name === "AbortError";
+
+		if (isAborted) {
+			logger.warn({ durationMs: Date.now() - startTime }, "pooled query aborted");
+		} else {
+			logger.error({ error: String(err) }, "pooled query error");
 		}
 
 		yield {

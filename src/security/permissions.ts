@@ -16,6 +16,7 @@
  */
 
 import path from "node:path";
+import { parse as shellParse } from "shell-quote";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
@@ -116,12 +117,12 @@ export function getUserPermissionTier(
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
 
-	// Security: FULL_ACCESS requires sandbox for defense-in-depth
-	// Without sandbox, downgrade to WRITE_SAFE to prevent unrestricted access
+	// Note: Sandbox is now mandatory at relay startup (fail-fast).
+	// This check remains as a safety net in case of edge cases.
 	if (tier === "FULL_ACCESS" && !isSandboxInitialized()) {
-		logger.warn(
+		logger.error(
 			{ userId: normalizedId, originalTier: tier },
-			"FULL_ACCESS downgraded to WRITE_SAFE: sandbox unavailable",
+			"FULL_ACCESS denied: sandbox not initialized (this should not happen)",
 		);
 		return "WRITE_SAFE";
 	}
@@ -290,7 +291,6 @@ function normalizePath(inputPath: string): string {
 /**
  * Check if a path matches any of the sensitive credential paths.
  * This includes SSH keys, cloud credentials, etc.
- * Only use for single path strings, not commands.
  */
 function matchesSensitiveCredentialPath(inputPath: string): boolean {
 	const normalizedInput = normalizePath(inputPath);
@@ -309,100 +309,63 @@ function matchesSensitiveCredentialPath(inputPath: string): boolean {
 }
 
 /**
- * Build regex patterns for sensitive paths to detect them in commands.
- * Handles multiple forms:
- * - ~/path (tilde expansion)
- * - /home/user/path (expanded home)
- * - $HOME/path (shell variable)
- * - ${HOME}/path (brace-enclosed variable)
- * - Just the sensitive directory name (e.g., .ssh, .aws)
+ * Heuristic: determine if a token could represent a filesystem path.
  */
-function buildSensitivePathPatterns(): RegExp[] {
-	const patterns: RegExp[] = [];
-	const home = process.env.HOME ?? "/home/user";
-
-	for (const sensitivePath of SENSITIVE_READ_PATHS) {
-		// Escape special regex characters in the path
-		const escaped = sensitivePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-		// Match the path with ~ prefix
-		patterns.push(new RegExp(escaped, "i"));
-
-		// Also match with expanded home directory
-		if (sensitivePath.startsWith("~/")) {
-			const pathSuffix = sensitivePath.slice(2); // Remove ~/
-			const escapedSuffix = pathSuffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-			// Expanded home path: /home/user/.ssh
-			const expandedPath = sensitivePath.replace("~", home);
-			const expandedEscaped = expandedPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			patterns.push(new RegExp(expandedEscaped, "i"));
-
-			// $HOME form: $HOME/.ssh
-			patterns.push(new RegExp(`\\$HOME/${escapedSuffix}`, "i"));
-
-			// ${HOME} form: ${HOME}/.ssh
-			patterns.push(new RegExp(`\\$\\{HOME\\}/${escapedSuffix}`, "i"));
-
-			// Just the sensitive name after any path separator or whitespace
-			// This catches: cat .ssh/id_rsa (from home dir), or paths like /foo/.ssh
-			// Use word boundary or path separator to avoid false positives
-			patterns.push(new RegExp(`(?:^|[\\s/])${escapedSuffix}(?:/|$|\\s)`, "i"));
-		}
-	}
-
-	return patterns;
+function looksLikePath(token: string): boolean {
+	return (
+		token.startsWith("~") ||
+		token.startsWith("/") ||
+		token.startsWith(".") ||
+		token.includes(path.sep)
+	);
 }
 
-// Pre-computed patterns for command checking (computed once at module load)
-const SENSITIVE_COMMAND_PATTERNS = buildSensitivePathPatterns();
-
 /**
- * Extract path-like tokens from a command for additional checking.
- * Looks for tokens that could be file paths.
+ * Expand home-like prefixes in a token for accurate path comparison.
  */
-function extractPathTokens(command: string): string[] {
-	// Split on whitespace and common shell operators
-	const tokens = command.split(/[\s;|&`$()]+/).filter((t) => t.length > 0);
-
-	// Also extract quoted strings which might contain paths
-	const quotedMatches = command.match(/["'][^"']*["']/g) ?? [];
-	const quotedPaths = quotedMatches.map((m) => m.slice(1, -1));
-
-	return [...tokens, ...quotedPaths];
+function expandHomeLike(token: string): string {
+	if (token.startsWith("~/")) {
+		return path.join(process.env.HOME ?? "", token.slice(2));
+	}
+	if (token === "~") {
+		return process.env.HOME ?? token;
+	}
+	if (token.startsWith("$HOME/")) {
+		return path.join(process.env.HOME ?? "", token.slice("$HOME/".length));
+	}
+	if (token.startsWith("${HOME}/")) {
+		return path.join(process.env.HOME ?? "", token.slice("${HOME}/".length));
+	}
+	return token;
 }
 
 /**
  * Check if a command string references any sensitive paths.
- * Uses multiple detection strategies:
- * 1. Regex patterns for various path forms
- * 2. Token extraction and individual path checking
+ * Uses shell-style tokenization to avoid brittle whitespace parsing.
  */
 function commandContainsSensitivePath(command: string): boolean {
-	// Strategy 1: Check against pre-computed patterns (catches most cases)
-	for (const pattern of SENSITIVE_COMMAND_PATTERNS) {
-		if (pattern.test(command)) {
-			return true;
-		}
+	let tokens: Array<string | { op: string }>;
+	try {
+		tokens = shellParse(command);
+	} catch {
+		// Fallback to simple split if parsing fails
+		tokens = command.split(/\s+/).filter((t) => t.length > 0);
 	}
 
-	// Strategy 2: Extract and check individual path-like tokens
-	// This catches edge cases where paths are constructed dynamically
-	const tokens = extractPathTokens(command);
 	for (const token of tokens) {
-		// Skip very short tokens or obvious non-paths
-		if (token.length < 3) continue;
+		if (typeof token !== "string") continue;
+		if (!looksLikePath(token)) continue;
 
-		// Check if token looks like a path (contains / or starts with ~ or .)
-		if (token.includes("/") || token.startsWith("~") || token.startsWith(".")) {
-			// Expand ~ if present and check
-			const expanded = token.startsWith("~")
-				? token.replace(/^~/, process.env.HOME ?? "/home/user")
-				: token;
+		const expanded = expandHomeLike(token);
 
-			if (matchesSensitiveCredentialPath(expanded)) {
-				return true;
-			}
+		// Check telclaude-specific sensitive patterns on both raw and expanded
+		if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(token) || pattern.test(expanded))) {
+			return true;
+		}
+
+		// Check credential roots
+		if (matchesSensitiveCredentialPath(expanded)) {
+			return true;
 		}
 	}
 

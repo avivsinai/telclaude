@@ -4,6 +4,7 @@ import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { initializeSandbox, isSandboxAvailable, resetSandbox } from "../sandbox/index.js";
+import { destroySessionPool } from "../sdk/session-pool.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 
@@ -39,15 +40,24 @@ export function registerRelayCommand(program: Command): void {
 					`Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`,
 				);
 
-				// Initialize sandbox for OS-level isolation
+				// Initialize sandbox for OS-level isolation (MANDATORY)
 				const sandboxAvailable = await isSandboxAvailable();
-				if (sandboxAvailable) {
-					await initializeSandbox();
-					console.log("Sandbox: enabled (OS-level isolation)");
-				} else {
-					console.log("Sandbox: unavailable (platform not supported or dependencies missing)");
-					logger.warn("sandbox unavailable - commands will run without OS-level isolation");
+				if (!sandboxAvailable) {
+					console.error(
+						"\n❌ Sandbox unavailable - telclaude requires OS-level sandboxing for security.\n",
+					);
+					console.error("Install dependencies:");
+					console.error("  macOS: Built-in (Seatbelt) - should work out of the box");
+					console.error("  Linux: apt install bubblewrap (Debian/Ubuntu)");
+					console.error("         dnf install bubblewrap (Fedora)");
+					console.error("         pacman -S bubblewrap (Arch)");
+					console.error("  Windows: Not supported\n");
+					console.error("Or run in Docker for containerized isolation.");
+					process.exit(1);
 				}
+
+				await initializeSandbox();
+				console.log("Sandbox: enabled (OS-level isolation)");
 
 				// Check TOTP daemon availability
 				const totpAvailable = await isTOTPDaemonAvailable();
@@ -71,11 +81,13 @@ export function registerRelayCommand(program: Command): void {
 					console.log("\nShutting down...");
 					abortController.abort();
 
+					// Clean up session pool
+					await destroySessionPool();
+					logger.info("session pool destroyed");
+
 					// Clean up sandbox
-					if (sandboxAvailable) {
-						await resetSandbox();
-						logger.info("sandbox reset");
-					}
+					await resetSandbox();
+					logger.info("sandbox reset");
 				};
 
 				process.on("SIGINT", () => void shutdown());
@@ -88,9 +100,8 @@ export function registerRelayCommand(program: Command): void {
 				});
 
 				// Final cleanup after monitor exits
-				if (sandboxAvailable) {
-					await resetSandbox();
-				}
+				await destroySessionPool();
+				await resetSandbox();
 
 				console.log("Relay stopped.");
 			} catch (err) {
