@@ -21,6 +21,15 @@ const DEFAULT_TIMEOUT_MS = 10000;
 export type SetupResult = { success: true; uri: string } | { success: false; error: string };
 
 /**
+ * Result of a TOTP check operation.
+ * Distinguishes between "user has no TOTP" and "daemon unavailable".
+ */
+export type CheckResult =
+	| { status: "enabled" }
+	| { status: "disabled" }
+	| { status: "error"; error: string };
+
+/**
  * Client for the TOTP daemon.
  */
 export class TOTPClient {
@@ -173,8 +182,9 @@ export class TOTPClient {
 
 	/**
 	 * Check if a user has TOTP enabled.
+	 * Returns a result that distinguishes between "disabled" and "error".
 	 */
-	async check(localUserId: string): Promise<boolean> {
+	async check(localUserId: string): Promise<CheckResult> {
 		try {
 			const response = await this.sendRequest({
 				type: "check",
@@ -182,13 +192,13 @@ export class TOTPClient {
 			});
 
 			if (response.type === "check") {
-				return response.enabled;
+				return response.enabled ? { status: "enabled" } : { status: "disabled" };
 			}
 
-			return false;
+			return { status: "error", error: "Unexpected response from TOTP daemon" };
 		} catch (err) {
-			logger.debug({ error: String(err) }, "TOTP check failed");
-			return false;
+			logger.debug({ error: String(err) }, "TOTP check failed - daemon unavailable");
+			return { status: "error", error: String(err) };
 		}
 	}
 

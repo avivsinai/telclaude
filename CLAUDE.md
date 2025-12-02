@@ -67,8 +67,10 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
    - Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
    - ⚠️ **Security Note**: WRITE_SAFE prevents *accidental* damage, not *malicious* attacks. Users can escape by writing scripts that perform blocked operations. For true isolation, run in a container.
 
-3. **FULL_ACCESS**: No restrictions (requires explicit configuration)
+3. **FULL_ACCESS**: No tool restrictions, but requires human approval for each request
    - Uses `bypassPermissions` mode with `allowDangerouslySkipPermissions`
+   - ⚠️ **Every request requires approval** - This is intentional for safety. FULL_ACCESS grants unrestricted tool use, so human-in-the-loop approval prevents accidental or malicious damage.
+   - Future: Time-based approval windows (e.g., "approve for 2 hours") to reduce friction while maintaining security.
 
 ### OS-Level Sandbox
 

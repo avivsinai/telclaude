@@ -2,4 +2,10 @@
  * TOTP client module exports.
  */
 
-export { TOTPClient, getTOTPClient, resetTOTPClient, type SetupResult } from "./client.js";
+export {
+	TOTPClient,
+	getTOTPClient,
+	resetTOTPClient,
+	type SetupResult,
+	type CheckResult,
+} from "./client.js";

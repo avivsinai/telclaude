@@ -585,13 +585,15 @@ async function handleInboundMessage(
 	// Check for TOTP code (6 digits) - for approving with 2FA
 	// Only intercept if there's actually a pending approval; otherwise let normal
 	// 6-digit messages fall through to the data plane
-	if (
-		/^\d{6}$/.test(trimmedBody) &&
-		(await hasTOTP(msg.chatId)) &&
-		getMostRecentPendingApproval(msg.chatId)
-	) {
-		await handleTOTPApproval(msg, trimmedBody, cfg, auditLogger, recentlySent);
-		return;
+	if (/^\d{6}$/.test(trimmedBody) && getMostRecentPendingApproval(msg.chatId)) {
+		const totpCheck = await hasTOTP(msg.chatId);
+		if (totpCheck.hasTOTP) {
+			await handleTOTPApproval(msg, trimmedBody, cfg, auditLogger, recentlySent);
+			return;
+		}
+		// If daemon is down but user might have TOTP, we already have a pending approval
+		// so they can use /deny or wait - but we don't want to silently drop the 6-digit message
+		// Let it fall through to data plane as a normal message
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -648,7 +650,36 @@ async function handleInboundMessage(
 		});
 
 		// Use the actual timing from createApproval to avoid TTL mismatch
-		const userHasTOTP = await hasTOTP(msg.chatId);
+		// Check TOTP status - fail closed if daemon is unavailable
+		const totpCheck = await hasTOTP(msg.chatId);
+		if ("error" in totpCheck) {
+			// TOTP daemon is unavailable - fail closed to prevent bypass
+			// Remove the pending approval since we can't process it securely
+			logger.error(
+				{ chatId: msg.chatId, error: totpCheck.error },
+				"TOTP daemon unavailable - blocking request",
+			);
+			await msg.reply(
+				"⚠️ Security service unavailable. Cannot process this request.\n\n" +
+					"The TOTP daemon is not running. Please contact an administrator or try again later.",
+			);
+			await auditLogger.log({
+				timestamp: new Date(),
+				requestId,
+				telegramUserId: userId,
+				telegramUsername: msg.username,
+				chatId: msg.chatId,
+				messagePreview: msg.body.slice(0, 100),
+				observerClassification: observerResult.classification,
+				observerConfidence: observerResult.confidence,
+				permissionTier: tier,
+				outcome: "blocked",
+				errorType: "totp_daemon_unavailable",
+			});
+			return;
+		}
+
+		const userHasTOTP = totpCheck.hasTOTP;
 		const approvalMessage = formatApprovalRequest(
 			{
 				nonce,

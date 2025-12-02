@@ -17,23 +17,43 @@ import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "totp" });
 
+/**
+ * Result of checking if a chat has TOTP enabled.
+ * Distinguishes between "no TOTP" and "daemon unavailable".
+ */
+export type TOTPCheckResult =
+	| { hasTOTP: true }
+	| { hasTOTP: false }
+	| { hasTOTP: false; error: string };
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API (per-chat, requires identity link)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Check if a chat has TOTP 2FA enabled.
- * Requires an identity link - returns false if no link exists.
+ * Requires an identity link - returns { hasTOTP: false } if no link exists.
+ * Returns { error } if daemon is unavailable (caller should fail closed).
  */
-export async function hasTOTP(chatId: number): Promise<boolean> {
+export async function hasTOTP(chatId: number): Promise<TOTPCheckResult> {
 	const link = getIdentityLink(chatId);
 	if (!link) {
 		logger.debug({ chatId }, "no identity link - TOTP not available");
-		return false;
+		return { hasTOTP: false };
 	}
 
 	const client = getTOTPClient();
-	return client.check(link.localUserId);
+	const result = await client.check(link.localUserId);
+
+	if (result.status === "enabled") {
+		return { hasTOTP: true };
+	}
+	if (result.status === "disabled") {
+		return { hasTOTP: false };
+	}
+	// Daemon unavailable - propagate error so caller can fail closed
+	logger.warn({ chatId, error: result.error }, "TOTP daemon unavailable during check");
+	return { hasTOTP: false, error: result.error };
 }
 
 /**
