@@ -8,25 +8,15 @@
  * Circuit breaker prevents cascading failures when SDK is slow/failing.
  */
 
-import { type SDKAssistantMessage, type SDKMessage, query } from "@anthropic-ai/claude-agent-sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { isAssistantMessage } from "../sdk/message-guards.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import { checkStructuralIssues, fastPathClassify } from "./fast-path.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
 
 const logger = getChildLogger({ module: "observer" });
-
-function isSDKAssistantMessage(msg: SDKMessage): msg is SDKAssistantMessage {
-	return (
-		msg.type === "assistant" &&
-		"message" in msg &&
-		typeof msg.message === "object" &&
-		msg.message !== null &&
-		"content" in msg.message &&
-		Array.isArray(msg.message.content)
-	);
-}
 
 export type ObserverConfig = {
 	enabled: boolean;
@@ -174,7 +164,7 @@ Respond with JSON only.`;
 
 			let response = "";
 			for await (const msg of q) {
-				if (isSDKAssistantMessage(msg)) {
+				if (isAssistantMessage(msg)) {
 					for (const block of msg.message.content) {
 						if (block.type === "text") {
 							response += block.text;

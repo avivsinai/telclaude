@@ -8,16 +8,26 @@
 import fs from "node:fs";
 import {
 	type PermissionMode,
-	type SDKMessage,
 	type Options as SDKOptions,
-	type SDKPartialAssistantMessage,
-	type SDKResultMessage,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { isSandboxInitialized, wrapCommand } from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
+import {
+	isBashInput,
+	isContentBlockStopEvent,
+	isGlobInput,
+	isGrepInput,
+	isReadInput,
+	isResultMessage,
+	isStreamEvent,
+	isTextDeltaEvent,
+	isToolResultMessage,
+	isToolUseStartEvent,
+	isWriteInput,
+} from "./message-guards.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 
@@ -57,148 +67,78 @@ function isPathSensitive(inputPath: string): boolean {
 	return false;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Type Guards for SDK Messages
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Type guard for SDK result messages.
- */
-function isResultMessage(msg: SDKMessage): msg is SDKResultMessage {
-	return (
-		msg.type === "result" && "total_cost_usd" in msg && "num_turns" in msg && "duration_ms" in msg
-	);
-}
-
-/**
- * Type guard for Bash tool input.
- */
-function isBashInput(input: unknown): input is { command: string } {
-	return (
-		typeof input === "object" &&
-		input !== null &&
-		"command" in input &&
-		typeof (input as { command: unknown }).command === "string"
-	);
-}
-
-/**
- * Type guard for Read tool input.
- */
-function isReadInput(input: unknown): input is { file_path: string } {
-	return (
-		typeof input === "object" &&
-		input !== null &&
-		"file_path" in input &&
-		typeof (input as { file_path: unknown }).file_path === "string"
-	);
-}
-
-/**
- * Type guard for Glob tool input.
- */
-function isGlobInput(input: unknown): input is { pattern: string; path?: string } {
-	return (
-		typeof input === "object" &&
-		input !== null &&
-		"pattern" in input &&
-		typeof (input as { pattern: unknown }).pattern === "string"
-	);
-}
-
-/**
- * Type guard for Grep tool input.
- */
-function isGrepInput(input: unknown): input is { pattern: string; path?: string } {
-	return (
-		typeof input === "object" &&
-		input !== null &&
-		"pattern" in input &&
-		typeof (input as { pattern: unknown }).pattern === "string"
-	);
-}
-
-/**
- * Type guard for stream_event messages.
- */
-function isStreamEvent(msg: SDKMessage): msg is SDKPartialAssistantMessage {
-	return msg.type === "stream_event" && "event" in msg;
-}
-
-/**
- * Type guard for content_block_delta with text_delta.
- */
-function isTextDeltaEvent(
-	event: unknown,
-): event is { type: "content_block_delta"; delta: { type: "text_delta"; text: string } } {
-	if (typeof event !== "object" || event === null) return false;
-	const e = event as { type?: string; delta?: { type?: string; text?: unknown } };
-	return (
-		e.type === "content_block_delta" &&
-		typeof e.delta === "object" &&
-		e.delta !== null &&
-		e.delta.type === "text_delta" &&
-		typeof e.delta.text === "string"
-	);
-}
-
-/**
- * Type guard for content_block_start with tool_use.
- */
-function isToolUseStartEvent(
-	event: unknown,
-): event is { type: "content_block_start"; content_block: { type: "tool_use"; name: string } } {
-	if (typeof event !== "object" || event === null) return false;
-	const e = event as { type?: string; content_block?: { type?: string; name?: unknown } };
-	return (
-		e.type === "content_block_start" &&
-		typeof e.content_block === "object" &&
-		e.content_block !== null &&
-		e.content_block.type === "tool_use" &&
-		typeof e.content_block.name === "string"
-	);
-}
-
-/**
- * Type guard for content_block_stop.
- */
-function isContentBlockStopEvent(event: unknown): event is { type: "content_block_stop" } {
-	if (typeof event !== "object" || event === null) return false;
-	return (event as { type?: string }).type === "content_block_stop";
-}
-
-/**
- * Type guard for user message with tool_use_result.
- */
-function isToolResultMessage(msg: SDKMessage): msg is SDKMessage & { tool_use_result: unknown } {
-	return msg.type === "user" && "tool_use_result" in msg;
-}
-
 /**
  * Options for SDK queries.
+ *
+ * Controls permission tiers, session handling, streaming, and timeouts.
+ *
+ * @example
+ * // Basic read-only query with timeout
+ * const chunks = executeQueryStream("What files are in this directory?", {
+ *   cwd: process.cwd(),
+ *   tier: "READ_ONLY",
+ *   timeoutMs: 30000,
+ * });
+ *
+ * @example
+ * // Write-safe query with session resumption
+ * const chunks = executeQueryStream("Create a new file called test.ts", {
+ *   cwd: process.cwd(),
+ *   tier: "WRITE_SAFE",
+ *   resumeSessionId: "session-123",
+ *   enableSkills: true,
+ * });
+ *
+ * @example
+ * // Full-access query with custom timeout and abort controller
+ * const controller = new AbortController();
+ * setTimeout(() => controller.abort(), 60000);
+ *
+ * const chunks = executeQueryStream("Run the build script", {
+ *   cwd: "/path/to/project",
+ *   tier: "FULL_ACCESS",
+ *   abortController: controller,
+ *   systemPromptAppend: "Be extra careful with destructive operations.",
+ * });
  */
 export type TelclaudeQueryOptions = {
-	/** Working directory for the query */
+	/** Working directory for the query. Tools operate relative to this path. */
 	cwd: string;
-	/** Permission tier for this query */
+
+	/** Permission tier controlling which tools are available.
+	 * - READ_ONLY: Read, Glob, Grep, WebFetch, WebSearch
+	 * - WRITE_SAFE: Above + Write, Edit, Bash (with restrictions)
+	 * - FULL_ACCESS: All tools, bypasses permissions (requires sandbox)
+	 */
 	tier: PermissionTier;
-	/** Resume a previous session by ID (for conversation continuity) */
+
+	/** Resume a previous session by ID for conversation continuity.
+	 * Omit for new sessions; the SDK will create a fresh conversation.
+	 */
 	resumeSessionId?: string;
-	/** Custom system prompt to append */
+
+	/** Custom system prompt to append to the default claude_code preset. */
 	systemPromptAppend?: string;
-	/** Override the model */
+
+	/** Override the model (defaults to SDK's default model). */
 	model?: string;
-	/** Maximum turns for the conversation */
+
+	/** Maximum conversation turns before stopping (default: SDK default). */
 	maxTurns?: number;
-	/** Include streaming partial messages */
+
+	/** Include streaming partial messages for real-time text updates. */
 	includePartialMessages?: boolean;
-	/** Permission mode override */
+
+	/** Permission mode override (bypassPermissions for FULL_ACCESS). */
 	permissionMode?: PermissionMode;
-	/** Enable skills (loads from project/user) */
+
+	/** Enable skills loading from project's .claude/skills directory. */
 	enableSkills?: boolean;
-	/** Abort controller for cancellation */
+
+	/** Abort controller for external cancellation (e.g., user interrupt). */
 	abortController?: AbortController;
-	/** Timeout in milliseconds */
+
+	/** Timeout in milliseconds. Query aborts if exceeded. */
 	timeoutMs?: number;
 };
 
@@ -276,8 +216,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			}
 		}
 
-		if (toolName === "Write" && isReadInput(input)) {
-			// Write uses same input shape as Read
+		if (toolName === "Write" && isWriteInput(input)) {
 			if (isPathSensitive(input.file_path)) {
 				logger.warn({ path: input.file_path }, "blocked write to sensitive path");
 				return {
@@ -380,6 +319,7 @@ export async function* executeQueryStream(
 	prompt: string,
 	opts: TelclaudeQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
+	const startTime = Date.now();
 	const sdkOpts = buildSdkOptions({
 		...opts,
 		includePartialMessages: true,
@@ -435,16 +375,27 @@ export async function* executeQueryStream(
 			}
 		}
 	} catch (err) {
-		logger.error({ error: String(err) }, "SDK streaming query error");
+		// Distinguish between abort (timeout/cancellation) and other errors
+		const isAborted = err instanceof Error && err.name === "AbortError";
+
+		if (isAborted) {
+			logger.warn(
+				{ durationMs: Date.now() - startTime },
+				"SDK query aborted (timeout/cancellation)",
+			);
+		} else {
+			logger.error({ error: String(err) }, "SDK streaming query error");
+		}
+
 		yield {
 			type: "done",
 			result: {
 				response,
 				success: false,
-				error: String(err),
+				error: isAborted ? "Request was aborted" : String(err),
 				costUsd,
 				numTurns,
-				durationMs,
+				durationMs: Date.now() - startTime,
 			},
 		};
 	}
