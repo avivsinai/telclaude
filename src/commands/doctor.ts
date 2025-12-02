@@ -41,7 +41,7 @@ export function registerDoctorCommand(program: Command): void {
 				// Login check
 				let loggedIn = false;
 				try {
-					const who = execSync("claude /whoami", {
+					const who = execSync("claude whoami", {
 						encoding: "utf8",
 						stdio: ["ignore", "pipe", "pipe"],
 					}).trim();

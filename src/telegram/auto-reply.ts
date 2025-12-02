@@ -591,9 +591,20 @@ async function handleInboundMessage(
 			await handleTOTPApproval(msg, trimmedBody, cfg, auditLogger, recentlySent);
 			return;
 		}
-		// If daemon is down but user might have TOTP, we already have a pending approval
-		// so they can use /deny or wait - but we don't want to silently drop the 6-digit message
-		// Let it fall through to data plane as a normal message
+		// Fail closed if daemon is unavailable - don't let the message fall through
+		if ("error" in totpCheck) {
+			logger.error(
+				{ chatId: msg.chatId, error: totpCheck.error },
+				"TOTP daemon unavailable during approval verification",
+			);
+			await msg.reply(
+				"⚠️ Cannot verify TOTP code - security service unavailable.\n\n" +
+					"The TOTP daemon is not running. Your pending approval cannot be processed.\n" +
+					"Please contact an administrator or use `/deny` to cancel the request.",
+			);
+			return;
+		}
+		// No TOTP configured for this user - let 6-digit message fall through to data plane
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
