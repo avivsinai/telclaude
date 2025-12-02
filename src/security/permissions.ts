@@ -192,6 +192,23 @@ export function containsBlockedCommand(command: string): string | null {
 }
 
 /**
+ * Sensitive paths that the agent should never access.
+ * These contain secrets (TOTP, etc.) that must not be exposed.
+ */
+const SENSITIVE_PATH_PATTERNS = [
+	/\.telclaude\//i, // Config directory with database
+	/telclaude\.db/i, // Database file directly
+	/totp_secrets/i, // TOTP table name in queries
+];
+
+/**
+ * Check if a path or command accesses sensitive telclaude data.
+ */
+export function isSensitivePath(pathOrCommand: string): boolean {
+	return SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(pathOrCommand));
+}
+
+/**
  * Check if a user has at least the specified permission tier.
  */
 export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {

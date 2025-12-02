@@ -3,6 +3,8 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
+import { initializeSandbox, isSandboxAvailable, resetSandbox } from "../sandbox/index.js";
+import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
@@ -37,6 +39,25 @@ export function registerRelayCommand(program: Command): void {
 					`Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`,
 				);
 
+				// Initialize sandbox for OS-level isolation
+				const sandboxAvailable = await isSandboxAvailable();
+				if (sandboxAvailable) {
+					await initializeSandbox();
+					console.log("Sandbox: enabled (OS-level isolation)");
+				} else {
+					console.log("Sandbox: unavailable (platform not supported or dependencies missing)");
+					logger.warn("sandbox unavailable - commands will run without OS-level isolation");
+				}
+
+				// Check TOTP daemon availability
+				const totpAvailable = await isTOTPDaemonAvailable();
+				if (totpAvailable) {
+					console.log("TOTP daemon: connected");
+				} else {
+					console.log("TOTP daemon: not running (2FA will be unavailable)");
+					console.log("  Start with: telclaude totp-daemon");
+				}
+
 				if (cfg.telegram?.allowedChats?.length) {
 					console.log(`Allowed chats: ${cfg.telegram.allowedChats.join(", ")}`);
 				} else {
@@ -46,19 +67,30 @@ export function registerRelayCommand(program: Command): void {
 				// Set up graceful shutdown
 				const abortController = new AbortController();
 
-				const shutdown = () => {
+				const shutdown = async () => {
 					console.log("\nShutting down...");
 					abortController.abort();
+
+					// Clean up sandbox
+					if (sandboxAvailable) {
+						await resetSandbox();
+						logger.info("sandbox reset");
+					}
 				};
 
-				process.on("SIGINT", shutdown);
-				process.on("SIGTERM", shutdown);
+				process.on("SIGINT", () => void shutdown());
+				process.on("SIGTERM", () => void shutdown());
 
 				await monitorTelegramProvider({
 					verbose,
 					keepAlive: true,
 					abortSignal: abortController.signal,
 				});
+
+				// Final cleanup after monitor exits
+				if (sandboxAvailable) {
+					await resetSandbox();
+				}
 
 				console.log("Relay stopped.");
 			} catch (err) {

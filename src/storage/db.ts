@@ -17,7 +17,7 @@ import { CONFIG_DIR } from "../utils.js";
 const logger = getChildLogger({ module: "storage" });
 
 const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 let db: Database.Database | null = null;
 
@@ -147,7 +147,16 @@ function migrate(database: Database.Database): void {
 				last_failure_at INTEGER,
 				next_attempt_at INTEGER
 			);
+
 		`);
+	}
+
+	// Migration 2: Remove totp_secrets table (now stored in OS keychain via daemon)
+	if (currentVersion < 2) {
+		database.exec(`
+			DROP TABLE IF EXISTS totp_secrets;
+		`);
+		logger.info("migration 2: removed totp_secrets table (secrets now in OS keychain)");
 	}
 
 	// Update schema version

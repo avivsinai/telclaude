@@ -46,6 +46,7 @@
   "packageManager": "pnpm@9.15.0",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.55",
+    "@anthropic-ai/sandbox-runtime": "^0.0.17",
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/runner": "^2.0.3",
     "better-sqlite3": "^12.5.0",
@@ -54,6 +55,8 @@
     "dotenv": "^17.2.3",
     "grammy": "^1.35.0",
     "json5": "^2.2.3",
+    "keytar": "^7.9.0",
+    "otpauth": "^9.4.1",
     "pino": "^10.1.0",
     "pino-pretty": "^13.1.2",
     "rate-limiter-flexible": "^5.0.5",

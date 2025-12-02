@@ -15,7 +15,8 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { TIER_TOOLS, containsBlockedCommand } from "../security/permissions.js";
+import { isSandboxInitialized, wrapCommand } from "../sandbox/index.js";
+import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 
@@ -41,6 +42,42 @@ function isBashInput(input: unknown): input is { command: string } {
 		input !== null &&
 		"command" in input &&
 		typeof (input as { command: unknown }).command === "string"
+	);
+}
+
+/**
+ * Type guard for Read tool input.
+ */
+function isReadInput(input: unknown): input is { file_path: string } {
+	return (
+		typeof input === "object" &&
+		input !== null &&
+		"file_path" in input &&
+		typeof (input as { file_path: unknown }).file_path === "string"
+	);
+}
+
+/**
+ * Type guard for Glob tool input.
+ */
+function isGlobInput(input: unknown): input is { pattern: string; path?: string } {
+	return (
+		typeof input === "object" &&
+		input !== null &&
+		"pattern" in input &&
+		typeof (input as { pattern: unknown }).pattern === "string"
+	);
+}
+
+/**
+ * Type guard for Grep tool input.
+ */
+function isGrepInput(input: unknown): input is { pattern: string; path?: string } {
+	return (
+		typeof input === "object" &&
+		input !== null &&
+		"pattern" in input &&
+		typeof (input as { pattern: unknown }).pattern === "string"
 	);
 }
 
@@ -185,24 +222,91 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		const tierTools = TIER_TOOLS[opts.tier];
 		sdkOpts.allowedTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
-
-		// For WRITE_SAFE, add custom permission check for Bash
-		if (opts.tier === "WRITE_SAFE") {
-			sdkOpts.canUseTool = async (toolName, input) => {
-				if (toolName === "Bash" && isBashInput(input)) {
-					const blocked = containsBlockedCommand(input.command);
-					if (blocked) {
-						logger.warn({ command: input.command, blocked }, "blocked dangerous bash command");
-						return {
-							behavior: "deny",
-							message: `Command contains blocked operation: ${blocked}`,
-						};
-					}
-				}
-				return { behavior: "allow", updatedInput: input };
-			};
-		}
 	}
+
+	// Add canUseTool for ALL tiers to protect sensitive paths
+	// This prevents the agent from accessing TOTP secrets, database, etc.
+	sdkOpts.canUseTool = async (toolName, input) => {
+		// Block access to sensitive telclaude paths (TOTP secrets, etc.)
+		if (toolName === "Read" && isReadInput(input)) {
+			if (isSensitivePath(input.file_path)) {
+				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
+				return {
+					behavior: "deny",
+					message: "Access to telclaude configuration files is not permitted.",
+				};
+			}
+		}
+
+		if (toolName === "Glob" && isGlobInput(input)) {
+			const searchPath = input.path ?? input.pattern;
+			if (isSensitivePath(searchPath)) {
+				logger.warn({ path: searchPath }, "blocked glob of sensitive path");
+				return {
+					behavior: "deny",
+					message: "Searching telclaude configuration directories is not permitted.",
+				};
+			}
+		}
+
+		if (toolName === "Grep" && isGrepInput(input)) {
+			const searchPath = input.path ?? "";
+			const searchPattern = input.pattern;
+			if (isSensitivePath(searchPath) || isSensitivePath(searchPattern)) {
+				logger.warn({ path: searchPath, pattern: searchPattern }, "blocked grep of sensitive path");
+				return {
+					behavior: "deny",
+					message: "Searching telclaude configuration is not permitted.",
+				};
+			}
+		}
+
+		if (toolName === "Bash" && isBashInput(input)) {
+			// Block access to sensitive paths via shell
+			if (isSensitivePath(input.command)) {
+				logger.warn({ command: input.command }, "blocked bash access to sensitive path");
+				return {
+					behavior: "deny",
+					message: "Access to telclaude configuration via shell is not permitted.",
+				};
+			}
+
+			// For WRITE_SAFE, also check for blocked commands
+			if (opts.tier === "WRITE_SAFE") {
+				const blocked = containsBlockedCommand(input.command);
+				if (blocked) {
+					logger.warn({ command: input.command, blocked }, "blocked dangerous bash command");
+					return {
+						behavior: "deny",
+						message: `Command contains blocked operation: ${blocked}`,
+					};
+				}
+			}
+
+			// Wrap command with sandbox if available
+			if (isSandboxInitialized()) {
+				try {
+					const sandboxedCommand = await wrapCommand(input.command);
+					logger.debug(
+						{ original: input.command, sandboxed: sandboxedCommand.substring(0, 100) },
+						"sandboxing bash command",
+					);
+					return {
+						behavior: "allow",
+						updatedInput: { ...input, command: sandboxedCommand },
+					};
+				} catch (err) {
+					logger.error({ error: String(err), command: input.command }, "sandbox wrap failed");
+					return {
+						behavior: "deny",
+						message: "Failed to sandbox command. Execution blocked for security.",
+					};
+				}
+			}
+		}
+
+		return { behavior: "allow", updatedInput: input };
+	};
 
 	// Load settings from project for skills
 	if (opts.enableSkills) {

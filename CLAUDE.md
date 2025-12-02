@@ -4,7 +4,7 @@ Telegram-Claude bridge with comprehensive security layer. This project enables C
 
 ## Development Guidelines
 
-- **No backward compatibility** - This is a new OSS project. Prefer clean rewrites over migration shims.
+- **No backward compatibility policy** - We do not preserve compatibility for configs, DB schemas, APIs, or stored state. Prefer clean rewrites over migration shims; expect to reset data when upgrading.
 - **Pristine code** - Write clean, idiomatic TypeScript. No dead code, no legacy cruft.
 - **Claude Agent SDK** - Use `@anthropic-ai/claude-agent-sdk` for all Claude interactions, not CLI spawning.
 - **Skills** - Use `.claude/skills/` for Claude's behavior customization. Skills are auto-loaded by the SDK.
@@ -34,8 +34,23 @@ Telegram Bot API (grammY)
 └─────────────────────────────────────┘
          │
          ▼
+┌─────────────────────────────────────┐
+│         OS-Level Sandbox            │
+│  (Seatbelt/macOS, bubblewrap/Linux) │
+│  • Filesystem restrictions          │
+│  • Network filtering                │
+└─────────────────────────────────────┘
+         │
+         ▼
   Claude Agent SDK
   (allowedTools per tier)
+
+┌─────────────────────────────────────┐
+│        TOTP Daemon (separate)       │
+│  • Secrets in OS keychain (keytar)  │
+│  • Unix socket IPC only             │
+│  • Never exposed to Claude          │
+└─────────────────────────────────────┘
 ```
 
 ## Key Concepts
@@ -54,6 +69,43 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
 
 3. **FULL_ACCESS**: No restrictions (requires explicit configuration)
    - Uses `bypassPermissions` mode with `allowDangerouslySkipPermissions`
+
+### OS-Level Sandbox
+
+All Claude queries run inside an OS-level sandbox using `@anthropic-ai/sandbox-runtime`:
+
+- **macOS**: Uses Seatbelt (`sandbox-exec`) for kernel-level enforcement
+- **Linux**: Uses bubblewrap for namespace-based isolation
+
+The sandbox enforces:
+- **Filesystem restrictions**: Blocks access to `~/.telclaude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, etc.
+- **Write restrictions**: Only allows writing to current directory and `/tmp`
+- **Network filtering**: Configurable domain allowlist (default: permissive)
+
+This provides defense-in-depth against prompt injection attacks - even if Claude is tricked into running malicious commands, the OS prevents access to sensitive data.
+
+### TOTP Daemon
+
+Two-factor authentication secrets are stored in a separate process:
+
+- **Process isolation**: TOTP daemon runs separately from the main relay
+- **OS keychain storage**: Secrets stored via `keytar` (macOS Keychain, Linux secret-service)
+- **Unix socket IPC**: Communication via `~/.telclaude/totp.sock` (permissions 0600)
+- **Per-user scope**: TOTP requires an identity link first (per-user, not per-chat)
+
+The daemon must be running for 2FA to work:
+```bash
+# Start the TOTP daemon (in a separate terminal or as a service)
+telclaude totp-daemon
+
+# Or run it in the background
+telclaude totp-daemon &
+```
+
+This architecture ensures that even if Claude is compromised via prompt injection, it cannot:
+1. Read TOTP secrets (they're in a separate process)
+2. Bypass 2FA (it requires the daemon to verify codes)
+3. Access the OS keychain (sandbox blocks it)
 
 ### Security Observer
 
@@ -130,6 +182,7 @@ src/
 │   ├── status.ts         # Show status command
 │   ├── link.ts           # Identity linking command
 │   ├── doctor.ts         # Health check command
+│   ├── totp-daemon.ts    # TOTP daemon command
 │   └── index.ts
 │
 ├── config/
@@ -144,6 +197,21 @@ src/
 │
 ├── sdk/
 │   ├── client.ts         # Claude Agent SDK wrapper
+│   └── index.ts
+│
+├── sandbox/
+│   ├── config.ts         # Sandbox configuration (paths, network)
+│   ├── manager.ts        # SandboxManager wrapper
+│   └── index.ts
+│
+├── totp-daemon/
+│   ├── protocol.ts       # IPC protocol types (Zod schemas)
+│   ├── keychain.ts       # OS keychain wrapper (keytar)
+│   ├── server.ts         # Unix socket server
+│   └── index.ts
+│
+├── totp-client/
+│   ├── client.ts         # IPC client for TOTP daemon
 │   └── index.ts
 │
 ├── telegram/
@@ -251,6 +319,7 @@ Required:
 Optional:
 - `TELCLAUDE_CONFIG` - Custom config file path
 - `TELCLAUDE_LOG_LEVEL` - Log level (debug/info/warn/error)
+- `TELCLAUDE_TOTP_SOCKET` - Custom path for TOTP daemon socket (default: `~/.telclaude/totp.sock`)
 
 ## Claude Agent SDK
 
@@ -280,7 +349,7 @@ telclaude send <chatId> --media ./image.png --caption "Check this out"
 telclaude status
 telclaude status --json
 
-# Doctor (verify Claude CLI + skills)
+# Doctor (verify Claude CLI + skills + sandbox + TOTP daemon)
 telclaude doctor
 
 Example output:
@@ -291,7 +360,12 @@ Logged in: yes
 Local skills: found
   - /Users/you/projects/telclaude/.claude/skills/security-gate/SKILL.md
   - /Users/you/projects/telclaude/.claude/skills/telegram-reply/SKILL.md
+Sandbox: available
+TOTP daemon: running
 ```
+
+# Start the TOTP daemon (required for 2FA)
+telclaude totp-daemon
 
 # Identity linking (generate code for out-of-band verification)
 telclaude link <user-id>           # Generate a link code for a user
@@ -415,6 +489,20 @@ Check audit logs and adjust limits in config. Consider user tier assignment.
 1. Check `allowedChats` config
 2. Verify bot permissions in the chat
 3. Check Telegram API status
+
+### "TOTP daemon unavailable"
+Start the TOTP daemon in a separate terminal: `telclaude totp-daemon`. The daemon must be running for 2FA to work.
+
+### "Sandbox unavailable"
+On macOS, the sandbox should work out of the box. On Linux, install `bubblewrap`:
+- Debian/Ubuntu: `apt install bubblewrap`
+- Fedora: `dnf install bubblewrap`
+- Arch: `pacman -S bubblewrap`
+
+### 2FA not working
+1. Ensure an identity link exists: `/whoami`
+2. Check the TOTP daemon is running: `telclaude doctor`
+3. Verify the authenticator app time is synced
 
 ## Lineage
 

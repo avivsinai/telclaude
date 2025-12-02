@@ -19,9 +19,11 @@ import {
 	type PendingApproval,
 	cleanupExpiredApprovals,
 	consumeApproval,
+	consumeMostRecentApproval,
 	createApproval,
 	denyApproval,
 	formatApprovalRequest,
+	getMostRecentPendingApproval,
 	requiresApproval,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
@@ -29,6 +31,7 @@ import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
+import { disableTOTP, hasTOTP, setupTOTP, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
 import { cleanupExpired } from "../storage/db.js";
 
@@ -554,6 +557,44 @@ async function handleInboundMessage(
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
+	// 2FA COMMANDS
+	// ══════════════════════════════════════════════════════════════════════════
+
+	if (trimmedBody === "/setup-2fa") {
+		await handleSetup2FA(msg);
+		return;
+	}
+
+	if (trimmedBody.startsWith("/verify-2fa ")) {
+		const code = trimmedBody.split(/\s+/)[1]?.trim();
+		await handleVerify2FA(msg, code);
+		return;
+	}
+
+	if (trimmedBody === "/disable-2fa") {
+		await handleDisable2FA(msg);
+		return;
+	}
+
+	if (trimmedBody === "/deny") {
+		// Deny without nonce - deny the most recent pending approval
+		await handleDenyMostRecent(msg, auditLogger);
+		return;
+	}
+
+	// Check for TOTP code (6 digits) - for approving with 2FA
+	// Only intercept if there's actually a pending approval; otherwise let normal
+	// 6-digit messages fall through to the data plane
+	if (
+		/^\d{6}$/.test(trimmedBody) &&
+		(await hasTOTP(msg.chatId)) &&
+		getMostRecentPendingApproval(msg.chatId)
+	) {
+		await handleTOTPApproval(msg, trimmedBody, cfg, auditLogger, recentlySent);
+		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
 	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
 
@@ -607,25 +648,29 @@ async function handleInboundMessage(
 		});
 
 		// Use the actual timing from createApproval to avoid TTL mismatch
-		const approvalMessage = formatApprovalRequest({
-			nonce,
-			requestId,
-			chatId: msg.chatId,
-			createdAt,
-			expiresAt,
-			tier,
-			body: msg.body,
-			mediaPath: msg.mediaPath,
-			mediaUrl: msg.mediaUrl,
-			mediaType: msg.mediaType,
-			username: msg.username,
-			from: msg.from,
-			to: msg.to,
-			messageId: msg.id,
-			observerClassification: observerResult.classification,
-			observerConfidence: observerResult.confidence,
-			observerReason: observerResult.reason,
-		});
+		const userHasTOTP = await hasTOTP(msg.chatId);
+		const approvalMessage = formatApprovalRequest(
+			{
+				nonce,
+				requestId,
+				chatId: msg.chatId,
+				createdAt,
+				expiresAt,
+				tier,
+				body: msg.body,
+				mediaPath: msg.mediaPath,
+				mediaUrl: msg.mediaUrl,
+				mediaType: msg.mediaType,
+				username: msg.username,
+				from: msg.from,
+				to: msg.to,
+				messageId: msg.id,
+				observerClassification: observerResult.classification,
+				observerConfidence: observerResult.confidence,
+				observerReason: observerResult.reason,
+			},
+			userHasTOTP,
+		);
 
 		await msg.reply(approvalMessage);
 
@@ -808,4 +853,151 @@ async function executeApprovedRequest(
 		recentlySent,
 		auditLogger,
 	});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2FA COMMAND HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
+	const result = await setupTOTP(msg.chatId, msg.username);
+
+	if (!result.success) {
+		await msg.reply(result.error);
+		return;
+	}
+
+	// The URI can be used to generate a QR code, but for now we'll provide manual entry
+	// Extract the secret from the URI for manual entry
+	const secretMatch = result.uri.match(/secret=([A-Z2-7]+)/);
+	const secret = secretMatch?.[1] ?? "";
+
+	await msg.reply(
+		`*Setting up Two-Factor Authentication*\n\n1. Open Google Authenticator (or any TOTP app)\n2. Add a new account manually:\n   - Name: \`Telclaude\`\n   - Secret: \`${secret}\`\n   - Type: Time-based\n\n3. Enter the 6-digit code to verify:\n   \`/verify-2fa <code>\``,
+	);
+}
+
+async function handleVerify2FA(
+	msg: TelegramInboundMessage,
+	code: string | undefined,
+): Promise<void> {
+	if (!code) {
+		await msg.reply("Usage: `/verify-2fa <6-digit-code>`");
+		return;
+	}
+
+	if (!/^\d{6}$/.test(code)) {
+		await msg.reply("Please enter a valid 6-digit code.");
+		return;
+	}
+
+	const valid = await verifyTOTP(msg.chatId, code);
+
+	if (!valid) {
+		await msg.reply(
+			"Invalid code. Please try again with the current code from your authenticator.",
+		);
+		return;
+	}
+
+	await msg.reply(
+		"*2FA enabled successfully!*\n\n" +
+			"From now on, when approval is required, simply reply with your 6-digit authenticator code.\n\n" +
+			"To disable 2FA: `/disable-2fa`",
+	);
+}
+
+async function handleDisable2FA(msg: TelegramInboundMessage): Promise<void> {
+	const removed = await disableTOTP(msg.chatId);
+
+	if (removed) {
+		await msg.reply("2FA has been disabled for this chat.");
+	} else {
+		await msg.reply("2FA was not enabled for this chat.");
+	}
+}
+
+async function handleDenyMostRecent(
+	msg: TelegramInboundMessage,
+	auditLogger: AuditLogger,
+): Promise<void> {
+	const approval = getMostRecentPendingApproval(msg.chatId);
+
+	if (!approval) {
+		await msg.reply("No pending approval found.");
+		return;
+	}
+
+	// Use denyApproval with the nonce
+	const result = denyApproval(approval.nonce, msg.chatId);
+
+	if (!result.success) {
+		await msg.reply(result.error);
+		return;
+	}
+
+	await msg.reply("Request denied.");
+
+	await auditLogger.log({
+		timestamp: new Date(),
+		requestId: approval.requestId,
+		telegramUserId: String(msg.chatId),
+		telegramUsername: msg.username,
+		chatId: msg.chatId,
+		messagePreview: approval.body.slice(0, 100),
+		observerClassification: approval.observerClassification,
+		observerConfidence: approval.observerConfidence,
+		permissionTier: approval.tier,
+		outcome: "blocked",
+		errorType: "user_denied",
+	});
+}
+
+async function handleTOTPApproval(
+	msg: TelegramInboundMessage,
+	code: string,
+	cfg: TelclaudeConfig,
+	auditLogger: AuditLogger,
+	recentlySent: Set<string>,
+): Promise<void> {
+	// Check if there's a pending approval
+	const approval = getMostRecentPendingApproval(msg.chatId);
+
+	if (!approval) {
+		// No pending approval - this might just be a random 6-digit message
+		// Don't respond to avoid confusion
+		return;
+	}
+
+	// Verify the TOTP code
+	if (!(await verifyTOTP(msg.chatId, code))) {
+		await msg.reply(
+			"Invalid code. Please try again with the current code from your authenticator.",
+		);
+		return;
+	}
+
+	// Consume the approval
+	const result = consumeMostRecentApproval(msg.chatId);
+
+	if (!result.success) {
+		await msg.reply(result.error);
+		return;
+	}
+
+	await msg.reply("Request approved. Processing...");
+
+	const approvedApproval = result.data;
+	const approvedMsg: TelegramInboundMessage = {
+		...msg,
+		body: approvedApproval.body,
+		mediaPath: approvedApproval.mediaPath,
+		mediaUrl: approvedApproval.mediaUrl,
+		mediaType: approvedApproval.mediaType,
+		from: approvedApproval.from,
+		to: approvedApproval.to,
+		id: approvedApproval.messageId,
+	};
+
+	await executeApprovedRequest(approvedMsg, cfg, approvedApproval, auditLogger, recentlySent);
 }

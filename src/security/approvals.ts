@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
-import type { TelegramMediaType } from "../telegram/types.js";
+import type { MediaType } from "../types/media.js";
 import type { Result, SecurityClassification } from "./types.js";
 
 const logger = getChildLogger({ module: "approvals" });
@@ -22,7 +22,7 @@ export type PendingApproval = {
 	body: string;
 	mediaPath?: string;
 	mediaUrl?: string;
-	mediaType?: TelegramMediaType;
+	mediaType?: MediaType;
 	username?: string;
 	from: string;
 	to: string;
@@ -69,7 +69,7 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 		body: row.body,
 		mediaPath: row.media_path ?? undefined,
 		mediaUrl: row.media_url ?? undefined,
-		mediaType: row.media_type as TelegramMediaType | undefined,
+		mediaType: row.media_type as MediaType | undefined,
 		username: row.username ?? undefined,
 		from: row.from_user,
 		to: row.to_user,
@@ -303,9 +303,62 @@ export function requiresApproval(
 }
 
 /**
+ * Get the most recent pending approval for a chat.
+ * Used when verifying TOTP-based approvals.
+ */
+export function getMostRecentPendingApproval(chatId: number): PendingApproval | null {
+	const db = getDb();
+	const now = Date.now();
+
+	const row = db
+		.prepare(
+			"SELECT * FROM approvals WHERE chat_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+		)
+		.get(chatId, now) as ApprovalRow | undefined;
+
+	if (!row) {
+		return null;
+	}
+
+	return rowToApproval(row);
+}
+
+/**
+ * Consume the most recent pending approval for a chat (for TOTP-based approval).
+ */
+export function consumeMostRecentApproval(chatId: number): Result<PendingApproval> {
+	const db = getDb();
+
+	const result = db.transaction(() => {
+		const now = Date.now();
+		const row = db
+			.prepare(
+				"SELECT * FROM approvals WHERE chat_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(chatId, now) as ApprovalRow | undefined;
+
+		if (!row) {
+			return { success: false as const, error: "No pending approval found." };
+		}
+
+		// Delete it
+		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(row.nonce);
+
+		logger.info(
+			{ nonce: row.nonce, requestId: row.request_id, chatId },
+			"approval consumed via TOTP",
+		);
+
+		return { success: true as const, data: rowToApproval(row) };
+	})();
+
+	return result;
+}
+
+/**
  * Format a pending approval for display to the user.
  */
-export function formatApprovalRequest(approval: PendingApproval): string {
+export function formatApprovalRequest(approval: PendingApproval, hasTOTPEnabled: boolean): string {
 	const expiresIn = Math.max(0, Math.round((approval.expiresAt - Date.now()) / 1000));
 	const minutes = Math.floor(expiresIn / 60);
 	const seconds = expiresIn % 60;
@@ -325,13 +378,25 @@ export function formatApprovalRequest(approval: PendingApproval): string {
 		lines.push(`*Reason:* ${approval.observerReason}`);
 	}
 
-	lines.push(
-		"",
-		`To approve, reply: \`/approve ${approval.nonce}\``,
-		`To deny, reply: \`/deny ${approval.nonce}\``,
-		"",
-		`_Expires in ${timeStr}_`,
-	);
+	if (hasTOTPEnabled) {
+		// TOTP-based approval (secure)
+		lines.push(
+			"",
+			"Reply with your *6-digit authenticator code* to approve.",
+			"To deny, reply: `/deny`",
+		);
+	} else {
+		// Nonce-based approval fallback (less secure than TOTP)
+		lines.push(
+			"",
+			"Set up 2FA with `/setup-2fa` for secure approvals.",
+			"",
+			`To approve, reply: \`/approve ${approval.nonce}\``,
+			`To deny, reply: \`/deny ${approval.nonce}\``,
+		);
+	}
+
+	lines.push("", `_Expires in ${timeStr}_`);
 
 	return lines.join("\n");
 }

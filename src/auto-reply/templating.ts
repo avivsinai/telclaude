@@ -1,14 +1,7 @@
-export type MsgContext = {
-	Body?: string;
-	From?: string;
-	To?: string;
-	MessageId?: string;
-	MediaPath?: string;
-	MediaUrl?: string;
-	MediaType?: string;
-	Transcript?: string;
-	Username?: string;
-};
+import type { MsgContext } from "../types/message.js";
+
+// Re-export for convenience
+export type { MsgContext } from "../types/message.js";
 
 export type TemplateContext = MsgContext & {
 	BodyStripped?: string;

@@ -1,4 +1,5 @@
 import type { Message, User } from "grammy/types";
+import type { MediaType } from "../types/media.js";
 
 /**
  * Telegram chat identifier - can be user_id, group chat_id, or channel chat_id
@@ -6,16 +7,10 @@ import type { Message, User } from "grammy/types";
 export type TelegramChatId = number | string;
 
 /**
- * Media types supported by Telegram
+ * Media types supported by Telegram.
+ * Alias for the provider-agnostic MediaType.
  */
-export type TelegramMediaType =
-	| "photo"
-	| "document"
-	| "voice"
-	| "video"
-	| "audio"
-	| "sticker"
-	| "animation";
+export type TelegramMediaType = MediaType;
 
 /**
  * Media payload for outbound messages

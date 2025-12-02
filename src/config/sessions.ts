@@ -2,9 +2,9 @@
  * Session management with SQLite persistence.
  */
 
-import type { MsgContext } from "../auto-reply/templating.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import type { MsgContext } from "../types/message.js";
 import { normalizeTelegramId } from "../utils.js";
 
 const logger = getChildLogger({ module: "sessions" });

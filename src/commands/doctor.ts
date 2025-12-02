@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { isSandboxAvailable } from "../sandbox/index.js";
+import { isTOTPDaemonAvailable } from "../security/totp.js";
 
 const logger = getChildLogger({ module: "cmd-doctor" });
 
@@ -51,6 +53,12 @@ export function registerDoctorCommand(program: Command): void {
 				// Skills check (repo-local)
 				const skills = findSkills(process.cwd());
 
+				// Sandbox check
+				const sandboxAvailable = await isSandboxAvailable();
+
+				// TOTP daemon check
+				const totpDaemonAvailable = await isTOTPDaemonAvailable();
+
 				console.log("=== telclaude doctor ===");
 				console.log(`Claude CLI: ${version}`);
 				console.log(
@@ -60,6 +68,12 @@ export function registerDoctorCommand(program: Command): void {
 				if (skills.length) {
 					for (const s of skills) console.log(`  - ${s}`);
 				}
+				console.log(
+					`Sandbox: ${sandboxAvailable ? "available" : "unavailable"}${sandboxAvailable ? "" : " (optional - OS-level isolation)"}`,
+				);
+				console.log(
+					`TOTP daemon: ${totpDaemonAvailable ? "running" : "not running"}${totpDaemonAvailable ? "" : " (run: telclaude totp-daemon)"}`,
+				);
 
 				if (!loggedIn) {
 					process.exitCode = 1;
