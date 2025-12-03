@@ -147,7 +147,7 @@ services:
 
       # Encryption key for TOTP secrets (REQUIRED)
       # Generate with: openssl rand -base64 32
-      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required - generate with: openssl rand -base64 32}
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
 
       # File paths
       - TOTP_SECRETS_FILE=/data/totp-secrets.json

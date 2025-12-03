@@ -35,10 +35,13 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /build
 
 # Copy package files first (better layer caching)
-COPY package.json pnpm-lock.yaml ./
+# Include .npmrc for pnpm config (disables link-workspace-packages)
+COPY package.json pnpm-lock.yaml .npmrc ./
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# --ignore-scripts prevents the "prepare" hook from running (which tries to build
+# before source files are copied)
+RUN pnpm install --ignore-scripts
 
 # Copy source code
 COPY . .
@@ -47,7 +50,8 @@ COPY . .
 RUN pnpm run build
 
 # Prune dev dependencies for production
-RUN pnpm prune --prod
+# --ignore-scripts prevents the "prepare" hook from running (typescript already removed)
+RUN pnpm prune --prod --ignore-scripts
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 2: Claude CLI
@@ -103,30 +107,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-RUN groupadd --gid ${USER_GID} telclaude \
-    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash telclaude \
+# Create user if it doesn't exist (node image already has UID/GID 1000)
+# If UID 1000 exists, we reuse that user; otherwise create telclaude user
+RUN if ! id -u ${USER_UID} >/dev/null 2>&1; then \
+        groupadd --gid ${USER_GID} telclaude 2>/dev/null || true; \
+        useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash telclaude; \
+    fi \
     # Create necessary directories
     && mkdir -p /home/telclaude/.telclaude \
     && mkdir -p /home/telclaude/.claude \
     && mkdir -p /workspace \
     && mkdir -p /data \
-    && chown -R telclaude:telclaude /home/telclaude /workspace /data
+    && chown -R ${USER_UID}:${USER_GID} /home/telclaude /workspace /data
 
 # Copy Claude CLI from builder stage
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=claude-cli /usr/local/bin/claude /usr/local/bin/claude
 
-# Copy built application
+# Copy built application (use numeric UID/GID since user name might not exist)
 WORKDIR /app
-COPY --from=builder --chown=telclaude:telclaude /build/dist ./dist
-COPY --from=builder --chown=telclaude:telclaude /build/node_modules ./node_modules
-COPY --from=builder --chown=telclaude:telclaude /build/package.json ./
-COPY --from=builder --chown=telclaude:telclaude /build/bin ./bin
-COPY --from=builder --chown=telclaude:telclaude /build/.claude ./.claude
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/dist ./dist
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/node_modules ./node_modules
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/package.json ./
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/bin ./bin
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/.claude ./.claude
 
 # Copy firewall initialization script and entrypoint wrapper
-COPY --chown=telclaude:telclaude docker/init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY --chown=telclaude:telclaude docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=${USER_UID}:${USER_GID} docker/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chown=${USER_UID}:${USER_GID} docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
 
 # Create symlink for telclaude command

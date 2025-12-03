@@ -22,11 +22,13 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 WORKDIR /build
 
-# Copy package files
-COPY package.json pnpm-lock.yaml ./
+# Copy package files (including .npmrc for pnpm config)
+COPY package.json pnpm-lock.yaml .npmrc ./
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# --ignore-scripts prevents the "prepare" hook from running (which tries to build
+# before source files are copied)
+RUN pnpm install --ignore-scripts
 
 # Copy source
 COPY . .
@@ -35,7 +37,8 @@ COPY . .
 RUN pnpm run build
 
 # Prune dev dependencies
-RUN pnpm prune --prod
+# --ignore-scripts prevents the "prepare" hook from running (typescript already removed)
+RUN pnpm prune --prod --ignore-scripts
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 2: Runtime (Minimal)
@@ -49,19 +52,23 @@ LABEL org.opencontainers.image.description="TOTP daemon sidecar for telclaude"
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-RUN groupadd --gid ${USER_GID} telclaude \
-    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash telclaude \
+# Create user if it doesn't exist (node image already has UID/GID 1000)
+# If UID 1000 exists, we reuse that user; otherwise create telclaude user
+RUN if ! id -u ${USER_UID} >/dev/null 2>&1; then \
+        groupadd --gid ${USER_GID} telclaude 2>/dev/null || true; \
+        useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash telclaude; \
+    fi \
     && mkdir -p /home/telclaude/.telclaude \
     && mkdir -p /data \
     && mkdir -p /run/totp \
-    && chown -R telclaude:telclaude /home/telclaude /data /run/totp
+    && chown -R ${USER_UID}:${USER_GID} /home/telclaude /data /run/totp
 
-# Copy built application
+# Copy built application (use numeric UID/GID since user name might not exist)
 WORKDIR /app
-COPY --from=builder --chown=telclaude:telclaude /build/dist ./dist
-COPY --from=builder --chown=telclaude:telclaude /build/node_modules ./node_modules
-COPY --from=builder --chown=telclaude:telclaude /build/package.json ./
-COPY --from=builder --chown=telclaude:telclaude /build/bin ./bin
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/dist ./dist
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/node_modules ./node_modules
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/package.json ./
+COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/bin ./bin
 
 # Environment
 ENV NODE_ENV=production
@@ -70,8 +77,8 @@ ENV TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
 ENV TOTP_STORAGE_BACKEND=file
 ENV HOME=/home/telclaude
 
-# Switch to non-root user
-USER telclaude
+# Switch to non-root user (use numeric UID since user name might not exist)
+USER 1000:1000
 
 # Healthcheck - verify socket exists
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
