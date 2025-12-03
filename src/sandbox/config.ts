@@ -35,6 +35,20 @@ export const SENSITIVE_READ_PATHS = [
 	"~/.claude", // Conversation history, settings
 	"~/Library/Application Support/Claude", // macOS app data
 
+	// === Shell configuration files (can inject startup malware) ===
+	"~/.bashrc",
+	"~/.bash_profile",
+	"~/.bash_login",
+	"~/.zshrc",
+	"~/.zprofile",
+	"~/.zlogin",
+	"~/.zshenv",
+	"~/.profile",
+	"~/.login",
+	"~/.cshrc",
+	"~/.tcshrc",
+	"~/.config/fish/config.fish",
+
 	// === Shell history (may contain typed secrets) ===
 	"~/.bash_history",
 	"~/.zsh_history",
@@ -98,6 +112,30 @@ export const DEFAULT_WRITE_PATHS = [
 ];
 
 /**
+ * Cloud metadata endpoints that should be blocked to prevent SSRF attacks.
+ * These are used by cloud providers for instance metadata and credentials.
+ */
+export const BLOCKED_METADATA_DOMAINS = [
+	// AWS IMDSv1/v2 metadata service
+	"169.254.169.254",
+	// AWS ECS container metadata
+	"169.254.170.2",
+	// GCP metadata service
+	"metadata.google.internal",
+	"metadata.goog",
+	// Azure Instance Metadata Service (IMDS)
+	"169.254.169.254", // Same IP as AWS
+	// Link-local addresses (entire range)
+	"169.254.*",
+	// Kubernetes service account tokens
+	"kubernetes.default.svc",
+	// DigitalOcean metadata
+	"169.254.169.254",
+	// Oracle Cloud Infrastructure
+	"169.254.169.254",
+];
+
+/**
  * Paths that should never be writable, even if in an allowed write path.
  * This is a safety net for sensitive files that might be in cwd.
  */
@@ -142,7 +180,8 @@ export function buildSandboxConfig(options: {
 			// Default to permissive network access (user's choice)
 			// Can be restricted via config
 			allowedDomains: options.allowedDomains ?? ["*"],
-			deniedDomains: options.deniedDomains ?? [],
+			// SECURITY: Always block cloud metadata endpoints to prevent SSRF
+			deniedDomains: [...BLOCKED_METADATA_DOMAINS, ...(options.deniedDomains ?? [])],
 			allowUnixSockets: options.allowUnixSockets ?? [],
 			allowLocalBinding: false, // No need to bind local ports
 		},

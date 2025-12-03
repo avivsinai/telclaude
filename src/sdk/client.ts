@@ -342,9 +342,20 @@ function applyTierSandboxConfig(tier: PermissionTier): void {
  */
 export async function* executeQueryStream(
 	prompt: string,
-	opts: TelclaudeQueryOptions,
+	inputOpts: TelclaudeQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
+
+	// SECURITY: FULL_ACCESS requires sandbox - downgrade if unavailable
+	// This is a last-line defense in case getUserPermissionTier is bypassed
+	let opts = inputOpts;
+	if (opts.tier === "FULL_ACCESS" && !isSandboxInitialized()) {
+		logger.error(
+			{ originalTier: opts.tier },
+			"FULL_ACCESS requested without sandbox; downgrading to WRITE_SAFE",
+		);
+		opts = { ...opts, tier: "WRITE_SAFE" };
+	}
 
 	// Apply tier-aligned sandbox config
 	applyTierSandboxConfig(opts.tier);
@@ -450,9 +461,20 @@ export type PooledQueryOptions = TelclaudeQueryOptions & {
  */
 export async function* executePooledQuery(
 	prompt: string,
-	opts: PooledQueryOptions,
+	inputOpts: PooledQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
+
+	// SECURITY: FULL_ACCESS requires sandbox - downgrade if unavailable
+	// This is a last-line defense in case getUserPermissionTier is bypassed
+	let opts = inputOpts;
+	if (opts.tier === "FULL_ACCESS" && !isSandboxInitialized()) {
+		logger.error(
+			{ originalTier: opts.tier, poolKey: opts.poolKey },
+			"FULL_ACCESS requested without sandbox; downgrading to WRITE_SAFE",
+		);
+		opts = { ...opts, tier: "WRITE_SAFE" };
+	}
 
 	// Apply tier-aligned sandbox config
 	applyTierSandboxConfig(opts.tier);

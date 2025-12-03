@@ -41,6 +41,7 @@ import {
 } from "../security/totp-session.js";
 import { disableTOTP, hasTOTP, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
+import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
 
 import { createTelegramBot } from "./client.js";
@@ -61,26 +62,51 @@ function makeRecentSentKey(chatId: number, body: string): string {
 
 // Rate limiting for control commands (prevent brute-force on /approve)
 // Stricter than regular rate limits: 5 attempts per minute per user
-const controlCommandAttempts = new Map<string, { count: number; windowStart: number }>();
+// SECURITY: Now SQLite-backed for persistence across restarts
 const CONTROL_COMMAND_LIMIT = 5;
 const CONTROL_COMMAND_WINDOW_MS = 60_000;
 
 function checkControlCommandRateLimit(userId: string): boolean {
+	const db = getDb();
 	const now = Date.now();
-	const entry = controlCommandAttempts.get(userId);
+	const windowStart = Math.floor(now / CONTROL_COMMAND_WINDOW_MS) * CONTROL_COMMAND_WINDOW_MS;
 
-	if (!entry || now - entry.windowStart > CONTROL_COMMAND_WINDOW_MS) {
-		// New window
-		controlCommandAttempts.set(userId, { count: 1, windowStart: now });
-		return true;
-	}
+	try {
+		// Use transaction for atomicity
+		const result = db.transaction(() => {
+			// Get current count for this window
+			const row = db
+				.prepare(
+					"SELECT points FROM rate_limits WHERE limiter_type = ? AND key = ? AND window_start = ?",
+				)
+				.get("control_command", userId, windowStart) as { points: number } | undefined;
 
-	if (entry.count >= CONTROL_COMMAND_LIMIT) {
+			const currentCount = row?.points ?? 0;
+
+			if (currentCount >= CONTROL_COMMAND_LIMIT) {
+				return false;
+			}
+
+			// Increment counter
+			db.prepare(
+				`INSERT INTO rate_limits (limiter_type, key, window_start, points)
+				 VALUES (?, ?, ?, 1)
+				 ON CONFLICT(limiter_type, key, window_start)
+				 DO UPDATE SET points = points + 1`,
+			).run("control_command", userId, windowStart);
+
+			return true;
+		})();
+
+		return result;
+	} catch (err) {
+		// FAIL CLOSED: On error, block the request
+		logger.error(
+			{ error: String(err), userId },
+			"control command rate limit check failed - blocking",
+		);
 		return false;
 	}
-
-	entry.count++;
-	return true;
 }
 
 // Session locks to prevent race conditions on rapid messages

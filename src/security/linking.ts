@@ -140,8 +140,19 @@ export function consumeLinkCode(
 			   linked_by = excluded.linked_by`,
 		).run(chatId, row.local_user_id, now, linkedBy);
 
-		// Remove the consumed code
-		db.prepare("DELETE FROM pending_link_codes WHERE code = ?").run(formattedCode);
+		// SECURITY: Atomically consume the code - verify it was actually deleted
+		// This prevents replay attacks if somehow the code wasn't deleted
+		const deleteResult = db
+			.prepare("DELETE FROM pending_link_codes WHERE code = ?")
+			.run(formattedCode);
+		if (deleteResult.changes !== 1) {
+			// This should never happen in normal operation, but if it does, fail safe
+			logger.error(
+				{ code: formattedCode, chatId, changes: deleteResult.changes },
+				"SECURITY: Link code deletion anomaly - possible race condition",
+			);
+			throw new Error("Link code consumption failed - please try again");
+		}
 
 		// SECURITY: Invalidate TOTP sessions when identity links change
 		// This ensures new chats must verify TOTP even if linking to a user with an existing session

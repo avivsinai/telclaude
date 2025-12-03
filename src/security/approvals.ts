@@ -205,8 +205,17 @@ export function consumeApproval(nonce: string, chatId: number): Result<PendingAp
 			};
 		}
 
-		// Valid - delete and return
-		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
+		// SECURITY: Atomically consume the approval - verify it was actually deleted
+		// This prevents replay attacks if somehow the approval wasn't deleted
+		const deleteResult = db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
+		if (deleteResult.changes !== 1) {
+			// This should never happen in normal operation, but if it does, fail safe
+			logger.error(
+				{ nonce, chatId, changes: deleteResult.changes },
+				"SECURITY: Approval deletion anomaly - possible race condition",
+			);
+			return { success: false as const, error: "Approval consumption failed - please try again" };
+		}
 
 		logger.info({ nonce, requestId: row.request_id, chatId }, "approval consumed");
 
@@ -359,8 +368,15 @@ export function consumeMostRecentApproval(chatId: number): Result<PendingApprova
 			return { success: false as const, error: "No pending approval found." };
 		}
 
-		// Delete it
-		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(row.nonce);
+		// SECURITY: Atomically consume the approval - verify it was actually deleted
+		const deleteResult = db.prepare("DELETE FROM approvals WHERE nonce = ?").run(row.nonce);
+		if (deleteResult.changes !== 1) {
+			logger.error(
+				{ nonce: row.nonce, chatId, changes: deleteResult.changes },
+				"SECURITY: Approval deletion anomaly - possible race condition",
+			);
+			return { success: false as const, error: "Approval consumption failed - please try again" };
+		}
 
 		logger.info(
 			{ nonce: row.nonce, requestId: row.request_id, chatId },

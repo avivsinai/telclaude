@@ -102,7 +102,10 @@ export function registerStatusCommand(program: Command): void {
 						if (status.telegram.allowedChats.length > 0) {
 							console.log(`  Allowed Chats: ${status.telegram.allowedChats.join(", ")}`);
 						} else {
-							console.log("  Allowed Chats: all (no restrictions)");
+							// SECURITY: Empty allowedChats means DENY ALL, not allow all (fail-closed)
+							console.log(
+								"  Allowed Chats: none (security fail-closed; configure allowedChats to permit access)",
+							);
 						}
 						console.log();
 					}

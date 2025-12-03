@@ -154,15 +154,97 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 }
 
 /**
+ * Maximum file size to scan for secrets (10 MB).
+ * Files larger than this are not scanned to avoid memory issues.
+ */
+const MAX_FILE_SCAN_SIZE = 10 * 1024 * 1024;
+
+/**
+ * Scan file content for secrets before sending.
+ * Returns true if the file is safe to send, false if secrets detected.
+ */
+function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: string } {
+	try {
+		let content: string;
+
+		if (Buffer.isBuffer(source)) {
+			// Scan buffer content
+			if (source.length > MAX_FILE_SCAN_SIZE) {
+				logger.warn({ size: source.length }, "file too large to scan for secrets");
+				return { safe: true }; // Allow but log warning
+			}
+			content = source.toString("utf-8");
+		} else if (!source.startsWith("http://") && !source.startsWith("https://")) {
+			// Local file path - read and scan
+			const absolutePath = path.isAbsolute(source) ? source : path.resolve(source);
+			if (!fs.existsSync(absolutePath)) {
+				return { safe: true }; // File doesn't exist yet, let Telegram handle the error
+			}
+
+			const stats = fs.statSync(absolutePath);
+			if (stats.size > MAX_FILE_SCAN_SIZE) {
+				logger.warn({ path: absolutePath, size: stats.size }, "file too large to scan for secrets");
+				return { safe: true }; // Allow but log warning
+			}
+
+			content = fs.readFileSync(absolutePath, "utf-8");
+		} else {
+			// URL - cannot scan, allow but log
+			logger.debug({ source }, "cannot scan URL content for secrets");
+			return { safe: true };
+		}
+
+		// Filter file content
+		const filterResult = filterOutput(content);
+		if (filterResult.blocked) {
+			logger.error(
+				{
+					matchCount: filterResult.matches.length,
+					patterns: filterResult.matches.map((m) => m.pattern),
+				},
+				"BLOCKED: Secret detected in file content",
+			);
+			return {
+				safe: false,
+				reason: `File contains sensitive data: ${filterResult.matches.map((m) => m.pattern).join(", ")}`,
+			};
+		}
+
+		return { safe: true };
+	} catch (err) {
+		// If we can't read the file (binary, permission, etc.), allow it
+		// The sandbox should have already prevented access to truly sensitive files
+		logger.debug({ error: String(err) }, "could not scan file content (may be binary)");
+		return { safe: true };
+	}
+}
+
+/**
  * Send media payload to a chat.
  *
- * SECURITY: All captions are filtered for secret exfiltration before sending.
+ * SECURITY: All captions AND file contents are filtered for secret exfiltration before sending.
  */
 export async function sendMediaToChat(
 	api: Api,
 	chatId: number,
 	payload: TelegramMediaPayload,
 ): Promise<Message> {
+	// SECURITY: Scan file content for secrets before sending
+	const fileScan = scanFileForSecrets(payload.source);
+	if (!fileScan.safe) {
+		logger.error(
+			{ chatId, reason: fileScan.reason },
+			"BLOCKED: File contains secrets, not sending",
+		);
+		// Send a blocked notification instead of the file
+		return api.sendMessage(
+			chatId,
+			"⚠️ File blocked by security filter.\n\n" +
+				"The file appears to contain sensitive credentials (API keys, tokens, or private keys). " +
+				"This is a security measure to prevent accidental exposure of secrets.",
+		);
+	}
+
 	// SECURITY: Filter caption for secrets before sending
 	// Note: sticker type doesn't have caption, so we check if it exists
 	let safeCaption: string | undefined;
