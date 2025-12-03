@@ -9,6 +9,7 @@ import type { Command } from "commander";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { getDefaultSocketPath, startServer } from "../totp-daemon/index.js";
+import { getStorageProvider } from "../totp-daemon/storage-provider.js";
 
 const logger = getChildLogger({ module: "cmd-totp-daemon" });
 
@@ -40,8 +41,15 @@ export function registerTOTPDaemonCommand(program: Command): void {
 					socketPath,
 				});
 
+				// Get the actual storage provider to display accurate info
+				const storageProvider = await getStorageProvider();
+				const storageDesc =
+					storageProvider.name === "keytar"
+						? "OS keychain (keytar)"
+						: "encrypted file (AES-256-GCM)";
+
 				console.log(`TOTP daemon listening on: ${handle.socketPath}`);
-				console.log("Secrets stored in: OS keychain (keytar)");
+				console.log(`Secrets stored in: ${storageDesc}`);
 				console.log("Press Ctrl+C to stop.");
 
 				// Set up graceful shutdown

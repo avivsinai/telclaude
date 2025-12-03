@@ -1,67 +1,59 @@
 /**
- * Keychain wrapper for TOTP secrets using keytar.
+ * Keychain wrapper for TOTP secrets.
  *
- * Uses the OS-native credential storage:
- * - macOS: Keychain
- * - Linux: libsecret (GNOME Keyring / KWallet)
- * - Windows: Credential Vault
+ * Supports multiple storage backends:
+ * - keytar (OS keychain) - macOS Keychain, Linux libsecret, Windows Credential Vault
+ * - encrypted file - for Docker/headless deployments
+ *
+ * Backend selection is handled by storage-provider.ts based on environment.
  *
  * Secrets are stored per localUserId, not per chatId.
  * This ensures one TOTP secret per user across all their linked chats.
  */
 
-import keytar from "keytar";
 import { Secret, TOTP } from "otpauth";
 import { getChildLogger } from "../logging.js";
+import { getStorageProvider, isStorageAvailable } from "./storage-provider.js";
 
 const logger = getChildLogger({ module: "keychain" });
 
-const SERVICE_NAME = "telclaude";
 const ISSUER = "Telclaude";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Low-level Keychain Operations
+// Low-level Storage Operations
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Store a TOTP secret in the OS keychain.
+ * Store a TOTP secret.
  */
 export async function storeSecret(localUserId: string, secret: Secret): Promise<void> {
-	const account = `totp:${localUserId}`;
-	await keytar.setPassword(SERVICE_NAME, account, secret.base32);
-	logger.debug({ localUserId }, "stored TOTP secret in keychain");
+	const provider = await getStorageProvider();
+	await provider.storeSecret(localUserId, secret);
 }
 
 /**
- * Retrieve a TOTP secret from the OS keychain.
+ * Retrieve a TOTP secret.
  * Returns null if no secret exists for this user.
  */
 export async function getSecret(localUserId: string): Promise<Secret | null> {
-	const account = `totp:${localUserId}`;
-	const base32 = await keytar.getPassword(SERVICE_NAME, account);
-	if (!base32) return null;
-	return Secret.fromBase32(base32);
+	const provider = await getStorageProvider();
+	return provider.getSecret(localUserId);
 }
 
 /**
- * Delete a TOTP secret from the OS keychain.
+ * Delete a TOTP secret.
  */
 export async function deleteSecret(localUserId: string): Promise<boolean> {
-	const account = `totp:${localUserId}`;
-	const deleted = await keytar.deletePassword(SERVICE_NAME, account);
-	if (deleted) {
-		logger.info({ localUserId }, "deleted TOTP secret from keychain");
-	}
-	return deleted;
+	const provider = await getStorageProvider();
+	return provider.deleteSecret(localUserId);
 }
 
 /**
  * Check if a user has a TOTP secret configured.
  */
 export async function hasSecret(localUserId: string): Promise<boolean> {
-	const account = `totp:${localUserId}`;
-	const secret = await keytar.getPassword(SERVICE_NAME, account);
-	return secret !== null;
+	const provider = await getStorageProvider();
+	return provider.hasSecret(localUserId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -69,7 +61,7 @@ export async function hasSecret(localUserId: string): Promise<boolean> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Generate a new TOTP secret and store it in the keychain.
+ * Generate a new TOTP secret and store it.
  * Returns the otpauth:// URI for QR code generation.
  *
  * If a secret already exists, returns an error.
@@ -98,7 +90,7 @@ export async function setupTOTP(
 		secret,
 	});
 
-	// Store in keychain
+	// Store the secret
 	await storeSecret(localUserId, secret);
 
 	logger.info({ localUserId }, "TOTP setup initiated");
@@ -146,3 +138,9 @@ export async function verifyTOTP(localUserId: string, code: string): Promise<boo
 export async function disableTOTP(localUserId: string): Promise<boolean> {
 	return deleteSecret(localUserId);
 }
+
+/**
+ * Check if TOTP storage is available.
+ * Returns true if either keytar or file storage can be used.
+ */
+export { isStorageAvailable };

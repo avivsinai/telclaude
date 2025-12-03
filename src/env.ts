@@ -13,35 +13,51 @@ let cachedEnv: TelclaudeEnv | null = null;
 /**
  * Read and validate required environment variables.
  *
- * SECURITY: Token is ONLY loaded from ~/.telclaude/telclaude.json
- * This directory is blocked from Claude's sandbox, preventing token
- * exposure via prompt injection attacks.
+ * SECURITY: Token loading priority:
+ * 1. Config file (~/.telclaude/telclaude.json) - preferred for native deployments
+ *    because this directory is blocked from Claude's sandbox
+ * 2. TELEGRAM_BOT_TOKEN env var - allowed for Docker deployments where
+ *    container isolation provides equivalent security
  *
- * We intentionally DO NOT support .env files or environment variables
- * for the bot token, as these are readable by Claude.
+ * In Docker, the container itself provides isolation, so env vars are acceptable.
+ * For native deployments, prefer the config file approach.
  */
 export function readEnv(runtime: RuntimeEnv = defaultRuntime): TelclaudeEnv {
 	if (cachedEnv) return cachedEnv;
 
-	// ONLY load from secure config file
+	// Try config file first (preferred for native deployments)
 	let token: string | undefined;
+	let configError: string | undefined;
 	try {
 		const config = loadConfig();
 		token = config.telegram?.botToken;
 	} catch (err) {
-		runtime.error("Failed to load config file:");
-		runtime.error(`  ${err instanceof Error ? err.message : String(err)}`);
-		runtime.exit(1);
+		// Config loading failed - save error for later, but allow env var fallback
+		configError = err instanceof Error ? err.message : String(err);
+	}
+
+	// Fall back to environment variable (for Docker deployments)
+	if (!token) {
+		token = process.env.TELEGRAM_BOT_TOKEN;
+	}
+
+	// If we got token from env var but config had an error, log a warning
+	if (token && configError) {
+		runtime.error(`Warning: Config file failed to load (${configError}), using TELEGRAM_BOT_TOKEN`);
 	}
 
 	if (!token) {
-		runtime.error("Telegram bot token not found in config file.");
+		runtime.error("Telegram bot token not found.");
+		if (configError) {
+			runtime.error(`  (config file error: ${configError})`);
+		}
 		runtime.error("");
-		runtime.error("Add to ~/.telclaude/telclaude.json:");
+		runtime.error("Option 1 - Config file (recommended for native deployments):");
+		runtime.error("  Add to ~/.telclaude/telclaude.json:");
 		runtime.error('  { "telegram": { "botToken": "your-token-here" } }');
 		runtime.error("");
-		runtime.error("This is the ONLY supported location for security reasons.");
-		runtime.error("The ~/.telclaude/ directory is blocked from Claude's sandbox.");
+		runtime.error("Option 2 - Environment variable (for Docker):");
+		runtime.error("  export TELEGRAM_BOT_TOKEN=your-token-here");
 		runtime.error("");
 		runtime.error("Get a token from @BotFather on Telegram");
 		runtime.exit(1);
@@ -67,15 +83,16 @@ export function readEnv(runtime: RuntimeEnv = defaultRuntime): TelclaudeEnv {
 
 /**
  * Check if environment is properly configured.
- * ONLY checks the secure config file location.
+ * Checks both config file and TELEGRAM_BOT_TOKEN env var.
  */
 export function hasValidEnv(): boolean {
 	try {
 		const config = loadConfig();
-		return !!config.telegram?.botToken;
+		if (config.telegram?.botToken) return true;
 	} catch {
-		return false;
+		// Config loading failed, check env var
 	}
+	return !!process.env.TELEGRAM_BOT_TOKEN;
 }
 
 /**

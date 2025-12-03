@@ -1,0 +1,238 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Telclaude Docker Compose Configuration
+#
+# For Windows (WSL2) deployment with security hardening.
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your values
+#   2. Update WORKSPACE_PATH to point to your projects folder
+#   3. docker compose up -d
+#
+# Security features:
+#   - Privilege dropping via gosu (starts root, drops to UID 1000)
+#   - Capability dropping (cap_drop: ALL, then add back only what's needed)
+#   - Read-only root filesystem (with tmpfs for writes)
+#   - Optional network firewall (requires root at startup, hence gosu pattern)
+#   - Named volumes for persistence
+#   - TOTP sidecar with encrypted file storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Main Relay Service
+  # ─────────────────────────────────────────────────────────────────────────────
+  telclaude:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude:latest
+    container_name: telclaude
+
+    # Wait for TOTP daemon to be ready
+    depends_on:
+      totp:
+        condition: service_healthy
+
+    environment:
+      # Required: Telegram bot token
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+
+      # Optional: Anthropic API key (if not using claude login)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Telclaude configuration
+      - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+
+      # TOTP daemon socket (shared with sidecar)
+      - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+
+      # Enable network firewall (requires --cap-add=NET_ADMIN)
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+
+      # Node environment
+      - NODE_ENV=production
+
+    volumes:
+      # Workspace: Your projects folder (Claude will work here)
+      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+
+      # Persistent data (SQLite DB, sessions, config)
+      - telclaude-data:/data:rw
+
+      # Claude Code configuration (credentials, settings)
+      - telclaude-claude:/home/telclaude/.claude:rw
+
+      # Shared socket for TOTP daemon communication
+      - totp-socket:/run/totp:rw
+
+    security_opt:
+      # no-new-privileges is NOT used here because:
+      # 1. The entrypoint starts as root to run firewall init
+      # 2. Then uses gosu to drop privileges to non-root
+      # 3. no-new-privileges would prevent setuid() calls needed by gosu
+      # The application itself runs as non-root after privilege drop.
+      []
+
+    # NOTE: Do NOT set user: here. The entrypoint handles privilege dropping:
+    # 1. Starts as root (for firewall init)
+    # 2. Uses gosu to drop to telclaude user (UID 1000)
+    # Setting user: would bypass the entrypoint's ability to run privileged init.
+
+    cap_drop:
+      - ALL
+    cap_add:
+      # SYS_ADMIN: Required for bubblewrap sandbox
+      - SYS_ADMIN
+      # NET_ADMIN: Required for iptables firewall (TELCLAUDE_FIREWALL=1)
+      - NET_ADMIN
+      # SETUID/SETGID: Required for gosu to drop privileges
+      - SETUID
+      - SETGID
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+    networks:
+      - telclaude-net
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOTP Daemon Sidecar
+  #
+  # Handles 2FA operations with encrypted file storage.
+  # Communicates with relay via Unix socket on shared volume.
+  # ─────────────────────────────────────────────────────────────────────────────
+  totp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.totp
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude-totp:latest
+    container_name: telclaude-totp
+
+    environment:
+      # Storage backend: file (encrypted) instead of keytar (OS keychain)
+      - TOTP_STORAGE_BACKEND=file
+
+      # Encryption key for TOTP secrets (REQUIRED)
+      # Generate with: openssl rand -base64 32
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required - generate with: openssl rand -base64 32}
+
+      # File paths
+      - TOTP_SECRETS_FILE=/data/totp-secrets.json
+      - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+
+      - NODE_ENV=production
+
+    volumes:
+      # Persistent TOTP data (encrypted secrets file)
+      - totp-data:/data:rw
+
+      # Shared socket for relay communication
+      - totp-socket:/run/totp:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
+
+    networks:
+      - telclaude-net
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/totp/totp.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Named Volumes
+# ═══════════════════════════════════════════════════════════════════════════════
+volumes:
+  # Main relay data: SQLite DB, sessions, identity links, approvals
+  telclaude-data:
+    name: telclaude-data
+
+  # Claude Code credentials and settings
+  telclaude-claude:
+    name: telclaude-claude
+
+  # TOTP daemon data: encrypted secrets file
+  totp-data:
+    name: telclaude-totp-data
+
+  # Shared Unix socket for relay ↔ TOTP communication
+  # Uses tmpfs for better performance and automatic cleanup
+  totp-socket:
+    name: telclaude-totp-socket
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Networks
+# ═══════════════════════════════════════════════════════════════════════════════
+networks:
+  telclaude-net:
+    name: telclaude-net
+    driver: bridge

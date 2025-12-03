@@ -1,0 +1,59 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Docker Build Ignore
+# Excludes files from Docker build context to speed up builds
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Dependencies (will be installed in container)
+node_modules/
+
+# Build artifacts
+dist/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files (secrets should be passed via environment variables)
+.env
+.env.*
+!.env.example
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__/
+coverage/
+
+# Documentation (not needed in runtime)
+*.md
+!docker/README.md
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Docker files (prevent recursive copies, but keep docker/ directory files)
+docker-compose*.yml
+/Dockerfile*
+!docker/Dockerfile*
+
+# Local development
+*.local
+
+# Note: .claude/ is NOT ignored - it contains skills needed by the SDK
