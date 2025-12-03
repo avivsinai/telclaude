@@ -113,6 +113,9 @@ const SecurityConfigSchema = z.object({
 
 // Telegram configuration schema
 const TelegramConfigSchema = z.object({
+	// Bot token - stored here (in ~/.telclaude/) rather than .env for security
+	// The ~/.telclaude/ directory is blocked from Claude's sandbox
+	botToken: z.string().optional(),
 	allowedChats: z.array(z.union([z.number(), z.string()])).optional(),
 	polling: z
 		.object({

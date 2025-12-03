@@ -1,12 +1,60 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Api, Bot } from "grammy";
+import type { Api, Bot, Context } from "grammy";
 import { InputFile } from "grammy";
 import type { Message } from "grammy/types";
 
 import { getChildLogger } from "../logging.js";
+import { type FilterResult, filterOutput } from "../security/output-filter.js";
 import { stringToChatId } from "../utils.js";
 import type { TelegramMediaPayload } from "./types.js";
+
+const logger = getChildLogger({ module: "telegram-outbound" });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Output Filter Integration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Error thrown when output contains detected secrets.
+ */
+export class SecretExfiltrationBlockedError extends Error {
+	constructor(public readonly filterResult: FilterResult) {
+		super(`Output blocked: detected ${filterResult.matches.length} potential secret(s)`);
+		this.name = "SecretExfiltrationBlockedError";
+	}
+}
+
+/**
+ * Filter text before sending. Throws if secrets detected.
+ *
+ * SECURITY: This is the last line of defense against secret exfiltration.
+ * All outbound text MUST pass through this filter.
+ */
+function filterBeforeSend(text: string): void {
+	const result = filterOutput(text);
+	if (result.blocked) {
+		logger.error(
+			{
+				matchCount: result.matches.length,
+				patterns: result.matches.map((m) => m.pattern),
+			},
+			"BLOCKED: Secret exfiltration attempt detected in outbound message",
+		);
+		throw new SecretExfiltrationBlockedError(result);
+	}
+}
+
+/**
+ * Replacement message sent when original is blocked.
+ */
+const BLOCKED_MESSAGE =
+	"⚠️ Response blocked by security filter.\n\n" +
+	"The response contained what appears to be sensitive credentials " +
+	"(API keys, tokens, or private keys). This is a security measure to " +
+	"prevent accidental exposure of secrets.\n\n" +
+	"If you need to work with credentials, ensure they are not included " +
+	"in the response text.";
 
 export type SendMessageOptions = {
 	verbose?: boolean;
@@ -23,6 +71,8 @@ export type SendResult = {
 
 /**
  * Send a message to a Telegram chat.
+ *
+ * SECURITY: All text is filtered for secrets before sending.
  */
 export async function sendMessageTelegram(
 	bot: Bot,
@@ -30,8 +80,23 @@ export async function sendMessageTelegram(
 	body: string,
 	options: SendMessageOptions = {},
 ): Promise<SendResult> {
-	const logger = getChildLogger({ module: "telegram-outbound" });
 	const chatId = typeof to === "number" ? to : stringToChatId(to);
+
+	// SECURITY: Filter output for secrets
+	try {
+		filterBeforeSend(body);
+	} catch (err) {
+		if (err instanceof SecretExfiltrationBlockedError) {
+			// Send blocked notification instead
+			const result = await bot.api.sendMessage(chatId, BLOCKED_MESSAGE);
+			logger.warn(
+				{ chatId, messageId: result.message_id },
+				"sent blocked notification (secrets detected)",
+			);
+			return { messageId: String(result.message_id), chatId };
+		}
+		throw err;
+	}
 
 	// Send typing indicator
 	try {
@@ -43,6 +108,10 @@ export async function sendMessageTelegram(
 	// Handle media
 	const mediaSource = options.mediaPath ?? options.mediaUrl;
 	if (mediaSource) {
+		// Also filter caption
+		if (body) {
+			filterBeforeSend(body);
+		}
 		const payload = inferMediaPayload(mediaSource, body);
 		const result = await sendMediaToChat(bot.api, chatId, payload);
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
@@ -179,6 +248,20 @@ export async function sendTelegramMessage(
 	const bot = new Bot(options.token);
 
 	try {
+		// SECURITY: Filter all text output
+		const textToFilter = options.text ?? options.caption;
+		if (textToFilter) {
+			try {
+				filterBeforeSend(textToFilter);
+			} catch (err) {
+				if (err instanceof SecretExfiltrationBlockedError) {
+					const result = await bot.api.sendMessage(options.chatId, BLOCKED_MESSAGE);
+					return { success: true, messageId: result.message_id };
+				}
+				throw err;
+			}
+		}
+
 		if (options.mediaPath) {
 			const payload = inferMediaPayload(options.mediaPath, options.caption ?? options.text);
 			const result = await sendMediaToChat(bot.api, options.chatId, payload);
@@ -195,3 +278,45 @@ export async function sendTelegramMessage(
 		return { success: false, error: String(err) };
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Secure Reply Wrapper
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Secure wrapper for ctx.reply() that filters output for secrets.
+ *
+ * SECURITY: Use this instead of ctx.reply() to ensure all outbound
+ * messages are filtered for secret exfiltration.
+ *
+ * @param ctx - grammY context
+ * @param text - Message text to send
+ * @param options - Optional reply parameters
+ * @returns Message result or blocked notification
+ */
+export async function safeReply(
+	ctx: Context,
+	text: string,
+	options?: Parameters<Context["reply"]>[1],
+): Promise<Message> {
+	// SECURITY: Filter output for secrets
+	try {
+		filterBeforeSend(text);
+	} catch (err) {
+		if (err instanceof SecretExfiltrationBlockedError) {
+			logger.warn(
+				{ chatId: ctx.chat?.id, patterns: err.filterResult.matches.map((m) => m.pattern) },
+				"BLOCKED: Secret detected in reply, sending blocked notification",
+			);
+			return ctx.reply(BLOCKED_MESSAGE);
+		}
+		throw err;
+	}
+
+	return ctx.reply(text, options);
+}
+
+/**
+ * Re-export filter utilities for use in other modules.
+ */
+export { filterOutput, type FilterResult } from "../security/output-filter.js";

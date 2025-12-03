@@ -1,3 +1,4 @@
+import { filterInfrastructureSecrets } from "./output-filter.js";
 import type { SecurityClassification } from "./types.js";
 
 /**
@@ -88,7 +89,21 @@ export function fastPathClassify(message: string): {
 } | null {
 	const trimmed = message.trim();
 
-	// Check dangerous patterns first
+	// SECURITY: Block messages containing infrastructure secrets
+	// These are secrets that should NEVER be given to the agent:
+	// - Telegram bot tokens (would allow bot hijacking)
+	// - Anthropic API keys (would allow unauthorized API usage)
+	// - SSH/PGP private keys (would allow server/identity compromise)
+	const secretResult = filterInfrastructureSecrets(trimmed);
+	if (secretResult.blocked) {
+		const patterns = secretResult.matches.map((m) => m.pattern).join(", ");
+		return {
+			classification: "BLOCK",
+			reason: `Message contains infrastructure secret(s): ${patterns}. These should never be shared with the agent.`,
+		};
+	}
+
+	// Check dangerous patterns
 	for (const pattern of DANGEROUS_PATTERNS) {
 		if (pattern.test(trimmed)) {
 			return {

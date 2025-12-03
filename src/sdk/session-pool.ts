@@ -254,14 +254,22 @@ export async function* executeWithPool(
 	let pooledSession: PooledSession | null = null;
 	let usedFallback = false;
 
+	console.log(`[DEBUG session-pool] executeWithPool starting for poolKey=${poolKey}`);
+
 	try {
 		// Try V2 session pool
+		console.log("[DEBUG session-pool] About to acquire session...");
 		pooledSession = await pool.acquire(poolKey, sessionOptions, resumeSessionId);
+		console.log("[DEBUG session-pool] Session acquired, about to send message...");
 
 		// Send message and yield responses
 		await pooledSession.session.send(message);
+		console.log("[DEBUG session-pool] Message sent, about to receive responses...");
 
+		let msgCount = 0;
 		for await (const msg of pooledSession.session.receive()) {
+			msgCount++;
+			console.log(`[DEBUG session-pool] Received msg #${msgCount}, type=${msg.type}`);
 			// Capture session ID from result for future resume
 			if (msg.type === "result" || msg.type === "system") {
 				if ("session_id" in msg && msg.session_id) {
@@ -270,8 +278,10 @@ export async function* executeWithPool(
 			}
 			yield msg;
 		}
+		console.log(`[DEBUG session-pool] Receive loop finished, total msgs=${msgCount}`);
 	} catch (err) {
 		// Log the error and try fallback
+		console.log(`[DEBUG session-pool] V2 failed with error: ${String(err)}`);
 		logger.warn({ error: String(err), poolKey }, "V2 session failed, falling back to query()");
 
 		// Destroy the failed session
@@ -279,19 +289,25 @@ export async function* executeWithPool(
 		usedFallback = true;
 
 		// Fallback to stable query() API
+		console.log("[DEBUG session-pool] Starting fallback query()...");
 		const q = query({
 			prompt: message,
 			options: { ...queryOptions, resume: resumeSessionId },
 		});
 
+		let fallbackMsgCount = 0;
 		for await (const msg of q) {
+			fallbackMsgCount++;
+			console.log(`[DEBUG session-pool] Fallback msg #${fallbackMsgCount}, type=${msg.type}`);
 			yield msg;
 		}
+		console.log(`[DEBUG session-pool] Fallback completed, total msgs=${fallbackMsgCount}`);
 	}
 
 	if (usedFallback) {
 		logger.debug({ poolKey }, "fallback query completed");
 	}
+	console.log("[DEBUG session-pool] executeWithPool finished");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

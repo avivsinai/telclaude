@@ -12,6 +12,7 @@ import {
 	getSession,
 	setSession,
 } from "../config/sessions.js";
+import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
@@ -200,18 +201,22 @@ type ExecutionContext = {
  * arrive rapidly for the same session.
  */
 async function executeAndReply(ctx: ExecutionContext): Promise<void> {
+	console.log("[DEBUG] Inside executeAndReply");
 	const { msg, config } = ctx;
 
 	const userId = String(msg.chatId);
 	const startTime = Date.now();
 
 	const replyConfig = config.inbound?.reply;
+	console.log(`[DEBUG] replyConfig.enabled=${replyConfig?.enabled}`);
 	if (!replyConfig?.enabled) {
 		logger.debug("reply not enabled, skipping");
 		return;
 	}
 
+	console.log("[DEBUG] Sending composing indicator...");
 	await msg.sendComposing();
+	console.log("[DEBUG] Composing indicator sent");
 
 	// Session handling with SQLite
 	const sessionConfig = replyConfig.session;
@@ -223,9 +228,11 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
 
 	// Use session lock to prevent race conditions on rapid messages
+	console.log(`[DEBUG] Acquiring session lock for: ${sessionKey}`);
 	await withSessionLock(
 		sessionKey,
 		async () => {
+			console.log("[DEBUG] Session lock acquired, calling executeWithSession");
 			await executeWithSession(ctx, sessionKey, {
 				userId,
 				startTime,
@@ -233,9 +240,11 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 				resetTriggers,
 				timeoutSeconds,
 			});
+			console.log("[DEBUG] executeWithSession completed");
 		},
 		ctx.requestId,
 	);
+	console.log("[DEBUG] Session lock released");
 }
 
 /**
@@ -252,6 +261,7 @@ async function executeWithSession(
 		timeoutSeconds: number;
 	},
 ): Promise<void> {
+	console.log("[DEBUG] Inside executeWithSession");
 	const {
 		msg,
 		tier,
@@ -263,6 +273,7 @@ async function executeWithSession(
 	} = ctx;
 	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds } = opts;
 	const existingSession = getSession(sessionKey);
+	console.log(`[DEBUG] existingSession=${existingSession ? "exists" : "null"}, tier=${tier}`);
 	const now = Date.now();
 
 	// Check for reset triggers or idle timeout
@@ -314,6 +325,9 @@ async function executeWithSession(
 		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
 		let responseText = "";
 
+		console.log(
+			`[DEBUG] About to call executePooledQuery with prompt: "${queryPrompt.slice(0, 50)}..."`,
+		);
 		// Execute with V2 session pool for connection reuse and timeout
 		for await (const chunk of executePooledQuery(queryPrompt, {
 			cwd: process.cwd(),
@@ -444,10 +458,12 @@ export async function monitorTelegramProvider(
 		if (abortSignal?.aborted) break;
 
 		try {
-			const token = process.env.TELEGRAM_BOT_TOKEN;
-			if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+			const env = readEnv();
+			const token = env.telegramBotToken;
 
+			console.log("Connecting to Telegram...");
 			const { bot, botInfo } = await createTelegramBot({ token, verbose });
+			console.log(`Connected as @${botInfo.username}`);
 
 			logger.info({ botId: botInfo.id, username: botInfo.username }, "connected to Telegram");
 
@@ -470,6 +486,12 @@ export async function monitorTelegramProvider(
 			});
 
 			const runner = run(bot);
+			console.log("[DEBUG] Runner started, polling should be active");
+
+			// Log runner errors
+			runner.task()?.catch((err) => {
+				console.error("[DEBUG] Runner task error:", err);
+			});
 
 			// Periodic cleanup of expired entries in SQLite
 			const cleanupInterval = setInterval(() => {
@@ -552,8 +574,10 @@ async function handleInboundMessage(
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
 ): Promise<void> {
+	console.log(`[DEBUG] handleInboundMessage called for: "${msg.body}"`);
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
+	console.log(`[DEBUG] requestId=${requestId}, userId=${userId}`);
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// CONTROL PLANE COMMANDS - Intercepted BEFORE any other processing
@@ -672,9 +696,11 @@ async function handleInboundMessage(
 	// ══════════════════════════════════════════════════════════════════════════
 	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
+	console.log("[DEBUG] Reached data plane section");
 
 	// Input sanitization - reject malformed messages early
 	const sanitized = sanitizeInput(msg.body);
+	console.log(`[DEBUG] Sanitization result: valid=${sanitized.valid}`);
 	if (!sanitized.valid) {
 		logger.warn({ userId, reason: sanitized.reason }, "malformed input rejected");
 		await msg.reply(`Message rejected: ${sanitized.reason}`);
@@ -689,8 +715,11 @@ async function handleInboundMessage(
 	}
 
 	const tier = getUserPermissionTier(msg.chatId, cfg.security);
+	console.log(`[DEBUG] Permission tier: ${tier}`);
 
+	console.log("[DEBUG] Checking rate limit...");
 	const rateLimitResult = await rateLimiter.checkLimit(userId, tier);
+	console.log(`[DEBUG] Rate limit result: allowed=${rateLimitResult.allowed}`);
 	if (!rateLimitResult.allowed) {
 		logger.info({ userId, tier }, "rate limited");
 		await auditLogger.logRateLimited(userId, msg.chatId, tier);
@@ -700,9 +729,13 @@ async function handleInboundMessage(
 		return;
 	}
 
+	console.log("[DEBUG] Calling observer.analyze...");
 	const observerResult = await observer.analyze(msg.body, {
 		permissionTier: tier,
 	});
+	console.log(
+		`[DEBUG] Observer result: classification=${observerResult.classification}, confidence=${observerResult.confidence}`,
+	);
 
 	if (requiresApproval(tier, observerResult.classification, observerResult.confidence)) {
 		// Create approval and get timing info to ensure display matches actual expiry
@@ -804,6 +837,7 @@ async function handleInboundMessage(
 		logger.info({ userId, reason: observerResult.reason }, "message flagged with warning");
 	}
 
+	console.log("[DEBUG] About to call executeAndReply...");
 	await executeAndReply({
 		msg,
 		prompt: msg.body.trim(),

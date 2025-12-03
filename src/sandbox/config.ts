@@ -19,19 +19,72 @@ import type { PermissionTier } from "../config/config.js";
  * These include telclaude's own data and common credential stores.
  */
 export const SENSITIVE_READ_PATHS = [
+	// === Telclaude data ===
 	"~/.telclaude", // Our database, config, sockets
+
+	// === Environment files (secrets!) ===
+	// These patterns block .env files anywhere in readable paths
+	"**/.env",
+	"**/.env.*", // .env.local, .env.production, etc.
+	"**/.envrc", // direnv files
+	"**/secrets.json",
+	"**/secrets.yaml",
+	"**/secrets.yml",
+
+	// === Claude Code data ===
+	"~/.claude", // Conversation history, settings
+	"~/Library/Application Support/Claude", // macOS app data
+
+	// === Shell history (may contain typed secrets) ===
+	"~/.bash_history",
+	"~/.zsh_history",
+	"~/.zsh_sessions",
+	"~/.sh_history",
+	"~/.history",
+	"~/.lesshst",
+	"~/.node_repl_history",
+	"~/.python_history",
+	"~/.psql_history",
+	"~/.mysql_history",
+	"~/.sqlite_history",
+	"~/.rediscli_history",
+
+	// === SSH/GPG keys ===
 	"~/.ssh", // SSH keys
 	"~/.gnupg", // GPG keys
+
+	// === Cloud credentials ===
 	"~/.aws", // AWS credentials
 	"~/.azure", // Azure credentials
 	"~/.config/gcloud", // GCP credentials
 	"~/.kube", // Kubernetes configs
 	"~/.docker/config.json", // Docker registry auth
+
+	// === Package manager auth ===
 	"~/.npmrc", // npm auth tokens
 	"~/.pypirc", // PyPI credentials
+	"~/.gem/credentials", // RubyGems
+	"~/.cargo/credentials", // Cargo/crates.io
+
+	// === Git credentials ===
 	"~/.netrc", // Various service credentials
 	"~/.gitconfig", // Git config (may contain credentials)
 	"~/.git-credentials", // Git credentials
+
+	// === Browser profiles (localStorage may have tokens) ===
+	"~/Library/Application Support/Google/Chrome",
+	"~/Library/Application Support/Firefox",
+	"~/Library/Application Support/Arc",
+	"~/.config/chromium",
+	"~/.config/google-chrome",
+	"~/.mozilla",
+
+	// === macOS Keychain (defense in depth) ===
+	"~/Library/Keychains",
+
+	// === Linux proc filesystem ===
+	"/proc/self/environ", // Environment variables
+	"/proc/self/cmdline", // Command line args
 ];
 
 /**

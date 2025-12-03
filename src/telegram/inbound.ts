@@ -143,7 +143,11 @@ export async function monitorTelegramInbox(
 	};
 
 	// Handle text messages
+	console.log("[DEBUG] Registering message:text handler");
 	bot.on("message:text", async (ctx) => {
+		console.log(
+			`[DEBUG] Received message from chat ${ctx.chat.id}: "${ctx.message.text?.slice(0, 50)}..."`,
+		);
 		const msgId = `${ctx.chat.id}:${ctx.message.message_id}`;
 		if (seen.has(msgId)) return;
 		seen.add(msgId);

@@ -24,6 +24,7 @@ import {
 } from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 import {
+	isAssistantMessage,
 	isBashInput,
 	isContentBlockStopEvent,
 	isGlobInput,
@@ -458,6 +459,8 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
+	console.log("[DEBUG client] executePooledQuery starting");
+
 	// Apply tier-aligned sandbox config
 	applyTierSandboxConfig(opts.tier);
 
@@ -472,6 +475,8 @@ export async function* executePooledQuery(
 		pathToClaudeCodeExecutable: undefined, // Use default
 	};
 
+	console.log(`[DEBUG client] sessionOpts model=${sessionOpts.model}`);
+
 	logger.debug(
 		{
 			tier: opts.tier,
@@ -482,6 +487,7 @@ export async function* executePooledQuery(
 	);
 
 	const pool = getSessionPool();
+	console.log("[DEBUG client] Got session pool, about to iterate executeWithPool...");
 	let response = "";
 	let costUsd = 0;
 	let numTurns = 0;
@@ -489,6 +495,8 @@ export async function* executePooledQuery(
 	let currentToolUse: { name: string; input: unknown } | null = null;
 
 	try {
+		console.log("[DEBUG client] Starting for-await loop over executeWithPool");
+		let msgCounter = 0;
 		for await (const msg of executeWithPool(
 			pool,
 			opts.poolKey,
@@ -497,6 +505,10 @@ export async function* executePooledQuery(
 			sdkOpts,
 			opts.resumeSessionId,
 		)) {
+			msgCounter++;
+			console.log(
+				`[DEBUG client] Received msg #${msgCounter}, type=${msg.type}, keys=${Object.keys(msg).join(",")}`,
+			);
 			if (isStreamEvent(msg)) {
 				const event = msg.event;
 				if (isTextDeltaEvent(event)) {
@@ -507,6 +519,18 @@ export async function* executePooledQuery(
 				} else if (isContentBlockStopEvent(event) && currentToolUse) {
 					yield { type: "tool_use", toolName: currentToolUse.name, input: currentToolUse.input };
 					currentToolUse = null;
+				}
+			} else if (isAssistantMessage(msg)) {
+				// Handle V2 SDK assistant messages which contain the complete response
+				// The message.content is an array of content blocks (text, tool_use, etc.)
+				for (const block of msg.message.content) {
+					if (block.type === "text") {
+						console.log(`[DEBUG client] Got assistant text: "${block.text.slice(0, 50)}..."`);
+						yield { type: "text", content: block.text };
+						response += block.text;
+					} else if (block.type === "tool_use") {
+						yield { type: "tool_use", toolName: block.name, input: block.input };
+					}
 				}
 			} else if (isToolResultMessage(msg)) {
 				yield { type: "tool_result", toolName: "unknown", output: msg.tool_use_result };
@@ -524,7 +548,9 @@ export async function* executePooledQuery(
 				};
 			}
 		}
+		console.log(`[DEBUG client] for-await loop finished, total msgs=${msgCounter}`);
 	} catch (err) {
+		console.log(`[DEBUG client] catch block, error=${String(err)}`);
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
 		if (isAborted) {
@@ -545,4 +571,5 @@ export async function* executePooledQuery(
 			},
 		};
 	}
+	console.log("[DEBUG client] executePooledQuery finished");
 }
