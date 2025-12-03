@@ -17,7 +17,7 @@ import { CONFIG_DIR } from "../utils.js";
 const logger = getChildLogger({ module: "storage" });
 
 const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 let db: Database.Database | null = null;
 
@@ -178,6 +178,20 @@ function migrate(database: Database.Database): void {
 		logger.info("migration 2: removed totp_secrets table (secrets now in OS keychain)");
 	}
 
+	// Migration 3: TOTP sessions for "remember me" feature
+	if (currentVersion < 3) {
+		database.exec(`
+			-- TOTP sessions (per-user verification "remember me")
+			CREATE TABLE IF NOT EXISTS totp_sessions (
+				local_user_id TEXT PRIMARY KEY,
+				verified_at INTEGER NOT NULL,
+				expires_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_totp_sessions_expires ON totp_sessions(expires_at);
+		`);
+		logger.info("migration 3: added totp_sessions table");
+	}
+
 	// Update schema version
 	database.prepare("DELETE FROM schema_version").run();
 	database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
@@ -189,7 +203,12 @@ function migrate(database: Database.Database): void {
  * Clean up expired entries from all tables.
  * Call periodically to prevent database bloat.
  */
-export function cleanupExpired(): { approvals: number; linkCodes: number; rateLimits: number } {
+export function cleanupExpired(): {
+	approvals: number;
+	linkCodes: number;
+	rateLimits: number;
+	totpSessions: number;
+} {
 	const database = getDb();
 	const now = Date.now();
 
@@ -207,13 +226,24 @@ export function cleanupExpired(): { approvals: number; linkCodes: number; rateLi
 		.prepare("DELETE FROM rate_limits WHERE window_start < ?")
 		.run(oneHourAgo);
 
+	// Clean expired TOTP sessions
+	const totpSessionsResult = database
+		.prepare("DELETE FROM totp_sessions WHERE expires_at < ?")
+		.run(now);
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
 		rateLimits: rateLimitsResult.changes,
+		totpSessions: totpSessionsResult.changes,
 	};
 
-	if (result.approvals > 0 || result.linkCodes > 0 || result.rateLimits > 0) {
+	if (
+		result.approvals > 0 ||
+		result.linkCodes > 0 ||
+		result.rateLimits > 0 ||
+		result.totpSessions > 0
+	) {
 		logger.debug(result, "cleaned up expired entries");
 	}
 

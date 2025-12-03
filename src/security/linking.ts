@@ -11,6 +11,7 @@
 import crypto from "node:crypto";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import { invalidateTOTPSession } from "./totp-session.js";
 import type { Result } from "./types.js";
 
 const logger = getChildLogger({ module: "identity-linking" });
@@ -124,6 +125,11 @@ export function consumeLinkCode(
 			};
 		}
 
+		// Check if there's an existing link for this chat (for session invalidation)
+		const existingLink = db
+			.prepare("SELECT local_user_id FROM identity_links WHERE chat_id = ?")
+			.get(chatId) as { local_user_id: string } | undefined;
+
 		// Create the identity link (upsert)
 		db.prepare(
 			`INSERT INTO identity_links (chat_id, local_user_id, linked_at, linked_by)
@@ -136,6 +142,23 @@ export function consumeLinkCode(
 
 		// Remove the consumed code
 		db.prepare("DELETE FROM pending_link_codes WHERE code = ?").run(formattedCode);
+
+		// SECURITY: Invalidate TOTP sessions when identity links change
+		// This ensures new chats must verify TOTP even if linking to a user with an existing session
+		if (existingLink && existingLink.local_user_id !== row.local_user_id) {
+			// Chat was linked to a different user - invalidate old user's session
+			invalidateTOTPSession(existingLink.local_user_id);
+			logger.info(
+				{ oldLocalUserId: existingLink.local_user_id },
+				"invalidated old user's TOTP session on relink",
+			);
+		}
+		// Always invalidate the new user's session so this chat must verify TOTP
+		invalidateTOTPSession(row.local_user_id);
+		logger.info(
+			{ localUserId: row.local_user_id },
+			"invalidated TOTP session for newly linked user",
+		);
 
 		logger.info(
 			{ code: formattedCode, chatId, localUserId: row.local_user_id, linkedBy },
@@ -169,12 +192,27 @@ export function getIdentityLink(chatId: number): IdentityLink | null {
 
 /**
  * Remove an identity link for a chat.
+ * Also invalidates any TOTP session for the linked user.
  */
 export function removeIdentityLink(chatId: number): boolean {
 	const db = getDb();
+
+	// Get the link before removing so we can invalidate the session
+	const link = db
+		.prepare("SELECT local_user_id FROM identity_links WHERE chat_id = ?")
+		.get(chatId) as { local_user_id: string } | undefined;
+
 	const result = db.prepare("DELETE FROM identity_links WHERE chat_id = ?").run(chatId);
 
 	if (result.changes > 0) {
+		// SECURITY: Invalidate TOTP session when identity link is removed
+		if (link) {
+			invalidateTOTPSession(link.local_user_id);
+			logger.info(
+				{ chatId, localUserId: link.local_user_id },
+				"invalidated TOTP session on unlink",
+			);
+		}
 		logger.info({ chatId }, "identity link removed");
 		return true;
 	}

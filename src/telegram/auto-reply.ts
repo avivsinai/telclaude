@@ -34,6 +34,11 @@ import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
+import {
+	createTOTPSession,
+	hasTOTPSession,
+	invalidateTOTPSessionForChat,
+} from "../security/totp-session.js";
 import { disableTOTP, hasTOTP, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
 import { cleanupExpired } from "../storage/db.js";
@@ -664,6 +669,11 @@ async function handleInboundMessage(
 		return;
 	}
 
+	if (trimmedBody === "/2fa-logout") {
+		await handleLogout2FA(msg);
+		return;
+	}
+
 	if (trimmedBody === "/deny") {
 		// Deny without nonce - deny the most recent pending approval
 		await handleDenyMostRecent(msg, auditLogger);
@@ -842,6 +852,15 @@ async function handleInboundMessage(
 		}
 
 		const userHasTOTP = totpCheck.hasTOTP;
+		// Check if user has a valid TOTP session ("remember me" feature)
+		// If they do, show nonce-based approval instead of requiring TOTP
+		const hasValidSession = hasTOTPSession(msg.chatId);
+		const requireTOTPVerification = userHasTOTP && !hasValidSession;
+
+		if (hasValidSession) {
+			logger.debug({ chatId: msg.chatId }, "valid TOTP session found, using nonce-based approval");
+		}
+
 		const approvalMessage = formatApprovalRequest(
 			{
 				nonce,
@@ -862,7 +881,7 @@ async function handleInboundMessage(
 				observerConfidence: observerResult.confidence,
 				observerReason: observerResult.reason,
 			},
-			userHasTOTP,
+			requireTOTPVerification,
 		);
 
 		await msg.reply(approvalMessage);
@@ -1183,7 +1202,10 @@ async function handleVerify2FA(
 	await msg.reply(
 		"*2FA enabled successfully!*\n\n" +
 			"From now on, when approval is required, simply reply with your 6-digit authenticator code.\n\n" +
-			"To disable 2FA: `/disable-2fa`",
+			"After you verify once, your session will be remembered for a while so you won't need to enter the code again for subsequent approvals.\n\n" +
+			"Commands:\n" +
+			"• `/2fa-logout` - End your session early\n" +
+			"• `/disable-2fa` - Disable 2FA completely",
 	);
 }
 
@@ -1191,9 +1213,21 @@ async function handleDisable2FA(msg: TelegramInboundMessage): Promise<void> {
 	const removed = await disableTOTP(msg.chatId);
 
 	if (removed) {
+		// Also invalidate any active TOTP session
+		invalidateTOTPSessionForChat(msg.chatId);
 		await msg.reply("2FA has been disabled for this chat.");
 	} else {
 		await msg.reply("2FA was not enabled for this chat.");
+	}
+}
+
+async function handleLogout2FA(msg: TelegramInboundMessage): Promise<void> {
+	const removed = invalidateTOTPSessionForChat(msg.chatId);
+
+	if (removed) {
+		await msg.reply("2FA session ended. You will need to verify TOTP for the next approval.");
+	} else {
+		await msg.reply("No active 2FA session found.");
 	}
 }
 
@@ -1255,6 +1289,18 @@ async function handleTOTPApproval(
 			"Invalid code. Please try again with the current code from your authenticator.",
 		);
 		return;
+	}
+
+	// Create a TOTP session after successful verification ("remember me" feature)
+	const link = getIdentityLink(msg.chatId);
+	if (link) {
+		const sessionTtlMinutes = cfg.security?.totp?.sessionTtlMinutes ?? 240; // Default 4 hours
+		const sessionTtlMs = sessionTtlMinutes * 60 * 1000;
+		createTOTPSession(link.localUserId, sessionTtlMs);
+		logger.info(
+			{ chatId: msg.chatId, localUserId: link.localUserId, ttlMinutes: sessionTtlMinutes },
+			"TOTP session created after successful verification",
+		);
 	}
 
 	// Consume the approval

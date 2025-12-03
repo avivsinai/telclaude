@@ -36,7 +36,7 @@ const InboundConfigSchema = z.object({
 // Security observer configuration
 const ObserverConfigSchema = z.object({
 	enabled: z.boolean().default(true),
-	maxLatencyMs: z.number().int().positive().default(2000),
+	maxLatencyMs: z.number().int().positive().default(300000), // 5 minutes - SDK calls can be slow
 	dangerThreshold: z.number().min(0).max(1).default(0.7),
 	fallbackOnTimeout: z.enum(["allow", "block", "escalate"]).default("block"),
 });
@@ -107,6 +107,11 @@ const SecurityConfigSchema = z.object({
 		.object({
 			enabled: z.boolean().default(true),
 			logFile: z.string().optional(),
+		})
+		.optional(),
+	totp: z
+		.object({
+			sessionTtlMinutes: z.number().int().positive().default(240), // 4 hours
 		})
 		.optional(),
 });
@@ -252,7 +257,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			security: {
 				observer: {
 					enabled: true,
-					maxLatencyMs: 2000,
+					maxLatencyMs: 300000, // 5 minutes
 					dangerThreshold: 0.7,
 					fallbackOnTimeout: "block",
 				},
