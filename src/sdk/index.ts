@@ -11,12 +11,11 @@ export {
 } from "./client.js";
 
 export {
-	SessionPool,
-	getSessionPool,
-	destroySessionPool,
-	type PooledSession,
-	type SessionPoolOptions,
-} from "./session-pool.js";
+	getSessionManager,
+	destroySessionManager,
+	executeWithSession,
+	type SessionInfo,
+} from "./session-manager.js";
 
 export {
 	isAssistantMessage,

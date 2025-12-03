@@ -4,7 +4,7 @@ import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { initializeSandbox, isSandboxAvailable, resetSandbox } from "../sandbox/index.js";
-import { destroySessionPool } from "../sdk/session-pool.js";
+import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 
@@ -113,7 +113,7 @@ export function registerRelayCommand(program: Command): void {
 					abortController.abort();
 
 					// Clean up session pool
-					await destroySessionPool();
+					await destroySessionManager();
 					logger.info("session pool destroyed");
 
 					// Clean up sandbox
@@ -131,7 +131,7 @@ export function registerRelayCommand(program: Command): void {
 				});
 
 				// Final cleanup after monitor exits
-				await destroySessionPool();
+				await destroySessionManager();
 				await resetSandbox();
 
 				console.log("Relay stopped.");

@@ -16,6 +16,7 @@ import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
+import { getSessionManager } from "../sdk/session-manager.js";
 import {
 	type PendingApproval,
 	cleanupExpiredApprovals,
@@ -692,6 +693,25 @@ async function handleInboundMessage(
 			return;
 		}
 		// No TOTP configured for this user - let 6-digit message fall through to data plane
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// SESSION RESET COMMANDS
+	// ══════════════════════════════════════════════════════════════════════════
+
+	if (trimmedBody === "/new" || trimmedBody === "/reset") {
+		// Session key is tg:{chatId} for per-sender scope
+		const sessionKey = `tg:${msg.chatId}`;
+
+		// Clear the session from config/sessions (SQLite)
+		deleteSession(sessionKey);
+
+		// Clear the session from SDK session manager (in-memory)
+		getSessionManager().clearSession(sessionKey);
+
+		logger.info({ chatId: msg.chatId, sessionKey }, "session reset via control command");
+		await msg.reply("Session reset. Starting fresh conversation.");
+		return;
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════

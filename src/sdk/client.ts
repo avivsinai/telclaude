@@ -2,7 +2,7 @@
  * Claude Agent SDK wrapper for telclaude.
  *
  * Provides a typed interface to the Claude Agent SDK with:
- * - V2 session pooling for performance
+ * - Session pooling with resume for multi-turn conversations
  * - Tier-aligned sandbox configurations
  * - Security enforcement via canUseTool callback
  */
@@ -11,7 +11,6 @@ import fs from "node:fs";
 import {
 	type PermissionMode,
 	type Options as SDKOptions,
-	type SDKSessionOptions,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
@@ -37,7 +36,7 @@ import {
 	isToolUseStartEvent,
 	isWriteInput,
 } from "./message-guards.js";
-import { executeWithPool, getSessionPool } from "./session-pool.js";
+import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 
@@ -432,7 +431,7 @@ export async function* executeQueryStream(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// V2 Session Pool API (Experimental)
+// Session Pool API
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -444,22 +443,16 @@ export type PooledQueryOptions = TelclaudeQueryOptions & {
 };
 
 /**
- * Execute a query using the V2 session pool.
+ * Execute a query using the session pool with resume support.
  *
- * Benefits over executeQueryStream:
- * - Reuses persistent SDK connections (reduced spawn overhead)
- * - Automatic session lifecycle management
- * - Fallback to stable query() API if V2 fails
- *
- * @experimental Uses unstable V2 SDK API
+ * Uses the stable query() API with session ID tracking for multi-turn conversations.
+ * Session IDs are automatically captured and reused via the resume option.
  */
 export async function* executePooledQuery(
 	prompt: string,
 	opts: PooledQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
-
-	console.log("[DEBUG client] executePooledQuery starting");
 
 	// Apply tier-aligned sandbox config
 	applyTierSandboxConfig(opts.tier);
@@ -468,14 +461,6 @@ export async function* executePooledQuery(
 		...opts,
 		includePartialMessages: true,
 	});
-
-	// Build V2 session options
-	const sessionOpts: SDKSessionOptions = {
-		model: opts.model ?? "claude-sonnet-4-20250514",
-		pathToClaudeCodeExecutable: undefined, // Use default
-	};
-
-	console.log(`[DEBUG client] sessionOpts model=${sessionOpts.model}`);
 
 	logger.debug(
 		{
@@ -486,8 +471,7 @@ export async function* executePooledQuery(
 		"executing pooled SDK query",
 	);
 
-	const pool = getSessionPool();
-	console.log("[DEBUG client] Got session pool, about to iterate executeWithPool...");
+	const sessionManager = getSessionManager();
 	let response = "";
 	let costUsd = 0;
 	let numTurns = 0;
@@ -495,20 +479,7 @@ export async function* executePooledQuery(
 	let currentToolUse: { name: string; input: unknown } | null = null;
 
 	try {
-		console.log("[DEBUG client] Starting for-await loop over executeWithPool");
-		let msgCounter = 0;
-		for await (const msg of executeWithPool(
-			pool,
-			opts.poolKey,
-			prompt,
-			sessionOpts,
-			sdkOpts,
-			opts.resumeSessionId,
-		)) {
-			msgCounter++;
-			console.log(
-				`[DEBUG client] Received msg #${msgCounter}, type=${msg.type}, keys=${Object.keys(msg).join(",")}`,
-			);
+		for await (const msg of executeWithSession(sessionManager, opts.poolKey, prompt, sdkOpts)) {
 			if (isStreamEvent(msg)) {
 				const event = msg.event;
 				if (isTextDeltaEvent(event)) {
@@ -521,11 +492,9 @@ export async function* executePooledQuery(
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {
-				// Handle V2 SDK assistant messages which contain the complete response
-				// The message.content is an array of content blocks (text, tool_use, etc.)
+				// Handle assistant messages which contain complete response content blocks
 				for (const block of msg.message.content) {
 					if (block.type === "text") {
-						console.log(`[DEBUG client] Got assistant text: "${block.text.slice(0, 50)}..."`);
 						yield { type: "text", content: block.text };
 						response += block.text;
 					} else if (block.type === "tool_use") {
@@ -548,9 +517,7 @@ export async function* executePooledQuery(
 				};
 			}
 		}
-		console.log(`[DEBUG client] for-await loop finished, total msgs=${msgCounter}`);
 	} catch (err) {
-		console.log(`[DEBUG client] catch block, error=${String(err)}`);
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
 		if (isAborted) {
@@ -571,5 +538,4 @@ export async function* executePooledQuery(
 			},
 		};
 	}
-	console.log("[DEBUG client] executePooledQuery finished");
 }
