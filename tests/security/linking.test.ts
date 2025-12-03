@@ -41,6 +41,13 @@ vi.mock("../../src/storage/db.js", () => {
 						linked_at INTEGER NOT NULL,
 						linked_by TEXT NOT NULL
 					);
+
+					CREATE TABLE IF NOT EXISTS totp_sessions (
+						local_user_id TEXT PRIMARY KEY,
+						verified_at INTEGER NOT NULL,
+						expires_at INTEGER NOT NULL
+					);
+					CREATE INDEX IF NOT EXISTS idx_totp_sessions_expires ON totp_sessions(expires_at);
 				`);
 			}
 			return mockDb;
