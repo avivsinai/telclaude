@@ -28,11 +28,12 @@ import {
 	requiresApproval,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
+import { checkInfrastructureSecrets } from "../security/fast-path.js";
 import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
-import { disableTOTP, hasTOTP, setupTOTP, verifyTOTP } from "../security/totp.js";
+import { disableTOTP, hasTOTP, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
 import { cleanupExpired } from "../storage/db.js";
 
@@ -707,6 +708,40 @@ async function handleInboundMessage(
 		return;
 	}
 
+	// ══════════════════════════════════════════════════════════════════════════
+	// INFRASTRUCTURE SECRET CHECK - NON-OVERRIDABLE
+	// ══════════════════════════════════════════════════════════════════════════
+	// SECURITY: Check for infrastructure secrets BEFORE any approval logic.
+	// These are NEVER allowed to be sent to Claude - no approval can bypass this.
+	const infraSecretCheck = checkInfrastructureSecrets(msg.body);
+	if (infraSecretCheck.blocked) {
+		logger.error(
+			{
+				userId,
+				chatId: msg.chatId,
+				patterns: infraSecretCheck.patterns,
+			},
+			"BLOCKED: Infrastructure secrets detected - NON-OVERRIDABLE",
+		);
+		await msg.reply(
+			"Message blocked: Contains infrastructure secrets (bot tokens, API keys, or private keys).\n\n" +
+				"This is a security measure that CANNOT be overridden. These secrets must never be sent to the AI agent.\n\n" +
+				"If you need to work with credentials, store them in environment variables or config files instead of pasting them directly.",
+		);
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId,
+			telegramUserId: userId,
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: "[REDACTED - infrastructure secrets]",
+			permissionTier: getUserPermissionTier(msg.chatId, cfg.security),
+			outcome: "blocked",
+			errorType: `infrastructure_secrets:${infraSecretCheck.patterns.join(",")}`,
+		});
+		return;
+	}
+
 	const recentKey = makeRecentSentKey(msg.chatId, msg.body);
 	if (recentlySent.has(recentKey)) {
 		recentlySent.delete(recentKey);
@@ -1074,20 +1109,31 @@ async function executeApprovedRequest(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
-	const result = await setupTOTP(msg.chatId, msg.username);
+	// SECURITY: TOTP secrets must NOT be sent via Telegram.
+	// Sending secrets over Telegram means anyone with chat history access can
+	// recreate the TOTP device, completely defeating the purpose of 2FA.
+	//
+	// Instead, direct users to set up 2FA via CLI where the secret is displayed locally.
 
-	if (!result.success) {
-		await msg.reply(result.error);
+	const link = getIdentityLink(msg.chatId);
+	if (!link) {
+		await msg.reply(
+			"You must link your identity first before setting up 2FA.\n\n" +
+				"Ask an admin to run `telclaude link <user-id>` to generate a link code.",
+		);
 		return;
 	}
 
-	// The URI can be used to generate a QR code, but for now we'll provide manual entry
-	// Extract the secret from the URI for manual entry
-	const secretMatch = result.uri.match(/secret=([A-Z2-7]+)/);
-	const secret = secretMatch?.[1] ?? "";
-
 	await msg.reply(
-		`*Setting up Two-Factor Authentication*\n\n1. Open Google Authenticator (or any TOTP app)\n2. Add a new account manually:\n   - Name: \`Telclaude\`\n   - Secret: \`${secret}\`\n   - Type: Time-based\n\n3. Enter the 6-digit code to verify:\n   \`/verify-2fa <code>\``,
+		"*Setting up Two-Factor Authentication*\n\n" +
+			"For security reasons, TOTP secrets cannot be sent via Telegram " +
+			"(anyone with access to chat history could recreate your 2FA device).\n\n" +
+			"*To set up 2FA:*\n" +
+			"1. Run this command on your local machine:\n" +
+			"   `telclaude totp-setup`\n\n" +
+			"2. Scan the QR code or enter the secret in your authenticator app\n\n" +
+			"3. The CLI will verify your setup automatically\n\n" +
+			"Once configured, you can approve requests by simply entering your 6-digit code.",
 	);
 }
 

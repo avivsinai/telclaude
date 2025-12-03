@@ -155,33 +155,56 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 
 /**
  * Send media payload to a chat.
+ *
+ * SECURITY: All captions are filtered for secret exfiltration before sending.
  */
 export async function sendMediaToChat(
 	api: Api,
 	chatId: number,
 	payload: TelegramMediaPayload,
 ): Promise<Message> {
+	// SECURITY: Filter caption for secrets before sending
+	// Note: sticker type doesn't have caption, so we check if it exists
+	let safeCaption: string | undefined;
+	if ("caption" in payload && payload.caption) {
+		const filterResult = filterOutput(payload.caption);
+		if (filterResult.blocked) {
+			logger.error(
+				{
+					chatId,
+					matchCount: filterResult.matches.length,
+					patterns: filterResult.matches.map((m) => m.pattern),
+				},
+				"BLOCKED: Secret exfiltration attempt detected in media caption",
+			);
+			// Replace caption with blocked message, but still send the media
+			safeCaption = "[Caption blocked - contained sensitive data]";
+		} else {
+			safeCaption = payload.caption;
+		}
+	}
+
 	const source = createInputFile(payload.source);
 
 	switch (payload.type) {
 		case "photo":
-			return api.sendPhoto(chatId, source, { caption: payload.caption });
+			return api.sendPhoto(chatId, source, { caption: safeCaption });
 		case "document":
-			return api.sendDocument(chatId, source, { caption: payload.caption });
+			return api.sendDocument(chatId, source, { caption: safeCaption });
 		case "voice":
-			return api.sendVoice(chatId, source, { caption: payload.caption });
+			return api.sendVoice(chatId, source, { caption: safeCaption });
 		case "video":
-			return api.sendVideo(chatId, source, { caption: payload.caption });
+			return api.sendVideo(chatId, source, { caption: safeCaption });
 		case "audio":
 			return api.sendAudio(chatId, source, {
-				caption: payload.caption,
+				caption: safeCaption,
 				title: payload.title,
 				performer: payload.performer,
 			});
 		case "sticker":
 			return api.sendSticker(chatId, source);
 		case "animation":
-			return api.sendAnimation(chatId, source, { caption: payload.caption });
+			return api.sendAnimation(chatId, source, { caption: safeCaption });
 		default:
 			throw new Error(`Unsupported media type: ${(payload as { type: string }).type}`);
 	}

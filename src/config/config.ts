@@ -222,10 +222,18 @@ export function getConfigDir(): string {
 }
 
 /**
- * Ensure the config directory exists.
+ * Ensure the config directory exists with secure permissions.
+ *
+ * SECURITY: Sets directory to 0700 (owner only).
  */
 export async function ensureConfigDir(): Promise<void> {
-	await fs.promises.mkdir(CONFIG_DIR, { recursive: true });
+	await fs.promises.mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
+	// Harden existing directory permissions
+	try {
+		await fs.promises.chmod(CONFIG_DIR, 0o700);
+	} catch {
+		// May fail on some filesystems, continue anyway
+	}
 }
 
 /**
@@ -283,7 +291,10 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			},
 		};
 
-		await fs.promises.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), "utf-8");
+		await fs.promises.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), {
+			encoding: "utf-8",
+			mode: 0o600, // SECURITY: Owner read/write only
+		});
 		return true;
 	}
 }

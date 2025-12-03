@@ -92,6 +92,9 @@ export type CreateApprovalResult = {
 /**
  * Create a new pending approval and return the nonce with timing info.
  *
+ * SECURITY: Enforces a single pending approval per chat to prevent race conditions.
+ * Any existing pending approvals for the chat are cancelled before creating the new one.
+ *
  * Nonce is 16 hex characters (8 bytes of entropy) to prevent brute-force attacks.
  * With 8 bytes = 2^64 possibilities, and 5-minute TTL, brute-force is infeasible.
  */
@@ -107,31 +110,46 @@ export function createApproval(
 	const now = Date.now();
 	const expiresAt = now + ttlMs;
 
-	db.prepare(
-		`INSERT INTO approvals (
-			nonce, request_id, chat_id, created_at, expires_at, tier, body,
-			media_path, media_url, media_type, username, from_user, to_user,
-			message_id, observer_classification, observer_confidence, observer_reason
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	).run(
-		nonce,
-		entry.requestId,
-		entry.chatId,
-		now,
-		expiresAt,
-		entry.tier,
-		entry.body,
-		entry.mediaPath ?? null,
-		entry.mediaUrl ?? null,
-		entry.mediaType ?? null,
-		entry.username ?? null,
-		entry.from,
-		entry.to,
-		entry.messageId,
-		entry.observerClassification,
-		entry.observerConfidence,
-		entry.observerReason ?? null,
-	);
+	// Use a transaction to atomically:
+	// 1. Delete any existing pending approvals for this chat (prevent race conditions)
+	// 2. Insert the new approval
+	db.transaction(() => {
+		// SECURITY: Cancel any existing pending approvals for this chat
+		// This prevents race conditions where multiple TOTP approvals could be pending
+		const deleted = db.prepare("DELETE FROM approvals WHERE chat_id = ?").run(entry.chatId);
+		if (deleted.changes > 0) {
+			logger.warn(
+				{ chatId: entry.chatId, cancelledCount: deleted.changes },
+				"cancelled existing pending approvals for new request",
+			);
+		}
+
+		db.prepare(
+			`INSERT INTO approvals (
+				nonce, request_id, chat_id, created_at, expires_at, tier, body,
+				media_path, media_url, media_type, username, from_user, to_user,
+				message_id, observer_classification, observer_confidence, observer_reason
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			nonce,
+			entry.requestId,
+			entry.chatId,
+			now,
+			expiresAt,
+			entry.tier,
+			entry.body,
+			entry.mediaPath ?? null,
+			entry.mediaUrl ?? null,
+			entry.mediaType ?? null,
+			entry.username ?? null,
+			entry.from,
+			entry.to,
+			entry.messageId,
+			entry.observerClassification,
+			entry.observerConfidence,
+			entry.observerReason ?? null,
+		);
+	})();
 
 	logger.info(
 		{

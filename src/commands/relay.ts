@@ -31,6 +31,35 @@ export function registerRelayCommand(program: Command): void {
 				const cfg = loadConfig();
 				readEnv(); // Validates environment variables
 
+				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
+				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
+					console.error("\n❌ SECURITY ERROR: defaultTier=FULL_ACCESS is not allowed.\n");
+					console.error(
+						"Setting defaultTier to FULL_ACCESS would give unrestricted access to ALL users,",
+					);
+					console.error(
+						"bypassing all security controls. This is almost certainly not what you want.\n",
+					);
+					console.error("Instead, assign FULL_ACCESS to specific users:");
+					console.error('  "permissions": {');
+					console.error('    "defaultTier": "READ_ONLY",');
+					console.error('    "users": {');
+					console.error('      "tg:YOUR_CHAT_ID": { "tier": "FULL_ACCESS" }');
+					console.error("    }");
+					console.error("  }\n");
+					process.exit(1);
+				}
+
+				// SECURITY: Warn on fallbackOnTimeout=allow
+				if (cfg.security?.observer?.fallbackOnTimeout === "allow") {
+					console.warn("\n⚠️  WARNING: security.observer.fallbackOnTimeout=allow is risky.\n");
+					console.warn(
+						"If the security observer times out, requests will be ALLOWED without review.",
+					);
+					console.warn("An attacker could DoS the observer to bypass security checks.");
+					console.warn('Consider using "block" (safer) or "escalate" instead.\n');
+				}
+
 				console.log("Starting Telclaude relay...");
 				console.log(
 					`Security observer: ${cfg.security?.observer?.enabled !== false ? "enabled" : "disabled"}`,
@@ -71,7 +100,9 @@ export function registerRelayCommand(program: Command): void {
 				if (cfg.telegram?.allowedChats?.length) {
 					console.log(`Allowed chats: ${cfg.telegram.allowedChats.join(", ")}`);
 				} else {
-					console.log("Warning: No allowed chats configured - bot will respond to all chats");
+					console.log(
+						"Warning: No allowed chats configured - bot will DENY all chats (fail-closed). Add chat IDs to ~/.telclaude/telclaude.json to permit access.",
+					);
 				}
 
 				// Set up graceful shutdown

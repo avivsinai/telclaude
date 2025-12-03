@@ -2,9 +2,20 @@ import type { Bot, Context } from "grammy";
 
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
+import { filterOutput } from "../security/output-filter.js";
 import { chatIdToString } from "../utils.js";
 import { sendMediaToChat } from "./outbound.js";
 import { sanitizeClaudeResponse } from "./sanitize.js";
+
+/**
+ * Message sent when output contains detected secrets.
+ * SECURITY: This must match outbound.ts BLOCKED_MESSAGE for consistency.
+ */
+const SECRET_BLOCKED_MESSAGE =
+	"Response blocked by security filter.\n\n" +
+	"The response contained what appears to be sensitive credentials " +
+	"(API keys, tokens, or private keys). This is a security measure to " +
+	"prevent accidental exposure of secrets.";
 import {
 	type BotInfo,
 	type TelegramInboundMessage,
@@ -47,8 +58,17 @@ export async function monitorTelegramInbox(
 	const botIdStr = chatIdToString(botInfo.id);
 
 	// Helper to check if chat is allowed
+	// SECURITY: Fails CLOSED - if no allowedChats configured, deny ALL
 	const isChatAllowed = (chatId: number): boolean => {
-		if (!allowedChats?.length) return true;
+		if (!allowedChats || allowedChats.length === 0) {
+			// SECURITY: Empty allowedChats = deny all (fail closed)
+			// This prevents accidental exposure if config is missing
+			logger.warn(
+				{ chatId },
+				"DENIED: No allowedChats configured - denying all chats for security",
+			);
+			return false;
+		}
 		return allowedChats.some((allowed) => {
 			if (typeof allowed === "number") return allowed === chatId;
 			return String(allowed) === String(chatId);
@@ -69,6 +89,16 @@ export async function monitorTelegramInbox(
 		if (!isChatAllowed(chat.id)) {
 			if (verbose) {
 				logger.debug({ chatId: chat.id }, "message from non-allowed chat, ignoring");
+			}
+
+			// Reduce surface area: immediately leave unauthorized group/supergroup/channel
+			if (["group", "supergroup", "channel"].includes(chat.type)) {
+				try {
+					await bot.api.leaveChat(chat.id);
+					logger.info({ chatId: chat.id, chatType: chat.type }, "left unauthorized chat");
+				} catch (err) {
+					logger.warn({ chatId: chat.id, error: String(err) }, "failed to leave chat");
+				}
 			}
 			return null;
 		}
@@ -122,9 +152,26 @@ export async function monitorTelegramInbox(
 				await bot.api.sendChatAction(chat.id, "typing");
 			},
 			reply: async (text: string, options?: { useMarkdown?: boolean }) => {
-				// Default to plain text for safety (prevents markdown injection)
-				// Sanitize all responses to remove dangerous characters
+				// SECURITY: Filter for secret exfiltration BEFORE any processing
+				// This is the last line of defense - ALL outbound text MUST pass through this
+				const filterResult = filterOutput(text);
+				if (filterResult.blocked) {
+					logger.error(
+						{
+							chatId: chat.id,
+							matchCount: filterResult.matches.length,
+							patterns: filterResult.matches.map((m) => m.pattern),
+						},
+						"BLOCKED: Secret exfiltration attempt detected in reply",
+					);
+					// Send blocked notification instead of the secret-containing message
+					await bot.api.sendMessage(chat.id, SECRET_BLOCKED_MESSAGE);
+					return;
+				}
+
+				// Sanitize response (length truncation, control chars)
 				const sanitized = sanitizeClaudeResponse(text);
+
 				if (options?.useMarkdown) {
 					// Only use markdown when explicitly requested (for system messages)
 					await bot.api.sendMessage(chat.id, sanitized, { parse_mode: "Markdown" });

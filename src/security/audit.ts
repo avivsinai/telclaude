@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { redactSecrets } from "./output-filter.js";
 import type { AuditEntry, SecurityClassification } from "./types.js";
 
 const DEFAULT_AUDIT_DIR = path.join(os.tmpdir(), "telclaude");
@@ -127,6 +128,9 @@ export class AuditLogger {
 
 	/**
 	 * Log an audit entry.
+	 *
+	 * SECURITY: Message preview is sanitized to redact any detected secrets
+	 * before being written to the audit log.
 	 */
 	async log(entry: AuditEntry): Promise<void> {
 		if (!this.config.enabled) return;
@@ -138,10 +142,14 @@ export class AuditLogger {
 		}
 
 		try {
-			const line = JSON.stringify({
+			// SECURITY: Redact secrets from message preview before logging
+			const sanitizedEntry = {
 				...entry,
+				messagePreview: redactSecrets(entry.messagePreview),
 				timestamp: entry.timestamp.toISOString(),
-			});
+			};
+
+			const line = JSON.stringify(sanitizedEntry);
 
 			// Check if file exists to determine if we need to set permissions
 			const fileExisted = fs.existsSync(this.logFile);

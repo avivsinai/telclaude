@@ -24,14 +24,33 @@ let db: Database.Database | null = null;
 /**
  * Get or create the database connection.
  * Uses WAL mode for better concurrency.
+ *
+ * SECURITY: Sets restrictive file permissions on database and config directory.
  */
 export function getDb(): Database.Database {
 	if (db) return db;
 
-	// Ensure directory exists
-	fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+	const dbDir = path.dirname(DB_PATH);
+
+	// Ensure directory exists with secure permissions (owner only)
+	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
+
+	// Harden existing directory permissions if it already existed
+	try {
+		fs.chmodSync(dbDir, 0o700);
+	} catch {
+		// May fail on some filesystems, log but continue
+		logger.warn({ path: dbDir }, "could not set directory permissions to 0700");
+	}
 
 	db = new Database(DB_PATH);
+
+	// SECURITY: Set database file to owner read/write only
+	try {
+		fs.chmodSync(DB_PATH, 0o600);
+	} catch {
+		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600");
+	}
 
 	// Enable WAL mode for better concurrency
 	db.pragma("journal_mode = WAL");

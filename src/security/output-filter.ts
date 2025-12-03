@@ -166,6 +166,28 @@ function redact(secret: string): string {
 }
 
 /**
+ * Redact all secrets from a text string.
+ * Replaces detected secrets with [REDACTED:pattern_name].
+ *
+ * SECURITY: Use this for log sanitization to prevent secrets from
+ * appearing in audit logs, error messages, or debug output.
+ *
+ * @param text - The text to sanitize
+ * @returns Text with all detected secrets replaced
+ */
+export function redactSecrets(text: string): string {
+	let result = text;
+
+	for (const { name, pattern } of SECRET_PATTERNS) {
+		// Create new regex instance with global flag
+		const regex = new RegExp(pattern.source, "g");
+		result = result.replace(regex, `[REDACTED:${name}]`);
+	}
+
+	return result;
+}
+
+/**
  * Scan text for secret patterns.
  * Returns all matches found.
  */

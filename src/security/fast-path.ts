@@ -2,6 +2,40 @@ import { filterInfrastructureSecrets } from "./output-filter.js";
 import type { SecurityClassification } from "./types.js";
 
 /**
+ * Result when infrastructure secrets are detected.
+ * These are NON-OVERRIDABLE - no approval mechanism can bypass this.
+ */
+export type InfraSecretCheckResult = {
+	blocked: boolean;
+	patterns: string[];
+	reason?: string;
+};
+
+/**
+ * Check if a message contains infrastructure secrets that should NEVER be sent to Claude.
+ * This is separate from approval-able blocks - infrastructure secrets cannot be approved.
+ *
+ * SECURITY: Infrastructure secrets (bot token, Anthropic key, private keys) represent
+ * a catastrophic security risk if sent to Claude, as Claude could:
+ * 1. Echo them back to Telegram (exfiltration)
+ * 2. Use them to make unauthorized API calls
+ * 3. Store them in conversation context
+ *
+ * These are NON-OVERRIDABLE - no /approve or TOTP can bypass this check.
+ */
+export function checkInfrastructureSecrets(message: string): InfraSecretCheckResult {
+	const result = filterInfrastructureSecrets(message);
+	if (result.blocked) {
+		return {
+			blocked: true,
+			patterns: result.matches.map((m) => m.pattern),
+			reason: `Message contains infrastructure secret(s): ${result.matches.map((m) => m.pattern).join(", ")}. These cannot be sent to the agent.`,
+		};
+	}
+	return { blocked: false, patterns: [] };
+}
+
+/**
  * Patterns that are clearly safe and can skip LLM review.
  *
  * SECURITY NOTE: These patterns must be STRICTLY anchored (^ and $) to avoid
@@ -82,6 +116,10 @@ export const DANGEROUS_PATTERNS: RegExp[] = [
 /**
  * Fast-path classification without LLM.
  * Returns null if LLM review is needed.
+ *
+ * NOTE: Infrastructure secrets are checked separately via checkInfrastructureSecrets()
+ * in the auto-reply flow BEFORE this function, making them non-overridable.
+ * This function only handles general BLOCK patterns that CAN be approved.
  */
 export function fastPathClassify(message: string): {
 	classification: SecurityClassification;
@@ -89,19 +127,9 @@ export function fastPathClassify(message: string): {
 } | null {
 	const trimmed = message.trim();
 
-	// SECURITY: Block messages containing infrastructure secrets
-	// These are secrets that should NEVER be given to the agent:
-	// - Telegram bot tokens (would allow bot hijacking)
-	// - Anthropic API keys (would allow unauthorized API usage)
-	// - SSH/PGP private keys (would allow server/identity compromise)
-	const secretResult = filterInfrastructureSecrets(trimmed);
-	if (secretResult.blocked) {
-		const patterns = secretResult.matches.map((m) => m.pattern).join(", ");
-		return {
-			classification: "BLOCK",
-			reason: `Message contains infrastructure secret(s): ${patterns}. These should never be shared with the agent.`,
-		};
-	}
+	// NOTE: Infrastructure secrets (bot token, Anthropic key, private keys) are now
+	// checked separately via checkInfrastructureSecrets() in auto-reply.ts and are
+	// NON-OVERRIDABLE. They are blocked before reaching this point.
 
 	// Check dangerous patterns
 	for (const pattern of DANGEROUS_PATTERNS) {
