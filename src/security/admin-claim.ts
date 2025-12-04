@@ -78,12 +78,16 @@ export function ensureAdminClaimTable(): void {
 
 /**
  * Check if any admin has been claimed yet.
- * Returns true if there's at least one identity link with admin status.
+ * Returns true if there's at least one identity link with admin status (local_user_id = 'admin').
  */
 export function hasAdmin(): boolean {
 	const db = getDb();
-	// Check if any identity links exist - the first linked user is effectively admin
-	const row = db.prepare("SELECT COUNT(*) as count FROM identity_links").get() as {
+	// Check specifically for admin identity link, not just any link
+	// This ensures the admin claim flow remains available until an actual admin is claimed,
+	// even if regular users are linked first via `telclaude link`
+	const row = db
+		.prepare("SELECT COUNT(*) as count FROM identity_links WHERE local_user_id = 'admin'")
+		.get() as {
 		count: number;
 	};
 	return row.count > 0;
@@ -94,12 +98,11 @@ export function hasAdmin(): boolean {
  */
 export function isAdminChat(chatId: number): boolean {
 	const db = getDb();
-	// The first identity link is considered admin
-	// In single-user mode, any linked chat is effectively admin
+	// Check if this chat is linked with admin status (local_user_id = 'admin')
 	const row = db
-		.prepare("SELECT chat_id FROM identity_links ORDER BY linked_at ASC LIMIT 1")
-		.get() as { chat_id: number } | undefined;
-	return row?.chat_id === chatId;
+		.prepare("SELECT chat_id FROM identity_links WHERE chat_id = ? AND local_user_id = 'admin'")
+		.get(chatId) as { chat_id: number } | undefined;
+	return row !== undefined;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
