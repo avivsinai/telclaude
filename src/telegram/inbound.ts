@@ -2,6 +2,7 @@ import type { Bot, Context } from "grammy";
 
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
+import { hasAdmin } from "../security/admin-claim.js";
 import { filterOutput } from "../security/output-filter.js";
 import { chatIdToString } from "../utils.js";
 import { sendMediaToChat } from "./outbound.js";
@@ -59,7 +60,16 @@ export async function monitorTelegramInbox(
 
 	// Helper to check if chat is allowed
 	// SECURITY: Fails CLOSED - if no allowedChats configured, deny ALL
-	const isChatAllowed = (chatId: number): boolean => {
+	// EXCEPTION: Allow private chats for admin bootstrap when no admin exists
+	const isChatAllowed = (chatId: number, chatType: string): boolean => {
+		// BOOTSTRAP: Allow private messages through when no admin is configured yet
+		// This enables the first-time admin claim flow to work
+		// Once an admin is claimed, they'll be added to identity_links and normal auth applies
+		if (!hasAdmin() && chatType === "private") {
+			logger.info({ chatId }, "BOOTSTRAP: Allowing private message - no admin configured yet");
+			return true;
+		}
+
 		if (!allowedChats || allowedChats.length === 0) {
 			// SECURITY: Empty allowedChats = deny all (fail closed)
 			// This prevents accidental exposure if config is missing
@@ -86,7 +96,7 @@ export async function monitorTelegramInbox(
 		const chat = message.chat;
 		const from = message.from;
 
-		if (!isChatAllowed(chat.id)) {
+		if (!isChatAllowed(chat.id, chat.type)) {
 			if (verbose) {
 				logger.debug({ chatId: chat.id }, "message from non-allowed chat, ignoring");
 			}
