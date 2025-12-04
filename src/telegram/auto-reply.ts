@@ -562,6 +562,7 @@ export async function monitorTelegramProvider(
 						rateLimiter,
 						auditLogger,
 						recentlySent,
+						securityProfile,
 					);
 				},
 			});
@@ -654,6 +655,7 @@ async function handleInboundMessage(
 	rateLimiter: RateLimiter,
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
+	securityProfile: "simple" | "strict" | "test",
 ): Promise<void> {
 	console.log(`[DEBUG] handleInboundMessage called for: "${msg.body}"`);
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
@@ -908,7 +910,12 @@ async function handleInboundMessage(
 		`[DEBUG] Observer result: classification=${observerResult.classification}, confidence=${observerResult.confidence}`,
 	);
 
-	if (requiresApproval(tier, observerResult.classification, observerResult.confidence)) {
+	// V2: Approvals only required in strict profile
+	// In simple/test profiles, all requests proceed without approval workflow
+	if (
+		securityProfile === "strict" &&
+		requiresApproval(tier, observerResult.classification, observerResult.confidence)
+	) {
 		// Create approval and get timing info to ensure display matches actual expiry
 		const { nonce, createdAt, expiresAt } = createApproval({
 			requestId,
