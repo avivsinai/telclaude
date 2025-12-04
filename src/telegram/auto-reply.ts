@@ -18,8 +18,12 @@ import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
 import { getSessionManager } from "../sdk/session-manager.js";
 import {
+	getPendingAdminClaim,
+	handleAdminClaimApproval,
+	handleFirstMessageIfNoAdmin,
+} from "../security/admin-claim.js";
+import {
 	type PendingApproval,
-	cleanupExpiredApprovals,
 	consumeApproval,
 	consumeMostRecentApproval,
 	createApproval,
@@ -34,6 +38,7 @@ import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
+import { createStreamingRedactor } from "../security/streaming-redactor.js";
 import {
 	createTOTPSession,
 	hasTOTPSession,
@@ -358,6 +363,10 @@ async function executeWithSession(
 		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
 		let responseText = "";
 
+		// V2: Create streaming redactor for output secret filtering
+		// This catches secrets that may be split across chunk boundaries
+		const redactor = createStreamingRedactor();
+
 		console.log(
 			`[DEBUG] About to call executePooledQuery with prompt: "${queryPrompt.slice(0, 50)}..."`,
 		);
@@ -371,7 +380,9 @@ async function executeWithSession(
 			timeoutMs: timeoutSeconds * 1000,
 		})) {
 			if (chunk.type === "text") {
-				responseText += chunk.content;
+				// V2: Process through streaming redactor to catch secrets
+				const safeContent = redactor.processChunk(chunk.content);
+				responseText += safeContent;
 			} else if (chunk.type === "done") {
 				if (!chunk.result.success) {
 					const errorMsg = chunk.result.error?.includes("aborted")
@@ -397,7 +408,28 @@ async function executeWithSession(
 					return;
 				}
 
-				const finalResponse = responseText || chunk.result.response;
+				// V2: Flush remaining buffered content from streaming redactor
+				const flushedContent = redactor.flush();
+				responseText += flushedContent;
+
+				// Use accumulated response or fallback to chunk result
+				// If using fallback response, also run it through redactor
+				let finalResponse = responseText;
+				if (!finalResponse && chunk.result.response) {
+					// Fallback response needs redaction too
+					const fallbackRedactor = createStreamingRedactor();
+					finalResponse = fallbackRedactor.processChunk(chunk.result.response);
+					finalResponse += fallbackRedactor.flush();
+				}
+
+				// Log redaction stats if any secrets were found
+				const stats = redactor.getStats();
+				if (stats.secretsRedacted > 0) {
+					logger.warn(
+						{ requestId, secretsRedacted: stats.secretsRedacted, patterns: stats.patternsMatched },
+						"secrets redacted from response before sending to Telegram",
+					);
+				}
 
 				if (finalResponse) {
 					// Add to recentlySent BEFORE sending to prevent echo race condition
@@ -456,6 +488,8 @@ export type MonitorOptions = {
 	verbose: boolean;
 	keepAlive?: boolean;
 	abortSignal?: AbortSignal;
+	/** V2: Security profile - "simple" (default), "strict", or "test" */
+	securityProfile?: "simple" | "strict" | "test";
 };
 
 /**
@@ -465,17 +499,31 @@ export async function monitorTelegramProvider(
 	options: MonitorOptions,
 	_runtime?: RuntimeEnv,
 ): Promise<void> {
-	const { verbose, keepAlive = true, abortSignal } = options;
+	const { verbose, keepAlive = true, abortSignal, securityProfile = "simple" } = options;
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
 
+	// V2: Security profile controls observer behavior
+	// - "simple": Observer disabled (hard enforcement only)
+	// - "strict": Observer enabled (adds soft policy analysis)
+	// - "test": Observer disabled (no security - testing only)
+	const observerEnabled = securityProfile === "strict" && (cfg.security?.observer?.enabled ?? true);
+
 	const observer = createObserver({
-		enabled: cfg.security?.observer?.enabled ?? true,
+		enabled: observerEnabled,
 		maxLatencyMs: cfg.security?.observer?.maxLatencyMs ?? 2000,
 		dangerThreshold: cfg.security?.observer?.dangerThreshold ?? 0.7,
 		fallbackOnTimeout: cfg.security?.observer?.fallbackOnTimeout ?? "block",
 		cwd: process.cwd(),
 	});
+
+	if (securityProfile === "test") {
+		logger.warn("SECURITY PROFILE: test - ALL SECURITY DISABLED (testing only)");
+	} else if (securityProfile === "strict") {
+		logger.info("security profile: strict (observer + approvals enabled)");
+	} else {
+		logger.info("security profile: simple (hard enforcement only)");
+	}
 
 	const rateLimiter = createRateLimiter(cfg.security);
 	const auditLogger = createAuditLogger({
@@ -527,8 +575,8 @@ export async function monitorTelegramProvider(
 			});
 
 			// Periodic cleanup of expired entries in SQLite
+			// cleanupExpired() handles approvals, linkCodes, rateLimits, totpSessions, adminClaims
 			const cleanupInterval = setInterval(() => {
-				cleanupExpiredApprovals();
 				cleanupExpired();
 			}, 60_000);
 
@@ -611,6 +659,28 @@ async function handleInboundMessage(
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
 	console.log(`[DEBUG] requestId=${requestId}, userId=${userId}`);
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// V2: ADMIN CLAIM FLOW - First-time setup for single-user deployments
+	// This must run BEFORE control commands to intercept first message
+	// ══════════════════════════════════════════════════════════════════════════
+
+	// Determine chat type for admin claim check
+	const chatType = msg.chatType ?? "private"; // Default to private if not specified
+
+	// Check for first-time admin claim (only if no admin is set up yet)
+	const adminClaimResult = await handleFirstMessageIfNoAdmin(
+		msg.chatId,
+		chatType,
+		msg.body,
+		{ userId: msg.senderId, username: msg.username },
+		auditLogger,
+	);
+
+	if (adminClaimResult.handled) {
+		await msg.reply(adminClaimResult.response);
+		return;
+	}
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// CONTROL PLANE COMMANDS - Intercepted BEFORE any other processing
@@ -697,6 +767,16 @@ async function handleInboundMessage(
 
 	if (trimmedBody === "/2fa-logout") {
 		await handleLogout2FA(msg);
+		return;
+	}
+
+	if (trimmedBody === "/skip-totp") {
+		await msg.reply(
+			"⚠️ *TOTP setup skipped*\n\n" +
+				"You can set up two-factor authentication later by running:\n" +
+				"`telclaude totp-setup`\n\n" +
+				"Note: Without 2FA, anyone with access to your Telegram account can use this bot.",
+		);
 		return;
 	}
 
@@ -1008,6 +1088,23 @@ async function handleApproveCommand(
 	if (!nonce) {
 		await msg.reply("Usage: `/approve <code>`");
 		return;
+	}
+
+	// V2: Check for admin claim approval first
+	const pendingAdminClaim = getPendingAdminClaim(msg.chatId);
+	if (pendingAdminClaim) {
+		const adminClaimResult = await handleAdminClaimApproval(
+			nonce,
+			msg.chatId,
+			{ userId: msg.senderId, username: msg.username },
+			auditLogger,
+		);
+		if (adminClaimResult) {
+			await msg.reply(adminClaimResult.response);
+			return;
+		}
+		// If handleAdminClaimApproval returns null, the code wasn't for admin claim
+		// Fall through to regular approval handling
 	}
 
 	const result = consumeApproval(nonce, msg.chatId);

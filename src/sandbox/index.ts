@@ -1,5 +1,13 @@
 /**
  * Sandbox module exports.
+ *
+ * V2 SECURITY ARCHITECTURE:
+ * Provides OS-level isolation using @anthropic-ai/sandbox-runtime.
+ * - Filesystem: Deny ~ broadly, allow only workspace
+ * - Environment: Allowlist-only model
+ * - Network: Domain + method restrictions
+ * - Private /tmp: Mounted from ~/.telclaude/sandbox-tmp
+ * - Symlink protection: Reject external targets
  */
 
 export {
@@ -20,4 +28,33 @@ export {
 	DEFAULT_SANDBOX_CONFIG,
 	TIER_SANDBOX_CONFIGS,
 	getSandboxConfigForTier,
+	PRIVATE_TMP_CONFIG,
+	SYMLINK_POLICY,
+	BLOCKED_METADATA_DOMAINS,
+	BLOCKED_PRIVATE_NETWORKS,
 } from "./config.js";
+
+// V2: Environment isolation
+export {
+	buildSandboxEnv,
+	getEnvIsolationSummary,
+	isEnvVarSafe,
+	getBlockedEnvVars,
+	ENV_ALLOWLIST,
+	ENV_DENY_PREFIXES,
+} from "./env.js";
+
+// V2: Network proxy with domain allowlist and method restrictions
+export {
+	checkNetworkRequest,
+	getNetworkIsolationSummary,
+	runNetworkSelfTest,
+	DEFAULT_NETWORK_CONFIG,
+	DEFAULT_ALLOWED_DOMAINS,
+	type NetworkProxyConfig,
+	type DomainRule,
+	type HttpMethod,
+	type NetworkRequestCheck,
+	type NetworkIsolationSummary,
+	type NetworkSelfTestResult,
+} from "./network-proxy.js";

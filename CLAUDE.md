@@ -63,6 +63,43 @@ Telegram Bot API (grammY)
 
 ## Key Concepts
 
+### V2 Security Architecture
+
+The V2 security architecture introduces two profiles and five security pillars:
+
+#### Security Profiles
+
+- **simple** (default): Hard enforcement only
+  - Sandbox (filesystem, environment, network)
+  - Secret output filter (CORE patterns + entropy detection)
+  - Rate limiting
+  - Audit logging
+  - No observer, no approval workflows
+
+- **strict** (opt-in): Adds soft policy layers
+  - All "simple" features plus:
+  - Security observer (Claude Haiku analysis)
+  - Approval workflows for risky operations
+  - Permission tier enforcement
+
+- **test**: No security (for testing only)
+
+#### Five Security Pillars
+
+1. **Filesystem Isolation**: Sandbox blocks access to sensitive paths (~/.ssh, ~/.aws, ~/.telclaude, etc.)
+2. **Environment Isolation**: Allowlist-only model - only safe env vars pass through (PATH, LANG, NODE_ENV, etc.)
+3. **Network Isolation**: Cloud metadata endpoints blocked (169.254.169.254, etc.) to prevent SSRF
+4. **Secret Output Filtering**: CORE patterns detect and redact secrets in output (Telegram tokens, API keys, private keys, JWTs)
+5. **Auth/TOTP/Rate Limiting/Audit**: Identity verification, 2FA, rate limits, and audit trail
+
+#### Key V2 Features
+
+- **Private /tmp**: Sandbox gets its own /tmp (mounted from ~/.telclaude/sandbox-tmp) to prevent reading host secrets
+- **Symlink Protection**: Rejects symlinks that resolve outside allowed paths
+- **Streaming Redaction**: Handles secrets split across message chunks
+- **Entropy Detection**: Catches high-entropy blobs that might be encoded secrets
+- **CORE Patterns**: 18+ secret patterns that are NEVER configurable, NEVER removable
+
 ### Permission Tiers
 
 Three tiers control what Claude can do (via SDK `allowedTools`):
@@ -157,6 +194,26 @@ SQLite provides ACID transactions for atomic operations (e.g., consuming an appr
 - **Fails closed**: If rate limiting errors, requests are blocked (not allowed)
 - SQLite-backed for persistence across restarts
 
+### First-Time Admin Claim (V2)
+
+When no admin is configured, the first private chat message triggers an admin claim flow:
+
+1. User sends any message to the bot in a **private chat**
+2. Bot responds with a confirmation code: `Reply /approve ABC123 to claim admin`
+3. User replies `/approve ABC123` within 5 minutes
+4. User is linked as admin and prompted to set up TOTP
+
+**Security constraints:**
+- Admin claim only works in **private chats** (groups/channels are rejected)
+- Each claim requires explicit confirmation with a unique code
+- Code expires after 5 minutes
+- Audit logged for security review
+
+To reset and re-claim admin:
+```bash
+telclaude reset-auth  # Requires typing "RESET" to confirm
+```
+
 ### Identity Linking
 
 Links Telegram users to authorized identities via out-of-band verification:
@@ -207,6 +264,8 @@ src/
 │   ├── link.ts           # Identity linking command
 │   ├── doctor.ts         # Health check command
 │   ├── totp-daemon.ts    # TOTP daemon command
+│   ├── totp-setup.ts     # TOTP setup command
+│   ├── reset-auth.ts     # Reset auth state command (DANGEROUS)
 │   └── index.ts
 │
 ├── config/
@@ -226,7 +285,8 @@ src/
 │   └── index.ts
 │
 ├── sandbox/
-│   ├── config.ts         # Sandbox configuration (paths, network)
+│   ├── config.ts         # Sandbox configuration (paths, network, V2 features)
+│   ├── env.ts            # V2: Environment isolation (allowlist model)
 │   ├── manager.ts        # SandboxManager wrapper
 │   └── index.ts
 │
@@ -251,6 +311,10 @@ src/
 │
 ├── security/
 │   ├── types.ts          # Security types
+│   ├── pipeline.ts       # V2: SecurityPipeline abstraction (simple/strict/test profiles)
+│   ├── streaming-redactor.ts # V2: Streaming secret redaction across chunk boundaries
+│   ├── output-filter.ts  # V2: CORE secret patterns + entropy detection
+│   ├── admin-claim.ts    # V2: First-time admin claim flow (private chats only)
 │   ├── fast-path.ts      # Regex-based quick decisions
 │   ├── observer.ts       # SDK-based security analysis (with circuit breaker)
 │   ├── permissions.ts    # Tier system and tool arrays
@@ -291,11 +355,22 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
     }
   },
   "security": {
+    "profile": "simple",
     "observer": {
       "enabled": true,
       "maxLatencyMs": 2000,
       "dangerThreshold": 0.7,
       "fallbackOnTimeout": "block"
+    },
+    "secretFilter": {
+      "additionalPatterns": [
+        { "id": "my_api_key", "pattern": "my-api-[a-z0-9]{32}" }
+      ],
+      "entropyDetection": {
+        "enabled": true,
+        "threshold": 4.5,
+        "minLength": 32
+      }
     },
     "permissions": {
       "defaultTier": "READ_ONLY",
@@ -393,8 +468,14 @@ The V2 API is wrapped in `src/sdk/session-pool.ts` to isolate the unstable API s
 ## CLI Commands
 
 ```bash
-# Start the relay
+# Start the relay (default: simple profile)
 telclaude relay
+
+# Start with strict profile (enables observer + approvals)
+telclaude relay --profile strict
+
+# Start with test profile (NO SECURITY - testing only)
+telclaude relay --profile test
 
 # Send a message
 telclaude send <chatId> "Hello!"
@@ -404,19 +485,40 @@ telclaude send <chatId> --media ./image.png --caption "Check this out"
 telclaude status
 telclaude status --json
 
-# Doctor (verify Claude CLI + skills + sandbox + TOTP daemon)
+# Doctor (verify Claude CLI + skills + sandbox + security pillars)
 telclaude doctor
 
 Example output:
 ```
 === telclaude doctor ===
-Claude CLI: claude version 1.15.0
-Logged in: yes
-Local skills: found
-  - /Users/you/projects/telclaude/.claude/skills/security-gate/SKILL.md
-  - /Users/you/projects/telclaude/.claude/skills/telegram-reply/SKILL.md
-Sandbox: available
-TOTP daemon: running
+
+📦 Claude CLI
+   Version: claude version 1.15.0
+   Logged in: ✓ yes
+   Local skills: ✓ 2 found
+     - security-gate
+     - telegram-reply
+
+🔒 Security (V2)
+   Profile: simple
+     Observer: disabled (simple profile)
+     Approvals: disabled (simple profile)
+
+🛡️  Security Pillars
+   1. Filesystem isolation: ✓ available
+   2. Environment isolation: ✓ 15 allowed, 42 blocked
+   3. Network isolation: ✓ metadata endpoints blocked
+   4. Secret filtering: ✓ 18 CORE patterns
+   5. Auth/TOTP: ✓ daemon running
+
+📦 Sandbox
+   Status: ✓ available
+
+🔐 TOTP Daemon
+   Status: ✓ running
+
+📊 Overall Health
+   ✓ All checks passed
 ```
 
 # Start the TOTP daemon (required for 2FA)
@@ -429,6 +531,10 @@ telclaude link --remove <user-id>  # Remove a linked identity
 
 # Set up TOTP 2FA for a user (requires totp-daemon running)
 telclaude totp-setup <user-id>     # Interactive setup with QR code and verification
+
+# Reset auth state (DANGEROUS - requires confirmation)
+telclaude reset-auth               # Nuke all identity links and TOTP sessions
+telclaude reset-auth --force       # Skip confirmation prompt
 ```
 
 ## Development

@@ -17,7 +17,7 @@ import { CONFIG_DIR } from "../utils.js";
 const logger = getChildLogger({ module: "storage" });
 
 const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 let db: Database.Database | null = null;
 
@@ -192,6 +192,24 @@ function migrate(database: Database.Database): void {
 		logger.info("migration 3: added totp_sessions table");
 	}
 
+	// Migration 4: Pending admin claims for first-time setup
+	if (currentVersion < 4) {
+		database.exec(`
+			-- Pending admin claims (first-time setup flow)
+			CREATE TABLE IF NOT EXISTS pending_admin_claims (
+				code TEXT PRIMARY KEY,
+				chat_id INTEGER NOT NULL,
+				user_id INTEGER,
+				username TEXT,
+				created_at INTEGER NOT NULL,
+				expires_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_chat ON pending_admin_claims(chat_id);
+			CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_expires ON pending_admin_claims(expires_at);
+		`);
+		logger.info("migration 4: added pending_admin_claims table");
+	}
+
 	// Update schema version
 	database.prepare("DELETE FROM schema_version").run();
 	database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
@@ -208,6 +226,7 @@ export function cleanupExpired(): {
 	linkCodes: number;
 	rateLimits: number;
 	totpSessions: number;
+	adminClaims: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -231,18 +250,25 @@ export function cleanupExpired(): {
 		.prepare("DELETE FROM totp_sessions WHERE expires_at < ?")
 		.run(now);
 
+	// Clean expired admin claims
+	const adminClaimsResult = database
+		.prepare("DELETE FROM pending_admin_claims WHERE expires_at < ?")
+		.run(now);
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
 		rateLimits: rateLimitsResult.changes,
 		totpSessions: totpSessionsResult.changes,
+		adminClaims: adminClaimsResult.changes,
 	};
 
 	if (
 		result.approvals > 0 ||
 		result.linkCodes > 0 ||
 		result.rateLimits > 0 ||
-		result.totpSessions > 0
+		result.totpSessions > 0 ||
+		result.adminClaims > 0
 	) {
 		logger.debug(result, "cleaned up expired entries");
 	}

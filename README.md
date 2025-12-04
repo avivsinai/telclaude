@@ -58,6 +58,8 @@ pnpm dev doctor   # verify setup
 pnpm dev relay    # start
 ```
 
+**First-time setup:** Send a message to your bot in a private chat. You'll be prompted to confirm admin claim with `/approve <code>`. TOTP setup is recommended.
+
 ## Configuration
 
 Config: `~/.telclaude/telclaude.json`
@@ -66,13 +68,15 @@ Config: `~/.telclaude/telclaude.json`
 {
   "telegram": { "allowedChats": [] },
   "security": {
-    "permissions": {
-      "defaultTier": "READ_ONLY",
-      "users": { "tg:123456789": { "tier": "WRITE_SAFE" } }
-    }
+    "profile": "simple"
   }
 }
 ```
+
+**Security profiles:**
+- `simple` (default): Hard enforcement only (sandbox, secret filter, rate limits)
+- `strict`: Adds observer + approvals + permission tiers
+- `test`: No security (testing only)
 
 See [CLAUDE.md](CLAUDE.md) for full configuration reference.
 

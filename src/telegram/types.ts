@@ -30,11 +30,13 @@ export type TelegramMediaPayload =
 export type TelegramInboundMessage = {
 	id: string;
 	chatId: number;
+	senderId?: number; // User ID of the sender (distinct from chatId in groups)
 	from: string; // Normalized sender ID (tg:123456)
 	to: string; // Bot's ID
 	body: string; // Text content or caption
 	pushName?: string; // User's display name
 	username?: string; // @username if available
+	chatType?: "private" | "group" | "supergroup" | "channel"; // Chat type for security checks
 	timestamp?: number; // Unix timestamp in ms
 	isEdited?: boolean;
 	editedTimestamp?: number;

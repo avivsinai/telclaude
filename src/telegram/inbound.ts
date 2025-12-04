@@ -135,11 +135,13 @@ export async function monitorTelegramInbox(
 		const inboundMsg: TelegramInboundMessage = {
 			id: String(message.message_id),
 			chatId: chat.id,
+			senderId: from?.id,
 			from: chatId,
 			to: botIdStr,
 			body,
 			pushName: from ? buildPushName(from) : undefined,
 			username: from?.username,
+			chatType: chat.type as "private" | "group" | "supergroup" | "channel",
 			timestamp: message.date * 1000,
 			isEdited,
 			editedTimestamp: isEdited && message.edit_date ? message.edit_date * 1000 : undefined,

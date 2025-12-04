@@ -1,14 +1,20 @@
 /**
  * Sandbox configuration for telclaude.
  *
+ * V2 SECURITY ARCHITECTURE:
  * Uses @anthropic-ai/sandbox-runtime to isolate Claude's execution environment.
  * This provides OS-level sandboxing (Seatbelt on macOS, bubblewrap on Linux).
  *
  * Security model:
- * - Filesystem: Deny access to sensitive paths (~/.telclaude, ~/.ssh, etc.)
- * - Network: Permissive by default (configurable via config)
- * - All permission tiers are sandboxed for defense-in-depth
- * - Tier-aligned configs: READ_ONLY has stricter write restrictions
+ * - Filesystem: Deny ~ broadly, allow only workspace
+ * - Environment: Allowlist-only model (see src/sandbox/env.ts)
+ * - Network: Domain + method restrictions via proxy
+ * - Private /tmp: Sandbox sees ~/.telclaude/sandbox-tmp, not host /tmp
+ * - Symlink protection: Reject symlinks resolving outside allowed paths
+ *
+ * Tier-aligned configs:
+ * - READ_ONLY: No writes allowed
+ * - WRITE_SAFE/FULL_ACCESS: Writes to workspace + private /tmp
  */
 
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -104,12 +110,33 @@ export const SENSITIVE_READ_PATHS = [
 /**
  * Default write-allowed paths.
  * Sandboxed processes can only write to these locations.
+ *
+ * V2: Use synthetic workspace path and private /tmp
  */
 export const DEFAULT_WRITE_PATHS = [
-	".", // Current working directory
-	"/tmp", // Temporary files
-	"/var/tmp", // Persistent temp files
+	"/workspace", // Synthetic workspace (project mounted here)
+	"/tmp", // Private tmp (mounted from ~/.telclaude/sandbox-tmp)
 ];
+
+/**
+ * Private /tmp configuration.
+ * Sandbox gets its own /tmp to prevent reading secrets from host /tmp
+ * (keyring sockets, dbus secrets, etc.)
+ */
+export const PRIVATE_TMP_CONFIG = {
+	hostPath: "~/.telclaude/sandbox-tmp",
+	sandboxPath: "/tmp",
+};
+
+/**
+ * Symlink policy for preventing escape attempts.
+ */
+export const SYMLINK_POLICY = {
+	/** Reject symlinks that resolve outside allowed paths */
+	policy: "reject-external" as const,
+	/** Log symlink resolution attempts for audit */
+	logAttempts: true,
+};
 
 /**
  * Cloud metadata endpoints that should be blocked to prevent SSRF attacks.
@@ -133,6 +160,26 @@ export const BLOCKED_METADATA_DOMAINS = [
 	"169.254.169.254",
 	// Oracle Cloud Infrastructure
 	"169.254.169.254",
+	// Alibaba Cloud
+	"100.100.100.200",
+];
+
+/**
+ * RFC1918 private networks - always blocked.
+ * Prevents accessing internal services, routers, etc.
+ */
+export const BLOCKED_PRIVATE_NETWORKS = [
+	// Localhost
+	"127.0.0.0/8",
+	"::1",
+	"localhost",
+	// RFC1918 private ranges
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	// Link-local
+	"169.254.0.0/16",
+	"fe80::/10",
 ];
 
 /**

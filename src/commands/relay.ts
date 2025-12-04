@@ -13,6 +13,7 @@ const logger = getChildLogger({ module: "cmd-relay" });
 export type RelayOptions = {
 	verbose?: boolean;
 	dryRun?: boolean;
+	profile?: "simple" | "strict" | "test";
 };
 
 export function registerRelayCommand(program: Command): void {
@@ -20,6 +21,7 @@ export function registerRelayCommand(program: Command): void {
 		.command("relay")
 		.description("Start the Telegram relay with auto-reply")
 		.option("--dry-run", "Don't actually send replies (for testing)")
+		.option("--profile <profile>", "Security profile: simple, strict, or test (overrides config)")
 		.action(async (opts: RelayOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
 
@@ -60,14 +62,30 @@ export function registerRelayCommand(program: Command): void {
 					console.warn('Consider using "block" (safer) or "escalate" instead.\n');
 				}
 
+				// Determine effective security profile (CLI flag overrides config)
+				const effectiveProfile = opts.profile ?? cfg.security?.profile ?? "simple";
+
+				// SECURITY: Warn about test profile
+				if (effectiveProfile === "test") {
+					console.warn("\n⚠️  WARNING: Using 'test' security profile - NO SECURITY ENFORCEMENT.\n");
+					console.warn(
+						"This profile is for testing only and should NEVER be used in production.\n",
+					);
+				}
+
 				console.log("Starting Telclaude relay...");
+				console.log(`Security profile: ${effectiveProfile}`);
+				if (effectiveProfile === "strict") {
+					console.log(
+						`  Observer: ${cfg.security?.observer?.enabled !== false ? "enabled" : "disabled"}`,
+					);
+					console.log("  Approvals: enabled");
+				}
+				console.log("  Rate limiting: enabled");
 				console.log(
-					`Security observer: ${cfg.security?.observer?.enabled !== false ? "enabled" : "disabled"}`,
+					`  Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`,
 				);
-				console.log("Rate limiting: enabled");
-				console.log(
-					`Audit logging: ${cfg.security?.audit?.enabled !== false ? "enabled" : "disabled"}`,
-				);
+				console.log("  Secret filtering: enabled (CORE patterns + entropy detection)");
 
 				// Initialize sandbox for OS-level isolation (MANDATORY)
 				const sandboxAvailable = await isSandboxAvailable();
@@ -128,6 +146,7 @@ export function registerRelayCommand(program: Command): void {
 					verbose,
 					keepAlive: true,
 					abortSignal: abortController.signal,
+					securityProfile: effectiveProfile,
 				});
 
 				// Final cleanup after monitor exits

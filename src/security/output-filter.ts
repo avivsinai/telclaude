@@ -1,20 +1,22 @@
 /**
  * Output filter for detecting and blocking secret exfiltration.
  *
+ * V2 SECURITY ARCHITECTURE:
+ * - CORE patterns: NEVER configurable, NEVER removable
+ * - Additive patterns: Users can ADD, never remove CORE
+ * - Entropy detection: Catches encoded/obfuscated secrets
+ *
  * SECURITY PRINCIPLE:
  * - Claude CAN see secrets (needed to complete tasks)
  * - Claude CANNOT send secrets out (exfiltration prevention)
  *
- * This filter runs on ALL outbound channels:
- * 1. Telegram responses (primary exfiltration risk)
- * 2. Network request URLs/bodies (WebFetch, curl, etc.)
- *
- * Defense layers:
- * 1. Plain text pattern matching
- * 2. Base64 decode and scan
- * 3. Hex decode and scan
- * 4. URL decode and scan
- * 5. Rolling buffer for split-across-chunks detection
+ * Surface area coverage (everything leaving the process):
+ * - Telegram messages
+ * - Tool results
+ * - File contents when agent reads them back
+ * - Error messages
+ * - Audit logs
+ * - Debug logs
  */
 
 export interface SecretPattern {
@@ -22,27 +24,29 @@ export interface SecretPattern {
 	pattern: RegExp;
 	severity: "critical" | "high";
 	description: string;
+	/** If true, this is a CORE pattern that cannot be removed */
+	core?: boolean;
 }
 
 /**
- * Secret patterns to detect.
- *
- * CRITICAL: Infrastructure secrets that could compromise telclaude itself
- * HIGH: Secrets that could compromise user's external services
+ * CORE secret patterns - NEVER configurable, NEVER removable.
+ * These are the foundational patterns that must always be enforced.
  */
-export const SECRET_PATTERNS: SecretPattern[] = [
+export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 	// === CRITICAL: Telclaude infrastructure ===
 	{
 		name: "telegram_bot_token",
 		pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/,
 		severity: "critical",
 		description: "Telegram bot token - would allow bot hijacking",
+		core: true,
 	},
 	{
 		name: "anthropic_api_key",
 		pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/,
 		severity: "critical",
 		description: "Anthropic API key - would allow unauthorized API usage",
+		core: true,
 	},
 
 	// === CRITICAL: Private keys ===
@@ -51,12 +55,23 @@ export const SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /-----BEGIN\s+(RSA\s+|EC\s+|OPENSSH\s+|DSA\s+)?PRIVATE\s+KEY-----/,
 		severity: "critical",
 		description: "SSH private key - would allow server compromise",
+		core: true,
 	},
 	{
 		name: "pgp_private_key",
 		pattern: /-----BEGIN\s+PGP\s+PRIVATE\s+KEY\s+BLOCK-----/,
 		severity: "critical",
 		description: "PGP private key - would allow decryption/impersonation",
+		core: true,
+	},
+
+	// === CRITICAL: TOTP seeds (base32) ===
+	{
+		name: "totp_seed",
+		pattern: /\b[A-Z2-7]{32,}\b/,
+		severity: "critical",
+		description: "TOTP seed - would allow 2FA bypass",
+		core: true,
 	},
 
 	// === HIGH: Cloud provider credentials ===
@@ -65,19 +80,21 @@ export const SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /\bAKIA[0-9A-Z]{16}\b/,
 		severity: "high",
 		description: "AWS access key ID",
+		core: true,
 	},
 	{
 		name: "aws_secret_key",
-		// AWS secret keys are 40 chars, base64-ish
 		pattern: /\baws_secret_access_key\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/i,
 		severity: "high",
 		description: "AWS secret access key",
+		core: true,
 	},
 	{
 		name: "gcp_service_account",
 		pattern: /"type"\s*:\s*"service_account"[\s\S]*?"private_key"\s*:/,
 		severity: "high",
 		description: "GCP service account key",
+		core: true,
 	},
 
 	// === HIGH: API keys and tokens ===
@@ -86,42 +103,58 @@ export const SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /\bsk-[A-Za-z0-9]{48,}\b/,
 		severity: "high",
 		description: "OpenAI API key",
+		core: true,
 	},
 	{
-		name: "github_token",
-		pattern: /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/,
+		name: "github_pat",
+		pattern: /\bghp_[A-Za-z0-9]{36}\b/,
 		severity: "high",
 		description: "GitHub personal access token",
+		core: true,
 	},
 	{
 		name: "github_oauth",
-		pattern: /\bgho_[A-Za-z0-9]{36,}\b/,
+		pattern: /\bgho_[A-Za-z0-9]{36}\b/,
 		severity: "high",
 		description: "GitHub OAuth token",
+		core: true,
 	},
 	{
 		name: "slack_token",
 		pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
 		severity: "high",
 		description: "Slack API token",
+		core: true,
 	},
 	{
 		name: "stripe_key",
 		pattern: /\b(sk|pk)_(live|test)_[A-Za-z0-9]{24,}\b/,
 		severity: "high",
 		description: "Stripe API key",
+		core: true,
 	},
 	{
 		name: "sendgrid_key",
 		pattern: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/,
 		severity: "high",
 		description: "SendGrid API key",
+		core: true,
 	},
 	{
 		name: "twilio_key",
 		pattern: /\bSK[a-f0-9]{32}\b/,
 		severity: "high",
 		description: "Twilio API key",
+		core: true,
+	},
+
+	// === HIGH: JWTs (can contain sensitive claims) ===
+	{
+		name: "jwt",
+		pattern: /\beyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/,
+		severity: "high",
+		description: "JSON Web Token",
+		core: true,
 	},
 
 	// === HIGH: Database connection strings with passwords ===
@@ -130,16 +163,24 @@ export const SECRET_PATTERNS: SecretPattern[] = [
 		pattern: /\b(mongodb|postgres|mysql|redis):\/\/[^:]+:([^@]+)@/,
 		severity: "high",
 		description: "Database connection string with password",
+		core: true,
 	},
 
-	// === HIGH: JWT secrets ===
+	// === HIGH: Generic env var patterns ===
 	{
-		name: "jwt_secret",
-		pattern: /\b(jwt[_-]?secret|JWT_SECRET)\s*[=:]\s*['"]?([A-Za-z0-9_-]{16,})['"]?/i,
+		name: "env_secret",
+		pattern: /\b(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?/i,
 		severity: "high",
-		description: "JWT secret key",
+		description: "Environment variable containing secret",
+		core: true,
 	},
 ];
+
+/**
+ * All secret patterns (CORE patterns).
+ * This is the main export used by the filter.
+ */
+export const SECRET_PATTERNS: SecretPattern[] = CORE_SECRET_PATTERNS;
 
 export interface FilterMatch {
 	pattern: string;
@@ -179,8 +220,9 @@ export function redactSecrets(text: string): string {
 	let result = text;
 
 	for (const { name, pattern } of SECRET_PATTERNS) {
-		// Create new regex instance with global flag
-		const regex = new RegExp(pattern.source, "g");
+		// Create new regex instance, preserving original flags but ensuring global
+		const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+		const regex = new RegExp(pattern.source, flags);
 		result = result.replace(regex, `[REDACTED:${name}]`);
 	}
 

@@ -33,6 +33,10 @@ const InboundConfigSchema = z.object({
 	reply: ReplyConfigSchema.optional(),
 });
 
+// Security profile - determines which security layers are active
+export const SecurityProfileSchema = z.enum(["simple", "strict", "test"]);
+export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
+
 // Security observer configuration
 const ObserverConfigSchema = z.object({
 	enabled: z.boolean().default(true),
@@ -56,9 +60,34 @@ const UserPermissionSchema = z.object({
 		.optional(),
 });
 
+// Secret filter configuration for additive patterns
+const SecretFilterConfigSchema = z.object({
+	additionalPatterns: z
+		.array(
+			z.object({
+				id: z.string(),
+				pattern: z.string(),
+			}),
+		)
+		.optional(),
+	entropyDetection: z
+		.object({
+			enabled: z.boolean().default(true),
+			threshold: z.number().min(0).max(8).default(4.5),
+			minLength: z.number().int().positive().default(32),
+		})
+		.optional(),
+});
+
 // Security configuration schema
 const SecurityConfigSchema = z.object({
+	// V2: Security profile determines which layers are active
+	// "simple" (default): Hard enforcement only (sandbox, secret filter, rate limits)
+	// "strict": Adds soft policy layers (observer, approvals)
+	// "test": No security (for testing only)
+	profile: SecurityProfileSchema.default("simple"),
 	observer: ObserverConfigSchema.optional(),
+	secretFilter: SecretFilterConfigSchema.optional(),
 	permissions: z
 		.object({
 			defaultTier: PermissionTierSchema.default("READ_ONLY"),
