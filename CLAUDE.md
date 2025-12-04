@@ -343,9 +343,16 @@ Required:
 - `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather
 
 Optional:
+- `ANTHROPIC_API_KEY` - API key (alternative to `claude login`)
 - `TELCLAUDE_CONFIG` - Custom config file path
 - `TELCLAUDE_LOG_LEVEL` - Log level (debug/info/warn/error)
+- `TELCLAUDE_DATA_DIR` - Data directory (default: `~/.telclaude`)
 - `TELCLAUDE_TOTP_SOCKET` - Custom path for TOTP daemon socket (default: `~/.telclaude/totp.sock`)
+
+Docker-only (file-based TOTP storage):
+- `TOTP_STORAGE_BACKEND` - `keytar` (default, OS keychain) or `file` (encrypted file)
+- `TOTP_ENCRYPTION_KEY` - AES-256-GCM key for file backend (generate with: `openssl rand -base64 32`)
+- `TOTP_SECRETS_FILE` - Custom path for encrypted secrets file
 
 ## Claude Agent SDK
 
@@ -419,6 +426,9 @@ telclaude totp-daemon
 telclaude link <user-id>           # Generate a link code for a user
 telclaude link --list              # List all linked identities
 telclaude link --remove <user-id>  # Remove a linked identity
+
+# Set up TOTP 2FA for a user (requires totp-daemon running)
+telclaude totp-setup <user-id>     # Interactive setup with QR code and verification
 ```
 
 ## Development

@@ -89,6 +89,7 @@ pnpm build        # build
 ## Documentation
 
 - **[CLAUDE.md](CLAUDE.md)** — Architecture, configuration, implementation details
+- **[docker/README.md](docker/README.md)** — Docker deployment guide
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contributor guidelines
 - **[SECURITY.md](SECURITY.md)** — Security policy, threat model
 
