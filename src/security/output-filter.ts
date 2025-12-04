@@ -237,8 +237,10 @@ function scanPlainText(text: string): FilterMatch[] {
 	const matches: FilterMatch[] = [];
 
 	for (const { name, pattern, severity, description } of SECRET_PATTERNS) {
-		// Create new regex instance to reset state
-		const regex = new RegExp(pattern.source, pattern.flags || "g");
+		// Create new regex instance, preserving original flags but ensuring global
+		// CRITICAL: Without 'g' flag, exec() never advances lastIndex → infinite loop
+		const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+		const regex = new RegExp(pattern.source, flags);
 
 		for (let match = regex.exec(text); match !== null; match = regex.exec(text)) {
 			matches.push({
