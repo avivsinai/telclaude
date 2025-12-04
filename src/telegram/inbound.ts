@@ -3,7 +3,7 @@ import type { Bot, Context } from "grammy";
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
-import { filterOutput } from "../security/output-filter.js";
+import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
 import { chatIdToString } from "../utils.js";
 import { sendMediaToChat } from "./outbound.js";
 import { sanitizeClaudeResponse } from "./sanitize.js";
@@ -34,6 +34,7 @@ export type InboxMonitorOptions = {
 	verbose: boolean;
 	onMessage: (msg: TelegramInboundMessage) => Promise<void>;
 	allowedChats?: (number | string)[];
+	secretFilterConfig?: SecretFilterConfig;
 };
 
 export type InboxMonitorHandle = {
@@ -47,7 +48,7 @@ export type InboxMonitorHandle = {
 export async function monitorTelegramInbox(
 	options: InboxMonitorOptions,
 ): Promise<InboxMonitorHandle> {
-	const { bot, botInfo, verbose, onMessage, allowedChats } = options;
+	const { bot, botInfo, verbose, onMessage, allowedChats, secretFilterConfig } = options;
 	const logger = getChildLogger({ module: "telegram-inbound" });
 	const seen = new Set<string>();
 
@@ -166,7 +167,8 @@ export async function monitorTelegramInbox(
 			reply: async (text: string, options?: { useMarkdown?: boolean }) => {
 				// SECURITY: Filter for secret exfiltration BEFORE any processing
 				// This is the last line of defense - ALL outbound text MUST pass through this
-				const filterResult = filterOutput(text);
+				// Use config-aware filtering to include additional patterns and entropy detection
+				const filterResult = filterOutputWithConfig(text, secretFilterConfig);
 				if (filterResult.blocked) {
 					logger.error(
 						{

@@ -471,3 +471,159 @@ export class ChunkBuffer {
 		this.buffer = "";
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V2: Config-Aware Filtering
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Configuration for secret filtering.
+ * Allows users to ADD patterns (never remove CORE patterns) and tune entropy detection.
+ */
+export interface SecretFilterConfig {
+	additionalPatterns?: Array<{ id: string; pattern: string }>;
+	entropyDetection?: { enabled?: boolean; threshold?: number; minLength?: number };
+}
+
+/**
+ * Calculate Shannon entropy of a string.
+ * Higher entropy = more random = more likely to be a secret.
+ */
+export function calculateEntropy(str: string): number {
+	const len = str.length;
+	if (len === 0) return 0;
+
+	const freq: Record<string, number> = {};
+	for (const char of str) {
+		freq[char] = (freq[char] || 0) + 1;
+	}
+
+	let entropy = 0;
+	for (const count of Object.values(freq)) {
+		const p = count / len;
+		entropy -= p * Math.log2(p);
+	}
+	return entropy;
+}
+
+/**
+ * Detect high-entropy blobs that might be encoded secrets.
+ * Looks for base64-like or hex-like strings with high randomness.
+ */
+export function detectHighEntropyBlobs(
+	text: string,
+	threshold: number,
+	minLength: number,
+): string[] {
+	const suspiciousBlobs: string[] = [];
+	const blobPattern = /[=:]\s*['"]?([a-zA-Z0-9+/=]{32,}|[a-fA-F0-9]{32,})['"]?/g;
+	for (const match of text.matchAll(blobPattern)) {
+		const blob = match[1];
+		if (blob && blob.length >= minLength) {
+			const entropy = calculateEntropy(blob);
+			if (entropy > threshold) {
+				suspiciousBlobs.push(blob);
+			}
+		}
+	}
+	return suspiciousBlobs;
+}
+
+/**
+ * Filter output with user configuration.
+ * Applies CORE patterns + additional patterns + entropy detection.
+ *
+ * @param text - The text to scan
+ * @param config - Optional secret filter configuration
+ * @returns FilterResult with blocked status and all matches
+ */
+export function filterOutputWithConfig(text: string, config?: SecretFilterConfig): FilterResult {
+	// Start with CORE pattern detection
+	const result = filterOutput(text);
+	const allMatches = [...result.matches];
+
+	// Apply user-defined additional patterns
+	if (config?.additionalPatterns) {
+		for (const { id, pattern } of config.additionalPatterns) {
+			try {
+				const regex = new RegExp(pattern, "g");
+				for (const match of text.matchAll(regex)) {
+					allMatches.push({
+						pattern: `user:${id}`,
+						severity: "high",
+						description: `User-defined pattern: ${id}`,
+						redactedMatch: redact(match[0]),
+					});
+				}
+			} catch {
+				// Invalid regex pattern, skip
+			}
+		}
+	}
+
+	// Apply entropy detection (enabled by default)
+	if (config?.entropyDetection?.enabled !== false) {
+		const threshold = config?.entropyDetection?.threshold ?? 4.5;
+		const minLength = config?.entropyDetection?.minLength ?? 32;
+		const blobs = detectHighEntropyBlobs(text, threshold, minLength);
+		for (const blob of blobs) {
+			allMatches.push({
+				pattern: "HIGH_ENTROPY",
+				severity: "high",
+				description: "High-entropy blob detected (possible encoded secret)",
+				redactedMatch: redact(blob),
+			});
+		}
+	}
+
+	// Deduplicate by pattern + redactedMatch
+	const seen = new Set<string>();
+	const uniqueMatches = allMatches.filter((m) => {
+		const key = `${m.pattern}:${m.redactedMatch}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+
+	return {
+		blocked: uniqueMatches.length > 0,
+		matches: uniqueMatches,
+	};
+}
+
+/**
+ * Redact secrets from text using configuration.
+ * Applies CORE patterns + additional patterns + entropy detection.
+ *
+ * @param text - The text to redact
+ * @param config - Optional secret filter configuration
+ * @returns Text with all detected secrets replaced
+ */
+export function redactSecretsWithConfig(text: string, config?: SecretFilterConfig): string {
+	// Start with CORE pattern redaction
+	let result = redactSecrets(text);
+
+	// Apply user-defined additional patterns
+	if (config?.additionalPatterns) {
+		for (const { id, pattern } of config.additionalPatterns) {
+			try {
+				const regex = new RegExp(pattern, "g");
+				result = result.replace(regex, `[REDACTED:user:${id}]`);
+			} catch {
+				// Invalid regex pattern, skip
+			}
+		}
+	}
+
+	// Apply entropy detection (enabled by default)
+	if (config?.entropyDetection?.enabled !== false) {
+		const threshold = config?.entropyDetection?.threshold ?? 4.5;
+		const minLength = config?.entropyDetection?.minLength ?? 32;
+		const blobs = detectHighEntropyBlobs(result, threshold, minLength);
+		for (const blob of blobs) {
+			result = result.replace(blob, "[REDACTED:HIGH_ENTROPY]");
+		}
+	}
+
+	return result;
+}

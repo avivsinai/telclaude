@@ -12,7 +12,14 @@
  */
 
 import { getChildLogger } from "../logging.js";
-import { SECRET_PATTERNS, filterOutput, redactSecrets } from "./output-filter.js";
+import {
+	SECRET_PATTERNS,
+	type SecretFilterConfig,
+	filterOutput,
+	filterOutputWithConfig,
+	redactSecrets,
+	redactSecretsWithConfig,
+} from "./output-filter.js";
 
 const logger = getChildLogger({ module: "streaming-redactor" });
 
@@ -33,6 +40,7 @@ export interface RedactionStats {
 export class StreamingRedactor {
 	private buffer = "";
 	private readonly OVERLAP_SIZE: number;
+	private readonly secretFilterConfig?: SecretFilterConfig;
 	private stats: RedactionStats = {
 		chunksProcessed: 0,
 		secretsRedacted: 0,
@@ -44,9 +52,11 @@ export class StreamingRedactor {
 	 *
 	 * @param overlapSize - Characters to keep in buffer for overlap detection.
 	 *                      Should be >= longest expected secret pattern (~100 chars).
+	 * @param secretFilterConfig - Optional config for additional patterns and entropy detection.
 	 */
-	constructor(overlapSize = 100) {
+	constructor(overlapSize = 100, secretFilterConfig?: SecretFilterConfig) {
 		this.OVERLAP_SIZE = overlapSize;
+		this.secretFilterConfig = secretFilterConfig;
 	}
 
 	/**
@@ -61,13 +71,17 @@ export class StreamingRedactor {
 		// Combine buffer with new chunk
 		const combined = this.buffer + chunk;
 
-		// Check for secrets in combined text
-		const filterResult = filterOutput(combined);
+		// Check for secrets in combined text (use config if provided)
+		const filterResult = this.secretFilterConfig
+			? filterOutputWithConfig(combined, this.secretFilterConfig)
+			: filterOutput(combined);
 		let processed = combined;
 
 		if (filterResult.blocked) {
-			// Redact secrets
-			processed = redactSecrets(combined);
+			// Redact secrets (use config if provided)
+			processed = this.secretFilterConfig
+				? redactSecretsWithConfig(combined, this.secretFilterConfig)
+				: redactSecrets(combined);
 			this.stats.secretsRedacted += filterResult.matches.length;
 			for (const match of filterResult.matches) {
 				if (!this.stats.patternsMatched.includes(match.pattern)) {
@@ -102,12 +116,16 @@ export class StreamingRedactor {
 	 * @returns Final text to emit
 	 */
 	flush(): string {
-		// Final scan of remaining buffer
-		const filterResult = filterOutput(this.buffer);
+		// Final scan of remaining buffer (use config if provided)
+		const filterResult = this.secretFilterConfig
+			? filterOutputWithConfig(this.buffer, this.secretFilterConfig)
+			: filterOutput(this.buffer);
 		let final = this.buffer;
 
 		if (filterResult.blocked) {
-			final = redactSecrets(this.buffer);
+			final = this.secretFilterConfig
+				? redactSecretsWithConfig(this.buffer, this.secretFilterConfig)
+				: redactSecrets(this.buffer);
 			this.stats.secretsRedacted += filterResult.matches.length;
 			for (const match of filterResult.matches) {
 				if (!this.stats.patternsMatched.includes(match.pattern)) {
@@ -160,9 +178,15 @@ export class StreamingRedactor {
 
 /**
  * Create a streaming redactor with default settings.
+ *
+ * @param overlapSize - Characters to keep in buffer for overlap detection.
+ * @param secretFilterConfig - Optional config for additional patterns and entropy detection.
  */
-export function createStreamingRedactor(overlapSize?: number): StreamingRedactor {
-	return new StreamingRedactor(overlapSize);
+export function createStreamingRedactor(
+	overlapSize?: number,
+	secretFilterConfig?: SecretFilterConfig,
+): StreamingRedactor {
+	return new StreamingRedactor(overlapSize, secretFilterConfig);
 }
 
 /**
@@ -227,3 +251,6 @@ export function getLongestPatternLength(): number {
 export function getPatternNames(): string[] {
 	return SECRET_PATTERNS.map((p) => p.name);
 }
+
+// Re-export SecretFilterConfig for convenience
+export type { SecretFilterConfig } from "./output-filter.js";

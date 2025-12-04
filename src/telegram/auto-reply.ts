@@ -365,7 +365,8 @@ async function executeWithSession(
 
 		// V2: Create streaming redactor for output secret filtering
 		// This catches secrets that may be split across chunk boundaries
-		const redactor = createStreamingRedactor();
+		// Pass config for additional patterns and entropy detection
+		const redactor = createStreamingRedactor(undefined, ctx.config.security?.secretFilter);
 
 		console.log(
 			`[DEBUG] About to call executePooledQuery with prompt: "${queryPrompt.slice(0, 50)}..."`,
@@ -553,6 +554,7 @@ export async function monitorTelegramProvider(
 				botInfo,
 				verbose,
 				allowedChats: cfg.telegram?.allowedChats,
+				secretFilterConfig: cfg.security?.secretFilter,
 				onMessage: async (msg) => {
 					await handleInboundMessage(
 						msg,
