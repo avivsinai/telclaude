@@ -50,6 +50,9 @@ importers:
       pino-pretty:
         specifier: ^13.1.2
         version: 13.1.2
+      qrcode-terminal:
+        specifier: ^0.12.0
+        version: 0.12.0
       rate-limiter-flexible:
         specifier: ^5.0.5
         version: 5.0.5
@@ -72,6 +75,9 @@ importers:
       '@types/node':
         specifier: ^22.15.0
         version: 22.19.1
+      '@types/qrcode-terminal':
+        specifier: ^0.12.2
+        version: 0.12.2
       '@types/shell-quote':
         specifier: ^1.7.5
         version: 1.7.5
@@ -624,6 +630,9 @@ packages:
   '@types/node@22.19.1':
     resolution: {integrity: sha512-LCCV0HdSZZZb34qifBsyWlUmok6W7ouER+oQIGBScS8EsZsQbrtFTUrDX4hOl+CS6p7cnNC4td+qrSVGSCTUfQ==}
 
+  '@types/qrcode-terminal@0.12.2':
+    resolution: {integrity: sha512-v+RcIEJ+Uhd6ygSQ0u5YYY7ZM+la7GgPbs0V/7l/kFs2uO4S8BcIUEMoP7za4DNIqNnUD5npf0A/7kBhrCKG5Q==}
+
   '@types/shell-quote@1.7.5':
     resolution: {integrity: sha512-+UE8GAGRPbJVQDdxi16dgadcBfQ+KG2vgZhV1+3A1XmHbmwcdwhCUwIdy+d3pAGrbvgRoVSjeI9vOWyq376Yzw==}
 
@@ -1067,6 +1076,10 @@ packages:
 
   pump@3.0.3:
     resolution: {integrity: sha512-todwxLMY7/heScKmntwQG8CXVkWUOdYxIvY2s0VWAAMh/nd8SoYiRaKjlr7+iCs984f2P8zvrfWcDDYVb73NfA==}
+
+  qrcode-terminal@0.12.0:
+    resolution: {integrity: sha512-EXtzRZmC+YGmGlDFbXKxQiMZNwCLEO6BANKXG4iCtSIM0yqc/pappSx3RIKr4r0uh5JsBckOXeKrB3Iz7mdQpQ==}
+    hasBin: true
 
   quick-format-unescaped@4.0.4:
     resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
@@ -1730,6 +1743,8 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/qrcode-terminal@0.12.2': {}
+
   '@types/shell-quote@1.7.5': {}
 
   '@vitest/coverage-v8@3.2.4(vitest@3.2.4(@types/node@22.19.1)(tsx@4.20.6))':
@@ -2197,6 +2212,8 @@ snapshots:
     dependencies:
       end-of-stream: 1.4.5
       once: 1.4.0
+
+  qrcode-terminal@0.12.0: {}
 
   quick-format-unescaped@4.0.4: {}
 

@@ -1,10 +1,22 @@
 import * as readline from "node:readline";
 import type { Command } from "commander";
+import qrcode from "qrcode-terminal";
 import { getTOTPClient } from "../totp-client/client.js";
 
 export type TOTPSetupOptions = {
 	user?: string;
 };
+
+/**
+ * Display a QR code in the terminal.
+ */
+function displayQRCode(uri: string): Promise<void> {
+	return new Promise((resolve) => {
+		qrcode.generate(uri, { small: true }, () => {
+			resolve();
+		});
+	});
+}
 
 /**
  * Read a line from stdin.
@@ -70,23 +82,21 @@ export function registerTOTPSetupCommand(program: Command): void {
 			console.log("║  SECURITY: This secret is displayed LOCALLY ONLY.        ║");
 			console.log("║  It is never sent over the network or stored in logs.    ║");
 			console.log("║                                                          ║");
+			console.log("╚══════════════════════════════════════════════════════════╝");
+
+			console.log("\n📱 Scan this QR code with your authenticator app:\n");
+
+			// Display QR code
+			await displayQRCode(setupResult.uri);
+
+			console.log("\n╔══════════════════════════════════════════════════════════╗");
+			console.log("║  MANUAL ENTRY (if QR scan fails)                         ║");
 			console.log("╠══════════════════════════════════════════════════════════╣");
 			console.log("║                                                          ║");
 			console.log(`║  User: ${userId.padEnd(50)}║`);
 			console.log("║                                                          ║");
-			console.log("║  Secret (for manual entry):                              ║");
+			console.log("║  Secret:                                                 ║");
 			console.log(`║  ${secret.padEnd(56)}║`);
-			console.log("║                                                          ║");
-			console.log("║  Or scan this URI in your authenticator app:             ║");
-			console.log("║                                                          ║");
-
-			// Print URI (may wrap)
-			const maxLineLen = 54;
-			for (let i = 0; i < setupResult.uri.length; i += maxLineLen) {
-				const chunk = setupResult.uri.slice(i, i + maxLineLen);
-				console.log(`║  ${chunk.padEnd(56)}║`);
-			}
-
 			console.log("║                                                          ║");
 			console.log("╚══════════════════════════════════════════════════════════╝\n");
 
