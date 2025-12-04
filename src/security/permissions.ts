@@ -94,11 +94,17 @@ export function getUserPermissionTier(
 	// 1. Check for identity link first
 	if (!Number.isNaN(numericId)) {
 		const link = getIdentityLink(numericId);
-		if (link && userPerms) {
-			// Look up by the linked localUserId
-			const linkedPerms = userPerms[link.localUserId];
-			if (linkedPerms) {
-				tier = linkedPerms.tier;
+		if (link) {
+			// ADMIN: The admin claim flow uses "admin" as the localUserId.
+			// Grant FULL_ACCESS automatically for claimed admins.
+			if (link.localUserId === "admin") {
+				tier = "FULL_ACCESS";
+			} else if (userPerms) {
+				// Look up by the linked localUserId
+				const linkedPerms = userPerms[link.localUserId];
+				if (linkedPerms) {
+					tier = linkedPerms.tier;
+				}
 			}
 		}
 	}

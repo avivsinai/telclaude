@@ -300,13 +300,26 @@ export function getPendingApprovalCount(): number {
 
 /**
  * Determine if a request requires approval based on tier and classification.
+ *
+ * @param tier - The user's permission tier
+ * @param classification - The security observer's classification
+ * @param confidence - The observer's confidence level
+ * @param isAdmin - Whether the user is a claimed admin (bypasses FULL_ACCESS approval)
  */
 export function requiresApproval(
 	tier: PermissionTier,
 	classification: SecurityClassification,
 	confidence: number,
+	isAdmin = false,
 ): boolean {
-	// FULL_ACCESS always requires approval
+	// ADMIN: Claimed admins bypass approval even with FULL_ACCESS tier.
+	// The admin claim flow establishes trust, so approvals are redundant for admins.
+	// Note: Secret output filtering still applies - admins can't exfiltrate secrets.
+	if (isAdmin) {
+		return false;
+	}
+
+	// FULL_ACCESS always requires approval (for non-admin users)
 	if (tier === "FULL_ACCESS") {
 		return true;
 	}

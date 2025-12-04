@@ -34,7 +34,7 @@ import {
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
 import { checkInfrastructureSecrets } from "../security/fast-path.js";
-import { consumeLinkCode, getIdentityLink } from "../security/linking.js";
+import { consumeLinkCode, getIdentityLink, isAdmin } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
@@ -914,9 +914,15 @@ async function handleInboundMessage(
 
 	// V2: Approvals only required in strict profile
 	// In simple/test profiles, all requests proceed without approval workflow
+	// ADMIN: Claimed admins bypass approval even in strict profile
 	if (
 		securityProfile === "strict" &&
-		requiresApproval(tier, observerResult.classification, observerResult.confidence)
+		requiresApproval(
+			tier,
+			observerResult.classification,
+			observerResult.confidence,
+			isAdmin(msg.chatId),
+		)
 	) {
 		// Create approval and get timing info to ensure display matches actual expiry
 		const { nonce, createdAt, expiresAt } = createApproval({

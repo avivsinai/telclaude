@@ -254,6 +254,15 @@ export function isLinked(chatId: number): boolean {
 }
 
 /**
+ * Check if a chat is linked to the admin identity.
+ * The admin claim flow uses "admin" as the localUserId.
+ */
+export function isAdmin(chatId: number): boolean {
+	const link = getIdentityLink(chatId);
+	return link !== null && link.localUserId === "admin";
+}
+
+/**
  * Clean up expired pending link codes.
  */
 export function cleanupExpiredCodes(): number {
