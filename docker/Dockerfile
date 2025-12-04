@@ -102,39 +102,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Verify gosu works
     && gosu nobody true
 
-# Create non-root user with specific UID/GID
-# Using 1000 to match typical first user on Linux/WSL
+# Modify the existing node user to match desired UID/GID
+# The node base image already has a 'node' user with UID/GID 1000
+# We use usermod/groupmod to adjust if needed (idiomatic Docker pattern)
+# See: https://github.com/nodejs/docker-node/issues/289
 ARG USER_UID=1000
 ARG USER_GID=1000
 
-# Create user if it doesn't exist (node image already has UID/GID 1000)
-# If UID 1000 exists, we reuse that user; otherwise create telclaude user
-RUN if ! id -u ${USER_UID} >/dev/null 2>&1; then \
-        groupadd --gid ${USER_GID} telclaude 2>/dev/null || true; \
-        useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash telclaude; \
-    fi \
+RUN groupmod -g ${USER_GID} node \
+    && usermod -u ${USER_UID} -g ${USER_GID} node \
     # Create necessary directories
-    && mkdir -p /home/telclaude/.telclaude \
-    && mkdir -p /home/telclaude/.claude \
+    && mkdir -p /home/node/.telclaude \
+    && mkdir -p /home/node/.claude \
     && mkdir -p /workspace \
     && mkdir -p /data \
-    && chown -R ${USER_UID}:${USER_GID} /home/telclaude /workspace /data
+    && chown -R node:node /home/node /workspace /data
 
 # Copy Claude CLI from builder stage
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=claude-cli /usr/local/bin/claude /usr/local/bin/claude
 
-# Copy built application (use numeric UID/GID since user name might not exist)
+# Copy built application
 WORKDIR /app
-COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/dist ./dist
-COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/node_modules ./node_modules
-COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/package.json ./
-COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/bin ./bin
-COPY --from=builder --chown=${USER_UID}:${USER_GID} /build/.claude ./.claude
+COPY --from=builder --chown=node:node /build/dist ./dist
+COPY --from=builder --chown=node:node /build/node_modules ./node_modules
+COPY --from=builder --chown=node:node /build/package.json ./
+COPY --from=builder --chown=node:node /build/bin ./bin
+COPY --from=builder --chown=node:node /build/.claude ./.claude
 
 # Copy firewall initialization script and entrypoint wrapper
-COPY --chown=${USER_UID}:${USER_GID} docker/init-firewall.sh /usr/local/bin/init-firewall.sh
-COPY --chown=${USER_UID}:${USER_GID} docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chown=node:node docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
 
 # Create symlink for telclaude command
@@ -143,7 +141,7 @@ RUN ln -s /app/bin/telclaude.js /usr/local/bin/telclaude
 # Environment variables
 ENV NODE_ENV=production
 ENV TELCLAUDE_DATA_DIR=/data
-ENV HOME=/home/telclaude
+ENV HOME=/home/node
 
 # NOTE: We do NOT use USER directive here.
 # The entrypoint starts as root to run privileged operations (firewall setup),

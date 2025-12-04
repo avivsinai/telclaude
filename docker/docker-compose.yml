@@ -65,7 +65,7 @@ services:
       - telclaude-data:/data:rw
 
       # Claude Code configuration (credentials, settings)
-      - telclaude-claude:/home/telclaude/.claude:rw
+      - telclaude-claude:/home/node/.claude:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
