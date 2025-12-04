@@ -34,6 +34,7 @@ coverage/
 # Documentation (not needed in runtime)
 *.md
 !docker/README.md
+!.claude/**/*.md
 docs/
 
 # OS files
@@ -56,4 +57,5 @@ docker-compose*.yml
 # Local development
 *.local
 
-# Note: .claude/ is NOT ignored - it contains skills needed by the SDK
+# Note: .claude/ directory is included (see !.claude/**/*.md exception above)
+# It contains skills (SKILL.md files) needed by the Claude Agent SDK
