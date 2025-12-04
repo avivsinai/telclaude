@@ -80,7 +80,7 @@ services:
 
     # NOTE: Do NOT set user: here. The entrypoint handles privilege dropping:
     # 1. Starts as root (for firewall init)
-    # 2. Uses gosu to drop to telclaude user (UID 1000)
+    # 2. Uses gosu to drop to node user (UID 1000)
     # Setting user: would bypass the entrypoint's ability to run privileged init.
 
     cap_drop:
@@ -93,6 +93,8 @@ services:
       # SETUID/SETGID: Required for gosu to drop privileges
       - SETUID
       - SETGID
+      # CHOWN: Required for entrypoint to fix ownership of mounted volumes
+      - CHOWN
 
     read_only: true
     tmpfs:

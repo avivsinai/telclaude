@@ -109,7 +109,7 @@ This stores credentials in the `telclaude-claude` volume.
 |---------------|---------|-----------|
 | `/workspace` | Your projects folder | Host mount |
 | `/data` | SQLite DB, config, sessions | Named volume |
-| `/home/telclaude/.claude` | Claude credentials | Named volume |
+| `/home/node/.claude` | Claude credentials | Named volume |
 
 ### Environment Variables
 
