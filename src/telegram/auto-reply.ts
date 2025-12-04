@@ -526,6 +526,21 @@ export async function monitorTelegramProvider(
 		logger.info("security profile: simple (hard enforcement only)");
 	}
 
+	// SECURITY: One-time cleanup of expired security artifacts on startup
+	// This runs BEFORE entering the connection loop to ensure stale approvals,
+	// link codes, TOTP sessions, and admin claims are purged on every run.
+	// Without this, expired artifacts could accumulate if:
+	// - Previous runs crashed or exited early
+	// - Connection fails (e.g., bad token) and we exit before the interval starts
+	// - Any exception occurs before the polling loop
+	try {
+		cleanupExpired();
+		logger.debug("startup cleanup of expired security artifacts completed");
+	} catch (err) {
+		// Log but don't fail - cleanup errors shouldn't prevent startup
+		logger.error({ error: String(err) }, "startup cleanup failed");
+	}
+
 	const rateLimiter = createRateLimiter(cfg.security);
 	const auditLogger = createAuditLogger({
 		enabled: cfg.security?.audit?.enabled ?? true,
