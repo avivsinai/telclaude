@@ -49,6 +49,10 @@ COPY . .
 # Build the project
 RUN pnpm run build
 
+# Rebuild native modules (they weren't compiled during install due to --ignore-scripts)
+# This compiles better-sqlite3, sharp, keytar, etc.
+RUN pnpm rebuild
+
 # Prune dev dependencies for production
 # --ignore-scripts prevents the "prepare" hook from running (typescript already removed)
 RUN pnpm prune --prod --ignore-scripts

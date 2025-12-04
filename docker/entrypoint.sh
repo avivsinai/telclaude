@@ -19,8 +19,8 @@ set -e
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Target user to run the application as
-TELCLAUDE_USER="${TELCLAUDE_USER:-telclaude}"
+# Target user to run the application as (node user from base image)
+TELCLAUDE_USER="${TELCLAUDE_USER:-node}"
 TELCLAUDE_UID="${TELCLAUDE_UID:-1000}"
 TELCLAUDE_GID="${TELCLAUDE_GID:-1000}"
 
@@ -38,9 +38,9 @@ if [ "$(id -u)" = "0" ]; then
 
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
-    for dir in /data /workspace /home/telclaude/.claude /home/telclaude/.telclaude; do
+    for dir in /data /workspace /home/node/.claude /home/node/.telclaude; do
         if [ -d "$dir" ]; then
-            # Only chown if not already owned by telclaude
+            # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
                 echo "[entrypoint] Fixing ownership of $dir"
                 chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "$dir" 2>/dev/null || true
