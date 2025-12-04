@@ -60,6 +60,8 @@ pnpm dev relay    # start
 
 **First-time setup:** Send a message to your bot in a private chat. You'll be prompted to confirm admin claim with `/approve <code>`. TOTP setup is recommended.
 
+⚠️ **Allowlist required:** The bot ignores *all* chats unless their IDs are listed in `telegram.allowedChats`. Add your own chat ID before first contact (e.g., ask `@userinfobot` for your ID) or the bot will not reply and admin claim will never start. This is intentional to prevent unsolicited access.
+
 ## Configuration
 
 Config: `~/.telclaude/telclaude.json`

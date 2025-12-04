@@ -412,6 +412,8 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
 }
 ```
 
+**Mandatory allowlist:** `allowedChats` must include your chat ID *before* you DM the bot. The relay refuses all messages (including first-time admin claim) from chats not on this list. Obtain your ID via a helper bot like `@userinfobot` and add it here to begin setup.
+
 ## Environment Variables
 
 Required:

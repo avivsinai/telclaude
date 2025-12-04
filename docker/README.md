@@ -144,6 +144,8 @@ Example `telclaude.json`:
 }
 ```
 
+> **Important:** `allowedChats` is required. The container ignores all chats that are not explicitly listed, even for the first admin claim. Add your own chat ID (e.g., from `@userinfobot`) before running `docker compose up` or the bot will not respond.
+
 ## Commands
 
 ```powershell
