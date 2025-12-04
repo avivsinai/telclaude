@@ -849,37 +849,40 @@ async function handleInboundMessage(
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// INFRASTRUCTURE SECRET CHECK - NON-OVERRIDABLE
+	// INFRASTRUCTURE SECRET CHECK - NON-OVERRIDABLE (except in test profile)
 	// ══════════════════════════════════════════════════════════════════════════
 	// SECURITY: Check for infrastructure secrets BEFORE any approval logic.
 	// These are NEVER allowed to be sent to Claude - no approval can bypass this.
-	const infraSecretCheck = checkInfrastructureSecrets(msg.body);
-	if (infraSecretCheck.blocked) {
-		logger.error(
-			{
-				userId,
+	// TEST PROFILE: Skipped to allow testing with real tokens/keys.
+	if (securityProfile !== "test") {
+		const infraSecretCheck = checkInfrastructureSecrets(msg.body);
+		if (infraSecretCheck.blocked) {
+			logger.error(
+				{
+					userId,
+					chatId: msg.chatId,
+					patterns: infraSecretCheck.patterns,
+				},
+				"BLOCKED: Infrastructure secrets detected - NON-OVERRIDABLE",
+			);
+			await msg.reply(
+				"Message blocked: Contains infrastructure secrets (bot tokens, API keys, or private keys).\n\n" +
+					"This is a security measure that CANNOT be overridden. These secrets must never be sent to the AI agent.\n\n" +
+					"If you need to work with credentials, store them in environment variables or config files instead of pasting them directly.",
+			);
+			await auditLogger.log({
+				timestamp: new Date(),
+				requestId,
+				telegramUserId: userId,
+				telegramUsername: msg.username,
 				chatId: msg.chatId,
-				patterns: infraSecretCheck.patterns,
-			},
-			"BLOCKED: Infrastructure secrets detected - NON-OVERRIDABLE",
-		);
-		await msg.reply(
-			"Message blocked: Contains infrastructure secrets (bot tokens, API keys, or private keys).\n\n" +
-				"This is a security measure that CANNOT be overridden. These secrets must never be sent to the AI agent.\n\n" +
-				"If you need to work with credentials, store them in environment variables or config files instead of pasting them directly.",
-		);
-		await auditLogger.log({
-			timestamp: new Date(),
-			requestId,
-			telegramUserId: userId,
-			telegramUsername: msg.username,
-			chatId: msg.chatId,
-			messagePreview: "[REDACTED - infrastructure secrets]",
-			permissionTier: getUserPermissionTier(msg.chatId, cfg.security),
-			outcome: "blocked",
-			errorType: `infrastructure_secrets:${infraSecretCheck.patterns.join(",")}`,
-		});
-		return;
+				messagePreview: "[REDACTED - infrastructure secrets]",
+				permissionTier: getUserPermissionTier(msg.chatId, cfg.security),
+				outcome: "blocked",
+				errorType: `infrastructure_secrets:${infraSecretCheck.patterns.join(",")}`,
+			});
+			return;
+		}
 	}
 
 	const recentKey = makeRecentSentKey(msg.chatId, msg.body);
@@ -892,16 +895,19 @@ async function handleInboundMessage(
 	const tier = getUserPermissionTier(msg.chatId, cfg.security);
 	console.log(`[DEBUG] Permission tier: ${tier}`);
 
-	console.log("[DEBUG] Checking rate limit...");
-	const rateLimitResult = await rateLimiter.checkLimit(userId, tier);
-	console.log(`[DEBUG] Rate limit result: allowed=${rateLimitResult.allowed}`);
-	if (!rateLimitResult.allowed) {
-		logger.info({ userId, tier }, "rate limited");
-		await auditLogger.logRateLimited(userId, msg.chatId, tier);
-		await msg.reply(
-			`Rate limit exceeded. Please wait ${Math.ceil(rateLimitResult.resetMs / 1000)} seconds.`,
-		);
-		return;
+	// TEST PROFILE: Skip rate limiting to allow unlimited testing
+	if (securityProfile !== "test") {
+		console.log("[DEBUG] Checking rate limit...");
+		const rateLimitResult = await rateLimiter.checkLimit(userId, tier);
+		console.log(`[DEBUG] Rate limit result: allowed=${rateLimitResult.allowed}`);
+		if (!rateLimitResult.allowed) {
+			logger.info({ userId, tier }, "rate limited");
+			await auditLogger.logRateLimited(userId, msg.chatId, tier);
+			await msg.reply(
+				`Rate limit exceeded. Please wait ${Math.ceil(rateLimitResult.resetMs / 1000)} seconds.`,
+			);
+			return;
+		}
 	}
 
 	console.log("[DEBUG] Calling observer.analyze...");
