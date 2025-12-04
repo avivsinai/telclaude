@@ -8,6 +8,7 @@
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
 import { DEFAULT_SANDBOX_CONFIG, buildSandboxConfig } from "./config.js";
+import { buildSandboxEnv } from "./env.js";
 
 const logger = getChildLogger({ module: "sandbox" });
 
@@ -17,6 +18,7 @@ const logger = getChildLogger({ module: "sandbox" });
 
 let initialized = false;
 let currentConfig: SandboxRuntimeConfig | null = null;
+let sanitizedEnv: Record<string, string> | null = null;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
@@ -41,11 +43,15 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 		initialized = true;
 		currentConfig = sandboxConfig;
 
+		// V2 SECURITY: Build sanitized environment for commands
+		sanitizedEnv = buildSandboxEnv(process.env);
+
 		logger.info(
 			{
 				denyRead: sandboxConfig.filesystem?.denyRead?.length ?? 0,
 				allowWrite: sandboxConfig.filesystem?.allowWrite?.length ?? 0,
 				allowedDomains: sandboxConfig.network?.allowedDomains?.length ?? 0,
+				envVarsAllowed: Object.keys(sanitizedEnv).length,
 			},
 			"sandbox initialized",
 		);
@@ -68,6 +74,7 @@ export async function resetSandbox(): Promise<void> {
 		await SandboxManager.reset();
 		initialized = false;
 		currentConfig = null;
+		sanitizedEnv = null;
 		logger.info("sandbox reset");
 	} catch (err) {
 		logger.warn({ error: String(err) }, "error resetting sandbox");
@@ -119,10 +126,38 @@ export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
 }
 
 /**
+ * Escape a string for use in shell command (single-quote escaping).
+ */
+function shellEscape(value: string): string {
+	// Replace single quotes with '\'' (end quote, escaped quote, start quote)
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build environment prefix for commands.
+ * Uses `env -i KEY=VALUE...` to ensure only allowed vars reach the command.
+ */
+function buildEnvPrefix(): string {
+	if (!sanitizedEnv) {
+		return "";
+	}
+
+	const envAssignments = Object.entries(sanitizedEnv)
+		.map(([key, value]) => `${key}=${shellEscape(value)}`)
+		.join(" ");
+
+	return `env -i ${envAssignments} `;
+}
+
+/**
  * Wrap a command with sandbox isolation.
  *
- * Returns the command string prefixed with the sandbox wrapper.
+ * Returns the command string prefixed with:
+ * 1. Environment isolation (env -i KEY=VALUE...)
+ * 2. Sandbox wrapper (filesystem + network restrictions)
+ *
  * The sandbox enforces filesystem and network restrictions at the OS level.
+ * Environment isolation ensures only allowlisted env vars reach the command.
  *
  * @param command - The command to sandbox
  * @returns The sandboxed command string
@@ -134,9 +169,24 @@ export async function wrapCommand(command: string): Promise<string> {
 	}
 
 	try {
-		const wrapped = await SandboxManager.wrapWithSandbox(command);
-		logger.debug({ original: command, wrapped: wrapped.substring(0, 100) }, "command wrapped");
-		return wrapped;
+		// First wrap with sandbox (filesystem + network isolation)
+		const sandboxWrapped = await SandboxManager.wrapWithSandbox(command);
+
+		// Then wrap with environment isolation
+		// V2 SECURITY: Apply allowlist-only environment
+		const envPrefix = buildEnvPrefix();
+		const fullyWrapped = envPrefix + sandboxWrapped;
+
+		logger.debug(
+			{
+				original: command,
+				wrapped: fullyWrapped.substring(0, 150),
+				envVarsApplied: sanitizedEnv ? Object.keys(sanitizedEnv).length : 0,
+			},
+			"command wrapped with env isolation",
+		);
+
+		return fullyWrapped;
 	} catch (err) {
 		logger.error({ error: String(err), command }, "failed to wrap command");
 		throw new Error(`Failed to sandbox command: ${String(err)}`);
