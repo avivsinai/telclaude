@@ -5,9 +5,12 @@
  * telclaude-specific configuration and lifecycle management.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
-import { DEFAULT_SANDBOX_CONFIG, buildSandboxConfig } from "./config.js";
+import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
 import { buildSandboxEnv } from "./env.js";
 
 const logger = getChildLogger({ module: "sandbox" });
@@ -39,6 +42,16 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 	const sandboxConfig = config ?? DEFAULT_SANDBOX_CONFIG;
 
 	try {
+		// V2 SECURITY: Create private temp directory before initializing sandbox
+		// This ensures commands have a writable temp dir (host /tmp is blocked)
+		const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
+			? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
+			: PRIVATE_TMP_PATH;
+		if (!fs.existsSync(resolvedTmpPath)) {
+			fs.mkdirSync(resolvedTmpPath, { recursive: true, mode: 0o700 });
+			logger.info({ path: resolvedTmpPath }, "created private temp directory");
+		}
+
 		await SandboxManager.initialize(sandboxConfig);
 		initialized = true;
 		currentConfig = sandboxConfig;

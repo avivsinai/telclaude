@@ -6,8 +6,7 @@
  * - Filesystem: Deny ~ broadly, allow only workspace
  * - Environment: Allowlist-only model
  * - Network: Domain + method restrictions
- * - Private /tmp: Mounted from ~/.telclaude/sandbox-tmp
- * - Symlink protection: Reject external targets
+ * - Private /tmp: Host /tmp blocked; writes go to ~/.telclaude/sandbox-tmp
  */
 
 export {
@@ -28,8 +27,8 @@ export {
 	DEFAULT_SANDBOX_CONFIG,
 	TIER_SANDBOX_CONFIGS,
 	getSandboxConfigForTier,
-	PRIVATE_TMP_CONFIG,
-	SYMLINK_POLICY,
+	PRIVATE_TMP_PATH,
+	PRIVATE_TMP_CONFIG, // Deprecated, use PRIVATE_TMP_PATH
 	BLOCKED_METADATA_DOMAINS,
 	BLOCKED_PRIVATE_NETWORKS,
 } from "./config.js";

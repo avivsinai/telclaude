@@ -9,12 +9,11 @@
  * - Filesystem: Deny ~ broadly, allow only workspace
  * - Environment: Allowlist-only model (see src/sandbox/env.ts)
  * - Network: Domain + method restrictions via proxy
- * - Private /tmp: Sandbox sees ~/.telclaude/sandbox-tmp, not host /tmp
- * - Symlink protection: Reject symlinks resolving outside allowed paths
+ * - Private /tmp: Host /tmp is blocked; writes go to ~/.telclaude/sandbox-tmp
  *
  * Tier-aligned configs:
  * - READ_ONLY: No writes allowed
- * - WRITE_SAFE/FULL_ACCESS: Writes to workspace + private /tmp
+ * - WRITE_SAFE/FULL_ACCESS: Writes to workspace + private temp
  */
 
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
@@ -105,38 +104,44 @@ export const SENSITIVE_READ_PATHS = [
 	// === Linux proc filesystem ===
 	"/proc/self/environ", // Environment variables
 	"/proc/self/cmdline", // Command line args
+
+	// === Host /tmp (may contain secrets from keyring, dbus, etc.) ===
+	"/tmp",
+	"/var/tmp",
 ];
+
+/**
+ * Private temporary directory for sandboxed processes.
+ * This is used instead of host /tmp to prevent reading secrets.
+ */
+export const PRIVATE_TMP_PATH = "~/.telclaude/sandbox-tmp";
 
 /**
  * Default write-allowed paths.
  * Sandboxed processes can only write to these locations.
  *
- * V2: Use synthetic workspace path and private /tmp
+ * Note: We use PRIVATE_TMP_PATH instead of /tmp to prevent
+ * reading secrets from host /tmp (keyring sockets, dbus secrets, etc.)
  */
 export const DEFAULT_WRITE_PATHS = [
 	"/workspace", // Synthetic workspace (project mounted here)
-	"/tmp", // Private tmp (mounted from ~/.telclaude/sandbox-tmp)
+	PRIVATE_TMP_PATH, // Private temp dir (host /tmp is blocked)
 ];
 
 /**
- * Private /tmp configuration.
- * Sandbox gets its own /tmp to prevent reading secrets from host /tmp
- * (keyring sockets, dbus secrets, etc.)
+ * @deprecated Use PRIVATE_TMP_PATH instead. This is kept for backward compatibility.
+ * The SDK doesn't support bind mounts, so we block host /tmp via denyRead
+ * and allow writes to PRIVATE_TMP_PATH instead.
  */
 export const PRIVATE_TMP_CONFIG = {
-	hostPath: "~/.telclaude/sandbox-tmp",
-	sandboxPath: "/tmp",
+	hostPath: PRIVATE_TMP_PATH,
+	sandboxPath: PRIVATE_TMP_PATH, // No actual mounting, just the write-allowed path
 };
 
-/**
- * Symlink policy for preventing escape attempts.
- */
-export const SYMLINK_POLICY = {
-	/** Reject symlinks that resolve outside allowed paths */
-	policy: "reject-external" as const,
-	/** Log symlink resolution attempts for audit */
-	logAttempts: true,
-};
+// NOTE: Symlink protection is NOT implemented. The @anthropic-ai/sandbox-runtime
+// SDK does not support symlink policies. The underlying sandbox (Seatbelt/bubblewrap)
+// may provide some protection, but it's not configurable via the SDK.
+// DO NOT claim symlink protection in documentation.
 
 /**
  * Cloud metadata endpoints that should be blocked to prevent SSRF attacks.

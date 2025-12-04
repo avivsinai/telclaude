@@ -6,9 +6,13 @@
  * - Allowlist-only model: Only vars in ENV_ALLOWLIST pass through
  * - Deny prefixes: Secondary belt catching credential patterns
  * - HOME alignment: HOME=/home/sandbox (synthetic, not real ~)
+ * - TMPDIR: Points to private temp dir (host /tmp is blocked)
  */
 
+import os from "node:os";
+import path from "node:path";
 import { getChildLogger } from "../logging.js";
+import { PRIVATE_TMP_PATH } from "./config.js";
 
 const logger = getChildLogger({ module: "env-isolation" });
 
@@ -53,6 +57,11 @@ export const ENV_ALLOWLIST = [
 	"DEBUG",
 	"FORCE_COLOR",
 	"NO_COLOR",
+
+	// Temp directories (we override TMPDIR to private temp)
+	"TMPDIR",
+	"TMP",
+	"TEMP",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -181,6 +190,16 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 
 	// Override HOME to synthetic path
 	sandboxEnv.HOME = "/home/sandbox";
+
+	// V2 SECURITY: Override TMPDIR to private temp directory
+	// This ensures commands use our private temp instead of host /tmp
+	// (which is blocked via denyRead in sandbox config)
+	const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
+		? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
+		: PRIVATE_TMP_PATH;
+	sandboxEnv.TMPDIR = resolvedTmpPath;
+	sandboxEnv.TMP = resolvedTmpPath;
+	sandboxEnv.TEMP = resolvedTmpPath;
 
 	// Count blocked vars for metrics
 	for (const key of Object.keys(processEnv)) {
