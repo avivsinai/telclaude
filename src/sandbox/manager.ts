@@ -3,6 +3,17 @@
  *
  * Provides a high-level interface for sandboxing commands with
  * telclaude-specific configuration and lifecycle management.
+ *
+ * Architecture:
+ * ```
+ * telclaude process
+ *     │
+ *     ├─→ Wrapper: Sandboxes entire Claude CLI subprocess
+ *     │   (pathToClaudeCodeExecutable → srt wrapper)
+ *     │
+ *     └─→ SandboxManager: Additional sandboxing for Bash commands
+ *         (defense-in-depth via canUseTool callback)
+ * ```
  */
 
 import fs from "node:fs";
@@ -12,6 +23,8 @@ import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox
 import { getChildLogger } from "../logging.js";
 import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
 import { buildSandboxEnv } from "./env.js";
+import { isBlockedIP } from "./network-proxy.js";
+import { initializeWrapper, updateWrapperConfig, verifyWrapper } from "./wrapper.js";
 
 const logger = getChildLogger({ module: "sandbox" });
 
@@ -23,26 +36,45 @@ let initialized = false;
 let currentConfig: SandboxRuntimeConfig | null = null;
 let sanitizedEnv: Record<string, string> | null = null;
 
+/** Path to the sandboxed Claude wrapper (set during initialization) */
+let wrapperPath: string | null = null;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/** Result of sandbox initialization */
+export type SandboxInitResult = {
+	/** Whether core sandbox (Bash isolation) initialized successfully */
+	initialized: boolean;
+	/** Whether wrapper (full Claude CLI isolation) is active */
+	wrapperEnabled: boolean;
+	/** Error message if wrapper failed (for display to user) */
+	wrapperError?: string;
+};
 
 /**
  * Initialize the sandbox manager with the given configuration.
  * Must be called before any sandboxed commands can be executed.
  *
+ * Initializes two sandbox layers:
+ * 1. Wrapper: Sandboxes entire Claude CLI subprocess (via pathToClaudeCodeExecutable)
+ * 2. SandboxManager: Additional sandboxing for Bash commands (defense-in-depth)
+ *
  * @param config - Optional configuration override (defaults to DEFAULT_SANDBOX_CONFIG)
+ * @returns Status of sandbox initialization including wrapper status
  */
-export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<void> {
+export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<SandboxInitResult> {
 	if (initialized) {
 		logger.debug("sandbox already initialized, skipping");
-		return;
+		return { initialized: true, wrapperEnabled: wrapperPath !== null };
 	}
 
 	const sandboxConfig = config ?? DEFAULT_SANDBOX_CONFIG;
+	let wrapperError: string | undefined;
 
 	try {
-		// V2 SECURITY: Create private temp directory before initializing sandbox
+		// SECURITY: Create private temp directory before initializing sandbox
 		// This ensures commands have a writable temp dir (host /tmp is blocked)
 		const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
 			? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
@@ -52,11 +84,78 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 			logger.info({ path: resolvedTmpPath }, "created private temp directory");
 		}
 
-		await SandboxManager.initialize(sandboxConfig);
+		// CRITICAL: Set TMPDIR BEFORE SandboxManager.initialize() on Linux
+		// The sandbox-runtime creates network bridge sockets at tmpdir()/claude-*.sock
+		// By pointing TMPDIR to our private temp, sockets land there instead of host /tmp.
+		// This allows us to safely block host /tmp in denyRead without breaking network.
+		const originalTmpdir = process.env.TMPDIR;
+		process.env.TMPDIR = resolvedTmpPath;
+		logger.debug(
+			{ tmpdir: resolvedTmpPath, originalTmpdir },
+			"set TMPDIR for sandbox bridge sockets",
+		);
+
+		// LAYER 1: Initialize wrapper for Claude CLI subprocess
+		// This ensures ALL Claude operations (Read/Write/Bash/etc) run sandboxed
+		const wrapperResult = await initializeWrapper(sandboxConfig);
+		if (wrapperResult.success) {
+			// Verify wrapper can actually execute (srt runtime test)
+			const verification = await verifyWrapper();
+			if (verification.valid) {
+				wrapperPath = wrapperResult.wrapperPath;
+				logger.info(
+					{
+						wrapperPath: wrapperResult.wrapperPath,
+						claudePath: wrapperResult.claudePath,
+						srtPath: wrapperResult.srtPath,
+					},
+					"initialized Claude CLI sandbox wrapper",
+				);
+			} else {
+				// Wrapper created but srt can't execute
+				wrapperError = `Wrapper verification failed: ${verification.error}`;
+				logger.warn(
+					{ error: verification.error },
+					"wrapper created but srt verification failed - falling back to Bash-only sandboxing",
+				);
+			}
+		} else {
+			// Wrapper init failed - log warning but continue
+			// The sandbox manager for Bash commands still provides some protection
+			wrapperError = wrapperResult.error;
+			logger.warn(
+				{ error: wrapperResult.error },
+				"failed to initialize Claude CLI sandbox wrapper - falling back to Bash-only sandboxing",
+			);
+		}
+
+		// LAYER 2: Initialize SandboxManager for Bash commands (defense-in-depth)
+		// NETWORK FIX: The sandbox-runtime treats "*" as a literal domain name, not a wildcard.
+		// It also doesn't support CIDR notation (10.0.0.0/8) in deniedDomains.
+		// We use sandboxAskCallback to:
+		// 1. Block private networks (RFC1918, localhost) - always enforced
+		// 2. Auto-approve other requests when allowedDomains contains "*"
+		// NOTE: Callback reads currentConfig dynamically so updateSandboxConfig takes effect
+		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
+			// Always block private/internal networks (security critical)
+			if (isBlockedIP(host)) {
+				logger.debug({ host }, "blocked private network access via sandboxAskCallback");
+				return false;
+			}
+			// SECURITY: Check currentConfig dynamically (not captured at init time)
+			// This ensures updateSandboxConfig() changes take effect immediately
+			const allowAll = currentConfig?.network?.allowedDomains?.includes("*");
+			if (allowAll) {
+				return true;
+			}
+			// Otherwise deny (no matching allowedDomains rule)
+			return false;
+		};
+		await SandboxManager.initialize(sandboxConfig, sandboxAskCallback);
 		initialized = true;
 		currentConfig = sandboxConfig;
 
-		// V2 SECURITY: Build sanitized environment for commands
+		// SECURITY: Build sanitized environment for commands
 		sanitizedEnv = buildSandboxEnv(process.env);
 
 		logger.info(
@@ -65,9 +164,16 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 				allowWrite: sandboxConfig.filesystem?.allowWrite?.length ?? 0,
 				allowedDomains: sandboxConfig.network?.allowedDomains?.length ?? 0,
 				envVarsAllowed: Object.keys(sanitizedEnv).length,
+				wrapperEnabled: wrapperPath !== null,
 			},
 			"sandbox initialized",
 		);
+
+		return {
+			initialized: true,
+			wrapperEnabled: wrapperPath !== null,
+			wrapperError,
+		};
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to initialize sandbox");
 		throw new Error(`Sandbox initialization failed: ${String(err)}`);
@@ -85,9 +191,13 @@ export async function resetSandbox(): Promise<void> {
 
 	try {
 		await SandboxManager.reset();
+		// Note: We don't cleanup the wrapper here because it's a one-time setup
+		// and users may want to keep it for subsequent runs. Use cleanupWrapper()
+		// explicitly if needed.
 		initialized = false;
 		currentConfig = null;
 		sanitizedEnv = null;
+		wrapperPath = null;
 		logger.info("sandbox reset");
 	} catch (err) {
 		logger.warn({ error: String(err) }, "error resetting sandbox");
@@ -111,7 +221,10 @@ export function getSandboxConfig(): SandboxRuntimeConfig | null {
 /**
  * Update the sandbox configuration without restarting.
  *
- * Uses SandboxManager.updateConfig() to hot-swap the configuration.
+ * Updates both:
+ * 1. Wrapper SRT settings (for Claude CLI subprocess)
+ * 2. SandboxManager config (for Bash commands)
+ *
  * This is useful for tier-aligned configs where different tiers
  * have different sandbox restrictions.
  *
@@ -124,18 +237,45 @@ export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
 	}
 
 	try {
+		// Update wrapper settings (for Claude CLI subprocess)
+		if (wrapperPath) {
+			updateWrapperConfig(config);
+		}
+
+		// Update SandboxManager config (for Bash commands)
 		SandboxManager.updateConfig(config);
 		currentConfig = config;
 		logger.debug(
 			{
 				denyRead: config.filesystem?.denyRead?.length ?? 0,
 				allowWrite: config.filesystem?.allowWrite?.length ?? 0,
+				wrapperUpdated: wrapperPath !== null,
 			},
 			"sandbox config updated",
 		);
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to update sandbox config");
 	}
+}
+
+/**
+ * Get the path to the sandboxed Claude wrapper.
+ *
+ * Returns null if:
+ * - Sandbox not initialized
+ * - Wrapper initialization failed
+ *
+ * This path should be passed to the SDK via `pathToClaudeCodeExecutable`.
+ */
+export function getClaudeWrapperPath(): string | null {
+	return wrapperPath;
+}
+
+/**
+ * Check if the Claude wrapper is enabled.
+ */
+export function isWrapperEnabled(): boolean {
+	return wrapperPath !== null;
 }
 
 /**
@@ -186,7 +326,7 @@ export async function wrapCommand(command: string): Promise<string> {
 		const sandboxWrapped = await SandboxManager.wrapWithSandbox(command);
 
 		// Then wrap with environment isolation
-		// V2 SECURITY: Apply allowlist-only environment
+		// SECURITY: Apply allowlist-only environment
 		const envPrefix = buildEnvPrefix();
 		const fullyWrapped = envPrefix + sandboxWrapped;
 
@@ -233,7 +373,13 @@ export async function isSandboxAvailable(): Promise<boolean> {
 	// Perform the availability check once
 	try {
 		const testConfig = buildSandboxConfig({});
-		await SandboxManager.initialize(testConfig);
+		// Use same callback pattern for consistency with initializeSandbox
+		const allowAll = testConfig.network?.allowedDomains?.includes("*");
+		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
+			if (isBlockedIP(host)) return false;
+			return !!allowAll;
+		};
+		await SandboxManager.initialize(testConfig, sandboxAskCallback);
 		await SandboxManager.reset();
 		sandboxAvailable = true;
 	} catch {

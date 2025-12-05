@@ -1,7 +1,7 @@
 /**
  * Sandbox configuration for telclaude.
  *
- * V2 SECURITY ARCHITECTURE:
+ * SECURITY ARCHITECTURE:
  * Uses @anthropic-ai/sandbox-runtime to isolate Claude's execution environment.
  * This provides OS-level sandboxing (Seatbelt on macOS, bubblewrap on Linux).
  *
@@ -9,19 +9,37 @@
  * - Filesystem: Deny ~ broadly, allow only workspace
  * - Environment: Allowlist-only model (see src/sandbox/env.ts)
  * - Network: Domain + method restrictions via proxy
- * - Private /tmp: Host /tmp is blocked; writes go to ~/.telclaude/sandbox-tmp
+ * - Private temp: Writes go to ~/.telclaude/sandbox-tmp (but host /tmp NOT blocked,
+ *   as Linux sandbox-runtime creates tmpfs mounts that would hide network sockets)
  *
  * Tier-aligned configs:
  * - READ_ONLY: No writes allowed
  * - WRITE_SAFE/FULL_ACCESS: Writes to workspace + private temp
+ *
+ * LINUX GLOB WORKAROUND:
+ * The @anthropic-ai/sandbox-runtime library silently drops glob patterns on Linux
+ * (bubblewrap doesn't support them). We work around this by expanding globs to
+ * literal paths before passing to the sandbox. See glob-expansion.ts for details.
  */
 
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { PermissionTier } from "../config/config.js";
+import { getChildLogger } from "../logging.js";
+import { expandGlobsForLinux, getGlobPatterns, isLinux } from "./glob-expansion.js";
 
 /**
  * Sensitive paths that should never be readable by sandboxed processes.
  * These include telclaude's own data and common credential stores.
+ *
+ * LINUX LIMITATION: On Linux, glob patterns like ".env" and "secrets.*" are
+ * expanded to literal paths at sandbox initialization time. Two caveats:
+ * 1. Files matching these patterns CREATED AFTER init will NOT be protected
+ * 2. Expansion runs from cwd AND home directory to cover sensitive files outside cwd
+ *
+ * This is a fundamental limitation of bubblewrap (Linux sandbox).
+ * See glob-expansion.ts for details.
+ *
+ * On macOS (Seatbelt), glob patterns work natively and these limitations do not apply.
  */
 export const SENSITIVE_READ_PATHS = [
 	// === Telclaude data ===
@@ -105,9 +123,19 @@ export const SENSITIVE_READ_PATHS = [
 	"/proc/self/environ", // Environment variables
 	"/proc/self/cmdline", // Command line args
 
-	// === Host /tmp (may contain secrets from keyring, dbus, etc.) ===
+	// === Temp directories ===
+	// Host temp directories contain secrets: SSH agent sockets, keyring sockets,
+	// D-Bus sockets, credential files, etc.
+	//
+	// IMPORTANT: We set TMPDIR to our private temp (~/.telclaude/sandbox-tmp) BEFORE
+	// calling SandboxManager.initialize() in manager.ts. This makes sandbox-runtime
+	// create its network bridge sockets there instead of /tmp, allowing us to safely
+	// block host /tmp and /var/tmp without breaking network functionality.
 	"/tmp",
 	"/var/tmp",
+
+	// systemd user runtime directories (contains keyring, gpg-agent, ssh-agent, etc.)
+	"/run/user",
 ];
 
 /**
@@ -117,14 +145,13 @@ export const SENSITIVE_READ_PATHS = [
 export const PRIVATE_TMP_PATH = "~/.telclaude/sandbox-tmp";
 
 /**
- * Default write-allowed paths.
- * Sandboxed processes can only write to these locations.
+ * Default write-allowed paths (excluding cwd which must be passed dynamically).
+ * Sandboxed processes can only write to these locations plus their cwd.
  *
  * Note: We use PRIVATE_TMP_PATH instead of /tmp to prevent
  * reading secrets from host /tmp (keyring sockets, dbus secrets, etc.)
  */
 export const DEFAULT_WRITE_PATHS = [
-	"/workspace", // Synthetic workspace (project mounted here)
 	PRIVATE_TMP_PATH, // Private temp dir (host /tmp is blocked)
 ];
 
@@ -190,22 +217,102 @@ export const BLOCKED_PRIVATE_NETWORKS = [
 /**
  * Paths that should never be writable, even if in an allowed write path.
  * This is a safety net for sensitive files that might be in cwd.
+ *
+ * IMPORTANT: sandbox-runtime adds default write paths internally (e.g., /tmp/claude,
+ * ~/.claude/debug) that we cannot disable. These denyWrite patterns are applied
+ * to ALL writable paths, providing defense-in-depth against writing sensitive
+ * file patterns to sandbox-runtime's internal paths.
+ *
+ * LINUX LIMITATION: On Linux, glob patterns (*.pem, *.key, .env.*, etc.) are
+ * expanded to literal paths at sandbox initialization time. Files matching these
+ * patterns that are CREATED AFTER init will NOT be protected by denyWrite.
+ * This is a fundamental limitation of bubblewrap (Linux sandbox).
+ *
+ * Mitigations:
+ * - Output filter (CORE patterns) catches secrets in output regardless of filesystem
+ * - Most sensitive files (SSH keys, credentials) pre-exist before the sandbox runs
+ * - The sandbox is defense-in-depth, not the primary security mechanism
+ *
+ * On macOS (Seatbelt), glob patterns work natively and this limitation does not apply.
  */
 export const DENY_WRITE_PATHS = [
-	".env", // Environment secrets
+	// === Environment secrets ===
+	".env",
 	".env.local",
 	".env.production",
 	".env.development",
-	"*.pem", // Private keys
-	"*.key",
+	".env.*", // Catch all .env variants
+	".envrc", // direnv
+	"secrets.json",
+	"secrets.yaml",
+	"secrets.yml",
+
+	// === SSH keys ===
 	"id_rsa",
+	"id_rsa.pub",
 	"id_ed25519",
-	"credentials.json", // Service account keys
+	"id_ed25519.pub",
+	"id_ecdsa",
+	"id_ecdsa.pub",
+	"id_dsa",
+	"id_dsa.pub",
+	"authorized_keys",
+	"known_hosts",
+	"*.pem",
+	"*.key",
+	"*.ppk", // PuTTY private keys
+
+	// === SSL/TLS certificates and keys ===
+	"*.crt",
+	"*.cer",
+	"*.p12",
+	"*.pfx",
+	"*.jks", // Java keystore
+
+	// === Cloud provider credentials ===
+	"credentials.json", // GCP service account
 	"service-account.json",
+	"credentials", // AWS credentials file
+	"config", // AWS config (when writing to ~/.aws/)
+
+	// === Package manager auth ===
+	".npmrc",
+	".pypirc",
+	".netrc",
+	".git-credentials",
+
+	// === Shell configuration (prevent injection) ===
+	".bashrc",
+	".bash_profile",
+	".zshrc",
+	".zprofile",
+	".profile",
+	"config.fish",
+
+	// === GPG keys ===
+	"*.gpg",
+	"*.asc",
+	"pubring.kbx",
+	"trustdb.gpg",
+
+	// === Kubernetes/Docker ===
+	"kubeconfig",
+	"config.json", // Docker config
+
+	// === Generic secret patterns ===
+	"*_secret*",
+	"*_private*",
+	"*_token*",
+	"*_credential*",
 ];
+
+const logger = getChildLogger({ module: "sandbox-config" });
 
 /**
  * Build sandbox configuration.
+ *
+ * On Linux, glob patterns are expanded to literal paths since bubblewrap
+ * doesn't support globs. This is a point-in-time expansion.
  *
  * @param options - Configuration overrides
  * @returns SandboxRuntimeConfig for the sandbox manager
@@ -221,21 +328,70 @@ export function buildSandboxConfig(options: {
 	deniedDomains?: string[];
 	/** Allow Unix socket access (e.g., for Docker) */
 	allowUnixSockets?: string[];
+	/** Working directory for glob expansion (default: process.cwd()) */
+	cwd?: string;
 }): SandboxRuntimeConfig {
+	const cwd = options.cwd ?? process.cwd();
+
+	// Collect all deny/allow paths
+	let denyRead = [...SENSITIVE_READ_PATHS, ...(options.additionalDenyRead ?? [])];
+	let denyWrite = [...DENY_WRITE_PATHS];
+	const allowWrite = [...DEFAULT_WRITE_PATHS, ...(options.additionalAllowWrite ?? [])];
+
+	// LINUX GLOB WORKAROUND: Expand globs to literal paths
+	// The sandbox-runtime silently drops glob patterns on Linux
+	if (isLinux()) {
+		const denyReadGlobs = getGlobPatterns(denyRead);
+		const denyWriteGlobs = getGlobPatterns(denyWrite);
+
+		if (denyReadGlobs.length > 0 || denyWriteGlobs.length > 0) {
+			logger.warn(
+				{
+					denyReadGlobs: denyReadGlobs.length,
+					denyWriteGlobs: denyWriteGlobs.length,
+					patterns: [...denyReadGlobs, ...denyWriteGlobs].slice(0, 10),
+				},
+				"Linux sandbox: expanding glob patterns to literal paths (bubblewrap limitation)",
+			);
+		}
+
+		denyRead = expandGlobsForLinux(denyRead, cwd);
+		denyWrite = expandGlobsForLinux(denyWrite, cwd);
+	}
+
 	return {
 		filesystem: {
-			denyRead: [...SENSITIVE_READ_PATHS, ...(options.additionalDenyRead ?? [])],
-			allowWrite: [...DEFAULT_WRITE_PATHS, ...(options.additionalAllowWrite ?? [])],
-			denyWrite: DENY_WRITE_PATHS,
+			denyRead,
+			allowWrite,
+			denyWrite,
 		},
 		network: {
 			// Default to permissive network access (user's choice)
-			// Can be restricted via config
+			// Can be restricted via config.
+			// NOTE: The sandbox-runtime doesn't treat "*" as a wildcard - it's a literal match.
+			// We handle the allow-all case via sandboxAskCallback in manager.ts.
 			allowedDomains: options.allowedDomains ?? ["*"],
 			// SECURITY: Always block cloud metadata endpoints to prevent SSRF
 			deniedDomains: [...BLOCKED_METADATA_DOMAINS, ...(options.deniedDomains ?? [])],
 			allowUnixSockets: options.allowUnixSockets ?? [],
-			allowLocalBinding: false, // No need to bind local ports
+			// INTENT: Disable local port binding for sandboxed processes.
+			//
+			// UPSTREAM LIMITATION (macOS): This flag is NOT fully effective on macOS.
+			// The sandbox-runtime's Seatbelt profile always allows localhost bind/connect
+			// to its internal proxy ports (for network interception). The profile adds:
+			//   (allow network-bind (local ip "localhost:<proxyPort>"))
+			//   (allow network-outbound (remote ip "localhost:<proxyPort>"))
+			// These rules are required for the proxy to function, but mean sandboxed
+			// processes can connect to localhost on those ports. If the proxy isn't
+			// running, these ports could theoretically be reused by other services.
+			//
+			// This is a fundamental limitation of the sandbox-runtime architecture -
+			// fixing it would require upstream changes to @anthropic-ai/sandbox-runtime.
+			allowLocalBinding: false,
+			// SECURITY: Disable arbitrary Unix socket creation via seccomp (Linux only).
+			// Without this flag, sandbox defaults to allowing all Unix sockets.
+			// When false, only paths in allowUnixSockets are permitted.
+			allowAllUnixSockets: false,
 		},
 	};
 }
@@ -251,44 +407,39 @@ export const DEFAULT_SANDBOX_CONFIG = buildSandboxConfig({});
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Sandbox configuration aligned with permission tiers.
+ * Get sandbox configuration for a specific permission tier.
  *
  * The sandbox enforces what Claude CAN do (enforcement),
  * while the tier controls what Claude SHOULD do (policy).
  * The sandbox matches the tier, not more restrictive.
  *
- * - READ_ONLY: No writes allowed (empty allowWrite)
- * - WRITE_SAFE: Writes to cwd + /tmp
+ * @param tier - Permission tier
+ * @param cwd - Working directory to allow writes to (for WRITE_SAFE/FULL_ACCESS) and for glob expansion
+ * @returns SandboxRuntimeConfig with tier-appropriate permissions
+ *
+ * - READ_ONLY: No writes allowed
+ * - WRITE_SAFE: Writes to cwd + private temp
  * - FULL_ACCESS: Same as WRITE_SAFE (sandbox is safety net, not policy)
  */
-export const TIER_SANDBOX_CONFIGS: Record<PermissionTier, SandboxRuntimeConfig> = {
-	READ_ONLY: buildSandboxConfig({
+export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): SandboxRuntimeConfig {
+	const workingDir = cwd ?? process.cwd();
+
+	if (tier === "READ_ONLY") {
 		// No writes allowed for read-only tier
-		additionalAllowWrite: [],
-	}),
-	WRITE_SAFE: buildSandboxConfig({
-		// Standard write paths for write-safe tier
-		additionalAllowWrite: [],
-	}),
-	FULL_ACCESS: buildSandboxConfig({
-		// Same as WRITE_SAFE - sandbox is safety net, tier is policy
-		additionalAllowWrite: [],
-	}),
-};
+		// Still pass cwd for glob expansion on Linux
+		const baseConfig = buildSandboxConfig({ cwd: workingDir });
+		return {
+			...baseConfig,
+			filesystem: {
+				...baseConfig.filesystem,
+				allowWrite: [], // No writes for READ_ONLY
+			},
+		};
+	}
 
-// Override the allowWrite for READ_ONLY to be empty
-// (buildSandboxConfig adds DEFAULT_WRITE_PATHS, we need to remove them)
-TIER_SANDBOX_CONFIGS.READ_ONLY = {
-	...TIER_SANDBOX_CONFIGS.READ_ONLY,
-	filesystem: {
-		...TIER_SANDBOX_CONFIGS.READ_ONLY.filesystem,
-		allowWrite: [], // No writes for READ_ONLY
-	},
-};
-
-/**
- * Get sandbox configuration for a specific permission tier.
- */
-export function getSandboxConfigForTier(tier: PermissionTier): SandboxRuntimeConfig {
-	return TIER_SANDBOX_CONFIGS[tier];
+	// WRITE_SAFE and FULL_ACCESS: allow writes to cwd and private temp
+	return buildSandboxConfig({
+		additionalAllowWrite: cwd ? [cwd] : [],
+		cwd: workingDir,
+	});
 }

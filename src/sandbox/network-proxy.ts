@@ -1,17 +1,27 @@
 /**
- * Network Proxy Configuration - V2 Security
+ * Network Proxy Configuration
  *
- * Provides domain allowlist with method restrictions for sandboxed network access.
+ * Provides domain allowlist configuration for sandboxed network access.
+ *
+ * IMPORTANT: Method (GET/POST) and port restrictions defined here are NOT enforced
+ * at runtime. The @anthropic-ai/sandbox-runtime library only supports domain-based
+ * filtering. These configurations are used for:
+ * - Doctor diagnostics (to show intended policy)
+ * - Future reference if sandbox-runtime adds method/port support
+ * - Documentation of security intent
+ *
+ * What IS enforced:
+ * - Domain allowlist (via sandbox-runtime)
+ * - Private network blocking (127.x, 10.x, 192.168.x, etc.) via sandboxAskCallback
+ * - Cloud metadata endpoint blocking (169.254.169.254, etc.)
+ *
+ * What is NOT enforced:
+ * - HTTP method restrictions (GET/HEAD vs POST/PUT)
+ * - Port restrictions (any port works on allowed domains)
  *
  * Design principles:
- * - Proxy all traffic through controlled interface
  * - Block by default, allow only specified domains
- * - Restrict methods (GET/HEAD default, POST requires explicit config)
  * - Hard-block localhost, RFC1918, and cloud metadata endpoints
- *
- * HTTP exfiltration stance:
- * - Simple profile: Accept limited GET-based exfil (secrets can be in query params)
- * - Strict profile: Optional filtering of high-entropy query params
  * - Output filter is the primary defense for secrets
  */
 
@@ -45,9 +55,6 @@ export interface NetworkProxyConfig {
 
 	/** Allowed ports (default: 80, 443) */
 	allowedPorts: number[];
-
-	/** Enable feature (behind feature flag for safe rollout) */
-	enabled: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -98,7 +105,6 @@ export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 	allowedDomains: DEFAULT_ALLOWED_DOMAINS,
 	defaultAction: "block",
 	allowedPorts: [80, 443],
-	enabled: false, // Behind feature flag
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -126,7 +132,7 @@ function domainMatches(domain: string, pattern: string): boolean {
  * Check if an IP address is in a blocked network range.
  * Simplified implementation - for full CIDR support, use a library.
  */
-function isBlockedIP(ip: string): boolean {
+export function isBlockedIP(ip: string): boolean {
 	// Check literal matches first
 	for (const blocked of BLOCKED_PRIVATE_NETWORKS) {
 		if (blocked === ip) return true;
@@ -306,29 +312,49 @@ export function addAllowedDomain(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface NetworkIsolationSummary {
-	enabled: boolean;
 	allowedDomains: number;
+	/**
+	 * Domains configured for POST access.
+	 * NOTE: Method restrictions are NOT enforced at runtime by sandbox-runtime.
+	 * This is informational only (shows intended policy).
+	 */
 	domainsWithPost: string[];
 	blockedMetadataEndpoints: number;
 	blockedPrivateNetworks: number;
+	/** True if network uses "*" wildcard (unrestricted egress) */
+	isPermissive: boolean;
+	/**
+	 * Port restrictions configured in policy.
+	 * NOTE: Port restrictions are NOT enforced at runtime by sandbox-runtime.
+	 * This is informational only (shows intended policy).
+	 */
+	allowedPorts?: number[];
 }
 
 /**
  * Get network isolation summary for doctor output.
+ *
+ * @param config - Network proxy config (optional)
+ * @param sandboxAllowedDomains - The actual domains allowed by the sandbox (e.g., ["*"] for permissive)
  */
 export function getNetworkIsolationSummary(
 	config: NetworkProxyConfig = DEFAULT_NETWORK_CONFIG,
+	sandboxAllowedDomains?: string[],
 ): NetworkIsolationSummary {
 	const domainsWithPost = config.allowedDomains
 		.filter((rule) => rule.methods.includes("POST"))
 		.map((rule) => rule.domain);
 
+	// Check if sandbox is permissive (uses "*" wildcard)
+	const isPermissive = sandboxAllowedDomains ? sandboxAllowedDomains.includes("*") : true; // Default sandbox config is permissive
+
 	return {
-		enabled: config.enabled,
 		allowedDomains: config.allowedDomains.length,
 		domainsWithPost,
 		blockedMetadataEndpoints: BLOCKED_METADATA_DOMAINS.length,
 		blockedPrivateNetworks: BLOCKED_PRIVATE_NETWORKS.length,
+		isPermissive,
+		allowedPorts: config.allowedPorts,
 	};
 }
 
@@ -347,14 +373,21 @@ export interface NetworkSelfTestResult {
 
 /**
  * Run network isolation self-tests.
- * These are logic tests only - no actual network requests are made.
+ *
+ * IMPORTANT: These are POLICY checks only - they test the checkNetworkRequest() logic,
+ * not actual runtime enforcement. The sandbox-runtime only enforces:
+ * - Domain allowlist (via sandboxAskCallback for private networks)
+ * - Cloud metadata blocking
+ *
+ * Tests for method/port restrictions pass the policy check but are NOT enforced
+ * at runtime by sandbox-runtime.
  */
 export function runNetworkSelfTest(
 	config: NetworkProxyConfig = DEFAULT_NETWORK_CONFIG,
 ): NetworkSelfTestResult {
 	const tests: NetworkSelfTestResult["tests"] = [];
 
-	// Test 1: Allowed domain with GET should pass
+	// Test 1: Allowed domain with GET should pass (ENFORCED by sandbox-runtime)
 	{
 		const result = checkNetworkRequest("registry.npmjs.org", "GET", 443, config);
 		tests.push({
@@ -364,7 +397,7 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 2: Metadata endpoint should be blocked
+	// Test 2: Metadata endpoint should be blocked (ENFORCED via isBlockedIP)
 	{
 		const result = checkNetworkRequest("169.254.169.254", "GET", 80, config);
 		tests.push({
@@ -374,7 +407,7 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 3: Localhost should be blocked
+	// Test 3: Localhost should be blocked (ENFORCED via isBlockedIP)
 	{
 		const result = checkNetworkRequest("127.0.0.1", "GET", 8080, config);
 		tests.push({
@@ -384,7 +417,7 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 4: Private network should be blocked
+	// Test 4: Private network should be blocked (ENFORCED via isBlockedIP)
 	{
 		const result = checkNetworkRequest("192.168.1.1", "GET", 80, config);
 		tests.push({
@@ -394,7 +427,7 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 5: Unknown domain should be blocked
+	// Test 5: Unknown domain should be blocked (ENFORCED by sandbox-runtime)
 	{
 		const result = checkNetworkRequest("evil.com", "GET", 443, config);
 		tests.push({
@@ -404,18 +437,19 @@ export function runNetworkSelfTest(
 		});
 	}
 
-	// Test 6: POST to github.com should be blocked (default config)
+	// Test 6: POST to github.com - POLICY CHECK ONLY, NOT ENFORCED AT RUNTIME
+	// sandbox-runtime does not support method restrictions
 	{
 		const result = checkNetworkRequest("github.com", "POST", 443, config);
 		const shouldBlock = !config.allowedDomains.some(
 			(r) => domainMatches("github.com", r.domain) && r.methods.includes("POST"),
 		);
 		tests.push({
-			name: "POST to github.com (default: blocked)",
+			name: "POST to github.com (policy: blocked, NOT enforced)",
 			passed: shouldBlock ? !result.allowed : result.allowed,
 			details: result.allowed
 				? "POST allowed (explicit config)"
-				: "POST blocked (method restriction)",
+				: "POST blocked in policy (not runtime-enforced)",
 		});
 	}
 

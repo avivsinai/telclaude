@@ -1,7 +1,7 @@
 /**
  * Output filter for detecting and blocking secret exfiltration.
  *
- * V2 SECURITY ARCHITECTURE:
+ * SECURITY ARCHITECTURE:
  * - CORE patterns: NEVER configurable, NEVER removable
  * - Additive patterns: Users can ADD, never remove CORE
  * - Entropy detection: Catches encoded/obfuscated secrets
@@ -473,7 +473,7 @@ export class ChunkBuffer {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// V2: Config-Aware Filtering
+// Config-Aware Filtering
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**

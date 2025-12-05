@@ -1,7 +1,6 @@
 /**
  * Sandbox module exports.
  *
- * V2 SECURITY ARCHITECTURE:
  * Provides OS-level isolation using @anthropic-ai/sandbox-runtime.
  * - Filesystem: Deny ~ broadly, allow only workspace
  * - Environment: Allowlist-only model
@@ -18,14 +17,31 @@ export {
 	isSandboxAvailable,
 	buildSandboxConfig,
 	updateSandboxConfig,
+	// Wrapper for Claude CLI subprocess
+	getClaudeWrapperPath,
+	isWrapperEnabled,
+	type SandboxInitResult,
 } from "./manager.js";
+
+// Claude CLI wrapper (sandboxes entire Claude subprocess)
+export {
+	initializeWrapper,
+	isWrapperInitialized,
+	getWrapperPath,
+	updateWrapperConfig,
+	cleanupWrapper,
+	verifyWrapper,
+	validateWrapperPaths,
+	type WrapperInitResult,
+	WRAPPER_PATH,
+	SRT_SETTINGS_PATH,
+} from "./wrapper.js";
 
 export {
 	SENSITIVE_READ_PATHS,
 	DEFAULT_WRITE_PATHS,
 	DENY_WRITE_PATHS,
 	DEFAULT_SANDBOX_CONFIG,
-	TIER_SANDBOX_CONFIGS,
 	getSandboxConfigForTier,
 	PRIVATE_TMP_PATH,
 	PRIVATE_TMP_CONFIG, // Deprecated, use PRIVATE_TMP_PATH
@@ -33,7 +49,7 @@ export {
 	BLOCKED_PRIVATE_NETWORKS,
 } from "./config.js";
 
-// V2: Environment isolation
+// Environment isolation
 export {
 	buildSandboxEnv,
 	getEnvIsolationSummary,
@@ -43,11 +59,12 @@ export {
 	ENV_DENY_PREFIXES,
 } from "./env.js";
 
-// V2: Network proxy with domain allowlist and method restrictions
+// Network proxy with domain allowlist and method restrictions
 export {
 	checkNetworkRequest,
 	getNetworkIsolationSummary,
 	runNetworkSelfTest,
+	isBlockedIP,
 	DEFAULT_NETWORK_CONFIG,
 	DEFAULT_ALLOWED_DOMAINS,
 	type NetworkProxyConfig,
@@ -57,3 +74,12 @@ export {
 	type NetworkIsolationSummary,
 	type NetworkSelfTestResult,
 } from "./network-proxy.js";
+
+// Glob expansion for Linux (bubblewrap doesn't support globs)
+export {
+	expandGlobsForLinux,
+	analyzeGlobPatterns,
+	isLinux,
+	containsGlobChars,
+	getGlobPatterns,
+} from "./glob-expansion.js";

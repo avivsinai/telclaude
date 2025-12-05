@@ -1,7 +1,7 @@
 /**
  * Security module exports.
  *
- * V2 SECURITY ARCHITECTURE:
+ * SECURITY ARCHITECTURE:
  * This module provides defense-in-depth security with two profiles:
  * - simple (default): Hard enforcement only (sandbox, secret filter, rate limits)
  * - strict (opt-in): Adds soft policy layers (observer, approvals)
@@ -15,7 +15,7 @@
  * - Streaming redaction
  */
 
-// V2: Security pipeline abstraction
+// Security pipeline abstraction
 export {
 	buildSecurityPipeline,
 	type SecurityPipeline,
@@ -31,7 +31,7 @@ export {
 	detectHighEntropyBlobs,
 } from "./pipeline.js";
 
-// V2: Streaming redactor for chunk boundary handling
+// Streaming redactor for chunk boundary handling
 export {
 	StreamingRedactor,
 	createStreamingRedactor,
@@ -65,7 +65,7 @@ export * from "./linking.js";
 export * from "./approvals.js";
 export * from "./totp-session.js";
 
-// V2: Admin claim flow for single-user deployments
+// Admin claim flow for single-user deployments
 export {
 	hasAdmin,
 	isAdminChat,

@@ -1,5 +1,5 @@
 /**
- * Reset Auth Command - V2 Security
+ * Reset Auth Command
  *
  * Nukes all local auth state, forcing re-claim on next Telegram message.
  *

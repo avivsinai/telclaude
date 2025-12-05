@@ -132,9 +132,16 @@ async function withSessionLock<T>(
 	requestId?: string,
 ): Promise<T> {
 	// Wait for any existing operation on this session (with timeout)
-	const existingLock = sessionLocks.get(sessionKey);
-	if (existingLock) {
-		const waitStartedAt = Date.now();
+	// Use a loop to handle race conditions when multiple threads timeout simultaneously
+	const waitStartedAt = Date.now();
+	// eslint-disable-next-line no-constant-condition
+	while (true) {
+		const existingLock = sessionLocks.get(sessionKey);
+		if (!existingLock) {
+			// No lock exists, proceed to acquire
+			break;
+		}
+
 		const timeoutPromise = new Promise<"timeout">((resolve) =>
 			setTimeout(() => resolve("timeout"), SESSION_LOCK_TIMEOUT_MS),
 		);
@@ -142,7 +149,16 @@ async function withSessionLock<T>(
 			existingLock.promise.then(() => "done" as const),
 			timeoutPromise,
 		]);
-		if (result === "timeout") {
+
+		if (result === "done") {
+			// Lock was released normally, loop to check if someone else grabbed it
+			continue;
+		}
+
+		// Timeout - attempt to steal the lock, but only if it's still the same one we waited on
+		// This prevents race conditions where two threads timeout and both try to delete
+		const currentLock = sessionLocks.get(sessionKey);
+		if (currentLock === existingLock) {
 			const lockHeldFor = Date.now() - existingLock.acquiredAt;
 			logger.warn(
 				{
@@ -154,15 +170,20 @@ async function withSessionLock<T>(
 				},
 				"session lock timeout - previous operation may be stuck, forcing release",
 			);
-			// Remove the stuck lock to allow this operation to proceed
+			// Only delete if we're still looking at the same stuck lock
 			sessionLocks.delete(sessionKey);
-		} else {
-			const waitedMs = Date.now() - waitStartedAt;
-			if (waitedMs > 5000) {
-				// Log if we had to wait more than 5 seconds
-				logger.info({ sessionKey, requestId, waitedMs }, "session lock acquired after waiting");
-			}
+			break;
 		}
+		// Someone else already stole/released the lock, loop to wait on the new one
+	}
+
+	const totalWaitMs = Date.now() - waitStartedAt;
+	if (totalWaitMs > 5000) {
+		// Log if we had to wait more than 5 seconds
+		logger.info(
+			{ sessionKey, requestId, waitedMs: totalWaitMs },
+			"session lock acquired after waiting",
+		);
 	}
 
 	// Create a new lock for our operation
@@ -239,22 +260,18 @@ type ExecutionContext = {
  * arrive rapidly for the same session.
  */
 async function executeAndReply(ctx: ExecutionContext): Promise<void> {
-	console.log("[DEBUG] Inside executeAndReply");
 	const { msg, config } = ctx;
 
 	const userId = String(msg.chatId);
 	const startTime = Date.now();
 
 	const replyConfig = config.inbound?.reply;
-	console.log(`[DEBUG] replyConfig.enabled=${replyConfig?.enabled}`);
 	if (!replyConfig?.enabled) {
 		logger.debug("reply not enabled, skipping");
 		return;
 	}
 
-	console.log("[DEBUG] Sending composing indicator...");
 	await msg.sendComposing();
-	console.log("[DEBUG] Composing indicator sent");
 
 	// Session handling with SQLite
 	const sessionConfig = replyConfig.session;
@@ -266,11 +283,9 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
 
 	// Use session lock to prevent race conditions on rapid messages
-	console.log(`[DEBUG] Acquiring session lock for: ${sessionKey}`);
 	await withSessionLock(
 		sessionKey,
 		async () => {
-			console.log("[DEBUG] Session lock acquired, calling executeWithSession");
 			await executeWithSession(ctx, sessionKey, {
 				userId,
 				startTime,
@@ -278,11 +293,9 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 				resetTriggers,
 				timeoutSeconds,
 			});
-			console.log("[DEBUG] executeWithSession completed");
 		},
 		ctx.requestId,
 	);
-	console.log("[DEBUG] Session lock released");
 }
 
 /**
@@ -299,7 +312,6 @@ async function executeWithSession(
 		timeoutSeconds: number;
 	},
 ): Promise<void> {
-	console.log("[DEBUG] Inside executeWithSession");
 	const {
 		msg,
 		tier,
@@ -311,7 +323,6 @@ async function executeWithSession(
 	} = ctx;
 	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds } = opts;
 	const existingSession = getSession(sessionKey);
-	console.log(`[DEBUG] existingSession=${existingSession ? "exists" : "null"}, tier=${tier}`);
 	const now = Date.now();
 
 	// Check for reset triggers or idle timeout
@@ -363,15 +374,12 @@ async function executeWithSession(
 		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
 		let responseText = "";
 
-		// V2: Create streaming redactor for output secret filtering
+		// Create streaming redactor for output secret filtering
 		// This catches secrets that may be split across chunk boundaries
 		// Pass config for additional patterns and entropy detection
 		const redactor = createStreamingRedactor(undefined, ctx.config.security?.secretFilter);
 
-		console.log(
-			`[DEBUG] About to call executePooledQuery with prompt: "${queryPrompt.slice(0, 50)}..."`,
-		);
-		// Execute with V2 session pool for connection reuse and timeout
+		// Execute with session pool for connection reuse and timeout
 		for await (const chunk of executePooledQuery(queryPrompt, {
 			cwd: process.cwd(),
 			tier,
@@ -381,7 +389,7 @@ async function executeWithSession(
 			timeoutMs: timeoutSeconds * 1000,
 		})) {
 			if (chunk.type === "text") {
-				// V2: Process through streaming redactor to catch secrets
+				// Process through streaming redactor to catch secrets
 				const safeContent = redactor.processChunk(chunk.content);
 				responseText += safeContent;
 			} else if (chunk.type === "done") {
@@ -409,7 +417,7 @@ async function executeWithSession(
 					return;
 				}
 
-				// V2: Flush remaining buffered content from streaming redactor
+				// Flush remaining buffered content from streaming redactor
 				const flushedContent = redactor.flush();
 				responseText += flushedContent;
 
@@ -489,7 +497,7 @@ export type MonitorOptions = {
 	verbose: boolean;
 	keepAlive?: boolean;
 	abortSignal?: AbortSignal;
-	/** V2: Security profile - "simple" (default), "strict", or "test" */
+	/** Security profile - "simple" (default), "strict", or "test" */
 	securityProfile?: "simple" | "strict" | "test";
 };
 
@@ -504,7 +512,7 @@ export async function monitorTelegramProvider(
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
 
-	// V2: Security profile controls observer behavior
+	// Security profile controls observer behavior
 	// - "simple": Observer disabled (hard enforcement only)
 	// - "strict": Observer enabled (adds soft policy analysis)
 	// - "test": Observer disabled (no security - testing only)
@@ -547,6 +555,24 @@ export async function monitorTelegramProvider(
 		logFile: cfg.security?.audit?.logFile,
 	});
 
+	// Clean up old rate limit windows at startup
+	try {
+		rateLimiter.cleanup();
+		logger.debug("startup cleanup of rate limit windows completed");
+	} catch (err) {
+		logger.error({ error: String(err) }, "startup rate limit cleanup failed");
+	}
+
+	// Set up periodic cleanup for rate limit windows (every 10 minutes)
+	const RATE_LIMIT_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+	const rateLimitCleanupInterval = setInterval(() => {
+		try {
+			rateLimiter.cleanup();
+		} catch (err) {
+			logger.error({ error: String(err) }, "periodic rate limit cleanup failed");
+		}
+	}, RATE_LIMIT_CLEANUP_INTERVAL_MS);
+
 	const recentlySent = new Set<string>();
 
 	let reconnectAttempts = 0;
@@ -585,11 +611,10 @@ export async function monitorTelegramProvider(
 			});
 
 			const runner = run(bot);
-			console.log("[DEBUG] Runner started, polling should be active");
 
 			// Log runner errors
 			runner.task()?.catch((err) => {
-				console.error("[DEBUG] Runner task error:", err);
+				logger.error({ error: String(err) }, "runner task error");
 			});
 
 			// Periodic cleanup of expired entries in SQLite
@@ -659,6 +684,9 @@ export async function monitorTelegramProvider(
 			await sleepWithAbort(delay, abortSignal);
 		}
 	}
+
+	// Clean up the rate limit interval when exiting
+	clearInterval(rateLimitCleanupInterval);
 }
 
 /**
@@ -674,13 +702,11 @@ async function handleInboundMessage(
 	recentlySent: Set<string>,
 	securityProfile: "simple" | "strict" | "test",
 ): Promise<void> {
-	console.log(`[DEBUG] handleInboundMessage called for: "${msg.body}"`);
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
-	console.log(`[DEBUG] requestId=${requestId}, userId=${userId}`);
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// V2: ADMIN CLAIM FLOW - First-time setup for single-user deployments
+	// ADMIN CLAIM FLOW - First-time setup for single-user deployments
 	// This must run BEFORE control commands to intercept first message
 	// ══════════════════════════════════════════════════════════════════════════
 
@@ -852,11 +878,9 @@ async function handleInboundMessage(
 	// ══════════════════════════════════════════════════════════════════════════
 	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
-	console.log("[DEBUG] Reached data plane section");
 
 	// Input sanitization - reject malformed messages early
 	const sanitized = sanitizeInput(msg.body);
-	console.log(`[DEBUG] Sanitization result: valid=${sanitized.valid}`);
 	if (!sanitized.valid) {
 		logger.warn({ userId, reason: sanitized.reason }, "malformed input rejected");
 		await msg.reply(`Message rejected: ${sanitized.reason}`);
@@ -908,13 +932,10 @@ async function handleInboundMessage(
 	}
 
 	const tier = getUserPermissionTier(msg.chatId, cfg.security);
-	console.log(`[DEBUG] Permission tier: ${tier}`);
 
 	// TEST PROFILE: Skip rate limiting to allow unlimited testing
 	if (securityProfile !== "test") {
-		console.log("[DEBUG] Checking rate limit...");
 		const rateLimitResult = await rateLimiter.checkLimit(userId, tier);
-		console.log(`[DEBUG] Rate limit result: allowed=${rateLimitResult.allowed}`);
 		if (!rateLimitResult.allowed) {
 			logger.info({ userId, tier }, "rate limited");
 			await auditLogger.logRateLimited(userId, msg.chatId, tier);
@@ -925,15 +946,11 @@ async function handleInboundMessage(
 		}
 	}
 
-	console.log("[DEBUG] Calling observer.analyze...");
 	const observerResult = await observer.analyze(msg.body, {
 		permissionTier: tier,
 	});
-	console.log(
-		`[DEBUG] Observer result: classification=${observerResult.classification}, confidence=${observerResult.confidence}`,
-	);
 
-	// V2: Approvals only required in strict profile
+	// Approvals only required in strict profile
 	// In simple/test profiles, all requests proceed without approval workflow
 	// ADMIN: Claimed admins bypass approval even in strict profile
 	if (
@@ -1053,7 +1070,6 @@ async function handleInboundMessage(
 		logger.info({ userId, reason: observerResult.reason }, "message flagged with warning");
 	}
 
-	console.log("[DEBUG] About to call executeAndReply...");
 	await executeAndReply({
 		msg,
 		prompt: msg.body.trim(),
@@ -1126,7 +1142,7 @@ async function handleApproveCommand(
 		return;
 	}
 
-	// V2: Check for admin claim approval first
+	// Check for admin claim approval first
 	const pendingAdminClaim = getPendingAdminClaim(msg.chatId);
 	if (pendingAdminClaim) {
 		const adminClaimResult = await handleAdminClaimApproval(

@@ -3,7 +3,12 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
-import { initializeSandbox, isSandboxAvailable, resetSandbox } from "../sandbox/index.js";
+import {
+	getNetworkIsolationSummary,
+	initializeSandbox,
+	isSandboxAvailable,
+	resetSandbox,
+} from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
@@ -94,17 +99,37 @@ export function registerRelayCommand(program: Command): void {
 						"\n❌ Sandbox unavailable - telclaude requires OS-level sandboxing for security.\n",
 					);
 					console.error("Install dependencies:");
-					console.error("  macOS: Built-in (Seatbelt) - should work out of the box");
-					console.error("  Linux: apt install bubblewrap (Debian/Ubuntu)");
-					console.error("         dnf install bubblewrap (Fedora)");
-					console.error("         pacman -S bubblewrap (Arch)");
+					console.error("  macOS: brew install ripgrep");
+					console.error("         (Seatbelt is built-in)");
+					console.error("  Linux: apt install bubblewrap ripgrep socat (Debian/Ubuntu)");
+					console.error("         dnf install bubblewrap ripgrep socat (Fedora)");
+					console.error("         pacman -S bubblewrap ripgrep socat (Arch)");
 					console.error("  Windows: Not supported\n");
+					console.error("Required tools:");
+					console.error("  - ripgrep (rg): Used by sandbox-runtime for file operations");
+					console.error("  - socat: Required on Linux for network proxying\n");
 					console.error("Or run in Docker for containerized isolation.");
 					process.exit(1);
 				}
 
-				await initializeSandbox();
-				console.log("Sandbox: enabled (OS-level isolation)");
+				const sandboxResult = await initializeSandbox();
+				if (sandboxResult.wrapperEnabled) {
+					console.log("Sandbox: enabled (full wrapper - all Claude tools sandboxed)");
+				} else {
+					console.warn("\n⚠️  Sandbox: DEGRADED (Bash-only isolation, wrapper failed)");
+					if (sandboxResult.wrapperError) {
+						console.warn(`   Reason: ${sandboxResult.wrapperError}`);
+					}
+					console.warn("   Claude Read/Write/Edit tools run WITHOUT sandbox protection.\n");
+				}
+
+				// Network policy - be explicit about permissive default
+				const netSummary = getNetworkIsolationSummary();
+				if (netSummary.isPermissive) {
+					console.log("Network: PERMISSIVE (all egress allowed, metadata endpoints blocked)");
+				} else {
+					console.log(`Network: RESTRICTED (${netSummary.allowedDomains} domains allowed)`);
+				}
 
 				// Check TOTP daemon availability
 				const totpAvailable = await isTOTPDaemonAvailable();

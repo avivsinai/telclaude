@@ -1,11 +1,11 @@
 /**
- * Environment Isolation - V2 Security
+ * Environment Isolation
  *
  * Principle: Construct a fresh env from allowlist. Never pass through secrets.
  *
  * - Allowlist-only model: Only vars in ENV_ALLOWLIST pass through
  * - Deny prefixes: Secondary belt catching credential patterns
- * - HOME alignment: HOME=/home/sandbox (synthetic, not real ~)
+ * - HOME alignment: HOME points to private temp dir (writable, isolated from real ~)
  * - TMPDIR: Points to private temp dir (host /tmp is blocked)
  */
 
@@ -34,7 +34,7 @@ export const ENV_ALLOWLIST = [
 	"TERM",
 	"COLORTERM",
 
-	// User info (HOME overridden to synthetic path)
+	// User info (HOME overridden to private temp - writable and isolated)
 	"HOME",
 	"USER",
 	"SHELL",
@@ -51,10 +51,9 @@ export const ENV_ALLOWLIST = [
 
 	// Node.js
 	"NODE_ENV",
-	"NODE_OPTIONS",
+	// SECURITY: NODE_OPTIONS removed - allows --require injection to preload arbitrary code
 
 	// Debugging (safe)
-	"DEBUG",
 	"FORCE_COLOR",
 	"NO_COLOR",
 
@@ -70,10 +69,28 @@ export const ENV_ALLOWLIST = [
 
 /**
  * These prefixes are NEVER passed through, even if somehow in allowlist.
- * Defense in depth against credential leakage.
+ * Defense in depth against credential leakage and code injection.
  */
 export const ENV_DENY_PREFIXES = [
-	// Cloud providers
+	// === CODE INJECTION VECTORS (CRITICAL) ===
+	// Dynamic linker injection (Linux)
+	"LD_", // LD_PRELOAD, LD_LIBRARY_PATH - inject shared libraries
+	// Dynamic linker injection (macOS)
+	"DYLD_", // DYLD_INSERT_LIBRARIES, DYLD_LIBRARY_PATH - same as LD_PRELOAD
+	// Node.js injection (NODE_ENV is safe and in allowlist, these are dangerous)
+	"NODE_OPTIONS", // --require injection to preload arbitrary code
+	"NODE_PATH", // Module path injection
+	// Python injection
+	"PYTHON", // PYTHONSTARTUP, PYTHONPATH, PYTHONUSERSITE
+	// Ruby injection
+	"RUBY", // RUBYOPT, RUBYLIB
+	// Perl injection
+	"PERL", // PERL5OPT, PERL5LIB
+	// Bash startup injection
+	"BASH_ENV", // Runs commands before bash scripts
+	// Note: "ENV" omitted as it conflicts with legitimate env vars
+
+	// === CLOUD PROVIDERS ===
 	"AWS_",
 	"GCP_",
 	"AZURE_",
@@ -188,10 +205,7 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 		}
 	}
 
-	// Override HOME to synthetic path
-	sandboxEnv.HOME = "/home/sandbox";
-
-	// V2 SECURITY: Override TMPDIR to private temp directory
+	// SECURITY: Override TMPDIR to private temp directory
 	// This ensures commands use our private temp instead of host /tmp
 	// (which is blocked via denyRead in sandbox config)
 	const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
@@ -200,6 +214,11 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 	sandboxEnv.TMPDIR = resolvedTmpPath;
 	sandboxEnv.TMP = resolvedTmpPath;
 	sandboxEnv.TEMP = resolvedTmpPath;
+
+	// Override HOME to private temp directory (writable and isolated from real ~)
+	// Using the same path as TMPDIR ensures HOME is in allowWrite and exists.
+	// Previously set to "/home/sandbox" which didn't exist and wasn't writable.
+	sandboxEnv.HOME = resolvedTmpPath;
 
 	// Count blocked vars for metrics
 	for (const key of Object.keys(processEnv)) {

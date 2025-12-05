@@ -1,5 +1,5 @@
 /**
- * Security Pipeline - V2 Architecture
+ * Security Pipeline
  *
  * Two profiles:
  * - simple (default): Hard enforcement only, no approvals, no observer
@@ -364,7 +364,31 @@ export async function buildSecurityPipeline(config: PipelineConfig): Promise<Sec
 	const { profile, securityConfig, rateLimiter, auditLogger, secretFilterConfig } = config;
 
 	if (profile === "test") {
-		logger.warn("using test profile - NO SECURITY ENFORCEMENT");
+		// SECURITY: Test profile has NO security - require explicit opt-in
+		const testEnvFlag = process.env.TELCLAUDE_ENABLE_TEST_PROFILE === "1";
+		const isProduction = process.env.NODE_ENV === "production";
+
+		if (isProduction && !testEnvFlag) {
+			logger.error("test profile requested in production without TELCLAUDE_ENABLE_TEST_PROFILE=1");
+			throw new Error(
+				"Cannot use test profile in production. " +
+					"Set TELCLAUDE_ENABLE_TEST_PROFILE=1 to explicitly enable (DANGEROUS).",
+			);
+		}
+
+		if (!testEnvFlag) {
+			logger.error(
+				"test profile requires TELCLAUDE_ENABLE_TEST_PROFILE=1 - " +
+					"this disables ALL security enforcement",
+			);
+			throw new Error(
+				"Test profile requires explicit opt-in. " +
+					"Set TELCLAUDE_ENABLE_TEST_PROFILE=1 environment variable to enable. " +
+					"WARNING: This disables ALL security enforcement!",
+			);
+		}
+
+		logger.warn("TEST PROFILE ENABLED - NO SECURITY ENFORCEMENT - NEVER USE IN PRODUCTION");
 		return new TestPipeline();
 	}
 

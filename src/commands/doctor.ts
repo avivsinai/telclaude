@@ -5,10 +5,18 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
+	DENY_WRITE_PATHS,
+	SENSITIVE_READ_PATHS,
+	SRT_SETTINGS_PATH,
+	WRAPPER_PATH,
+	analyzeGlobPatterns,
 	getEnvIsolationSummary,
 	getNetworkIsolationSummary,
+	isLinux,
 	isSandboxAvailable,
+	isWrapperInitialized,
 	runNetworkSelfTest,
+	verifyWrapper,
 } from "../sandbox/index.js";
 import { CORE_SECRET_PATTERNS, filterOutput, redactSecrets } from "../security/index.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
@@ -95,11 +103,11 @@ export function registerDoctorCommand(program: Command): void {
 				// TOTP daemon check
 				const totpDaemonAvailable = await isTOTPDaemonAvailable();
 
-				// V2: Load config for profile info
+				// Load config for profile info
 				const cfg = loadConfig();
 				const profile = cfg.security?.profile ?? "simple";
 
-				// V2: Environment isolation summary
+				// Environment isolation summary
 				const envSummary = getEnvIsolationSummary(process.env);
 
 				console.log("=== telclaude doctor ===\n");
@@ -117,8 +125,8 @@ export function registerDoctorCommand(program: Command): void {
 					for (const s of skills) console.log(`     - ${path.basename(path.dirname(s))}`);
 				}
 
-				// V2: Security section
-				console.log("\n🔒 Security (V2)");
+				// Security section
+				console.log("\n🔒 Security");
 				console.log(`   Profile: ${profile}`);
 				if (profile === "strict") {
 					console.log(
@@ -132,7 +140,7 @@ export function registerDoctorCommand(program: Command): void {
 					console.log("     ⚠️  TEST PROFILE - NO SECURITY");
 				}
 
-				// V2: Five pillars status
+				// Five pillars status
 				console.log("\n🛡️  Security Pillars");
 				console.log(
 					`   1. Filesystem isolation: ${sandboxAvailable ? "✓ available" : "✗ unavailable"}`,
@@ -140,7 +148,19 @@ export function registerDoctorCommand(program: Command): void {
 				console.log(
 					`   2. Environment isolation: ✓ ${envSummary.allowed} allowed, ${envSummary.blocked} blocked`,
 				);
-				console.log("   3. Network isolation: ✓ metadata endpoints blocked");
+
+				// Network isolation - be explicit about permissive default
+				const netSummaryPillars = getNetworkIsolationSummary();
+				if (netSummaryPillars.isPermissive) {
+					console.log(
+						"   3. Network isolation: ⚠️  PERMISSIVE (metadata blocked, but egress unrestricted)",
+					);
+				} else {
+					console.log(
+						`   3. Network isolation: ✓ ${netSummaryPillars.allowedDomains} domains allowed`,
+					);
+				}
+
 				console.log(`   4. Secret filtering: ✓ ${CORE_SECRET_PATTERNS.length} CORE patterns`);
 				console.log(
 					`   5. Auth/TOTP: ${totpDaemonAvailable ? "✓ daemon running" : "⚠️  daemon not running"}`,
@@ -151,6 +171,35 @@ export function registerDoctorCommand(program: Command): void {
 				console.log(`   Status: ${sandboxAvailable ? "✓ available" : "✗ unavailable (REQUIRED)"}`);
 				if (!sandboxAvailable) {
 					console.log("   Install: bubblewrap (Linux) or run on macOS (Seatbelt)");
+				}
+
+				// Linux glob expansion status
+				if (isLinux()) {
+					const globAnalysis = analyzeGlobPatterns({
+						denyRead: SENSITIVE_READ_PATHS,
+						denyWrite: DENY_WRITE_PATHS,
+					});
+					if (globAnalysis.hasIssues) {
+						console.log("   Linux glob workaround: ✓ active");
+						console.log(
+							`     Expanding ${globAnalysis.denyReadGlobs.length} read + ${globAnalysis.denyWriteGlobs.length} write patterns`,
+						);
+						console.log("     Note: Patterns expanded to literal paths at startup");
+					}
+				}
+
+				// Claude wrapper (sandboxes entire Claude CLI subprocess)
+				const wrapperInitialized = isWrapperInitialized();
+				console.log("\n🔐 Claude Sandbox Wrapper");
+				console.log(`   Status: ${wrapperInitialized ? "✓ initialized" : "○ not initialized"}`);
+				if (wrapperInitialized) {
+					console.log(`   Wrapper: ${WRAPPER_PATH}`);
+					console.log(`   Settings: ${SRT_SETTINGS_PATH}`);
+					// Verify wrapper functionality
+					const wrapperCheck = await verifyWrapper();
+					console.log(`   Functional: ${wrapperCheck.valid ? "✓ yes" : `✗ ${wrapperCheck.error}`}`);
+				} else {
+					console.log("   Note: Wrapper is auto-initialized on first relay start");
 				}
 
 				// TOTP details

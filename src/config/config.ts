@@ -81,7 +81,7 @@ const SecretFilterConfigSchema = z.object({
 
 // Security configuration schema
 const SecurityConfigSchema = z.object({
-	// V2: Security profile determines which layers are active
+	// Security profile determines which layers are active
 	// "simple" (default): Hard enforcement only (sandbox, secret filter, rate limits)
 	// "strict": Adds soft policy layers (observer, approvals)
 	// "test": No security (for testing only)

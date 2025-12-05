@@ -260,13 +260,51 @@ export function containsBlockedCommand(command: string): string | null {
 /**
  * Sensitive paths that the agent should never access.
  * These contain secrets (TOTP, etc.) that must not be exposed.
+ *
+ * NOTE: These are regex patterns checked against the FULL path string.
+ * They complement matchesSensitiveCredentialPath() which does prefix-based
+ * directory matching (e.g., ~/.ssh/*, ~/.aws/*). These patterns catch
+ * individual secret FILES that can appear anywhere in the filesystem.
+ *
+ * SECURITY: This is a critical policy layer. Even when the sandbox is
+ * unavailable or the wrapper fails, these patterns block tool access
+ * to sensitive files.
  */
-const SENSITIVE_PATH_PATTERNS = [
+const SENSITIVE_PATH_PATTERNS: RegExp[] = [
+	// === Telclaude internals ===
 	/\.telclaude(\/|$)/i, // Config directory with database (with or without trailing slash)
 	/telclaude\.db/i, // Database file directly
 	/telclaude\.json/i, // Config file
 	/totp_secrets/i, // TOTP table name in queries
 	/totp\.sock/i, // TOTP socket
+
+	// === Environment files (secrets!) ===
+	// Match .env anywhere in path (but not .environment or similar)
+	/[/\\]\.env$/i, // Exact .env file
+	/[/\\]\.env\.[^/\\]+$/i, // .env.local, .env.production, .env.development, etc.
+	/[/\\]\.envrc$/i, // direnv config
+
+	// === Secret files ===
+	/[/\\]secrets\.(json|ya?ml)$/i, // secrets.json, secrets.yaml, secrets.yml
+	/[/\\]credentials\.json$/i, // GCP service account key
+	/[/\\]service[-_]?account\.json$/i, // Service account keys
+
+	// === SSH/Private keys ===
+	/[/\\]id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i, // SSH key files
+	/[/\\]authorized_keys$/i,
+	/[/\\]known_hosts$/i,
+	/\.pem$/i, // PEM certificates/keys
+	/\.key$/i, // Generic private keys
+	/\.ppk$/i, // PuTTY private keys
+
+	// === Package manager auth ===
+	/[/\\]\.npmrc$/i, // npm auth tokens
+	/[/\\]\.pypirc$/i, // PyPI credentials
+	/[/\\]\.netrc$/i, // Various service credentials
+	/[/\\]\.git-credentials$/i, // Git credential storage
+
+	// === Cloud provider configs ===
+	/[/\\]kubeconfig$/i, // Kubernetes config
 ];
 
 /**

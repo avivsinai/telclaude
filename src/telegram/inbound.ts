@@ -61,16 +61,10 @@ export async function monitorTelegramInbox(
 
 	// Helper to check if chat is allowed
 	// SECURITY: Fails CLOSED - if no allowedChats configured, deny ALL
-	// EXCEPTION: Allow private chats for admin bootstrap when no admin exists
+	// NOTE: allowedChats is REQUIRED even for bootstrap - this prevents random
+	// users from claiming admin by messaging the bot before it's configured.
 	const isChatAllowed = (chatId: number, chatType: string): boolean => {
-		// BOOTSTRAP: Allow private messages through when no admin is configured yet
-		// This enables the first-time admin claim flow to work
-		// Once an admin is claimed, they'll be added to identity_links and normal auth applies
-		if (!hasAdmin() && chatType === "private") {
-			logger.info({ chatId }, "BOOTSTRAP: Allowing private message - no admin configured yet");
-			return true;
-		}
-
+		// First check: ALWAYS require allowedChats to be configured
 		if (!allowedChats || allowedChats.length === 0) {
 			// SECURITY: Empty allowedChats = deny all (fail closed)
 			// This prevents accidental exposure if config is missing
@@ -80,10 +74,36 @@ export async function monitorTelegramInbox(
 			);
 			return false;
 		}
-		return allowedChats.some((allowed) => {
+
+		// Check if chat is in the allowlist
+		const isInAllowlist = allowedChats.some((allowed) => {
 			if (typeof allowed === "number") return allowed === chatId;
 			return String(allowed) === String(chatId);
 		});
+
+		if (!isInAllowlist) {
+			// Chat not in allowlist - check if this is bootstrap scenario
+			// Even during bootstrap, we require allowedChats to prevent random users
+			// from claiming admin
+			if (!hasAdmin() && chatType === "private") {
+				logger.warn(
+					{ chatId },
+					"BOOTSTRAP DENIED: Private chat not in allowedChats. " +
+						"Add your chat ID to allowedChats in config to enable admin claim.",
+				);
+			}
+			return false;
+		}
+
+		// Chat is in allowlist - log bootstrap mode if applicable
+		if (!hasAdmin() && chatType === "private") {
+			logger.info(
+				{ chatId },
+				"BOOTSTRAP: Allowing private message for admin claim (chat in allowedChats)",
+			);
+		}
+
+		return true;
 	};
 
 	// Helper to build inbound message
@@ -204,10 +224,11 @@ export async function monitorTelegramInbox(
 	};
 
 	// Handle text messages
-	console.log("[DEBUG] Registering message:text handler");
+	logger.debug("registering message:text handler");
 	bot.on("message:text", async (ctx) => {
-		console.log(
-			`[DEBUG] Received message from chat ${ctx.chat.id}: "${ctx.message.text?.slice(0, 50)}..."`,
+		logger.debug(
+			{ chatId: ctx.chat.id, messageId: ctx.message.message_id },
+			"received text message",
 		);
 		const msgId = `${ctx.chat.id}:${ctx.message.message_id}`;
 		if (seen.has(msgId)) return;

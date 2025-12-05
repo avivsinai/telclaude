@@ -4,7 +4,7 @@ Telegram-Claude bridge with comprehensive security layer. This project enables C
 
 ## Development Guidelines
 
-- **No backward compatibility policy** - We do not preserve compatibility for configs, DB schemas, APIs, or stored state. Prefer clean rewrites over migration shims; expect to reset data when upgrading.
+- **No backward compatibility** - This is an unreleased project. Do not write migration code, compatibility shims, deprecation warnings, or version-specific logic. Just change things directly. No need to preserve configs, DB schemas, APIs, or stored state - expect to reset data when changing things. No version numbering in names either (e.g., don't call things "V2 Session Pool").
 - **Pristine code** - Write clean, idiomatic TypeScript. No dead code, no legacy cruft.
 - **Claude Agent SDK** - Use `@anthropic-ai/claude-agent-sdk` for all Claude interactions, not CLI spawning.
 - **Skills** - Use `.claude/skills/` for Claude's behavior customization. Skills are auto-loaded by the SDK.
@@ -43,7 +43,7 @@ Telegram Bot API (grammY)
          │
          ▼
 ┌─────────────────────────────────────┐
-│       V2 Session Pool               │
+│         Session Pool                │
 │  • Reuses SDK connections           │
 │  • Per-user session pooling         │
 │  • Fallback to stable query() API   │
@@ -63,9 +63,9 @@ Telegram Bot API (grammY)
 
 ## Key Concepts
 
-### V2 Security Architecture
+### Security Architecture
 
-The V2 security architecture introduces two profiles and five security pillars:
+The security architecture provides two profiles and five security pillars:
 
 #### Security Profiles
 
@@ -92,13 +92,13 @@ The V2 security architecture introduces two profiles and five security pillars:
 4. **Secret Output Filtering**: CORE patterns detect and redact secrets in output (Telegram tokens, API keys, private keys, JWTs)
 5. **Auth/TOTP/Rate Limiting/Audit**: Identity verification, 2FA, rate limits, and audit trail
 
-#### Key V2 Features
+#### Key Features
 
 - **Private /tmp**: Sandbox gets its own /tmp (mounted from ~/.telclaude/sandbox-tmp) to prevent reading host secrets
-- **Symlink Protection**: Rejects symlinks that resolve outside allowed paths
 - **Streaming Redaction**: Handles secrets split across message chunks
 - **Entropy Detection**: Catches high-entropy blobs that might be encoded secrets
 - **CORE Patterns**: 18+ secret patterns that are NEVER configurable, NEVER removable
+- **denyWrite Patterns**: Blocks writing sensitive file patterns (id_rsa, *.pem, .env, etc.) even to allowed paths
 
 ### Permission Tiers
 
@@ -106,6 +106,7 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
 
 1. **READ_ONLY**: Claude can only read files, search, and browse the web
    - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`
+   - ⚠️ **Upstream Limitation**: `@anthropic-ai/sandbox-runtime` adds default write paths internally (`/tmp/claude`, `~/.claude/debug`) that we cannot disable. Telclaude mitigates this with `denyWrite` patterns that block sensitive file types (SSH keys, .env files, etc.) in ALL paths including sandbox-runtime's defaults.
 
 2. **WRITE_SAFE**: Can write/edit files but restricted shell commands
    - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Write`, `Edit`, `Bash`
@@ -135,13 +136,13 @@ The sandbox enforces:
 
 This provides defense-in-depth against prompt injection attacks - even if Claude is tricked into running malicious commands, the OS kernel prevents access to sensitive data.
 
-### V2 Session Pool
+### Session Pool
 
 SDK connections are pooled per user for performance:
 
 - **Connection reuse**: Persistent SDK sessions reduce process spawn overhead
 - **Automatic lifecycle**: Sessions are cleaned up after idle timeout (5 minutes)
-- **Fallback**: If V2 API fails, automatically falls back to stable `query()` API
+- **Fallback**: If unstable API fails, automatically falls back to stable `query()` API
 
 The pool is keyed by session key (derived from chat/user ID), so each user gets their own pooled connection. This is especially beneficial for multi-turn conversations.
 
@@ -194,7 +195,7 @@ SQLite provides ACID transactions for atomic operations (e.g., consuming an appr
 - **Fails closed**: If rate limiting errors, requests are blocked (not allowed)
 - SQLite-backed for persistence across restarts
 
-### First-Time Admin Claim (V2)
+### First-Time Admin Claim
 
 When no admin is configured, the first private chat message triggers an admin claim flow:
 
@@ -280,13 +281,13 @@ src/
 │
 ├── sdk/
 │   ├── client.ts         # Claude Agent SDK wrapper
-│   ├── session-pool.ts   # V2 Session Pool for connection reuse
+│   ├── session-pool.ts   # Session Pool for connection reuse
 │   ├── message-guards.ts # Type guards for SDK messages
 │   └── index.ts
 │
 ├── sandbox/
-│   ├── config.ts         # Sandbox configuration (paths, network, V2 features)
-│   ├── env.ts            # V2: Environment isolation (allowlist model)
+│   ├── config.ts         # Sandbox configuration (paths, network)
+│   ├── env.ts            # Environment isolation (allowlist model)
 │   ├── manager.ts        # SandboxManager wrapper
 │   └── index.ts
 │
@@ -311,10 +312,10 @@ src/
 │
 ├── security/
 │   ├── types.ts          # Security types
-│   ├── pipeline.ts       # V2: SecurityPipeline abstraction (simple/strict/test profiles)
-│   ├── streaming-redactor.ts # V2: Streaming secret redaction across chunk boundaries
-│   ├── output-filter.ts  # V2: CORE secret patterns + entropy detection
-│   ├── admin-claim.ts    # V2: First-time admin claim flow (private chats only)
+│   ├── pipeline.ts       # SecurityPipeline abstraction (simple/strict/test profiles)
+│   ├── streaming-redactor.ts # Streaming secret redaction across chunk boundaries
+│   ├── output-filter.ts  # CORE secret patterns + entropy detection
+│   ├── admin-claim.ts    # First-time admin claim flow (private chats only)
 │   ├── fast-path.ts      # Regex-based quick decisions
 │   ├── observer.ts       # SDK-based security analysis (with circuit breaker)
 │   ├── permissions.ts    # Tier system and tool arrays
@@ -445,12 +446,12 @@ The SDK provides:
 - Custom permission logic via `canUseTool` callback
 - Automatic skill loading via `settingSources: ['project']`
 
-### V2 Session Pool (Experimental)
+### Session Pool (Experimental)
 
-Telclaude uses the unstable V2 SDK API for session pooling:
+Telclaude uses the unstable SDK session API for connection pooling:
 
 ```typescript
-// V2 API usage
+// Unstable session API usage
 import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
 
 // Sessions are pooled and reused across messages
@@ -462,10 +463,10 @@ session.close();
 
 Benefits:
 - **Reduced latency**: Reuse persistent connections instead of spawning new processes
-- **Automatic fallback**: If V2 fails, falls back to stable `query()` API
+- **Automatic fallback**: If unstable API fails, falls back to stable `query()` API
 - **Lifecycle management**: Idle sessions are automatically cleaned up
 
-The V2 API is wrapped in `src/sdk/session-pool.ts` to isolate the unstable API surface.
+The unstable session API is wrapped in `src/sdk/session-pool.ts` to isolate the unstable API surface.
 
 ## CLI Commands
 
@@ -501,7 +502,7 @@ Example output:
      - security-gate
      - telegram-reply
 
-🔒 Security (V2)
+🔒 Security
    Profile: simple
      Observer: disabled (simple profile)
      Approvals: disabled (simple profile)

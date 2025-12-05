@@ -15,9 +15,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { buildSandboxEnv } from "../sandbox/env.js";
 import {
+	getClaudeWrapperPath,
 	getSandboxConfigForTier,
 	isSandboxInitialized,
+	isWrapperEnabled,
 	updateSandboxConfig,
 	wrapCommand,
 } from "../sandbox/index.js";
@@ -196,7 +199,18 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		includePartialMessages: opts.includePartialMessages,
 		abortController,
 		resume: opts.resumeSessionId,
+		// SECURITY: Sanitize environment to prevent leaking secrets like TELEGRAM_BOT_TOKEN
+		// Only allowlisted env vars pass through to the Claude subprocess
+		env: buildSandboxEnv(process.env),
 	};
+
+	// SECURITY: Use sandboxed wrapper for Claude CLI subprocess
+	// This ensures ALL Claude operations (Read/Write/Glob/Grep/Bash) run sandboxed
+	const wrapperPath = getClaudeWrapperPath();
+	if (wrapperPath) {
+		sdkOpts.pathToClaudeCodeExecutable = wrapperPath;
+		logger.debug({ wrapperPath }, "using sandboxed Claude wrapper");
+	}
 
 	// Configure tools based on tier
 	if (opts.tier === "FULL_ACCESS") {
@@ -214,9 +228,17 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	// This prevents the agent from accessing TOTP secrets, database, credentials, etc.
 	// Uses symlink resolution to prevent bypass attacks
 	sdkOpts.canUseTool = async (toolName, input) => {
+		// Log every tool invocation for debugging
+		logger.debug(
+			{ toolName, input: JSON.stringify(input).substring(0, 200) },
+			"canUseTool invoked",
+		);
+
 		// Block access to sensitive paths (telclaude internals + credentials like ~/.ssh)
 		if (toolName === "Read" && isReadInput(input)) {
-			if (isPathSensitive(input.file_path)) {
+			const sensitive = isPathSensitive(input.file_path);
+			logger.debug({ path: input.file_path, sensitive }, "checking Read path sensitivity");
+			if (sensitive) {
 				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
 				return {
 					behavior: "deny",
@@ -324,15 +346,21 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 /**
  * Apply tier-aligned sandbox configuration.
  * Updates the sandbox config to match the permission tier.
+ *
+ * @param tier - Permission tier
+ * @param cwd - Working directory to allow writes to
  */
-function applyTierSandboxConfig(tier: PermissionTier): void {
+function applyTierSandboxConfig(tier: PermissionTier, cwd: string): void {
 	if (!isSandboxInitialized()) {
 		return;
 	}
 
-	const tierConfig = getSandboxConfigForTier(tier);
+	const tierConfig = getSandboxConfigForTier(tier, cwd);
 	updateSandboxConfig(tierConfig);
-	logger.debug({ tier }, "applied tier-aligned sandbox config");
+	logger.debug(
+		{ tier, cwd, allowWrite: tierConfig.filesystem?.allowWrite },
+		"applied tier-aligned sandbox config",
+	);
 }
 
 /**
@@ -346,19 +374,21 @@ export async function* executeQueryStream(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires sandbox - downgrade if unavailable
-	// This is a last-line defense in case getUserPermissionTier is bypassed
+	// SECURITY: FULL_ACCESS requires the sandbox wrapper - downgrade if unavailable
+	// The wrapper (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
+	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
+	// isSandboxInitialized() is not enough - it can be true even when wrapper failed.
 	let opts = inputOpts;
-	if (opts.tier === "FULL_ACCESS" && !isSandboxInitialized()) {
+	if (opts.tier === "FULL_ACCESS" && !isWrapperEnabled()) {
 		logger.error(
 			{ originalTier: opts.tier },
-			"FULL_ACCESS requested without sandbox; downgrading to WRITE_SAFE",
+			"FULL_ACCESS requested without sandbox wrapper; downgrading to WRITE_SAFE",
 		);
 		opts = { ...opts, tier: "WRITE_SAFE" };
 	}
 
-	// Apply tier-aligned sandbox config
-	applyTierSandboxConfig(opts.tier);
+	// Apply tier-aligned sandbox config with cwd
+	applyTierSandboxConfig(opts.tier, opts.cwd);
 
 	const sdkOpts = buildSdkOptions({
 		...opts,
@@ -377,6 +407,7 @@ export async function* executeQueryStream(
 	const q = query({ prompt, options: sdkOpts });
 
 	let response = "";
+	let assistantMessageFallback = ""; // Track assistant message text as fallback
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
@@ -396,6 +427,13 @@ export async function* executeQueryStream(
 					yield { type: "tool_use", toolName: currentToolUse.name, input: currentToolUse.input };
 					currentToolUse = null;
 				}
+			} else if (isAssistantMessage(msg)) {
+				// Track assistant message text as fallback in case streaming events weren't delivered
+				for (const block of msg.message.content) {
+					if (block.type === "text") {
+						assistantMessageFallback += block.text;
+					}
+				}
 			} else if (isToolResultMessage(msg)) {
 				// Tool result from a tool use
 				yield { type: "tool_result", toolName: "unknown", output: msg.tool_use_result };
@@ -408,9 +446,20 @@ export async function* executeQueryStream(
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
 
+				// Use assistant message fallback if streaming didn't deliver text
+				const finalResponse = response || assistantMessageFallback;
+				if (!response && assistantMessageFallback) {
+					logger.debug(
+						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
+						"using assistant message fallback (streaming events not delivered)",
+					);
+					// Yield the fallback text now since it wasn't streamed
+					yield { type: "text", content: assistantMessageFallback };
+				}
+
 				yield {
 					type: "done",
-					result: { response, success, error, costUsd, numTurns, durationMs },
+					result: { response: finalResponse, success, error, costUsd, numTurns, durationMs },
 				};
 			}
 		}
@@ -427,10 +476,13 @@ export async function* executeQueryStream(
 			logger.error({ error: String(err) }, "SDK streaming query error");
 		}
 
+		// Use fallback if we didn't get streaming events but did get assistant messages
+		const finalResponse = response || assistantMessageFallback;
+
 		yield {
 			type: "done",
 			result: {
-				response,
+				response: finalResponse,
 				success: false,
 				error: isAborted ? "Request was aborted" : String(err),
 				costUsd,
@@ -465,19 +517,21 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires sandbox - downgrade if unavailable
-	// This is a last-line defense in case getUserPermissionTier is bypassed
+	// SECURITY: FULL_ACCESS requires the sandbox wrapper - downgrade if unavailable
+	// The wrapper (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
+	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
+	// isSandboxInitialized() is not enough - it can be true even when wrapper failed.
 	let opts = inputOpts;
-	if (opts.tier === "FULL_ACCESS" && !isSandboxInitialized()) {
+	if (opts.tier === "FULL_ACCESS" && !isWrapperEnabled()) {
 		logger.error(
 			{ originalTier: opts.tier, poolKey: opts.poolKey },
-			"FULL_ACCESS requested without sandbox; downgrading to WRITE_SAFE",
+			"FULL_ACCESS requested without sandbox wrapper; downgrading to WRITE_SAFE",
 		);
 		opts = { ...opts, tier: "WRITE_SAFE" };
 	}
 
-	// Apply tier-aligned sandbox config
-	applyTierSandboxConfig(opts.tier);
+	// Apply tier-aligned sandbox config with cwd
+	applyTierSandboxConfig(opts.tier, opts.cwd);
 
 	const sdkOpts = buildSdkOptions({
 		...opts,
@@ -495,6 +549,7 @@ export async function* executePooledQuery(
 
 	const sessionManager = getSessionManager();
 	let response = "";
+	let assistantMessageFallback = ""; // Track assistant message text as fallback
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
@@ -514,13 +569,15 @@ export async function* executePooledQuery(
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {
-				// Handle assistant messages which contain complete response content blocks
+				// NOTE: We do NOT yield text from assistant messages because we already
+				// get it via streaming events (isTextDeltaEvent). However, we track it
+				// as a fallback in case streaming events weren't delivered.
 				for (const block of msg.message.content) {
-					if (block.type === "text") {
-						yield { type: "text", content: block.text };
-						response += block.text;
-					} else if (block.type === "tool_use") {
+					if (block.type === "tool_use") {
 						yield { type: "tool_use", toolName: block.name, input: block.input };
+					} else if (block.type === "text") {
+						// Track as fallback but don't yield (to avoid duplicates)
+						assistantMessageFallback += block.text;
 					}
 				}
 			} else if (isToolResultMessage(msg)) {
@@ -533,9 +590,20 @@ export async function* executePooledQuery(
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
 
+				// Use assistant message fallback if streaming didn't deliver text
+				const finalResponse = response || assistantMessageFallback;
+				if (!response && assistantMessageFallback) {
+					logger.debug(
+						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
+						"using assistant message fallback (streaming events not delivered)",
+					);
+					// Yield the fallback text now since it wasn't streamed
+					yield { type: "text", content: assistantMessageFallback };
+				}
+
 				yield {
 					type: "done",
-					result: { response, success, error, costUsd, numTurns, durationMs },
+					result: { response: finalResponse, success, error, costUsd, numTurns, durationMs },
 				};
 			}
 		}
@@ -548,10 +616,13 @@ export async function* executePooledQuery(
 			logger.error({ error: String(err) }, "pooled query error");
 		}
 
+		// Use fallback if we didn't get streaming events but did get assistant messages
+		const finalResponse = response || assistantMessageFallback;
+
 		yield {
 			type: "done",
 			result: {
-				response,
+				response: finalResponse,
 				success: false,
 				error: isAborted ? "Request was aborted" : String(err),
 				costUsd,

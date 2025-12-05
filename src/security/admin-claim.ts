@@ -1,5 +1,5 @@
 /**
- * Admin Claim Flow - V2 Security
+ * Admin Claim Flow
  *
  * Implements first-time admin setup for single-user deployments:
  * - First private message triggers claim flow

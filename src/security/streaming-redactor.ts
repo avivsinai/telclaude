@@ -1,5 +1,5 @@
 /**
- * Streaming Redactor - V2 Security
+ * Streaming Redactor
  *
  * Handles secret redaction across chunk boundaries when streaming to Telegram.
  *
