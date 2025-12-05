@@ -1,0 +1,17 @@
+# Telclaude gitleaks configuration
+# - Uses gitleaks built-in ruleset
+# - Allowlists the intentional test fixtures containing fake secrets
+
+[allowlist]
+description = "Test fixtures and examples with fake secrets"
+paths = [
+  "src/commands/doctor.ts",
+  ".env.example",
+  "docker/README.md"
+]
+regexes = [
+  '''ghp_abc123def456ghi789jkl012mno345pqr678''',                # fake GitHub PAT in doctor self-test
+  '''AKIAIOSFODNN7EXAMPLE''',                                   # fake AWS key in doctor self-test
+  '''-----BEGIN RSA PRIVATE KEY-----\\nMIIE...''',              # shortened RSA header used as example
+  '''1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ12345678901'''        # fake Telegram bot token in doctor self-test
+]

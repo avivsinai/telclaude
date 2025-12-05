@@ -31,6 +31,7 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
+    "security:scan": "gitleaks detect --source . --config .gitleaks.toml",
     "prepublishOnly": "pnpm run build",
     "prepare": "pnpm run build"
   },
