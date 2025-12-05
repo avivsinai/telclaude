@@ -43,10 +43,10 @@ Telegram Bot API (grammY)
          │
          ▼
 ┌─────────────────────────────────────┐
-│         Session Pool                │
-│  • Reuses SDK connections           │
-│  • Per-user session pooling         │
-│  • Fallback to stable query() API   │
+│       Session Manager               │
+│  • Stable query() API               │
+│  • 30-minute resume cache           │
+│  • Per-user conversation state      │
 └─────────────────────────────────────┘
          │
          ▼
@@ -83,6 +83,8 @@ The security architecture provides two profiles and five security pillars:
   - Permission tier enforcement
 
 - **test**: No security (for testing only)
+  - Requires `TELCLAUDE_ENABLE_TEST_PROFILE=1` environment variable
+  - Will throw an error at startup if env var is not set
 
 #### Five Security Pillars
 
@@ -110,7 +112,8 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
 
 2. **WRITE_SAFE**: Can write/edit files but restricted shell commands
    - Tools: `Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Write`, `Edit`, `Bash`
-   - Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
+   - Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `killall`, `sudo`, `su`, `shutdown`, `reboot`, `mkfs`, `dd`
+   - Additional dangerous pattern detection (e.g., `> /dev/`, `curl | sh`, fork bombs)
    - ⚠️ **Security Note**: WRITE_SAFE prevents *accidental* damage, not *malicious* attacks. Users can escape by writing scripts that perform blocked operations. For true isolation, run in a container.
 
 3. **FULL_ACCESS**: No tool restrictions, but requires human approval for each request
@@ -123,28 +126,34 @@ Three tiers control what Claude can do (via SDK `allowedTools`):
 All Claude queries run inside an OS-level sandbox using `@anthropic-ai/sandbox-runtime`. **Sandbox is mandatory** - the relay will not start if sandboxing is unavailable.
 
 - **macOS**: Uses Seatbelt (`sandbox-exec`) for kernel-level enforcement
-- **Linux**: Uses bubblewrap for namespace-based isolation
+- **Linux**: Uses bubblewrap for namespace-based isolation (requires `ripgrep` and `socat`)
 
 The sandbox enforces:
 - **Filesystem restrictions**: Blocks access to `~/.telclaude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, etc.
+- **Private /tmp**: Host `/tmp` is blocked; sandbox uses `~/.telclaude/sandbox-tmp` instead
 - **Tier-aligned write restrictions**:
   - READ_ONLY: No writes allowed (empty allowWrite)
-  - WRITE_SAFE/FULL_ACCESS: Writes to cwd + `/tmp`
-- **Network filtering**: Configurable domain allowlist (default: permissive)
+  - WRITE_SAFE/FULL_ACCESS: Writes to cwd + private temp (`~/.telclaude/sandbox-tmp`)
+- **Network filtering**: Configurable domain allowlist (default: permissive with metadata endpoints blocked)
+
+**Claude CLI Sandbox Wrapper**: In addition to per-command sandboxing, telclaude can wrap the entire Claude CLI subprocess with `srt` (sandbox runtime tool). This provides defense-in-depth for all Claude tools (Read/Write/Edit), not just Bash commands. The wrapper is auto-initialized on first relay start.
+
+**Linux glob expansion limitation**: Linux bubblewrap doesn't support glob patterns in path rules. Telclaude works around this by expanding globs to literal paths at startup, which may miss dynamically created directories.
 
 **Design principle**: The permission tier defines *policy* (what Claude should do), while the sandbox provides *enforcement* (what Claude can do). The sandbox config matches the tier, not more restrictive.
 
 This provides defense-in-depth against prompt injection attacks - even if Claude is tricked into running malicious commands, the OS kernel prevents access to sensitive data.
 
-### Session Pool
+### Session Manager
 
-SDK connections are pooled per user for performance:
+Conversation state is managed via the Session Manager (`src/sdk/session-manager.ts`):
 
-- **Connection reuse**: Persistent SDK sessions reduce process spawn overhead
-- **Automatic lifecycle**: Sessions are cleaned up after idle timeout (5 minutes)
-- **Fallback**: If unstable API fails, automatically falls back to stable `query()` API
+- **Stable API**: Uses the production SDK `query()` API, not unstable session APIs
+- **Resume support**: 30-minute resume cache allows continuing conversations via `resume` parameter
+- **Per-user state**: Sessions keyed by chat/user ID maintain conversation context
+- **Idle cleanup**: Sessions expire after configurable idle timeout (default: 30 minutes)
 
-The pool is keyed by session key (derived from chat/user ID), so each user gets their own pooled connection. This is especially beneficial for multi-turn conversations.
+The session manager wraps the stable SDK query API with conversation tracking. When a user sends a message, the manager checks for an existing session ID and passes it to `query({ resume: sessionId })` to continue the conversation.
 
 ### TOTP Daemon
 
@@ -227,6 +236,12 @@ Control-plane commands (handled before Claude sees them):
 - `/link <code>` - Link identity with verification code
 - `/unlink` - Remove identity link
 - `/whoami` - Show current identity link status
+- `/setup-2fa` - Start TOTP 2FA setup (shows QR code)
+- `/verify-2fa <code>` - Verify TOTP code to complete setup
+- `/disable-2fa` - Disable 2FA for your account
+- `/2fa-logout` - Log out current 2FA session
+- `/skip-totp` - Skip 2FA prompt (if admin has enabled)
+- `/deny` - Deny a pending approval request
 
 ### Command Approval
 
@@ -281,14 +296,17 @@ src/
 │
 ├── sdk/
 │   ├── client.ts         # Claude Agent SDK wrapper
-│   ├── session-pool.ts   # Session Pool for connection reuse
+│   ├── session-manager.ts # Session manager with query() resume support
 │   ├── message-guards.ts # Type guards for SDK messages
 │   └── index.ts
 │
 ├── sandbox/
 │   ├── config.ts         # Sandbox configuration (paths, network)
 │   ├── env.ts            # Environment isolation (allowlist model)
+│   ├── glob-expansion.ts # Linux glob pattern expansion workaround
 │   ├── manager.ts        # SandboxManager wrapper
+│   ├── network-proxy.ts  # Network isolation and metadata blocking
+│   ├── wrapper.ts        # Claude CLI sandbox wrapper (srt)
 │   └── index.ts
 │
 ├── totp-daemon/
@@ -342,7 +360,9 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
 ```json
 {
   "telegram": {
+    "botToken": "123456:ABC-DEF...",
     "allowedChats": [123456789],
+    "heartbeatSeconds": 60,
     "polling": {
       "timeout": 30,
       "limit": 100
@@ -359,7 +379,7 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
     "profile": "simple",
     "observer": {
       "enabled": true,
-      "maxLatencyMs": 2000,
+      "maxLatencyMs": 300000,
       "dangerThreshold": 0.7,
       "fallbackOnTimeout": "block"
     },
@@ -394,12 +414,20 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
     "audit": {
       "enabled": true,
       "logFile": "/var/log/telclaude/audit.log"
+    },
+    "totp": {
+      "sessionTtlMinutes": 240
     }
   },
   "inbound": {
+    "transcribeAudio": {
+      "command": ["whisper", "--model", "base"],
+      "timeoutSeconds": 45
+    },
     "reply": {
       "enabled": true,
       "timeoutSeconds": 600,
+      "typingIntervalSeconds": 8,
       "session": {
         "scope": "per-sender",
         "idleMinutes": 30,
@@ -408,7 +436,8 @@ Config file: `~/.telclaude/telclaude.json` (or set via `--config` flag or `TELCL
     }
   },
   "logging": {
-    "level": "info"
+    "level": "info",
+    "file": "/var/log/telclaude/telclaude.log"
   }
 }
 ```
@@ -446,27 +475,29 @@ The SDK provides:
 - Custom permission logic via `canUseTool` callback
 - Automatic skill loading via `settingSources: ['project']`
 
-### Session Pool (Experimental)
+### Session Manager
 
-Telclaude uses the unstable SDK session API for connection pooling:
+Telclaude uses the stable SDK `query()` API with conversation resume support:
 
 ```typescript
-// Unstable session API usage
-import { unstable_v2_createSession, unstable_v2_resumeSession } from '@anthropic-ai/claude-agent-sdk';
+// Stable session management via query() API
+import { query } from '@anthropic-ai/claude-agent-sdk';
 
-// Sessions are pooled and reused across messages
-const session = unstable_v2_createSession(options);
-await session.send(message);
-for await (const msg of session.receive()) { ... }
-session.close();
+// First message in conversation
+const result = await query({ prompt: message, ... });
+const sessionId = result.sessionId; // Save for resume
+
+// Subsequent messages resume the conversation
+const result2 = await query({ prompt: nextMessage, resume: sessionId, ... });
 ```
 
 Benefits:
-- **Reduced latency**: Reuse persistent connections instead of spawning new processes
-- **Automatic fallback**: If unstable API fails, falls back to stable `query()` API
-- **Lifecycle management**: Idle sessions are automatically cleaned up
+- **Stable API**: Uses production `query()` API, avoiding unstable session APIs
+- **Resume support**: 30-minute cache allows continuing conversations
+- **Per-user isolation**: Each user gets their own conversation context
+- **Automatic cleanup**: Sessions expire after idle timeout
 
-The unstable session API is wrapped in `src/sdk/session-pool.ts` to isolate the unstable API surface.
+The session manager is implemented in `src/sdk/session-manager.ts`.
 
 ## CLI Commands
 
@@ -480,6 +511,9 @@ telclaude relay --profile strict
 # Start with test profile (NO SECURITY - testing only)
 telclaude relay --profile test
 
+# Dry-run mode (don't actually send replies)
+telclaude relay --dry-run
+
 # Send a message
 telclaude send <chatId> "Hello!"
 telclaude send <chatId> --media ./image.png --caption "Check this out"
@@ -490,6 +524,8 @@ telclaude status --json
 
 # Doctor (verify Claude CLI + skills + sandbox + security pillars)
 telclaude doctor
+telclaude doctor --network   # Run network isolation self-test
+telclaude doctor --secrets   # Run secret detection self-test
 
 Example output:
 ```
@@ -526,6 +562,7 @@ Example output:
 
 # Start the TOTP daemon (required for 2FA)
 telclaude totp-daemon
+telclaude totp-daemon --socket-path /custom/path.sock
 
 # Identity linking (generate code for out-of-band verification)
 telclaude link <user-id>           # Generate a link code for a user
@@ -661,11 +698,32 @@ Check audit logs and adjust limits in config. Consider user tier assignment.
 Start the TOTP daemon in a separate terminal: `telclaude totp-daemon`. The daemon must be running for 2FA to work.
 
 ### "Sandbox unavailable" (relay won't start)
-Sandbox is mandatory for telclaude. On macOS, the sandbox should work out of the box. On Linux, install `bubblewrap`:
-- Debian/Ubuntu: `apt install bubblewrap`
-- Fedora: `dnf install bubblewrap`
-- Arch: `pacman -S bubblewrap`
-- Windows: Not supported - run in Docker or WSL2
+Sandbox is mandatory for telclaude. Install required dependencies:
+
+**macOS:**
+```bash
+brew install ripgrep  # Required by sandbox-runtime
+```
+Seatbelt is built-in.
+
+**Linux:**
+```bash
+# Debian/Ubuntu
+apt install bubblewrap ripgrep socat
+
+# Fedora
+dnf install bubblewrap ripgrep socat
+
+# Arch
+pacman -S bubblewrap ripgrep socat
+```
+
+**Windows:** Not supported - run in Docker or WSL2.
+
+Required tools:
+- `bubblewrap` (Linux only): Namespace-based sandboxing
+- `ripgrep` (all platforms): Required by sandbox-runtime for file operations
+- `socat` (Linux only): Required for network proxying
 
 If running in Docker, the container may need `--privileged` or specific capabilities for bubblewrap to work.
 
