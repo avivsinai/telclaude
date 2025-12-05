@@ -14,6 +14,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Soft controls: Haiku observer, approval workflow, and TOTP-backed human-in-the-loop for FULL_ACCESS.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_SAFE, FULL_ACCESS.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
+- No telemetry or analytics; only audit logs you enable in your own environment.
 
 ## Architecture
 
@@ -58,6 +59,16 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Telegram bot token from @BotFather
 - macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH (Windows via Docker/WSL only)
 - Optional but recommended: TOTP daemon uses the OS keychain (keytar)
+
+## Quick start (Docker, recommended for prod)
+```bash
+git clone https://github.com/avivsinai/telclaude.git
+cd telclaude/docker
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN and WORKSPACE_PATH
+docker compose up -d --build
+docker compose exec telclaude claude login  # if not using ANTHROPIC_API_KEY
+```
+See `docker/README.md` for firewall, volume, and upgrade details.
 
 ## Quick start (local)
 1) Clone and install
@@ -146,6 +157,17 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 - Build: `pnpm build`
 - Local CLI: `pnpm dev relay`, `pnpm dev doctor`, etc.
 - Secrets scan: `brew install gitleaks` (or download binary) then `pnpm security:scan` (uses `.gitleaks.toml`)
+
+## Security & reporting
+- Default stance is fail-closed (empty `allowedChats` denies all; `defaultTier=FULL_ACCESS` is rejected).
+- Sandbox is mandatory; relay exits if Seatbelt/bubblewrap is unavailable.
+- Vulnerabilities: please follow `SECURITY.md` for coordinated disclosure.
+
+## Community
+- Contributing guidelines: see `CONTRIBUTING.md`.
+- Code of Conduct: see `CODE_OF_CONDUCT.md`.
+- Issues & discussions: open GitHub issues; we triage weekly.
+- Changelog: see `CHANGELOG.md`.
 
 ## Documentation & Support
 - `CLAUDE.md` — architecture and configuration details
