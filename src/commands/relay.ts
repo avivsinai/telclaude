@@ -123,12 +123,17 @@ export function registerRelayCommand(program: Command): void {
 					console.warn("   Claude Read/Write/Edit tools run WITHOUT sandbox protection.\n");
 				}
 
-				// Network policy - be explicit about permissive default
+				// Network policy - default is strict allowlist
 				const netSummary = getNetworkIsolationSummary();
 				if (netSummary.isPermissive) {
-					console.log("Network: PERMISSIVE (all egress allowed, metadata endpoints blocked)");
+					console.log("Network: OPEN (wildcard egress; metadata endpoints still blocked)");
 				} else {
 					console.log(`Network: RESTRICTED (${netSummary.allowedDomains} domains allowed)`);
+				}
+				if (process.env.TELCLAUDE_NETWORK_MODE) {
+					console.log(
+						`  Network mode override: TELCLAUDE_NETWORK_MODE=${process.env.TELCLAUDE_NETWORK_MODE}`,
+					);
 				}
 
 				// Check TOTP daemon availability

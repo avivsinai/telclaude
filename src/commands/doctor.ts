@@ -6,14 +6,17 @@ import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
 	DENY_WRITE_PATHS,
+	MIN_SANDBOX_RUNTIME_VERSION,
 	SENSITIVE_READ_PATHS,
 	SRT_SETTINGS_PATH,
 	WRAPPER_PATH,
 	analyzeGlobPatterns,
 	getEnvIsolationSummary,
 	getNetworkIsolationSummary,
+	getSandboxRuntimeVersion,
 	isLinux,
 	isSandboxAvailable,
+	isSandboxRuntimeAtLeast,
 	isWrapperInitialized,
 	runNetworkSelfTest,
 	verifyWrapper,
@@ -103,6 +106,10 @@ export function registerDoctorCommand(program: Command): void {
 				// TOTP daemon check
 				const totpDaemonAvailable = await isTOTPDaemonAvailable();
 
+				// Sandbox runtime version (CVE guardrail)
+				const sandboxRuntimeVersion = getSandboxRuntimeVersion();
+				const sandboxRuntimePatched = isSandboxRuntimeAtLeast();
+
 				// Load config for profile info
 				const cfg = loadConfig();
 				const profile = cfg.security?.profile ?? "simple";
@@ -149,15 +156,20 @@ export function registerDoctorCommand(program: Command): void {
 					`   2. Environment isolation: ✓ ${envSummary.allowed} allowed, ${envSummary.blocked} blocked`,
 				);
 
-				// Network isolation - be explicit about permissive default
+				// Network isolation - default is strict allowlist
 				const netSummaryPillars = getNetworkIsolationSummary();
 				if (netSummaryPillars.isPermissive) {
 					console.log(
-						"   3. Network isolation: ⚠️  PERMISSIVE (metadata blocked, but egress unrestricted)",
+						"   3. Network isolation: ⚠️  OPEN (metadata blocked, but wildcard egress enabled)",
 					);
 				} else {
 					console.log(
 						`   3. Network isolation: ✓ ${netSummaryPillars.allowedDomains} domains allowed`,
+					);
+				}
+				if (process.env.TELCLAUDE_NETWORK_MODE) {
+					console.log(
+						`     TELCLAUDE_NETWORK_MODE=${process.env.TELCLAUDE_NETWORK_MODE} (env override)`,
 					);
 				}
 
@@ -171,6 +183,16 @@ export function registerDoctorCommand(program: Command): void {
 				console.log(`   Status: ${sandboxAvailable ? "✓ available" : "✗ unavailable (REQUIRED)"}`);
 				if (!sandboxAvailable) {
 					console.log("   Install: bubblewrap (Linux) or run on macOS (Seatbelt)");
+				}
+				console.log(
+					`   Runtime: ${sandboxRuntimeVersion ?? "not found"}${
+						sandboxRuntimeVersion ? "" : " (install via package manager)"
+					}`,
+				);
+				if (sandboxRuntimeVersion && !sandboxRuntimePatched) {
+					console.log(
+						`   ⚠️  Upgrade @anthropic-ai/sandbox-runtime to >= ${MIN_SANDBOX_RUNTIME_VERSION} (fixes CVE-2025-66479 network allowlist bug)`,
+					);
 				}
 
 				// Linux glob expansion status

@@ -7,6 +7,7 @@ import type { Message } from "grammy/types";
 import { getChildLogger } from "../logging.js";
 import { type FilterResult, filterOutput } from "../security/output-filter.js";
 import { stringToChatId } from "../utils.js";
+import { sanitizeClaudeResponse, stripMarkdown } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-outbound" });
@@ -82,6 +83,9 @@ export async function sendMessageTelegram(
 ): Promise<SendResult> {
 	const chatId = typeof to === "number" ? to : stringToChatId(to);
 
+	const sanitizeBody = (text: string) =>
+		sanitizeClaudeResponse(options.parseMode ? text : stripMarkdown(text));
+
 	// SECURITY: Filter output for secrets
 	try {
 		filterBeforeSend(body);
@@ -108,19 +112,16 @@ export async function sendMessageTelegram(
 	// Handle media
 	const mediaSource = options.mediaPath ?? options.mediaUrl;
 	if (mediaSource) {
-		// Also filter caption
-		if (body) {
-			filterBeforeSend(body);
-		}
-		const payload = inferMediaPayload(mediaSource, body);
+		const payload = inferMediaPayload(mediaSource, sanitizeBody(body));
 		const result = await sendMediaToChat(bot.api, chatId, payload);
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
 		return { messageId: String(result.message_id), chatId };
 	}
 
 	// Send text message
-	const result = await bot.api.sendMessage(chatId, body, {
-		parse_mode: options.parseMode ?? "Markdown",
+	const sanitizedText = sanitizeBody(body);
+	const result = await bot.api.sendMessage(chatId, sanitizedText, {
+		parse_mode: options.parseMode, // default: plain text to avoid Markdown parse errors
 		reply_to_message_id: options.replyToMessageId,
 	});
 

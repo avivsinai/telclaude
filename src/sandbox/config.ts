@@ -25,6 +25,7 @@
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "./domains.js";
 import { expandGlobsForLinux, getGlobPatterns, isLinux } from "./glob-expansion.js";
 
 /**
@@ -54,8 +55,11 @@ export const SENSITIVE_READ_PATHS = [
 	"**/secrets.yaml",
 	"**/secrets.yml",
 
-	// === Claude Code data ===
-	"~/.claude", // Conversation history, settings
+	// NOTE: ~/.claude is NOT blocked because Claude CLI needs it for authentication.
+	// The srt sandbox wraps the entire Claude process, so blocking ~/.claude would
+	// prevent Claude from reading its own OAuth tokens and settings.
+
+	// === Claude desktop app data ===
 	"~/Library/Application Support/Claude", // macOS app data
 
 	// === Shell configuration files (can inject startup malware) ===
@@ -116,8 +120,14 @@ export const SENSITIVE_READ_PATHS = [
 	"~/.config/google-chrome",
 	"~/.mozilla",
 
-	// === macOS Keychain (defense in depth) ===
-	"~/Library/Keychains",
+	// NOTE: ~/Library/Keychains is NOT blocked to allow Claude CLI subscription auth.
+	// Claude uses macOS Keychain to store OAuth tokens from `claude login`.
+	// Blocking Keychain would require ANTHROPIC_API_KEY which triggers API billing.
+	// Trade-off: Keychain access grants potential access to OTHER stored secrets.
+	// Mitigations:
+	// - Claude's Seatbelt profile restricts Keychain access to its own items
+	// - Network isolation prevents exfiltration
+	// - Output filter catches leaked secrets
 
 	// === Linux proc filesystem ===
 	"/proc/self/environ", // Environment variables
@@ -153,6 +163,7 @@ export const PRIVATE_TMP_PATH = "~/.telclaude/sandbox-tmp";
  */
 export const DEFAULT_WRITE_PATHS = [
 	PRIVATE_TMP_PATH, // Private temp dir (host /tmp is blocked)
+	"~/.claude.json", // Claude CLI config (required for startup)
 ];
 
 /**
@@ -332,6 +343,12 @@ export function buildSandboxConfig(options: {
 	cwd?: string;
 }): SandboxRuntimeConfig {
 	const cwd = options.cwd ?? process.cwd();
+	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+
+	const resolvedDefaultAllowed =
+		envNetworkMode === "open" || envNetworkMode === "permissive"
+			? ["*"]
+			: DEFAULT_ALLOWED_DOMAIN_NAMES;
 
 	// Collect all deny/allow paths
 	let denyRead = [...SENSITIVE_READ_PATHS, ...(options.additionalDenyRead ?? [])];
@@ -366,11 +383,9 @@ export function buildSandboxConfig(options: {
 			denyWrite,
 		},
 		network: {
-			// Default to permissive network access (user's choice)
-			// Can be restricted via config.
-			// NOTE: The sandbox-runtime doesn't treat "*" as a wildcard - it's a literal match.
-			// We handle the allow-all case via sandboxAskCallback in manager.ts.
-			allowedDomains: options.allowedDomains ?? ["*"],
+			// Default to strict allowlist using well-known developer domains.
+			// Users can opt into broader access via options.allowedDomains or TELCLAUDE_NETWORK_MODE=open.
+			allowedDomains: options.allowedDomains ?? resolvedDefaultAllowed,
 			// SECURITY: Always block cloud metadata endpoints to prevent SSRF
 			deniedDomains: [...BLOCKED_METADATA_DOMAINS, ...(options.deniedDomains ?? [])],
 			allowUnixSockets: options.allowUnixSockets ?? [],
@@ -398,7 +413,7 @@ export function buildSandboxConfig(options: {
 
 /**
  * Default sandbox configuration.
- * Uses permissive network but restricts filesystem access to sensitive paths.
+ * Uses a strict network allowlist and restricts filesystem access to sensitive paths.
  */
 export const DEFAULT_SANDBOX_CONFIG = buildSandboxConfig({});
 

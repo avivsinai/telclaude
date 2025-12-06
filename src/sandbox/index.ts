@@ -75,6 +75,13 @@ export {
 	type NetworkSelfTestResult,
 } from "./network-proxy.js";
 
+// Sandbox-runtime version helper (for CVE checks)
+export {
+	getSandboxRuntimeVersion,
+	isSandboxRuntimeAtLeast,
+	MIN_SANDBOX_RUNTIME_VERSION,
+} from "./version.js";
+
 // Glob expansion for Linux (bubblewrap doesn't support globs)
 export {
 	expandGlobsForLinux,

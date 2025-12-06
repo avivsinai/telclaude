@@ -27,21 +27,21 @@
 
 import { getChildLogger } from "../logging.js";
 import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
+import {
+	DEFAULT_ALLOWED_DOMAINS,
+	type DomainRule,
+	type HttpMethod,
+	domainMatchesPattern,
+} from "./domains.js";
 
 const logger = getChildLogger({ module: "network-proxy" });
+
+export { DEFAULT_ALLOWED_DOMAINS } from "./domains.js";
+export type { DomainRule, HttpMethod } from "./domains.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════════
-
-export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
-
-export interface DomainRule {
-	/** Domain pattern (e.g., "registry.npmjs.org", "*.pypi.org") */
-	domain: string;
-	/** Allowed HTTP methods (default: GET, HEAD) */
-	methods: HttpMethod[];
-}
 
 export interface NetworkProxyConfig {
 	/** Unix socket path for proxy (default: ~/.telclaude/network-proxy.sock) */
@@ -62,44 +62,8 @@ export interface NetworkProxyConfig {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Default domain allowlist with method restrictions.
- * GET/HEAD only by default - POST requires explicit config.
- */
-export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
-	// Package registries (read-only)
-	{ domain: "registry.npmjs.org", methods: ["GET", "HEAD"] },
-	{ domain: "pypi.org", methods: ["GET", "HEAD"] },
-	{ domain: "files.pythonhosted.org", methods: ["GET", "HEAD"] },
-	{ domain: "crates.io", methods: ["GET", "HEAD"] },
-	{ domain: "static.crates.io", methods: ["GET", "HEAD"] },
-	{ domain: "rubygems.org", methods: ["GET", "HEAD"] },
-
-	// Documentation sites
-	{ domain: "docs.python.org", methods: ["GET", "HEAD"] },
-	{ domain: "docs.rs", methods: ["GET", "HEAD"] },
-	{ domain: "developer.mozilla.org", methods: ["GET", "HEAD"] },
-	{ domain: "stackoverflow.com", methods: ["GET", "HEAD"] },
-	{ domain: "*.stackexchange.com", methods: ["GET", "HEAD"] },
-
-	// Code hosting (READ ONLY by default)
-	// POST requires explicit config - prevents pushing secrets to repos
-	{ domain: "github.com", methods: ["GET", "HEAD"] },
-	{ domain: "api.github.com", methods: ["GET", "HEAD"] },
-	{ domain: "gitlab.com", methods: ["GET", "HEAD"] },
-	{ domain: "bitbucket.org", methods: ["GET", "HEAD"] },
-	{ domain: "raw.githubusercontent.com", methods: ["GET", "HEAD"] },
-	{ domain: "gist.githubusercontent.com", methods: ["GET", "HEAD"] },
-
-	// npm/yarn CDNs
-	{ domain: "unpkg.com", methods: ["GET", "HEAD"] },
-	{ domain: "cdn.jsdelivr.net", methods: ["GET", "HEAD"] },
-
-	// Anthropic API (for SDK)
-	{ domain: "api.anthropic.com", methods: ["GET", "HEAD", "POST"] },
-];
-
-/**
  * Default network proxy configuration.
+ * Domain list lives in sandbox/domains.ts to stay consistent with sandbox config defaults.
  */
 export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 	allowedDomains: DEFAULT_ALLOWED_DOMAINS,
@@ -110,23 +74,6 @@ export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 // ═══════════════════════════════════════════════════════════════════════════════
 // Domain Matching
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Check if a domain matches a pattern.
- * Supports wildcard prefixes like "*.example.com".
- */
-function domainMatches(domain: string, pattern: string): boolean {
-	const normalizedDomain = domain.toLowerCase();
-	const normalizedPattern = pattern.toLowerCase();
-
-	if (normalizedPattern.startsWith("*.")) {
-		// Wildcard pattern: *.example.com matches sub.example.com
-		const suffix = normalizedPattern.slice(1); // .example.com
-		return normalizedDomain.endsWith(suffix) || normalizedDomain === normalizedPattern.slice(2);
-	}
-
-	return normalizedDomain === normalizedPattern;
-}
 
 /**
  * Check if an IP address is in a blocked network range.
@@ -236,7 +183,9 @@ export function checkNetworkRequest(
 	}
 
 	// 4. Find matching domain rule
-	const matchedRule = config.allowedDomains.find((rule) => domainMatches(domain, rule.domain));
+	const matchedRule = config.allowedDomains.find((rule) =>
+		domainMatchesPattern(domain, rule.domain),
+	);
 
 	if (!matchedRule) {
 		logger.info({ domain, method }, "domain not in allowlist");
@@ -271,7 +220,7 @@ export function checkNetworkRequest(
  */
 export function allowPost(config: NetworkProxyConfig, domain: string): NetworkProxyConfig {
 	const updatedDomains = config.allowedDomains.map((rule) => {
-		if (domainMatches(domain, rule.domain)) {
+		if (domainMatchesPattern(domain, rule.domain)) {
 			return {
 				...rule,
 				methods: [...new Set([...rule.methods, "POST" as const])],
@@ -281,7 +230,7 @@ export function allowPost(config: NetworkProxyConfig, domain: string): NetworkPr
 	});
 
 	// If domain wasn't in list, add it
-	if (!updatedDomains.some((rule) => domainMatches(domain, rule.domain))) {
+	if (!updatedDomains.some((rule) => domainMatchesPattern(domain, rule.domain))) {
 		updatedDomains.push({ domain, methods: ["GET", "HEAD", "POST"] });
 	}
 
@@ -346,7 +295,9 @@ export function getNetworkIsolationSummary(
 		.map((rule) => rule.domain);
 
 	// Check if sandbox is permissive (uses "*" wildcard)
-	const isPermissive = sandboxAllowedDomains ? sandboxAllowedDomains.includes("*") : true; // Default sandbox config is permissive
+	const sandboxDomainPatterns =
+		sandboxAllowedDomains ?? config.allowedDomains.map((rule) => rule.domain);
+	const isPermissive = sandboxDomainPatterns.includes("*");
 
 	return {
 		allowedDomains: config.allowedDomains.length,
@@ -442,7 +393,7 @@ export function runNetworkSelfTest(
 	{
 		const result = checkNetworkRequest("github.com", "POST", 443, config);
 		const shouldBlock = !config.allowedDomains.some(
-			(r) => domainMatches("github.com", r.domain) && r.methods.includes("POST"),
+			(r) => domainMatchesPattern("github.com", r.domain) && r.methods.includes("POST"),
 		);
 		tests.push({
 			name: "POST to github.com (policy: blocked, NOT enforced)",

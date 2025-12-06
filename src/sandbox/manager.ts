@@ -22,8 +22,14 @@ import path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
 import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
+import { domainMatchesPattern } from "./domains.js";
 import { buildSandboxEnv } from "./env.js";
 import { isBlockedIP } from "./network-proxy.js";
+import {
+	MIN_SANDBOX_RUNTIME_VERSION,
+	getSandboxRuntimeVersion,
+	isSandboxRuntimeAtLeast,
+} from "./version.js";
 import { initializeWrapper, updateWrapperConfig, verifyWrapper } from "./wrapper.js";
 
 const logger = getChildLogger({ module: "sandbox" });
@@ -68,6 +74,18 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 	if (initialized) {
 		logger.debug("sandbox already initialized, skipping");
 		return { initialized: true, wrapperEnabled: wrapperPath !== null };
+	}
+
+	const runtimeVersion = getSandboxRuntimeVersion();
+	if (runtimeVersion && !isSandboxRuntimeAtLeast()) {
+		logger.warn(
+			{ runtimeVersion, minimum: MIN_SANDBOX_RUNTIME_VERSION },
+			"sandbox-runtime below patched version; upgrade recommended to fix network allowlist bug (CVE-2025-66479)",
+		);
+	} else if (!runtimeVersion) {
+		logger.warn(
+			"sandbox-runtime package not found; ensure dependencies are installed for network isolation",
+		);
 	}
 
 	const sandboxConfig = config ?? DEFAULT_SANDBOX_CONFIG;
@@ -144,12 +162,14 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 			}
 			// SECURITY: Check currentConfig dynamically (not captured at init time)
 			// This ensures updateSandboxConfig() changes take effect immediately
-			const allowAll = currentConfig?.network?.allowedDomains?.includes("*");
-			if (allowAll) {
+			const allowedDomains = currentConfig?.network?.allowedDomains ?? [];
+			if (allowedDomains.includes("*")) {
 				return true;
 			}
-			// Otherwise deny (no matching allowedDomains rule)
-			return false;
+			if (allowedDomains.length === 0) {
+				return false;
+			}
+			return allowedDomains.some((pattern) => domainMatchesPattern(host, pattern));
 		};
 		await SandboxManager.initialize(sandboxConfig, sandboxAskCallback);
 		initialized = true;
@@ -374,10 +394,12 @@ export async function isSandboxAvailable(): Promise<boolean> {
 	try {
 		const testConfig = buildSandboxConfig({});
 		// Use same callback pattern for consistency with initializeSandbox
-		const allowAll = testConfig.network?.allowedDomains?.includes("*");
+		const allowedDomains = testConfig.network?.allowedDomains ?? [];
 		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
 			if (isBlockedIP(host)) return false;
-			return !!allowAll;
+			if (allowedDomains.includes("*")) return true;
+			if (allowedDomains.length === 0) return false;
+			return allowedDomains.some((pattern) => domainMatchesPattern(host, pattern));
 		};
 		await SandboxManager.initialize(testConfig, sandboxAskCallback);
 		await SandboxManager.reset();
