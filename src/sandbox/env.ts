@@ -215,10 +215,11 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 	sandboxEnv.TMP = resolvedTmpPath;
 	sandboxEnv.TEMP = resolvedTmpPath;
 
-	// Override HOME to private temp directory (writable and isolated from real ~)
-	// Using the same path as TMPDIR ensures HOME is in allowWrite and exists.
-	// Previously set to "/home/sandbox" which didn't exist and wasn't writable.
-	sandboxEnv.HOME = resolvedTmpPath;
+	// Preserve real HOME so Claude CLI can read its cached auth under ~/.claude.
+	// Sandboxing and denyRead still protect sensitive subpaths; TMPDIR remains isolated.
+	if (processEnv.HOME) {
+		sandboxEnv.HOME = processEnv.HOME;
+	}
 
 	// Count blocked vars for metrics
 	for (const key of Object.keys(processEnv)) {

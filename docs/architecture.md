@@ -3,6 +3,10 @@
 Updated: 2025-12-06  
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
+## Runtime guardrail notes (dec 2025)
+- Sandbox-runtime schema rejects bare `"*"` and IP/CIDR patterns in allow/deny lists. If users request `"*"` (e.g., `TELCLAUDE_NETWORK_MODE=open|permissive`), telclaude falls back to the default developer allowlist to keep the proxy + blocks active instead of failing init.
+- Read model is deny-list based: files outside the sensitive path list are readable if the user/agent asks. Seatbelt/bubblewrap plus the sensitive denyRead set provide defense-in-depth, but absolute allow-list reads are not supported by the runtime. For stricter isolation, run inside Docker/WSL with a minimal bind-mounted workspace.
+
 ## System Overview
 
 ```

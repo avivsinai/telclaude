@@ -981,33 +981,14 @@ async function handleInboundMessage(
 		});
 
 		// Use the actual timing from createApproval to avoid TTL mismatch
-		// Check TOTP status - fail closed if daemon is unavailable
+		// Check TOTP status. If the daemon is unavailable, fall back to nonce approvals
+		// so the system remains usable (downgraded security is better than global denial).
 		const totpCheck = await hasTOTP(msg.chatId);
 		if ("error" in totpCheck) {
-			// TOTP daemon is unavailable - fail closed to prevent bypass
-			// Remove the pending approval since we can't process it securely
-			logger.error(
+			logger.warn(
 				{ chatId: msg.chatId, error: totpCheck.error },
-				"TOTP daemon unavailable - blocking request",
+				"TOTP daemon unavailable - falling back to nonce approvals",
 			);
-			await msg.reply(
-				"⚠️ Security service unavailable. Cannot process this request.\n\n" +
-					"The TOTP daemon is not running. Please contact an administrator or try again later.",
-			);
-			await auditLogger.log({
-				timestamp: new Date(),
-				requestId,
-				telegramUserId: userId,
-				telegramUsername: msg.username,
-				chatId: msg.chatId,
-				messagePreview: msg.body.slice(0, 100),
-				observerClassification: observerResult.classification,
-				observerConfidence: observerResult.confidence,
-				permissionTier: tier,
-				outcome: "blocked",
-				errorType: "totp_daemon_unavailable",
-			});
-			return;
 		}
 
 		const userHasTOTP = totpCheck.hasTOTP;

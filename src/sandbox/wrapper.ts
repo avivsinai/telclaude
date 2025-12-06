@@ -26,7 +26,11 @@ import os from "node:os";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
-import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
+import {
+	BLOCKED_METADATA_DOMAINS,
+	BLOCKED_PRIVATE_NETWORKS,
+	DEFAULT_ALLOWED_DOMAIN_NAMES,
+} from "./config.js";
 
 // For resolving packages relative to telclaude installation
 const require = createRequire(import.meta.url);
@@ -231,21 +235,9 @@ exec "${srtPath}" --settings "$SETTINGS" "${claudePath}" "$@"
  * This is intentionally strict: allowlists should only contain real domains
  * (with optional leading wildcard). IPs/CIDRs belong in denied lists.
  */
-function isValidSrtDomain(pattern: string): boolean {
-	// Reject bare * or overly broad patterns
-	if (pattern === "*" || pattern === "*.*" || /^\*\.[a-z]{2,4}$/i.test(pattern)) {
-		return false;
-	}
-
-	// Reject IP addresses (IPv4 and IPv6)
-	if (/^[\d.:]+$/.test(pattern) || /^[\da-f:]+$/i.test(pattern)) {
-		return false;
-	}
-
-	// Reject CIDR notation
-	if (pattern.includes("/")) {
-		return false;
-	}
+function isValidSrtAllowPattern(pattern: string): boolean {
+	// Reject bare "*" and overly broad "*.*" (schema forbids)
+	if (pattern === "*" || pattern === "*.*") return false;
 
 	// Reject localhost variants
 	if (pattern === "localhost" || pattern === "::1") {
@@ -253,7 +245,6 @@ function isValidSrtDomain(pattern: string): boolean {
 	}
 
 	// Accept valid domain patterns (with optional wildcard prefix)
-	// Must have at least one dot and valid domain characters
 	return /^(\*\.)?[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)+$/.test(pattern);
 }
 
@@ -274,43 +265,30 @@ function expandTilde(p: string): string {
 /**
  * Convert our SandboxRuntimeConfig to SRT settings file format.
  *
- * IMPORTANT: The srt CLI has strict validation rules:
- * 1. Domain patterns: Only accepts valid domain names, not IPs, CIDRs, or bare "*"
- * 2. Filesystem paths: Must be absolute paths, not tilde notation
- *
- * When allowedDomains is ["*"], we:
- * - Set skipNetworkProxy: true to disable network filtering entirely
- * - Clear deniedDomains since the proxy won't enforce them anyway
- *
- * This is necessary because:
- * 1. srt rejects "*" as a domain pattern
- * 2. srt rejects IPs/CIDRs in deniedDomains (e.g., "127.0.0.0/8", "169.254.*")
- * 3. An empty allowedDomains with proxy enabled blocks ALL outbound traffic
- * 4. Claude CLI needs network access to reach Anthropic's API
+ * IMPORTANT: The srt CLI expects:
+ * 1. Domain patterns in allowedDomains (supports wildcard prefixes like "*.example.com", NOT bare "*")
+ * 2. deniedDomains follows the same domain pattern rules (no IPs/CIDRs)
+ * 3. Filesystem paths must be absolute (no tildes)
  */
 function configToSrtSettings(config: SandboxRuntimeConfig): object {
 	const rawAllowedDomains = config.network?.allowedDomains ?? [];
-	const isAllowAll = rawAllowedDomains.includes("*");
+	const allowAllRequested = rawAllowedDomains.includes("*");
 
-	// Filter allowedDomains to only valid patterns (remove "*")
-	// If isAllowAll, we'll set skipNetworkProxy instead
-	const allowedDomains = isAllowAll ? [] : rawAllowedDomains.filter(isValidSrtDomain);
+	// If caller requested "*", fall back to broad-but-valid defaults to stay schema-compliant
+	const filteredAllowed = (
+		allowAllRequested ? DEFAULT_ALLOWED_DOMAIN_NAMES : rawAllowedDomains
+	).filter(isValidSrtAllowPattern);
 
-	// Deny list: only build when NOT in allow-all mode
-	// When skipNetworkProxy is true, there's no proxy to enforce these patterns,
-	// and srt rejects IP/CIDR patterns anyway (only accepts domain names)
-	let uniqueDeniedDomains: string[] = [];
-	if (!isAllowAll) {
-		const configDeniedDomains = config.network?.deniedDomains ?? [];
-		// Only include patterns that srt actually accepts (valid domains, not IPs/CIDRs)
-		const deniedDomains = [
-			...BLOCKED_METADATA_DOMAINS,
-			...BLOCKED_PRIVATE_NETWORKS,
-			...configDeniedDomains,
-		].filter(isValidSrtDomain); // Use strict domain validation, not isValidSrtDeniedPattern
+	// Deny list: keep only domain patterns srt accepts (IPs/CIDRs are rejected by schema)
+	const configDeniedDomains = config.network?.deniedDomains ?? [];
+	const deniedDomains = [
+		...BLOCKED_METADATA_DOMAINS,
+		...BLOCKED_PRIVATE_NETWORKS,
+		...configDeniedDomains,
+	].filter(isValidSrtAllowPattern);
 
-		uniqueDeniedDomains = [...new Set(deniedDomains)];
-	}
+	const allowedDomains = [...new Set(filteredAllowed)];
+	const uniqueDeniedDomains = [...new Set(deniedDomains)];
 
 	// Expand tildes in filesystem paths - srt requires absolute paths
 	const denyRead = (config.filesystem?.denyRead ?? []).map(expandTilde);
@@ -326,12 +304,6 @@ function configToSrtSettings(config: SandboxRuntimeConfig): object {
 			// SECURITY: Disable arbitrary Unix socket creation via seccomp (Linux only).
 			// When false, only paths in allowUnixSockets are permitted.
 			allowAllUnixSockets: config.network?.allowAllUnixSockets ?? false,
-			// Skip network proxy when allowedDomains is ["*"] (allow-all mode).
-			// This is required because:
-			// 1. srt rejects "*" as a domain pattern
-			// 2. An empty allowedDomains with proxy enabled blocks ALL outbound traffic
-			// 3. Claude CLI needs unrestricted network access to reach Anthropic's API
-			...(isAllowAll ? { skipNetworkProxy: true } : {}),
 		},
 		filesystem: {
 			denyRead,

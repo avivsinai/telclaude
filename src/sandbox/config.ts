@@ -345,10 +345,13 @@ export function buildSandboxConfig(options: {
 	const cwd = options.cwd ?? process.cwd();
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 
-	const resolvedDefaultAllowed =
-		envNetworkMode === "open" || envNetworkMode === "permissive"
-			? ["*"]
-			: DEFAULT_ALLOWED_DOMAIN_NAMES;
+	let resolvedDefaultAllowed = DEFAULT_ALLOWED_DOMAIN_NAMES;
+	if (envNetworkMode === "open" || envNetworkMode === "permissive") {
+		logger.warn(
+			'TELCLAUDE_NETWORK_MODE=open|permissive requested but sandbox-runtime forbids "*"; using default allowlist instead',
+		);
+		resolvedDefaultAllowed = DEFAULT_ALLOWED_DOMAIN_NAMES;
+	}
 
 	// Collect all deny/allow paths
 	let denyRead = [...SENSITIVE_READ_PATHS, ...(options.additionalDenyRead ?? [])];
