@@ -55,7 +55,25 @@ function settingsChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
 }
 
 function buildLogger(settings: ResolvedSettings): Logger {
-	fs.mkdirSync(path.dirname(settings.file), { recursive: true });
+	const logDir = path.dirname(settings.file);
+	fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+	try {
+		fs.chmodSync(logDir, 0o700);
+	} catch {
+		// Best effort; continue even if chmod fails (e.g., on some filesystems)
+	}
+
+	// Ensure file exists with 0600 to prevent world-readable logs
+	if (!fs.existsSync(settings.file)) {
+		fs.closeSync(fs.openSync(settings.file, "a", 0o600));
+	} else {
+		try {
+			fs.chmodSync(settings.file, 0o600);
+		} catch {
+			// Ignore chmod errors; destination below will still open the file
+		}
+	}
+
 	const destination = pino.destination({
 		dest: settings.file,
 		mkdir: true,

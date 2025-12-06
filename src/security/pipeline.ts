@@ -23,6 +23,7 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import type { AuditLogger } from "./audit.js";
 import { checkInfrastructureSecrets } from "./fast-path.js";
+import { isAdmin } from "./linking.js";
 import { filterOutput, redactSecrets } from "./output-filter.js";
 import { getUserPermissionTier } from "./permissions.js";
 import type { RateLimiter } from "./rate-limit.js";
@@ -212,6 +213,7 @@ class StrictPipeline implements SecurityPipeline {
 			tier: PermissionTier,
 			classification: SecurityClassification,
 			confidence: number,
+			isAdmin: boolean,
 		) => boolean,
 		private secretFilterConfig?: SecretFilterConfig,
 	) {}
@@ -250,7 +252,10 @@ class StrictPipeline implements SecurityPipeline {
 		const observerResult = await this.observer.analyze(ctx.body, { permissionTier: tier });
 
 		// 5. Check if approval is required
-		if (this.requiresApprovalFn(tier, observerResult.classification, observerResult.confidence)) {
+		const admin = isAdmin(ctx.chatId);
+		if (
+			this.requiresApprovalFn(tier, observerResult.classification, observerResult.confidence, admin)
+		) {
 			return {
 				action: "approval_required",
 				tier,
@@ -424,7 +429,8 @@ export async function buildSecurityPipeline(config: PipelineConfig): Promise<Sec
 		rateLimiter,
 		auditLogger,
 		observer,
-		requiresApproval,
+		(tier, classification, confidence, admin) =>
+			requiresApproval(tier, classification, confidence, admin),
 		secretFilterConfig,
 	);
 }

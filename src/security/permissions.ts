@@ -308,6 +308,27 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Basename-only checks (catch relative paths like ".env" that lack separators).
+ * These complement SENSITIVE_PATH_PATTERNS which expect a slash.
+ */
+const SENSITIVE_BASENAME_PATTERNS: RegExp[] = [
+	/^\.env(\..+)?$/i, // .env, .env.local, etc.
+	/^\.envrc$/i,
+	/^secrets\.(json|ya?ml)$/i,
+	/^(credentials|service[-_]?account)\.json$/i,
+	/^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i,
+	/^authorized_keys$/i,
+	/^known_hosts$/i,
+	/\.pem$/i,
+	/\.key$/i,
+	/\.ppk$/i,
+];
+
+function isSensitiveBasename(name: string): boolean {
+	return SENSITIVE_BASENAME_PATTERNS.some((pattern) => pattern.test(name));
+}
+
+/**
  * Expand ~ to home directory for path comparison.
  */
 function expandHome(p: string): string {
@@ -349,6 +370,12 @@ function matchesSensitiveCredentialPath(inputPath: string): boolean {
 			return true;
 		}
 	}
+
+	// Basename-only fallback for patterns that don't include separators (e.g., ".env")
+	if (isSensitiveBasename(path.basename(normalizedInput))) {
+		return true;
+	}
+
 	return false;
 }
 
@@ -409,6 +436,11 @@ function commandContainsSensitivePath(command: string): boolean {
 
 		// Check credential roots
 		if (matchesSensitiveCredentialPath(expanded)) {
+			return true;
+		}
+
+		// Basename-only detection (e.g., ".env" created after sandbox init)
+		if (isSensitiveBasename(path.basename(expanded))) {
 			return true;
 		}
 	}

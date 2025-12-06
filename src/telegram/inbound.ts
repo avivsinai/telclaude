@@ -4,7 +4,7 @@ import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
-import { chatIdToString } from "../utils.js";
+import { chatIdToString, normalizeTelegramId } from "../utils.js";
 import { sendMediaToChat } from "./outbound.js";
 import { sanitizeClaudeResponse } from "./sanitize.js";
 
@@ -64,6 +64,8 @@ export async function monitorTelegramInbox(
 	// NOTE: allowedChats is REQUIRED even for bootstrap - this prevents random
 	// users from claiming admin by messaging the bot before it's configured.
 	const isChatAllowed = (chatId: number, chatType: string): boolean => {
+		const normalizedChatId = normalizeTelegramId(chatId) ?? String(chatId);
+
 		// First check: ALWAYS require allowedChats to be configured
 		if (!allowedChats || allowedChats.length === 0) {
 			// SECURITY: Empty allowedChats = deny all (fail closed)
@@ -77,6 +79,10 @@ export async function monitorTelegramInbox(
 
 		// Check if chat is in the allowlist
 		const isInAllowlist = allowedChats.some((allowed) => {
+			const normalizedAllowed = normalizeTelegramId(allowed);
+			if (normalizedAllowed && normalizedChatId) {
+				return normalizedAllowed === normalizedChatId;
+			}
 			if (typeof allowed === "number") return allowed === chatId;
 			return String(allowed) === String(chatId);
 		});
