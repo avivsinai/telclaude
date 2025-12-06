@@ -16,6 +16,28 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
 
+## Documentation map
+- Overview & onboarding: this `README.md`
+- Agent playbook: `CLAUDE.md` (auto-loaded by Claude Code)
+- Agents guide pointer: `AGENTS.md`
+- Architecture/security deep dive: `docs/architecture.md`
+- Container deploy: `docker/README.md`
+- Policies: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`
+
+## Support & cadence
+- Status: alpha (0.1.x) — breaking changes possible until 1.0.
+- Platforms: macOS 14+, Linux (bubblewrap+socat+rg); Docker/WSL recommended for prod.
+- Issues/PR triage: weekly; security reports acknowledged within 48h.
+- Releases: ad-hoc during alpha; aim for monthly.
+- Security contact: avivsinai@gmail.com (or GitHub private advisory).
+
+## Permission tiers (at a glance)
+| Tier | What it can do | Safeguards |
+| --- | --- | --- |
+| READ_ONLY | Read files, search, web fetch/search | No writes; sandbox + secret filter |
+| WRITE_SAFE | READ_ONLY + write/edit/bash | Blocks destructive bash (rm/chown/kill, etc.); denyWrite patterns |
+| FULL_ACCESS | All tools | Every request requires human approval; still sandboxed |
+
 ## Architecture
 
 ```
@@ -144,6 +166,16 @@ pnpm dev relay --profile strict   # omit flag to use simple profile
 - `telclaude totp-setup <user-id>`
 - `telclaude reset-auth [--force]`
 
+## Usage example
+Run strict profile with approvals and TOTP:
+```bash
+pnpm dev totp-daemon &
+pnpm dev relay --profile strict
+# In Telegram (allowed chat):
+# 1) bot replies with /approve CODE for admin claim
+# 2) run /setup-2fa to bind TOTP
+```
+
 Use `pnpm dev <command>` during development (tsx). For production: `pnpm build && pnpm start <command>` (runs from `dist/`).
 
 ## Deployment
@@ -162,6 +194,15 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 - Default stance is fail-closed (empty `allowedChats` denies all; `defaultTier=FULL_ACCESS` is rejected).
 - Sandbox is mandatory; relay exits if Seatbelt/bubblewrap is unavailable.
 - Vulnerabilities: please follow `SECURITY.md` for coordinated disclosure.
+- Security contact: avivsinai@gmail.com (or GitHub security advisory).
+
+## Troubleshooting (quick)
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
+| Sandbox unavailable | seatbelt/bubblewrap/rg/socat missing | Install deps (see `CLAUDE.md#sandbox-unavailable-relay-wont-start`) |
+| TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
+| SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` |
 
 ## Community
 - Contributing guidelines: see `CONTRIBUTING.md`.

@@ -6,7 +6,7 @@
 
 If you discover a security vulnerability in telclaude, please report it responsibly:
 
-1. **Email**: Send details to the maintainer (check the repository for contact info)
+1. **Email**: avivsinai@gmail.com (encrypted mail welcome; no public key required)
 2. **Private Disclosure**: Use [GitHub's private vulnerability reporting](https://github.com/avivsinai/telclaude/security/advisories/new) if available
 
 ### What to Include
