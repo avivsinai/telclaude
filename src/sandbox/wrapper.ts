@@ -208,6 +208,13 @@ if [ ! -f "$SETTINGS" ]; then
     exit 1
 fi
 
+# Pass through ANTHROPIC_API_KEY if set (optional - for API billing fallback)
+# Claude uses Keychain OAuth tokens by default for subscription billing.
+# If ANTHROPIC_API_KEY is set, Claude will use API billing instead of subscription.
+if [ -n "\${ANTHROPIC_API_KEY:-}" ]; then
+    export ANTHROPIC_API_KEY
+fi
+
 # Execute Claude through srt with our settings
 # The --settings flag tells srt to use our custom configuration
 exec "${srtPath}" --settings "$SETTINGS" "${claudePath}" "$@"
@@ -219,42 +226,117 @@ exec "${srtPath}" --settings "$SETTINGS" "${claudePath}" "$@"
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Check if a string looks like a valid domain pattern for srt allowlists.
+ *
+ * This is intentionally strict: allowlists should only contain real domains
+ * (with optional leading wildcard). IPs/CIDRs belong in denied lists.
+ */
+function isValidSrtDomain(pattern: string): boolean {
+	// Reject bare * or overly broad patterns
+	if (pattern === "*" || pattern === "*.*" || /^\*\.[a-z]{2,4}$/i.test(pattern)) {
+		return false;
+	}
+
+	// Reject IP addresses (IPv4 and IPv6)
+	if (/^[\d.:]+$/.test(pattern) || /^[\da-f:]+$/i.test(pattern)) {
+		return false;
+	}
+
+	// Reject CIDR notation
+	if (pattern.includes("/")) {
+		return false;
+	}
+
+	// Reject localhost variants
+	if (pattern === "localhost" || pattern === "::1") {
+		return false;
+	}
+
+	// Accept valid domain patterns (with optional wildcard prefix)
+	// Must have at least one dot and valid domain characters
+	return /^(\*\.)?[a-zA-Z0-9][-a-zA-Z0-9]*(\.[a-zA-Z0-9][-a-zA-Z0-9]*)+$/.test(pattern);
+}
+
+/**
+ * Expand tilde (~) in paths to the actual home directory.
+ * srt requires absolute paths, not tilde notation.
+ */
+function expandTilde(p: string): string {
+	if (p.startsWith("~/")) {
+		return path.join(os.homedir(), p.slice(2));
+	}
+	if (p === "~") {
+		return os.homedir();
+	}
+	return p;
+}
+
+/**
  * Convert our SandboxRuntimeConfig to SRT settings file format.
  *
- * IMPORTANT: We merge BLOCKED_METADATA_DOMAINS and BLOCKED_PRIVATE_NETWORKS into
- * deniedDomains to ensure the wrapper (SRT CLI) blocks these endpoints. This mirrors
- * the sandboxAskCallback logic used for Bash commands in SandboxManager.
+ * IMPORTANT: The srt CLI has strict validation rules:
+ * 1. Domain patterns: Only accepts valid domain names, not IPs, CIDRs, or bare "*"
+ * 2. Filesystem paths: Must be absolute paths, not tilde notation
  *
- * LIMITATION: CIDR notation (10.0.0.0/8, 172.16.0.0/12, etc.) in BLOCKED_PRIVATE_NETWORKS
- * likely won't work with SRT's domain blocking, which is string-based. Only exact matches
- * like "localhost", "::1", and specific IPs will be effective. For full private network
- * blocking, the sandboxAskCallback with isBlockedIP() is needed (Bash commands only).
+ * When allowedDomains is ["*"], we:
+ * - Set skipNetworkProxy: true to disable network filtering entirely
+ * - Clear deniedDomains since the proxy won't enforce them anyway
+ *
+ * This is necessary because:
+ * 1. srt rejects "*" as a domain pattern
+ * 2. srt rejects IPs/CIDRs in deniedDomains (e.g., "127.0.0.0/8", "169.254.*")
+ * 3. An empty allowedDomains with proxy enabled blocks ALL outbound traffic
+ * 4. Claude CLI needs network access to reach Anthropic's API
  */
 function configToSrtSettings(config: SandboxRuntimeConfig): object {
-	// Merge blocked domains/networks with config's deniedDomains
-	const deniedDomains = [
-		...BLOCKED_METADATA_DOMAINS,
-		...BLOCKED_PRIVATE_NETWORKS,
-		...(config.network?.deniedDomains ?? []),
-	];
+	const rawAllowedDomains = config.network?.allowedDomains ?? [];
+	const isAllowAll = rawAllowedDomains.includes("*");
 
-	// Deduplicate
-	const uniqueDeniedDomains = [...new Set(deniedDomains)];
+	// Filter allowedDomains to only valid patterns (remove "*")
+	// If isAllowAll, we'll set skipNetworkProxy instead
+	const allowedDomains = isAllowAll ? [] : rawAllowedDomains.filter(isValidSrtDomain);
+
+	// Deny list: only build when NOT in allow-all mode
+	// When skipNetworkProxy is true, there's no proxy to enforce these patterns,
+	// and srt rejects IP/CIDR patterns anyway (only accepts domain names)
+	let uniqueDeniedDomains: string[] = [];
+	if (!isAllowAll) {
+		const configDeniedDomains = config.network?.deniedDomains ?? [];
+		// Only include patterns that srt actually accepts (valid domains, not IPs/CIDRs)
+		const deniedDomains = [
+			...BLOCKED_METADATA_DOMAINS,
+			...BLOCKED_PRIVATE_NETWORKS,
+			...configDeniedDomains,
+		].filter(isValidSrtDomain); // Use strict domain validation, not isValidSrtDeniedPattern
+
+		uniqueDeniedDomains = [...new Set(deniedDomains)];
+	}
+
+	// Expand tildes in filesystem paths - srt requires absolute paths
+	const denyRead = (config.filesystem?.denyRead ?? []).map(expandTilde);
+	const allowWrite = (config.filesystem?.allowWrite ?? []).map(expandTilde);
+	const denyWrite = (config.filesystem?.denyWrite ?? []).map(expandTilde);
 
 	return {
 		network: {
-			allowedDomains: config.network?.allowedDomains ?? [],
+			allowedDomains,
 			deniedDomains: uniqueDeniedDomains,
 			allowUnixSockets: config.network?.allowUnixSockets ?? [],
 			allowLocalBinding: config.network?.allowLocalBinding ?? false,
 			// SECURITY: Disable arbitrary Unix socket creation via seccomp (Linux only).
 			// When false, only paths in allowUnixSockets are permitted.
 			allowAllUnixSockets: config.network?.allowAllUnixSockets ?? false,
+			// Skip network proxy when allowedDomains is ["*"] (allow-all mode).
+			// This is required because:
+			// 1. srt rejects "*" as a domain pattern
+			// 2. An empty allowedDomains with proxy enabled blocks ALL outbound traffic
+			// 3. Claude CLI needs unrestricted network access to reach Anthropic's API
+			...(isAllowAll ? { skipNetworkProxy: true } : {}),
 		},
 		filesystem: {
-			denyRead: config.filesystem?.denyRead ?? [],
-			allowWrite: config.filesystem?.allowWrite ?? [],
-			denyWrite: config.filesystem?.denyWrite ?? [],
+			denyRead,
+			allowWrite,
+			denyWrite,
 		},
 		// Allow nested sandboxing (for defense-in-depth with Bash commands)
 		// but accept weaker guarantees for the inner sandbox

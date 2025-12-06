@@ -140,6 +140,13 @@ The sandbox enforces:
 
 **Linux glob expansion limitation**: Linux bubblewrap doesn't support glob patterns in path rules. Telclaude works around this by expanding globs to literal paths at startup, which may miss dynamically created directories.
 
+**macOS Keychain access (security trade-off)**: The sandbox allows Claude CLI to access macOS Keychain for OAuth authentication. This enables **subscription billing** (Pro/Max plans) instead of requiring `ANTHROPIC_API_KEY` (API billing). Trade-off: Keychain access could theoretically expose other stored secrets, but this is mitigated by:
+- Claude's Seatbelt profile restricts access to its own Keychain items
+- Network isolation prevents exfiltration to untrusted domains
+- Output filter catches leaked secrets before reaching Telegram
+
+To use API billing instead (stricter isolation), set `ANTHROPIC_API_KEY` and Claude will bypass Keychain.
+
 **Design principle**: The permission tier defines *policy* (what Claude should do), while the sandbox provides *enforcement* (what Claude can do). The sandbox config matches the tier, not more restrictive.
 
 This provides defense-in-depth against prompt injection attacks - even if Claude is tricked into running malicious commands, the OS kernel prevents access to sensitive data.
@@ -450,7 +457,7 @@ Required:
 - `TELEGRAM_BOT_TOKEN` - Bot token from @BotFather
 
 Optional:
-- `ANTHROPIC_API_KEY` - API key (alternative to `claude login`)
+- `ANTHROPIC_API_KEY` - API key for pay-per-token billing. If set, Claude uses API billing instead of subscription (Pro/Max). Omit this to use subscription via `claude login`.
 - `TELCLAUDE_CONFIG` - Custom config file path
 - `TELCLAUDE_LOG_LEVEL` - Log level (debug/info/warn/error)
 - `TELCLAUDE_DATA_DIR` - Data directory (default: `~/.telclaude`)
