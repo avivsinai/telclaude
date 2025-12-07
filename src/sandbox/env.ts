@@ -56,6 +56,10 @@ export const ENV_ALLOWLIST = [
 	// Debugging (safe)
 	"FORCE_COLOR",
 	"NO_COLOR",
+	"DEBUG",
+	"CLAUDE_CODE_DEBUG",
+	"CLAUDE_CODE_LOG_LEVEL",
+	"SRT_LOG_LEVEL",
 
 	// Temp directories (we override TMPDIR to private temp)
 	"TMPDIR",
@@ -186,6 +190,8 @@ function matchesDenyPrefix(key: string): boolean {
  * @param processEnv - The current process environment
  * @returns Sanitized environment with only safe variables
  */
+const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
+
 export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, string> {
 	const sandboxEnv: Record<string, string> = {};
 	let blockedCount = 0;
@@ -194,7 +200,6 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 	for (const key of ENV_ALLOWLIST) {
 		const value = processEnv[key];
 		if (value !== undefined) {
-			// Double-check against deny prefixes (defense in depth)
 			if (matchesDenyPrefix(key)) {
 				logger.warn({ key }, "env var in allowlist but matches deny prefix - blocked");
 				blockedCount++;
@@ -205,23 +210,24 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 		}
 	}
 
-	// SECURITY: Override TMPDIR to private temp directory
-	// This ensures commands use our private temp instead of host /tmp
-	// (which is blocked via denyRead in sandbox config)
-	const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
-		? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
-		: PRIVATE_TMP_PATH;
-	sandboxEnv.TMPDIR = resolvedTmpPath;
-	sandboxEnv.TMP = resolvedTmpPath;
-	sandboxEnv.TEMP = resolvedTmpPath;
+	// PROD: force private temp; DEV: keep host TMPDIR to avoid srt/proxy friction
+	if (IS_PROD) {
+		const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
+			? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
+			: PRIVATE_TMP_PATH;
+		sandboxEnv.TMPDIR = resolvedTmpPath;
+		sandboxEnv.TMP = resolvedTmpPath;
+		sandboxEnv.TEMP = resolvedTmpPath;
+	} else {
+		if (processEnv.TMPDIR) sandboxEnv.TMPDIR = processEnv.TMPDIR;
+		if (processEnv.TMP) sandboxEnv.TMP = processEnv.TMP;
+		if (processEnv.TEMP) sandboxEnv.TEMP = processEnv.TEMP;
+	}
 
-	// Preserve real HOME so Claude CLI can read its cached auth under ~/.claude.
-	// Sandboxing and denyRead still protect sensitive subpaths; TMPDIR remains isolated.
 	if (processEnv.HOME) {
 		sandboxEnv.HOME = processEnv.HOME;
 	}
 
-	// Count blocked vars for metrics
 	for (const key of Object.keys(processEnv)) {
 		if (!ENV_ALLOWLIST.includes(key)) {
 			blockedCount++;

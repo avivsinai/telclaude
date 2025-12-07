@@ -77,7 +77,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 
 ## Requirements
 - Node 22+, pnpm 9.x
-- Claude CLI (`brew install anthropic-ai/cli/claude`) **or** `ANTHROPIC_API_KEY`
+- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed relay; use `claude login` so tokens live in `~/.claude`.
 - Telegram bot token from @BotFather
 - macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH (Windows via Docker/WSL only)
 - Optional but recommended: TOTP daemon uses the OS keychain (keytar)
@@ -88,7 +88,7 @@ git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
 cp .env.example .env   # set TELEGRAM_BOT_TOKEN and WORKSPACE_PATH
 docker compose up -d --build
-docker compose exec telclaude claude login  # if not using ANTHROPIC_API_KEY
+docker compose exec telclaude claude login  # required; API key is not forwarded into sandbox
 ```
 See `docker/README.md` for firewall, volume, and upgrade details.
 
@@ -120,7 +120,7 @@ Notes: `defaultTier=FULL_ACCESS` is intentionally rejected at runtime. Prefer pu
 
 3) Authenticate Claude
 ```bash
-claude login             # or export ANTHROPIC_API_KEY=sk-ant-...
+claude login             # API key is not forwarded into sandboxed relay
 ```
 
 4) (Recommended) Start TOTP daemon in another terminal
@@ -135,7 +135,12 @@ pnpm dev doctor --network --secrets
 
 6) Run the relay
 ```bash
-pnpm dev relay --profile strict   # omit flag to use simple profile
+# Development (native, uses Claude Code's srt sandbox; if it fails on your host, use Docker below)
+pnpm dev relay --profile simple
+
+# Recommended / Production: Docker or WSL with container boundary + srt
+docker compose up -d --build
+docker compose exec telclaude pnpm start relay --profile strict
 ```
 
 7) First admin claim
@@ -179,8 +184,8 @@ pnpm dev relay --profile strict
 Use `pnpm dev <command>` during development (tsx). For production: `pnpm build && pnpm start <command>` (runs from `dist/`).
 
 ## Deployment
-- Preferred for production: Docker/WSL Compose stack (see `docker/README.md`) — gives a strong container boundary, read-only root FS, dropped caps, optional outbound firewall. Use this on shared or multi-tenant hosts.
-- Native macOS/Linux: good for development and trusted single-user hosts; relies on Seatbelt/bubblewrap for the security boundary. Ensure deps are installed and `~/.telclaude/telclaude.json` stays chmod 600, then `pnpm build && pnpm start relay --profile strict`.
+- **Production (mandatory): Docker/WSL Compose stack** (`docker/README.md`). Container boundary + Claude Code srt sandbox. Use this on shared or multi-tenant hosts.
+- **Development:** Native macOS/Linux with Claude Code srt sandbox. Telclaude writes `~/.claude/settings.local.json` so the SDK’s srt enforces our filesystem/network policy (single srt layer). If the srt sandbox fails on your host, develop inside the Docker stack with bind mounts. Keep `~/.telclaude/telclaude.json` chmod 600.
 
 ## Development
 - Lint/format: `pnpm lint`, `pnpm format`

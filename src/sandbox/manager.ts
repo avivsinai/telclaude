@@ -1,19 +1,8 @@
 /**
- * Sandbox manager wrapper for telclaude.
+ * Sandbox manager for telclaude.
  *
  * Provides a high-level interface for sandboxing commands with
  * telclaude-specific configuration and lifecycle management.
- *
- * Architecture:
- * ```
- * telclaude process
- *     │
- *     ├─→ Wrapper: Sandboxes entire Claude CLI subprocess
- *     │   (pathToClaudeCodeExecutable → srt wrapper)
- *     │
- *     └─→ SandboxManager: Additional sandboxing for Bash commands
- *         (defense-in-depth via canUseTool callback)
- * ```
  */
 
 import fs from "node:fs";
@@ -30,8 +19,6 @@ import {
 	getSandboxRuntimeVersion,
 	isSandboxRuntimeAtLeast,
 } from "./version.js";
-import { initializeWrapper, updateWrapperConfig, verifyWrapper } from "./wrapper.js";
-
 const logger = getChildLogger({ module: "sandbox" });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -42,9 +29,6 @@ let initialized = false;
 let currentConfig: SandboxRuntimeConfig | null = null;
 let sanitizedEnv: Record<string, string> | null = null;
 
-/** Path to the sandboxed Claude wrapper (set during initialization) */
-let wrapperPath: string | null = null;
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -53,10 +37,6 @@ let wrapperPath: string | null = null;
 export type SandboxInitResult = {
 	/** Whether core sandbox (Bash isolation) initialized successfully */
 	initialized: boolean;
-	/** Whether wrapper (full Claude CLI isolation) is active */
-	wrapperEnabled: boolean;
-	/** Error message if wrapper failed (for display to user) */
-	wrapperError?: string;
 };
 
 /**
@@ -68,12 +48,12 @@ export type SandboxInitResult = {
  * 2. SandboxManager: Additional sandboxing for Bash commands (defense-in-depth)
  *
  * @param config - Optional configuration override (defaults to DEFAULT_SANDBOX_CONFIG)
- * @returns Status of sandbox initialization including wrapper status
+ * @returns Status of sandbox initialization
  */
 export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<SandboxInitResult> {
 	if (initialized) {
 		logger.debug("sandbox already initialized, skipping");
-		return { initialized: true, wrapperEnabled: wrapperPath !== null };
+		return { initialized: true };
 	}
 
 	const runtimeVersion = getSandboxRuntimeVersion();
@@ -89,8 +69,6 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 	}
 
 	const sandboxConfig = config ?? DEFAULT_SANDBOX_CONFIG;
-	let wrapperError: string | undefined;
-
 	try {
 		// SECURITY: Create private temp directory before initializing sandbox
 		// This ensures commands have a writable temp dir (host /tmp is blocked)
@@ -113,41 +91,7 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 			"set TMPDIR for sandbox bridge sockets",
 		);
 
-		// LAYER 1: Initialize wrapper for Claude CLI subprocess
-		// This ensures ALL Claude operations (Read/Write/Bash/etc) run sandboxed
-		const wrapperResult = await initializeWrapper(sandboxConfig);
-		if (wrapperResult.success) {
-			// Verify wrapper can actually execute (srt runtime test)
-			const verification = await verifyWrapper();
-			if (verification.valid) {
-				wrapperPath = wrapperResult.wrapperPath;
-				logger.info(
-					{
-						wrapperPath: wrapperResult.wrapperPath,
-						claudePath: wrapperResult.claudePath,
-						srtPath: wrapperResult.srtPath,
-					},
-					"initialized Claude CLI sandbox wrapper",
-				);
-			} else {
-				// Wrapper created but srt can't execute
-				wrapperError = `Wrapper verification failed: ${verification.error}`;
-				logger.warn(
-					{ error: verification.error },
-					"wrapper created but srt verification failed - falling back to Bash-only sandboxing",
-				);
-			}
-		} else {
-			// Wrapper init failed - log warning but continue
-			// The sandbox manager for Bash commands still provides some protection
-			wrapperError = wrapperResult.error;
-			logger.warn(
-				{ error: wrapperResult.error },
-				"failed to initialize Claude CLI sandbox wrapper - falling back to Bash-only sandboxing",
-			);
-		}
-
-		// LAYER 2: Initialize SandboxManager for Bash commands (defense-in-depth)
+		// Initialize SandboxManager for Bash commands (defense-in-depth)
 		// NETWORK FIX: The sandbox-runtime treats "*" as a literal domain name, not a wildcard.
 		// It also doesn't support CIDR notation (10.0.0.0/8) in deniedDomains.
 		// We use sandboxAskCallback to:
@@ -184,15 +128,12 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 				allowWrite: sandboxConfig.filesystem?.allowWrite?.length ?? 0,
 				allowedDomains: sandboxConfig.network?.allowedDomains?.length ?? 0,
 				envVarsAllowed: Object.keys(sanitizedEnv).length,
-				wrapperEnabled: wrapperPath !== null,
 			},
 			"sandbox initialized",
 		);
 
 		return {
 			initialized: true,
-			wrapperEnabled: wrapperPath !== null,
-			wrapperError,
 		};
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to initialize sandbox");
@@ -211,13 +152,9 @@ export async function resetSandbox(): Promise<void> {
 
 	try {
 		await SandboxManager.reset();
-		// Note: We don't cleanup the wrapper here because it's a one-time setup
-		// and users may want to keep it for subsequent runs. Use cleanupWrapper()
-		// explicitly if needed.
 		initialized = false;
 		currentConfig = null;
 		sanitizedEnv = null;
-		wrapperPath = null;
 		logger.info("sandbox reset");
 	} catch (err) {
 		logger.warn({ error: String(err) }, "error resetting sandbox");
@@ -241,14 +178,7 @@ export function getSandboxConfig(): SandboxRuntimeConfig | null {
 /**
  * Update the sandbox configuration without restarting.
  *
- * Updates both:
- * 1. Wrapper SRT settings (for Claude CLI subprocess)
- * 2. SandboxManager config (for Bash commands)
- *
- * This is useful for tier-aligned configs where different tiers
- * have different sandbox restrictions.
- *
- * @param config - New configuration to apply
+ * Updates SandboxManager config (for Bash commands).
  */
 export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
 	if (!initialized) {
@@ -257,11 +187,6 @@ export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
 	}
 
 	try {
-		// Update wrapper settings (for Claude CLI subprocess)
-		if (wrapperPath) {
-			updateWrapperConfig(config);
-		}
-
 		// Update SandboxManager config (for Bash commands)
 		SandboxManager.updateConfig(config);
 		currentConfig = config;
@@ -269,33 +194,12 @@ export function updateSandboxConfig(config: SandboxRuntimeConfig): void {
 			{
 				denyRead: config.filesystem?.denyRead?.length ?? 0,
 				allowWrite: config.filesystem?.allowWrite?.length ?? 0,
-				wrapperUpdated: wrapperPath !== null,
 			},
 			"sandbox config updated",
 		);
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to update sandbox config");
 	}
-}
-
-/**
- * Get the path to the sandboxed Claude wrapper.
- *
- * Returns null if:
- * - Sandbox not initialized
- * - Wrapper initialization failed
- *
- * This path should be passed to the SDK via `pathToClaudeCodeExecutable`.
- */
-export function getClaudeWrapperPath(): string | null {
-	return wrapperPath;
-}
-
-/**
- * Check if the Claude wrapper is enabled.
- */
-export function isWrapperEnabled(): boolean {
-	return wrapperPath !== null;
 }
 
 /**
@@ -327,7 +231,7 @@ function buildEnvPrefix(): string {
  *
  * Returns the command string prefixed with:
  * 1. Environment isolation (env -i KEY=VALUE...)
- * 2. Sandbox wrapper (filesystem + network restrictions)
+ * 2. Sandbox (filesystem + network restrictions)
  *
  * The sandbox enforces filesystem and network restrictions at the OS level.
  * Environment isolation ensures only allowlisted env vars reach the command.

@@ -8,8 +8,6 @@ import {
 	DENY_WRITE_PATHS,
 	MIN_SANDBOX_RUNTIME_VERSION,
 	SENSITIVE_READ_PATHS,
-	SRT_SETTINGS_PATH,
-	WRAPPER_PATH,
 	analyzeGlobPatterns,
 	getEnvIsolationSummary,
 	getNetworkIsolationSummary,
@@ -17,9 +15,7 @@ import {
 	isLinux,
 	isSandboxAvailable,
 	isSandboxRuntimeAtLeast,
-	isWrapperInitialized,
 	runNetworkSelfTest,
-	verifyWrapper,
 } from "../sandbox/index.js";
 import { CORE_SECRET_PATTERNS, filterOutput, redactSecrets } from "../security/index.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
@@ -208,20 +204,6 @@ export function registerDoctorCommand(program: Command): void {
 						);
 						console.log("     Note: Patterns expanded to literal paths at startup");
 					}
-				}
-
-				// Claude wrapper (sandboxes entire Claude CLI subprocess)
-				const wrapperInitialized = isWrapperInitialized();
-				console.log("\n🔐 Claude Sandbox Wrapper");
-				console.log(`   Status: ${wrapperInitialized ? "✓ initialized" : "○ not initialized"}`);
-				if (wrapperInitialized) {
-					console.log(`   Wrapper: ${WRAPPER_PATH}`);
-					console.log(`   Settings: ${SRT_SETTINGS_PATH}`);
-					// Verify wrapper functionality
-					const wrapperCheck = await verifyWrapper();
-					console.log(`   Functional: ${wrapperCheck.valid ? "✓ yes" : `✗ ${wrapperCheck.error}`}`);
-				} else {
-					console.log("   Note: Wrapper is auto-initialized on first relay start");
 				}
 
 				// TOTP details

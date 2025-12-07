@@ -36,6 +36,8 @@ export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
 	// POST requires explicit config - prevents pushing secrets to repos
 	{ domain: "github.com", methods: ["GET", "HEAD"] },
 	{ domain: "api.github.com", methods: ["GET", "HEAD"] },
+	{ domain: "codeload.github.com", methods: ["GET", "HEAD"] },
+	{ domain: "objects.githubusercontent.com", methods: ["GET", "HEAD"] },
 	{ domain: "gitlab.com", methods: ["GET", "HEAD"] },
 	{ domain: "bitbucket.org", methods: ["GET", "HEAD"] },
 	{ domain: "raw.githubusercontent.com", methods: ["GET", "HEAD"] },
@@ -45,8 +47,12 @@ export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
 	{ domain: "unpkg.com", methods: ["GET", "HEAD"] },
 	{ domain: "cdn.jsdelivr.net", methods: ["GET", "HEAD"] },
 
-	// Anthropic API (for SDK)
+	// Anthropic API + Claude Code endpoints
 	{ domain: "api.anthropic.com", methods: ["GET", "HEAD", "POST"] },
+	{ domain: "claude.ai", methods: ["GET", "HEAD", "POST"] },
+	{ domain: "*.claude.ai", methods: ["GET", "HEAD", "POST"] },
+	{ domain: "code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
+	{ domain: "*.code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 ];
 
 /**

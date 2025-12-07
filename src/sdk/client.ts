@@ -17,10 +17,8 @@ import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
 import {
-	getClaudeWrapperPath,
 	getSandboxConfigForTier,
 	isSandboxInitialized,
-	isWrapperEnabled,
 	updateSandboxConfig,
 	wrapCommand,
 } from "../sandbox/index.js";
@@ -58,6 +56,30 @@ function resolveRealPath(inputPath: string): string {
 		// File doesn't exist yet or other error - return original
 		return inputPath;
 	}
+}
+
+/**
+ * Recursively scan an input payload for any string that hits isSensitivePath().
+ * This is a belt-and-suspenders guard when the tool schema isn't path-specific.
+ */
+function inputContainsSensitivePath(payload: unknown): boolean {
+	if (payload == null) {
+		return false;
+	}
+
+	if (typeof payload === "string") {
+		return isSensitivePath(payload);
+	}
+
+	if (Array.isArray(payload)) {
+		return payload.some((v) => inputContainsSensitivePath(v));
+	}
+
+	if (typeof payload === "object") {
+		return Object.values(payload).some((v) => inputContainsSensitivePath(v));
+	}
+
+	return false;
 }
 
 /**
@@ -204,19 +226,12 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		env: buildSandboxEnv(process.env),
 	};
 
-	// SECURITY: Use sandboxed wrapper for Claude CLI subprocess
-	// This ensures ALL Claude operations (Read/Write/Glob/Grep/Bash) run sandboxed
-	const wrapperPath = getClaudeWrapperPath();
-	if (wrapperPath) {
-		sdkOpts.pathToClaudeCodeExecutable = wrapperPath;
-		logger.debug({ wrapperPath }, "using sandboxed Claude wrapper");
-	}
-
 	// Configure tools based on tier
 	if (opts.tier === "FULL_ACCESS") {
-		// Full access - use bypassPermissions mode
-		sdkOpts.permissionMode = opts.permissionMode ?? "bypassPermissions";
-		sdkOpts.allowDangerouslySkipPermissions = true;
+		// Full access, but keep canUseTool enforcement for sensitive paths.
+		// Leave allowedTools undefined => all tools allowed.
+		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
+		sdkOpts.allowDangerouslySkipPermissions = false;
 	} else {
 		// Restricted tiers - specify allowed tools
 		const tierTools = TIER_TOOLS[opts.tier];
@@ -233,6 +248,15 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			{ toolName, input: JSON.stringify(input).substring(0, 200) },
 			"canUseTool invoked",
 		);
+
+		// Generic guard: block any input that references sensitive paths, even if the tool schema is unknown.
+		if (inputContainsSensitivePath(input)) {
+			logger.warn({ toolName, input }, "blocked tool input containing sensitive path");
+			return {
+				behavior: "deny",
+				message: "Access to sensitive paths is not permitted for security reasons.",
+			};
+		}
 
 		// Block access to sensitive paths (telclaude internals + credentials like ~/.ssh)
 		if (toolName === "Read" && isReadInput(input)) {
@@ -374,31 +398,18 @@ export async function* executeQueryStream(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires the sandbox wrapper - downgrade if unavailable
-	// The wrapper (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
-	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
-	// isSandboxInitialized() is not enough - it can be true even when wrapper failed.
-	let opts = inputOpts;
-	if (opts.tier === "FULL_ACCESS" && !isWrapperEnabled()) {
-		logger.error(
-			{ originalTier: opts.tier },
-			"FULL_ACCESS requested without sandbox wrapper; downgrading to WRITE_SAFE",
-		);
-		opts = { ...opts, tier: "WRITE_SAFE" };
-	}
-
 	// Apply tier-aligned sandbox config with cwd
-	applyTierSandboxConfig(opts.tier, opts.cwd);
+	applyTierSandboxConfig(inputOpts.tier, inputOpts.cwd);
 
 	const sdkOpts = buildSdkOptions({
-		...opts,
+		...inputOpts,
 		includePartialMessages: true,
 	});
 
 	logger.debug(
 		{
-			tier: opts.tier,
-			cwd: opts.cwd,
+			tier: inputOpts.tier,
+			cwd: inputOpts.cwd,
 			allowedTools: sdkOpts.allowedTools,
 		},
 		"executing streaming SDK query",
@@ -467,13 +478,21 @@ export async function* executeQueryStream(
 		// Distinguish between abort (timeout/cancellation) and other errors
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
+		const errorInfo =
+			err instanceof Error
+				? {
+						name: err.name,
+						message: err.message,
+						stack: err.stack,
+						// spread after capturing name/message/stack to avoid TS overwrite warnings
+						...(err as unknown as Record<string, unknown>),
+					}
+				: { value: err };
+
 		if (isAborted) {
-			logger.warn(
-				{ durationMs: Date.now() - startTime },
-				"SDK query aborted (timeout/cancellation)",
-			);
+			logger.warn({ durationMs: Date.now() - startTime, error: errorInfo }, "SDK query aborted");
 		} else {
-			logger.error({ error: String(err) }, "SDK streaming query error");
+			logger.error({ error: errorInfo }, "SDK streaming query error");
 		}
 
 		// Use fallback if we didn't get streaming events but did get assistant messages
@@ -521,15 +540,7 @@ export async function* executePooledQuery(
 	// The wrapper (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
 	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
 	// isSandboxInitialized() is not enough - it can be true even when wrapper failed.
-	let opts = inputOpts;
-	if (opts.tier === "FULL_ACCESS" && !isWrapperEnabled()) {
-		logger.error(
-			{ originalTier: opts.tier, poolKey: opts.poolKey },
-			"FULL_ACCESS requested without sandbox wrapper; downgrading to WRITE_SAFE",
-		);
-		opts = { ...opts, tier: "WRITE_SAFE" };
-	}
-
+	const opts = inputOpts;
 	// Apply tier-aligned sandbox config with cwd
 	applyTierSandboxConfig(opts.tier, opts.cwd);
 
@@ -589,6 +600,22 @@ export async function* executePooledQuery(
 
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
+
+				if (!success) {
+					logger.error(
+						{
+							requestError: error,
+							resultMessage: msg,
+							costUsd,
+							numTurns,
+							durationMs,
+							poolKey: opts.poolKey,
+							cwd: opts.cwd,
+							tier: opts.tier,
+						},
+						"SDK result message reported failure",
+					);
+				}
 
 				// Use assistant message fallback if streaming didn't deliver text
 				const finalResponse = response || assistantMessageFallback;

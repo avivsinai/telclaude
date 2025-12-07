@@ -8,6 +8,7 @@ import {
 	initializeSandbox,
 	isSandboxAvailable,
 	resetSandbox,
+	syncSdkSettingsFile,
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
@@ -70,6 +71,9 @@ export function registerRelayCommand(program: Command): void {
 				// Determine effective security profile (CLI flag overrides config)
 				const effectiveProfile = opts.profile ?? cfg.security?.profile ?? "simple";
 
+				// Ensure Claude SDK sandbox uses telclaude's policy (single srt layer)
+				syncSdkSettingsFile();
+
 				// SECURITY: Warn about test profile
 				if (effectiveProfile === "test") {
 					console.warn("\n⚠️  WARNING: Using 'test' security profile - NO SECURITY ENFORCEMENT.\n");
@@ -113,14 +117,8 @@ export function registerRelayCommand(program: Command): void {
 				}
 
 				const sandboxResult = await initializeSandbox();
-				if (sandboxResult.wrapperEnabled) {
-					console.log("Sandbox: enabled (full wrapper - all Claude tools sandboxed)");
-				} else {
-					console.warn("\n⚠️  Sandbox: DEGRADED (Bash-only isolation, wrapper failed)");
-					if (sandboxResult.wrapperError) {
-						console.warn(`   Reason: ${sandboxResult.wrapperError}`);
-					}
-					console.warn("   Claude Read/Write/Edit tools run WITHOUT sandbox protection.\n");
+				if (sandboxResult.initialized) {
+					console.log("Sandbox: enabled (srt)");
 				}
 
 				// Network policy - default is strict allowlist

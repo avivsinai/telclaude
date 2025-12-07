@@ -36,14 +36,16 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 	// === CRITICAL: Telclaude infrastructure ===
 	{
 		name: "telegram_bot_token",
-		pattern: /\b\d{8,10}:[A-Za-z0-9_-]{35}\b/,
+		// BotFather tokens are digits + ':' + 35-ish chars (can vary slightly). Loosen length to avoid false negatives.
+		pattern: /\b\d{8,10}:[A-Za-z0-9_-]{32,64}\b/,
 		severity: "critical",
 		description: "Telegram bot token - would allow bot hijacking",
 		core: true,
 	},
 	{
 		name: "anthropic_api_key",
-		pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/,
+		// Real keys are long (~45 chars) but allow shorter in case format shifts; keep broad to avoid misses.
+		pattern: /\bsk-ant-[A-Za-z0-9_-]{10,}\b/,
 		severity: "critical",
 		description: "Anthropic API key - would allow unauthorized API usage",
 		core: true,

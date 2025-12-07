@@ -28,6 +28,8 @@ import { getChildLogger } from "../logging.js";
 import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "./domains.js";
 import { expandGlobsForLinux, getGlobPatterns, isLinux } from "./glob-expansion.js";
 
+const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
+
 /**
  * Sensitive paths that should never be readable by sandboxed processes.
  * These include telclaude's own data and common credential stores.
@@ -109,7 +111,6 @@ export const SENSITIVE_READ_PATHS = [
 
 	// === Git credentials ===
 	"~/.netrc", // Various service credentials
-	"~/.gitconfig", // Git config (may contain credentials)
 	"~/.git-credentials", // Git credentials
 
 	// === Browser profiles (localStorage may have tokens) ===
@@ -163,7 +164,12 @@ export const PRIVATE_TMP_PATH = "~/.telclaude/sandbox-tmp";
  */
 export const DEFAULT_WRITE_PATHS = [
 	PRIVATE_TMP_PATH, // Private temp dir (host /tmp is blocked)
-	"~/.claude.json", // Claude CLI config (required for startup)
+	// Claude CLI config + atomic temp files
+	"~/.claude.json",
+	"~/.claude.json.*",
+	// Claude CLI workspace data (sessions, history, logs)
+	"~/.claude",
+	"~/.claude/**",
 ];
 
 /**
@@ -291,6 +297,7 @@ export const DENY_WRITE_PATHS = [
 	".pypirc",
 	".netrc",
 	".git-credentials",
+	".gitconfig",
 
 	// === Shell configuration (prevent injection) ===
 	".bashrc",
@@ -356,7 +363,7 @@ export function buildSandboxConfig(options: {
 	// Collect all deny/allow paths
 	let denyRead = [...SENSITIVE_READ_PATHS, ...(options.additionalDenyRead ?? [])];
 	let denyWrite = [...DENY_WRITE_PATHS];
-	const allowWrite = [...DEFAULT_WRITE_PATHS, ...(options.additionalAllowWrite ?? [])];
+	let allowWrite = [...DEFAULT_WRITE_PATHS, ...(options.additionalAllowWrite ?? [])];
 
 	// LINUX GLOB WORKAROUND: Expand globs to literal paths
 	// The sandbox-runtime silently drops glob patterns on Linux
@@ -364,12 +371,15 @@ export function buildSandboxConfig(options: {
 		const denyReadGlobs = getGlobPatterns(denyRead);
 		const denyWriteGlobs = getGlobPatterns(denyWrite);
 
-		if (denyReadGlobs.length > 0 || denyWriteGlobs.length > 0) {
+		const allowWriteGlobs = getGlobPatterns(allowWrite);
+
+		if (denyReadGlobs.length > 0 || denyWriteGlobs.length > 0 || allowWriteGlobs.length > 0) {
 			logger.warn(
 				{
 					denyReadGlobs: denyReadGlobs.length,
 					denyWriteGlobs: denyWriteGlobs.length,
-					patterns: [...denyReadGlobs, ...denyWriteGlobs].slice(0, 10),
+					allowWriteGlobs: allowWriteGlobs.length,
+					patterns: [...denyReadGlobs, ...denyWriteGlobs, ...allowWriteGlobs].slice(0, 10),
 				},
 				"Linux sandbox: expanding glob patterns to literal paths (bubblewrap limitation)",
 			);
@@ -377,6 +387,7 @@ export function buildSandboxConfig(options: {
 
 		denyRead = expandGlobsForLinux(denyRead, cwd);
 		denyWrite = expandGlobsForLinux(denyWrite, cwd);
+		allowWrite = expandGlobsForLinux(allowWrite, cwd);
 	}
 
 	return {
@@ -392,24 +403,10 @@ export function buildSandboxConfig(options: {
 			// SECURITY: Always block cloud metadata endpoints to prevent SSRF
 			deniedDomains: [...BLOCKED_METADATA_DOMAINS, ...(options.deniedDomains ?? [])],
 			allowUnixSockets: options.allowUnixSockets ?? [],
-			// INTENT: Disable local port binding for sandboxed processes.
-			//
-			// UPSTREAM LIMITATION (macOS): This flag is NOT fully effective on macOS.
-			// The sandbox-runtime's Seatbelt profile always allows localhost bind/connect
-			// to its internal proxy ports (for network interception). The profile adds:
-			//   (allow network-bind (local ip "localhost:<proxyPort>"))
-			//   (allow network-outbound (remote ip "localhost:<proxyPort>"))
-			// These rules are required for the proxy to function, but mean sandboxed
-			// processes can connect to localhost on those ports. If the proxy isn't
-			// running, these ports could theoretically be reused by other services.
-			//
-			// This is a fundamental limitation of the sandbox-runtime architecture -
-			// fixing it would require upstream changes to @anthropic-ai/sandbox-runtime.
-			allowLocalBinding: false,
-			// SECURITY: Disable arbitrary Unix socket creation via seccomp (Linux only).
-			// Without this flag, sandbox defaults to allowing all Unix sockets.
-			// When false, only paths in allowUnixSockets are permitted.
-			allowAllUnixSockets: false,
+			// In dev we allow local binding/Unix sockets to avoid host-seatbelt friction.
+			allowLocalBinding: !IS_PROD,
+			// SECURITY: Disable arbitrary Unix socket creation in prod; relax in dev to reduce failures.
+			allowAllUnixSockets: !IS_PROD,
 		},
 	};
 }

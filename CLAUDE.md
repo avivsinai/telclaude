@@ -33,8 +33,8 @@
 
 ## Repo map (hot paths)
 - `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter.  
-- `src/sandbox/` — sandbox configs, env allowlist, wrapper, network proxy.  
-- `src/sdk/` — Claude SDK wrapper, session manager (30 min resume).  
+- `src/sandbox/` — sandbox configs, env allowlist, network proxy.  
+- `src/sdk/` — Claude SDK integration, session manager (30 min resume).  
 - `src/telegram/` — inbound/outbound bot.  
 - `src/commands/` — CLI commands.  
 - `.claude/skills/` — security-gate, telegram-reply skills.  
@@ -43,12 +43,13 @@
 
 ## Common commands
 - Install: `pnpm install`  
-- Dev relay: `pnpm dev relay --profile strict`  
+- Dev relay (native, srt sandbox): `pnpm dev relay --profile simple`  
 - TOTP daemon: `pnpm dev totp-daemon`  
 - Doctor: `pnpm dev doctor --network --secrets`  
 - Lint/format: `pnpm lint`, `pnpm format`  
 - Typecheck: `pnpm typecheck`  
-- Tests: `pnpm test`
+- Tests: `pnpm test`  
+- SDK sandbox policy is written to `~/.claude/settings.local.json` on relay start (single srt layer; no wrapper).
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.  
@@ -67,4 +68,3 @@
 - Bot silent: confirm `allowedChats`, rate limits, and observer not blocking (see audit).  
 - TOTP failing: ensure daemon running and device time synced.  
 - SDK errors: `claude` CLI installed and `claude login` performed.
-

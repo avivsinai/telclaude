@@ -17,25 +17,15 @@ export {
 	isSandboxAvailable,
 	buildSandboxConfig,
 	updateSandboxConfig,
-	// Wrapper for Claude CLI subprocess
-	getClaudeWrapperPath,
-	isWrapperEnabled,
 	type SandboxInitResult,
 } from "./manager.js";
 
-// Claude CLI wrapper (sandboxes entire Claude subprocess)
+// Claude SDK sandbox settings writer (feeds @anthropic-ai/claude-agent-sdk)
 export {
-	initializeWrapper,
-	isWrapperInitialized,
-	getWrapperPath,
-	updateWrapperConfig,
-	cleanupWrapper,
-	verifyWrapper,
-	validateWrapperPaths,
-	type WrapperInitResult,
-	WRAPPER_PATH,
-	SRT_SETTINGS_PATH,
-} from "./wrapper.js";
+	syncSdkSandboxSettings,
+	syncSdkSandboxSettings as syncSdkSettingsFile,
+	SDK_SETTINGS_PATH,
+} from "./sdk-settings.js";
 
 export {
 	SENSITIVE_READ_PATHS,

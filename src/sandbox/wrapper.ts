@@ -26,11 +26,8 @@ import os from "node:os";
 import path from "node:path";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
-import {
-	BLOCKED_METADATA_DOMAINS,
-	BLOCKED_PRIVATE_NETWORKS,
-	DEFAULT_ALLOWED_DOMAIN_NAMES,
-} from "./config.js";
+import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
+import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "./domains.js";
 
 // For resolving packages relative to telclaude installation
 const require = createRequire(import.meta.url);
@@ -274,18 +271,22 @@ function configToSrtSettings(config: SandboxRuntimeConfig): object {
 	const rawAllowedDomains = config.network?.allowedDomains ?? [];
 	const allowAllRequested = rawAllowedDomains.includes("*");
 
-	// If caller requested "*", fall back to broad-but-valid defaults to stay schema-compliant
-	const filteredAllowed = (
-		allowAllRequested ? DEFAULT_ALLOWED_DOMAIN_NAMES : rawAllowedDomains
-	).filter(isValidSrtAllowPattern);
+	const diagnostic = process.env.TELCLAUDE_SANDBOX_DIAGNOSTIC === "1";
+
+	// Diagnostic mode: don't filter domain patterns (user requested maximal allow)
+	const filteredAllowed = diagnostic
+		? rawAllowedDomains
+		: (allowAllRequested ? DEFAULT_ALLOWED_DOMAIN_NAMES : rawAllowedDomains).filter(
+				isValidSrtAllowPattern,
+			);
 
 	// Deny list: keep only domain patterns srt accepts (IPs/CIDRs are rejected by schema)
 	const configDeniedDomains = config.network?.deniedDomains ?? [];
-	const deniedDomains = [
-		...BLOCKED_METADATA_DOMAINS,
-		...BLOCKED_PRIVATE_NETWORKS,
-		...configDeniedDomains,
-	].filter(isValidSrtAllowPattern);
+	const deniedDomains = diagnostic
+		? configDeniedDomains
+		: [...BLOCKED_METADATA_DOMAINS, ...BLOCKED_PRIVATE_NETWORKS, ...configDeniedDomains].filter(
+				isValidSrtAllowPattern,
+			);
 
 	const allowedDomains = [...new Set(filteredAllowed)];
 	const uniqueDeniedDomains = [...new Set(deniedDomains)];

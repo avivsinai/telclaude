@@ -72,7 +72,7 @@ TOTP daemon (separate process, keychain-backed)
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_SAFE/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
 - Network: default strict allowlist (npm/pypi/docs/github/Anthropic API); set `TELCLAUDE_NETWORK_MODE=open|permissive` to allow `*`. Metadata endpoints and RFC1918 ranges always blocked; local binding disabled except for sandbox proxy ports (Seatbelt limitation).  
-- Sandbox wrapper (`srt`) attempts to sandbox ALL Claude tools; if wrapper init fails, relay degrades to Bash-only sandboxing and warns at startup.
+- Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude writes `~/.claude/settings.local.json` with our filesystem/network policy so the SDK sandbox is the single srt layer (no extra wrapper).
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  
@@ -119,8 +119,8 @@ TOTP daemon (separate process, keychain-backed)
 
 ## File Map (high-touch)
 - `src/security/*` — pipeline, permissions, observer, approvals, rate limits.  
-- `src/sandbox/*` — OS sandbox config and wrapper.  
-- `src/sdk/*` — Claude SDK wrapper and session manager.  
+- `src/sandbox/*` — OS sandbox config.  
+- `src/sdk/*` — Claude SDK integration and session manager.  
 - `src/telegram/*` — inbound/outbound bot wiring.  
 - `src/commands/*` — CLI commands.  
 - `.claude/skills/*` — skills auto-loaded by SDK.
