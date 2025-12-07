@@ -21,7 +21,8 @@ export type PendingApproval = {
 	tier: PermissionTier;
 	body: string;
 	mediaPath?: string;
-	mediaUrl?: string;
+	mediaFilePath?: string;
+	mediaFileId?: string;
 	mediaType?: MediaType;
 	username?: string;
 	from: string;
@@ -44,7 +45,8 @@ type ApprovalRow = {
 	tier: string;
 	body: string;
 	media_path: string | null;
-	media_url: string | null;
+	media_file_path: string | null;
+	media_file_id: string | null;
 	media_type: string | null;
 	username: string | null;
 	from_user: string;
@@ -68,7 +70,8 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 		tier: row.tier as PermissionTier,
 		body: row.body,
 		mediaPath: row.media_path ?? undefined,
-		mediaUrl: row.media_url ?? undefined,
+		mediaFilePath: row.media_file_path ?? undefined,
+		mediaFileId: row.media_file_id ?? undefined,
 		mediaType: row.media_type as MediaType | undefined,
 		username: row.username ?? undefined,
 		from: row.from_user,
@@ -127,9 +130,10 @@ export function createApproval(
 		db.prepare(
 			`INSERT INTO approvals (
 				nonce, request_id, chat_id, created_at, expires_at, tier, body,
-				media_path, media_url, media_type, username, from_user, to_user,
+				media_path, media_type, media_file_path, media_file_id,
+				username, from_user, to_user,
 				message_id, observer_classification, observer_confidence, observer_reason
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			nonce,
 			entry.requestId,
@@ -139,8 +143,9 @@ export function createApproval(
 			entry.tier,
 			entry.body,
 			entry.mediaPath ?? null,
-			entry.mediaUrl ?? null,
 			entry.mediaType ?? null,
+			entry.mediaFilePath ?? null,
+			entry.mediaFileId ?? null,
 			entry.username ?? null,
 			entry.from,
 			entry.to,

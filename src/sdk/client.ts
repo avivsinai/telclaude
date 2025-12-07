@@ -536,10 +536,9 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires the sandbox layer - downgrade if unavailable
-	// The layer (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
-	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
-	// isSandboxInitialized() is not enough - it can be true even when layer failed.
+	// SECURITY: FULL_ACCESS requires the sandbox layer. Relay startup fails if the
+	// layer is unavailable; this check is a safety net in case initialization
+	// state drifts, ensuring we never run without sandbox alignment.
 	const opts = inputOpts;
 	// Apply tier-aligned sandbox config with cwd
 	applyTierSandboxConfig(opts.tier, opts.cwd);

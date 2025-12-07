@@ -13,6 +13,7 @@
  * - Warning messages explain the risk
  */
 
+import crypto from "node:crypto";
 import * as readline from "node:readline";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
@@ -44,6 +45,13 @@ export function registerResetAuthCommand(program: Command): void {
 		.option("--force", "Skip confirmation prompt")
 		.action(async (options: { force?: boolean }) => {
 			try {
+				if (process.env.TELCLAUDE_ENABLE_RESET_AUTH !== "1") {
+					console.error(
+						"TELCLAUDE_ENABLE_RESET_AUTH=1 is required to run this command. Set it explicitly to acknowledge the risk.",
+					);
+					process.exit(1);
+				}
+
 				console.log("");
 				console.log("⚠️  WARNING: This will remove ALL identity links and TOTP sessions.");
 				console.log("   The next Telegram message will be able to claim admin.");
@@ -52,9 +60,25 @@ export function registerResetAuthCommand(program: Command): void {
 				console.log("   An attacker with shell access could take over your bot.");
 				console.log("");
 
-				if (!options.force) {
+				const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+				if (options.force && isTty) {
+					console.log("--force ignored on TTY; interactive confirmations are required.");
+				}
+
+				if (!options.force || isTty) {
 					const answer = await prompt('Type "RESET" to confirm: ');
 					if (answer.trim() !== "RESET") {
+						console.log("");
+						console.log("Aborted. No changes made.");
+						return;
+					}
+				}
+
+				// Second confirmation with a random code when interactive
+				if (isTty) {
+					const confirmationCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+					const codeAnswer = await prompt(`Enter confirmation code ${confirmationCode}: `);
+					if (codeAnswer.trim().toUpperCase() !== confirmationCode) {
 						console.log("");
 						console.log("Aborted. No changes made.");
 						return;

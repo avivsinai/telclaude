@@ -59,7 +59,6 @@ const BLOCKED_MESSAGE =
 
 export type SendMessageOptions = {
 	verbose?: boolean;
-	mediaUrl?: string;
 	mediaPath?: string;
 	parseMode?: "Markdown" | "HTML" | "MarkdownV2";
 	replyToMessageId?: number;
@@ -110,7 +109,7 @@ export async function sendMessageTelegram(
 	}
 
 	// Handle media
-	const mediaSource = options.mediaPath ?? options.mediaUrl;
+	const mediaSource = options.mediaPath;
 	if (mediaSource) {
 		const payload = inferMediaPayload(mediaSource, sanitizeBody(body));
 		const result = await sendMediaToChat(bot.api, chatId, payload);
@@ -190,8 +189,20 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 
 			content = fs.readFileSync(absolutePath, "utf-8");
 		} else {
-			// URL - cannot scan, allow but log
-			logger.debug({ source }, "cannot scan URL content for secrets");
+			// URL - still check the URL string for obvious secrets, but avoid downloading
+			const filterResult = filterOutput(source);
+			if (filterResult.blocked) {
+				logger.error(
+					{ source, patterns: filterResult.matches.map((m) => m.pattern) },
+					"BLOCKED: Secret-looking data detected in media URL",
+				);
+				return {
+					safe: false,
+					reason: `URL contains sensitive data: ${filterResult.matches.map((m) => m.pattern).join(", ")}`,
+				};
+			}
+
+			logger.debug({ source }, "skipping content scan for remote URL (no download)");
 			return { safe: true };
 		}
 

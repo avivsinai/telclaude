@@ -14,7 +14,7 @@ export type MsgContext = {
 	To?: string;
 	MessageId?: string;
 	MediaPath?: string;
-	MediaUrl?: string;
+	MediaFilePath?: string;
 	MediaType?: string;
 	Transcript?: string;
 	Username?: string;

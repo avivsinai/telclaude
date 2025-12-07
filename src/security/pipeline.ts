@@ -43,7 +43,6 @@ export interface MessageContext {
 	username?: string;
 	body: string;
 	mediaPath?: string;
-	mediaUrl?: string;
 	requestId: string;
 	chatType?: "private" | "group" | "supergroup" | "channel";
 }

@@ -22,14 +22,14 @@ export type SavedMedia = {
  * Save a buffer to a temporary file and return its path.
  */
 export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promise<SavedMedia> {
-	await fs.promises.mkdir(MEDIA_DIR, { recursive: true });
+	await fs.promises.mkdir(MEDIA_DIR, { recursive: true, mode: 0o700 });
 
 	const ext = mimeToExtension(mimeType);
 	const hash = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 16);
 	const filename = `${Date.now()}-${hash}${ext}`;
 	const filepath = path.join(MEDIA_DIR, filename);
 
-	await fs.promises.writeFile(filepath, buffer);
+	await fs.promises.writeFile(filepath, buffer, { mode: 0o600 });
 
 	return {
 		path: filepath,
@@ -46,7 +46,7 @@ export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promis
  * @returns Path to saved file, or throws on error/size exceeded
  */
 export async function saveMediaStream(response: Response, mimeType?: string): Promise<SavedMedia> {
-	await fs.promises.mkdir(MEDIA_DIR, { recursive: true });
+	await fs.promises.mkdir(MEDIA_DIR, { recursive: true, mode: 0o700 });
 
 	// Check content-length header for size limit
 	const contentLength = response.headers.get("content-length");
@@ -84,7 +84,7 @@ export async function saveMediaStream(response: Response, mimeType?: string): Pr
 	// Convert web stream to Node stream for fs.createWriteStream
 	const webStream = body.pipeThrough(sizeChecker);
 	const nodeStream = Readable.fromWeb(webStream as import("stream/web").ReadableStream);
-	const writeStream = fs.createWriteStream(filepath);
+	const writeStream = fs.createWriteStream(filepath, { mode: 0o600 });
 
 	try {
 		await pipeline(nodeStream, writeStream);

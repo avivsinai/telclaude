@@ -1,11 +1,7 @@
 /**
  * SQLite storage layer for telclaude.
  *
- * Provides persistent, atomic storage for:
- * - Pending approvals (with TTL)
- * - Rate limit counters
- * - Identity links
- * - Sessions
+ * One-shot schema (no migrations). DB is treated as ephemeral operational state.
  */
 
 import fs from "node:fs";
@@ -17,7 +13,6 @@ import { CONFIG_DIR } from "../utils.js";
 const logger = getChildLogger({ module: "storage" });
 
 const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-const SCHEMA_VERSION = 4;
 
 let db: Database.Database | null = null;
 
@@ -39,7 +34,6 @@ export function getDb(): Database.Database {
 	try {
 		fs.chmodSync(dbDir, 0o700);
 	} catch {
-		// May fail on some filesystems, log but continue
 		logger.warn({ path: dbDir }, "could not set directory permissions to 0700");
 	}
 
@@ -55,12 +49,48 @@ export function getDb(): Database.Database {
 	// Enable WAL mode for better concurrency
 	db.pragma("journal_mode = WAL");
 
-	// Run migrations
-	migrate(db);
+	// Create schema (single-version, no migrations)
+	initializeSchema(db);
 
 	logger.info({ path: DB_PATH }, "database initialized");
 
 	return db;
+}
+
+/**
+ * Dangerously reset the database file and recreate schema.
+ * Intended for guarded CLI usage only.
+ */
+export function resetDatabase(): void {
+	closeDb();
+
+	const dbDir = path.dirname(DB_PATH);
+	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
+
+	try {
+		if (fs.existsSync(DB_PATH)) {
+			fs.unlinkSync(DB_PATH);
+			logger.warn({ path: DB_PATH }, "database file removed by resetDatabase()");
+		}
+	} catch (err) {
+		logger.error(
+			{ path: DB_PATH, error: String(err) },
+			"failed to remove database file during reset",
+		);
+		throw err;
+	}
+
+	db = new Database(DB_PATH);
+	try {
+		fs.chmodSync(DB_PATH, 0o600);
+	} catch {
+		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600 after reset");
+	}
+
+	db.pragma("journal_mode = WAL");
+	initializeSchema(db);
+
+	logger.info({ path: DB_PATH }, "database reset and reinitialized");
 }
 
 /**
@@ -75,146 +105,165 @@ export function closeDb(): void {
 }
 
 /**
- * Run database migrations.
+ * Initialize database schema (single version, no migrations).
  */
-function migrate(database: Database.Database): void {
-	// Create schema version table if not exists
+function initializeSchema(database: Database.Database): void {
 	database.exec(`
-		CREATE TABLE IF NOT EXISTS schema_version (
-			version INTEGER PRIMARY KEY
-		)
+		-- Pending approvals with TTL
+		CREATE TABLE IF NOT EXISTS approvals (
+			nonce TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			chat_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			tier TEXT NOT NULL,
+			body TEXT NOT NULL,
+			media_path TEXT,
+			media_file_path TEXT,
+			media_file_id TEXT,
+			media_type TEXT,
+			username TEXT,
+			from_user TEXT NOT NULL,
+			to_user TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			observer_classification TEXT NOT NULL,
+			observer_confidence REAL NOT NULL,
+			observer_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
+		CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);
+
+		-- Rate limit counters
+		CREATE TABLE IF NOT EXISTS rate_limits (
+			limiter_type TEXT NOT NULL,
+			key TEXT NOT NULL,
+			window_start INTEGER NOT NULL,
+			points INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (limiter_type, key, window_start)
+		);
+		CREATE INDEX IF NOT EXISTS idx_rate_limits_expiry ON rate_limits(window_start);
+
+		-- Identity links (Telegram chat -> local user)
+		CREATE TABLE IF NOT EXISTS identity_links (
+			chat_id INTEGER PRIMARY KEY,
+			local_user_id TEXT NOT NULL,
+			linked_at INTEGER NOT NULL,
+			linked_by TEXT NOT NULL
+		);
+
+		-- Pending link codes (for out-of-band verification)
+		CREATE TABLE IF NOT EXISTS pending_link_codes (
+			code TEXT PRIMARY KEY,
+			local_user_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_link_codes_expires ON pending_link_codes(expires_at);
+
+		-- Sessions
+		CREATE TABLE IF NOT EXISTS sessions (
+			session_key TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL,
+			system_sent INTEGER NOT NULL DEFAULT 0
+		);
+
+		-- Circuit breaker state
+		CREATE TABLE IF NOT EXISTS circuit_breaker (
+			name TEXT PRIMARY KEY,
+			state TEXT NOT NULL DEFAULT 'closed',
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			last_failure_at INTEGER,
+			next_attempt_at INTEGER
+		);
+
+		-- TOTP sessions (per-user verification "remember me")
+		CREATE TABLE IF NOT EXISTS totp_sessions (
+			local_user_id TEXT PRIMARY KEY,
+			verified_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_totp_sessions_expires ON totp_sessions(expires_at);
+
+		-- Pending admin claims (first-time setup flow)
+		CREATE TABLE IF NOT EXISTS pending_admin_claims (
+			code TEXT PRIMARY KEY,
+			chat_id INTEGER NOT NULL,
+			user_id INTEGER,
+			username TEXT,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_chat ON pending_admin_claims(chat_id);
+		CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_expires ON pending_admin_claims(expires_at);
 	`);
 
-	const row = database.prepare("SELECT version FROM schema_version LIMIT 1").get() as
-		| { version: number }
-		| undefined;
-	const currentVersion = row?.version ?? 0;
+	ensureApprovalsColumns(database);
 
-	if (currentVersion >= SCHEMA_VERSION) {
+	logger.info("database schema initialized");
+}
+
+function ensureApprovalsColumns(database: Database.Database): void {
+	const requiredColumns = new Set([
+		"nonce",
+		"request_id",
+		"chat_id",
+		"created_at",
+		"expires_at",
+		"tier",
+		"body",
+		"media_path",
+		"media_file_path",
+		"media_file_id",
+		"media_type",
+		"username",
+		"from_user",
+		"to_user",
+		"message_id",
+		"observer_classification",
+		"observer_confidence",
+		"observer_reason",
+	]);
+
+	const rows = database.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
+	const hasAll =
+		rows.length > 0 &&
+		rows.every((r) => requiredColumns.has(r.name)) &&
+		requiredColumns.size === rows.length;
+
+	if (rows.length > 0 && hasAll) {
 		return;
 	}
 
-	logger.info({ from: currentVersion, to: SCHEMA_VERSION }, "running migrations");
-
-	// Migration 1: Initial schema
-	if (currentVersion < 1) {
-		database.exec(`
-			-- Pending approvals with TTL
-			CREATE TABLE IF NOT EXISTS approvals (
-				nonce TEXT PRIMARY KEY,
-				request_id TEXT NOT NULL,
-				chat_id INTEGER NOT NULL,
-				created_at INTEGER NOT NULL,
-				expires_at INTEGER NOT NULL,
-				tier TEXT NOT NULL,
-				body TEXT NOT NULL,
-				media_path TEXT,
-				media_url TEXT,
-				media_type TEXT,
-				username TEXT,
-				from_user TEXT NOT NULL,
-				to_user TEXT NOT NULL,
-				message_id TEXT NOT NULL,
-				observer_classification TEXT NOT NULL,
-				observer_confidence REAL NOT NULL,
-				observer_reason TEXT
-			);
-			CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
-			CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);
-
-			-- Rate limit counters
-			-- Using composite key of (limiter_type, key, window_start)
-			CREATE TABLE IF NOT EXISTS rate_limits (
-				limiter_type TEXT NOT NULL,
-				key TEXT NOT NULL,
-				window_start INTEGER NOT NULL,
-				points INTEGER NOT NULL DEFAULT 0,
-				PRIMARY KEY (limiter_type, key, window_start)
-			);
-			CREATE INDEX IF NOT EXISTS idx_rate_limits_expiry ON rate_limits(window_start);
-
-			-- Identity links (Telegram chat -> local user)
-			CREATE TABLE IF NOT EXISTS identity_links (
-				chat_id INTEGER PRIMARY KEY,
-				local_user_id TEXT NOT NULL,
-				linked_at INTEGER NOT NULL,
-				linked_by TEXT NOT NULL
-			);
-
-			-- Pending link codes (for out-of-band verification)
-			CREATE TABLE IF NOT EXISTS pending_link_codes (
-				code TEXT PRIMARY KEY,
-				local_user_id TEXT NOT NULL,
-				created_at INTEGER NOT NULL,
-				expires_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_pending_link_codes_expires ON pending_link_codes(expires_at);
-
-			-- Sessions
-			CREATE TABLE IF NOT EXISTS sessions (
-				session_key TEXT PRIMARY KEY,
-				session_id TEXT NOT NULL,
-				updated_at INTEGER NOT NULL,
-				system_sent INTEGER NOT NULL DEFAULT 0
-			);
-
-			-- Circuit breaker state
-			CREATE TABLE IF NOT EXISTS circuit_breaker (
-				name TEXT PRIMARY KEY,
-				state TEXT NOT NULL DEFAULT 'closed',
-				failure_count INTEGER NOT NULL DEFAULT 0,
-				last_failure_at INTEGER,
-				next_attempt_at INTEGER
-			);
-
-		`);
+	if (rows.length > 0 && !hasAll) {
+		logger.warn("approvals table schema mismatch detected; dropping and recreating");
+		database.exec("DROP TABLE IF EXISTS approvals");
 	}
 
-	// Migration 2: Remove totp_secrets table (now stored in OS keychain via daemon)
-	if (currentVersion < 2) {
-		database.exec(`
-			DROP TABLE IF EXISTS totp_secrets;
-		`);
-		logger.info("migration 2: removed totp_secrets table (secrets now in OS keychain)");
-	}
-
-	// Migration 3: TOTP sessions for "remember me" feature
-	if (currentVersion < 3) {
-		database.exec(`
-			-- TOTP sessions (per-user verification "remember me")
-			CREATE TABLE IF NOT EXISTS totp_sessions (
-				local_user_id TEXT PRIMARY KEY,
-				verified_at INTEGER NOT NULL,
-				expires_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_totp_sessions_expires ON totp_sessions(expires_at);
-		`);
-		logger.info("migration 3: added totp_sessions table");
-	}
-
-	// Migration 4: Pending admin claims for first-time setup
-	if (currentVersion < 4) {
-		database.exec(`
-			-- Pending admin claims (first-time setup flow)
-			CREATE TABLE IF NOT EXISTS pending_admin_claims (
-				code TEXT PRIMARY KEY,
-				chat_id INTEGER NOT NULL,
-				user_id INTEGER,
-				username TEXT,
-				created_at INTEGER NOT NULL,
-				expires_at INTEGER NOT NULL
-			);
-			CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_chat ON pending_admin_claims(chat_id);
-			CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_expires ON pending_admin_claims(expires_at);
-		`);
-		logger.info("migration 4: added pending_admin_claims table");
-	}
-
-	// Update schema version
-	database.prepare("DELETE FROM schema_version").run();
-	database.prepare("INSERT INTO schema_version (version) VALUES (?)").run(SCHEMA_VERSION);
-
-	logger.info({ version: SCHEMA_VERSION }, "migrations complete");
+	database.exec(`
+		CREATE TABLE IF NOT EXISTS approvals (
+			nonce TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			chat_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			tier TEXT NOT NULL,
+			body TEXT NOT NULL,
+			media_path TEXT,
+			media_file_path TEXT,
+			media_file_id TEXT,
+			media_type TEXT,
+			username TEXT,
+			from_user TEXT NOT NULL,
+			to_user TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			observer_classification TEXT NOT NULL,
+			observer_confidence REAL NOT NULL,
+			observer_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
+		CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);
+	`);
 }
 
 /**
@@ -263,22 +312,7 @@ export function cleanupExpired(): {
 		adminClaims: adminClaimsResult.changes,
 	};
 
-	if (
-		result.approvals > 0 ||
-		result.linkCodes > 0 ||
-		result.rateLimits > 0 ||
-		result.totpSessions > 0 ||
-		result.adminClaims > 0
-	) {
-		logger.debug(result, "cleaned up expired entries");
-	}
+	logger.info(result, "expired entries cleaned up");
 
 	return result;
-}
-
-/**
- * Get database file path.
- */
-export function getDbPath(): string {
-	return DB_PATH;
 }

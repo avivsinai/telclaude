@@ -76,8 +76,9 @@ export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
  * 2. Look up by raw chatId or tg:chatId prefix
  * 3. Fall back to default tier
  *
- * Security: FULL_ACCESS requires sandbox to be available.
- * If sandbox is unavailable, FULL_ACCESS is downgraded to WRITE_SAFE.
+ * Security: FULL_ACCESS requires the OS sandbox. Relay startup already fails
+ * if sandboxing is unavailable; this runtime check is a last-resort safety net
+ * and will log+degrade if somehow reached.
  */
 export function getUserPermissionTier(
 	userId: string | number,

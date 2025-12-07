@@ -45,7 +45,8 @@ export type TelegramInboundMessage = {
 	// Media info (if present)
 	mediaPath?: string;
 	mediaType?: TelegramMediaType;
-	mediaUrl?: string;
+	mediaFilePath?: string;
+	mediaFileId?: string;
 	mimeType?: string;
 
 	// Callbacks for responding

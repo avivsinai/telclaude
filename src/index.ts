@@ -5,6 +5,7 @@ import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
+import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
@@ -25,6 +26,7 @@ registerDoctorCommand(program);
 registerTOTPDaemonCommand(program);
 registerTOTPSetupCommand(program);
 registerResetAuthCommand(program);
+registerResetDbCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

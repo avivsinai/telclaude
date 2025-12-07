@@ -356,7 +356,7 @@ async function executeWithSession(
 		To: ctx.to,
 		MessageId: msg.id,
 		MediaPath: ctx.mediaPath,
-		MediaUrl: msg.mediaUrl,
+		MediaFilePath: msg.mediaFilePath,
 		MediaType: ctx.mediaType,
 		Username: ctx.username,
 		SessionId: sessionEntry.sessionId,
@@ -372,6 +372,34 @@ async function executeWithSession(
 
 	try {
 		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
+
+		// SECURITY: Run infrastructure secret checks on the final prompt (post-templating)
+		const infraPromptCheck = checkInfrastructureSecrets(queryPrompt);
+		if (infraPromptCheck.blocked) {
+			logger.error(
+				{ userId, patterns: infraPromptCheck.patterns },
+				"BLOCKED: Infrastructure secrets detected in final prompt",
+			);
+			await msg.reply(
+				"Message blocked: Contains infrastructure secrets (bot tokens, API keys, or private keys).\n\n" +
+					"This is a security measure that CANNOT be overridden. These secrets must never be sent to the AI agent.\n\n" +
+					"If you need to work with credentials, store them in environment variables or config files instead of pasting them directly.",
+			);
+			await auditLogger.log({
+				timestamp: new Date(),
+				requestId,
+				telegramUserId: userId,
+				telegramUsername: ctx.username,
+				chatId: msg.chatId,
+				messagePreview: "[REDACTED - infrastructure secrets]",
+				permissionTier: tier,
+				observerClassification,
+				observerConfidence,
+				outcome: "blocked",
+				errorType: `infrastructure_secrets:${infraPromptCheck.patterns.join(",")}`,
+			});
+			return;
+		}
 		let responseText = "";
 
 		// Create streaming redactor for output secret filtering
@@ -969,7 +997,8 @@ async function handleInboundMessage(
 			tier,
 			body: msg.body,
 			mediaPath: msg.mediaPath,
-			mediaUrl: msg.mediaUrl,
+			mediaFilePath: msg.mediaFilePath,
+			mediaFileId: msg.mediaFileId,
 			mediaType: msg.mediaType,
 			username: msg.username,
 			from: msg.from,
@@ -1011,7 +1040,8 @@ async function handleInboundMessage(
 				tier,
 				body: msg.body,
 				mediaPath: msg.mediaPath,
-				mediaUrl: msg.mediaUrl,
+				mediaFilePath: msg.mediaFilePath,
+				mediaFileId: msg.mediaFileId,
 				mediaType: msg.mediaType,
 				username: msg.username,
 				from: msg.from,
@@ -1154,7 +1184,8 @@ async function handleApproveCommand(
 		...msg,
 		body: approval.body,
 		mediaPath: approval.mediaPath,
-		mediaUrl: approval.mediaUrl,
+		mediaFilePath: approval.mediaFilePath,
+		mediaFileId: approval.mediaFileId,
 		mediaType: approval.mediaType,
 		from: approval.from,
 		to: approval.to,
@@ -1474,7 +1505,8 @@ async function handleTOTPApproval(
 		...msg,
 		body: approvedApproval.body,
 		mediaPath: approvedApproval.mediaPath,
-		mediaUrl: approvedApproval.mediaUrl,
+		mediaFilePath: approvedApproval.mediaFilePath,
+		mediaFileId: approvedApproval.mediaFileId,
 		mediaType: approvedApproval.mediaType,
 		from: approvedApproval.from,
 		to: approvedApproval.to,

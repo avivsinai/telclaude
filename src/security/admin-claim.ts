@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import type { AuditLogger } from "./audit.js";
+import { hasTOTP } from "./totp.js";
 
 const logger = getChildLogger({ module: "admin-claim" });
 
@@ -299,7 +300,15 @@ export function formatAdminClaimPrompt(code: string, expiresInSeconds: number): 
 /**
  * Format the admin claim success message.
  */
-export function formatAdminClaimSuccess(): string {
+export function formatAdminClaimSuccess(hasExistingTOTP: boolean): string {
+	if (hasExistingTOTP) {
+		return (
+			"✅ *Chat relinked as admin*\n\n" +
+			"Existing 2FA is already active for this admin user.\n\n" +
+			"If you need to reset it, reply `/disable-2fa` then `/setup-2fa`."
+		);
+	}
+
 	return (
 		"✅ *Chat linked as admin*\n\n" +
 		"This chat now has FULL_ACCESS permissions.\n\n" +
@@ -435,6 +444,9 @@ export async function handleAdminClaimApproval(
 	// Complete the claim
 	completeAdminClaim(chatId, opts);
 
+	// Check if TOTP already exists for this admin (persisted in keychain)
+	const totpStatus = await hasTOTP(chatId);
+
 	if (auditLogger) {
 		await auditLogger.log({
 			timestamp: new Date(),
@@ -451,5 +463,5 @@ export async function handleAdminClaimApproval(
 
 	logger.info({ chatId, username: opts?.username }, "admin claim completed successfully");
 
-	return { response: formatAdminClaimSuccess(), success: true };
+	return { response: formatAdminClaimSuccess(totpStatus.hasTOTP === true), success: true };
 }

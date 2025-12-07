@@ -146,7 +146,8 @@ export async function monitorTelegramInbox(
 		// Download media if present
 		let mediaPath: string | undefined;
 		const mediaType = getMediaTypeFromMessage(message);
-		let mediaUrl: string | undefined;
+		let mediaFilePath: string | undefined;
+		let mediaFileId: string | undefined;
 		let mimeType = getMimeTypeFromMessage(message);
 
 		const fileId = getFileIdFromMessage(message);
@@ -154,8 +155,10 @@ export async function monitorTelegramInbox(
 			try {
 				const file = await bot.api.getFile(fileId);
 				if (file.file_path) {
-					mediaUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
-					const response = await fetch(mediaUrl);
+					mediaFilePath = file.file_path;
+					mediaFileId = fileId;
+					const downloadUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
+					const response = await fetch(downloadUrl);
 					if (!response.ok) {
 						throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 					}
@@ -185,7 +188,8 @@ export async function monitorTelegramInbox(
 			replyToMessageId: message.reply_to_message?.message_id,
 			mediaPath,
 			mediaType,
-			mediaUrl,
+			mediaFilePath,
+			mediaFileId,
 			mimeType,
 			sendComposing: async () => {
 				await bot.api.sendChatAction(chat.id, "typing");
