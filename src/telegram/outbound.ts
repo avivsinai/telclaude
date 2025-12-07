@@ -386,11 +386,11 @@ export async function sendTelegramMessage(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Secure Reply Wrapper
+// Secure Reply Layer
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Secure wrapper for ctx.reply() that filters output for secrets.
+ * Secure layer for ctx.reply() that filters output for secrets.
  *
  * SECURITY: Use this instead of ctx.reply() to ensure all outbound
  * messages are filtered for secret exfiltration.

@@ -267,7 +267,7 @@ export function containsBlockedCommand(command: string): string | null {
  * individual secret FILES that can appear anywhere in the filesystem.
  *
  * SECURITY: This is a critical policy layer. Even when the sandbox is
- * unavailable or the wrapper fails, these patterns block tool access
+ * unavailable or the layer fails, these patterns block tool access
  * to sensitive files.
  */
 const SENSITIVE_PATH_PATTERNS: RegExp[] = [

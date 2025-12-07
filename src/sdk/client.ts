@@ -1,5 +1,5 @@
 /**
- * Claude Agent SDK wrapper for telclaude.
+ * Claude Agent SDK layer for telclaude.
  *
  * Provides a typed interface to the Claude Agent SDK with:
  * - Session pooling with resume for multi-turn conversations
@@ -536,10 +536,10 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires the sandbox wrapper - downgrade if unavailable
-	// The wrapper (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
+	// SECURITY: FULL_ACCESS requires the sandbox layer - downgrade if unavailable
+	// The layer (pathToClaudeCodeExecutable) sandboxes ALL Claude operations.
 	// Without it, FULL_ACCESS would grant unrestricted permissions with no OS-level isolation.
-	// isSandboxInitialized() is not enough - it can be true even when wrapper failed.
+	// isSandboxInitialized() is not enough - it can be true even when layer failed.
 	const opts = inputOpts;
 	// Apply tier-aligned sandbox config with cwd
 	applyTierSandboxConfig(opts.tier, opts.cwd);

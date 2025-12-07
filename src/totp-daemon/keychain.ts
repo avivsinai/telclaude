@@ -1,5 +1,5 @@
 /**
- * Keychain wrapper for TOTP secrets.
+ * Keychain layer for TOTP secrets.
  *
  * Supports multiple storage backends:
  * - keytar (OS keychain) - macOS Keychain, Linux libsecret, Windows Credential Vault
