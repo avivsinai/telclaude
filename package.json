@@ -71,8 +71,8 @@
     "linux"
   ],
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.55",
-    "@anthropic-ai/sandbox-runtime": "^0.0.17",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.62",
+    "@anthropic-ai/sandbox-runtime": "^0.0.20",
     "@grammyjs/auto-retry": "^2.0.2",
     "@grammyjs/runner": "^2.0.3",
     "better-sqlite3": "^12.5.0",

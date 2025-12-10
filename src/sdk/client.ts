@@ -11,6 +11,7 @@ import fs from "node:fs";
 import {
 	type PermissionMode,
 	type Options as SDKOptions,
+	type SdkBeta,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
@@ -174,6 +175,9 @@ export type TelclaudeQueryOptions = {
 
 	/** Timeout in milliseconds. Query aborts if exceeded. */
 	timeoutMs?: number;
+
+	/** Optional beta features to enable (e.g., 1M context window). */
+	betas?: SdkBeta[];
 };
 
 /**
@@ -235,8 +239,15 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	} else {
 		// Restricted tiers - specify allowed tools
 		const tierTools = TIER_TOOLS[opts.tier];
+		// `tools` constrains built-in tool surface; allowedTools also gates optional Skill.
+		sdkOpts.tools = tierTools;
 		sdkOpts.allowedTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
+	}
+
+	// Opt-in beta headers (e.g., 1M context)
+	if (opts.betas?.length) {
+		sdkOpts.betas = opts.betas;
 	}
 
 	// Add canUseTool for ALL tiers to protect sensitive paths

@@ -415,6 +415,7 @@ async function executeWithSession(
 			resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 			enableSkills: tier !== "READ_ONLY",
 			timeoutMs: timeoutSeconds * 1000,
+			betas: ctx.config.sdk?.betas,
 		})) {
 			if (chunk.type === "text") {
 				// Process through streaming redactor to catch secrets

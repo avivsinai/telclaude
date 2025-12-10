@@ -33,6 +33,12 @@ const InboundConfigSchema = z.object({
 	reply: ReplyConfigSchema.optional(),
 });
 
+// SDK configuration schema (for Claude Agent SDK options)
+const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
+const SdkConfigSchema = z.object({
+	betas: z.array(SdkBetaEnum).default([]),
+});
+
 // Security profile - determines which security layers are active
 export const SecurityProfileSchema = z.enum(["simple", "strict", "test"]);
 export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
@@ -188,6 +194,7 @@ const TelclaudeConfigSchema = z.object({
 	telegram: TelegramConfigSchema.optional(),
 	inbound: InboundConfigSchema.optional(),
 	logging: LoggingConfigSchema.optional(),
+	sdk: SdkConfigSchema.optional(),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -195,6 +202,7 @@ export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
+export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
@@ -313,6 +321,9 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 				polling: {
 					timeout: 30,
 				},
+			},
+			sdk: {
+				betas: [],
 			},
 			inbound: {
 				reply: {
