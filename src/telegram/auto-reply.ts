@@ -522,6 +522,9 @@ async function executeWithSession(
 	}
 }
 
+// Test-only surface
+export const __test = { executeAndReply };
+
 export type MonitorOptions = {
 	verbose: boolean;
 	keepAlive?: boolean;
