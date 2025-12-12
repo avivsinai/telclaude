@@ -175,6 +175,7 @@ export function registerRelayCommand(program: Command): void {
 					keepAlive: true,
 					abortSignal: abortController.signal,
 					securityProfile: effectiveProfile,
+					dryRun: opts.dryRun ?? false,
 				});
 
 				// Final cleanup after monitor exits

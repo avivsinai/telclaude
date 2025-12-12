@@ -1,12 +1,12 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { CONFIG_DIR } from "../utils.js";
 import { redactSecrets } from "./output-filter.js";
 import type { AuditEntry, SecurityClassification } from "./types.js";
 
-const DEFAULT_AUDIT_DIR = path.join(os.tmpdir(), "telclaude");
+const DEFAULT_AUDIT_DIR = path.join(CONFIG_DIR, "logs");
 const DEFAULT_AUDIT_FILE = path.join(DEFAULT_AUDIT_DIR, "audit.log");
 
 const logger = getChildLogger({ module: "audit" });

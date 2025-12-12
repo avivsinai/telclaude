@@ -35,6 +35,9 @@ package-lock.json
 # Telclaude data (runtime)
 .telclaude/
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # Temporary files
 *.tmp
 *.temp

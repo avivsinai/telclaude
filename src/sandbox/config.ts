@@ -9,8 +9,9 @@
  * - Filesystem: Deny ~ broadly, allow only workspace
  * - Environment: Allowlist-only model (see src/sandbox/env.ts)
  * - Network: Domain + method restrictions via proxy
- * - Private temp: Writes go to ~/.telclaude/sandbox-tmp (but host /tmp NOT blocked,
- *   as Linux sandbox-runtime creates tmpfs mounts that would hide network sockets)
+ * - Private temp: Writes go to ~/.telclaude/sandbox-tmp and host /tmp is denyRead.
+ *   On Linux, we set TMPDIR to the private temp before sandbox init so network sockets
+ *   are created there, allowing host /tmp to be safely blocked.
  *
  * Tier-aligned configs:
  * - READ_ONLY: No writes allowed
@@ -228,6 +229,8 @@ export const BLOCKED_PRIVATE_NETWORKS = [
 	"192.168.0.0/16",
 	// Link-local
 	"169.254.0.0/16",
+	// IPv6 private/link-local ranges
+	"fc00::/7",
 	"fe80::/10",
 ];
 

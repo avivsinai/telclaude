@@ -25,6 +25,8 @@
  * - Output filter is the primary defense for secrets
  */
 
+import dns from "node:dns/promises";
+import net from "node:net";
 import { getChildLogger } from "../logging.js";
 import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
 import {
@@ -77,7 +79,7 @@ export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 
 /**
  * Check if an IP address is in a blocked network range.
- * Simplified implementation - for full CIDR support, use a library.
+ * We support the private ranges in BLOCKED_PRIVATE_NETWORKS for both IPv4 and IPv6.
  */
 export function isBlockedIP(ip: string): boolean {
 	// Check literal matches first
@@ -86,9 +88,12 @@ export function isBlockedIP(ip: string): boolean {
 		if (blocked === "localhost" && (ip === "127.0.0.1" || ip === "::1")) return true;
 	}
 
-	// Check IPv4 ranges (simplified)
-	const ipv4Match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-	if (ipv4Match) {
+	const ipType = net.isIP(ip);
+
+	// Check IPv4 ranges (fast path)
+	if (ipType === 4) {
+		const ipv4Match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+		if (!ipv4Match) return false;
 		const [, a, b] = ipv4Match.map(Number);
 
 		// 127.0.0.0/8
@@ -105,9 +110,88 @@ export function isBlockedIP(ip: string): boolean {
 
 		// 169.254.0.0/16 (link-local)
 		if (a === 169 && b === 254) return true;
+		return false;
+	}
+
+	// Check IPv6 private/link-local ranges declared in BLOCKED_PRIVATE_NETWORKS
+	if (ipType === 6) {
+		// Handle IPv4-mapped IPv6 addresses like ::ffff:192.168.1.1
+		if (ip.includes(".")) {
+			const maybeV4 = ip.slice(ip.lastIndexOf(":") + 1);
+			if (net.isIP(maybeV4) === 4) {
+				return isBlockedIP(maybeV4);
+			}
+		}
+
+		const ipBig = ipv6ToBigInt(ip);
+		if (ipBig !== null) {
+			for (const blocked of BLOCKED_PRIVATE_NETWORKS) {
+				if (blocked.includes(":") && blocked.includes("/")) {
+					if (ipv6InCidr(ipBig, blocked)) return true;
+				}
+			}
+		}
 	}
 
 	return false;
+}
+
+function ipv6ToBigInt(address: string): bigint | null {
+	const lower = address.toLowerCase();
+	if (lower.includes(".")) return null;
+
+	const hasCompression = lower.includes("::");
+	const [left, right] = lower.split("::");
+	const leftParts = left ? left.split(":").filter(Boolean) : [];
+	const rightParts = right ? right.split(":").filter(Boolean) : [];
+
+	let parts: string[];
+	if (hasCompression) {
+		const missing = 8 - (leftParts.length + rightParts.length);
+		if (missing < 0) return null;
+		parts = [...leftParts, ...Array(missing).fill("0"), ...rightParts];
+	} else {
+		parts = lower.split(":");
+	}
+
+	if (parts.length !== 8) return null;
+
+	let value = 0n;
+	for (const part of parts) {
+		const num = BigInt(Number.parseInt(part || "0", 16));
+		if (num < 0n || num > 0xffffn) return null;
+		value = (value << 16n) + num;
+	}
+	return value;
+}
+
+function ipv6InCidr(ipBig: bigint, cidr: string): boolean {
+	const [prefix, bitsStr] = cidr.split("/");
+	const bits = Number(bitsStr);
+	if (!Number.isFinite(bits) || bits < 0 || bits > 128) return false;
+	const prefixBig = ipv6ToBigInt(prefix);
+	if (prefixBig === null) return false;
+	const shift = BigInt(128 - bits);
+	return ipBig >> shift === prefixBig >> shift;
+}
+
+/**
+ * Check if a host should be blocked due to resolving to a private/metadata IP.
+ *
+ * NOTE: DNS resolution is only used at runtime (sandboxAskCallback). Policy checks
+ * in checkNetworkRequest() remain domain-only and may not catch DNS rebinding.
+ */
+export async function isBlockedHost(host: string): Promise<boolean> {
+	// Fast path for literal IPs and localhost
+	if (isBlockedIP(host)) return true;
+
+	// Attempt DNS resolution for hostnames. If lookup fails, fall back to domain rules.
+	try {
+		const results = await dns.lookup(host, { all: true });
+		return results.some((r) => isBlockedIP(r.address));
+	} catch {
+		return false;
+	}
 }
 
 /**

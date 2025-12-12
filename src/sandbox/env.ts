@@ -5,7 +5,8 @@
  *
  * - Allowlist-only model: Only vars in ENV_ALLOWLIST pass through
  * - Deny prefixes: Secondary belt catching credential patterns
- * - HOME alignment: HOME points to private temp dir (writable, isolated from real ~)
+ * - HOME: Passed through from host so Claude CLI can access its own auth/config.
+ *   Sensitive home subpaths are blocked separately by filesystem denyRead and canUseTool.
  * - TMPDIR: Points to private temp dir (host /tmp is blocked)
  */
 
@@ -34,7 +35,7 @@ export const ENV_ALLOWLIST = [
 	"TERM",
 	"COLORTERM",
 
-	// User info (HOME overridden to private temp - writable and isolated)
+	// User info (HOME passed through; sensitive subpaths blocked separately)
 	"HOME",
 	"USER",
 	"SHELL",

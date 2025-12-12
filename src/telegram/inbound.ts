@@ -5,18 +5,8 @@ import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
-import { sendMediaToChat } from "./outbound.js";
+import { SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
 import { sanitizeClaudeResponse } from "./sanitize.js";
-
-/**
- * Message sent when output contains detected secrets.
- * SECURITY: This must match outbound.ts BLOCKED_MESSAGE for consistency.
- */
-const SECRET_BLOCKED_MESSAGE =
-	"Response blocked by security filter.\n\n" +
-	"The response contained what appears to be sensitive credentials " +
-	"(API keys, tokens, or private keys). This is a security measure to " +
-	"prevent accidental exposure of secrets.";
 import {
 	type BotInfo,
 	type TelegramInboundMessage,
@@ -32,6 +22,7 @@ export type InboxMonitorOptions = {
 	bot: Bot;
 	botInfo: BotInfo;
 	verbose: boolean;
+	dryRun?: boolean;
 	onMessage: (msg: TelegramInboundMessage) => Promise<void>;
 	allowedChats?: (number | string)[];
 	secretFilterConfig?: SecretFilterConfig;
@@ -48,7 +39,15 @@ export type InboxMonitorHandle = {
 export async function monitorTelegramInbox(
 	options: InboxMonitorOptions,
 ): Promise<InboxMonitorHandle> {
-	const { bot, botInfo, verbose, onMessage, allowedChats, secretFilterConfig } = options;
+	const {
+		bot,
+		botInfo,
+		verbose,
+		dryRun = false,
+		onMessage,
+		allowedChats,
+		secretFilterConfig,
+	} = options;
 	const logger = getChildLogger({ module: "telegram-inbound" });
 	const seen = new Set<string>();
 
@@ -192,6 +191,10 @@ export async function monitorTelegramInbox(
 			mediaFileId,
 			mimeType,
 			sendComposing: async () => {
+				if (dryRun) {
+					logger.debug({ chatId: chat.id }, "dry-run: would send typing action");
+					return;
+				}
 				await bot.api.sendChatAction(chat.id, "typing");
 			},
 			reply: async (text: string, options?: { useMarkdown?: boolean }) => {
@@ -208,6 +211,13 @@ export async function monitorTelegramInbox(
 						},
 						"BLOCKED: Secret exfiltration attempt detected in reply",
 					);
+					if (dryRun) {
+						logger.warn(
+							{ chatId: chat.id },
+							"dry-run: reply blocked by secret filter; would send blocked notification",
+						);
+						return;
+					}
 					// Send blocked notification instead of the secret-containing message
 					await bot.api.sendMessage(chat.id, SECRET_BLOCKED_MESSAGE);
 					return;
@@ -215,6 +225,18 @@ export async function monitorTelegramInbox(
 
 				// Sanitize response (length truncation, control chars)
 				const sanitized = sanitizeClaudeResponse(text);
+
+				if (dryRun) {
+					logger.info(
+						{
+							chatId: chat.id,
+							useMarkdown: options?.useMarkdown ?? false,
+							preview: sanitized.slice(0, 200),
+						},
+						"dry-run: would send reply",
+					);
+					return;
+				}
 
 				if (options?.useMarkdown) {
 					// Only use markdown when explicitly requested (for system messages)
@@ -225,6 +247,17 @@ export async function monitorTelegramInbox(
 				}
 			},
 			sendMedia: async (payload: TelegramMediaPayload) => {
+				if (dryRun) {
+					logger.info(
+						{
+							chatId: chat.id,
+							type: payload.type,
+							caption: "caption" in payload ? payload.caption?.slice(0, 200) : undefined,
+						},
+						"dry-run: would send media",
+					);
+					return;
+				}
 				await sendMediaToChat(bot.api, chat.id, payload);
 			},
 			raw: message,

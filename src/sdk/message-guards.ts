@@ -121,6 +121,28 @@ export function isContentBlockStopEvent(event: unknown): event is { type: "conte
 	return (event as { type?: string }).type === "content_block_stop";
 }
 
+/**
+ * Type guard for content_block_delta with input_json_delta.
+ * Used to accumulate streaming tool input JSON.
+ */
+export function isInputJsonDeltaEvent(event: unknown): event is {
+	type: "content_block_delta";
+	delta: { type: "input_json_delta"; partial_json: string };
+} {
+	if (typeof event !== "object" || event === null) return false;
+	const e = event as {
+		type?: string;
+		delta?: { type?: string; partial_json?: unknown };
+	};
+	return (
+		e.type === "content_block_delta" &&
+		typeof e.delta === "object" &&
+		e.delta !== null &&
+		e.delta.type === "input_json_delta" &&
+		typeof e.delta.partial_json === "string"
+	);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tool Input Type Guards
 // ═══════════════════════════════════════════════════════════════════════════════

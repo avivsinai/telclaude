@@ -79,6 +79,46 @@ describe("executePooledQuery streaming", () => {
 		expect((chunks[2] as any).result.response).toBe("Hi");
 	});
 
+	it("accumulates tool input from input_json_delta events", async () => {
+		queryMock.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "stream_event",
+					event: {
+						type: "content_block_start",
+						content_block: { type: "tool_use", name: "Bash" },
+					},
+				};
+				yield {
+					type: "stream_event",
+					event: {
+						type: "content_block_delta",
+						delta: { type: "input_json_delta", partial_json: '{"command":"echo hi"}' },
+					},
+				};
+				yield { type: "stream_event", event: { type: "content_block_stop" } };
+				yield {
+					type: "result",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					subtype: "success",
+				};
+			})(),
+		);
+
+		const chunks = await collectChunks(
+			executePooledQuery("prompt", {
+				cwd: "/tmp",
+				tier: "READ_ONLY",
+				poolKey: "chat-3",
+			}),
+		);
+
+		const toolUse = chunks.find((c: any) => c.type === "tool_use") as any;
+		expect(toolUse.input).toEqual({ command: "echo hi" });
+	});
+
 	it("falls back to assistant message text when no stream events", async () => {
 		queryMock.mockReturnValueOnce(
 			(async function* () {

@@ -1,14 +1,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
+import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "media-store" });
-const MEDIA_DIR = path.join(os.tmpdir(), "telclaude", "media");
+const MEDIA_DIR = path.join(CONFIG_DIR, "media");
 
 // Maximum media file size (20MB - Telegram bot API limit)
 const MAX_MEDIA_SIZE = 20 * 1024 * 1024;

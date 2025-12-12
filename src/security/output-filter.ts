@@ -225,7 +225,14 @@ export function redactSecrets(text: string): string {
 		// Create new regex instance, preserving original flags but ensuring global
 		const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
 		const regex = new RegExp(pattern.source, flags);
-		result = result.replace(regex, `[REDACTED:${name}]`);
+		if (name === "totp_seed") {
+			// Avoid redacting low-entropy base32-looking text (reduces false positives)
+			result = result.replace(regex, (m) =>
+				calculateEntropy(m) >= TOTP_ENTROPY_THRESHOLD ? `[REDACTED:${name}]` : m,
+			);
+		} else {
+			result = result.replace(regex, `[REDACTED:${name}]`);
+		}
 	}
 
 	return result;
@@ -245,6 +252,10 @@ function scanPlainText(text: string): FilterMatch[] {
 		const regex = new RegExp(pattern.source, flags);
 
 		for (let match = regex.exec(text); match !== null; match = regex.exec(text)) {
+			// Reduce false positives for base32-like TOTP seeds by checking entropy
+			if (name === "totp_seed" && calculateEntropy(match[0]) < TOTP_ENTROPY_THRESHOLD) {
+				continue;
+			}
 			matches.push({
 				pattern: name,
 				severity,
@@ -486,6 +497,9 @@ export interface SecretFilterConfig {
 	additionalPatterns?: Array<{ id: string; pattern: string }>;
 	entropyDetection?: { enabled?: boolean; threshold?: number; minLength?: number };
 }
+
+// Entropy threshold for treating base32 blobs as TOTP seeds.
+const TOTP_ENTROPY_THRESHOLD = 4.0;
 
 /**
  * Calculate Shannon entropy of a string.

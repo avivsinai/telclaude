@@ -531,6 +531,8 @@ export type MonitorOptions = {
 	abortSignal?: AbortSignal;
 	/** Security profile - "simple" (default), "strict", or "test" */
 	securityProfile?: "simple" | "strict" | "test";
+	/** If true, do not send any outbound Telegram messages/media. */
+	dryRun?: boolean;
 };
 
 /**
@@ -540,7 +542,13 @@ export async function monitorTelegramProvider(
 	options: MonitorOptions,
 	_runtime?: RuntimeEnv,
 ): Promise<void> {
-	const { verbose, keepAlive = true, abortSignal, securityProfile = "simple" } = options;
+	const {
+		verbose,
+		keepAlive = true,
+		abortSignal,
+		securityProfile = "simple",
+		dryRun = false,
+	} = options;
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
 
@@ -626,6 +634,7 @@ export async function monitorTelegramProvider(
 				bot,
 				botInfo,
 				verbose,
+				dryRun,
 				allowedChats: cfg.telegram?.allowedChats,
 				secretFilterConfig: cfg.security?.secretFilter,
 				onMessage: async (msg) => {

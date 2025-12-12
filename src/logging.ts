@@ -1,12 +1,12 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import pino, { type Bindings, type LevelWithSilent, type Logger } from "pino";
 import { type TelclaudeConfig, loadConfig } from "./config/config.js";
 import { isVerbose } from "./globals.js";
+import { CONFIG_DIR } from "./utils.js";
 
-const DEFAULT_LOG_DIR = path.join(os.tmpdir(), "telclaude");
+const DEFAULT_LOG_DIR = path.join(CONFIG_DIR, "logs");
 export const DEFAULT_LOG_FILE = path.join(DEFAULT_LOG_DIR, "telclaude.log");
 
 const ALLOWED_LEVELS: readonly LevelWithSilent[] = [

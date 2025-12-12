@@ -30,6 +30,7 @@ import {
 	isContentBlockStopEvent,
 	isGlobInput,
 	isGrepInput,
+	isInputJsonDeltaEvent,
 	isReadInput,
 	isResultMessage,
 	isStreamEvent,
@@ -143,7 +144,7 @@ export type TelclaudeQueryOptions = {
 	/** Permission tier controlling which tools are available.
 	 * - READ_ONLY: Read, Glob, Grep, WebFetch, WebSearch
 	 * - WRITE_SAFE: Above + Write, Edit, Bash (with restrictions)
-	 * - FULL_ACCESS: All tools, bypasses permissions (requires sandbox)
+	 * - FULL_ACCESS: All tools (requires sandbox); still subject to canUseTool and approvals
 	 */
 	tier: PermissionTier;
 
@@ -433,7 +434,7 @@ export async function* executeQueryStream(
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
-	let currentToolUse: { name: string; input: unknown } | null = null;
+	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
 
 	try {
 		for await (const msg of q) {
@@ -444,9 +445,25 @@ export async function* executeQueryStream(
 					yield { type: "text", content: event.delta.text };
 					response += event.delta.text;
 				} else if (isToolUseStartEvent(event)) {
-					currentToolUse = { name: event.content_block.name, input: {} };
+					const cb = (event as unknown as { content_block: { name: string; input?: unknown } })
+						.content_block;
+					currentToolUse = {
+						name: cb.name,
+						input: cb.input ?? {},
+						inputJson: "",
+					};
+				} else if (isInputJsonDeltaEvent(event) && currentToolUse) {
+					currentToolUse.inputJson += event.delta.partial_json;
 				} else if (isContentBlockStopEvent(event) && currentToolUse) {
-					yield { type: "tool_use", toolName: currentToolUse.name, input: currentToolUse.input };
+					let input = currentToolUse.input;
+					if (currentToolUse.inputJson) {
+						try {
+							input = JSON.parse(currentToolUse.inputJson);
+						} catch {
+							input = currentToolUse.inputJson;
+						}
+					}
+					yield { type: "tool_use", toolName: currentToolUse.name, input };
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {
@@ -574,7 +591,7 @@ export async function* executePooledQuery(
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
-	let currentToolUse: { name: string; input: unknown } | null = null;
+	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
 
 	try {
 		for await (const msg of executeWithSession(sessionManager, opts.poolKey, prompt, sdkOpts)) {
@@ -584,9 +601,25 @@ export async function* executePooledQuery(
 					yield { type: "text", content: event.delta.text };
 					response += event.delta.text;
 				} else if (isToolUseStartEvent(event)) {
-					currentToolUse = { name: event.content_block.name, input: {} };
+					const cb = (event as unknown as { content_block: { name: string; input?: unknown } })
+						.content_block;
+					currentToolUse = {
+						name: cb.name,
+						input: cb.input ?? {},
+						inputJson: "",
+					};
+				} else if (isInputJsonDeltaEvent(event) && currentToolUse) {
+					currentToolUse.inputJson += event.delta.partial_json;
 				} else if (isContentBlockStopEvent(event) && currentToolUse) {
-					yield { type: "tool_use", toolName: currentToolUse.name, input: currentToolUse.input };
+					let input = currentToolUse.input;
+					if (currentToolUse.inputJson) {
+						try {
+							input = JSON.parse(currentToolUse.inputJson);
+						} catch {
+							input = currentToolUse.inputJson;
+						}
+					}
+					yield { type: "tool_use", toolName: currentToolUse.name, input };
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {

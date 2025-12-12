@@ -32,7 +32,7 @@ const logger = getChildLogger({ module: "permissions" });
 export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 	WRITE_SAFE: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
-	FULL_ACCESS: [], // Empty = all tools allowed (with bypassPermissions)
+	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
 };
 
 /**

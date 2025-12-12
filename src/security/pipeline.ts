@@ -24,7 +24,13 @@ import { getChildLogger } from "../logging.js";
 import type { AuditLogger } from "./audit.js";
 import { checkInfrastructureSecrets } from "./fast-path.js";
 import { isAdmin } from "./linking.js";
-import { filterOutput, redactSecrets } from "./output-filter.js";
+import {
+	type SecretFilterConfig,
+	calculateEntropy,
+	detectHighEntropyBlobs,
+	filterOutput,
+	redactSecrets,
+} from "./output-filter.js";
 import { getUserPermissionTier } from "./permissions.js";
 import type { RateLimiter } from "./rate-limit.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
@@ -76,11 +82,6 @@ export interface RedactionEvent {
 	count: number;
 }
 
-export interface SecretFilterConfig {
-	additionalPatterns?: Array<{ id: string; pattern: string }>;
-	entropyDetection?: { enabled: boolean; threshold?: number; minLength?: number };
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security Pipeline Interface
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -90,42 +91,6 @@ export interface SecurityPipeline {
 	beforeExecution(ctx: MessageContext): Promise<SecurityDecision>;
 	afterExecution(ctx: MessageContext, result: ExecutionResult): Promise<void>;
 	redactOutput(text: string): RedactionResult;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Entropy Detection
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function calculateEntropy(str: string): number {
-	const len = str.length;
-	if (len === 0) return 0;
-
-	const freq: Record<string, number> = {};
-	for (const char of str) {
-		freq[char] = (freq[char] || 0) + 1;
-	}
-
-	let entropy = 0;
-	for (const count of Object.values(freq)) {
-		const p = count / len;
-		entropy -= p * Math.log2(p);
-	}
-	return entropy;
-}
-
-function detectHighEntropyBlobs(text: string, threshold: number, minLength: number): string[] {
-	const suspiciousBlobs: string[] = [];
-	const blobPattern = /[=:]\s*['"]?([a-zA-Z0-9+/=]{32,}|[a-fA-F0-9]{32,})['"]?/g;
-	for (const match of text.matchAll(blobPattern)) {
-		const blob = match[1];
-		if (blob && blob.length >= minLength) {
-			const entropy = calculateEntropy(blob);
-			if (entropy > threshold) {
-				suspiciousBlobs.push(blob);
-			}
-		}
-	}
-	return suspiciousBlobs;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -435,3 +400,4 @@ export async function buildSecurityPipeline(config: PipelineConfig): Promise<Sec
 }
 
 export { calculateEntropy, detectHighEntropyBlobs };
+export type { SecretFilterConfig };

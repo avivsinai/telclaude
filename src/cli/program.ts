@@ -1,14 +1,12 @@
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { Command } from "commander";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 
 function getVersion(): string {
 	try {
-		const pkgPath = path.resolve(__dirname, "../../package.json");
-		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+		// Resolve package.json relative to this module (works from src or dist)
+		const pkg = require("../../package.json") as { version?: string };
 		return pkg.version ?? "0.0.0";
 	} catch {
 		return "0.0.0";

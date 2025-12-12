@@ -48,8 +48,9 @@ function filterBeforeSend(text: string): void {
 
 /**
  * Replacement message sent when original is blocked.
+ * Exported so inbound replies can stay consistent.
  */
-const BLOCKED_MESSAGE =
+export const SECRET_BLOCKED_MESSAGE =
 	"⚠️ Response blocked by security filter.\n\n" +
 	"The response contained what appears to be sensitive credentials " +
 	"(API keys, tokens, or private keys). This is a security measure to " +
@@ -91,7 +92,7 @@ export async function sendMessageTelegram(
 	} catch (err) {
 		if (err instanceof SecretExfiltrationBlockedError) {
 			// Send blocked notification instead
-			const result = await bot.api.sendMessage(chatId, BLOCKED_MESSAGE);
+			const result = await bot.api.sendMessage(chatId, SECRET_BLOCKED_MESSAGE);
 			logger.warn(
 				{ chatId, messageId: result.message_id },
 				"sent blocked notification (secrets detected)",
@@ -167,13 +168,32 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 	try {
 		let content: string;
 
+		const isProbablyText = (text: string): boolean => {
+			if (!text.length) return true;
+			const printable = text.split("").filter((c) => {
+				const code = c.charCodeAt(0);
+				return (
+					code === 9 || // tab
+					code === 10 || // lf
+					code === 13 || // cr
+					(code >= 32 && code <= 126)
+				);
+			}).length;
+			return printable / text.length > 0.8;
+		};
+
 		if (Buffer.isBuffer(source)) {
 			// Scan buffer content
 			if (source.length > MAX_FILE_SCAN_SIZE) {
 				logger.warn({ size: source.length }, "file too large to scan for secrets");
 				return { safe: true }; // Allow but log warning
 			}
-			content = source.toString("utf-8");
+			const text = source.toString("utf-8");
+			if (!isProbablyText(text)) {
+				logger.debug("buffer appears binary; skipping secret scan");
+				return { safe: true };
+			}
+			content = text;
 		} else if (!source.startsWith("http://") && !source.startsWith("https://")) {
 			// Local file path - read and scan
 			const absolutePath = path.isAbsolute(source) ? source : path.resolve(source);
@@ -186,8 +206,13 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 				logger.warn({ path: absolutePath, size: stats.size }, "file too large to scan for secrets");
 				return { safe: true }; // Allow but log warning
 			}
-
-			content = fs.readFileSync(absolutePath, "utf-8");
+			const buf = fs.readFileSync(absolutePath);
+			const text = buf.toString("utf-8");
+			if (!isProbablyText(text)) {
+				logger.debug({ path: absolutePath }, "file appears binary; skipping secret scan");
+				return { safe: true };
+			}
+			content = text;
 		} else {
 			// URL - still check the URL string for obvious secrets, but avoid downloading
 			const filterResult = filterOutput(source);
@@ -372,7 +397,7 @@ export async function sendTelegramMessage(
 				filterBeforeSend(textToFilter);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
-					const result = await bot.api.sendMessage(options.chatId, BLOCKED_MESSAGE);
+					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
 					return { success: true, messageId: result.message_id };
 				}
 				throw err;
@@ -425,7 +450,7 @@ export async function safeReply(
 				{ chatId: ctx.chat?.id, patterns: err.filterResult.matches.map((m) => m.pattern) },
 				"BLOCKED: Secret detected in reply, sending blocked notification",
 			);
-			return ctx.reply(BLOCKED_MESSAGE);
+			return ctx.reply(SECRET_BLOCKED_MESSAGE);
 		}
 		throw err;
 	}

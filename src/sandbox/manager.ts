@@ -13,7 +13,7 @@ import { getChildLogger } from "../logging.js";
 import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
 import { domainMatchesPattern } from "./domains.js";
 import { buildSandboxEnv } from "./env.js";
-import { isBlockedIP } from "./network-proxy.js";
+import { isBlockedHost } from "./network-proxy.js";
 import {
 	MIN_SANDBOX_RUNTIME_VERSION,
 	getSandboxRuntimeVersion,
@@ -28,6 +28,7 @@ const logger = getChildLogger({ module: "sandbox" });
 let initialized = false;
 let currentConfig: SandboxRuntimeConfig | null = null;
 let sanitizedEnv: Record<string, string> | null = null;
+let originalTmpdir: string | undefined;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API
@@ -84,7 +85,7 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 		// The sandbox-runtime creates network bridge sockets at tmpdir()/claude-*.sock
 		// By pointing TMPDIR to our private temp, sockets land there instead of host /tmp.
 		// This allows us to safely block host /tmp in denyRead without breaking network.
-		const originalTmpdir = process.env.TMPDIR;
+		originalTmpdir = process.env.TMPDIR;
 		process.env.TMPDIR = resolvedTmpPath;
 		logger.debug(
 			{ tmpdir: resolvedTmpPath, originalTmpdir },
@@ -100,7 +101,7 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 		// NOTE: Callback reads currentConfig dynamically so updateSandboxConfig takes effect
 		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
 			// Always block private/internal networks (security critical)
-			if (isBlockedIP(host)) {
+			if (await isBlockedHost(host)) {
 				logger.debug({ host }, "blocked private network access via sandboxAskCallback");
 				return false;
 			}
@@ -158,6 +159,14 @@ export async function resetSandbox(): Promise<void> {
 		logger.info("sandbox reset");
 	} catch (err) {
 		logger.warn({ error: String(err) }, "error resetting sandbox");
+	} finally {
+		// Restore TMPDIR to its original value to avoid leaking global state.
+		if (originalTmpdir === undefined) {
+			Reflect.deleteProperty(process.env, "TMPDIR");
+		} else {
+			process.env.TMPDIR = originalTmpdir;
+		}
+		originalTmpdir = undefined;
 	}
 }
 
@@ -300,7 +309,7 @@ export async function isSandboxAvailable(): Promise<boolean> {
 		// Use same callback pattern for consistency with initializeSandbox
 		const allowedDomains = testConfig.network?.allowedDomains ?? [];
 		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
-			if (isBlockedIP(host)) return false;
+			if (await isBlockedHost(host)) return false;
 			if (allowedDomains.includes("*")) return true;
 			if (allowedDomains.length === 0) return false;
 			return allowedDomains.some((pattern) => domainMatchesPattern(host, pattern));
