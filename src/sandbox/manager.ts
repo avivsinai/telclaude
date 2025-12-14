@@ -255,8 +255,15 @@ export async function wrapCommand(command: string): Promise<string> {
 	}
 
 	try {
+		// SECURITY: Override NO_PROXY to force RFC1918 traffic through the proxy.
+		// The sandbox-runtime hardcodes NO_PROXY to bypass private networks (10.0.0.0/8, etc.)
+		// for developer convenience. We reset it so all traffic goes through the proxy
+		// where sandboxAskCallback can block RFC1918 addresses.
+		const noProxyOverride = "export NO_PROXY= no_proxy= && ";
+		const commandWithOverride = noProxyOverride + command;
+
 		// First wrap with sandbox (filesystem + network isolation)
-		const sandboxWrapped = await SandboxManager.wrapWithSandbox(command);
+		const sandboxWrapped = await SandboxManager.wrapWithSandbox(commandWithOverride);
 
 		// Then wrap with environment isolation
 		// SECURITY: Apply allowlist-only environment
