@@ -102,7 +102,7 @@ The sandbox prevents access to:
 ### Write Restrictions
 
 - **READ_ONLY**: No writes allowed
-- **WRITE_SAFE/FULL_ACCESS**: Writes limited to current working directory + `/tmp`
+- **WRITE_SAFE/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`). Host `/tmp`/`/var/tmp` are deny-read.
 
 ---
 

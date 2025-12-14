@@ -378,10 +378,14 @@ export function getNetworkIsolationSummary(
 		.filter((rule) => rule.methods.includes("POST"))
 		.map((rule) => rule.domain);
 
-	// Check if sandbox is permissive (uses "*" wildcard)
+	// Check if sandbox is permissive.
+	// Note: telclaude treats TELCLAUDE_NETWORK_MODE=open|permissive as "allow all non-private egress"
+	// via the sandboxAskCallback layer (so private networks are still blocked, including DNS rebinding).
 	const sandboxDomainPatterns =
 		sandboxAllowedDomains ?? config.allowedDomains.map((rule) => rule.domain);
-	const isPermissive = sandboxDomainPatterns.includes("*");
+	const envMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+	const isPermissive =
+		envMode === "open" || envMode === "permissive" || sandboxDomainPatterns.includes("*");
 
 	return {
 		allowedDomains: config.allowedDomains.length,

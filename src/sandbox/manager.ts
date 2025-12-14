@@ -93,17 +93,23 @@ export async function initializeSandbox(config?: SandboxRuntimeConfig): Promise<
 		);
 
 		// Initialize SandboxManager for Bash commands (defense-in-depth)
-		// NETWORK FIX: The sandbox-runtime treats "*" as a literal domain name, not a wildcard.
-		// It also doesn't support CIDR notation (10.0.0.0/8) in deniedDomains.
+		// NETWORK NOTES:
+		// - We avoid a catch-all allowedDomains entry because it would bypass sandboxAskCallback,
+		//   which we use to block private networks (including DNS rebinding) even in permissive mode.
+		// - sandboxAskCallback is only invoked for domains NOT matched by allowedDomains/deniedDomains rules.
 		// We use sandboxAskCallback to:
 		// 1. Block private networks (RFC1918, localhost) - always enforced
-		// 2. Auto-approve other requests when allowedDomains contains "*"
+		// 2. Allow broad egress when TELCLAUDE_NETWORK_MODE=open|permissive is set
 		// NOTE: Callback reads currentConfig dynamically so updateSandboxConfig takes effect
 		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
 			// Always block private/internal networks (security critical)
 			if (await isBlockedHost(host)) {
 				logger.debug({ host }, "blocked private network access via sandboxAskCallback");
 				return false;
+			}
+			const envMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+			if (envMode === "open" || envMode === "permissive") {
+				return true;
 			}
 			// SECURITY: Check currentConfig dynamically (not captured at init time)
 			// This ensures updateSandboxConfig() changes take effect immediately
@@ -311,12 +317,25 @@ export async function isSandboxAvailable(): Promise<boolean> {
 	}
 
 	// Perform the availability check once
+	const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
+		? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))
+		: PRIVATE_TMP_PATH;
+	const originalEnvTmpdir = process.env.TMPDIR;
+
 	try {
+		// Mirror initializeSandbox(): ensure private temp exists + use it for sandbox-runtime sockets.
+		if (!fs.existsSync(resolvedTmpPath)) {
+			fs.mkdirSync(resolvedTmpPath, { recursive: true, mode: 0o700 });
+		}
+		process.env.TMPDIR = resolvedTmpPath;
+
 		const testConfig = buildSandboxConfig({});
 		// Use same callback pattern for consistency with initializeSandbox
 		const allowedDomains = testConfig.network?.allowedDomains ?? [];
 		const sandboxAskCallback = async ({ host }: { host: string; port?: number }) => {
 			if (await isBlockedHost(host)) return false;
+			const envMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+			if (envMode === "open" || envMode === "permissive") return true;
 			if (allowedDomains.includes("*")) return true;
 			if (allowedDomains.length === 0) return false;
 			return allowedDomains.some((pattern) => domainMatchesPattern(host, pattern));
@@ -326,6 +345,13 @@ export async function isSandboxAvailable(): Promise<boolean> {
 		sandboxAvailable = true;
 	} catch {
 		sandboxAvailable = false;
+	} finally {
+		// Restore TMPDIR to avoid leaking global state during a best-effort check.
+		if (originalEnvTmpdir === undefined) {
+			Reflect.deleteProperty(process.env, "TMPDIR");
+		} else {
+			process.env.TMPDIR = originalEnvTmpdir;
+		}
 	}
 
 	sandboxAvailabilityChecked = true;

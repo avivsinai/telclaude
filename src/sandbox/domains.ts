@@ -69,8 +69,9 @@ export function domainMatchesPattern(domain: string, pattern: string): boolean {
 	const normalizedPattern = pattern.toLowerCase();
 
 	if (normalizedPattern.startsWith("*.")) {
-		const suffix = normalizedPattern.slice(1); // ".example.com"
-		return normalizedDomain.endsWith(suffix) || normalizedDomain === normalizedPattern.slice(2);
+		// Match subdomains only (align with @anthropic-ai/sandbox-runtime behavior)
+		const baseDomain = normalizedPattern.slice(2); // "example.com"
+		return normalizedDomain.endsWith(`.${baseDomain}`);
 	}
 
 	return normalizedDomain === normalizedPattern;

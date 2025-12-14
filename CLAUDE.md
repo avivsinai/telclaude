@@ -21,7 +21,7 @@
 - Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_SAFE, and low-confidence WARN; TTL 5 minutes.  
 - Infrastructure secrets (bot tokens, Anthropic keys, private keys) are non-overridable blocks.  
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.  
-- Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`. Network default allowlist (npm/pypi/docs/github/Anthropic API); metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables `*`.  
+- Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`. Network default allowlist (npm/pypi/docs/github/Anthropic API); metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress (all non-private domains).  
 - Wrapper: `srt` sandboxes all Claude tools; if it fails, relay falls back to Bash-only sandbox and logs a warning.
 
 ## Workflow (Opus 4.5 friendly)
@@ -49,7 +49,7 @@
 - Lint/format: `pnpm lint`, `pnpm format`  
 - Typecheck: `pnpm typecheck`  
 - Tests: `pnpm test`  
-- SDK sandbox policy is written to `~/.claude/settings.local.json` on relay start (single srt layer; no wrapper).
+- SDK sandbox policy is passed per invocation via `--settings` (no writes to `~/.claude`).
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.  

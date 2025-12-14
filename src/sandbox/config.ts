@@ -193,24 +193,16 @@ export const PRIVATE_TMP_CONFIG = {
  * These are used by cloud providers for instance metadata and credentials.
  */
 export const BLOCKED_METADATA_DOMAINS = [
-	// AWS IMDSv1/v2 metadata service
+	// Cloud instance metadata service IP (used by multiple providers: AWS/GCP/Azure/OCI/DO)
 	"169.254.169.254",
 	// AWS ECS container metadata
 	"169.254.170.2",
-	// GCP metadata service
+	// GCP metadata hostnames (resolve to 169.254.169.254)
 	"metadata.google.internal",
 	"metadata.goog",
-	// Azure Instance Metadata Service (IMDS)
-	"169.254.169.254", // Same IP as AWS
-	// Link-local addresses (entire range)
-	"169.254.*",
-	// Kubernetes service account tokens
+	// Kubernetes service DNS (often internal IPs / service account token endpoints)
 	"kubernetes.default.svc",
-	// DigitalOcean metadata
-	"169.254.169.254",
-	// Oracle Cloud Infrastructure
-	"169.254.169.254",
-	// Alibaba Cloud
+	// Alibaba Cloud metadata
 	"100.100.100.200",
 ];
 
@@ -343,7 +335,7 @@ export function buildSandboxConfig(options: {
 	additionalDenyRead?: string[];
 	/** Additional paths to allow writing */
 	additionalAllowWrite?: string[];
-	/** Allowed network domains (default: all via '*') */
+	/** Allowed network domains (default: strict allowlist) */
 	allowedDomains?: string[];
 	/** Denied network domains (takes precedence over allowed) */
 	deniedDomains?: string[];
@@ -355,12 +347,12 @@ export function buildSandboxConfig(options: {
 	const cwd = options.cwd ?? process.cwd();
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 
-	let resolvedDefaultAllowed = DEFAULT_ALLOWED_DOMAIN_NAMES;
+	const resolvedDefaultAllowed = DEFAULT_ALLOWED_DOMAIN_NAMES;
 	if (envNetworkMode === "open" || envNetworkMode === "permissive") {
 		logger.warn(
-			'TELCLAUDE_NETWORK_MODE=open|permissive requested but sandbox-runtime forbids "*"; using default allowlist instead',
+			{ mode: envNetworkMode },
+			"TELCLAUDE_NETWORK_MODE enabled: broad egress will be allowed (private/metadata still blocked)",
 		);
-		resolvedDefaultAllowed = DEFAULT_ALLOWED_DOMAIN_NAMES;
 	}
 
 	// Collect all deny/allow paths
@@ -401,7 +393,7 @@ export function buildSandboxConfig(options: {
 		},
 		network: {
 			// Default to strict allowlist using well-known developer domains.
-			// Users can opt into broader access via options.allowedDomains or TELCLAUDE_NETWORK_MODE=open.
+			// Users can opt into broader access via options.allowedDomains (config).
 			allowedDomains: options.allowedDomains ?? resolvedDefaultAllowed,
 			// SECURITY: Always block cloud metadata endpoints to prevent SSRF
 			deniedDomains: [...BLOCKED_METADATA_DOMAINS, ...(options.deniedDomains ?? [])],
@@ -424,6 +416,10 @@ export const DEFAULT_SANDBOX_CONFIG = buildSandboxConfig({});
 // Tier-Aligned Sandbox Configs
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Cache tier configs to avoid repeated Linux glob expansion per query.
+// Keyed by `${tier}:${cwd}`; env-based tweaks (e.g., TELCLAUDE_NETWORK_MODE) are assumed stable per process.
+const sandboxTierConfigCache = new Map<string, SandboxRuntimeConfig>();
+
 /**
  * Get sandbox configuration for a specific permission tier.
  *
@@ -441,23 +437,32 @@ export const DEFAULT_SANDBOX_CONFIG = buildSandboxConfig({});
  */
 export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): SandboxRuntimeConfig {
 	const workingDir = cwd ?? process.cwd();
+	const cacheKey = `${tier}:${workingDir}`;
+	const cached = sandboxTierConfigCache.get(cacheKey);
+	if (cached) {
+		return cached;
+	}
 
 	if (tier === "READ_ONLY") {
 		// No writes allowed for read-only tier
 		// Still pass cwd for glob expansion on Linux
 		const baseConfig = buildSandboxConfig({ cwd: workingDir });
-		return {
+		const ro: SandboxRuntimeConfig = {
 			...baseConfig,
 			filesystem: {
 				...baseConfig.filesystem,
 				allowWrite: [], // No writes for READ_ONLY
 			},
 		};
+		sandboxTierConfigCache.set(cacheKey, ro);
+		return ro;
 	}
 
 	// WRITE_SAFE and FULL_ACCESS: allow writes to cwd and private temp
-	return buildSandboxConfig({
+	const rw = buildSandboxConfig({
 		additionalAllowWrite: cwd ? [cwd] : [],
 		cwd: workingDir,
 	});
+	sandboxTierConfigCache.set(cacheKey, rw);
+	return rw;
 }

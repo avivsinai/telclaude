@@ -9,10 +9,12 @@ import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
+import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
 import { registerTOTPSetupCommand } from "./commands/totp-setup.js";
 import { setConfigPath } from "./config/path.js";
 import { setVerbose } from "./globals.js";
-import { getLogger } from "./logging.js";
+import { closeLogger, getLogger } from "./logging.js";
+import { closeDb } from "./storage/db.js";
 
 // Create CLI program
 const program = createProgram();
@@ -24,6 +26,7 @@ registerStatusCommand(program);
 registerLinkCommand(program);
 registerDoctorCommand(program);
 registerTOTPDaemonCommand(program);
+registerTOTPDisableCommand(program);
 registerTOTPSetupCommand(program);
 registerResetAuthCommand(program);
 registerResetDbCommand(program);
@@ -42,5 +45,18 @@ program.hook("preAction", (thisCommand) => {
 	getLogger();
 });
 
-// Parse and execute
-program.parse();
+async function main(): Promise<void> {
+	await program.parseAsync();
+}
+
+main()
+	.catch((err) => {
+		// Commander prints some errors itself; keep this minimal.
+		console.error(`Error: ${String(err)}`);
+		process.exitCode = 1;
+	})
+	.finally(() => {
+		// Ensure CLI commands can exit cleanly (pino destination + SQLite keep handles open).
+		closeDb();
+		closeLogger();
+	});

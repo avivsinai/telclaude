@@ -88,19 +88,25 @@ function resetVerifyRateLimit(localUserId: string): void {
 	verifyRateLimits.delete(localUserId);
 }
 
-// Clean up stale entries periodically
-setInterval(() => {
-	const now = Date.now();
-	for (const [userId, entry] of verifyRateLimits.entries()) {
-		// Remove if window expired and not locked out
-		if (
-			now - entry.windowStart > VERIFY_RATE_LIMIT.windowMs &&
-			(!entry.lockedUntil || entry.lockedUntil <= now)
-		) {
-			verifyRateLimits.delete(userId);
+function startVerifyRateLimitCleanupTimer(): NodeJS.Timeout {
+	// Clean up stale entries periodically.
+	// IMPORTANT: This must not run at module import time; otherwise every CLI command
+	// would keep the event loop alive even when the daemon isn't started.
+	const timer = setInterval(() => {
+		const now = Date.now();
+		for (const [userId, entry] of verifyRateLimits.entries()) {
+			// Remove if window expired and not locked out
+			if (
+				now - entry.windowStart > VERIFY_RATE_LIMIT.windowMs &&
+				(!entry.lockedUntil || entry.lockedUntil <= now)
+			) {
+				verifyRateLimits.delete(userId);
+			}
 		}
-	}
-}, 60 * 1000); // Every minute
+	}, 60 * 1000); // Every minute
+	timer.unref();
+	return timer;
+}
 
 export type ServerOptions = {
 	socketPath?: string;
@@ -162,9 +168,10 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 
 			logger.info({ socketPath }, "TOTP daemon listening");
 
+			const cleanupTimer = startVerifyRateLimitCleanupTimer();
 			resolve({
 				isRunning: () => server.listening,
-				stop: () => stopServer(server, socketPath),
+				stop: () => stopServer(server, socketPath, cleanupTimer),
 				socketPath,
 			});
 		});
@@ -174,8 +181,13 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 /**
  * Stop the server and clean up.
  */
-async function stopServer(server: Server, socketPath: string): Promise<void> {
+async function stopServer(
+	server: Server,
+	socketPath: string,
+	cleanupTimer: NodeJS.Timeout,
+): Promise<void> {
 	return new Promise((resolve) => {
+		clearInterval(cleanupTimer);
 		server.close(() => {
 			try {
 				fs.unlinkSync(socketPath);

@@ -22,7 +22,15 @@ export function registerStatusCommand(program: Command): void {
 				const hasConfig = fs.existsSync(configPath);
 				const cfg = hasConfig ? loadConfig() : null;
 
-				const token = process.env.TELEGRAM_BOT_TOKEN;
+				const tokenFromConfig = cfg?.telegram?.botToken;
+				const tokenFromEnv = process.env.TELEGRAM_BOT_TOKEN;
+				const telegramToken = tokenFromConfig
+					? { status: "set" as const, source: "config" as const }
+					: null;
+				const telegramTokenResolved =
+					telegramToken ??
+					(tokenFromEnv ? { status: "set" as const, source: "env" as const } : null);
+
 				let claudeCli = "missing";
 				try {
 					const version = execSync("claude --version", {
@@ -37,6 +45,7 @@ export function registerStatusCommand(program: Command): void {
 				// Get audit stats if enabled
 				let auditStats = null;
 				if (cfg?.security?.audit?.enabled !== false) {
+					// Best-effort; AuditLogger initializes securely but does not create the log file.
 					const auditLogger = createAuditLogger({
 						enabled: true,
 						logFile: cfg?.security?.audit?.logFile,
@@ -50,17 +59,23 @@ export function registerStatusCommand(program: Command): void {
 						exists: hasConfig,
 					},
 					environment: {
-						telegramToken: token ? "set" : "not set",
+						telegramToken: telegramTokenResolved
+							? `${telegramTokenResolved.status} (${telegramTokenResolved.source})`
+							: "not set",
 						claudeCli,
 					},
 					security: cfg
 						? {
+								profile: cfg.security?.profile ?? "simple",
 								observer: cfg.security?.observer?.enabled !== false ? "enabled" : "disabled",
 								audit: cfg.security?.audit?.enabled !== false ? "enabled" : "disabled",
 								rateLimiting: "enabled",
-								permissionTiers: cfg.security?.permissions
-									? Object.keys(cfg.security.permissions)
-									: [],
+								permissions: cfg.security?.permissions
+									? {
+											defaultTier: cfg.security.permissions.defaultTier,
+											userOverrides: Object.keys(cfg.security.permissions.users ?? {}).length,
+										}
+									: null,
 							}
 						: null,
 					telegram: cfg
@@ -88,11 +103,13 @@ export function registerStatusCommand(program: Command): void {
 
 					if (status.security) {
 						console.log("Security:");
+						console.log(`  Profile: ${status.security.profile}`);
 						console.log(`  Observer: ${status.security.observer}`);
 						console.log(`  Audit: ${status.security.audit}`);
 						console.log(`  Rate Limiting: ${status.security.rateLimiting}`);
-						if (status.security.permissionTiers.length > 0) {
-							console.log(`  Permission Tiers: ${status.security.permissionTiers.join(", ")}`);
+						if (status.security.permissions) {
+							console.log(`  Default Tier: ${status.security.permissions.defaultTier}`);
+							console.log(`  User Overrides: ${status.security.permissions.userOverrides}`);
 						}
 						console.log();
 					}

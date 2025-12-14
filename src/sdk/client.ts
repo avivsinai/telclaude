@@ -18,6 +18,7 @@ import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
 import {
+	buildSdkPermissionsForTier,
 	getSandboxConfigForTier,
 	isSandboxInitialized,
 	updateSandboxConfig,
@@ -42,6 +43,7 @@ import {
 import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
+const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security Helpers
@@ -229,6 +231,21 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		// SECURITY: Sanitize environment to prevent leaking secrets like TELEGRAM_BOT_TOKEN
 		// Only allowlisted env vars pass through to the Claude subprocess
 		env: buildSandboxEnv(process.env),
+	};
+
+	// Enforce Claude Code sandbox + permission policy per invocation (no writes to ~/.claude).
+	// Sandbox settings are merged into `--settings` by the Agent SDK.
+	const permissions = buildSdkPermissionsForTier(opts.tier);
+	sdkOpts.extraArgs = {
+		...sdkOpts.extraArgs,
+		settings: JSON.stringify({ permissions }),
+	};
+	sdkOpts.sandbox = {
+		enabled: true,
+		network: {
+			allowLocalBinding: !IS_PROD,
+			allowAllUnixSockets: !IS_PROD,
+		},
 	};
 
 	// Configure tools based on tier

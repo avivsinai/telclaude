@@ -8,7 +8,6 @@ import {
 	initializeSandbox,
 	isSandboxAvailable,
 	resetSandbox,
-	syncSdkSettingsFile,
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
@@ -70,9 +69,6 @@ export function registerRelayCommand(program: Command): void {
 
 				// Determine effective security profile (CLI flag overrides config)
 				const effectiveProfile = opts.profile ?? cfg.security?.profile ?? "simple";
-
-				// Ensure Claude SDK sandbox uses telclaude's policy (single srt layer)
-				syncSdkSettingsFile();
 
 				// SECURITY: Warn about test profile
 				if (effectiveProfile === "test") {

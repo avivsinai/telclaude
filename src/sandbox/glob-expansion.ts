@@ -109,8 +109,8 @@ export function expandGlobSync(pattern: string, cwd?: string): string[] {
 		}
 
 		// Expand from home directory (catches ~/.env, ~/secrets.json, etc.)
-		// Skip if cwd is already within home to avoid duplicates
-		if (!baseCwd.startsWith(homedir) || baseCwd === homedir) {
+		// Skip only if we're already expanding from home (Set de-dupes paths, but avoid double walking)
+		if (baseCwd !== homedir) {
 			for (const match of expandGlobFromBase(normalizedPattern, homedir)) {
 				allMatches.add(match);
 			}
@@ -153,9 +153,8 @@ export function expandGlobsForLinux(paths: string[], cwd?: string): string[] {
 				result.push(...expanded);
 				expandedCount += expanded.length;
 			} else {
-				// Keep the original pattern even if no matches found
-				// The sandbox will just silently ignore it
-				logger.debug({ pattern }, "no matches for glob pattern, keeping original");
+				// No matches - drop it (bubblewrap doesn't support globs anyway).
+				logger.debug({ pattern }, "no matches for glob pattern, dropping");
 			}
 		} else {
 			result.push(pattern);

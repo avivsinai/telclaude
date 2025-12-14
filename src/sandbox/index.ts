@@ -20,12 +20,8 @@ export {
 	type SandboxInitResult,
 } from "./manager.js";
 
-// Claude SDK sandbox settings writer (feeds @anthropic-ai/claude-agent-sdk)
-export {
-	syncSdkSandboxSettings,
-	syncSdkSandboxSettings as syncSdkSettingsFile,
-	SDK_SETTINGS_PATH,
-} from "./sdk-settings.js";
+// Claude SDK settings builder (fed to @anthropic-ai/claude-agent-sdk via --settings)
+export { buildSdkPermissionsForTier } from "./sdk-settings.js";
 
 export {
 	SENSITIVE_READ_PATHS,

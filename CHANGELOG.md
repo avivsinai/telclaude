@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CLI command: `totp-disable <user-id>`
 - Comprehensive README with Mermaid architecture diagrams
 - CONTRIBUTING.md with contributor guidelines
 - SECURITY.md with security policy and threat model
@@ -20,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Updated package.json with comprehensive metadata and keywords
+- `TELCLAUDE_NETWORK_MODE=open|permissive` now enables broad egress (non-private) via sandboxAskCallback (metadata + private networks still blocked)
+- Claude Code sandbox policy is passed per SDK invocation via `--settings` (no writes to `~/.claude`)
+
+### Fixed
+
+- CLI commands now exit cleanly (no module-import timers keeping the event loop alive)
+- Telegram `/setup-2fa` and `/skip-totp` instructions now include the required `totp-setup <user-id>` usage
+- Sandbox metadata denylist cleaned up (removed invalid patterns / duplicates) and tier sandbox configs are cached to avoid repeated Linux glob expansion work
 
 ## [0.1.0] - 2025-12-02
 

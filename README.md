@@ -169,6 +169,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `telclaude send <chatId> [message] [--media <path>] [--caption <text>]`
 - `telclaude totp-daemon [--socket-path <path>]`
 - `telclaude totp-setup <user-id>`
+- `telclaude totp-disable <user-id>`
 - `telclaude reset-auth [--force]`
 
 ## Usage example
@@ -185,7 +186,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 
 ## Deployment
 - **Production (mandatory): Docker/WSL Compose stack** (`docker/README.md`). Container boundary + Claude Code srt sandbox. Use this on shared or multi-tenant hosts.
-- **Development:** Native macOS/Linux with Claude Code srt sandbox. Telclaude writes `~/.claude/settings.local.json` so the SDK’s srt enforces our filesystem/network policy (single srt layer). If the srt sandbox fails on your host, develop inside the Docker stack with bind mounts. Keep `~/.telclaude/telclaude.json` chmod 600.
+- **Development:** Native macOS/Linux with Claude Code srt sandbox. Telclaude passes our filesystem/network policy via `--settings` on each SDK invocation (no writes to `~/.claude`). If you previously ran versions that edited `~/.claude/settings.local.json`, you may want to revert that file. If the srt sandbox fails on your host, develop inside the Docker stack with bind mounts. Keep `~/.telclaude/telclaude.json` chmod 600.
 
 ## Development
 - Lint/format: `pnpm lint`, `pnpm format`

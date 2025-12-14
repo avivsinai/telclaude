@@ -211,7 +211,8 @@ export function buildSandboxEnv(processEnv: NodeJS.ProcessEnv): Record<string, s
 		}
 	}
 
-	// PROD: force private temp; DEV: keep host TMPDIR to avoid srt/proxy friction
+	// PROD: force private temp. DEV: inherit current TMP* (initializeSandbox may already point TMPDIR
+	// at the private temp to keep sandbox-runtime proxy sockets out of host /tmp).
 	if (IS_PROD) {
 		const resolvedTmpPath = PRIVATE_TMP_PATH.startsWith("~")
 			? path.join(os.homedir(), PRIVATE_TMP_PATH.slice(2))

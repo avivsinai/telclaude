@@ -4,7 +4,7 @@ Updated: 2025-12-06
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Runtime guardrail notes (dec 2025)
-- Sandbox-runtime schema rejects bare `"*"` and IP/CIDR patterns in allow/deny lists. If users request `"*"` (e.g., `TELCLAUDE_NETWORK_MODE=open|permissive`), telclaude falls back to the default developer allowlist to keep the proxy + blocks active instead of failing init.
+- Telclaude implements `TELCLAUDE_NETWORK_MODE=open|permissive` via the sandboxAskCallback layer so it can allow broad egress while still blocking metadata endpoints + RFC1918/private networks (a catch‑all allow rule would skip those checks).
 - Read model is deny-list based: files outside the sensitive path list are readable if the user/agent asks. Seatbelt/bubblewrap plus the sensitive denyRead set provide defense-in-depth, but absolute allow-list reads are not supported by the runtime. For stricter isolation, run inside Docker/WSL with a minimal bind-mounted workspace.
 
 ## System Overview
@@ -45,7 +45,7 @@ TOTP daemon (separate process, keychain-backed)
 ## Five Security Pillars
 1) Filesystem isolation (deny sensitive paths; private `/tmp`; host `/tmp`/`/var/tmp`/`/run/user` denied).  
 2) Environment isolation (allowlist env vars).  
-3) Network isolation (strict default allowlist of developer/Anthropic domains; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` widens to wildcard).  
+3) Network isolation (strict default allowlist of developer/Anthropic domains; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains).  
 4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).  
 5) Auth/rate limits/audit (identity links, TOTP optional, SQLite-backed).
 
@@ -71,8 +71,8 @@ TOTP daemon (separate process, keychain-backed)
 - **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).  
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_SAFE/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
-- Network: default strict allowlist (npm/pypi/docs/github/Anthropic API); set `TELCLAUDE_NETWORK_MODE=open|permissive` to allow `*`. Metadata endpoints and RFC1918 ranges always blocked; local binding disabled except for sandbox proxy ports (Seatbelt limitation).  
-- Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude writes `~/.claude/settings.local.json` with our filesystem/network policy so the SDK sandbox is the single srt layer (no extra wrapper).
+- Network: default strict allowlist (npm/pypi/docs/github/Anthropic API). `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
+- Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude passes our filesystem/network policy via `--settings` for each SDK invocation (no writes to `~/.claude`).
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  

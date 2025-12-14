@@ -32,6 +32,7 @@ export type LoggerResolvedSettings = ResolvedSettings;
 
 let cachedLogger: Logger | null = null;
 let cachedSettings: ResolvedSettings | null = null;
+let cachedDestination: unknown | null = null;
 let overrideSettings: LoggerSettings | null = null;
 
 function normalizeLevel(level?: string): LevelWithSilent {
@@ -54,7 +55,32 @@ function settingsChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
 	return a.level !== b.level || a.file !== b.file;
 }
 
-function buildLogger(settings: ResolvedSettings): Logger {
+function closeDestination(dest: unknown): void {
+	// pino.destination() returns a SonicBoom stream at runtime, but types only include `write()`.
+	// We defensively close/flush any known methods to ensure CLI commands can exit cleanly.
+	const d = dest as {
+		flushSync?: () => void;
+		end?: () => void;
+		destroy?: () => void;
+	};
+	try {
+		d.flushSync?.();
+	} catch {
+		// best-effort
+	}
+	try {
+		d.end?.();
+	} catch {
+		// best-effort
+	}
+	try {
+		d.destroy?.();
+	} catch {
+		// best-effort
+	}
+}
+
+function buildLogger(settings: ResolvedSettings): { logger: Logger; destination: unknown } {
 	const logDir = path.dirname(settings.file);
 	fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
 	try {
@@ -79,7 +105,7 @@ function buildLogger(settings: ResolvedSettings): Logger {
 		mkdir: true,
 		sync: true, // deterministic for tests; log volume is modest.
 	});
-	return pino(
+	const logger = pino(
 		{
 			level: settings.level,
 			base: undefined,
@@ -87,12 +113,19 @@ function buildLogger(settings: ResolvedSettings): Logger {
 		},
 		destination,
 	);
+	return { logger, destination };
 }
 
 export function getLogger(): Logger {
 	const settings = resolveSettings();
 	if (!cachedLogger || settingsChanged(cachedSettings, settings)) {
-		cachedLogger = buildLogger(settings);
+		if (cachedDestination) {
+			closeDestination(cachedDestination);
+			cachedDestination = null;
+		}
+		const built = buildLogger(settings);
+		cachedLogger = built.logger;
+		cachedDestination = built.destination;
 		cachedSettings = settings;
 	}
 	return cachedLogger;
@@ -116,5 +149,18 @@ export function setLoggerOverride(settings: LoggerSettings | null) {
 export function resetLogger() {
 	cachedLogger = null;
 	cachedSettings = null;
+	if (cachedDestination) {
+		closeDestination(cachedDestination);
+		cachedDestination = null;
+	}
 	overrideSettings = null;
+}
+
+export function closeLogger(): void {
+	if (cachedDestination) {
+		closeDestination(cachedDestination);
+		cachedDestination = null;
+	}
+	cachedLogger = null;
+	cachedSettings = null;
 }

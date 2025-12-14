@@ -857,11 +857,12 @@ async function handleInboundMessage(
 	}
 
 	if (trimmedBody === "/skip-totp") {
+		const link = getIdentityLink(msg.chatId);
+		const setupCmd = link
+			? `telclaude totp-setup ${link.localUserId}`
+			: "telclaude totp-setup <user-id>";
 		await msg.reply(
-			"⚠️ *TOTP setup skipped*\n\n" +
-				"You can set up two-factor authentication later by running:\n" +
-				"`telclaude totp-setup`\n\n" +
-				"Note: Without 2FA, anyone with access to your Telegram account can use this bot.",
+			`⚠️ *TOTP setup skipped*\n\nYou can set up two-factor authentication later by running:\n\`${setupCmd}\`\n\n${link ? "Tip: you can confirm your user-id with /whoami.\n\n" : ""}Note: Without 2FA, anyone with access to your Telegram account can use this bot.`,
 		);
 		return;
 	}
@@ -1364,15 +1365,7 @@ async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
 	}
 
 	await msg.reply(
-		"*Setting up Two-Factor Authentication*\n\n" +
-			"For security reasons, TOTP secrets cannot be sent via Telegram " +
-			"(anyone with access to chat history could recreate your 2FA device).\n\n" +
-			"*To set up 2FA:*\n" +
-			"1. Run this command on your local machine:\n" +
-			"   `telclaude totp-setup`\n\n" +
-			"2. Scan the QR code or enter the secret in your authenticator app\n\n" +
-			"3. The CLI will verify your setup automatically\n\n" +
-			"Once configured, you can approve requests by simply entering your 6-digit code.",
+		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. The CLI will verify your setup automatically\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you can approve requests by simply entering your 6-digit code.`,
 	);
 }
 
