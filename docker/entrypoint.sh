@@ -38,7 +38,8 @@ if [ "$(id -u)" = "0" ]; then
 
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
-    for dir in /data /workspace /home/node/.claude /home/node/.telclaude; do
+    # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
+    for dir in /data /home/node/.claude /home/node/.telclaude; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
@@ -48,9 +49,14 @@ if [ "$(id -u)" = "0" ]; then
         fi
     done
 
-    # Drop privileges and exec into the application
-    echo "[entrypoint] Dropping privileges to user: $TELCLAUDE_USER"
-    exec gosu "$TELCLAUDE_USER" /app/bin/telclaude.js "$@"
+    # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)
+    if [ "${TELCLAUDE_RUN_AS_ROOT:-0}" = "1" ]; then
+        echo "[entrypoint] Running as root (TELCLAUDE_RUN_AS_ROOT=1, needed for bubblewrap in Docker)"
+        exec /app/bin/telclaude.js "$@"
+    else
+        echo "[entrypoint] Dropping privileges to user: $TELCLAUDE_USER"
+        exec gosu "$TELCLAUDE_USER" /app/bin/telclaude.js "$@"
+    fi
 else
     # Already running as non-root (e.g., docker-compose user: directive)
     # Skip privileged operations and run directly

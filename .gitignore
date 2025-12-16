@@ -45,3 +45,7 @@ package-lock.json
 
 # TypeScript
 *.tsbuildinfo
+
+# Docker local config (contains secrets/chat IDs)
+docker/.env
+docker/telclaude.json

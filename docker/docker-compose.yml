@@ -70,13 +70,12 @@ services:
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
 
-    security_opt:
-      # no-new-privileges is NOT used here because:
-      # 1. The entrypoint starts as root to run firewall init
-      # 2. Then uses gosu to drop privileges to non-root
-      # 3. no-new-privileges would prevent setuid() calls needed by gosu
-      # The application itself runs as non-root after privilege drop.
-      []
+    # no-new-privileges is NOT used here because:
+    # 1. The entrypoint starts as root to run firewall init
+    # 2. Then uses gosu to drop privileges to non-root
+    # 3. no-new-privileges would prevent setuid() calls needed by gosu
+    # The application itself runs as non-root after privilege drop.
+    security_opt: []
 
     # NOTE: Do NOT set user: here. The entrypoint handles privilege dropping:
     # 1. Starts as root (for firewall init)
@@ -95,6 +94,8 @@ services:
       - SETGID
       # CHOWN: Required for entrypoint to fix ownership of mounted volumes
       - CHOWN
+      # DAC_READ_SEARCH: Required to execute entrypoint when cap_drop=ALL
+      - DAC_READ_SEARCH
 
     read_only: true
     tmpfs:

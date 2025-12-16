@@ -86,8 +86,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsecret-1-0 \
     dbus \
     gnome-keyring \
-    # For sandbox (bubblewrap)
+    # For sandbox (bubblewrap + socat for network proxying)
     bubblewrap \
+    socat \
     # Utilities
     ca-certificates \
     curl \
