@@ -36,6 +36,11 @@ if [ "$(id -u)" = "0" ]; then
     # The script checks TELCLAUDE_FIREWALL internally
     /usr/local/bin/init-firewall.sh
 
+    # Create /tmp/claude for sandbox-runtime CWD tracking
+    # srt hardcodes this path internally regardless of TMPDIR
+    mkdir -p /tmp/claude
+    chmod 1777 /tmp/claude
+
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary

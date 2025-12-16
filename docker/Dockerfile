@@ -121,6 +121,9 @@ RUN groupmod -g ${USER_GID} node \
     && mkdir -p /home/node/.claude \
     && mkdir -p /workspace \
     && mkdir -p /data \
+    # Remove shell rc files to prevent noisy "Permission denied" errors
+    # when bash tries to source them inside the sandbox (which blocks reads)
+    && rm -f /home/node/.bashrc /home/node/.profile \
     && chown -R node:node /home/node /workspace /data
 
 # Copy Claude CLI from builder stage
