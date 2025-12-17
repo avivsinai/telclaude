@@ -466,3 +466,17 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
 	sandboxTierConfigCache.set(cacheKey, rw);
 	return rw;
 }
+
+/**
+ * Pre-warm the sandbox tier config cache for a given cwd.
+ * Call this at startup to avoid slow glob expansion on first message.
+ *
+ * @param cwd - Working directory to pre-warm configs for
+ */
+export function prewarmSandboxConfigCache(cwd: string): void {
+	const tiers: PermissionTier[] = ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"];
+	for (const tier of tiers) {
+		getSandboxConfigForTier(tier, cwd);
+	}
+	logger.info({ cwd, tiers: tiers.length }, "pre-warmed sandbox tier config cache");
+}

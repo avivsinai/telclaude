@@ -7,6 +7,7 @@ import {
 	getNetworkIsolationSummary,
 	initializeSandbox,
 	isSandboxAvailable,
+	prewarmSandboxConfigCache,
 	resetSandbox,
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
@@ -115,6 +116,8 @@ export function registerRelayCommand(program: Command): void {
 				const sandboxResult = await initializeSandbox();
 				if (sandboxResult.initialized) {
 					console.log("Sandbox: enabled (srt)");
+					// Pre-warm tier config cache to avoid slow glob expansion on first message
+					prewarmSandboxConfigCache(process.cwd());
 				}
 
 				// Network policy - default is strict allowlist

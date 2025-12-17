@@ -29,6 +29,7 @@ export {
 	DENY_WRITE_PATHS,
 	DEFAULT_SANDBOX_CONFIG,
 	getSandboxConfigForTier,
+	prewarmSandboxConfigCache,
 	PRIVATE_TMP_PATH,
 	PRIVATE_TMP_CONFIG, // Deprecated, use PRIVATE_TMP_PATH
 	BLOCKED_METADATA_DOMAINS,
