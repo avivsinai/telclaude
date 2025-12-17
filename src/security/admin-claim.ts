@@ -57,17 +57,20 @@ export function validateAdminSecret(providedSecret: string): boolean {
 	const expectedSecret = getAdminSecret();
 	if (!expectedSecret) return false;
 
-	// Constant-time comparison
-	if (providedSecret.length !== expectedSecret.length) {
-		// Still do comparison to maintain constant time
-		crypto.timingSafeEqual(
-			Buffer.from(providedSecret.padEnd(expectedSecret.length, "\0")),
-			Buffer.from(expectedSecret),
-		);
+	const expected = Buffer.from(expectedSecret);
+	const provided = Buffer.from(providedSecret);
+
+	// Constant-time comparison (avoid throwing on length mismatch).
+	if (provided.length !== expected.length) {
+		const normalized = Buffer.alloc(expected.length);
+		for (let i = 0; i < expected.length; i++) {
+			normalized[i] = provided[i] ?? 0;
+		}
+		crypto.timingSafeEqual(normalized, expected);
 		return false;
 	}
 
-	return crypto.timingSafeEqual(Buffer.from(providedSecret), Buffer.from(expectedSecret));
+	return crypto.timingSafeEqual(provided, expected);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

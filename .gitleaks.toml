@@ -7,7 +7,9 @@ description = "Test fixtures and examples with fake secrets"
 paths = [
   "src/commands/doctor.ts",
   ".env.example",
-  "docker/README.md"
+  "docker/README.md",
+  "tests/security/pattern-fuzzing.test.ts",
+  "tests/security/pipeline-integration.test.ts"
 ]
 regexes = [
   '''ghp_abc123def456ghi789jkl012mno345pqr678''',                # fake GitHub PAT in doctor self-test

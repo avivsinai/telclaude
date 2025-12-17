@@ -493,7 +493,7 @@ export function formatTier(tier: PermissionTier): string {
 		case "READ_ONLY":
 			return "Read Only";
 		case "WRITE_LOCAL":
-			return "Write Safe";
+			return "Write Local";
 		case "FULL_ACCESS":
 			return "Full Access";
 	}

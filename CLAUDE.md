@@ -53,7 +53,7 @@
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.  
-- First admin claim (private chat): bot replies with `/approve CODE`; send it back to become admin.  
+- First admin claim (private chat): bot replies with `/approve CODE`; send it back to become admin. If `TELCLAUDE_ADMIN_SECRET` is set, start with `/claim <secret>` first.  
 - Identity linking: `/link <code>` (generated via CLI) and `/unlink`.  
 - Approvals: `/approve <code>` or `/deny <code>`; only one pending per chat; TTL 5 minutes.  
 - TOTP: start daemon, `/setup-2fa`, then `/verify-2fa <code>`; `/disable-2fa` to remove.

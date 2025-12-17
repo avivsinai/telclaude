@@ -148,6 +148,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 - DM your bot from the allowed chat; it replies with `/approve <code>`.
 - Send that command back to link the chat as admin (FULL_ACCESS with per-request approvals).
 - In the same chat, run `/setup-2fa` to bind TOTP (daemon must be running). `/skip-totp` is allowed but not recommended.
+- Optional hardening: set `TELCLAUDE_ADMIN_SECRET` and start with `/claim <secret>` to prevent scanner bots claiming admin first (see `SECURITY.md`).
 
 ## Configuration
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).
