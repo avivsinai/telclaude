@@ -42,6 +42,10 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           NOTES=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "::error::No release notes found for version $VERSION in CHANGELOG.md"
+            exit 1
+          fi
           echo "notes<<EOF" >> $GITHUB_OUTPUT
           echo "$NOTES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
