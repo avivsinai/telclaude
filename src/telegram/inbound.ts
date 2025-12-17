@@ -6,7 +6,7 @@ import { hasAdmin } from "../security/admin-claim.js";
 import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
 import { SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
-import { sanitizeClaudeResponse } from "./sanitize.js";
+import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
 	type BotInfo,
 	type TelegramInboundMessage,
@@ -223,27 +223,31 @@ export async function monitorTelegramInbox(
 					return;
 				}
 
-				// Sanitize response (length truncation, control chars)
-				const sanitized = sanitizeClaudeResponse(text);
+				// Sanitize and split response into Telegram-safe chunks
+				const chunks = sanitizeAndSplitResponse(text);
 
 				if (dryRun) {
 					logger.info(
 						{
 							chatId: chat.id,
 							useMarkdown: options?.useMarkdown ?? false,
-							preview: sanitized.slice(0, 200),
+							chunkCount: chunks.length,
+							preview: chunks[0]?.slice(0, 200),
 						},
 						"dry-run: would send reply",
 					);
 					return;
 				}
 
-				if (options?.useMarkdown) {
-					// Only use markdown when explicitly requested (for system messages)
-					await bot.api.sendMessage(chat.id, sanitized, { parse_mode: "Markdown" });
-				} else {
-					// Plain text - no injection possible
-					await bot.api.sendMessage(chat.id, sanitized);
+				// Send each chunk as a separate message
+				for (const chunk of chunks) {
+					if (options?.useMarkdown) {
+						// Only use markdown when explicitly requested (for system messages)
+						await bot.api.sendMessage(chat.id, chunk, { parse_mode: "Markdown" });
+					} else {
+						// Plain text - no injection possible
+						await bot.api.sendMessage(chat.id, chunk);
+					}
 				}
 			},
 			sendMedia: async (payload: TelegramMediaPayload) => {

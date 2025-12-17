@@ -7,7 +7,7 @@ import type { Message } from "grammy/types";
 import { getChildLogger } from "../logging.js";
 import { type FilterResult, filterOutput } from "../security/output-filter.js";
 import { stringToChatId } from "../utils.js";
-import { sanitizeClaudeResponse, stripMarkdown } from "./sanitize.js";
+import { sanitizeAndSplitResponse, stripMarkdown } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-outbound" });
@@ -72,6 +72,7 @@ export type SendResult = {
 
 /**
  * Send a message to a Telegram chat.
+ * Long messages are automatically split into multiple messages.
  *
  * SECURITY: All text is filtered for secrets before sending.
  */
@@ -82,9 +83,6 @@ export async function sendMessageTelegram(
 	options: SendMessageOptions = {},
 ): Promise<SendResult> {
 	const chatId = typeof to === "number" ? to : stringToChatId(to);
-
-	const sanitizeBody = (text: string) =>
-		sanitizeClaudeResponse(options.parseMode ? text : stripMarkdown(text));
 
 	// SECURITY: Filter output for secrets
 	try {
@@ -112,21 +110,36 @@ export async function sendMessageTelegram(
 	// Handle media
 	const mediaSource = options.mediaPath;
 	if (mediaSource) {
-		const payload = inferMediaPayload(mediaSource, sanitizeBody(body));
+		const chunks = sanitizeAndSplitResponse(options.parseMode ? body : stripMarkdown(body));
+		const payload = inferMediaPayload(mediaSource, chunks[0]); // Use first chunk as caption
 		const result = await sendMediaToChat(bot.api, chatId, payload);
+		// Send remaining chunks as follow-up messages
+		for (let i = 1; i < chunks.length; i++) {
+			await bot.api.sendMessage(chatId, chunks[i], {
+				parse_mode: options.parseMode,
+			});
+		}
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
 		return { messageId: String(result.message_id), chatId };
 	}
 
-	// Send text message
-	const sanitizedText = sanitizeBody(body);
-	const result = await bot.api.sendMessage(chatId, sanitizedText, {
-		parse_mode: options.parseMode, // default: plain text to avoid Markdown parse errors
-		reply_to_message_id: options.replyToMessageId,
-	});
+	// Sanitize and split text into chunks
+	const chunks = sanitizeAndSplitResponse(options.parseMode ? body : stripMarkdown(body));
 
-	logger.info({ chatId, messageId: result.message_id }, "sent message");
-	return { messageId: String(result.message_id), chatId };
+	// Send each chunk
+	let lastResult: { message_id: number } | undefined;
+	for (let i = 0; i < chunks.length; i++) {
+		lastResult = await bot.api.sendMessage(chatId, chunks[i], {
+			parse_mode: options.parseMode,
+			reply_to_message_id: i === 0 ? options.replyToMessageId : undefined,
+		});
+	}
+
+	logger.info(
+		{ chatId, messageId: lastResult?.message_id, chunkCount: chunks.length },
+		"sent message",
+	);
+	return { messageId: String(lastResult?.message_id ?? 0), chatId };
 }
 
 /**
@@ -427,6 +440,7 @@ export async function sendTelegramMessage(
 
 /**
  * Secure layer for ctx.reply() that filters output for secrets.
+ * Long messages are automatically split into multiple messages.
  *
  * SECURITY: Use this instead of ctx.reply() to ensure all outbound
  * messages are filtered for secret exfiltration.
@@ -434,7 +448,7 @@ export async function sendTelegramMessage(
  * @param ctx - grammY context
  * @param text - Message text to send
  * @param options - Optional reply parameters
- * @returns Message result or blocked notification
+ * @returns Last message result or blocked notification
  */
 export async function safeReply(
 	ctx: Context,
@@ -455,7 +469,20 @@ export async function safeReply(
 		throw err;
 	}
 
-	return ctx.reply(text, options);
+	// Sanitize and split into chunks
+	const chunks = sanitizeAndSplitResponse(text);
+
+	// Send each chunk
+	let lastResult: Message | undefined;
+	for (const chunk of chunks) {
+		lastResult = await ctx.reply(chunk, options);
+	}
+
+	// chunks is always non-empty, so lastResult is always set
+	if (!lastResult) {
+		throw new Error("No message chunks to send");
+	}
+	return lastResult;
 }
 
 /**
