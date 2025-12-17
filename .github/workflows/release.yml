@@ -39,14 +39,19 @@ jobs:
 
       - name: Extract release notes
         id: extract-release-notes
-        uses: ffurber/extract-release-notes@v2
-        with:
-          changelog_file: CHANGELOG.md
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          # Extract content between this version header and the next version header
+          NOTES=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
+          # Handle multiline output for GitHub Actions
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          body: ${{ steps.extract-release-notes.outputs.release_notes }}
+          body: ${{ steps.extract-release-notes.outputs.notes }}
           draft: false
           prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
 
