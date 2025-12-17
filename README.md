@@ -83,6 +83,9 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH (Windows via Docker/WSL only)
 - Optional but recommended: TOTP daemon uses the OS keychain (keytar)
 
+## Third-party terms
+- This project depends on `@anthropic-ai/claude-agent-sdk`, which is distributed under Anthropic’s Claude Code legal agreements (see its `LICENSE.md` in `node_modules/` after install).
+
 ## Quick start (Docker, recommended for prod)
 ```bash
 git clone https://github.com/avivsinai/telclaude.git
