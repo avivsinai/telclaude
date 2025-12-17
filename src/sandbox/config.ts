@@ -15,7 +15,7 @@
  *
  * Tier-aligned configs:
  * - READ_ONLY: No writes allowed
- * - WRITE_SAFE/FULL_ACCESS: Writes to workspace + private temp
+ * - WRITE_LOCAL/FULL_ACCESS: Writes to workspace + private temp
  *
  * LINUX GLOB WORKAROUND:
  * The @anthropic-ai/sandbox-runtime library silently drops glob patterns on Linux
@@ -428,12 +428,12 @@ const sandboxTierConfigCache = new Map<string, SandboxRuntimeConfig>();
  * The sandbox matches the tier, not more restrictive.
  *
  * @param tier - Permission tier
- * @param cwd - Working directory to allow writes to (for WRITE_SAFE/FULL_ACCESS) and for glob expansion
+ * @param cwd - Working directory to allow writes to (for WRITE_LOCAL/FULL_ACCESS) and for glob expansion
  * @returns SandboxRuntimeConfig with tier-appropriate permissions
  *
  * - READ_ONLY: No writes allowed
- * - WRITE_SAFE: Writes to cwd + private temp
- * - FULL_ACCESS: Same as WRITE_SAFE (sandbox is safety net, not policy)
+ * - WRITE_LOCAL: Writes to cwd + private temp
+ * - FULL_ACCESS: Same as WRITE_LOCAL (sandbox is safety net, not policy)
  */
 export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): SandboxRuntimeConfig {
 	const workingDir = cwd ?? process.cwd();
@@ -458,7 +458,7 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
 		return ro;
 	}
 
-	// WRITE_SAFE and FULL_ACCESS: allow writes to cwd and private temp
+	// WRITE_LOCAL and FULL_ACCESS: allow writes to cwd and private temp
 	const rw = buildSandboxConfig({
 		additionalAllowWrite: cwd ? [cwd] : [],
 		cwd: workingDir,
@@ -474,7 +474,7 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
  * @param cwd - Working directory to pre-warm configs for
  */
 export function prewarmSandboxConfigCache(cwd: string): void {
-	const tiers: PermissionTier[] = ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"];
+	const tiers: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
 	for (const tier of tiers) {
 		getSandboxConfigForTier(tier, cwd);
 	}

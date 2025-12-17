@@ -1250,7 +1250,7 @@ async function handleDenyCommand(
  */
 const TIER_ORDER: Record<PermissionTier, number> = {
 	READ_ONLY: 0,
-	WRITE_SAFE: 1,
+	WRITE_LOCAL: 1,
 	FULL_ACCESS: 2,
 };
 

@@ -149,11 +149,11 @@ describe("RateLimiter", () => {
 			const userId = "usage-test-user";
 
 			// Make some requests
-			await limiter.checkLimit(userId, "WRITE_SAFE");
-			await limiter.checkLimit(userId, "WRITE_SAFE");
-			await limiter.checkLimit(userId, "WRITE_SAFE");
+			await limiter.checkLimit(userId, "WRITE_LOCAL");
+			await limiter.checkLimit(userId, "WRITE_LOCAL");
+			await limiter.checkLimit(userId, "WRITE_LOCAL");
 
-			const usage = await limiter.getUserUsage(userId, "WRITE_SAFE");
+			const usage = await limiter.getUserUsage(userId, "WRITE_LOCAL");
 			expect(usage.perUser.minute).toBe(3);
 			expect(usage.perTier.minute).toBe(3);
 		});

@@ -12,7 +12,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Mandatory OS sandboxing (Seatbelt on macOS, bubblewrap + socat + ripgrep on Linux) with private /tmp and tier-aligned deny-write rules.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, approval workflow, and TOTP-backed human-in-the-loop for FULL_ACCESS.
-- Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_SAFE, FULL_ACCESS.
+- Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
 
@@ -36,7 +36,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 | Tier | What it can do | Safeguards |
 | --- | --- | --- |
 | READ_ONLY | Read files, search, web fetch/search | No writes; sandbox + secret filter |
-| WRITE_SAFE | READ_ONLY + write/edit/bash | Blocks destructive bash (rm/chown/kill, etc.); denyWrite patterns |
+| WRITE_LOCAL | READ_ONLY + write/edit/bash | Blocks destructive bash (rm/chown/kill, etc.); denyWrite patterns |
 | FULL_ACCESS | All tools | Every request requires human approval; still sandboxed |
 
 ## Architecture
@@ -57,7 +57,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 │                                 ▼                                        │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
 │  │                      Permission Tiers                             │   │
-│  │  READ_ONLY          WRITE_SAFE           FULL_ACCESS              │   │
+│  │  READ_ONLY          WRITE_LOCAL           FULL_ACCESS              │   │
 │  │  (5 tools)          (8 tools)            (all, +approval)         │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                 │                                        │
@@ -157,7 +157,7 @@ docker compose exec telclaude pnpm start relay --profile strict
   - `test`: disables all enforcement; requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
 - Permission tiers:
   - `READ_ONLY`: read/search/web only; no writes.
-  - `WRITE_SAFE`: read/write/edit/bash with destructive commands blocked.
+  - `WRITE_LOCAL`: read/write/edit/bash with destructive commands blocked.
   - `FULL_ACCESS`: unrestricted tools but every request needs human approval.
   - Set per-user under `security.permissions.users`; `defaultTier` stays `READ_ONLY`.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.

@@ -16,9 +16,9 @@
 
       "users": {
         // Your Telegram user ID with write access
-        // WRITE_SAFE: can write/edit files and run bash
+        // WRITE_LOCAL: can write/edit files and run bash
         // Blocks dangerous commands (rm -rf, chmod, etc.) as accident guard
-        "tg:123456789": { "tier": "WRITE_SAFE" }
+        "tg:123456789": { "tier": "WRITE_LOCAL" }
       }
     },
 

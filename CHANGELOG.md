@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Telegram Bot API integration via grammY
 - Claude Agent SDK integration with V2 session pooling
 - Security Observer with fast-path regex and LLM analysis
-- Three-tier permission system (READ_ONLY, WRITE_SAFE, FULL_ACCESS)
+- Three-tier permission system (READ_ONLY, WRITE_LOCAL, FULL_ACCESS)
 - OS-level sandbox (Seatbelt on macOS, bubblewrap on Linux)
 - Rate limiting (global, per-user, per-tier)
 - Identity linking with out-of-band verification

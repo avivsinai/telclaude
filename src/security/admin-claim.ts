@@ -2,15 +2,20 @@
  * Admin Claim Flow
  *
  * Implements first-time admin setup for single-user deployments:
- * - First private message triggers claim flow
+ * - If TELCLAUDE_ADMIN_SECRET is set: requires `/claim <secret>` to start
+ * - If not set: first private message triggers claim flow (backward compatible)
  * - Only private chats can claim admin (groups rejected)
  * - Requires /approve <code> confirmation within timeout
  * - After claim, prompts for TOTP setup
  *
  * Design principles:
+ * - Pre-shared secret prevents scanner bots from claiming admin
  * - Private-chat-only prevents group channel hijacking
  * - Confirmation code prevents accidental claims
  * - Audit trail for all claim attempts
+ *
+ * SECURITY: When TELCLAUDE_ADMIN_SECRET is set, random scanners cannot claim
+ * admin by sending the first message. This closes the bootstrap race condition.
  */
 
 import crypto from "node:crypto";
@@ -27,6 +32,43 @@ const logger = getChildLogger({ module: "admin-claim" });
 
 const CLAIM_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 const CLAIM_CODE_LENGTH = 6; // 6 characters for easy typing
+
+/**
+ * Get the admin secret from environment.
+ * When set, admin claim requires `/claim <secret>` instead of any message.
+ */
+function getAdminSecret(): string | undefined {
+	return process.env.TELCLAUDE_ADMIN_SECRET;
+}
+
+/**
+ * Check if admin secret is required for claiming.
+ */
+export function isAdminSecretRequired(): boolean {
+	const secret = getAdminSecret();
+	return secret !== undefined && secret.length > 0;
+}
+
+/**
+ * Validate an admin secret against the environment variable.
+ * Uses constant-time comparison to prevent timing attacks.
+ */
+export function validateAdminSecret(providedSecret: string): boolean {
+	const expectedSecret = getAdminSecret();
+	if (!expectedSecret) return false;
+
+	// Constant-time comparison
+	if (providedSecret.length !== expectedSecret.length) {
+		// Still do comparison to maintain constant time
+		crypto.timingSafeEqual(
+			Buffer.from(providedSecret.padEnd(expectedSecret.length, "\0")),
+			Buffer.from(expectedSecret),
+		);
+		return false;
+	}
+
+	return crypto.timingSafeEqual(Buffer.from(providedSecret), Buffer.from(expectedSecret));
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -298,6 +340,27 @@ export function formatAdminClaimPrompt(code: string, expiresInSeconds: number): 
 }
 
 /**
+ * Format the message shown when admin secret is required.
+ */
+export function formatAdminSecretRequired(): string {
+	return (
+		"🔐 *Admin setup required*\n\n" +
+		"This bot requires a secret to claim admin.\n\n" +
+		"If you are the operator, reply with:\n" +
+		"`/claim <your-admin-secret>`\n\n" +
+		"The secret was set via `TELCLAUDE_ADMIN_SECRET` environment variable.\n\n" +
+		"⚠️ If you don't know the secret, contact the bot operator."
+	);
+}
+
+/**
+ * Format the message shown when wrong admin secret is provided.
+ */
+export function formatAdminSecretInvalid(): string {
+	return "❌ *Invalid admin secret*\n\nThe secret you provided is incorrect. Please try again.";
+}
+
+/**
  * Format the admin claim success message.
  */
 export function formatAdminClaimSuccess(hasExistingTOTP: boolean): string {
@@ -337,6 +400,10 @@ export function formatGroupRejection(): string {
 /**
  * Handle the first message when no admin is set up yet.
  * Returns the response message to send, or null if the message should proceed normally.
+ *
+ * SECURITY: If TELCLAUDE_ADMIN_SECRET is set, requires `/claim <secret>` to start
+ * the claim flow. This prevents scanner bots from claiming admin by sending the
+ * first message.
  *
  * IMPORTANT: If there's already a pending claim for this chat and the message
  * looks like an /approve command, we return handled: false to let the approve
@@ -382,6 +449,57 @@ export async function handleFirstMessageIfNoAdmin(
 	// so the approve handler can process it
 	if (existingClaim && messageBody.trim().toLowerCase().startsWith("/approve")) {
 		return { handled: false };
+	}
+
+	// SECURITY: If admin secret is required, check for /claim <secret>
+	if (isAdminSecretRequired()) {
+		const trimmedBody = messageBody.trim();
+		const claimMatch = trimmedBody.match(/^\/claim\s+(.+)$/i);
+
+		if (!claimMatch) {
+			// No /claim command - show the secret requirement message
+			logger.info({ chatId }, "admin secret required but not provided");
+
+			if (auditLogger) {
+				await auditLogger.log({
+					timestamp: new Date(),
+					requestId: `admin_claim_${Date.now()}`,
+					telegramUserId: String(opts?.userId ?? chatId),
+					telegramUsername: opts?.username,
+					chatId,
+					messagePreview: "(admin claim - secret required)",
+					permissionTier: "READ_ONLY",
+					outcome: "blocked",
+					errorType: "admin_claim_secret_required",
+				});
+			}
+
+			return { response: formatAdminSecretRequired(), handled: true };
+		}
+
+		// Validate the provided secret
+		const providedSecret = claimMatch[1].trim();
+		if (!validateAdminSecret(providedSecret)) {
+			logger.warn({ chatId }, "admin claim with invalid secret");
+
+			if (auditLogger) {
+				await auditLogger.log({
+					timestamp: new Date(),
+					requestId: `admin_claim_${Date.now()}`,
+					telegramUserId: String(opts?.userId ?? chatId),
+					telegramUsername: opts?.username,
+					chatId,
+					messagePreview: "(admin claim - invalid secret)",
+					permissionTier: "READ_ONLY",
+					outcome: "blocked",
+					errorType: "admin_claim_secret_invalid",
+				});
+			}
+
+			return { response: formatAdminSecretInvalid(), handled: true };
+		}
+
+		logger.info({ chatId }, "admin claim - valid secret provided");
 	}
 
 	// Start the claim flow (or restart if there was an existing expired one)

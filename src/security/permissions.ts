@@ -3,15 +3,15 @@
  *
  * Uses SDK allowedTools arrays instead of CLI flags.
  *
- * SECURITY NOTE ON WRITE_SAFE:
- * The WRITE_SAFE tier provides protection against *accidental* damage, NOT
+ * SECURITY NOTE ON WRITE_LOCAL:
+ * The WRITE_LOCAL tier provides protection against *accidental* damage, NOT
  * *malicious* attacks. A user with write access can escape the sandbox by:
  * - Writing a Python/Node script that deletes files, then running it
  * - Modifying shell configs that execute on next session
  * - Using language interpreters to bypass bash restrictions
  *
  * For true isolation against malicious users, run the agent in a container
- * (Docker) or VM. WRITE_SAFE is appropriate for trusted users who might
+ * (Docker) or VM. WRITE_LOCAL is appropriate for trusted users who might
  * accidentally run dangerous commands.
  */
 
@@ -31,14 +31,14 @@ const logger = getChildLogger({ module: "permissions" });
  */
 export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
-	WRITE_SAFE: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
+	WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
 };
 
 /**
- * Commands blocked for WRITE_SAFE tier (Bash restrictions).
+ * Commands blocked for WRITE_LOCAL tier (Bash restrictions).
  */
-export const WRITE_SAFE_BLOCKED_COMMANDS = [
+export const WRITE_LOCAL_BLOCKED_COMMANDS = [
 	"rm",
 	"rmdir",
 	"mv",
@@ -58,12 +58,12 @@ export const WRITE_SAFE_BLOCKED_COMMANDS = [
 /**
  * Tier descriptions for display.
  *
- * NOTE: WRITE_SAFE prevents accidental damage, not malicious attacks.
+ * NOTE: WRITE_LOCAL prevents accidental damage, not malicious attacks.
  * See module-level security note for details.
  */
 export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
 	READ_ONLY: "Can only read files and search. No write operations allowed.",
-	WRITE_SAFE:
+	WRITE_LOCAL:
 		"Can read and write files, but cannot delete or modify permissions. Note: prevents accidental damage, not malicious attacks.",
 	FULL_ACCESS: "Full system access with no restrictions.",
 };
@@ -131,7 +131,7 @@ export function getUserPermissionTier(
 			{ userId: normalizedId, originalTier: tier },
 			"FULL_ACCESS denied: sandbox not initialized (this should not happen)",
 		);
-		return "WRITE_SAFE";
+		return "WRITE_LOCAL";
 	}
 
 	return tier;
@@ -218,7 +218,7 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
- * Check if a command contains blocked operations for WRITE_SAFE tier.
+ * Check if a command contains blocked operations for WRITE_LOCAL tier.
  * Returns the reason if blocked, null if allowed.
  *
  * Uses tokenization for more reliable detection than pure regex.
@@ -236,7 +236,7 @@ export function containsBlockedCommand(command: string): string | null {
 	for (const token of tokens) {
 		// Strip leading dashes for flag detection, but check full token for commands
 		const cleanToken = token.replace(/^-+/, "");
-		if (WRITE_SAFE_BLOCKED_COMMANDS.includes(token)) {
+		if (WRITE_LOCAL_BLOCKED_COMMANDS.includes(token)) {
 			return token;
 		}
 		// Also check long-form flags like --recursive that map to rm behavior
@@ -481,7 +481,7 @@ export function isSensitivePath(pathOrCommand: string): boolean {
  * Check if a user has at least the specified permission tier.
  */
 export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {
-	const tierOrder: PermissionTier[] = ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"];
+	const tierOrder: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
 	return tierOrder.indexOf(userTier) >= tierOrder.indexOf(requiredTier);
 }
 
@@ -492,7 +492,7 @@ export function formatTier(tier: PermissionTier): string {
 	switch (tier) {
 		case "READ_ONLY":
 			return "Read Only";
-		case "WRITE_SAFE":
+		case "WRITE_LOCAL":
 			return "Write Safe";
 		case "FULL_ACCESS":
 			return "Full Access";

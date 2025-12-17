@@ -63,7 +63,7 @@ Cannot:
 - Execute shell commands
 - Access restricted paths
 
-### WRITE_SAFE
+### WRITE_LOCAL
 
 Medium privilege tier. Additionally can:
 - Write and edit files
@@ -71,7 +71,7 @@ Medium privilege tier. Additionally can:
 
 Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `sudo`, `su`
 
-**Security Note**: WRITE_SAFE prevents *accidental* damage, not *malicious* attacks. Determined attackers could write scripts that perform blocked operations. For true isolation, run in a container.
+**Security Note**: WRITE_LOCAL prevents *accidental* damage, not *malicious* attacks. Determined attackers could write scripts that perform blocked operations. For true isolation, run in a container.
 
 ### FULL_ACCESS
 
@@ -102,7 +102,7 @@ The sandbox prevents access to:
 ### Write Restrictions
 
 - **READ_ONLY**: No writes allowed
-- **WRITE_SAFE/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`). Host `/tmp`/`/var/tmp` are deny-read.
+- **WRITE_LOCAL/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`). Host `/tmp`/`/var/tmp` are deny-read.
 
 ---
 
@@ -152,6 +152,7 @@ Audit logs should be protected and regularly reviewed.
 
 When deploying telclaude:
 
+- [ ] **Set `TELCLAUDE_ADMIN_SECRET`** — Prevents scanner bots from claiming admin first
 - [ ] Use a dedicated bot token (not shared with other services)
 - [ ] Configure `allowedChats` to restrict which chats can interact
 - [ ] Set `defaultTier` to `READ_ONLY`
@@ -161,6 +162,17 @@ When deploying telclaude:
 - [ ] Run the TOTP daemon for 2FA on sensitive operations
 - [ ] Review audit logs regularly
 - [ ] Keep dependencies updated
+
+### Admin Claim Security
+
+By default, the first person to DM the bot can claim admin. **This is a bootstrap race condition.**
+
+To prevent scanner bots from claiming admin:
+```bash
+export TELCLAUDE_ADMIN_SECRET="your-secure-random-secret"
+```
+
+Then claim admin with: `/claim your-secure-random-secret`
 
 ### Additional Hardening
 
@@ -173,11 +185,64 @@ For high-security environments:
 
 ---
 
+## ⚠️ Important Security Caveats
+
+Before deploying, understand these fundamental limitations:
+
+### 1. WRITE_LOCAL Is NOT a Security Boundary
+
+**WRITE_LOCAL provides accident prevention, NOT security isolation.**
+
+The tier blocks common destructive commands (`rm`, `chmod`, `sudo`) but can be trivially bypassed:
+```bash
+# All of these bypass WRITE_LOCAL command blocking:
+python3 -c "import os; os.remove('file')"
+node -e "require('fs').unlinkSync('file')"
+echo "rm -rf /" > script.sh && bash script.sh
+```
+
+**For actual security isolation against malicious inputs:**
+- Run in a container with dropped capabilities
+- Mount the workspace read-only where possible
+- Use the OS sandbox's strict network policies
+
+### 2. Linux Sandbox Has Static Filesystem View
+
+On Linux (bubblewrap), sensitive file patterns (`**/.env`, `secrets.*`) are expanded to literal paths **at startup**.
+
+**TOCTOU Issue**: Files created AFTER the relay starts are NOT protected:
+```bash
+# At startup: ~/.env blocked, myproject/.env blocked (existed at init)
+# After startup: myproject/new-secret/.env is readable (created after init)
+```
+
+**Mitigation**: Restart the relay after creating new sensitive files, or run in Docker where bind mounts provide additional isolation.
+
+### 3. DNS Rebinding Risk (Open Network Mode)
+
+When `TELCLAUDE_NETWORK_MODE=open` or `permissive`, the DNS resolution check can be bypassed via DNS rebinding:
+1. First lookup returns a public IP (allowed)
+2. Second lookup (by the actual tool) returns `127.0.0.1` or metadata endpoint
+
+**Mitigation**: Keep the default strict network allowlist. Only use `open`/`permissive` mode on isolated networks.
+
+### 4. Output Filter Bypass
+
+The secret output filter uses regex patterns. Obfuscation can bypass detection:
+```
+# Detected: sk-ant-abc123
+# Not detected: s k - a n t - a b c 1 2 3
+```
+
+**Mitigation**: This is inherent to LLM monitoring. Document that FULL_ACCESS = potential data exfiltration regardless of filters.
+
+---
+
 ## Known Limitations
 
-### WRITE_SAFE Escape
+### WRITE_LOCAL Escape
 
-The WRITE_SAFE tier blocks specific Bash commands but cannot prevent:
+The WRITE_LOCAL tier blocks specific Bash commands but cannot prevent:
 - Writing scripts that perform blocked operations
 - Using alternative tools (e.g., `perl -e 'unlink("file")'`)
 - Modifying interpreter scripts
@@ -202,6 +267,17 @@ By default, Claude has network access for web fetching. Malicious prompts could 
 **Mitigation**:
 - Configure network allowlists in sandbox configuration
 - Monitor audit logs for suspicious network activity
+
+### Approval Shows Request, Not Commands
+
+Approval messages show the user's original request, not the actual commands Claude will execute. This is because approvals happen before Claude processes the request.
+
+**Risk**: User approves "Delete temp files" but Claude executes `rm -rf ~`.
+
+**Mitigation**:
+- Use READ_ONLY for untrusted users (no approvals needed, just read access)
+- Only grant FULL_ACCESS to users who understand they're approving intent, not specific commands
+- Review audit logs to see what commands were actually executed
 
 ---
 

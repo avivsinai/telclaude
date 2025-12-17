@@ -1249,7 +1249,7 @@ if (pendingMigrationNotice && isAdmin(ctx)) {
 7 layers, all on by default:
 ├── Fast-path regex
 ├── Observer (Haiku)
-├── Permission tiers (READ_ONLY/WRITE_SAFE/FULL)
+├── Permission tiers (READ_ONLY/WRITE_LOCAL/FULL)
 ├── Approval workflows
 ├── Rate limiting
 ├── Identity linking

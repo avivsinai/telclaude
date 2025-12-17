@@ -26,11 +26,11 @@ describe("buildSdkOptions", () => {
 		expect(opts.betas).toBeUndefined();
 	});
 
-	it("WRITE_SAFE allowlists built-in tools without Skill when disabled", () => {
-		const opts = buildSdkOptions({ ...baseOpts, tier: "WRITE_SAFE", enableSkills: false });
+	it("WRITE_LOCAL allowlists built-in tools without Skill when disabled", () => {
+		const opts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL", enableSkills: false });
 
-		expect(opts.tools).toEqual(TIER_TOOLS.WRITE_SAFE);
-		expect(opts.allowedTools).toEqual(TIER_TOOLS.WRITE_SAFE);
+		expect(opts.tools).toEqual(TIER_TOOLS.WRITE_LOCAL);
+		expect(opts.allowedTools).toEqual(TIER_TOOLS.WRITE_LOCAL);
 		expect(opts.permissionMode).toBe("acceptEdits");
 	});
 

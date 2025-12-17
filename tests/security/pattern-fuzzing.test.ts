@@ -363,7 +363,7 @@ describe("Blocked Command Fuzzing", () => {
 
 			// KNOWN LIMITATION: Full paths bypass tokenization
 			// "/bin/rm" becomes ["/bin/rm"] which doesn't match "rm"
-			// This is documented in permissions.ts - WRITE_SAFE is for accidents, not attacks
+			// This is documented in permissions.ts - WRITE_LOCAL is for accidents, not attacks
 			expect(containsBlockedCommand("/bin/rm file.txt")).toBeNull();
 		});
 

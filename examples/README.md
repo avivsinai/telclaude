@@ -14,7 +14,7 @@ Copy one of these to `~/.telclaude/telclaude.json` and customize.
 
 **Permission tiers** control what Claude can do:
 - `READ_ONLY` — Read files, search, web access. No writes.
-- `WRITE_SAFE` — Adds write/edit/bash. Blocks destructive commands (rm, chmod, etc).
+- `WRITE_LOCAL` — Adds write/edit/bash. Blocks destructive commands (rm, chmod, etc).
 - `FULL_ACCESS` — All tools. Requires human approval for each request.
 
 **Security profiles** control which layers are active:

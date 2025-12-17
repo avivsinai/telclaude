@@ -16,7 +16,7 @@ vi.mock("../../src/security/permissions.js", async () => {
 		...actual,
 		TIER_TOOLS: {
 			READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
-			WRITE_SAFE: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
+			WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 			FULL_ACCESS: [],
 		},
 		containsBlockedCommand,
@@ -69,9 +69,9 @@ describe("buildSdkOptions.canUseTool", () => {
 		expect(res?.behavior).toBe("deny");
 	});
 
-	it("denies Bash with blocked command in WRITE_SAFE", async () => {
+	it("denies Bash with blocked command in WRITE_LOCAL", async () => {
 		containsBlockedCommand.mockReturnValueOnce("rm");
-		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_SAFE" });
+		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
 		const res = await sdkOpts.canUseTool?.("Bash", { command: "rm -rf /" });
 		expect(res?.behavior).toBe("deny");
 		expect(res?.message).toContain("blocked operation");
@@ -80,7 +80,7 @@ describe("buildSdkOptions.canUseTool", () => {
 	it("wraps Bash when sandbox is initialized", async () => {
 		isSandboxInitialized.mockReturnValue(true);
 		wrapCommand.mockResolvedValue("sandboxed cmd");
-		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_SAFE" });
+		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
 		const res = await sdkOpts.canUseTool?.("Bash", { command: "echo ok" });
 		expect(res?.behavior).toBe("allow");
 		expect((res as any).updatedInput.command).toBe("sandboxed cmd");

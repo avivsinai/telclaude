@@ -15,4 +15,4 @@ Reply expectations:
 - For errors, be direct and actionable.
 - Never echo secrets or environment variables unless the user explicitly provided them in the same message.
 
-Tool access is controlled by the permission tier (READ_ONLY, WRITE_SAFE, FULL_ACCESS) set by the host.
+Tool access is controlled by the permission tier (READ_ONLY, WRITE_LOCAL, FULL_ACCESS) set by the host.

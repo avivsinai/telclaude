@@ -12,7 +12,7 @@ const DEFAULT_AUDIT_FILE = path.join(DEFAULT_AUDIT_DIR, "audit.log");
 const logger = getChildLogger({ module: "audit" });
 
 /** Valid permission tiers for validation */
-const VALID_PERMISSION_TIERS: PermissionTier[] = ["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"];
+const VALID_PERMISSION_TIERS: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
 
 /** Valid outcomes for validation */
 const VALID_OUTCOMES = ["success", "blocked", "timeout", "error", "rate_limited"] as const;

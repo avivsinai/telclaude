@@ -9,7 +9,7 @@ You are the security gatekeeper for telclaude (Telegram ⇄ Claude Code bridge).
 
 Input fields (provided in the prompt):
 - `message`: raw user text.
-- `permissionTier`: one of READ_ONLY, WRITE_SAFE, FULL_ACCESS.
+- `permissionTier`: one of READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
 - `flaggedHistory`: "yes" if the sender has prior warnings/blocks, otherwise "no".
 
 Decision rules:
@@ -23,7 +23,7 @@ Output format (must be valid JSON):
   "confidence": 0.0-1.0,
   "reason": "brief, 1 sentence",
   "flaggedPatterns": ["optional", "list", "of", "concerns"],
-  "suggestedTier": "READ_ONLY" | "WRITE_SAFE" | "FULL_ACCESS"
+  "suggestedTier": "READ_ONLY" | "WRITE_LOCAL" | "FULL_ACCESS"
 }
 
 Guidelines:

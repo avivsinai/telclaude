@@ -83,7 +83,7 @@ describe("Approvals", () => {
 			{
 				requestId: "test-req-" + Math.random(),
 				chatId,
-				tier: "WRITE_SAFE",
+				tier: "WRITE_LOCAL",
 				body: "Test message",
 				from: "user123",
 				to: "bot",
@@ -177,7 +177,7 @@ describe("Approvals", () => {
 
 			expect(result.success).toBe(true);
 			if (result.success) {
-				expect(result.data.tier).toBe("WRITE_SAFE");
+				expect(result.data.tier).toBe("WRITE_LOCAL");
 				expect(result.data.body).toBe("Test message");
 				expect(result.data.from).toBe("user123");
 				expect(result.data.observerClassification).toBe("WARN");

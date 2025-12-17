@@ -52,7 +52,7 @@ TOTP daemon (separate process, keychain-backed)
 ## Design notes
 - Sandbox is mandatory; relay exits if sandbox-runtime prerequisites are missing.  
 - Enforcement vs policy: sandbox + secret filter + rate limits + auth are always enforced; tiers/observer/approvals are policy layers.  
-- WRITE_SAFE is for accidental safety; sandbox still enforces filesystem/network limits.  
+- WRITE_LOCAL is for accidental safety; sandbox still enforces filesystem/network limits.  
 - Profiles:  
   - simple (default): sandbox + secret filter + rate limits + audit + tiers; observer/approvals off.  
   - strict: adds security observer (fast-path + LLM) and approval workflow.  
@@ -63,13 +63,13 @@ TOTP daemon (separate process, keychain-backed)
 | Tier | Tools | Extra safeguards | Notes |
 | --- | --- | --- | --- |
 | READ_ONLY | Read, Glob, Grep, WebFetch, WebSearch | No writes allowed | Sandbox blocks writes; SDK default write paths mitigated via denyWrite |
-| WRITE_SAFE | READ_ONLY + Write, Edit, Bash | Blocks destructive/bash & dangerous patterns (rm/rmdir/mv/chmod/chown/kill, curl\|sh, netcat, git hooks, path redirects, etc.); denyWrite patterns for secrets | Prevents accidents, not malicious intent |
-| FULL_ACCESS | All tools | Approval required unless user is claimed admin | Same sandbox as WRITE_SAFE; `bypassPermissions` gated by approval/identity |
+| WRITE_LOCAL | READ_ONLY + Write, Edit, Bash | Blocks destructive/bash & dangerous patterns (rm/rmdir/mv/chmod/chown/kill, curl\|sh, netcat, git hooks, path redirects, etc.); denyWrite patterns for secrets | Prevents accidents, not malicious intent |
+| FULL_ACCESS | All tools | Approval required unless user is claimed admin | Same sandbox as WRITE_LOCAL; `bypassPermissions` gated by approval/identity |
 
 ## OS-Level Sandbox
 - **macOS**: Seatbelt via `sandbox-exec`.  
 - **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).  
-- Tier-aligned write rules: READ_ONLY (no writes), WRITE_SAFE/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
+- Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
 - Network: default strict allowlist (npm/pypi/docs/github/Anthropic API). `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
 - Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude passes our filesystem/network policy via `--settings` for each SDK invocation (no writes to `~/.claude`).
@@ -83,7 +83,7 @@ TOTP daemon (separate process, keychain-backed)
 - **Identity linking**: `/link` codes generated via CLI; stored in SQLite.  
 - **First-time admin claim**: private chat only, short-lived approval code.  
 - **TOTP daemon**: separate process, Unix socket IPC, secrets in OS keychain (native) or encrypted file backend in Docker.  
-- **Approvals**: required for FULL_ACCESS (except claimed admin), all BLOCK classifications, WARN with WRITE_SAFE, and low-confidence WARN; TTL 5 minutes.
+- **Approvals**: required for FULL_ACCESS (except claimed admin), all BLOCK classifications, WARN with WRITE_LOCAL, and low-confidence WARN; TTL 5 minutes.
 
 ## Observer & Fast Path
 - Fast-path regex handles obvious safe/unsafe patterns and structural issues (zero-width chars, mixed scripts, repetition).  

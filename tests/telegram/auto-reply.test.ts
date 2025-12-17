@@ -70,7 +70,7 @@ const baseCtx = () => ({
 	from: "user",
 	to: "bot",
 	username: "alice",
-	tier: "WRITE_SAFE" as const,
+	tier: "WRITE_LOCAL" as const,
 	config: {
 		inbound: { reply: { enabled: true, timeoutSeconds: 60 } },
 		sdk: { betas: [] },

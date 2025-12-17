@@ -38,7 +38,7 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 	},
 	perTier: {
 		READ_ONLY: { perMinute: 20, perHour: 200 },
-		WRITE_SAFE: { perMinute: 10, perHour: 100 },
+		WRITE_LOCAL: { perMinute: 10, perHour: 100 },
 		FULL_ACCESS: { perMinute: 5, perHour: 30 },
 	},
 };
@@ -79,7 +79,7 @@ export class RateLimiter {
 			},
 			perTier: {
 				READ_ONLY: rateLimits?.perTier?.READ_ONLY ?? DEFAULT_RATE_LIMITS.perTier.READ_ONLY,
-				WRITE_SAFE: rateLimits?.perTier?.WRITE_SAFE ?? DEFAULT_RATE_LIMITS.perTier.WRITE_SAFE,
+				WRITE_LOCAL: rateLimits?.perTier?.WRITE_LOCAL ?? DEFAULT_RATE_LIMITS.perTier.WRITE_LOCAL,
 				FULL_ACCESS: rateLimits?.perTier?.FULL_ACCESS ?? DEFAULT_RATE_LIMITS.perTier.FULL_ACCESS,
 			},
 		};

@@ -9,6 +9,16 @@
 const MAX_MESSAGE_LENGTH = 4000; // Telegram limit is 4096, leave margin for safety
 
 /**
+ * Maximum total response size to prevent DoS.
+ * Responses larger than this are truncated with a warning.
+ * 500KB should be more than enough for any reasonable response.
+ */
+const MAX_TOTAL_RESPONSE_SIZE = 500 * 1024; // 500KB
+
+/** Truncation message appended when response exceeds size limit */
+const TRUNCATION_WARNING = "\n\n⚠️ [Response truncated - exceeded 500KB limit]";
+
+/**
  * Escape special characters for Telegram MarkdownV2.
  * Only use this for trusted content that needs formatting.
  */
@@ -151,11 +161,31 @@ export function sanitizeClaudeResponse(text: string): string {
  * Sanitize and split a long response into multiple Telegram-safe chunks.
  * Combines sanitization with intelligent splitting at natural boundaries.
  *
+ * SECURITY: Enforces a maximum total response size to prevent DoS attacks
+ * where an LLM generates extremely long responses that could block the event loop.
+ *
  * @param text - Text to sanitize and split
  * @returns Array of sanitized chunks ready for Telegram
  */
 export function sanitizeAndSplitResponse(text: string): string[] {
-	const sanitized = removeDangerousChars(text);
+	let sanitized = removeDangerousChars(text);
+
+	// Enforce maximum response size to prevent DoS
+	if (sanitized.length > MAX_TOTAL_RESPONSE_SIZE) {
+		// Truncate at a reasonable boundary (try to find last paragraph/line break)
+		const truncateAt = MAX_TOTAL_RESPONSE_SIZE - TRUNCATION_WARNING.length;
+		const lastParagraph = sanitized.lastIndexOf("\n\n", truncateAt);
+		const lastLine = sanitized.lastIndexOf("\n", truncateAt);
+		const cutPoint =
+			lastParagraph > truncateAt * 0.8
+				? lastParagraph
+				: lastLine > truncateAt * 0.8
+					? lastLine
+					: truncateAt;
+
+		sanitized = sanitized.slice(0, cutPoint) + TRUNCATION_WARNING;
+	}
+
 	return splitMessage(sanitized);
 }
 

@@ -371,13 +371,13 @@ AWS key: AKIAIOSFODNN7EXAMPLE
 				permissions: {
 					defaultTier: "READ_ONLY" as const,
 					users: {
-						"tg:123456": { tier: "WRITE_SAFE" as const },
+						"tg:123456": { tier: "WRITE_LOCAL" as const },
 					},
 				},
 			};
 
 			const tier = getUserPermissionTier(123456, config);
-			expect(tier).toBe("WRITE_SAFE");
+			expect(tier).toBe("WRITE_LOCAL");
 		});
 
 		it("returns default tier for unconfigured user", () => {
@@ -385,7 +385,7 @@ AWS key: AKIAIOSFODNN7EXAMPLE
 				permissions: {
 					defaultTier: "READ_ONLY" as const,
 					users: {
-						"tg:999999": { tier: "WRITE_SAFE" as const },
+						"tg:999999": { tier: "WRITE_LOCAL" as const },
 					},
 				},
 			};

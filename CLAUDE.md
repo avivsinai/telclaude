@@ -16,9 +16,9 @@
 ## Security essentials (policy vs enforcement)
 - Permission tiers  
   - `READ_ONLY`: tools Read/Glob/Grep/WebFetch/WebSearch; no writes.  
-  - `WRITE_SAFE`: +Write/Edit/Bash; blocks destructive/dangerous patterns (rm/rmdir/mv/chmod/chown/kill/ sudo/su/bash -c rm, curl|sh, netcat, git hooks, path redirects); accident guard only.  
+  - `WRITE_LOCAL`: +Write/Edit/Bash; blocks destructive/dangerous patterns (rm/rmdir/mv/chmod/chown/kill/ sudo/su/bash -c rm, curl|sh, netcat, git hooks, path redirects); accident guard only.  
   - `FULL_ACCESS`: all tools; human approval required unless user is claimed admin.  
-- Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_SAFE, and low-confidence WARN; TTL 5 minutes.  
+- Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_LOCAL, and low-confidence WARN; TTL 5 minutes.  
 - Infrastructure secrets (bot tokens, Anthropic keys, private keys) are non-overridable blocks.  
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.  
 - Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`. Network default allowlist (npm/pypi/docs/github/Anthropic API); metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress (all non-private domains).  

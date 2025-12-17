@@ -44,7 +44,7 @@ export function buildSdkPermissionsForTier(tier: PermissionTier): {
 } {
 	const allowWrite: string[] = [];
 	if (tier !== "READ_ONLY") {
-		// Allow writing to the SDK CWD (workspace) for WRITE_SAFE/FULL_ACCESS.
+		// Allow writing to the SDK CWD (workspace) for WRITE_LOCAL/FULL_ACCESS.
 		// `Write(.)` is interpreted relative to the Claude Code process cwd.
 		allowWrite.push("Write(.)");
 	}

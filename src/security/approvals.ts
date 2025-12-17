@@ -334,8 +334,8 @@ export function requiresApproval(
 		return true;
 	}
 
-	// WARN with WRITE_SAFE requires approval
-	if (classification === "WARN" && tier === "WRITE_SAFE") {
+	// WARN with WRITE_LOCAL requires approval
+	if (classification === "WARN" && tier === "WRITE_LOCAL") {
 		return true;
 	}
 
@@ -409,6 +409,10 @@ export function consumeMostRecentApproval(chatId: number): Result<PendingApprova
 
 /**
  * Format a pending approval for display to the user.
+ *
+ * IMPORTANT: This shows the USER'S REQUEST, not the actual commands Claude will execute.
+ * Approvals happen before Claude processes the request, so we can't show tool inputs.
+ * The user should understand they're approving based on the request, not specific commands.
  */
 export function formatApprovalRequest(approval: PendingApproval, hasTOTPEnabled: boolean): string {
 	const expiresIn = Math.max(0, Math.round((approval.expiresAt - Date.now()) / 1000));
@@ -421,6 +425,8 @@ export function formatApprovalRequest(approval: PendingApproval, hasTOTPEnabled:
 		"```",
 		approval.body.length > 500 ? `${approval.body.slice(0, 500)}...` : approval.body,
 		"```",
+		"",
+		"⚠️ _Note: This shows your request. Claude will decide the actual commands._",
 		"",
 		`*Tier:* ${approval.tier}`,
 		`*Observer:* ${approval.observerClassification} (confidence ${approval.observerConfidence.toFixed(2)})`,

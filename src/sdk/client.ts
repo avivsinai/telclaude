@@ -122,7 +122,7 @@ function isPathSensitive(inputPath: string): boolean {
  * // Write-safe query with session resumption
  * const chunks = executeQueryStream("Create a new file called test.ts", {
  *   cwd: process.cwd(),
- *   tier: "WRITE_SAFE",
+ *   tier: "WRITE_LOCAL",
  *   resumeSessionId: "session-123",
  *   enableSkills: true,
  * });
@@ -145,7 +145,7 @@ export type TelclaudeQueryOptions = {
 
 	/** Permission tier controlling which tools are available.
 	 * - READ_ONLY: Read, Glob, Grep, WebFetch, WebSearch
-	 * - WRITE_SAFE: Above + Write, Edit, Bash (with restrictions)
+	 * - WRITE_LOCAL: Above + Write, Edit, Bash (with restrictions)
 	 * - FULL_ACCESS: All tools (requires sandbox); still subject to canUseTool and approvals
 	 */
 	tier: PermissionTier;
@@ -342,8 +342,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				};
 			}
 
-			// For WRITE_SAFE, also check for blocked commands
-			if (opts.tier === "WRITE_SAFE") {
+			// For WRITE_LOCAL, also check for blocked commands
+			if (opts.tier === "WRITE_LOCAL") {
 				const blocked = containsBlockedCommand(input.command);
 				if (blocked) {
 					logger.warn({ command: input.command, blocked }, "blocked dangerous bash command");

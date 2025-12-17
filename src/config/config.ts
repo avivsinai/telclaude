@@ -52,7 +52,10 @@ const ObserverConfigSchema = z.object({
 });
 
 // Permission tier
-export const PermissionTierSchema = z.enum(["READ_ONLY", "WRITE_SAFE", "FULL_ACCESS"]);
+// NOTE: WRITE_LOCAL provides accident prevention, NOT security isolation.
+// It blocks common destructive commands (rm, chmod) but can be bypassed via
+// interpreters (python -c, node -e). For actual isolation, use containers.
+export const PermissionTierSchema = z.enum(["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"]);
 export type PermissionTier = z.infer<typeof PermissionTierSchema>;
 
 // User permission configuration
@@ -122,7 +125,7 @@ const SecurityConfigSchema = z.object({
 							perHour: z.number().int().positive().default(200),
 						})
 						.optional(),
-					WRITE_SAFE: z
+					WRITE_LOCAL: z
 						.object({
 							perMinute: z.number().int().positive().default(10),
 							perHour: z.number().int().positive().default(100),
