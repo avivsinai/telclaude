@@ -78,7 +78,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 ```
 
 ## Requirements
-- Node 22+, pnpm 9.x
+- Node 23+, pnpm 9.x
 - Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed relay; use `claude login` so tokens live in `~/.claude`.
 - Telegram bot token from @BotFather
 - macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH (Windows via Docker/WSL only)
