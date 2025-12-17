@@ -117,7 +117,8 @@ ARG USER_GID=1000
 RUN groupmod -g ${USER_GID} node \
     && usermod -u ${USER_UID} -g ${USER_GID} node \
     # Create necessary directories
-    && mkdir -p /home/node/.telclaude \
+    && mkdir -p /home/node/.telclaude/logs \
+    && mkdir -p /home/node/.telclaude/sandbox-tmp \
     && mkdir -p /home/node/.claude \
     && mkdir -p /workspace \
     && mkdir -p /data \

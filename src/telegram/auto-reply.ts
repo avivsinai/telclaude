@@ -1365,7 +1365,7 @@ async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
 	}
 
 	await msg.reply(
-		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. The CLI will verify your setup automatically\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you can approve requests by simply entering your 6-digit code.`,
+		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. Return here and send \`/verify-2fa <6-digit-code>\` to confirm your setup\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you can approve requests by simply entering your 6-digit code.`,
 	);
 }
 

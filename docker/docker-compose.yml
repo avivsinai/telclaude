@@ -54,6 +54,9 @@ services:
       # Enable network firewall (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
 
+      # Run as root (bubblewrap handles isolation)
+      - TELCLAUDE_RUN_AS_ROOT=1
+
       # Node environment
       - NODE_ENV=production
 
@@ -64,42 +67,29 @@ services:
       # Persistent data (SQLite DB, sessions, config)
       - telclaude-data:/data:rw
 
+      # Configuration file
+      - ./telclaude.json:/data/telclaude.json:ro
+
       # Claude Code configuration (credentials, settings)
       - telclaude-claude:/home/node/.claude:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
 
-    # no-new-privileges is NOT used here because:
-    # 1. The entrypoint starts as root to run firewall init
-    # 2. Then uses gosu to drop privileges to non-root
-    # 3. no-new-privileges would prevent setuid() calls needed by gosu
-    # The application itself runs as non-root after privilege drop.
-    security_opt: []
+    # Privileged needed for bubblewrap user namespaces in Docker
+    privileged: true
 
-    # NOTE: Do NOT set user: here. The entrypoint handles privilege dropping:
-    # 1. Starts as root (for firewall init)
-    # 2. Uses gosu to drop to node user (UID 1000)
-    # Setting user: would bypass the entrypoint's ability to run privileged init.
+    # Run as root - bubblewrap handles isolation
+    user: "0:0"
 
-    cap_drop:
-      - ALL
-    cap_add:
-      # SYS_ADMIN: Required for bubblewrap sandbox
-      - SYS_ADMIN
-      # NET_ADMIN: Required for iptables firewall (TELCLAUDE_FIREWALL=1)
-      - NET_ADMIN
-      # SETUID/SETGID: Required for gosu to drop privileges
-      - SETUID
-      - SETGID
-      # CHOWN: Required for entrypoint to fix ownership of mounted volumes
-      - CHOWN
-      # DAC_READ_SEARCH: Required to execute entrypoint when cap_drop=ALL
-      - DAC_READ_SEARCH
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
 
     read_only: true
     tmpfs:
       - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755
 
     deploy:
       resources:
@@ -178,6 +168,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64M,mode=1777
+      - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
 
     deploy:
       resources:
