@@ -227,6 +227,10 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 - `CONTRIBUTING.md` — how to get involved
 - `SECURITY.md` — vulnerability reporting and threat model
 
+## Acknowledgments
+
+Inspired by [Clawdis](https://github.com/steipete/clawdis) by [@steipete](https://github.com/steipete).
+
 ## License
 
 MIT

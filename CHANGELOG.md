@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2025-12-17
+
 ### Added
 
 - CLI command: `totp-disable <user-id>`
@@ -56,5 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/avivsinai/telclaude/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/avivsinai/telclaude/releases/tag/v0.1.0
