@@ -18,6 +18,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 
 ## Documentation map
 - Overview & onboarding: this `README.md`
+- Configuration examples: `examples/` (minimal, personal, team)
 - Agent playbook: `CLAUDE.md` (auto-loaded by Claude Code)
 - Agents guide pointer: `AGENTS.md`
 - Architecture/security deep dive: `docs/architecture.md`

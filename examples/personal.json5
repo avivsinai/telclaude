@@ -1,0 +1,40 @@
+// Personal use — single trusted user with write access
+// Good for: your own machine, solo development
+//
+// Copy to: ~/.telclaude/telclaude.json
+
+{
+  "telegram": {
+    "allowedChats": [123456789]  // Your chat ID
+  },
+
+  "security": {
+    "profile": "simple",  // No observer/approvals needed for personal use
+
+    "permissions": {
+      "defaultTier": "READ_ONLY",  // Fallback for unrecognized users
+
+      "users": {
+        // Your Telegram user ID with write access
+        // WRITE_SAFE: can write/edit files and run bash
+        // Blocks dangerous commands (rm -rf, chmod, etc.) as accident guard
+        "tg:123456789": { "tier": "WRITE_SAFE" }
+      }
+    },
+
+    // Relaxed rate limits for personal use
+    "rateLimits": {
+      "perUser": {
+        "perMinute": 30,
+        "perHour": 300
+      }
+    }
+  },
+
+  "inbound": {
+    "reply": {
+      "enabled": true,
+      "timeoutSeconds": 900  // 15 min for longer tasks
+    }
+  }
+}

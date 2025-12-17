@@ -1,0 +1,66 @@
+// Team configuration — multiple users with different access levels
+// Good for: shared bots, small teams, controlled environments
+//
+// Copy to: ~/.telclaude/telclaude.json
+
+{
+  "telegram": {
+    "allowedChats": [
+      123456789,   // Admin's DM
+      -100987654   // Team group chat (groups have negative IDs)
+    ]
+  },
+
+  "security": {
+    "profile": "strict",  // Enables observer + approval workflow
+
+    "permissions": {
+      "defaultTier": "READ_ONLY",  // New/unknown users start here
+
+      "users": {
+        // Admin: full access, but still needs approval per request
+        "tg:123456789": { "tier": "FULL_ACCESS" },
+
+        // Developer: can write code, blocked from dangerous bash
+        "tg:111111111": { "tier": "WRITE_SAFE" },
+
+        // Reviewer: read-only access for code review
+        "tg:222222222": { "tier": "READ_ONLY" }
+      }
+    },
+
+    // Tighter rate limits for shared environment
+    "rateLimits": {
+      "global": {
+        "perMinute": 50,
+        "perHour": 500
+      },
+      "perUser": {
+        "perMinute": 10,
+        "perHour": 60
+      },
+      // Different limits per tier
+      "perTier": {
+        "FULL_ACCESS": { "perMinute": 5, "perHour": 30 },
+        "WRITE_SAFE": { "perMinute": 10, "perHour": 100 },
+        "READ_ONLY": { "perMinute": 20, "perHour": 200 }
+      }
+    },
+
+    // Observer settings for strict profile
+    "observer": {
+      "enabled": true,
+      "dangerThreshold": 0.7,      // 0-1; lower = more cautious
+      "fallbackOnTimeout": "block" // block | allow | escalate
+    },
+
+    "audit": {
+      "enabled": true
+      // "logFile": "~/.telclaude/audit.log"  // Optional; defaults to stderr
+    }
+  },
+
+  "logging": {
+    "level": "info"
+  }
+}

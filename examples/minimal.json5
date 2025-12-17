@@ -1,0 +1,22 @@
+// Minimal configuration — just allowedChats required
+// Everything else uses secure defaults (READ_ONLY, rate limits, audit)
+//
+// Copy to: ~/.telclaude/telclaude.json
+
+{
+  "telegram": {
+    // REQUIRED: Your Telegram chat ID(s). Get yours from @userinfobot
+    // Bot ignores all other chats (fail-closed)
+    "allowedChats": [123456789]
+
+    // Bot token: set TELEGRAM_BOT_TOKEN env var, or uncomment:
+    // "botToken": "123456:ABC-DEF..."
+  }
+}
+
+// With this config you get:
+// - READ_ONLY tier (search, read files, web access)
+// - Sandbox enforcement
+// - Secret redaction in outputs
+// - Rate limiting (10/min, 60/hour)
+// - Audit logging

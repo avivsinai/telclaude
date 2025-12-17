@@ -17,7 +17,8 @@
   "files": [
     "dist",
     "bin",
-    ".claude"
+    ".claude",
+    "examples"
   ],
   "scripts": {
     "build": "tsc",
