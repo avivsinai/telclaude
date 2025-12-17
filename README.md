@@ -7,7 +7,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 [![CodeQL](https://github.com/avivsinai/telclaude/actions/workflows/codeql.yml/badge.svg)](https://github.com/avivsinai/telclaude/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> Status: alpha (0.1.x). Security-first defaults; expect breaking changes before 1.0.
+> **Alpha** — Security-first defaults; expect breaking changes until 1.0.
 
 ## Highlights
 - Mandatory OS sandboxing (Seatbelt on macOS, bubblewrap + socat + ripgrep on Linux) with private /tmp and tier-aligned deny-write rules.
@@ -27,7 +27,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Policies: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`
 
 ## Support & cadence
-- Status: alpha (0.1.x) — breaking changes possible until 1.0.
+- Status: alpha — breaking changes possible until 1.0.
 - Platforms: macOS 14+, Linux (bubblewrap+socat+rg); Docker/WSL recommended for prod.
 - Issues/PR triage: weekly; security reports acknowledged within 48h.
 - Releases: ad-hoc during alpha; aim for monthly.
