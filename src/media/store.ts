@@ -5,13 +5,15 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
-import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "media-store" });
 
-// Store media in sandbox-tmp/media so Claude can read it.
-// Note: ~/.telclaude is blocked for reading by the sandbox, but sandbox-tmp is allowed.
-const MEDIA_DIR = path.join(CONFIG_DIR, "sandbox-tmp", "media");
+// Store media in workspace so Claude can read it.
+// ~/.telclaude is blocked by sandbox, so we use a hidden dir in workspace instead.
+// In Docker: /workspace/.telclaude-media
+// Native: <cwd>/.telclaude-media
+const WORKSPACE = process.env.TELCLAUDE_WORKSPACE ?? process.cwd();
+const MEDIA_DIR = path.join(WORKSPACE, ".telclaude-media");
 
 // Maximum media file size (20MB - Telegram bot API limit)
 const MAX_MEDIA_SIZE = 20 * 1024 * 1024;
