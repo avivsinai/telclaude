@@ -47,7 +47,12 @@ const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV ===
  */
 export const SENSITIVE_READ_PATHS = [
 	// === Telclaude data ===
-	"~/.telclaude", // Our database, config, sockets
+	// Block specific sensitive files, but allow sandbox-tmp (used for media, temp files)
+	"~/.telclaude/telclaude.db",
+	"~/.telclaude/telclaude.db-*", // WAL/SHM files
+	"~/.telclaude/telclaude.json",
+	"~/.telclaude/logs",
+	"~/.telclaude/*.sock", // Unix sockets (TOTP, network proxy)
 
 	// === Environment files (secrets!) ===
 	// These patterns block .env files anywhere in readable paths
