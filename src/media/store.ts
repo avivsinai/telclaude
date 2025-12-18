@@ -8,7 +8,10 @@ import { getChildLogger } from "../logging.js";
 import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "media-store" });
-const MEDIA_DIR = path.join(CONFIG_DIR, "media");
+
+// Store media in sandbox-tmp/media so Claude can read it.
+// Note: ~/.telclaude is blocked for reading by the sandbox, but sandbox-tmp is allowed.
+const MEDIA_DIR = path.join(CONFIG_DIR, "sandbox-tmp", "media");
 
 // Maximum media file size (20MB - Telegram bot API limit)
 const MAX_MEDIA_SIZE = 20 * 1024 * 1024;

@@ -197,8 +197,7 @@ export async function checkTOTPAuthGate(
 			);
 			return {
 				status: "error",
-				message:
-					"⚠️ 2FA service is temporarily unavailable. Please try again in a moment.",
+				message: "⚠️ 2FA service is temporarily unavailable. Please try again in a moment.",
 			};
 		}
 
