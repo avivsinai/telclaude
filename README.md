@@ -31,7 +31,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 - Platforms: macOS 14+, Linux (bubblewrap+socat+rg); Docker/WSL recommended for prod.
 - Issues/PR triage: weekly; security reports acknowledged within 48h.
 - Releases: ad-hoc during alpha; aim for monthly.
-- Security contact: avivsinai@gmail.com (or GitHub private advisory).
+- Security contact: project maintainer(s) via GitHub security advisory.
 
 ## Permission tiers (at a glance)
 | Tier | What it can do | Safeguards |
@@ -209,7 +209,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 - Default stance is fail-closed (empty `allowedChats` denies all; `defaultTier=FULL_ACCESS` is rejected).
 - Sandbox is mandatory; relay exits if Seatbelt/bubblewrap is unavailable.
 - Vulnerabilities: please follow `SECURITY.md` for coordinated disclosure.
-- Security contact: avivsinai@gmail.com (or GitHub security advisory).
+- Security contact: project maintainer(s) via GitHub security advisory.
 
 ## Troubleshooting (quick)
 | Symptom | Likely cause | Fix |
