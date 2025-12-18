@@ -179,6 +179,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `telclaude unban <chat-id>` — restore access for a banned chat
 - `telclaude force-reauth <chat-id>` — invalidate TOTP session, requiring re-verification
 - `telclaude list-bans` — show all banned chats
+- `telclaude reset-db [--force]` — delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`)
 
 ## Usage example
 Run strict profile with approvals and TOTP:
