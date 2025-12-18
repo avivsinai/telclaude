@@ -97,8 +97,8 @@ TOTP daemon (separate process, keychain-backed)
 
 ## Message Flow (strict profile)
 1) Telegram message received.
-2) Admin claim flow (if no admin configured yet).
-3) Ban check — blocked users silently rejected.
+2) Ban check — blocked users silently rejected.
+3) Admin claim flow (if no admin configured yet).
 4) TOTP auth gate — if session expired, challenge and save message; on valid code, create session and replay.
 5) Control-plane commands handled (`/link`, `/approve`, `/deny`, `/whoami`, `/force-reauth`, etc.).
 6) Infrastructure secret block (non-overridable).
