@@ -196,6 +196,29 @@ function initializeSchema(database: Database.Database): void {
 		);
 		CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_chat ON pending_admin_claims(chat_id);
 		CREATE INDEX IF NOT EXISTS idx_pending_admin_claims_expires ON pending_admin_claims(expires_at);
+
+		-- Pending TOTP messages (saved while awaiting auth gate verification)
+		CREATE TABLE IF NOT EXISTS pending_totp_messages (
+			chat_id INTEGER PRIMARY KEY,
+			message_id TEXT NOT NULL,
+			body TEXT NOT NULL,
+			media_path TEXT,
+			media_type TEXT,
+			mime_type TEXT,
+			username TEXT,
+			sender_id INTEGER,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_totp_messages_expires ON pending_totp_messages(expires_at);
+
+		-- Banned chats (blocked from using the bot entirely)
+		CREATE TABLE IF NOT EXISTS banned_chats (
+			chat_id INTEGER PRIMARY KEY,
+			banned_at INTEGER NOT NULL,
+			banned_by TEXT NOT NULL,
+			reason TEXT
+		);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -276,6 +299,7 @@ export function cleanupExpired(): {
 	rateLimits: number;
 	totpSessions: number;
 	adminClaims: number;
+	pendingTotpMessages: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -304,12 +328,18 @@ export function cleanupExpired(): {
 		.prepare("DELETE FROM pending_admin_claims WHERE expires_at < ?")
 		.run(now);
 
+	// Clean expired pending TOTP messages
+	const pendingTotpResult = database
+		.prepare("DELETE FROM pending_totp_messages WHERE expires_at < ?")
+		.run(now);
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
 		rateLimits: rateLimitsResult.changes,
 		totpSessions: totpSessionsResult.changes,
 		adminClaims: adminClaimsResult.changes,
+		pendingTotpMessages: pendingTotpResult.changes,
 	};
 
 	logger.info(result, "expired entries cleaned up");

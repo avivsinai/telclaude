@@ -118,7 +118,7 @@ export function createApproval(
 	// 2. Insert the new approval
 	db.transaction(() => {
 		// SECURITY: Cancel any existing pending approvals for this chat
-		// This prevents race conditions where multiple TOTP approvals could be pending
+		// This prevents race conditions where multiple approvals could be pending
 		const deleted = db.prepare("DELETE FROM approvals WHERE chat_id = ?").run(entry.chatId);
 		if (deleted.changes > 0) {
 			logger.warn(
@@ -349,7 +349,7 @@ export function requiresApproval(
 
 /**
  * Get the most recent pending approval for a chat.
- * Used when verifying TOTP-based approvals.
+ * Used for /deny without nonce (denies most recent pending approval).
  */
 export function getMostRecentPendingApproval(chatId: number): PendingApproval | null {
 	const db = getDb();
@@ -369,52 +369,16 @@ export function getMostRecentPendingApproval(chatId: number): PendingApproval | 
 }
 
 /**
- * Consume the most recent pending approval for a chat (for TOTP-based approval).
- */
-export function consumeMostRecentApproval(chatId: number): Result<PendingApproval> {
-	const db = getDb();
-
-	const result = db.transaction(() => {
-		const now = Date.now();
-		const row = db
-			.prepare(
-				"SELECT * FROM approvals WHERE chat_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
-			)
-			.get(chatId, now) as ApprovalRow | undefined;
-
-		if (!row) {
-			return { success: false as const, error: "No pending approval found." };
-		}
-
-		// SECURITY: Atomically consume the approval - verify it was actually deleted
-		const deleteResult = db.prepare("DELETE FROM approvals WHERE nonce = ?").run(row.nonce);
-		if (deleteResult.changes !== 1) {
-			logger.error(
-				{ nonce: row.nonce, chatId, changes: deleteResult.changes },
-				"SECURITY: Approval deletion anomaly - possible race condition",
-			);
-			return { success: false as const, error: "Approval consumption failed - please try again" };
-		}
-
-		logger.info(
-			{ nonce: row.nonce, requestId: row.request_id, chatId },
-			"approval consumed via TOTP",
-		);
-
-		return { success: true as const, data: rowToApproval(row) };
-	})();
-
-	return result;
-}
-
-/**
  * Format a pending approval for display to the user.
  *
  * IMPORTANT: This shows the USER'S REQUEST, not the actual commands Claude will execute.
  * Approvals happen before Claude processes the request, so we can't show tool inputs.
  * The user should understand they're approving based on the request, not specific commands.
+ *
+ * NOTE: Identity verification is handled by the TOTP auth gate before messages reach here.
+ * Approvals are now nonce-only (intent confirmation, not identity verification).
  */
-export function formatApprovalRequest(approval: PendingApproval, hasTOTPEnabled: boolean): string {
+export function formatApprovalRequest(approval: PendingApproval): string {
 	const expiresIn = Math.max(0, Math.round((approval.expiresAt - Date.now()) / 1000));
 	const minutes = Math.floor(expiresIn / 60);
 	const seconds = expiresIn % 60;
@@ -436,23 +400,12 @@ export function formatApprovalRequest(approval: PendingApproval, hasTOTPEnabled:
 		lines.push(`*Reason:* ${approval.observerReason}`);
 	}
 
-	if (hasTOTPEnabled) {
-		// TOTP-based approval (secure)
-		lines.push(
-			"",
-			"Reply with your *6-digit authenticator code* to approve.",
-			"To deny, reply: `/deny`",
-		);
-	} else {
-		// Nonce-based approval fallback (less secure than TOTP)
-		lines.push(
-			"",
-			"Set up 2FA with `/setup-2fa` for secure approvals.",
-			"",
-			`To approve, reply: \`/approve ${approval.nonce}\``,
-			`To deny, reply: \`/deny ${approval.nonce}\``,
-		);
-	}
+	// Nonce-based approval (identity already verified by TOTP auth gate)
+	lines.push(
+		"",
+		`To approve, reply: \`/approve ${approval.nonce}\``,
+		`To deny, reply: \`/deny ${approval.nonce}\``,
+	);
 
 	lines.push("", `_Expires in ${timeStr}_`);
 

@@ -55,8 +55,9 @@
 - `allowedChats` must include the chat before first DM.  
 - First admin claim (private chat): bot replies with `/approve CODE`; send it back to become admin. If `TELCLAUDE_ADMIN_SECRET` is set, start with `/claim <secret>` first.  
 - Identity linking: `/link <code>` (generated via CLI) and `/unlink`.  
-- Approvals: `/approve <code>` or `/deny <code>`; only one pending per chat; TTL 5 minutes.  
-- TOTP: start daemon, `/setup-2fa`, then `/verify-2fa <code>`; `/disable-2fa` to remove.
+- Approvals (intent confirmation): `/approve <nonce>` or `/deny <nonce>`; nonce-based, only one pending per chat; TTL 5 minutes.
+- TOTP (identity verification): periodic auth gate when session expires. Start daemon, `/setup-2fa`, then `/verify-2fa <code>`. Commands: `/2fa-logout`, `/disable-2fa`, `/force-reauth [chat-id]`.
+- Emergency controls (CLI-only): `telclaude ban <chat-id>`, `telclaude unban <chat-id>`, `telclaude force-reauth <chat-id>`, `telclaude list-bans`.
 
 ## Sandbox notes
 - Linux globs expanded once at startup; new matching files after init are not auto-blocked.  

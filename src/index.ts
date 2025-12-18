@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createProgram } from "./cli/program.js";
+import { registerAccessControlCommands } from "./commands/access-control.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
@@ -30,6 +31,7 @@ registerTOTPDisableCommand(program);
 registerTOTPSetupCommand(program);
 registerResetAuthCommand(program);
 registerResetDbCommand(program);
+registerAccessControlCommands(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

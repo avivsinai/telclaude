@@ -118,7 +118,9 @@ export function registerTOTPSetupCommand(program: Command): void {
 			}
 
 			console.log("\n✅ TOTP 2FA setup complete!");
-			console.log(`   User '${userId}' can now approve requests with their authenticator code.`);
+			console.log(
+				`   User '${userId}' will be prompted to verify identity periodically via authenticator code.`,
+			);
 			console.log(`\n   To disable 2FA later: telclaude totp-disable ${userId}`);
 		});
 }

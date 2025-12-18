@@ -5,7 +5,7 @@ import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
-import { SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
+import { SECRET_BLOCKED_MESSAGE, convertAndSendMessage, sendMediaToChat } from "./outbound.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
 	type BotInfo,
@@ -239,14 +239,17 @@ export async function monitorTelegramInbox(
 					return;
 				}
 
-				// Send each chunk as a separate message
-				for (const chunk of chunks) {
+				// Send each chunk as a separate message with MarkdownV2 conversion
+				for (let i = 0; i < chunks.length; i++) {
+					const chunk = chunks[i];
 					if (options?.useMarkdown) {
-						// Only use markdown when explicitly requested (for system messages)
+						// Legacy Markdown for system messages that are pre-formatted
 						await bot.api.sendMessage(chat.id, chunk, { parse_mode: "Markdown" });
 					} else {
-						// Plain text - no injection possible
-						await bot.api.sendMessage(chat.id, chunk);
+						// Convert Claude's markdown to Telegram MarkdownV2
+						await convertAndSendMessage(bot.api, chat.id, chunk, {
+							replyToMessageId: i === 0 ? message.message_id : undefined,
+						});
 					}
 				}
 			},
