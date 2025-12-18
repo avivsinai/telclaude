@@ -3,11 +3,12 @@ import path from "node:path";
 import type { Api, Bot, Context } from "grammy";
 import { InputFile } from "grammy";
 import type { Message } from "grammy/types";
+import { convert as convertToTelegramMarkdown } from "telegram-markdown-v2";
 
 import { getChildLogger } from "../logging.js";
 import { type FilterResult, filterOutput } from "../security/output-filter.js";
 import { stringToChatId } from "../utils.js";
-import { sanitizeAndSplitResponse, stripMarkdown } from "./sanitize.js";
+import { sanitizeAndSplitResponse } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-outbound" });
@@ -107,30 +108,38 @@ export async function sendMessageTelegram(
 		// Non-fatal
 	}
 
+	const effectiveParseMode = options.parseMode ?? "MarkdownV2";
+	// Convert to MarkdownV2 unless caller explicitly wants HTML or legacy Markdown.
+	// For those modes, caller is responsible for proper formatting/escaping.
+	const shouldConvertMarkdown = options.parseMode !== "HTML" && options.parseMode !== "Markdown";
+
+	// Split BEFORE markdown conversion to avoid breaking escape sequences mid-chunk.
+	// Each chunk is then converted independently to ensure valid MarkdownV2.
+	const rawChunks = sanitizeAndSplitResponse(body);
+	const chunks = shouldConvertMarkdown
+		? rawChunks.map((chunk) => convertToTelegramMarkdown(chunk))
+		: rawChunks;
+
 	// Handle media
 	const mediaSource = options.mediaPath;
 	if (mediaSource) {
-		const chunks = sanitizeAndSplitResponse(options.parseMode ? body : stripMarkdown(body));
 		const payload = inferMediaPayload(mediaSource, chunks[0]); // Use first chunk as caption
-		const result = await sendMediaToChat(bot.api, chatId, payload);
+		const result = await sendMediaToChat(bot.api, chatId, payload, effectiveParseMode);
 		// Send remaining chunks as follow-up messages
 		for (let i = 1; i < chunks.length; i++) {
 			await bot.api.sendMessage(chatId, chunks[i], {
-				parse_mode: options.parseMode,
+				parse_mode: effectiveParseMode,
 			});
 		}
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
 		return { messageId: String(result.message_id), chatId };
 	}
 
-	// Sanitize and split text into chunks
-	const chunks = sanitizeAndSplitResponse(options.parseMode ? body : stripMarkdown(body));
-
 	// Send each chunk
 	let lastResult: { message_id: number } | undefined;
 	for (let i = 0; i < chunks.length; i++) {
 		lastResult = await bot.api.sendMessage(chatId, chunks[i], {
-			parse_mode: options.parseMode,
+			parse_mode: effectiveParseMode,
 			reply_to_message_id: i === 0 ? options.replyToMessageId : undefined,
 		});
 	}
@@ -143,10 +152,46 @@ export async function sendMessageTelegram(
 }
 
 /**
+ * Convert text to MarkdownV2 and send as a single message.
+ * Used by inbound.ts reply function to ensure consistent markdown handling.
+ *
+ * @param api - Telegram Bot API instance
+ * @param chatId - Target chat ID
+ * @param text - Text to convert and send (already sanitized and split)
+ * @param options - Optional parse mode override and reply settings
+ */
+export async function convertAndSendMessage(
+	api: Api,
+	chatId: number,
+	text: string,
+	options?: { parseMode?: "Markdown" | "HTML" | "MarkdownV2"; replyToMessageId?: number },
+): Promise<Message> {
+	const parseMode = options?.parseMode ?? "MarkdownV2";
+	// Convert to MarkdownV2 unless caller explicitly wants HTML or legacy Markdown
+	const shouldConvert = parseMode === "MarkdownV2";
+	const convertedText = shouldConvert ? convertToTelegramMarkdown(text) : text;
+
+	return api.sendMessage(chatId, convertedText, {
+		parse_mode: parseMode,
+		reply_to_message_id: options?.replyToMessageId,
+	});
+}
+
+/**
  * Infer media payload type from file path or URL.
+ * Handles URLs with querystrings by extracting pathname first.
  */
 function inferMediaPayload(source: string, caption?: string): TelegramMediaPayload {
-	const ext = path.extname(source).toLowerCase();
+	// For URLs, extract pathname to get correct extension (ignore querystring)
+	let pathForExt = source;
+	if (source.startsWith("http://") || source.startsWith("https://")) {
+		try {
+			pathForExt = new URL(source).pathname;
+		} catch {
+			// If URL parsing fails, use original source
+		}
+	}
+	const ext = path.extname(pathForExt).toLowerCase();
 
 	if ([".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext)) {
 		return { type: "photo", source, caption };
@@ -174,6 +219,37 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 const MAX_FILE_SCAN_SIZE = 10 * 1024 * 1024;
 
 /**
+ * Check if a buffer is likely text (not binary).
+ * Uses efficient sampling and handles UTF-8 properly.
+ */
+function isProbablyText(buf: Buffer): boolean {
+	if (buf.length === 0) return true;
+
+	// Sample up to 8KB for performance on large files
+	const sampleSize = Math.min(buf.length, 8192);
+	let nullCount = 0;
+	let controlCount = 0;
+
+	for (let i = 0; i < sampleSize; i++) {
+		const byte = buf[i];
+		// Null bytes are strong indicator of binary
+		if (byte === 0) {
+			nullCount++;
+			// More than 1% null bytes = definitely binary
+			if (nullCount > sampleSize * 0.01) return false;
+		}
+		// Count non-text control characters (0x00-0x08, 0x0E-0x1F except common ones)
+		// Excludes: tab(9), lf(10), cr(13), and allows UTF-8 continuation bytes (0x80-0xFF)
+		if (byte < 9 || (byte > 13 && byte < 32 && byte !== 27)) {
+			controlCount++;
+		}
+	}
+
+	// If more than 10% are problematic control chars, likely binary
+	return controlCount / sampleSize < 0.1;
+}
+
+/**
  * Scan file content for secrets before sending.
  * Returns true if the file is safe to send, false if secrets detected.
  */
@@ -181,32 +257,18 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 	try {
 		let content: string;
 
-		const isProbablyText = (text: string): boolean => {
-			if (!text.length) return true;
-			const printable = text.split("").filter((c) => {
-				const code = c.charCodeAt(0);
-				return (
-					code === 9 || // tab
-					code === 10 || // lf
-					code === 13 || // cr
-					(code >= 32 && code <= 126)
-				);
-			}).length;
-			return printable / text.length > 0.8;
-		};
-
 		if (Buffer.isBuffer(source)) {
 			// Scan buffer content
 			if (source.length > MAX_FILE_SCAN_SIZE) {
 				logger.warn({ size: source.length }, "file too large to scan for secrets");
 				return { safe: true }; // Allow but log warning
 			}
-			const text = source.toString("utf-8");
-			if (!isProbablyText(text)) {
+			// Check binary before converting to string (more efficient)
+			if (!isProbablyText(source)) {
 				logger.debug("buffer appears binary; skipping secret scan");
 				return { safe: true };
 			}
-			content = text;
+			content = source.toString("utf-8");
 		} else if (!source.startsWith("http://") && !source.startsWith("https://")) {
 			// Local file path - read and scan
 			const absolutePath = path.isAbsolute(source) ? source : path.resolve(source);
@@ -220,12 +282,12 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 				return { safe: true }; // Allow but log warning
 			}
 			const buf = fs.readFileSync(absolutePath);
-			const text = buf.toString("utf-8");
-			if (!isProbablyText(text)) {
+			// Check binary before converting to string (more efficient)
+			if (!isProbablyText(buf)) {
 				logger.debug({ path: absolutePath }, "file appears binary; skipping secret scan");
 				return { safe: true };
 			}
-			content = text;
+			content = buf.toString("utf-8");
 		} else {
 			// URL - still check the URL string for obvious secrets, but avoid downloading
 			const filterResult = filterOutput(source);
@@ -278,6 +340,7 @@ export async function sendMediaToChat(
 	api: Api,
 	chatId: number,
 	payload: TelegramMediaPayload,
+	parseMode?: "Markdown" | "MarkdownV2" | "HTML",
 ): Promise<Message> {
 	// SECURITY: Scan file content for secrets before sending
 	const fileScan = scanFileForSecrets(payload.source);
@@ -320,23 +383,24 @@ export async function sendMediaToChat(
 
 	switch (payload.type) {
 		case "photo":
-			return api.sendPhoto(chatId, source, { caption: safeCaption });
+			return api.sendPhoto(chatId, source, { caption: safeCaption, parse_mode: parseMode });
 		case "document":
-			return api.sendDocument(chatId, source, { caption: safeCaption });
+			return api.sendDocument(chatId, source, { caption: safeCaption, parse_mode: parseMode });
 		case "voice":
-			return api.sendVoice(chatId, source, { caption: safeCaption });
+			return api.sendVoice(chatId, source, { caption: safeCaption, parse_mode: parseMode });
 		case "video":
-			return api.sendVideo(chatId, source, { caption: safeCaption });
+			return api.sendVideo(chatId, source, { caption: safeCaption, parse_mode: parseMode });
 		case "audio":
 			return api.sendAudio(chatId, source, {
 				caption: safeCaption,
+				parse_mode: parseMode,
 				title: payload.title,
 				performer: payload.performer,
 			});
 		case "sticker":
 			return api.sendSticker(chatId, source);
 		case "animation":
-			return api.sendAnimation(chatId, source, { caption: safeCaption });
+			return api.sendAnimation(chatId, source, { caption: safeCaption, parse_mode: parseMode });
 		default:
 			throw new Error(`Unsupported media type: ${(payload as { type: string }).type}`);
 	}
@@ -403,11 +467,21 @@ export async function sendTelegramMessage(
 	const bot = new Bot(options.token);
 
 	try {
-		// SECURITY: Filter all text output
-		const textToFilter = options.text ?? options.caption;
-		if (textToFilter) {
+		// SECURITY: Filter BOTH text AND caption for secrets (not just one)
+		if (options.text) {
 			try {
-				filterBeforeSend(textToFilter);
+				filterBeforeSend(options.text);
+			} catch (err) {
+				if (err instanceof SecretExfiltrationBlockedError) {
+					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
+					return { success: true, messageId: result.message_id };
+				}
+				throw err;
+			}
+		}
+		if (options.caption) {
+			try {
+				filterBeforeSend(options.caption);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
 					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
@@ -424,8 +498,17 @@ export async function sendTelegramMessage(
 		}
 
 		if (options.text) {
-			const result = await bot.api.sendMessage(options.chatId, options.text);
-			return { success: true, messageId: result.message_id };
+			// Split and convert long text to handle Telegram's message limit
+			const chunks = sanitizeAndSplitResponse(options.text);
+			const convertedChunks = chunks.map((chunk) => convertToTelegramMarkdown(chunk));
+
+			let lastResult: { message_id: number } | undefined;
+			for (const chunk of convertedChunks) {
+				lastResult = await bot.api.sendMessage(options.chatId, chunk, {
+					parse_mode: "MarkdownV2",
+				});
+			}
+			return { success: true, messageId: lastResult?.message_id };
 		}
 
 		return { success: false, error: "No text or media provided" };
@@ -469,13 +552,29 @@ export async function safeReply(
 		throw err;
 	}
 
-	// Sanitize and split into chunks
-	const chunks = sanitizeAndSplitResponse(text);
+	const parseMode = options?.parse_mode;
+	// Convert to MarkdownV2 unless caller explicitly wants HTML or legacy Markdown.
+	const shouldConvertMarkdown = parseMode !== "HTML" && parseMode !== "Markdown";
+	const effectiveParseMode = parseMode ?? ("MarkdownV2" as const);
 
-	// Send each chunk
+	// Split BEFORE markdown conversion to avoid breaking escape sequences mid-chunk.
+	// Each chunk is then converted independently to ensure valid MarkdownV2.
+	const rawChunks = sanitizeAndSplitResponse(text);
+	const chunks = shouldConvertMarkdown
+		? rawChunks.map((chunk) => convertToTelegramMarkdown(chunk))
+		: rawChunks;
+
+	// Send each chunk. Only set reply_to_message_id on first chunk to avoid
+	// all chunks being marked as replies (matching sendMessageTelegram behavior).
 	let lastResult: Message | undefined;
-	for (const chunk of chunks) {
-		lastResult = await ctx.reply(chunk, options);
+	for (let i = 0; i < chunks.length; i++) {
+		const chunkOptions = {
+			...options,
+			parse_mode: effectiveParseMode,
+			// Only reply to original message on first chunk
+			reply_to_message_id: i === 0 ? options?.reply_to_message_id : undefined,
+		};
+		lastResult = await ctx.reply(chunks[i], chunkOptions);
 	}
 
 	// chunks is always non-empty, so lastResult is always set

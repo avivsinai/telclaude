@@ -6,7 +6,10 @@
  *
  * After a user verifies TOTP once, the session is remembered for
  * a configurable duration (default: 4 hours). During this time,
- * subsequent approvals don't require TOTP re-verification.
+ * subsequent messages don't require TOTP re-verification.
+ *
+ * NOTE: TOTP is used as an identity verification gate, not for approvals.
+ * Approvals use nonce-based confirmation only (intent verification).
  */
 
 import { getChildLogger } from "../logging.js";

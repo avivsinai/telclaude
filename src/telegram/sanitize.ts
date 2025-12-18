@@ -2,11 +2,16 @@
  * Message sanitization for Telegram output.
  *
  * Prevents injection attacks through Claude responses or user-echoed content.
- * Uses plain text by default to avoid markdown injection.
+ * Output is converted to MarkdownV2 by outbound.ts after splitting.
  */
 
-/** Telegram message length limit with safety margin */
-const MAX_MESSAGE_LENGTH = 4000; // Telegram limit is 4096, leave margin for safety
+/**
+ * Telegram message length limit with margin for MarkdownV2 escape expansion.
+ * Telegram's hard limit is 4096 chars. MarkdownV2 conversion can expand text
+ * significantly (e.g., "test.com" → "test\.com"), so we use 3200 to leave
+ * ~900 chars headroom for escaping special characters.
+ */
+const MAX_MESSAGE_LENGTH = 3200;
 
 /**
  * Maximum total response size to prevent DoS.
@@ -20,25 +25,25 @@ const TRUNCATION_WARNING = "\n\n⚠️ [Response truncated - exceeded 500KB limi
 
 /**
  * Escape special characters for Telegram MarkdownV2.
- * Only use this for trusted content that needs formatting.
+ * @deprecated Use telegram-markdown-v2 library instead (see outbound.ts).
+ * Kept for potential future use with system messages.
  */
 export function escapeMarkdownV2(text: string): string {
-	// Characters that need escaping in MarkdownV2
 	return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
 /**
  * Escape special characters for legacy Telegram Markdown.
- * Only use this for trusted content that needs formatting.
+ * Used by formatSystemMessage() for controlled system output.
  */
 export function escapeMarkdown(text: string): string {
-	// Characters that need escaping in legacy Markdown
 	return text.replace(/([_*`\[])/g, "\\$1");
 }
 
 /**
  * Strip all markdown formatting from text.
- * Use this for untrusted content (like Claude responses).
+ * @deprecated No longer used - we now convert to MarkdownV2 instead.
+ * Kept for potential fallback scenarios.
  */
 export function stripMarkdown(text: string): string {
 	return (
@@ -149,9 +154,7 @@ function removeDangerousChars(text: string): string {
 /**
  * Sanitize Claude's response for safe display in Telegram.
  * Removes potentially dangerous formatting while preserving readability.
- *
- * NOTE: This function now returns a single sanitized string without truncation.
- * Use splitMessage() separately if you need to split for Telegram's length limit.
+ * @deprecated Use sanitizeAndSplitResponse() instead which handles both.
  */
 export function sanitizeClaudeResponse(text: string): string {
 	return removeDangerousChars(text);

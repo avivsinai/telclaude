@@ -522,7 +522,7 @@ describe("Sensitive Path Fuzzing", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("Message Splitting Fuzzing", () => {
-	const MAX_LENGTH = 4000;
+	const MAX_LENGTH = 3200; // Matches MAX_MESSAGE_LENGTH in sanitize.ts (reduced for MarkdownV2 escape expansion)
 
 	describe("Basic functionality", () => {
 		it("returns single chunk for short messages", () => {

@@ -12,7 +12,7 @@ OS-sandboxed Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, a
 ## Highlights
 - Mandatory OS sandboxing (Seatbelt on macOS, bubblewrap + socat + ripgrep on Linux) with private /tmp and tier-aligned deny-write rules.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
-- Soft controls: Haiku observer, approval workflow, and TOTP-backed human-in-the-loop for FULL_ACCESS.
+- Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
@@ -151,7 +151,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 7) First admin claim
 - DM your bot from the allowed chat; it replies with `/approve <code>`.
 - Send that command back to link the chat as admin (FULL_ACCESS with per-request approvals).
-- In the same chat, run `/setup-2fa` to bind TOTP (daemon must be running). `/skip-totp` is allowed but not recommended.
+- In the same chat, run `/setup-2fa` to bind TOTP for periodic identity verification (daemon must be running). `/skip-totp` is allowed but not recommended.
 - Optional hardening: set `TELCLAUDE_ADMIN_SECRET` and start with `/claim <secret>` to prevent scanner bots claiming admin first (see `SECURITY.md`).
 
 ## Configuration
@@ -177,6 +177,10 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `telclaude totp-setup <user-id>`
 - `telclaude totp-disable <user-id>`
 - `telclaude reset-auth [--force]`
+- `telclaude ban <chat-id> [-r <reason>]` — block a chat from using the bot
+- `telclaude unban <chat-id>` — restore access for a banned chat
+- `telclaude force-reauth <chat-id>` — invalidate TOTP session, requiring re-verification
+- `telclaude list-bans` — show all banned chats
 
 ## Usage example
 Run strict profile with approvals and TOTP:

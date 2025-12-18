@@ -2,7 +2,6 @@ import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
 
-import type { TemplateContext } from "../auto-reply/templating.js";
 import { type PermissionTier, type TelclaudeConfig, loadConfig } from "../config/config.js";
 import {
 	DEFAULT_IDLE_MINUTES,
@@ -25,7 +24,6 @@ import {
 import {
 	type PendingApproval,
 	consumeApproval,
-	consumeMostRecentApproval,
 	createApproval,
 	denyApproval,
 	formatApprovalRequest,
@@ -33,21 +31,20 @@ import {
 	requiresApproval,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
+import { isChatBanned } from "../security/banned-chats.js";
 import { checkInfrastructureSecrets } from "../security/fast-path.js";
 import { consumeLinkCode, getIdentityLink, isAdmin } from "../security/linking.js";
 import { type SecurityObserver, createObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
 import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
 import { createStreamingRedactor } from "../security/streaming-redactor.js";
-import {
-	createTOTPSession,
-	hasTOTPSession,
-	invalidateTOTPSessionForChat,
-} from "../security/totp-session.js";
-import { disableTOTP, hasTOTP, verifyTOTP } from "../security/totp.js";
+import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
+import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
+import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
 import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
+import { buildMultimodalPrompt } from "./multimodal.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
@@ -349,20 +346,6 @@ async function executeWithSession(
 		isNewSession = false;
 	}
 
-	const templatingCtx: TemplateContext = {
-		Body: msg.body,
-		BodyStripped: msg.body.trim(),
-		From: ctx.from,
-		To: ctx.to,
-		MessageId: msg.id,
-		MediaPath: ctx.mediaPath,
-		MediaFilePath: msg.mediaFilePath,
-		MediaType: ctx.mediaType,
-		Username: ctx.username,
-		SessionId: sessionEntry.sessionId,
-		IsNewSession: isNewSession ? "true" : "false",
-	};
-
 	// Typing indicator refresh
 	const replyConfig = ctx.config.inbound?.reply;
 	const typingInterval = (replyConfig?.typingIntervalSeconds ?? 8) * 1000;
@@ -371,7 +354,13 @@ async function executeWithSession(
 	}, typingInterval);
 
 	try {
-		const queryPrompt = templatingCtx.BodyStripped ?? ctx.prompt;
+		// Build prompt with multimodal context (handles empty body + media)
+		const queryPrompt = buildMultimodalPrompt({
+			body: msg.body,
+			mediaPath: ctx.mediaPath,
+			mediaType: ctx.mediaType,
+			mimeType: msg.mimeType,
+		});
 
 		// SECURITY: Run infrastructure secret checks on the final prompt (post-templating)
 		const infraPromptCheck = checkInfrastructureSecrets(queryPrompt);
@@ -747,6 +736,16 @@ async function handleInboundMessage(
 	const userId = String(msg.chatId);
 
 	// ══════════════════════════════════════════════════════════════════════════
+	// BAN CHECK - Blocked users cannot use the bot at all
+	// ══════════════════════════════════════════════════════════════════════════
+
+	if (isChatBanned(msg.chatId)) {
+		logger.warn({ chatId: msg.chatId }, "message from banned chat, ignoring");
+		// Silent rejection - don't even acknowledge banned users
+		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
 	// ADMIN CLAIM FLOW - First-time setup for single-user deployments
 	// This must run BEFORE control commands to intercept first message
 	// ══════════════════════════════════════════════════════════════════════════
@@ -769,10 +768,86 @@ async function handleInboundMessage(
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
-	// CONTROL PLANE COMMANDS - Intercepted BEFORE any other processing
+	// TOTP AUTH GATE - Verify identity before processing any message
+	// Exempt: /setup-2fa and /verify-2fa (needed for initial TOTP setup)
 	// ══════════════════════════════════════════════════════════════════════════
 
 	const trimmedBody = msg.body.trim();
+
+	// Commands exempt from auth gate (needed for TOTP setup)
+	const isAuthExemptCommand =
+		trimmedBody === "/setup-2fa" ||
+		trimmedBody === "/verify-2fa" ||
+		trimmedBody.startsWith("/verify-2fa ");
+
+	if (!isAuthExemptCommand) {
+		const authGateResult = await checkTOTPAuthGate(msg.chatId, msg.body, {
+			chatId: msg.chatId,
+			messageId: msg.id,
+			body: msg.body,
+			mediaPath: msg.mediaPath,
+			mediaType: msg.mediaType,
+			mimeType: msg.mimeType,
+			username: msg.username,
+			senderId: msg.senderId,
+		});
+
+		if (authGateResult.status === "challenge") {
+			// Session expired, challenge sent, message saved
+			await msg.reply(authGateResult.message, { useMarkdown: true });
+			return;
+		}
+
+		if (authGateResult.status === "invalid_code") {
+			await msg.reply(authGateResult.message);
+			return;
+		}
+
+		if (authGateResult.status === "error") {
+			await msg.reply(authGateResult.message);
+			return;
+		}
+
+		if (authGateResult.status === "verified") {
+			// TOTP verified, session created
+			if (authGateResult.pendingMessage) {
+				const pendingMsg = authGateResult.pendingMessage;
+				await msg.reply("✅ 2FA verified. Processing your saved message...");
+
+				const replayMsg: TelegramInboundMessage = {
+					...msg,
+					id: pendingMsg.messageId,
+					body: pendingMsg.body,
+					mediaPath: pendingMsg.mediaPath,
+					mediaType: pendingMsg.mediaType,
+					mimeType: pendingMsg.mimeType,
+					username: pendingMsg.username ?? msg.username,
+					senderId: pendingMsg.senderId ?? msg.senderId,
+				};
+
+				await handleInboundMessage(
+					replayMsg,
+					_bot,
+					cfg,
+					observer,
+					rateLimiter,
+					auditLogger,
+					recentlySent,
+					securityProfile,
+				);
+				return;
+			}
+
+			await msg.reply("✅ 2FA verified. Session active.");
+			return;
+		}
+
+		// status === "pass" - continue with normal processing
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// CONTROL PLANE COMMANDS - Intercepted BEFORE any other processing
+	// ══════════════════════════════════════════════════════════════════════════
 
 	// Rate limit control commands to prevent brute-force attacks
 	const isControlCommand =
@@ -840,7 +915,7 @@ async function handleInboundMessage(
 		return;
 	}
 
-	if (trimmedBody.startsWith("/verify-2fa ")) {
+	if (trimmedBody === "/verify-2fa" || trimmedBody.startsWith("/verify-2fa ")) {
 		const code = trimmedBody.split(/\s+/)[1]?.trim();
 		await handleVerify2FA(msg, code);
 		return;
@@ -853,6 +928,13 @@ async function handleInboundMessage(
 
 	if (trimmedBody === "/2fa-logout") {
 		await handleLogout2FA(msg);
+		return;
+	}
+
+	// Admin-only command to force re-authentication for a specific chat
+	if (trimmedBody === "/force-reauth" || trimmedBody.startsWith("/force-reauth ")) {
+		const targetChatIdStr = trimmedBody.split(/\s+/)[1]?.trim();
+		await handleForceReauth(msg, targetChatIdStr);
 		return;
 	}
 
@@ -873,30 +955,9 @@ async function handleInboundMessage(
 		return;
 	}
 
-	// Check for TOTP code (6 digits) - for approving with 2FA
-	// Only intercept if there's actually a pending approval; otherwise let normal
-	// 6-digit messages fall through to the data plane
-	if (/^\d{6}$/.test(trimmedBody) && getMostRecentPendingApproval(msg.chatId)) {
-		const totpCheck = await hasTOTP(msg.chatId);
-		if (totpCheck.hasTOTP) {
-			await handleTOTPApproval(msg, trimmedBody, cfg, auditLogger, recentlySent);
-			return;
-		}
-		// Fail closed if daemon is unavailable - don't let the message fall through
-		if ("error" in totpCheck) {
-			logger.error(
-				{ chatId: msg.chatId, error: totpCheck.error },
-				"TOTP daemon unavailable during approval verification",
-			);
-			await msg.reply(
-				"⚠️ Cannot verify TOTP code - security service unavailable.\n\n" +
-					"The TOTP daemon is not running. Your pending approval cannot be processed.\n" +
-					"Please contact an administrator or use `/deny` to cancel the request.",
-			);
-			return;
-		}
-		// No TOTP configured for this user - let 6-digit message fall through to data plane
-	}
+	// NOTE: 6-digit TOTP codes for approvals are no longer needed here.
+	// Identity verification is now handled by the TOTP auth gate earlier in the flow.
+	// Approvals use nonce-based confirmation only.
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// SESSION RESET COMMANDS
@@ -1023,50 +1084,27 @@ async function handleInboundMessage(
 			observerReason: observerResult.reason,
 		});
 
-		// Use the actual timing from createApproval to avoid TTL mismatch
-		// Check TOTP status. If the daemon is unavailable, fall back to nonce approvals
-		// so the system remains usable (downgraded security is better than global denial).
-		const totpCheck = await hasTOTP(msg.chatId);
-		if ("error" in totpCheck) {
-			logger.warn(
-				{ chatId: msg.chatId, error: totpCheck.error },
-				"TOTP daemon unavailable - falling back to nonce approvals",
-			);
-		}
-
-		const userHasTOTP = totpCheck.hasTOTP;
-		// Check if user has a valid TOTP session ("remember me" feature)
-		// If they do, show nonce-based approval instead of requiring TOTP
-		const hasValidSession = hasTOTPSession(msg.chatId);
-		const requireTOTPVerification = userHasTOTP && !hasValidSession;
-
-		if (hasValidSession) {
-			logger.debug({ chatId: msg.chatId }, "valid TOTP session found, using nonce-based approval");
-		}
-
-		const approvalMessage = formatApprovalRequest(
-			{
-				nonce,
-				requestId,
-				chatId: msg.chatId,
-				createdAt,
-				expiresAt,
-				tier,
-				body: msg.body,
-				mediaPath: msg.mediaPath,
-				mediaFilePath: msg.mediaFilePath,
-				mediaFileId: msg.mediaFileId,
-				mediaType: msg.mediaType,
-				username: msg.username,
-				from: msg.from,
-				to: msg.to,
-				messageId: msg.id,
-				observerClassification: observerResult.classification,
-				observerConfidence: observerResult.confidence,
-				observerReason: observerResult.reason,
-			},
-			requireTOTPVerification,
-		);
+		// Format approval request (nonce-only, identity already verified by TOTP auth gate)
+		const approvalMessage = formatApprovalRequest({
+			nonce,
+			requestId,
+			chatId: msg.chatId,
+			createdAt,
+			expiresAt,
+			tier,
+			body: msg.body,
+			mediaPath: msg.mediaPath,
+			mediaFilePath: msg.mediaFilePath,
+			mediaFileId: msg.mediaFileId,
+			mediaType: msg.mediaType,
+			username: msg.username,
+			from: msg.from,
+			to: msg.to,
+			messageId: msg.id,
+			observerClassification: observerResult.classification,
+			observerConfidence: observerResult.confidence,
+			observerReason: observerResult.reason,
+		});
 
 		await msg.reply(approvalMessage);
 
@@ -1365,7 +1403,7 @@ async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
 	}
 
 	await msg.reply(
-		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. Return here and send \`/verify-2fa <6-digit-code>\` to confirm your setup\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you can approve requests by simply entering your 6-digit code.`,
+		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. Return here and send \`/verify-2fa <6-digit-code>\` to confirm your setup\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you’ll be prompted for your 6-digit code when your session expires.`,
 	);
 }
 
@@ -1383,6 +1421,23 @@ async function handleVerify2FA(
 		return;
 	}
 
+	// Check identity link first - unlinked users can't have TOTP
+	const link = getIdentityLink(msg.chatId);
+	if (!link) {
+		await msg.reply(
+			"You must link your identity first before verifying 2FA.\n\n" +
+				"Ask an admin to run `telclaude link <user-id>` to generate a link code.",
+		);
+		return;
+	}
+
+	// Check daemon availability to avoid confusing "Invalid code" on outage
+	const daemonAvailable = await isTOTPDaemonAvailable();
+	if (!daemonAvailable) {
+		await msg.reply("⚠️ 2FA service is temporarily unavailable. Please try again in a moment.");
+		return;
+	}
+
 	const valid = await verifyTOTP(msg.chatId, code);
 
 	if (!valid) {
@@ -1392,10 +1447,13 @@ async function handleVerify2FA(
 		return;
 	}
 
+	// Create session (link is guaranteed to exist from check above)
+	createTOTPSession(link.localUserId);
+
 	await msg.reply(
 		"*2FA enabled successfully!*\n\n" +
-			"From now on, when approval is required, simply reply with your 6-digit authenticator code.\n\n" +
-			"After you verify once, your session will be remembered for a while so you won't need to enter the code again for subsequent approvals.\n\n" +
+			"Your identity will be verified periodically when your session expires. Simply enter your 6-digit code when prompted.\n\n" +
+			"After you verify once, your session will be remembered for a while so you won't need to enter the code again for subsequent messages.\n\n" +
 			"Commands:\n" +
 			"• `/2fa-logout` - End your session early\n" +
 			"• `/disable-2fa` - Disable 2FA completely",
@@ -1418,9 +1476,49 @@ async function handleLogout2FA(msg: TelegramInboundMessage): Promise<void> {
 	const removed = invalidateTOTPSessionForChat(msg.chatId);
 
 	if (removed) {
-		await msg.reply("2FA session ended. You will need to verify TOTP for the next approval.");
+		await msg.reply("2FA session ended. You will need to verify TOTP for the next message.");
 	} else {
 		await msg.reply("No active 2FA session found.");
+	}
+}
+
+async function handleForceReauth(
+	msg: TelegramInboundMessage,
+	targetChatIdStr: string | undefined,
+): Promise<void> {
+	// If no target specified, force-reauth yourself (same as /2fa-logout)
+	if (!targetChatIdStr) {
+		const removed = invalidateTOTPSessionForChat(msg.chatId);
+		if (removed) {
+			await msg.reply(
+				"✅ Your 2FA session has been invalidated. You will need to verify TOTP for the next message.",
+			);
+		} else {
+			await msg.reply("No active 2FA session found for your chat.");
+		}
+		return;
+	}
+
+	// Target specified - require admin
+	if (!isAdmin(msg.chatId)) {
+		await msg.reply("Only admins can force-reauth other chats.");
+		return;
+	}
+
+	const targetChatId = Number.parseInt(targetChatIdStr, 10);
+	if (Number.isNaN(targetChatId)) {
+		await msg.reply(`Invalid chat ID: ${targetChatIdStr}`);
+		return;
+	}
+
+	const removed = invalidateTOTPSessionForChat(targetChatId);
+	if (removed) {
+		logger.warn({ adminChatId: msg.chatId, targetChatId }, "admin force-reauth via Telegram");
+		await msg.reply(
+			`✅ 2FA session invalidated for chat ${targetChatId}. They will need to verify TOTP for the next message.`,
+		);
+	} else {
+		await msg.reply(`Chat ${targetChatId} had no active 2FA session.`);
 	}
 }
 
@@ -1460,64 +1558,6 @@ async function handleDenyMostRecent(
 	});
 }
 
-async function handleTOTPApproval(
-	msg: TelegramInboundMessage,
-	code: string,
-	cfg: TelclaudeConfig,
-	auditLogger: AuditLogger,
-	recentlySent: Set<string>,
-): Promise<void> {
-	// Check if there's a pending approval
-	const approval = getMostRecentPendingApproval(msg.chatId);
-
-	if (!approval) {
-		// No pending approval - this might just be a random 6-digit message
-		// Don't respond to avoid confusion
-		return;
-	}
-
-	// Verify the TOTP code
-	if (!(await verifyTOTP(msg.chatId, code))) {
-		await msg.reply(
-			"Invalid code. Please try again with the current code from your authenticator.",
-		);
-		return;
-	}
-
-	// Create a TOTP session after successful verification ("remember me" feature)
-	const link = getIdentityLink(msg.chatId);
-	if (link) {
-		const sessionTtlMinutes = cfg.security?.totp?.sessionTtlMinutes ?? 240; // Default 4 hours
-		const sessionTtlMs = sessionTtlMinutes * 60 * 1000;
-		createTOTPSession(link.localUserId, sessionTtlMs);
-		logger.info(
-			{ chatId: msg.chatId, localUserId: link.localUserId, ttlMinutes: sessionTtlMinutes },
-			"TOTP session created after successful verification",
-		);
-	}
-
-	// Consume the approval
-	const result = consumeMostRecentApproval(msg.chatId);
-
-	if (!result.success) {
-		await msg.reply(result.error);
-		return;
-	}
-
-	await msg.reply("Request approved. Processing...");
-
-	const approvedApproval = result.data;
-	const approvedMsg: TelegramInboundMessage = {
-		...msg,
-		body: approvedApproval.body,
-		mediaPath: approvedApproval.mediaPath,
-		mediaFilePath: approvedApproval.mediaFilePath,
-		mediaFileId: approvedApproval.mediaFileId,
-		mediaType: approvedApproval.mediaType,
-		from: approvedApproval.from,
-		to: approvedApproval.to,
-		id: approvedApproval.messageId,
-	};
-
-	await executeApprovedRequest(approvedMsg, cfg, approvedApproval, auditLogger, recentlySent);
-}
+// NOTE: handleTOTPApproval function removed.
+// TOTP verification is now handled by the auth gate earlier in the flow.
+// Approvals use nonce-based confirmation only (/approve <nonce>).

@@ -47,7 +47,7 @@ TOTP daemon (separate process, keychain-backed)
 2) Environment isolation (allowlist env vars).  
 3) Network isolation (strict default allowlist of developer/Anthropic domains; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains).  
 4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).  
-5) Auth/rate limits/audit (identity links, TOTP optional, SQLite-backed).
+5) Auth/rate limits/audit (identity links, TOTP auth gate for periodic identity verification, SQLite-backed).
 
 ## Design notes
 - Sandbox is mandatory; relay exits if sandbox-runtime prerequisites are missing.  
@@ -80,10 +80,11 @@ TOTP daemon (separate process, keychain-backed)
 - Implemented in `src/sdk/session-manager.ts`.
 
 ## Control Plane & Auth
-- **Identity linking**: `/link` codes generated via CLI; stored in SQLite.  
-- **First-time admin claim**: private chat only, short-lived approval code.  
-- **TOTP daemon**: separate process, Unix socket IPC, secrets in OS keychain (native) or encrypted file backend in Docker.  
-- **Approvals**: required for FULL_ACCESS (except claimed admin), all BLOCK classifications, WARN with WRITE_LOCAL, and low-confidence WARN; TTL 5 minutes.
+- **Identity linking**: `/link` codes generated via CLI; stored in SQLite.
+- **First-time admin claim**: private chat only, short-lived approval code.
+- **TOTP auth gate (identity verification)**: Periodic identity check when session expires (default: 4 hours). Runs BEFORE any message processing. Separate daemon process, Unix socket IPC, secrets in OS keychain (native) or encrypted file backend in Docker.
+- **Approvals (intent confirmation)**: Nonce-based confirmation for dangerous operations. Required for FULL_ACCESS (except claimed admin), all BLOCK classifications, WARN with WRITE_LOCAL, and low-confidence WARN; TTL 5 minutes.
+- **Emergency controls**: CLI-only `ban`/`unban` (prevents attacker with Telegram+TOTP from unbanning themselves), `force-reauth`, `list-bans`. Telegram `/force-reauth [chat-id]` available for admins.
 
 ## Observer & Fast Path
 - Fast-path regex handles obvious safe/unsafe patterns and structural issues (zero-width chars, mixed scripts, repetition).  
@@ -95,16 +96,19 @@ TOTP daemon (separate process, keychain-backed)
 - Config path resolution in `src/config/path.ts`; schema in `src/config/config.ts`.
 
 ## Message Flow (strict profile)
-1) Telegram message received.  
-2) Control-plane commands handled (`/link`, `/approve`, `/deny`, `/whoami`).  
-3) Infrastructure secret block (non-overridable).  
-4) Rate-limit check.  
-5) Observer: structural checks + fast path, then LLM if needed.  
-6) Approval gate (per tier/classification).  
-7) Session lookup/resume.  
-8) Tier lookup (identity links/admin claim).  
-9) SDK query with tiered allowedTools inside sandbox.  
-10) Streaming reply to Telegram; audit logged.
+1) Telegram message received.
+2) Admin claim flow (if no admin configured yet).
+3) Ban check — blocked users silently rejected.
+4) TOTP auth gate — if session expired, challenge and save message; on valid code, create session and replay.
+5) Control-plane commands handled (`/link`, `/approve`, `/deny`, `/whoami`, `/force-reauth`, etc.).
+6) Infrastructure secret block (non-overridable).
+7) Rate-limit check.
+8) Observer: structural checks + fast path, then LLM if needed.
+9) Approval gate (nonce-based, per tier/classification).
+10) Session lookup/resume.
+11) Tier lookup (identity links/admin claim).
+12) SDK query with tiered allowedTools inside sandbox.
+13) Streaming reply to Telegram; audit logged.
 
 ## Deployment Notes
 - **Production**: Docker/WSL Compose adds container boundary, read-only root FS, dropped caps, optional outbound firewall; TOTP sidecar uses encrypted file backend.  
