@@ -44,7 +44,7 @@ import {
 import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
-let openaiSandboxKeyLogState: "none" | "exposed" | "missing" = "none";
+let openaiSandboxKeyLogState: "none" | "exposed" | "missing" | "disabled" = "none";
 const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -240,7 +240,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 	// Log when env var explicitly overrides config
 	if (envExposeDisabled && configEnables) {
-		logger.debug("OpenAI sandbox key exposure disabled by env var (overrides config)");
+		if (openaiSandboxKeyLogState !== "disabled") {
+			openaiSandboxKeyLogState = "disabled";
+			logger.debug("OpenAI sandbox key exposure disabled by env var (overrides config)");
+		}
 	}
 
 	const bashAllowed = opts.tier === "FULL_ACCESS" || TIER_TOOLS[opts.tier]?.includes("Bash");
