@@ -21,6 +21,9 @@ Copy one of these to `~/.telclaude/telclaude.json` and customize.
 - `simple` (default) — Sandbox + secret filter + rate limits + audit.
 - `strict` — Adds Haiku observer and approval workflow.
 
+**Group guardrail** (optional):
+- `telegram.groupChat.requireMention: true` to ignore group/supergroup messages unless they mention the bot or reply to it.
+
 **User IDs** use the format `tg:<telegram-user-id>` (e.g., `tg:123456789`).
 
 ## Finding your Telegram IDs
