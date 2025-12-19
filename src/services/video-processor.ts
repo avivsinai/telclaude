@@ -47,9 +47,10 @@ export type ProcessedVideo = {
 
 /**
  * Default video processing config.
+ * SECURITY: Disabled by default - FFmpeg runs unsandboxed and has historical parsing vulnerabilities.
  */
 const DEFAULT_CONFIG: VideoProcessingConfig = {
-	enabled: true,
+	enabled: false,
 	frameInterval: 1,
 	maxFrames: 30,
 	maxDurationSeconds: 300,

@@ -13,10 +13,10 @@ export interface DomainRule {
 }
 
 /**
- * Default domain allowlist with method intentions.
+ * Core domain allowlist (always included).
  * Runtime enforcement is domain-based; methods are informational.
  */
-export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
+const CORE_ALLOWED_DOMAINS: DomainRule[] = [
 	// Package registries (read-only)
 	{ domain: "registry.npmjs.org", methods: ["GET", "HEAD"] },
 	{ domain: "pypi.org", methods: ["GET", "HEAD"] },
@@ -53,10 +53,55 @@ export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
 	{ domain: "*.claude.ai", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "*.code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
+];
 
-	// OpenAI API (for image generation, TTS, transcription via telclaude CLI)
+/**
+ * OpenAI API domains (conditionally included when OpenAI features are enabled).
+ * SECURITY: Only added to sandbox allowlist when openai config is present,
+ * to minimize egress surface when not needed.
+ */
+export const OPENAI_DOMAINS: DomainRule[] = [
 	{ domain: "api.openai.com", methods: ["GET", "HEAD", "POST"] },
 ];
+
+/**
+ * Default domain allowlist with method intentions.
+ * For backwards compatibility, includes OpenAI by default.
+ * Use buildAllowedDomains() for conditional inclusion.
+ */
+export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [...CORE_ALLOWED_DOMAINS, ...OPENAI_DOMAINS];
+
+/**
+ * Options for building the allowed domains list.
+ */
+export interface BuildDomainsOptions {
+	/** Include OpenAI API domains. Default: false (only add when explicitly needed) */
+	includeOpenAI?: boolean;
+}
+
+/**
+ * Build the allowed domains list based on configuration.
+ * Use this instead of DEFAULT_ALLOWED_DOMAINS for conditional inclusion.
+ *
+ * @param options - Configuration options
+ * @returns Array of domain rules
+ */
+export function buildAllowedDomains(options: BuildDomainsOptions = {}): DomainRule[] {
+	const domains = [...CORE_ALLOWED_DOMAINS];
+
+	if (options.includeOpenAI) {
+		domains.push(...OPENAI_DOMAINS);
+	}
+
+	return domains;
+}
+
+/**
+ * Build the allowed domain names (strings only) based on configuration.
+ */
+export function buildAllowedDomainNames(options: BuildDomainsOptions = {}): string[] {
+	return buildAllowedDomains(options).map((rule) => rule.domain);
+}
 
 /**
  * Default domain patterns (without method metadata) for sandbox-runtime config.

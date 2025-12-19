@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { type TTSConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
+import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "tts" });
@@ -24,6 +25,8 @@ export type TTSOptions = {
 	responseFormat?: "mp3" | "opus" | "aac" | "flac" | "wav" | "pcm";
 	/** Model to use. Default: tts-1 */
 	model?: "tts-1" | "tts-1-hd";
+	/** User ID for rate limiting (chat_id or local_user_id) */
+	userId?: string;
 };
 
 /**
@@ -52,14 +55,17 @@ const DEFAULT_CONFIG: TTSConfig = {
 	voice: "alloy",
 	speed: 1.0,
 	autoReadResponses: false,
+	maxPerHourPerUser: 30,
+	maxPerDayPerUser: 100,
 };
 
 /**
  * Generate speech from text.
  *
  * @param text - Text to convert to speech
- * @param options - TTS options
+ * @param options - TTS options (include userId for rate limiting)
  * @returns Generated audio with local path and metadata
+ * @throws Error if rate limited or generation fails
  */
 export async function textToSpeech(text: string, options?: TTSOptions): Promise<GeneratedSpeech> {
 	if (!(await isOpenAIConfigured())) {
@@ -74,6 +80,22 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 
 	if (ttsConfig.provider === "disabled") {
 		throw new Error("Text-to-speech is disabled in config");
+	}
+
+	// Rate limiting check (if userId provided)
+	const userId = options?.userId;
+	if (userId) {
+		const rateLimiter = getMultimediaRateLimiter();
+		const rateLimitConfig = {
+			maxPerHourPerUser: ttsConfig.maxPerHourPerUser,
+			maxPerDayPerUser: ttsConfig.maxPerDayPerUser,
+		};
+		const limitResult = rateLimiter.checkLimit("tts", userId, rateLimitConfig);
+
+		if (!limitResult.allowed) {
+			logger.warn({ userId, remaining: limitResult.remaining }, "TTS rate limited");
+			throw new Error(limitResult.reason ?? "Text-to-speech rate limit exceeded");
+		}
 	}
 
 	const client = await getOpenAIClient();
@@ -139,6 +161,12 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 			},
 			"speech generated successfully",
 		);
+
+		// Consume rate limit point after successful generation
+		if (userId) {
+			const rateLimiter = getMultimediaRateLimiter();
+			rateLimiter.consume("tts", userId);
+		}
 
 		return {
 			path: saved.path,

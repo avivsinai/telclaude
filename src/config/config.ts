@@ -83,8 +83,10 @@ const ImageGenerationConfigSchema = z.object({
 });
 
 // Video processing configuration schema
+// SECURITY: Disabled by default - FFmpeg runs unsandboxed and has historical parsing vulnerabilities.
+// Enable only if you trust all users in allowedChats and accept the risk of processing untrusted video.
 const VideoProcessingConfigSchema = z.object({
-	enabled: z.boolean().default(true),
+	enabled: z.boolean().default(false),
 	frameInterval: z.number().positive().default(1), // Seconds between frames
 	maxFrames: z.number().int().positive().default(30),
 	maxDurationSeconds: z.number().int().positive().default(300), // 5 min max
@@ -98,6 +100,9 @@ const TTSConfigSchema = z.object({
 	speed: z.number().min(0.25).max(4.0).default(1.0),
 	// Enable auto-read for voice responses
 	autoReadResponses: z.boolean().default(false),
+	// Rate limiting for cost control
+	maxPerHourPerUser: z.number().int().positive().default(30),
+	maxPerDayPerUser: z.number().int().positive().default(100),
 });
 
 // Image optimization configuration schema

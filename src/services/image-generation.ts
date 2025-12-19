@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { type ImageGenerationConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
+import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "image-generation" });
@@ -23,6 +24,8 @@ export type ImageGenerationOptions = {
 	size?: ImageSize;
 	/** Quality tier: low, medium, high. Default: medium */
 	quality?: "low" | "medium" | "high";
+	/** User ID for rate limiting (chat_id or local_user_id) */
+	userId?: string;
 };
 
 /**
@@ -59,8 +62,9 @@ const SUPPORTED_SIZES: ImageSize[] = ["auto", "1024x1024", "1536x1024", "1024x15
  * Generate an image from a text prompt.
  *
  * @param prompt - Text description of the image to generate
- * @param options - Generation options
+ * @param options - Generation options (include userId for rate limiting)
  * @returns Generated image with local path and metadata
+ * @throws Error if rate limited or generation fails
  */
 export async function generateImage(
 	prompt: string,
@@ -79,6 +83,22 @@ export async function generateImage(
 
 	if (imageConfig.provider === "disabled") {
 		throw new Error("Image generation is disabled in config");
+	}
+
+	// Rate limiting check (if userId provided)
+	const userId = options?.userId;
+	if (userId) {
+		const rateLimiter = getMultimediaRateLimiter();
+		const rateLimitConfig = {
+			maxPerHourPerUser: imageConfig.maxPerHourPerUser,
+			maxPerDayPerUser: imageConfig.maxPerDayPerUser,
+		};
+		const limitResult = rateLimiter.checkLimit("image_generation", userId, rateLimitConfig);
+
+		if (!limitResult.allowed) {
+			logger.warn({ userId, remaining: limitResult.remaining }, "image generation rate limited");
+			throw new Error(limitResult.reason ?? "Image generation rate limit exceeded");
+		}
 	}
 
 	const client = await getOpenAIClient();
@@ -142,6 +162,12 @@ export async function generateImage(
 			},
 			"image generated successfully",
 		);
+
+		// Consume rate limit point after successful generation
+		if (userId) {
+			const rateLimiter = getMultimediaRateLimiter();
+			rateLimiter.consume("image_generation", userId);
+		}
 
 		return {
 			path: saved.path,

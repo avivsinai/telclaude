@@ -21,7 +21,7 @@ export {
 } from "./manager.js";
 
 // Claude SDK settings builder (fed to @anthropic-ai/claude-agent-sdk via --settings)
-export { buildSdkPermissionsForTier } from "./sdk-settings.js";
+export { buildSdkPermissionsForTier, type SdkPermissionOptions } from "./sdk-settings.js";
 
 export {
 	SENSITIVE_READ_PATHS,
@@ -61,6 +61,14 @@ export {
 	type NetworkIsolationSummary,
 	type NetworkSelfTestResult,
 } from "./network-proxy.js";
+
+// Conditional domain builders
+export {
+	buildAllowedDomains,
+	buildAllowedDomainNames,
+	OPENAI_DOMAINS,
+	type BuildDomainsOptions,
+} from "./domains.js";
 
 // Sandbox-runtime version helper (for CVE checks)
 export {

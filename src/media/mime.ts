@@ -86,13 +86,23 @@ export function detectMimeFromBytes(buffer: Buffer | Uint8Array): string | undef
 			}
 
 			// Special handling for M4A vs MP4
+			// IMPORTANT: Only "M4A " (with trailing space) is audio. "mp41", "mp42" are video brands.
 			if (mimeType === "video/mp4" && buffer.length >= 12) {
 				// Check ftyp brand at offset 8
 				const brand = String.fromCharCode(buffer[8], buffer[9], buffer[10], buffer[11]);
-				if (brand === "M4A " || brand === "mp41" || brand === "mp42") {
+				// Audio-only M4A container (note the trailing space in "M4A ")
+				if (brand === "M4A ") {
 					return "audio/mp4";
 				}
-				if (brand === "isom" || brand === "iso2" || brand === "avc1" || brand === "mp41") {
+				// Video containers (mp41, mp42, isom, iso2, avc1 are all video brands)
+				if (
+					brand === "isom" ||
+					brand === "iso2" ||
+					brand === "avc1" ||
+					brand === "mp41" ||
+					brand === "mp42" ||
+					brand === "mp71"
+				) {
 					return "video/mp4";
 				}
 				if (brand === "qt  ") {

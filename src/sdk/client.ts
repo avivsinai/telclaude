@@ -288,7 +288,11 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 	// Enforce Claude Code sandbox + permission policy per invocation (no writes to ~/.claude).
 	// Sandbox settings are merged into `--settings` by the Agent SDK.
-	const permissions = buildSdkPermissionsForTier(opts.tier);
+	// SECURITY: Only include OpenAI domains in sandbox allowlist if exposeKeyToSandbox is enabled.
+	// This minimizes egress surface when the agent doesn't need direct OpenAI access.
+	const permissions = buildSdkPermissionsForTier(opts.tier, {
+		includeOpenAI: exposeOpenAIKey && bashAllowed,
+	});
 	sdkOpts.extraArgs = {
 		...sdkOpts.extraArgs,
 		settings: JSON.stringify({ permissions }),

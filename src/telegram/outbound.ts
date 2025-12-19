@@ -252,8 +252,12 @@ function isProbablyText(buf: Buffer): boolean {
 /**
  * Scan file content for secrets before sending.
  * Returns true if the file is safe to send, false if secrets detected.
+ *
+ * Uses async I/O to avoid blocking the event loop on large files.
  */
-function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: string } {
+async function scanFileForSecrets(
+	source: string | Buffer,
+): Promise<{ safe: boolean; reason?: string }> {
 	try {
 		let content: string;
 
@@ -270,18 +274,20 @@ function scanFileForSecrets(source: string | Buffer): { safe: boolean; reason?: 
 			}
 			content = source.toString("utf-8");
 		} else if (!source.startsWith("http://") && !source.startsWith("https://")) {
-			// Local file path - read and scan
+			// Local file path - read and scan (async to avoid blocking event loop)
 			const absolutePath = path.isAbsolute(source) ? source : path.resolve(source);
-			if (!fs.existsSync(absolutePath)) {
-				return { safe: true }; // File doesn't exist yet, let Telegram handle the error
+			try {
+				await fs.promises.access(absolutePath, fs.constants.R_OK);
+			} catch {
+				return { safe: true }; // File doesn't exist or not readable, let Telegram handle the error
 			}
 
-			const stats = fs.statSync(absolutePath);
+			const stats = await fs.promises.stat(absolutePath);
 			if (stats.size > MAX_FILE_SCAN_SIZE) {
 				logger.warn({ path: absolutePath, size: stats.size }, "file too large to scan for secrets");
 				return { safe: true }; // Allow but log warning
 			}
-			const buf = fs.readFileSync(absolutePath);
+			const buf = await fs.promises.readFile(absolutePath);
 			// Check binary before converting to string (more efficient)
 			if (!isProbablyText(buf)) {
 				logger.debug({ path: absolutePath }, "file appears binary; skipping secret scan");
@@ -342,8 +348,8 @@ export async function sendMediaToChat(
 	payload: TelegramMediaPayload,
 	parseMode?: "Markdown" | "MarkdownV2" | "HTML",
 ): Promise<Message> {
-	// SECURITY: Scan file content for secrets before sending
-	const fileScan = scanFileForSecrets(payload.source);
+	// SECURITY: Scan file content for secrets before sending (async to avoid blocking)
+	const fileScan = await scanFileForSecrets(payload.source);
 	if (!fileScan.safe) {
 		logger.error(
 			{ chatId, reason: fileScan.reason },
