@@ -163,6 +163,8 @@ docker compose exec telclaude pnpm start relay --profile strict
   - `WRITE_LOCAL`: read/write/edit/bash with destructive commands blocked.
   - `FULL_ACCESS`: unrestricted tools but every request needs human approval.
   - Set per-user under `security.permissions.users`; `defaultTier` stays `READ_ONLY`.
+- Optional group guardrail:
+  - `telegram.groupChat.requireMention: true` to ignore group/supergroup messages unless they mention the bot or reply to it.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
 ## CLI

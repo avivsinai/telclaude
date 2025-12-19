@@ -628,6 +628,7 @@ export async function monitorTelegramProvider(
 				verbose,
 				dryRun,
 				allowedChats: cfg.telegram?.allowedChats,
+				groupChat: cfg.telegram?.groupChat,
 				secretFilterConfig: cfg.security?.secretFilter,
 				onMessage: async (msg) => {
 					await handleInboundMessage(

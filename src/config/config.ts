@@ -212,11 +212,17 @@ const SecurityConfigSchema = z.object({
 });
 
 // Telegram configuration schema
+const TelegramGroupChatConfigSchema = z.object({
+	// When enabled, group/supergroup messages must mention the bot (or reply to the bot)
+	requireMention: z.boolean().default(false),
+});
+
 const TelegramConfigSchema = z.object({
 	// Bot token - stored here (in ~/.telclaude/) rather than .env for security
 	// The ~/.telclaude/ directory is blocked from Claude's sandbox
 	botToken: z.string().optional(),
 	allowedChats: z.array(z.union([z.number(), z.string()])).optional(),
+	groupChat: TelegramGroupChatConfigSchema.optional(),
 	polling: z
 		.object({
 			timeout: z.number().int().positive().default(30),
