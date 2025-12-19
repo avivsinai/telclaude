@@ -39,6 +39,63 @@ const SdkConfigSchema = z.object({
 	betas: z.array(SdkBetaEnum).default([]),
 });
 
+// OpenAI configuration schema (for Whisper, GPT Image, TTS)
+const OpenAIConfigSchema = z.object({
+	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
+	baseUrl: z.string().optional(), // Custom endpoint for local inference servers
+});
+
+// Transcription configuration schema
+const TranscriptionConfigSchema = z.object({
+	provider: z.enum(["openai", "deepgram", "command"]).default("openai"),
+	model: z.enum(["whisper-1", "gpt-4o-mini-transcribe"]).default("whisper-1"),
+	language: z.string().optional(), // Auto-detect if not set
+	// For provider: "command" - CLI-based transcription (like clawdis)
+	command: z.array(z.string()).optional(),
+	timeoutSeconds: z.number().int().positive().default(60),
+});
+
+// Image generation configuration schema (GPT Image 1.5)
+const ImageGenerationConfigSchema = z.object({
+	provider: z.enum(["gpt-image", "disabled"]).default("gpt-image"),
+	model: z.literal("gpt-image-1.5").default("gpt-image-1.5"),
+	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("1024x1024"),
+	quality: z.enum(["low", "medium", "high"]).default("medium"),
+	// Rate limiting for cost control
+	maxPerHourPerUser: z.number().int().positive().default(10),
+	maxPerDayPerUser: z.number().int().positive().default(50),
+});
+
+// Video processing configuration schema
+const VideoProcessingConfigSchema = z.object({
+	enabled: z.boolean().default(true),
+	frameInterval: z.number().positive().default(1), // Seconds between frames
+	maxFrames: z.number().int().positive().default(30),
+	maxDurationSeconds: z.number().int().positive().default(300), // 5 min max
+	extractAudio: z.boolean().default(true), // Transcribe audio track
+});
+
+// Text-to-speech configuration schema
+const TTSConfigSchema = z.object({
+	provider: z.enum(["openai", "elevenlabs", "disabled"]).default("openai"),
+	voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).default("alloy"),
+	speed: z.number().min(0.25).max(4.0).default(1.0),
+	// Enable auto-read for voice responses
+	autoReadResponses: z.boolean().default(false),
+});
+
+// Image optimization configuration schema
+const ImageOptimizationConfigSchema = z.object({
+	enabled: z.boolean().default(true),
+	maxDimension: z.number().int().positive().default(2048),
+	maxSizeBytes: z
+		.number()
+		.int()
+		.positive()
+		.default(5 * 1024 * 1024), // 5MB
+	format: z.enum(["jpeg", "png", "webp"]).default("jpeg"),
+});
+
 // Security profile - determines which security layers are active
 export const SecurityProfileSchema = z.enum(["simple", "strict", "test"]);
 export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
@@ -198,6 +255,13 @@ const TelclaudeConfigSchema = z.object({
 	inbound: InboundConfigSchema.optional(),
 	logging: LoggingConfigSchema.optional(),
 	sdk: SdkConfigSchema.optional(),
+	// Multimedia capabilities
+	openai: OpenAIConfigSchema.optional(),
+	transcription: TranscriptionConfigSchema.optional(),
+	imageGeneration: ImageGenerationConfigSchema.optional(),
+	videoProcessing: VideoProcessingConfigSchema.optional(),
+	tts: TTSConfigSchema.optional(),
+	imageOptimization: ImageOptimizationConfigSchema.optional(),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -206,6 +270,12 @@ export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
+export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
+export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
+export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
+export type TTSConfig = z.infer<typeof TTSConfigSchema>;
+export type ImageOptimizationConfig = z.infer<typeof ImageOptimizationConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;

@@ -3,12 +3,14 @@
 import { createProgram } from "./cli/program.js";
 import { registerAccessControlCommands } from "./commands/access-control.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
 import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
 import { registerStatusCommand } from "./commands/status.js";
+import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
 import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
 import { registerTOTPSetupCommand } from "./commands/totp-setup.js";
@@ -32,6 +34,8 @@ registerTOTPSetupCommand(program);
 registerResetAuthCommand(program);
 registerResetDbCommand(program);
 registerAccessControlCommands(program);
+registerGenerateImageCommand(program);
+registerTextToSpeechCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

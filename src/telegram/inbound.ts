@@ -162,7 +162,7 @@ export async function monitorTelegramInbox(
 						throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 					}
 					// Stream directly to file to prevent OOM on large files
-					const saved = await saveMediaStream(response, mimeType);
+					const saved = await saveMediaStream(response, { mimeType, category: "incoming" });
 					mediaPath = saved.path;
 					mimeType = saved.contentType;
 				}

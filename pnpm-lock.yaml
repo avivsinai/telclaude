@@ -44,6 +44,9 @@ importers:
       keytar:
         specifier: ^7.9.0
         version: 7.9.0
+      openai:
+        specifier: ^6.14.0
+        version: 6.14.0(zod@3.25.76)
       otpauth:
         specifier: ^9.4.1
         version: 9.4.1
@@ -1244,6 +1247,18 @@ packages:
 
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
+
+  openai@6.14.0:
+    resolution: {integrity: sha512-ZPD9MG5/sPpyGZ0idRoDK0P5MWEMuXe0Max/S55vuvoxqyEVkN94m9jSpE3YgNgz3WoESFvozs57dxWqAco31w==}
+    hasBin: true
+    peerDependencies:
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
+      zod:
+        optional: true
 
   otpauth@9.4.1:
     resolution: {integrity: sha512-+iVvys36CFsyXEqfNftQm1II7SW23W1wx9RwNk0Cd97lbvorqAhBDksb/0bYry087QMxjiuBS0wokdoZ0iUeAw==}
@@ -2803,6 +2818,10 @@ snapshots:
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
+
+  openai@6.14.0(zod@3.25.76):
+    optionalDependencies:
+      zod: 3.25.76
 
   otpauth@9.4.1:
     dependencies:

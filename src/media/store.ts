@@ -13,7 +13,14 @@ const logger = getChildLogger({ module: "media-store" });
 // In Docker: /workspace/.telclaude-media
 // Native: <cwd>/.telclaude-media
 const WORKSPACE = process.env.TELCLAUDE_WORKSPACE ?? process.cwd();
-const MEDIA_DIR = path.join(WORKSPACE, ".telclaude-media");
+const MEDIA_ROOT = path.join(WORKSPACE, ".telclaude-media");
+
+/** Media categories for organized storage */
+export type MediaCategory =
+	| "incoming" // Received from Telegram
+	| "generated" // AI-generated images
+	| "tts" // Text-to-speech audio
+	| "video-frames"; // Extracted video frames
 
 // Maximum media file size (20MB - Telegram bot API limit)
 const MAX_MEDIA_SIZE = 20 * 1024 * 1024;
@@ -24,17 +31,52 @@ export type SavedMedia = {
 };
 
 /**
- * Save a buffer to a temporary file and return its path.
+ * Get the media directory path for a category.
+ * Creates the directory if it doesn't exist.
  */
-export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promise<SavedMedia> {
-	await fs.promises.mkdir(MEDIA_DIR, { recursive: true, mode: 0o700 });
+export async function getMediaDir(category?: MediaCategory): Promise<string> {
+	const dir = category ? path.join(MEDIA_ROOT, category) : MEDIA_ROOT;
+	await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+	return dir;
+}
 
-	const ext = mimeToExtension(mimeType);
+/**
+ * Get the media root directory path (synchronous, for module initialization).
+ */
+export function getMediaRootSync(): string {
+	return MEDIA_ROOT;
+}
+
+/**
+ * Save a buffer to a file in the specified category.
+ *
+ * @param buffer - Data to save
+ * @param options - Save options
+ * @returns Saved media info with path
+ */
+export async function saveMediaBuffer(
+	buffer: Buffer,
+	options?: {
+		mimeType?: string;
+		category?: MediaCategory;
+		/** Custom filename (without extension) */
+		filename?: string;
+		/** Custom extension (with dot) */
+		extension?: string;
+	},
+): Promise<SavedMedia> {
+	const dir = await getMediaDir(options?.category);
+	const mimeType = options?.mimeType;
+
+	const ext = options?.extension ?? mimeToExtension(mimeType);
 	const hash = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 16);
-	const filename = `${Date.now()}-${hash}${ext}`;
-	const filepath = path.join(MEDIA_DIR, filename);
+	const basename = options?.filename ?? `${Date.now()}-${hash}`;
+	const filename = `${basename}${ext}`;
+	const filepath = path.join(dir, filename);
 
 	await fs.promises.writeFile(filepath, buffer, { mode: 0o600 });
+
+	logger.debug({ filepath, bytes: buffer.length, category: options?.category }, "media saved");
 
 	return {
 		path: filepath,
@@ -43,15 +85,22 @@ export async function saveMediaBuffer(buffer: Buffer, mimeType?: string): Promis
 }
 
 /**
- * Stream a response body directly to a temporary file.
+ * Stream a response body directly to a file.
  * Prevents OOM by not loading entire file into memory.
  *
  * @param response - Fetch response with body to stream
- * @param mimeType - MIME type for the file extension
+ * @param options - Save options
  * @returns Path to saved file, or throws on error/size exceeded
  */
-export async function saveMediaStream(response: Response, mimeType?: string): Promise<SavedMedia> {
-	await fs.promises.mkdir(MEDIA_DIR, { recursive: true, mode: 0o700 });
+export async function saveMediaStream(
+	response: Response,
+	options?: {
+		mimeType?: string;
+		category?: MediaCategory;
+	},
+): Promise<SavedMedia> {
+	const dir = await getMediaDir(options?.category);
+	const mimeType = options?.mimeType;
 
 	// Check content-length header for size limit
 	const contentLength = response.headers.get("content-length");
@@ -65,7 +114,7 @@ export async function saveMediaStream(response: Response, mimeType?: string): Pr
 	const ext = mimeToExtension(mimeType);
 	const randomId = crypto.randomBytes(8).toString("hex");
 	const filename = `${Date.now()}-${randomId}${ext}`;
-	const filepath = path.join(MEDIA_DIR, filename);
+	const filepath = path.join(dir, filename);
 
 	// Get the response body as a web stream
 	const body = response.body;
@@ -93,7 +142,7 @@ export async function saveMediaStream(response: Response, mimeType?: string): Pr
 
 	try {
 		await pipeline(nodeStream, writeStream);
-		logger.debug({ filepath, bytes: totalBytes }, "media streamed to file");
+		logger.debug({ filepath, bytes: totalBytes, category: options?.category }, "media streamed");
 	} catch (err) {
 		// Clean up partial file on error
 		try {
@@ -108,6 +157,25 @@ export async function saveMediaStream(response: Response, mimeType?: string): Pr
 		path: filepath,
 		contentType: mimeType ?? "application/octet-stream",
 	};
+}
+
+/**
+ * Create a unique subdirectory within a category.
+ * Useful for video frames where multiple files belong together.
+ *
+ * @param category - Media category
+ * @param prefix - Optional prefix for the directory name
+ * @returns Path to the created subdirectory
+ */
+export async function createMediaSubdir(category: MediaCategory, prefix?: string): Promise<string> {
+	const parentDir = await getMediaDir(category);
+	const hash = crypto.randomBytes(8).toString("hex");
+	const dirname = prefix ? `${Date.now()}-${prefix}-${hash}` : `${Date.now()}-${hash}`;
+	const subdirPath = path.join(parentDir, dirname);
+
+	await fs.promises.mkdir(subdirPath, { recursive: true, mode: 0o700 });
+
+	return subdirPath;
 }
 
 /**
@@ -132,29 +200,84 @@ function mimeToExtension(mime?: string): string {
 }
 
 /**
- * Clean up old media files.
+ * Clean up old media files across all categories or a specific one.
+ *
+ * @param maxAgeMs - Maximum age of files to keep (default: 24 hours)
+ * @param category - Optional category to clean (cleans all if not specified)
+ * @returns Number of files/directories cleaned
  */
-export async function cleanupOldMedia(maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<number> {
-	try {
-		const files = await fs.promises.readdir(MEDIA_DIR);
-		const now = Date.now();
-		let cleaned = 0;
+export async function cleanupOldMedia(
+	maxAgeMs: number = 24 * 60 * 60 * 1000,
+	category?: MediaCategory,
+): Promise<number> {
+	const targetDir = category ? path.join(MEDIA_ROOT, category) : MEDIA_ROOT;
 
-		for (const file of files) {
-			const filepath = path.join(MEDIA_DIR, file);
+	try {
+		return await cleanupDirectory(targetDir, maxAgeMs, !category);
+	} catch {
+		return 0;
+	}
+}
+
+/**
+ * Recursively clean up old files and directories.
+ */
+async function cleanupDirectory(
+	dir: string,
+	maxAgeMs: number,
+	recursive: boolean,
+): Promise<number> {
+	const now = Date.now();
+	let cleaned = 0;
+
+	try {
+		const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+
+		for (const entry of entries) {
+			const entryPath = path.join(dir, entry.name);
+
 			try {
-				const stat = await fs.promises.stat(filepath);
-				if (now - stat.mtimeMs > maxAgeMs) {
-					await fs.promises.unlink(filepath);
+				const stat = await fs.promises.stat(entryPath);
+
+				if (entry.isDirectory()) {
+					if (recursive) {
+						// Recursively clean subdirectories
+						cleaned += await cleanupDirectory(entryPath, maxAgeMs, true);
+
+						// Remove empty directories older than maxAge
+						const remaining = await fs.promises.readdir(entryPath);
+						if (remaining.length === 0 && now - stat.mtimeMs > maxAgeMs) {
+							await fs.promises.rmdir(entryPath);
+							cleaned++;
+						}
+					}
+				} else if (now - stat.mtimeMs > maxAgeMs) {
+					await fs.promises.unlink(entryPath);
 					cleaned++;
 				}
 			} catch {
-				// Ignore individual file errors
+				// Ignore individual entry errors
 			}
 		}
-
-		return cleaned;
 	} catch {
-		return 0;
+		// Ignore directory read errors
+	}
+
+	return cleaned;
+}
+
+/**
+ * Remove a specific media file or directory.
+ */
+export async function removeMedia(mediaPath: string): Promise<void> {
+	try {
+		const stat = await fs.promises.stat(mediaPath);
+		if (stat.isDirectory()) {
+			await fs.promises.rm(mediaPath, { recursive: true, force: true });
+		} else {
+			await fs.promises.unlink(mediaPath);
+		}
+	} catch {
+		// Ignore removal errors
 	}
 }

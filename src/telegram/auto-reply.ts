@@ -44,7 +44,7 @@ import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp
 import type { SecurityClassification } from "../security/types.js";
 import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
-import { buildMultimodalPrompt } from "./multimodal.js";
+import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
@@ -354,13 +354,16 @@ async function executeWithSession(
 	}, typingInterval);
 
 	try {
-		// Build prompt with multimodal context (handles empty body + media)
-		const queryPrompt = buildMultimodalPrompt({
+		// Process multimodal context (transcribes audio if available)
+		const processedContext = await processMultimodalContext({
 			body: msg.body,
 			mediaPath: ctx.mediaPath,
 			mediaType: ctx.mediaType,
 			mimeType: msg.mimeType,
 		});
+
+		// Build prompt with multimodal context (handles empty body + media + transcripts)
+		const queryPrompt = buildMultimodalPrompt(processedContext);
 
 		// SECURITY: Run infrastructure secret checks on the final prompt (post-templating)
 		const infraPromptCheck = checkInfrastructureSecrets(queryPrompt);
