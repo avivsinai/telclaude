@@ -9,6 +9,7 @@ import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
 import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
+import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
@@ -36,6 +37,7 @@ registerResetDbCommand(program);
 registerAccessControlCommands(program);
 registerGenerateImageCommand(program);
 registerTextToSpeechCommand(program);
+registerSetupOpenAICommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

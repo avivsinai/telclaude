@@ -8,7 +8,7 @@ import fs from "node:fs";
 
 import { type TranscriptionConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { getOpenAIClient, isOpenAIConfigured } from "./openai-client.js";
+import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "transcription" });
 
@@ -77,11 +77,11 @@ async function transcribeWithOpenAI(
 	filePath: string,
 	config: TranscriptionConfig,
 ): Promise<TranscriptionResult> {
-	if (!isOpenAIConfigured()) {
+	if (!(await isOpenAIConfigured())) {
 		throw new Error("OpenAI API key not configured for transcription");
 	}
 
-	const client = getOpenAIClient();
+	const client = await getOpenAIClient();
 	const fileStream = fs.createReadStream(filePath);
 
 	const startTime = Date.now();
@@ -182,6 +182,7 @@ async function transcribeWithCommand(
 
 /**
  * Check if transcription is available.
+ * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isTranscriptionAvailable(): boolean {
 	const config = loadConfig();
@@ -189,7 +190,8 @@ export function isTranscriptionAvailable(): boolean {
 
 	switch (provider) {
 		case "openai":
-			return isOpenAIConfigured();
+			// Use sync check for quick availability; actual key from keychain is checked at call time
+			return isOpenAIConfiguredSync();
 		case "command":
 			return !!config.transcription?.command?.length;
 		case "deepgram":

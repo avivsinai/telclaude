@@ -83,9 +83,7 @@ export async function monitorTelegramInbox(
 				return true;
 			}
 			if (entity.type === "mention" || entity.type === "bot_command") {
-				const segment = bodyRaw
-					.slice(entity.offset, entity.offset + entity.length)
-					.toLowerCase();
+				const segment = bodyRaw.slice(entity.offset, entity.offset + entity.length).toLowerCase();
 				if (segment === `@${botUsername}` || segment.includes(`@${botUsername}`)) {
 					return true;
 				}

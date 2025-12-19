@@ -8,7 +8,7 @@ import fs from "node:fs";
 import { type TTSConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
-import { getOpenAIClient, isOpenAIConfigured } from "./openai-client.js";
+import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "tts" });
 
@@ -62,7 +62,7 @@ const DEFAULT_CONFIG: TTSConfig = {
  * @returns Generated audio with local path and metadata
  */
 export async function textToSpeech(text: string, options?: TTSOptions): Promise<GeneratedSpeech> {
-	if (!isOpenAIConfigured()) {
+	if (!(await isOpenAIConfigured())) {
 		throw new Error("OpenAI API key not configured for text-to-speech");
 	}
 
@@ -76,7 +76,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 		throw new Error("Text-to-speech is disabled in config");
 	}
 
-	const client = getOpenAIClient();
+	const client = await getOpenAIClient();
 	const voice = options?.voice ?? ttsConfig.voice ?? "alloy";
 	const speed = options?.speed ?? ttsConfig.speed ?? 1.0;
 	const model = options?.model ?? "tts-1";
@@ -156,6 +156,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 
 /**
  * Check if TTS is available.
+ * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isTTSAvailable(): boolean {
 	const config = loadConfig();
@@ -164,7 +165,7 @@ export function isTTSAvailable(): boolean {
 		return false;
 	}
 
-	return isOpenAIConfigured();
+	return isOpenAIConfiguredSync();
 }
 
 /**

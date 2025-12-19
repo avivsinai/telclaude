@@ -8,7 +8,7 @@ import fs from "node:fs";
 import { type ImageGenerationConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
-import { getOpenAIClient, isOpenAIConfigured } from "./openai-client.js";
+import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "image-generation" });
 
@@ -68,7 +68,7 @@ export async function generateImage(
 	prompt: string,
 	options?: ImageGenerationOptions,
 ): Promise<GeneratedImage> {
-	if (!isOpenAIConfigured()) {
+	if (!(await isOpenAIConfigured())) {
 		throw new Error("OpenAI API key not configured for image generation");
 	}
 
@@ -83,7 +83,7 @@ export async function generateImage(
 		throw new Error("Image generation is disabled in config");
 	}
 
-	const client = getOpenAIClient();
+	const client = await getOpenAIClient();
 	const model = imageConfig.model ?? "gpt-image-1.5";
 	const size = (imageConfig.size ?? "1024x1024") as ImageSize;
 	const quality = imageConfig.quality ?? "medium";
@@ -184,6 +184,7 @@ export async function generateImages(
 
 /**
  * Check if image generation is available.
+ * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isImageGenerationAvailable(): boolean {
 	const config = loadConfig();
@@ -192,7 +193,7 @@ export function isImageGenerationAvailable(): boolean {
 		return false;
 	}
 
-	return isOpenAIConfigured();
+	return isOpenAIConfiguredSync();
 }
 
 /**
