@@ -23,8 +23,6 @@ export type ImageGenerationOptions = {
 	size?: ImageSize;
 	/** Quality tier: low, medium, high. Default: medium */
 	quality?: "low" | "medium" | "high";
-	/** Number of images to generate. Default: 1 */
-	n?: number;
 };
 
 /**
@@ -106,7 +104,7 @@ export async function generateImage(
 			size,
 			quality,
 			n: 1,
-			output_format: "png",
+			response_format: "b64_json", // Explicitly request base64 data
 		});
 
 		const durationMs = Date.now() - startTime;

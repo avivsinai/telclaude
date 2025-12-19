@@ -13,6 +13,7 @@ import {
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
+import { cleanupOldMedia } from "../media/store.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
 import { getSessionManager } from "../sdk/session-manager.js";
@@ -42,6 +43,7 @@ import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
 import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
 import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
+import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
@@ -566,6 +568,33 @@ export async function monitorTelegramProvider(
 		logger.info("security profile: simple (hard enforcement only)");
 	}
 
+	// Initialize OpenAI key lookup (checks keychain, env, config)
+	// This populates the cache so sync availability checks work correctly
+	let openaiConfigured = await initializeOpenAIKey();
+	if (openaiConfigured) {
+		logger.info("OpenAI services available (image generation, TTS, transcription)");
+	} else {
+		logger.debug("OpenAI not configured - multimedia features disabled");
+	}
+
+	// If not configured, periodically re-check so a later setup-openai is picked up.
+	const OPENAI_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
+	let openaiRecheckInterval: NodeJS.Timeout | null = null;
+	if (!openaiConfigured) {
+		openaiRecheckInterval = setInterval(async () => {
+			clearOpenAICache();
+			const available = await initializeOpenAIKey();
+			if (available) {
+				openaiConfigured = true;
+				logger.info("OpenAI configured - multimedia features now enabled");
+				if (openaiRecheckInterval) {
+					clearInterval(openaiRecheckInterval);
+					openaiRecheckInterval = null;
+				}
+			}
+		}, OPENAI_RECHECK_INTERVAL_MS);
+	}
+
 	// SECURITY: One-time cleanup of expired security artifacts on startup
 	// This runs BEFORE entering the connection loop to ensure stale approvals,
 	// link codes, TOTP sessions, and admin claims are purged on every run.
@@ -604,6 +633,29 @@ export async function monitorTelegramProvider(
 			logger.error({ error: String(err) }, "periodic rate limit cleanup failed");
 		}
 	}, RATE_LIMIT_CLEANUP_INTERVAL_MS);
+
+	// Clean up old media files at startup
+	try {
+		const mediaRemoved = await cleanupOldMedia();
+		if (mediaRemoved > 0) {
+			logger.info({ filesRemoved: mediaRemoved }, "startup cleanup of old media completed");
+		}
+	} catch (err) {
+		logger.error({ error: String(err) }, "startup media cleanup failed");
+	}
+
+	// Set up periodic cleanup for old media files (every 30 minutes)
+	const MEDIA_CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+	const mediaCleanupInterval = setInterval(async () => {
+		try {
+			const removed = await cleanupOldMedia();
+			if (removed > 0) {
+				logger.info({ filesRemoved: removed }, "periodic media cleanup completed");
+			}
+		} catch (err) {
+			logger.error({ error: String(err) }, "periodic media cleanup failed");
+		}
+	}, MEDIA_CLEANUP_INTERVAL_MS);
 
 	const recentlySent = new Set<string>();
 
@@ -719,8 +771,12 @@ export async function monitorTelegramProvider(
 		}
 	}
 
-	// Clean up the rate limit interval when exiting
+	// Clean up intervals when exiting
 	clearInterval(rateLimitCleanupInterval);
+	clearInterval(mediaCleanupInterval);
+	if (openaiRecheckInterval) {
+		clearInterval(openaiRecheckInterval);
+	}
 }
 
 /**

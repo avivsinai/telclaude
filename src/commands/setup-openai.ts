@@ -17,6 +17,7 @@ import {
 	isSecretsStorageAvailable,
 	storeSecret,
 } from "../secrets/index.js";
+import { clearOpenAICache } from "../services/openai-client.js";
 
 const logger = getChildLogger({ module: "cmd-setup-openai" });
 
@@ -43,6 +44,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 				// Handle --delete
 				if (opts.delete) {
 					const deleted = await deleteSecret(SECRET_KEYS.OPENAI_API_KEY);
+					clearOpenAICache(); // Clear cached key so changes take effect
 					if (deleted) {
 						console.log("OpenAI API key removed from keychain.");
 					} else {
@@ -126,6 +128,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 
 				// Store the key
 				await storeSecret(SECRET_KEYS.OPENAI_API_KEY, apiKey);
+				clearOpenAICache(); // Clear cached key so new key takes effect
 				console.log("");
 				console.log(`OpenAI API key stored securely in ${providerName}.`);
 				console.log("");

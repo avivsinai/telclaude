@@ -53,6 +53,9 @@ export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
 	{ domain: "*.claude.ai", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "*.code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
+
+	// OpenAI API (for image generation, TTS, transcription via telclaude CLI)
+	{ domain: "api.openai.com", methods: ["GET", "HEAD", "POST"] },
 ];
 
 /**

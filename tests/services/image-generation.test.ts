@@ -86,7 +86,7 @@ describe("image-generation", () => {
 		const result = await generateImage("A tiny pixel art cat");
 
 		expect(capturedRequest.model).toBe("gpt-image-1.5");
-		expect(capturedRequest.output_format).toBe("png");
+		expect(capturedRequest.response_format).toBe("b64_json"); // Explicitly request base64 data
 		expect(capturedRequest.quality).toBe("medium");
 		expect(fs.existsSync(result.path)).toBe(true);
 

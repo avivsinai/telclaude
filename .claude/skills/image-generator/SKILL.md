@@ -42,9 +42,12 @@ telclaude generate-image "A serene mountain landscape at sunset with a lake refl
 
 ## Response Format
 
-After generation, the command outputs the local file path. Use this path to:
-1. Tell the user the image has been generated
-2. The image will be automatically sent to the Telegram chat
+After generation, the command outputs:
+- The local file path where the image was saved
+- File size in KB
+- Model used
+
+**Important**: Tell the user the image has been generated and include the file path in your response. The image file is saved locally and the user can access it at that path.
 
 ## Best Practices
 

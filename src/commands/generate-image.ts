@@ -10,6 +10,7 @@ import {
 	getEstimatedCost,
 	isImageGenerationAvailable,
 } from "../services/image-generation.js";
+import { initializeOpenAIKey } from "../services/openai-client.js";
 
 const logger = getChildLogger({ module: "cmd-generate-image" });
 
@@ -32,8 +33,15 @@ export function registerGenerateImageCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
+				// Initialize keychain lookup so isImageGenerationAvailable() works correctly
+				await initializeOpenAIKey();
+
 				if (!isImageGenerationAvailable()) {
-					console.error("Error: Image generation not available. Set OPENAI_API_KEY.");
+					console.error(
+						"Error: Image generation not available.\n" +
+							"Run: telclaude setup-openai\n" +
+							"Or set OPENAI_API_KEY environment variable.",
+					);
 					process.exit(1);
 				}
 

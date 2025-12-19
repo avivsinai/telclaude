@@ -62,7 +62,14 @@ telclaude tts "Quick update" --speed 1.5
 
 ## Response Format
 
-After generation, the command outputs the local file path. The audio file will be automatically sent to the Telegram chat as a voice message.
+After generation, the command outputs:
+- The local file path where the audio was saved
+- File size in KB
+- Audio format
+- Voice used
+- Estimated duration
+
+**Important**: Tell the user the audio has been generated and include the file path in your response. The audio file is saved locally and the user can access it at that path.
 
 ## Best Practices
 

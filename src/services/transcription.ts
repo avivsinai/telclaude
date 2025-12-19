@@ -138,8 +138,10 @@ async function transcribeWithCommand(
 	const timeoutMs = (config.timeoutSeconds ?? 60) * 1000;
 
 	return new Promise((resolve, reject) => {
+		let settled = false;
+		let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
 		const proc = spawn(cmd, args, {
-			timeout: timeoutMs,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 
@@ -155,11 +157,18 @@ async function transcribeWithCommand(
 		});
 
 		proc.on("error", (error) => {
+			if (settled) return;
+			settled = true;
+			if (timeoutId) clearTimeout(timeoutId);
 			logger.error({ command, error }, "transcription command failed to start");
 			reject(new Error(`Transcription command failed: ${error.message}`));
 		});
 
 		proc.on("close", (code) => {
+			if (settled) return;
+			settled = true;
+			if (timeoutId) clearTimeout(timeoutId);
+
 			if (code === 0) {
 				const text = stdout.trim();
 				logger.info({ command: cmd, textLength: text.length }, "command transcription complete");
@@ -170,12 +179,12 @@ async function transcribeWithCommand(
 			}
 		});
 
-		// Handle timeout
-		setTimeout(() => {
-			if (!proc.killed) {
-				proc.kill("SIGTERM");
-				reject(new Error(`Transcription command timed out after ${config.timeoutSeconds}s`));
-			}
+		// Handle timeout manually (spawn's timeout option doesn't reject the promise)
+		timeoutId = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			proc.kill("SIGTERM");
+			reject(new Error(`Transcription command timed out after ${config.timeoutSeconds}s`));
 		}, timeoutMs);
 	});
 }

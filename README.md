@@ -165,6 +165,10 @@ docker compose exec telclaude pnpm start relay --profile strict
   - Set per-user under `security.permissions.users`; `defaultTier` stays `READ_ONLY`.
 - Optional group guardrail:
   - `telegram.groupChat.requireMention: true` to ignore group/supergroup messages unless they mention the bot or reply to it.
+- OpenAI sandbox access (needed for Bash-based image/TTS/transcription tools):
+  - `openai.exposeKeyToSandbox: true` (or `TELCLAUDE_OPENAI_SANDBOX_EXPOSE=1`) injects an OpenAI key into the tool sandbox.
+  - Optional: set `TELCLAUDE_SANDBOX_OPENAI_KEY` to use a separate restricted key for tools.
+  - **Security note:** this exposes the key to the model; use a restricted key and enable only if needed.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
 ## CLI

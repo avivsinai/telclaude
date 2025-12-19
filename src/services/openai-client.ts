@@ -18,6 +18,7 @@ const logger = getChildLogger({ module: "openai-client" });
 
 let client: OpenAI | null = null;
 let cachedApiKey: string | null = null;
+let keySourceChecked = false;
 
 /**
  * Get the OpenAI API key from keychain, env, or config.
@@ -31,6 +32,7 @@ async function getApiKey(): Promise<string | null> {
 		const keychainKey = await getSecret(SECRET_KEYS.OPENAI_API_KEY);
 		if (keychainKey) {
 			cachedApiKey = keychainKey;
+			keySourceChecked = true;
 			logger.debug("using OpenAI API key from keychain");
 			return keychainKey;
 		}
@@ -41,6 +43,7 @@ async function getApiKey(): Promise<string | null> {
 	// 2. Try environment variable
 	if (process.env.OPENAI_API_KEY) {
 		cachedApiKey = process.env.OPENAI_API_KEY;
+		keySourceChecked = true;
 		logger.debug("using OpenAI API key from environment variable");
 		return cachedApiKey;
 	}
@@ -49,10 +52,12 @@ async function getApiKey(): Promise<string | null> {
 	const config = loadConfig();
 	if (config.openai?.apiKey) {
 		cachedApiKey = config.openai.apiKey;
+		keySourceChecked = true;
 		logger.debug("using OpenAI API key from config file");
 		return cachedApiKey;
 	}
 
+	keySourceChecked = true;
 	return null;
 }
 
@@ -90,7 +95,7 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 
 /**
  * Check if OpenAI is configured.
- * Note: This is async now due to keychain check.
+ * Note: This is async due to keychain check.
  */
 export async function isOpenAIConfigured(): Promise<boolean> {
 	const apiKey = await getApiKey();
@@ -98,13 +103,47 @@ export async function isOpenAIConfigured(): Promise<boolean> {
 }
 
 /**
- * Synchronous check if OpenAI might be configured.
- * Only checks env var and config (not keychain).
- * Use isOpenAIConfigured() for accurate check.
+ * Initialize OpenAI key lookup (call at startup).
+ * This populates the cache so isOpenAIConfiguredSync() works correctly.
+ */
+export async function initializeOpenAIKey(): Promise<boolean> {
+	const apiKey = await getApiKey();
+	return !!apiKey;
+}
+
+/**
+ * Synchronous check if OpenAI is configured.
+ * Returns accurate result if initializeOpenAIKey() was called at startup,
+ * otherwise falls back to env/config check only.
  */
 export function isOpenAIConfiguredSync(): boolean {
+	// If we've already checked all sources (including keychain), use cached result
+	if (keySourceChecked) {
+		return !!cachedApiKey;
+	}
+
+	// Fallback: check env and config only (keychain not yet checked)
 	const config = loadConfig();
 	return !!(process.env.OPENAI_API_KEY ?? config.openai?.apiKey);
+}
+
+/**
+ * Clear cached API key and client.
+ * Call this after key rotation or deletion.
+ */
+export function clearOpenAICache(): void {
+	cachedApiKey = null;
+	keySourceChecked = false;
+	client = null;
+	logger.debug("OpenAI cache cleared");
+}
+
+/**
+ * Get cached OpenAI key if we've already checked all sources.
+ * Returns null if the key hasn't been initialized yet.
+ */
+export function getCachedOpenAIKey(): string | null {
+	return keySourceChecked ? cachedApiKey : null;
 }
 
 /**

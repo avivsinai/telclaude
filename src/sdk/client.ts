@@ -14,7 +14,7 @@ import {
 	type SdkBeta,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionTier } from "../config/config.js";
+import { type PermissionTier, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
 import {
@@ -25,6 +25,7 @@ import {
 	wrapCommand,
 } from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
+import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -43,6 +44,7 @@ import {
 import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
+let openaiSandboxKeyLogState: "none" | "exposed" | "missing" = "none";
 const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -221,6 +223,54 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		setTimeout(() => abortController?.abort(), opts.timeoutMs);
 	}
 
+	const sandboxEnv = buildSandboxEnv(process.env);
+	const config = loadConfig();
+
+	// OpenAI sandbox key exposure precedence:
+	// 1. Env var explicit disable (0/false/no) => disabled, ignores config
+	// 2. Env var explicit enable (any other value) => enabled
+	// 3. Config value (openai.exposeKeyToSandbox) => fallback if env not set
+	const envExposeRaw = process.env.TELCLAUDE_OPENAI_SANDBOX_EXPOSE;
+	const envExpose = envExposeRaw?.toLowerCase();
+	const envExposeDisabled = envExpose === "0" || envExpose === "false" || envExpose === "no";
+	const envExposeEnabled =
+		envExposeRaw !== undefined && !envExposeDisabled && envExposeRaw.trim() !== "";
+	const configEnables = config.openai?.exposeKeyToSandbox ?? false;
+	const exposeOpenAIKey = envExposeEnabled || (!envExposeDisabled && configEnables);
+
+	// Log when env var explicitly overrides config
+	if (envExposeDisabled && configEnables) {
+		logger.debug("OpenAI sandbox key exposure disabled by env var (overrides config)");
+	}
+
+	const bashAllowed = opts.tier === "FULL_ACCESS" || TIER_TOOLS[opts.tier]?.includes("Bash");
+
+	if (exposeOpenAIKey && bashAllowed) {
+		const overrideKey = process.env.TELCLAUDE_SANDBOX_OPENAI_KEY;
+		const cachedKey = getCachedOpenAIKey();
+		const keyToExpose = overrideKey ?? cachedKey;
+
+		if (keyToExpose) {
+			sandboxEnv.OPENAI_API_KEY = keyToExpose;
+			if (openaiSandboxKeyLogState !== "exposed") {
+				openaiSandboxKeyLogState = "exposed";
+				logger.warn(
+					{
+						source: overrideKey ? "TELCLAUDE_SANDBOX_OPENAI_KEY" : "cached",
+					},
+					"OpenAI key exposed to tool sandbox (use a restricted key)",
+				);
+			}
+		} else {
+			if (openaiSandboxKeyLogState !== "missing") {
+				openaiSandboxKeyLogState = "missing";
+				logger.warn(
+					"OpenAI sandbox key exposure enabled but no key is available (set key or run setup-openai)",
+				);
+			}
+		}
+	}
+
 	const sdkOpts: SDKOptions = {
 		cwd: opts.cwd,
 		model: opts.model,
@@ -230,7 +280,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		resume: opts.resumeSessionId,
 		// SECURITY: Sanitize environment to prevent leaking secrets like TELEGRAM_BOT_TOKEN
 		// Only allowlisted env vars pass through to the Claude subprocess
-		env: buildSandboxEnv(process.env),
+		env: sandboxEnv,
 	};
 
 	// Enforce Claude Code sandbox + permission policy per invocation (no writes to ~/.claude).

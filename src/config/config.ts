@@ -6,6 +6,19 @@ import { z } from "zod";
 import { CONFIG_DIR } from "../utils.js";
 import { resolveConfigPath } from "./path.js";
 
+// Lazy logger to avoid circular dependency (logging.ts imports config.ts)
+type Logger = ReturnType<typeof import("../logging.js").getChildLogger>;
+let _logger: Logger | null = null;
+function getLogger(): Logger {
+	if (!_logger) {
+		// Dynamic import at runtime to break circular dependency
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const { getChildLogger } = require("../logging.js");
+		_logger = getChildLogger({ module: "config" }) as Logger;
+	}
+	return _logger;
+}
+
 // Session configuration schema
 const SessionConfigSchema = z.object({
 	scope: z.enum(["per-sender", "global"]).default("per-sender"),
@@ -43,12 +56,15 @@ const SdkConfigSchema = z.object({
 const OpenAIConfigSchema = z.object({
 	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
 	baseUrl: z.string().optional(), // Custom endpoint for local inference servers
+	// SECURITY: Exposes OpenAI API key to the Claude tool sandbox so Bash tools can call OpenAI.
+	// This allows the model to access the key. Use a restricted key and enable only if needed.
+	exposeKeyToSandbox: z.boolean().default(false),
 });
 
 // Transcription configuration schema
 const TranscriptionConfigSchema = z.object({
 	provider: z.enum(["openai", "deepgram", "command"]).default("openai"),
-	model: z.enum(["whisper-1", "gpt-4o-mini-transcribe"]).default("whisper-1"),
+	model: z.string().default("whisper-1"), // Any valid OpenAI transcription model
 	language: z.string().optional(), // Auto-detect if not set
 	// For provider: "command" - CLI-based transcription (like clawdis)
 	command: z.array(z.string()).optional(),
@@ -58,7 +74,7 @@ const TranscriptionConfigSchema = z.object({
 // Image generation configuration schema (GPT Image 1.5)
 const ImageGenerationConfigSchema = z.object({
 	provider: z.enum(["gpt-image", "disabled"]).default("gpt-image"),
-	model: z.literal("gpt-image-1.5").default("gpt-image-1.5"),
+	model: z.string().default("gpt-image-1.5"), // Any valid OpenAI image model (dall-e-3, gpt-image-1.5, etc.)
 	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("1024x1024"),
 	quality: z.enum(["low", "medium", "high"]).default("medium"),
 	// Rate limiting for cost control
@@ -311,8 +327,14 @@ export function loadConfig(): TelclaudeConfig {
 
 		return validated;
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			// No config file, return defaults
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			// No config file - use defaults
+			return {};
+		}
+		if (code === "EACCES") {
+			// Permission denied (e.g., running in sandbox where ~/.telclaude is blocked)
+			getLogger().debug({ configPath }, "config file not accessible (EACCES), using defaults");
 			return {};
 		}
 		throw err;

@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { initializeOpenAIKey } from "../services/openai-client.js";
 import { getEstimatedTTSCost, isTTSAvailable, textToSpeech } from "../services/tts.js";
 
 const logger = getChildLogger({ module: "cmd-tts" });
@@ -31,8 +32,15 @@ export function registerTextToSpeechCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
+				// Initialize keychain lookup so isTTSAvailable() works correctly
+				await initializeOpenAIKey();
+
 				if (!isTTSAvailable()) {
-					console.error("Error: Text-to-speech not available. Set OPENAI_API_KEY.");
+					console.error(
+						"Error: Text-to-speech not available.\n" +
+							"Run: telclaude setup-openai\n" +
+							"Or set OPENAI_API_KEY environment variable.",
+					);
 					process.exit(1);
 				}
 
