@@ -219,8 +219,16 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	// Create abort controller with timeout if specified
 	let abortController = opts.abortController;
 	if (opts.timeoutMs && !abortController) {
-		abortController = new AbortController();
-		setTimeout(() => abortController?.abort(), opts.timeoutMs);
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs);
+		controller.signal.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timeoutId);
+			},
+			{ once: true },
+		);
+		abortController = controller;
 	}
 
 	const sandboxEnv = buildSandboxEnv(process.env);

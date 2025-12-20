@@ -105,18 +105,6 @@ const TTSConfigSchema = z.object({
 	maxPerDayPerUser: z.number().int().positive().default(100),
 });
 
-// Image optimization configuration schema
-const ImageOptimizationConfigSchema = z.object({
-	enabled: z.boolean().default(true),
-	maxDimension: z.number().int().positive().default(2048),
-	maxSizeBytes: z
-		.number()
-		.int()
-		.positive()
-		.default(5 * 1024 * 1024), // 5MB
-	format: z.enum(["jpeg", "png", "webp"]).default("jpeg"),
-});
-
 // Security profile - determines which security layers are active
 export const SecurityProfileSchema = z.enum(["simple", "strict", "test"]);
 export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
@@ -288,7 +276,6 @@ const TelclaudeConfigSchema = z.object({
 	imageGeneration: ImageGenerationConfigSchema.optional(),
 	videoProcessing: VideoProcessingConfigSchema.optional(),
 	tts: TTSConfigSchema.optional(),
-	imageOptimization: ImageOptimizationConfigSchema.optional(),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -302,7 +289,6 @@ export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
 export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
 export type TTSConfig = z.infer<typeof TTSConfigSchema>;
-export type ImageOptimizationConfig = z.infer<typeof ImageOptimizationConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;

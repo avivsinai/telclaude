@@ -158,4 +158,35 @@ describe("RateLimiter", () => {
 			expect(usage.perTier.minute).toBe(3);
 		});
 	});
+
+	describe("cleanup behavior", () => {
+		it("retains multimedia day windows while cleaning hourly windows", async () => {
+			const { getDb } = await import("../../src/storage/db.js");
+			const db = getDb();
+
+			const now = Date.now();
+			const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+			const twentyFiveHoursAgo = now - 25 * 60 * 60 * 1000;
+
+			db.prepare(
+				"INSERT INTO rate_limits (limiter_type, key, window_start, points) VALUES (?, ?, ?, ?)",
+			).run("multimedia_tts", "user1", twoHoursAgo, 1);
+			db.prepare(
+				"INSERT INTO rate_limits (limiter_type, key, window_start, points) VALUES (?, ?, ?, ?)",
+			).run("multimedia_tts", "user1", twentyFiveHoursAgo, 1);
+			db.prepare(
+				"INSERT INTO rate_limits (limiter_type, key, window_start, points) VALUES (?, ?, ?, ?)",
+			).run("user_minute", "user1", twoHoursAgo, 1);
+
+			limiter.cleanup();
+
+			const remaining = db
+				.prepare("SELECT limiter_type, window_start FROM rate_limits ORDER BY window_start")
+				.all() as Array<{ limiter_type: string; window_start: number }>;
+
+			expect(remaining).toEqual([
+				{ limiter_type: "multimedia_tts", window_start: twoHoursAgo },
+			]);
+		});
+	});
 });

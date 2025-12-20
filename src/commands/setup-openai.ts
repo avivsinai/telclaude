@@ -22,8 +22,9 @@ import { clearOpenAICache } from "../services/openai-client.js";
 const logger = getChildLogger({ module: "cmd-setup-openai" });
 
 export function registerSetupOpenAICommand(program: Command): void {
-	const cmd = program
+	program
 		.command("setup-openai")
+		.alias("login-openai")
 		.description("Configure OpenAI API key (stored securely in keychain)")
 		.option("--delete", "Remove the stored API key")
 		.option("--show", "Show the stored API key (masked)")
@@ -143,13 +144,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 			}
 		});
 
-	// Add alias
-	program
-		.command("login-openai")
-		.description("Alias for setup-openai")
-		.action(() => {
-			cmd.parseAsync(process.argv.slice(2).filter((arg) => arg !== "login-openai"));
-		});
+	// Command alias is registered above.
 }
 
 /**

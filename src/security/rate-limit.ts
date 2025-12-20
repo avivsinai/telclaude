@@ -46,6 +46,7 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 // Window durations in milliseconds
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Get the start of the current window for a given duration.
@@ -266,7 +267,14 @@ export class RateLimiter {
 	cleanup(): number {
 		const db = getDb();
 		const oneHourAgo = Date.now() - HOUR_MS;
-		const result = db.prepare("DELETE FROM rate_limits WHERE window_start < ?").run(oneHourAgo);
+		const oneDayAgo = Date.now() - DAY_MS;
+		const result = db
+			.prepare(
+				`DELETE FROM rate_limits
+				 WHERE (limiter_type LIKE 'multimedia_%' AND window_start < ?)
+				    OR (limiter_type NOT LIKE 'multimedia_%' AND window_start < ?)`,
+			)
+			.run(oneDayAgo, oneHourAgo);
 
 		if (result.changes > 0) {
 			logger.debug({ cleaned: result.changes }, "cleaned old rate limit windows");

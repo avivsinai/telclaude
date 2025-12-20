@@ -71,6 +71,19 @@ export async function isFFmpegAvailable(): Promise<boolean> {
 }
 
 /**
+ * Check if FFprobe is available.
+ */
+export async function isFFprobeAvailable(): Promise<boolean> {
+	return new Promise((resolve) => {
+		const proc = spawn("ffprobe", ["-version"], {
+			stdio: ["ignore", "ignore", "ignore"],
+		});
+		proc.on("error", () => resolve(false));
+		proc.on("close", (code) => resolve(code === 0));
+	});
+}
+
+/**
  * Process a video file - extract frames and optionally transcribe audio.
  *
  * @param videoPath - Path to the video file
@@ -103,6 +116,9 @@ export async function processVideo(
 	if (!(await isFFmpegAvailable())) {
 		throw new Error("FFmpeg not available. Install ffmpeg to process videos.");
 	}
+	if (!(await isFFprobeAvailable())) {
+		throw new Error("FFprobe not available. Install ffmpeg to process videos.");
+	}
 
 	// Create unique output directory based on video hash
 	const videoBuffer = await fs.promises.readFile(videoPath);
@@ -122,7 +138,7 @@ export async function processVideo(
 		const frameInterval = videoConfig.frameInterval ?? 1;
 		const maxFrames = videoConfig.maxFrames ?? 30;
 		const totalPossibleFrames = Math.floor(effectiveDuration / frameInterval);
-		const framesToExtract = Math.min(totalPossibleFrames, maxFrames);
+		const framesToExtract = Math.min(Math.max(totalPossibleFrames, 1), maxFrames);
 
 		// Extract frames
 		const framePaths = await extractFrames(
@@ -332,10 +348,14 @@ async function extractAudio(
  */
 export async function isVideoProcessingAvailable(): Promise<boolean> {
 	const config = loadConfig();
-	if (config.videoProcessing?.enabled === false) {
+	if (config.videoProcessing?.enabled !== true) {
 		return false;
 	}
-	return isFFmpegAvailable();
+	const [ffmpegAvailable, ffprobeAvailable] = await Promise.all([
+		isFFmpegAvailable(),
+		isFFprobeAvailable(),
+	]);
+	return ffmpegAvailable && ffprobeAvailable;
 }
 
 /**
@@ -343,5 +363,5 @@ export async function isVideoProcessingAvailable(): Promise<boolean> {
  * Delegates to centralized media cleanup.
  */
 export async function cleanupVideoFrames(maxAgeMs: number = 24 * 60 * 60 * 1000): Promise<number> {
-	return cleanupOldMedia(maxAgeMs, "video-frames");
+	return cleanupOldMedia(maxAgeMs, "video-frames", true);
 }

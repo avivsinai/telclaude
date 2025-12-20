@@ -204,16 +204,19 @@ function mimeToExtension(mime?: string): string {
  *
  * @param maxAgeMs - Maximum age of files to keep (default: 24 hours)
  * @param category - Optional category to clean (cleans all if not specified)
+ * @param recursive - Whether to recurse into subdirectories (defaults to true only when no category)
  * @returns Number of files/directories cleaned
  */
 export async function cleanupOldMedia(
 	maxAgeMs: number = 24 * 60 * 60 * 1000,
 	category?: MediaCategory,
+	recursive?: boolean,
 ): Promise<number> {
 	const targetDir = category ? path.join(MEDIA_ROOT, category) : MEDIA_ROOT;
 
 	try {
-		return await cleanupDirectory(targetDir, maxAgeMs, !category);
+		const shouldRecurse = recursive ?? !category;
+		return await cleanupDirectory(targetDir, maxAgeMs, shouldRecurse);
 	} catch {
 		return 0;
 	}
