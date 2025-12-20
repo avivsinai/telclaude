@@ -43,6 +43,7 @@ import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
 import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
 import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
+import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
@@ -571,13 +572,18 @@ export async function monitorTelegramProvider(
 		logger.info("security profile: simple (hard enforcement only)");
 	}
 
-	// Initialize OpenAI key lookup (checks keychain, env, config)
-	// This populates the cache so sync availability checks work correctly
+	// Initialize API key lookups (checks keychain, env, config)
+	// This populates caches so sync availability checks work correctly
 	let openaiConfigured = await initializeOpenAIKey();
 	if (openaiConfigured) {
 		logger.info("OpenAI services available (image generation, TTS, transcription)");
 	} else {
 		logger.debug("OpenAI not configured - multimedia features disabled");
+	}
+
+	const gitConfigured = await initializeGitCredentials();
+	if (gitConfigured) {
+		logger.info("Git credentials available (GitHub token will be exposed to sandbox)");
 	}
 
 	// If not configured, periodically re-check so a later setup-openai is picked up.

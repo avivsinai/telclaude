@@ -144,6 +144,15 @@ export function getCachedGitToken(): string | null {
 }
 
 /**
+ * Initialize git credentials lookup (call at startup).
+ * This populates the cache so getCachedGitToken() works correctly.
+ */
+export async function initializeGitCredentials(): Promise<boolean> {
+	const creds = await getGitCredentials();
+	return !!creds;
+}
+
+/**
  * Apply git identity configuration to the system.
  * This configures git user.name and user.email globally.
  *
