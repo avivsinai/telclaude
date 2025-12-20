@@ -4,11 +4,14 @@ import { createProgram } from "./cli/program.js";
 import { registerAccessControlCommands } from "./commands/access-control.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
+import { registerGitCredentialCommand } from "./commands/git-credential.js";
+import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
 import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
+import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
@@ -38,6 +41,9 @@ registerAccessControlCommands(program);
 registerGenerateImageCommand(program);
 registerTextToSpeechCommand(program);
 registerSetupOpenAICommand(program);
+registerSetupGitCommand(program);
+registerGitTestCommand(program);
+registerGitCredentialCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

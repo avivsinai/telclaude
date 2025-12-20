@@ -42,13 +42,14 @@
 - `docker/` — container stack and hardening.
 
 ## Common commands
-- Install: `pnpm install`  
-- Dev relay (native, srt sandbox): `pnpm dev relay --profile simple`  
-- TOTP daemon: `pnpm dev totp-daemon`  
-- Doctor: `pnpm dev doctor --network --secrets`  
-- Lint/format: `pnpm lint`, `pnpm format`  
-- Typecheck: `pnpm typecheck`  
-- Tests: `pnpm test`  
+- Install: `pnpm install`
+- Dev relay (native, srt sandbox): `pnpm dev relay --profile simple`
+- TOTP daemon: `pnpm dev totp-daemon`
+- Doctor: `pnpm dev doctor --network --secrets`
+- Lint/format: `pnpm lint`, `pnpm format`
+- Typecheck: `pnpm typecheck`
+- Tests: `pnpm test`
+- Git setup: `telclaude setup-git` (interactive), `telclaude git-test` (verify connectivity)
 - SDK sandbox policy is passed per invocation via `--settings` (no writes to `~/.claude`).
 
 ## Auth & control plane
@@ -65,7 +66,14 @@
 - Network method/port restrictions are policy-only; domain allowlist + private/metadata blocks are enforced.
 
 ## Troubleshooting (quick)
-- Sandbox unavailable: install bubblewrap/socat/rg (Linux) or ensure Seatbelt + rg (macOS); rerun relay.  
-- Bot silent: confirm `allowedChats`, rate limits, and observer not blocking (see audit).  
-- TOTP failing: ensure daemon running and device time synced.  
+- Sandbox unavailable: install bubblewrap/socat/rg (Linux) or ensure Seatbelt + rg (macOS); rerun relay.
+- Bot silent: confirm `allowedChats`, rate limits, and observer not blocking (see audit).
+- TOTP failing: ensure daemon running and device time synced.
 - SDK errors: `claude` CLI installed and `claude login` performed.
+
+## Docker notes
+- **Node version**: Docker images MUST use `node:22-bookworm-slim`. Node 25+ removed corepack by default, breaking pnpm installation in Docker builds. Do not upgrade to node:25+ without adding explicit pnpm installation.
+- **Secrets storage**: OpenAI key via `telclaude setup-openai`, git credentials via `telclaude setup-git`; both persist in Docker volume (`telclaude-data:/data/secrets.json`), encrypted with `SECRETS_ENCRYPTION_KEY`.
+- **Git bot setup**: Create a GitHub bot account (e.g., `myproject-bot`), generate a fine-grained PAT, run `docker exec -it telclaude telclaude setup-git`. Alternatively, set `GIT_USERNAME`, `GIT_EMAIL`, `GITHUB_TOKEN` env vars.
+- **Workspace path**: Ensure `WORKSPACE_PATH` in `docker/.env` points to a valid host path (not macOS paths on Linux hosts).
+- **docker/.env is gitignored**: Only `.env.example` is tracked; never commit personal paths or tokens.

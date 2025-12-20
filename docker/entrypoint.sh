@@ -56,6 +56,25 @@ if [ "$(id -u)" = "0" ]; then
         cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
     fi
 
+    # Configure git credential helper (uses telclaude's secure storage)
+    # This allows git operations without storing plaintext credentials
+    echo "[entrypoint] Configuring git credential helper"
+    git config --global credential.helper "/app/bin/telclaude.js git-credential"
+    git config --global credential.useHttpPath true
+
+    # Apply git identity if credentials are stored
+    if /app/bin/telclaude.js git-identity --check 2>/dev/null; then
+        echo "[entrypoint] Applying git identity from secure storage"
+        /app/bin/telclaude.js git-identity 2>/dev/null || true
+    else
+        # Check for environment variable fallback
+        if [ -n "$GIT_USERNAME" ] && [ -n "$GIT_EMAIL" ]; then
+            echo "[entrypoint] Applying git identity from environment"
+            git config --global user.name "$GIT_USERNAME"
+            git config --global user.email "$GIT_EMAIL"
+        fi
+    fi
+
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary

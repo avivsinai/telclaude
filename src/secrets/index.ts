@@ -14,3 +14,5 @@ export {
 	SECRET_KEYS,
 	storeSecret,
 } from "./keychain.js";
+
+export type { GitCredentials } from "./keychain.js";
