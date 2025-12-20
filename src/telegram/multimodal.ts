@@ -7,11 +7,27 @@
  */
 
 import { getChildLogger } from "../logging.js";
+import {
+	type FeatureRateLimitConfig,
+	getMultimediaRateLimiter,
+} from "../services/multimedia-rate-limit.js";
 import { isTranscriptionAvailable, transcribeAudio } from "../services/transcription.js";
 import { isVideoProcessingAvailable, processVideo } from "../services/video-processor.js";
 import type { TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "multimodal" });
+
+/** Default rate limits for transcription (same as TTS) */
+const DEFAULT_TRANSCRIPTION_LIMITS: FeatureRateLimitConfig = {
+	maxPerHourPerUser: 20,
+	maxPerDayPerUser: 50,
+};
+
+/** Default rate limits for video processing (more conservative) */
+const DEFAULT_VIDEO_LIMITS: FeatureRateLimitConfig = {
+	maxPerHourPerUser: 10,
+	maxPerDayPerUser: 30,
+};
 
 export type MultimodalContext = {
 	body: string;
@@ -51,25 +67,58 @@ const TEXT_DOCUMENT_MIME_TYPES = [
 ];
 
 /**
+ * Options for multimodal context processing.
+ */
+export type ProcessMultimodalOptions = {
+	/** User ID for rate limiting. If not provided, rate limiting is skipped. */
+	userId?: string;
+};
+
+/**
  * Process media context and transcribe audio if needed.
  * Call this before buildMultimodalPrompt to handle async transcription.
  *
  * @param ctx - Multimodal context with media info
+ * @param options - Processing options (userId for rate limiting)
  * @returns Context with transcript populated if audio was transcribed
  */
-export async function processMultimodalContext(ctx: MultimodalContext): Promise<MultimodalContext> {
+export async function processMultimodalContext(
+	ctx: MultimodalContext,
+	options: ProcessMultimodalOptions = {},
+): Promise<MultimodalContext> {
 	const { mediaPath, mediaType, transcript, framePaths } = ctx;
+	const { userId } = options;
 
 	// Skip if no media or already processed
 	if (!mediaPath || !mediaType) {
 		return ctx;
 	}
 
+	const rateLimiter = userId ? getMultimediaRateLimiter() : null;
+
 	// Check if this is transcribable audio/voice
 	if (AUDIO_MEDIA_TYPES.includes(mediaType) && !transcript && isTranscriptionAvailable()) {
+		// Check rate limit if userId provided
+		if (rateLimiter && userId) {
+			const limits = DEFAULT_TRANSCRIPTION_LIMITS;
+			const limitResult = rateLimiter.checkLimit("transcription", userId, limits);
+			if (!limitResult.allowed) {
+				logger.info({ userId, reason: limitResult.reason }, "transcription rate limited");
+				return {
+					...ctx,
+					transcript: `[Transcription skipped: ${limitResult.reason}]`,
+				};
+			}
+		}
+
 		try {
 			logger.info({ mediaPath, mediaType }, "transcribing audio");
 			const result = await transcribeAudio(mediaPath);
+
+			// Consume rate limit point on success
+			if (rateLimiter && userId) {
+				rateLimiter.consume("transcription", userId);
+			}
 
 			logger.info(
 				{
@@ -97,9 +146,27 @@ export async function processMultimodalContext(ctx: MultimodalContext): Promise<
 		!framePaths &&
 		(await isVideoProcessingAvailable())
 	) {
+		// Check rate limit if userId provided
+		if (rateLimiter && userId) {
+			const limits = DEFAULT_VIDEO_LIMITS;
+			const limitResult = rateLimiter.checkLimit("video_processing", userId, limits);
+			if (!limitResult.allowed) {
+				logger.info({ userId, reason: limitResult.reason }, "video processing rate limited");
+				return {
+					...ctx,
+					transcript: `[Video processing skipped: ${limitResult.reason}]`,
+				};
+			}
+		}
+
 		try {
 			logger.info({ mediaPath, mediaType }, "processing video");
 			const result = await processVideo(mediaPath);
+
+			// Consume rate limit point on success
+			if (rateLimiter && userId) {
+				rateLimiter.consume("video_processing", userId);
+			}
 
 			logger.info(
 				{

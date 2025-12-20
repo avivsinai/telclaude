@@ -357,12 +357,15 @@ async function executeWithSession(
 
 	try {
 		// Process multimodal context (transcribes audio if available)
-		const processedContext = await processMultimodalContext({
-			body: msg.body,
-			mediaPath: ctx.mediaPath,
-			mediaType: ctx.mediaType,
-			mimeType: msg.mimeType,
-		});
+		const processedContext = await processMultimodalContext(
+			{
+				body: msg.body,
+				mediaPath: ctx.mediaPath,
+				mediaType: ctx.mediaType,
+				mimeType: msg.mimeType,
+			},
+			{ userId },
+		);
 
 		// Build prompt with multimodal context (handles empty body + media + transcripts)
 		const queryPrompt = buildMultimodalPrompt(processedContext);

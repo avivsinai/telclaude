@@ -118,13 +118,14 @@ export async function generateImage(
 	const startTime = Date.now();
 
 	try {
+		// GPT image models use output_format (png/jpeg/webp) and always return base64
 		const response = await client.images.generate({
 			model,
 			prompt,
 			size,
 			quality,
 			n: 1,
-			response_format: "b64_json", // Explicitly request base64 data
+			output_format: "png",
 		});
 
 		const durationMs = Date.now() - startTime;

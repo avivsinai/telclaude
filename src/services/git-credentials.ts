@@ -264,19 +264,40 @@ export async function getAuthenticatedUrl(repoUrl: string): Promise<string | nul
  * Run a git command with authentication via http.extraHeader.
  * This avoids exposing credentials in process args (visible in `ps`).
  *
- * SECURITY: Only provides auth for allowed hosts.
+ * SECURITY: Only provides auth for allowed hosts. The repoUrl parameter
+ * is validated against the allowlist before adding auth headers.
+ *
+ * @param args - Git command arguments (e.g., ["ls-remote", url, "HEAD"])
+ * @param options.repoUrl - Repository URL to authenticate against (REQUIRED for auth)
+ * @param options.timeout - Command timeout in ms
+ * @param options.cwd - Working directory
  */
 export async function runGitWithAuth(
 	args: string[],
-	options: { timeout?: number; cwd?: string } = {},
+	options: { repoUrl?: string; timeout?: number; cwd?: string } = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string; error?: Error }> {
 	const creds = await getGitCredentials();
-
-	// Build auth header if we have credentials
 	const extraArgs: string[] = [];
-	if (creds) {
-		const authHeader = `Authorization: Basic ${Buffer.from(`${creds.username}:${creds.token}`).toString("base64")}`;
-		extraArgs.push("-c", `http.extraHeader=${authHeader}`);
+
+	// Only add auth if we have credentials AND the host is allowed
+	if (creds && options.repoUrl) {
+		const url = toHttpsUrl(options.repoUrl);
+		if (url) {
+			try {
+				const parsed = new URL(url);
+				if (isHostAllowed(parsed.hostname)) {
+					const authHeader = `Authorization: Basic ${Buffer.from(`${creds.username}:${creds.token}`).toString("base64")}`;
+					extraArgs.push("-c", `http.extraHeader=${authHeader}`);
+				} else {
+					logger.warn(
+						{ host: parsed.hostname },
+						"runGitWithAuth: refusing auth for non-allowed host",
+					);
+				}
+			} catch {
+				logger.warn({ url: options.repoUrl }, "runGitWithAuth: invalid URL");
+			}
+		}
 	}
 
 	const result = spawnSync("git", [...extraArgs, ...args], {
@@ -382,6 +403,7 @@ export async function testGitConnectivity(
 
 		// Test with git ls-remote using http.extraHeader (not URL-embedded token)
 		const result = await runGitWithAuth(["ls-remote", "--exit-code", cleanUrl, "HEAD"], {
+			repoUrl: cleanUrl,
 			timeout: 15000,
 		});
 

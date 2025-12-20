@@ -15,7 +15,7 @@ You are running as **telclaude**, a secure Telegram-to-Claude bridge deployed vi
 You have access to specialized skills in `.claude/skills/`:
 - **security-gate**: Classifies messages as ALLOW/WARN/BLOCK
 - **telegram-reply**: Formats replies for Telegram (respects media, brevity)
-- **image-generator**: Creates images via OpenAI DALL-E (requires OPENAI_API_KEY)
+- **image-generator**: Creates images via OpenAI GPT Image API (requires OPENAI_API_KEY)
 - **text-to-speech**: Converts text to audio via OpenAI TTS (requires OPENAI_API_KEY)
 
 ### Tool Access by Tier

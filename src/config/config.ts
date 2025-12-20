@@ -74,7 +74,7 @@ const TranscriptionConfigSchema = z.object({
 // Image generation configuration schema (GPT Image 1.5)
 const ImageGenerationConfigSchema = z.object({
 	provider: z.enum(["gpt-image", "disabled"]).default("gpt-image"),
-	model: z.string().default("gpt-image-1.5"), // Any valid OpenAI image model (dall-e-3, gpt-image-1.5, etc.)
+	model: z.string().default("gpt-image-1.5"), // GPT image model (gpt-image-1.5, gpt-image-1, etc.)
 	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("1024x1024"),
 	quality: z.enum(["low", "medium", "high"]).default("medium"),
 	// Rate limiting for cost control
