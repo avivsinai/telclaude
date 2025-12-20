@@ -1,8 +1,8 @@
 /**
- * Shared domain allowlist defaults for sandboxed network access.
+ * Network domain allowlist for sandboxed network access.
  *
- * Kept in a dedicated module so both the sandbox runtime config and
- * the network policy helper can reference the same source of truth.
+ * Simplified: Single allowlist with all developer-friendly domains.
+ * OpenAI is always included (harmless without key exposure via env var).
  */
 
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -13,27 +13,41 @@ export interface DomainRule {
 }
 
 /**
- * Core domain allowlist (always included).
- * Runtime enforcement is domain-based; methods are informational.
+ * Common package registry domains (read-only).
  */
-const CORE_ALLOWED_DOMAINS: DomainRule[] = [
-	// Package registries (read-only)
+export const PACKAGE_MANAGER_DOMAINS: DomainRule[] = [
 	{ domain: "registry.npmjs.org", methods: ["GET", "HEAD"] },
+	{ domain: "registry.yarnpkg.com", methods: ["GET", "HEAD"] },
 	{ domain: "pypi.org", methods: ["GET", "HEAD"] },
 	{ domain: "files.pythonhosted.org", methods: ["GET", "HEAD"] },
 	{ domain: "crates.io", methods: ["GET", "HEAD"] },
 	{ domain: "static.crates.io", methods: ["GET", "HEAD"] },
+	{ domain: "index.crates.io", methods: ["GET", "HEAD"] },
 	{ domain: "rubygems.org", methods: ["GET", "HEAD"] },
+	{ domain: "repo.maven.apache.org", methods: ["GET", "HEAD"] },
+	{ domain: "repo1.maven.org", methods: ["GET", "HEAD"] },
+	{ domain: "api.nuget.org", methods: ["GET", "HEAD"] },
+	{ domain: "proxy.golang.org", methods: ["GET", "HEAD"] },
+	{ domain: "sum.golang.org", methods: ["GET", "HEAD"] },
+	{ domain: "repo.packagist.org", methods: ["GET", "HEAD"] },
+];
 
-	// Documentation sites
+/**
+ * Documentation domains (read-only).
+ */
+export const DOC_DOMAINS: DomainRule[] = [
 	{ domain: "docs.python.org", methods: ["GET", "HEAD"] },
 	{ domain: "docs.rs", methods: ["GET", "HEAD"] },
 	{ domain: "developer.mozilla.org", methods: ["GET", "HEAD"] },
 	{ domain: "stackoverflow.com", methods: ["GET", "HEAD"] },
 	{ domain: "*.stackexchange.com", methods: ["GET", "HEAD"] },
+];
 
-	// Code hosting (READ ONLY by default)
-	// POST requires explicit config - prevents pushing secrets to repos
+/**
+ * Code hosting domains (read-only by default).
+ * POST requires explicit config - prevents pushing secrets to repos.
+ */
+export const CODE_HOST_DOMAINS: DomainRule[] = [
 	{ domain: "github.com", methods: ["GET", "HEAD"] },
 	{ domain: "api.github.com", methods: ["GET", "HEAD"] },
 	{ domain: "codeload.github.com", methods: ["GET", "HEAD"] },
@@ -42,12 +56,20 @@ const CORE_ALLOWED_DOMAINS: DomainRule[] = [
 	{ domain: "bitbucket.org", methods: ["GET", "HEAD"] },
 	{ domain: "raw.githubusercontent.com", methods: ["GET", "HEAD"] },
 	{ domain: "gist.githubusercontent.com", methods: ["GET", "HEAD"] },
+];
 
-	// npm/yarn CDNs
+/**
+ * CDN domains used by package ecosystems (read-only).
+ */
+export const CDN_DOMAINS: DomainRule[] = [
 	{ domain: "unpkg.com", methods: ["GET", "HEAD"] },
 	{ domain: "cdn.jsdelivr.net", methods: ["GET", "HEAD"] },
+];
 
-	// Anthropic API + Claude Code endpoints
+/**
+ * Anthropic API + Claude Code endpoints.
+ */
+export const ANTHROPIC_DOMAINS: DomainRule[] = [
 	{ domain: "api.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "claude.ai", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "*.claude.ai", methods: ["GET", "HEAD", "POST"] },
@@ -56,55 +78,64 @@ const CORE_ALLOWED_DOMAINS: DomainRule[] = [
 ];
 
 /**
- * OpenAI API domains (conditionally included when OpenAI features are enabled).
- * SECURITY: Only added to sandbox allowlist when openai config is present,
- * to minimize egress surface when not needed.
+ * OpenAI API domains.
+ * Always included in allowlist - harmless without TELCLAUDE_OPENAI_SANDBOX_EXPOSE=1.
  */
 export const OPENAI_DOMAINS: DomainRule[] = [
 	{ domain: "api.openai.com", methods: ["GET", "HEAD", "POST"] },
 ];
 
 /**
- * Default domain allowlist with method intentions.
- * For backwards compatibility, includes OpenAI by default.
- * Use buildAllowedDomains() for conditional inclusion.
+ * Default domain allowlist with all developer-friendly domains.
  */
-export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [...CORE_ALLOWED_DOMAINS, ...OPENAI_DOMAINS];
+export const DEFAULT_ALLOWED_DOMAINS: DomainRule[] = [
+	...PACKAGE_MANAGER_DOMAINS,
+	...DOC_DOMAINS,
+	...CODE_HOST_DOMAINS,
+	...CDN_DOMAINS,
+	...ANTHROPIC_DOMAINS,
+	...OPENAI_DOMAINS,
+];
 
 /**
- * Options for building the allowed domains list.
- */
-export interface BuildDomainsOptions {
-	/** Include OpenAI API domains. Default: false (only add when explicitly needed) */
-	includeOpenAI?: boolean;
-}
-
-/**
- * Build the allowed domains list based on configuration.
- * Use this instead of DEFAULT_ALLOWED_DOMAINS for conditional inclusion.
+ * Build the allowed domains list with optional additional domains.
  *
- * @param options - Configuration options
- * @returns Array of domain rules
+ * @param additionalDomains - Extra domains to allow (GET/HEAD only)
  */
-export function buildAllowedDomains(options: BuildDomainsOptions = {}): DomainRule[] {
-	const domains = [...CORE_ALLOWED_DOMAINS];
+export function buildAllowedDomains(additionalDomains: string[] = []): DomainRule[] {
+	const extraRules = additionalDomains.map((domain) => ({
+		domain,
+		methods: ["GET", "HEAD"] as HttpMethod[],
+	}));
 
-	if (options.includeOpenAI) {
-		domains.push(...OPENAI_DOMAINS);
+	const combined = [...DEFAULT_ALLOWED_DOMAINS, ...extraRules];
+
+	// Merge duplicate domains
+	const merged = new Map<string, Set<HttpMethod>>();
+	for (const rule of combined) {
+		const key = rule.domain.toLowerCase();
+		const set = merged.get(key) ?? new Set<HttpMethod>();
+		for (const method of rule.methods) {
+			set.add(method);
+		}
+		merged.set(key, set);
 	}
 
-	return domains;
+	return Array.from(merged.entries()).map(([domain, methods]) => ({
+		domain,
+		methods: Array.from(methods),
+	}));
 }
 
 /**
- * Build the allowed domain names (strings only) based on configuration.
+ * Build the allowed domain names (strings only).
  */
-export function buildAllowedDomainNames(options: BuildDomainsOptions = {}): string[] {
-	return buildAllowedDomains(options).map((rule) => rule.domain);
+export function buildAllowedDomainNames(additionalDomains: string[] = []): string[] {
+	return buildAllowedDomains(additionalDomains).map((rule) => rule.domain);
 }
 
 /**
- * Default domain patterns (without method metadata) for sandbox-runtime config.
+ * Default domain patterns for sandbox-runtime config.
  */
 export const DEFAULT_ALLOWED_DOMAIN_NAMES = DEFAULT_ALLOWED_DOMAINS.map((rule) => rule.domain);
 

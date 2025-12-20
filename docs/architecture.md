@@ -45,7 +45,7 @@ TOTP daemon (separate process, keychain-backed)
 ## Five Security Pillars
 1) Filesystem isolation (deny sensitive paths; private `/tmp`; host `/tmp`/`/var/tmp`/`/run/user` denied).  
 2) Environment isolation (allowlist env vars).  
-3) Network isolation (strict default allowlist of developer/Anthropic domains; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains).  
+3) Network isolation (profile-based allowlist; default developer profile includes registries/docs/code hosts + Anthropic; package-managers-only profile is used for install-mode narrowing; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains).  
 4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).  
 5) Auth/rate limits/audit (identity links, TOTP auth gate for periodic identity verification, SQLite-backed).
 
@@ -71,7 +71,7 @@ TOTP daemon (separate process, keychain-backed)
 - **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).  
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
-- Network: default strict allowlist (npm/pypi/docs/github/Anthropic API). `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
+- Network: profile-based allowlist (developer-default or package-managers-only). Install-mode can temporarily narrow egress for package installs. `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
 - Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude passes our filesystem/network policy via `--settings` for each SDK invocation (no writes to `~/.claude`).
 
 ## Session & Conversation Model

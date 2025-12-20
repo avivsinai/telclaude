@@ -321,6 +321,21 @@ export const DENY_WRITE_PATHS = [
 
 const logger = getChildLogger({ module: "sandbox-config" });
 
+function hashString(value: string): string {
+	let hash = 2166136261;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = (hash * 16777619) >>> 0;
+	}
+	return hash.toString(16);
+}
+
+function domainsCacheKey(domains?: string[]): string {
+	if (!domains || domains.length === 0) return "default";
+	const normalized = domains.map((domain) => domain.toLowerCase()).sort();
+	return hashString(normalized.join("|"));
+}
+
 /**
  * Build sandbox configuration.
  *
@@ -435,9 +450,13 @@ const sandboxTierConfigCache = new Map<string, SandboxRuntimeConfig>();
  * - WRITE_LOCAL: Writes to cwd + private temp
  * - FULL_ACCESS: Same as WRITE_LOCAL (sandbox is safety net, not policy)
  */
-export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): SandboxRuntimeConfig {
+export function getSandboxConfigForTier(
+	tier: PermissionTier,
+	cwd?: string,
+	options: { allowedDomains?: string[] } = {},
+): SandboxRuntimeConfig {
 	const workingDir = cwd ?? process.cwd();
-	const cacheKey = `${tier}:${workingDir}`;
+	const cacheKey = `${tier}:${workingDir}:${domainsCacheKey(options.allowedDomains)}`;
 	const cached = sandboxTierConfigCache.get(cacheKey);
 	if (cached) {
 		return cached;
@@ -446,7 +465,10 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
 	if (tier === "READ_ONLY") {
 		// No writes allowed for read-only tier
 		// Still pass cwd for glob expansion on Linux
-		const baseConfig = buildSandboxConfig({ cwd: workingDir });
+		const baseConfig = buildSandboxConfig({
+			cwd: workingDir,
+			allowedDomains: options.allowedDomains,
+		});
 		const ro: SandboxRuntimeConfig = {
 			...baseConfig,
 			filesystem: {
@@ -462,6 +484,7 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
 	const rw = buildSandboxConfig({
 		additionalAllowWrite: cwd ? [cwd] : [],
 		cwd: workingDir,
+		allowedDomains: options.allowedDomains,
 	});
 	sandboxTierConfigCache.set(cacheKey, rw);
 	return rw;
@@ -473,10 +496,10 @@ export function getSandboxConfigForTier(tier: PermissionTier, cwd?: string): San
  *
  * @param cwd - Working directory to pre-warm configs for
  */
-export function prewarmSandboxConfigCache(cwd: string): void {
+export function prewarmSandboxConfigCache(cwd: string, allowedDomains?: string[]): void {
 	const tiers: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
 	for (const tier of tiers) {
-		getSandboxConfigForTier(tier, cwd);
+		getSandboxConfigForTier(tier, cwd, { allowedDomains });
 	}
 	logger.info({ cwd, tiers: tiers.length }, "pre-warmed sandbox tier config cache");
 }

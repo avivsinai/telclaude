@@ -1,3 +1,10 @@
+/**
+ * SDK permission settings builder.
+ *
+ * Builds permission rules for @anthropic-ai/claude-agent-sdk.
+ * These are passed via `--settings` per SDK invocation (no writes to ~/.claude).
+ */
+
 import os from "node:os";
 import path from "node:path";
 
@@ -10,7 +17,7 @@ import {
 	PRIVATE_TMP_PATH,
 	SENSITIVE_READ_PATHS,
 } from "./config.js";
-import { type BuildDomainsOptions, buildAllowedDomainNames } from "./domains.js";
+import { buildAllowedDomainNames } from "./domains.js";
 
 function uniq(values: string[]): string[] {
 	return Array.from(new Set(values));
@@ -33,25 +40,14 @@ function withGlobVariants(p: string): string[] {
 }
 
 /**
- * Options for building SDK permissions.
- */
-export interface SdkPermissionOptions {
-	/** Include OpenAI API in the network allowlist. Default: false */
-	includeOpenAI?: boolean;
-}
-
-/**
  * Build Claude Code permission rules for @anthropic-ai/claude-agent-sdk.
  *
- * Telclaude passes these rules via `--settings` per SDK invocation (no writes to ~/.claude).
- * Rules are used by Claude Code to configure its built-in sandbox policy.
- *
  * @param tier - Permission tier for the user
- * @param options - Additional options (e.g., whether to include OpenAI domains)
+ * @param additionalDomains - Extra domains to allow in network rules
  */
 export function buildSdkPermissionsForTier(
 	tier: PermissionTier,
-	options: SdkPermissionOptions = {},
+	additionalDomains: string[] = [],
 ): {
 	allow: string[];
 	deny: string[];
@@ -73,11 +69,8 @@ export function buildSdkPermissionsForTier(
 	);
 	const denyWrite = DENY_WRITE_PATHS.flatMap((p) => withGlobVariants(p).map((v) => `Write(${v})`));
 
-	// Build network allowlist conditionally based on options
-	const domainOptions: BuildDomainsOptions = {
-		includeOpenAI: options.includeOpenAI ?? false,
-	};
-	const allowedDomains = buildAllowedDomainNames(domainOptions);
+	// Build network allowlist (OpenAI always included - harmless without key exposure)
+	const allowedDomains = buildAllowedDomainNames(additionalDomains);
 	const allowNetwork = allowedDomains.map((d) => `Network(domain:${d})`);
 	const denyNetwork = [...BLOCKED_METADATA_DOMAINS, ...BLOCKED_PRIVATE_NETWORKS].map(
 		(d) => `Network(domain:${d})`,

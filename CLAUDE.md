@@ -61,9 +61,10 @@
 - Emergency controls (CLI-only): `telclaude ban <chat-id>`, `telclaude unban <chat-id>`, `telclaude force-reauth <chat-id>`, `telclaude list-bans`.
 
 ## Sandbox notes
-- Linux globs expanded once at startup; new matching files after init are not auto-blocked.  
-- Host `/tmp` is denied; use `~/.telclaude/sandbox-tmp` (set via TMPDIR).  
+- Linux globs expanded once at startup; new matching files after init are not auto-blocked.
+- Host `/tmp` is denied; use `~/.telclaude/sandbox-tmp` (set via TMPDIR).
 - Network method/port restrictions are policy-only; domain allowlist + private/metadata blocks are enforced.
+- **Tier-based key exposure**: API keys (OpenAI, GitHub) are automatically exposed to sandbox for WRITE_LOCAL and FULL_ACCESS tiers. READ_ONLY never gets keys. Configure via `setup-openai`/`setup-git` or env vars.
 
 ## Troubleshooting (quick)
 - Sandbox unavailable: install bubblewrap/socat/rg (Linux) or ensure Seatbelt + rg (macOS); rerun relay.

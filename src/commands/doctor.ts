@@ -5,10 +5,13 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
+	DEFAULT_NETWORK_CONFIG,
 	DENY_WRITE_PATHS,
 	MIN_SANDBOX_RUNTIME_VERSION,
 	SENSITIVE_READ_PATHS,
 	analyzeGlobPatterns,
+	buildAllowedDomainNames,
+	buildAllowedDomains,
 	getEnvIsolationSummary,
 	getNetworkIsolationSummary,
 	getSandboxRuntimeVersion,
@@ -109,6 +112,9 @@ export function registerDoctorCommand(program: Command): void {
 				// Load config for profile info
 				const cfg = loadConfig();
 				const profile = cfg.security?.profile ?? "simple";
+				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
+				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
+				const allowedDomains = buildAllowedDomains(additionalDomains);
 
 				// Environment isolation summary
 				const envSummary = getEnvIsolationSummary(process.env);
@@ -153,7 +159,10 @@ export function registerDoctorCommand(program: Command): void {
 				);
 
 				// Network isolation - default is strict allowlist
-				const netSummaryPillars = getNetworkIsolationSummary();
+				const netSummaryPillars = getNetworkIsolationSummary(
+					{ ...DEFAULT_NETWORK_CONFIG, allowedDomains },
+					allowedDomainNames,
+				);
 				if (netSummaryPillars.isPermissive) {
 					console.log(
 						"   3. Network isolation: ⚠️  OPEN (metadata blocked, but wildcard egress enabled)",
@@ -162,6 +171,9 @@ export function registerDoctorCommand(program: Command): void {
 					console.log(
 						`   3. Network isolation: ✓ ${netSummaryPillars.allowedDomains} domains allowed`,
 					);
+				}
+				if (additionalDomains.length > 0) {
+					console.log(`     Additional domains: ${additionalDomains.length}`);
 				}
 				if (process.env.TELCLAUDE_NETWORK_MODE) {
 					console.log(
@@ -236,7 +248,10 @@ export function registerDoctorCommand(program: Command): void {
 				// Run --network self-test if requested
 				if (options.network) {
 					console.log("\n🌐 Network Isolation Self-Test");
-					const netResult = runNetworkSelfTest();
+					const netResult = runNetworkSelfTest({
+						...DEFAULT_NETWORK_CONFIG,
+						allowedDomains,
+					});
 					for (const test of netResult.tests) {
 						console.log(`   ${test.passed ? "✓" : "✗"} ${test.name}: ${test.details ?? ""}`);
 					}
@@ -248,7 +263,10 @@ export function registerDoctorCommand(program: Command): void {
 					}
 
 					// Show network summary
-					const netSummary = getNetworkIsolationSummary();
+					const netSummary = getNetworkIsolationSummary(
+						{ ...DEFAULT_NETWORK_CONFIG, allowedDomains },
+						allowedDomainNames,
+					);
 					console.log("\n   Network Summary:");
 					console.log(`     Allowed domains: ${netSummary.allowedDomains}`);
 					if (netSummary.domainsWithPost.length > 0) {

@@ -53,12 +53,10 @@ const SdkConfigSchema = z.object({
 });
 
 // OpenAI configuration schema (for Whisper, GPT Image, TTS)
+// NOTE: To expose OpenAI key to sandbox, use TELCLAUDE_OPENAI_SANDBOX_EXPOSE=1 env var
 const OpenAIConfigSchema = z.object({
 	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
 	baseUrl: z.string().optional(), // Custom endpoint for local inference servers
-	// SECURITY: Exposes OpenAI API key to the Claude tool sandbox so Bash tools can call OpenAI.
-	// This allows the model to access the key. Use a restricted key and enable only if needed.
-	exposeKeyToSandbox: z.boolean().default(false),
 });
 
 // Transcription configuration schema
@@ -154,6 +152,12 @@ const SecretFilterConfigSchema = z.object({
 		.optional(),
 });
 
+// Network isolation configuration schema (simplified)
+const NetworkConfigSchema = z.object({
+	// Additional domains to allow beyond the default developer allowlist
+	additionalDomains: z.array(z.string()).default([]),
+});
+
 // Security configuration schema
 const SecurityConfigSchema = z.object({
 	// Security profile determines which layers are active
@@ -218,6 +222,7 @@ const SecurityConfigSchema = z.object({
 			sessionTtlMinutes: z.number().int().positive().default(240), // 4 hours
 		})
 		.optional(),
+	network: NetworkConfigSchema.optional(),
 });
 
 // Telegram configuration schema

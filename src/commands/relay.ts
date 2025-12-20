@@ -4,6 +4,10 @@ import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import {
+	DEFAULT_NETWORK_CONFIG,
+	buildAllowedDomainNames,
+	buildAllowedDomains,
+	buildSandboxConfig,
 	getNetworkIsolationSummary,
 	initializeSandbox,
 	isSandboxAvailable,
@@ -37,6 +41,9 @@ export function registerRelayCommand(program: Command): void {
 
 			try {
 				const cfg = loadConfig();
+				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
+				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
+				const allowedDomains = buildAllowedDomains(additionalDomains);
 				readEnv(); // Validates environment variables
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
@@ -113,19 +120,29 @@ export function registerRelayCommand(program: Command): void {
 					process.exit(1);
 				}
 
-				const sandboxResult = await initializeSandbox();
+				const sandboxConfig = buildSandboxConfig({
+					allowedDomains: allowedDomainNames,
+					cwd: process.cwd(),
+				});
+				const sandboxResult = await initializeSandbox(sandboxConfig);
 				if (sandboxResult.initialized) {
 					console.log("Sandbox: enabled (srt)");
 					// Pre-warm tier config cache to avoid slow glob expansion on first message
-					prewarmSandboxConfigCache(process.cwd());
+					prewarmSandboxConfigCache(process.cwd(), allowedDomainNames);
 				}
 
 				// Network policy - default is strict allowlist
-				const netSummary = getNetworkIsolationSummary();
+				const netSummary = getNetworkIsolationSummary(
+					{ ...DEFAULT_NETWORK_CONFIG, allowedDomains },
+					allowedDomainNames,
+				);
 				if (netSummary.isPermissive) {
 					console.log("Network: OPEN (wildcard egress; metadata endpoints still blocked)");
 				} else {
 					console.log(`Network: RESTRICTED (${netSummary.allowedDomains} domains allowed)`);
+				}
+				if (additionalDomains.length > 0) {
+					console.log(`  Additional domains: ${additionalDomains.length}`);
 				}
 				if (process.env.TELCLAUDE_NETWORK_MODE) {
 					console.log(

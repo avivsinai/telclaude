@@ -135,6 +135,15 @@ export function clearGitCredentialsCache(): void {
 }
 
 /**
+ * Get cached GitHub token if credentials have been loaded.
+ * Returns null if credentials haven't been initialized yet.
+ * Use this for sync access to the token (e.g., in sandbox env building).
+ */
+export function getCachedGitToken(): string | null {
+	return cachedCredentials?.token ?? null;
+}
+
+/**
  * Apply git identity configuration to the system.
  * This configures git user.name and user.email globally.
  *

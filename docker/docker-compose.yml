@@ -44,11 +44,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 
       # Secrets storage encryption (reuses TOTP key for convenience)
-      # Enables `telclaude setup-openai` for secure API key storage
+      # Enables `telclaude setup-openai` and `telclaude setup-git`
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-      # OpenAI for image/TTS skills (alternative: telclaude setup-openai)
+      # API keys (tier-based: auto-exposed for WRITE_LOCAL+, use setup-* commands or env vars)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - TELCLAUDE_OPENAI_SANDBOX_EXPOSE=${TELCLAUDE_OPENAI_SANDBOX_EXPOSE:-0}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GH_TOKEN:-}
 
       # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json

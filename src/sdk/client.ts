@@ -16,6 +16,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { type PermissionTier, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { buildAllowedDomainNames } from "../sandbox/domains.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
 import {
 	buildSdkPermissionsForTier,
@@ -25,6 +26,7 @@ import {
 	wrapCommand,
 } from "../sandbox/index.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
+import { getCachedGitToken } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {
 	isAssistantMessage,
@@ -44,8 +46,21 @@ import {
 import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
-let openaiSandboxKeyLogState: "none" | "exposed" | "missing" | "disabled" = "none";
+let keysExposedLogged = false;
 const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tier-Based Key Exposure
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Check if keys should be exposed to sandbox based on tier.
+ * WRITE_LOCAL and FULL_ACCESS tiers get configured keys exposed.
+ * READ_ONLY tier never gets keys (no Bash access anyway).
+ */
+function shouldExposeKeys(tier: PermissionTier): boolean {
+	return tier === "FULL_ACCESS" || tier === "WRITE_LOCAL";
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security Helpers
@@ -109,52 +124,15 @@ function isPathSensitive(inputPath: string): boolean {
 
 /**
  * Options for SDK queries.
- *
- * Controls permission tiers, session handling, streaming, and timeouts.
- *
- * @example
- * // Basic read-only query with timeout
- * const chunks = executeQueryStream("What files are in this directory?", {
- *   cwd: process.cwd(),
- *   tier: "READ_ONLY",
- *   timeoutMs: 30000,
- * });
- *
- * @example
- * // Write-safe query with session resumption
- * const chunks = executeQueryStream("Create a new file called test.ts", {
- *   cwd: process.cwd(),
- *   tier: "WRITE_LOCAL",
- *   resumeSessionId: "session-123",
- *   enableSkills: true,
- * });
- *
- * @example
- * // Full-access query with custom timeout and abort controller
- * const controller = new AbortController();
- * setTimeout(() => controller.abort(), 60000);
- *
- * const chunks = executeQueryStream("Run the build script", {
- *   cwd: "/path/to/project",
- *   tier: "FULL_ACCESS",
- *   abortController: controller,
- *   systemPromptAppend: "Be extra careful with destructive operations.",
- * });
  */
 export type TelclaudeQueryOptions = {
 	/** Working directory for the query. Tools operate relative to this path. */
 	cwd: string;
 
-	/** Permission tier controlling which tools are available.
-	 * - READ_ONLY: Read, Glob, Grep, WebFetch, WebSearch
-	 * - WRITE_LOCAL: Above + Write, Edit, Bash (with restrictions)
-	 * - FULL_ACCESS: All tools (requires sandbox); still subject to canUseTool and approvals
-	 */
+	/** Permission tier controlling which tools are available. */
 	tier: PermissionTier;
 
-	/** Resume a previous session by ID for conversation continuity.
-	 * Omit for new sessions; the SDK will create a fresh conversation.
-	 */
+	/** Resume a previous session by ID for conversation continuity. */
 	resumeSessionId?: string;
 
 	/** Custom system prompt to append to the default claude_code preset. */
@@ -163,19 +141,19 @@ export type TelclaudeQueryOptions = {
 	/** Override the model (defaults to SDK's default model). */
 	model?: string;
 
-	/** Maximum conversation turns before stopping (default: SDK default). */
+	/** Maximum conversation turns before stopping. */
 	maxTurns?: number;
 
 	/** Include streaming partial messages for real-time text updates. */
 	includePartialMessages?: boolean;
 
-	/** Permission mode override (bypassPermissions for FULL_ACCESS). */
+	/** Permission mode override. */
 	permissionMode?: PermissionMode;
 
 	/** Enable skills loading from project's .claude/skills directory. */
 	enableSkills?: boolean;
 
-	/** Abort controller for external cancellation (e.g., user interrupt). */
+	/** Abort controller for external cancellation. */
 	abortController?: AbortController;
 
 	/** Timeout in milliseconds. Query aborts if exceeded. */
@@ -189,17 +167,11 @@ export type TelclaudeQueryOptions = {
  * Result of a completed query.
  */
 export type QueryResult = {
-	/** Final text response */
 	response: string;
-	/** Whether the query succeeded */
 	success: boolean;
-	/** Error message if failed */
 	error?: string;
-	/** Total cost in USD */
 	costUsd: number;
-	/** Number of turns taken */
 	numTurns: number;
-	/** Duration in milliseconds */
 	durationMs: number;
 };
 
@@ -234,51 +206,28 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	const sandboxEnv = buildSandboxEnv(process.env);
 	const config = loadConfig();
 
-	// OpenAI sandbox key exposure precedence:
-	// 1. Env var explicit disable (0/false/no) => disabled, ignores config
-	// 2. Env var explicit enable (any other value) => enabled
-	// 3. Config value (openai.exposeKeyToSandbox) => fallback if env not set
-	const envExposeRaw = process.env.TELCLAUDE_OPENAI_SANDBOX_EXPOSE;
-	const envExpose = envExposeRaw?.toLowerCase();
-	const envExposeDisabled = envExpose === "0" || envExpose === "false" || envExpose === "no";
-	const envExposeEnabled =
-		envExposeRaw !== undefined && !envExposeDisabled && envExposeRaw.trim() !== "";
-	const configEnables = config.openai?.exposeKeyToSandbox ?? false;
-	const exposeOpenAIKey = envExposeEnabled || (!envExposeDisabled && configEnables);
+	// Tier-based key exposure: WRITE_LOCAL+ gets configured keys
+	if (shouldExposeKeys(opts.tier)) {
+		const exposedKeys: string[] = [];
 
-	// Log when env var explicitly overrides config
-	if (envExposeDisabled && configEnables) {
-		if (openaiSandboxKeyLogState !== "disabled") {
-			openaiSandboxKeyLogState = "disabled";
-			logger.debug("OpenAI sandbox key exposure disabled by env var (overrides config)");
+		// OpenAI key
+		const openaiKey = getCachedOpenAIKey();
+		if (openaiKey) {
+			sandboxEnv.OPENAI_API_KEY = openaiKey;
+			exposedKeys.push("OPENAI_API_KEY");
 		}
-	}
 
-	const bashAllowed = opts.tier === "FULL_ACCESS" || TIER_TOOLS[opts.tier]?.includes("Bash");
+		// GitHub token - from setup-git cache or env vars
+		const githubToken = getCachedGitToken() || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+		if (githubToken) {
+			sandboxEnv.GITHUB_TOKEN = githubToken;
+			sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this
+			exposedKeys.push("GITHUB_TOKEN");
+		}
 
-	if (exposeOpenAIKey && bashAllowed) {
-		const overrideKey = process.env.TELCLAUDE_SANDBOX_OPENAI_KEY;
-		const cachedKey = getCachedOpenAIKey();
-		const keyToExpose = overrideKey ?? cachedKey;
-
-		if (keyToExpose) {
-			sandboxEnv.OPENAI_API_KEY = keyToExpose;
-			if (openaiSandboxKeyLogState !== "exposed") {
-				openaiSandboxKeyLogState = "exposed";
-				logger.warn(
-					{
-						source: overrideKey ? "TELCLAUDE_SANDBOX_OPENAI_KEY" : "cached",
-					},
-					"OpenAI key exposed to tool sandbox (use a restricted key)",
-				);
-			}
-		} else {
-			if (openaiSandboxKeyLogState !== "missing") {
-				openaiSandboxKeyLogState = "missing";
-				logger.warn(
-					"OpenAI sandbox key exposure enabled but no key is available (set key or run setup-openai)",
-				);
-			}
+		if (exposedKeys.length > 0 && !keysExposedLogged) {
+			keysExposedLogged = true;
+			logger.info({ tier: opts.tier, keys: exposedKeys }, "API keys exposed to sandbox");
 		}
 	}
 
@@ -289,18 +238,12 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		includePartialMessages: opts.includePartialMessages,
 		abortController,
 		resume: opts.resumeSessionId,
-		// SECURITY: Sanitize environment to prevent leaking secrets like TELEGRAM_BOT_TOKEN
-		// Only allowlisted env vars pass through to the Claude subprocess
 		env: sandboxEnv,
 	};
 
-	// Enforce Claude Code sandbox + permission policy per invocation (no writes to ~/.claude).
-	// Sandbox settings are merged into `--settings` by the Agent SDK.
-	// SECURITY: Only include OpenAI domains in sandbox allowlist if exposeKeyToSandbox is enabled.
-	// This minimizes egress surface when the agent doesn't need direct OpenAI access.
-	const permissions = buildSdkPermissionsForTier(opts.tier, {
-		includeOpenAI: exposeOpenAIKey && bashAllowed,
-	});
+	// Build permissions with additional domains from config
+	const additionalDomains = config.security?.network?.additionalDomains ?? [];
+	const permissions = buildSdkPermissionsForTier(opts.tier, additionalDomains);
 	sdkOpts.extraArgs = {
 		...sdkOpts.extraArgs,
 		settings: JSON.stringify({ permissions }),
@@ -315,35 +258,28 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 	// Configure tools based on tier
 	if (opts.tier === "FULL_ACCESS") {
-		// Full access, but keep canUseTool enforcement for sensitive paths.
-		// Leave allowedTools undefined => all tools allowed.
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
 		sdkOpts.allowDangerouslySkipPermissions = false;
 	} else {
-		// Restricted tiers - specify allowed tools
 		const tierTools = TIER_TOOLS[opts.tier];
-		// `tools` constrains built-in tool surface; allowedTools also gates optional Skill.
 		sdkOpts.tools = tierTools;
 		sdkOpts.allowedTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
 	}
 
-	// Opt-in beta headers (e.g., 1M context)
+	// Opt-in beta headers
 	if (opts.betas?.length) {
 		sdkOpts.betas = opts.betas;
 	}
 
 	// Add canUseTool for ALL tiers to protect sensitive paths
-	// This prevents the agent from accessing TOTP secrets, database, credentials, etc.
-	// Uses symlink resolution to prevent bypass attacks
 	sdkOpts.canUseTool = async (toolName, input) => {
-		// Log every tool invocation for debugging
 		logger.debug(
 			{ toolName, input: JSON.stringify(input).substring(0, 200) },
 			"canUseTool invoked",
 		);
 
-		// Generic guard: block any input that references sensitive paths, even if the tool schema is unknown.
+		// Generic guard: block any input that references sensitive paths
 		if (inputContainsSensitivePath(input)) {
 			logger.warn({ toolName, input }, "blocked tool input containing sensitive path");
 			return {
@@ -352,11 +288,9 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			};
 		}
 
-		// Block access to sensitive paths (telclaude internals + credentials like ~/.ssh)
+		// Block access to sensitive paths
 		if (toolName === "Read" && isReadInput(input)) {
-			const sensitive = isPathSensitive(input.file_path);
-			logger.debug({ path: input.file_path, sensitive }, "checking Read path sensitivity");
-			if (sensitive) {
+			if (isPathSensitive(input.file_path)) {
 				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
 				return {
 					behavior: "deny",
@@ -407,7 +341,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				};
 			}
 
-			// For WRITE_LOCAL, also check for blocked commands
+			// For WRITE_LOCAL, check for blocked commands
 			if (opts.tier === "WRITE_LOCAL") {
 				const blocked = containsBlockedCommand(input.command);
 				if (blocked) {
@@ -444,8 +378,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// Load skills from both user (~/.claude) and project (cwd/.claude) locations
-	// User location contains bundled telclaude skills; project may have additional skills
+	// Load skills from both user and project locations
 	if (opts.enableSkills) {
 		sdkOpts.settingSources = ["user", "project"];
 	}
@@ -464,17 +397,18 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 /**
  * Apply tier-aligned sandbox configuration.
- * Updates the sandbox config to match the permission tier.
- *
- * @param tier - Permission tier
- * @param cwd - Working directory to allow writes to
  */
-function applyTierSandboxConfig(tier: PermissionTier, cwd: string): void {
+function applyTierSandboxConfig(
+	tier: PermissionTier,
+	cwd: string,
+	additionalDomains: string[] = [],
+): void {
 	if (!isSandboxInitialized()) {
 		return;
 	}
 
-	const tierConfig = getSandboxConfigForTier(tier, cwd);
+	const allowedDomains = buildAllowedDomainNames(additionalDomains);
+	const tierConfig = getSandboxConfigForTier(tier, cwd, { allowedDomains });
 	updateSandboxConfig(tierConfig);
 	logger.debug(
 		{ tier, cwd, allowWrite: tierConfig.filesystem?.allowWrite },
@@ -484,8 +418,6 @@ function applyTierSandboxConfig(tier: PermissionTier, cwd: string): void {
 
 /**
  * Execute a query with streaming, yielding chunks as they arrive.
- *
- * Applies tier-aligned sandbox configuration before execution.
  */
 export async function* executeQueryStream(
 	prompt: string,
@@ -493,8 +425,11 @@ export async function* executeQueryStream(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// Apply tier-aligned sandbox config with cwd
-	applyTierSandboxConfig(inputOpts.tier, inputOpts.cwd);
+	const config = loadConfig();
+	const additionalDomains = config.security?.network?.additionalDomains ?? [];
+
+	// Apply tier-aligned sandbox config
+	applyTierSandboxConfig(inputOpts.tier, inputOpts.cwd, additionalDomains);
 
 	const sdkOpts = buildSdkOptions({
 		...inputOpts,
@@ -513,16 +448,16 @@ export async function* executeQueryStream(
 	const q = query({ prompt, options: sdkOpts });
 
 	let response = "";
-	let assistantMessageFallback = ""; // Track assistant message text as fallback
+	let assistantMessageFallback = "";
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
 	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
+	let lastToolUseName: string | null = null;
 
 	try {
 		for await (const msg of q) {
 			if (isStreamEvent(msg)) {
-				// Handle streaming events for partial text using type guards
 				const event = msg.event;
 				if (isTextDeltaEvent(event)) {
 					yield { type: "text", content: event.delta.text };
@@ -546,21 +481,24 @@ export async function* executeQueryStream(
 							input = currentToolUse.inputJson;
 						}
 					}
+					lastToolUseName = currentToolUse.name;
 					yield { type: "tool_use", toolName: currentToolUse.name, input };
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {
-				// Track assistant message text as fallback in case streaming events weren't delivered
 				for (const block of msg.message.content) {
 					if (block.type === "text") {
 						assistantMessageFallback += block.text;
 					}
 				}
 			} else if (isToolResultMessage(msg)) {
-				// Tool result from a tool use
-				yield { type: "tool_result", toolName: "unknown", output: msg.tool_use_result };
+				yield {
+					type: "tool_result",
+					toolName: lastToolUseName ?? "unknown",
+					output: msg.tool_use_result,
+				};
+				lastToolUseName = null;
 			} else if (isResultMessage(msg)) {
-				// Use type guard for result message
 				costUsd = msg.total_cost_usd;
 				numTurns = msg.num_turns;
 				durationMs = msg.duration_ms;
@@ -568,14 +506,12 @@ export async function* executeQueryStream(
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
 
-				// Use assistant message fallback if streaming didn't deliver text
 				const finalResponse = response || assistantMessageFallback;
 				if (!response && assistantMessageFallback) {
 					logger.debug(
 						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
-						"using assistant message fallback (streaming events not delivered)",
+						"using assistant message fallback",
 					);
-					// Yield the fallback text now since it wasn't streamed
 					yield { type: "text", content: assistantMessageFallback };
 				}
 
@@ -586,27 +522,14 @@ export async function* executeQueryStream(
 			}
 		}
 	} catch (err) {
-		// Distinguish between abort (timeout/cancellation) and other errors
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
-		const errorInfo =
-			err instanceof Error
-				? {
-						name: err.name,
-						message: err.message,
-						stack: err.stack,
-						// spread after capturing name/message/stack to avoid TS overwrite warnings
-						...(err as unknown as Record<string, unknown>),
-					}
-				: { value: err };
-
 		if (isAborted) {
-			logger.warn({ durationMs: Date.now() - startTime, error: errorInfo }, "SDK query aborted");
+			logger.warn({ durationMs: Date.now() - startTime }, "SDK query aborted");
 		} else {
-			logger.error({ error: errorInfo }, "SDK streaming query error");
+			logger.error({ error: String(err) }, "SDK streaming query error");
 		}
 
-		// Use fallback if we didn't get streaming events but did get assistant messages
 		const finalResponse = response || assistantMessageFallback;
 
 		yield {
@@ -631,15 +554,11 @@ export async function* executeQueryStream(
  * Options for pooled queries.
  */
 export type PooledQueryOptions = TelclaudeQueryOptions & {
-	/** Session pool key (typically derived from chat/user ID) */
 	poolKey: string;
 };
 
 /**
  * Execute a query using the session pool with resume support.
- *
- * Uses the stable query() API with session ID tracking for multi-turn conversations.
- * Session IDs are automatically captured and reused via the resume option.
  */
 export async function* executePooledQuery(
 	prompt: string,
@@ -647,12 +566,12 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	// SECURITY: FULL_ACCESS requires the sandbox layer. Relay startup fails if the
-	// layer is unavailable; this check is a safety net in case initialization
-	// state drifts, ensuring we never run without sandbox alignment.
 	const opts = inputOpts;
-	// Apply tier-aligned sandbox config with cwd
-	applyTierSandboxConfig(opts.tier, opts.cwd);
+	const config = loadConfig();
+	const additionalDomains = config.security?.network?.additionalDomains ?? [];
+
+	// Apply tier-aligned sandbox config
+	applyTierSandboxConfig(opts.tier, opts.cwd, additionalDomains);
 
 	const sdkOpts = buildSdkOptions({
 		...opts,
@@ -670,11 +589,12 @@ export async function* executePooledQuery(
 
 	const sessionManager = getSessionManager();
 	let response = "";
-	let assistantMessageFallback = ""; // Track assistant message text as fallback
+	let assistantMessageFallback = "";
 	let costUsd = 0;
 	let numTurns = 0;
 	let durationMs = 0;
 	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
+	let lastToolUseName: string | null = null;
 
 	try {
 		for await (const msg of executeWithSession(sessionManager, opts.poolKey, prompt, sdkOpts)) {
@@ -702,23 +622,26 @@ export async function* executePooledQuery(
 							input = currentToolUse.inputJson;
 						}
 					}
+					lastToolUseName = currentToolUse.name;
 					yield { type: "tool_use", toolName: currentToolUse.name, input };
 					currentToolUse = null;
 				}
 			} else if (isAssistantMessage(msg)) {
-				// NOTE: We do NOT yield text from assistant messages because we already
-				// get it via streaming events (isTextDeltaEvent). However, we track it
-				// as a fallback in case streaming events weren't delivered.
 				for (const block of msg.message.content) {
 					if (block.type === "tool_use") {
+						lastToolUseName = block.name;
 						yield { type: "tool_use", toolName: block.name, input: block.input };
 					} else if (block.type === "text") {
-						// Track as fallback but don't yield (to avoid duplicates)
 						assistantMessageFallback += block.text;
 					}
 				}
 			} else if (isToolResultMessage(msg)) {
-				yield { type: "tool_result", toolName: "unknown", output: msg.tool_use_result };
+				yield {
+					type: "tool_result",
+					toolName: lastToolUseName ?? "unknown",
+					output: msg.tool_use_result,
+				};
+				lastToolUseName = null;
 			} else if (isResultMessage(msg)) {
 				costUsd = msg.total_cost_usd;
 				numTurns = msg.num_turns;
@@ -731,26 +654,21 @@ export async function* executePooledQuery(
 					logger.error(
 						{
 							requestError: error,
-							resultMessage: msg,
 							costUsd,
 							numTurns,
 							durationMs,
 							poolKey: opts.poolKey,
-							cwd: opts.cwd,
-							tier: opts.tier,
 						},
 						"SDK result message reported failure",
 					);
 				}
 
-				// Use assistant message fallback if streaming didn't deliver text
 				const finalResponse = response || assistantMessageFallback;
 				if (!response && assistantMessageFallback) {
 					logger.debug(
 						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
-						"using assistant message fallback (streaming events not delivered)",
+						"using assistant message fallback",
 					);
-					// Yield the fallback text now since it wasn't streamed
 					yield { type: "text", content: assistantMessageFallback };
 				}
 
@@ -769,7 +687,6 @@ export async function* executePooledQuery(
 			logger.error({ error: String(err) }, "pooled query error");
 		}
 
-		// Use fallback if we didn't get streaming events but did get assistant messages
 		const finalResponse = response || assistantMessageFallback;
 
 		yield {
