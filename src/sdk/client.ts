@@ -248,11 +248,15 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		...sdkOpts.extraArgs,
 		settings: JSON.stringify({ permissions }),
 	};
+
+	// Build allowed domains for SDK sandbox network
+	const allowedDomains = buildAllowedDomainNames(additionalDomains);
 	sdkOpts.sandbox = {
 		enabled: true,
 		network: {
 			allowLocalBinding: !IS_PROD,
 			allowAllUnixSockets: !IS_PROD,
+			allowedDomains,
 		},
 	};
 
