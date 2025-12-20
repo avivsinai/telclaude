@@ -12,7 +12,7 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 1: Builder
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:25-bookworm-slim AS builder
+FROM node:22-bookworm-slim AS builder
 
 # Install build dependencies for native modules
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -27,8 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+# Install pnpm via npm (corepack not available in all Node versions)
+RUN npm install -g pnpm@9.15.0
 
 WORKDIR /build
 
@@ -59,7 +59,7 @@ RUN pnpm prune --prod --ignore-scripts
 # Stage 2: Claude CLI
 # Install Claude Code CLI in a separate stage
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:25-bookworm-slim AS claude-cli
+FROM node:22-bookworm-slim AS claude-cli
 
 RUN npm install -g @anthropic-ai/claude-code
 
@@ -67,7 +67,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # Stage 3: Runtime
 # Minimal production image with security hardening
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:25-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="telclaude"
