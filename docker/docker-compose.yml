@@ -48,7 +48,7 @@ services:
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
       # OpenAI for image/TTS skills (alternative: telclaude setup-openai)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - TELCLAUDE_OPENAI_SANDBOX_EXPOSE=${TELCLAUDE_OPENAI_SANDBOX_EXPOSE:-1}
+      - TELCLAUDE_OPENAI_SANDBOX_EXPOSE=${TELCLAUDE_OPENAI_SANDBOX_EXPOSE:-0}
 
       # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json

@@ -12,7 +12,7 @@
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 1: Builder
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS builder
+FROM node:25-bookworm-slim AS builder
 
 # Install build dependencies for native modules
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,8 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     # For better-sqlite3
     libsqlite3-dev \
-    # For sharp (image processing)
-    libvips-dev \
     # For keytar (libsecret backend) - needed for TOTP
     libsecret-1-dev \
     pkg-config \
@@ -61,7 +59,7 @@ RUN pnpm prune --prod --ignore-scripts
 # Stage 2: Claude CLI
 # Install Claude Code CLI in a separate stage
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS claude-cli
+FROM node:25-bookworm-slim AS claude-cli
 
 RUN npm install -g @anthropic-ai/claude-code
 
@@ -69,7 +67,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # Stage 3: Runtime
 # Minimal production image with security hardening
 # ─────────────────────────────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 
 # Labels for container metadata
 LABEL org.opencontainers.image.title="telclaude"
@@ -80,8 +78,6 @@ LABEL org.opencontainers.image.source="https://github.com/avivsinai/telclaude"
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # For better-sqlite3 runtime
     libsqlite3-0 \
-    # For sharp runtime
-    libvips42 \
     # For keytar/libsecret (TOTP daemon)
     libsecret-1-0 \
     dbus \

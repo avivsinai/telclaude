@@ -87,7 +87,7 @@ async function sendWithMarkdownFallback(
 	rawText: string,
 	parseMode: "Markdown" | "HTML" | "MarkdownV2",
 	replyToMessageId?: number,
-): Promise<{ message_id: number }> {
+): Promise<Message> {
 	try {
 		return await api.sendMessage(chatId, formattedText, {
 			parse_mode: parseMode,
@@ -216,23 +216,14 @@ export async function convertAndSendMessage(
 	const shouldConvert = parseMode === "MarkdownV2";
 	const convertedText = shouldConvert ? convertToTelegramMarkdown(text) : text;
 
-	try {
-		return await api.sendMessage(chatId, convertedText, {
-			parse_mode: parseMode,
-			reply_to_message_id: options?.replyToMessageId,
-		});
-	} catch (err) {
-		// Check if this is a Telegram parse error (malformed markdown)
-		const errStr = String(err);
-		if (errStr.includes("can't parse entities") || errStr.includes("Bad Request")) {
-			logger.warn({ chatId, error: errStr }, "MarkdownV2 parse failed, falling back to plain text");
-			// Fallback: send as plain text without parse_mode
-			return api.sendMessage(chatId, text, {
-				reply_to_message_id: options?.replyToMessageId,
-			});
-		}
-		throw err;
-	}
+	return sendWithMarkdownFallback(
+		api,
+		chatId,
+		convertedText,
+		text,
+		parseMode,
+		options?.replyToMessageId,
+	);
 }
 
 /**
