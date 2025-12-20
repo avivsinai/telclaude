@@ -436,9 +436,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// Load settings from project for skills
+	// Load skills from both user (~/.claude) and project (cwd/.claude) locations
+	// User location contains bundled telclaude skills; project may have additional skills
 	if (opts.enableSkills) {
-		sdkOpts.settingSources = ["project"];
+		sdkOpts.settingSources = ["user", "project"];
 	}
 
 	// System prompt configuration

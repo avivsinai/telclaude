@@ -41,6 +41,21 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p /tmp/claude
     chmod 1777 /tmp/claude
 
+    # Install bundled skills to ~/.claude/skills (done at runtime so volumes don't obscure them)
+    if [ -d "/app/.claude/skills" ]; then
+        echo "[entrypoint] Installing bundled skills"
+        mkdir -p /home/node/.claude/skills
+        cp -a /app/.claude/skills/. /home/node/.claude/skills/
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude
+    fi
+
+    # Install bundled CLAUDE.md (agent playbook) if present
+    if [ -f "/app/.claude/CLAUDE.md" ]; then
+        echo "[entrypoint] Installing bundled CLAUDE.md"
+        mkdir -p /home/node/.claude
+        cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
+    fi
+
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary

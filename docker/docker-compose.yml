@@ -43,6 +43,13 @@ services:
       # Optional: Anthropic API key (if not using claude login)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 
+      # Secrets storage encryption (reuses TOTP key for convenience)
+      # Enables `telclaude setup-openai` for secure API key storage
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
+      # OpenAI for image/TTS skills (alternative: telclaude setup-openai)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - TELCLAUDE_OPENAI_SANDBOX_EXPOSE=${TELCLAUDE_OPENAI_SANDBOX_EXPOSE:-1}
+
       # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
