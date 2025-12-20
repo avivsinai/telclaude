@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
+import { getCachedGitToken } from "../services/git-credentials.js";
+import { getCachedOpenAIKey } from "../services/openai-client.js";
 import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
 import { domainMatchesPattern } from "./domains.js";
 import { buildSandboxEnv } from "./env.js";
@@ -228,13 +230,31 @@ function shellEscape(value: string): string {
 /**
  * Build environment prefix for commands.
  * Uses `env -i KEY=VALUE...` to ensure only allowed vars reach the command.
+ *
+ * Dynamically includes cached API keys (OpenAI, GitHub) that were loaded
+ * after sandbox initialization from secure storage.
  */
 function buildEnvPrefix(): string {
 	if (!sanitizedEnv) {
 		return "";
 	}
 
-	const envAssignments = Object.entries(sanitizedEnv)
+	// Start with the sanitized base env
+	const envToApply: Record<string, string> = { ...sanitizedEnv };
+
+	// Dynamically add cached API keys (loaded from keychain after init)
+	const openaiKey = getCachedOpenAIKey();
+	if (openaiKey) {
+		envToApply.OPENAI_API_KEY = openaiKey;
+	}
+
+	const githubToken = getCachedGitToken() || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	if (githubToken) {
+		envToApply.GITHUB_TOKEN = githubToken;
+		envToApply.GH_TOKEN = githubToken;
+	}
+
+	const envAssignments = Object.entries(envToApply)
 		.map(([key, value]) => `${key}=${shellEscape(value)}`)
 		.join(" ");
 
