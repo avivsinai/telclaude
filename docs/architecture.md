@@ -6,9 +6,15 @@ Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude
 ## Runtime guardrail notes (dec 2025)
 - **Network enforcement model**:
   - **Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always)
-  - **WebFetch/WebSearch**: `canUseTool` callback (respects `TELCLAUDE_NETWORK_MODE`)
-- `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for **WebFetch/WebSearch only**. Private/metadata still blocked via `canUseTool`.
-- SDK permission rules for network are NOT used (SDK matcher doesn't support needed wildcards). All WebFetch/WebSearch filtering is in `canUseTool`.
+  - **WebFetch**: PreToolUse hook (PRIMARY) + `canUseTool` callback (fallback).
+  - **WebSearch**: NOT filtered. Uses `query` parameter (not `url`); requests made server-side by Anthropic's search service, not by the local process.
+- `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for **WebFetch only**. Private/metadata still blocked via PreToolUse hook.
+- SDK permission rules for network are NOT used (SDK matcher doesn't support needed wildcards). WebFetch filtering is in PreToolUse hook + `canUseTool` fallback.
+- **Settings isolation (disableAllHooks defense)**:
+  - `settingSources: ["project"]` always set - user settings (~/.claude/settings.json) are never loaded.
+  - Writes to `.claude/settings.json` and `.claude/settings.local.json` are blocked via sensitive paths.
+  - This two-layer defense prevents both: (1) user settings with `disableAllHooks: true`, (2) prompt injection writing `disableAllHooks` to project settings.
+  - NOTE: This means user-level model overrides, plugins, etc. won't load in telclaude. This is intentional.
 - Read model is deny-list based: files outside the sensitive path list are readable if the user/agent asks. Seatbelt/bubblewrap plus the sensitive denyRead set provide defense-in-depth, but absolute allow-list reads are not supported by the runtime. For stricter isolation, run inside Docker/WSL with a minimal bind-mounted workspace.
 
 ## System Overview
@@ -49,7 +55,7 @@ TOTP daemon (separate process, keychain-backed)
 ## Five Security Pillars
 1) Filesystem isolation (deny sensitive paths; private `/tmp`; host `/tmp`/`/var/tmp`/`/run/user` denied).
 2) Environment isolation (allowlist env vars).
-3) Network isolation (strict default allowlist for Bash; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for WebFetch/WebSearch only).
+3) Network isolation (strict default allowlist for Bash; metadata + RFC1918 always blocked for WebFetch; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for WebFetch only; WebSearch is NOT filtered - server-side by Anthropic).
 4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).
 5) Auth/rate limits/audit (identity links, TOTP auth gate for periodic identity verification, SQLite-backed).
 
@@ -76,8 +82,10 @@ TOTP daemon (separate process, keychain-backed)
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.
 - **Network for Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always). Bash cannot reach arbitrary domains even in permissive mode.
-- **Network for WebFetch/WebSearch**: `canUseTool` callback enforces domain rules. In permissive mode, allows all public domains while blocking private/metadata.
-- SDK sandbox is the primary enforcement layer for Bash. WebFetch/WebSearch use `canUseTool` for network filtering.
+- **Network for WebFetch**: PreToolUse hook (PRIMARY) + `canUseTool` fallback. In permissive mode, allows all public domains while blocking private/metadata.
+- **Network for WebSearch**: NOT filtered. Uses `query` parameter (not `url`); requests made server-side by Anthropic's search service.
+- SDK sandbox is the primary enforcement layer for Bash. WebFetch uses PreToolUse hook + `canUseTool` for network filtering.
+- **Settings files**: `.claude/settings.json` and `.claude/settings.local.json` are blocked as sensitive paths (prevents prompt injection from writing `disableAllHooks`).
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  

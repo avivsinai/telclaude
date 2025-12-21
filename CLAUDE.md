@@ -24,8 +24,10 @@
 - Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`.
 - Network enforcement:
   - **Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always)
-  - **WebFetch/WebSearch**: `canUseTool` callback (respects `TELCLAUDE_NETWORK_MODE`)
-- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch/WebSearch only. Private/metadata always blocked.
+  - **WebFetch**: PreToolUse hook (cannot be bypassed) + `canUseTool` fallback.
+  - **WebSearch**: NOT filtered. Uses `query` parameter (not `url`); requests made server-side by Anthropic.
+- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only. Private/metadata always blocked.
+- **Settings isolation**: Only project settings loaded (`settingSources: ["project"]`); user settings ignored. Writes to `.claude/settings*.json` blocked via sensitive paths. This prevents `disableAllHooks` bypass attacks.
 
 ## Workflow (Opus 4.5 friendly)
 1) Plan → propose files to touch.  
@@ -53,7 +55,7 @@
 - Typecheck: `pnpm typecheck`
 - Tests: `pnpm test`
 - Git setup: `telclaude setup-git` (interactive), `telclaude git-test` (verify connectivity)
-- SDK sandbox provides OS-level network isolation for ALL tools (Bash, WebFetch, WebSearch); blocks RFC1918/metadata endpoints.
+- SDK sandbox provides OS-level network isolation for Bash only. WebFetch uses PreToolUse hook for network enforcement (blocks RFC1918/metadata unconditionally). WebSearch is NOT filtered (server-side by Anthropic).
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.  

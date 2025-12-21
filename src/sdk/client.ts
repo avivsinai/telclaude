@@ -9,6 +9,9 @@
 
 import fs from "node:fs";
 import {
+	type HookCallback,
+	type HookCallbackMatcher,
+	type HookInput,
 	type PermissionMode,
 	type Options as SDKOptions,
 	type SdkBeta,
@@ -178,6 +181,102 @@ export type StreamChunk =
 	| { type: "tool_result"; toolName: string; output: unknown }
 	| { type: "done"; result: QueryResult };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PreToolUse Hook for Network Security
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a PreToolUse hook that blocks WebFetch to private networks and metadata endpoints.
+ *
+ * CRITICAL: This hook runs UNCONDITIONALLY before every tool use, regardless of SDK permission decisions.
+ * This is necessary because the SDK's canUseTool callback is only called when the SDK's permission
+ * resolver returns "ask" - if settings pre-approve a domain, canUseTool is bypassed.
+ *
+ * NOTE: WebSearch is NOT filtered here because:
+ * - WebSearch uses a `query` parameter, not a `url` parameter
+ * - Search requests are made server-side by Anthropic, not by the local process
+ * - We cannot control which domains Anthropic's search accesses
+ *
+ * This hook ensures WebFetch private/metadata blocking cannot be bypassed by project settings.
+ * User settings are already excluded via settingSources: ["project"].
+ */
+function createNetworkSecurityHook(
+	isPermissiveMode: boolean,
+	allowedDomains: string[],
+): HookCallbackMatcher {
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		// Only handle PreToolUse events for WebFetch
+		if (input.hook_event_name !== "PreToolUse") {
+			return { continue: true };
+		}
+
+		const toolName = input.tool_name;
+
+		// Only filter WebFetch - WebSearch uses server-side requests we can't control
+		if (toolName !== "WebFetch") {
+			return { continue: true };
+		}
+
+		const toolInput = input.tool_input as { url?: string };
+		if (!toolInput.url) {
+			return { continue: true };
+		}
+
+		try {
+			const url = new URL(toolInput.url);
+
+			// Block non-HTTP protocols
+			if (!["http:", "https:"].includes(url.protocol)) {
+				logger.warn({ url: toolInput.url, tool: toolName }, "[hook] blocked non-HTTP protocol");
+				return {
+					decision: "block",
+					reason: "Only HTTP/HTTPS protocols are allowed.",
+				};
+			}
+
+			// Block private networks and metadata endpoints (ALWAYS enforced, cannot be bypassed)
+			if (await isBlockedHost(url.hostname)) {
+				logger.warn(
+					{ host: url.hostname, tool: toolName },
+					"[hook] blocked private/metadata access",
+				);
+				return {
+					decision: "block",
+					reason: "Access to private networks, localhost, or metadata endpoints is forbidden.",
+				};
+			}
+
+			// In strict mode, also check domain allowlist
+			if (!isPermissiveMode) {
+				if (!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))) {
+					logger.warn(
+						{ host: url.hostname, tool: toolName },
+						"[hook] blocked non-allowlisted domain",
+					);
+					return {
+						decision: "block",
+						reason: `Domain not in allowlist: ${url.hostname}`,
+					};
+				}
+			}
+
+			return { continue: true };
+		} catch {
+			logger.warn({ url: toolInput.url, tool: toolName }, "[hook] invalid URL");
+			return {
+				decision: "block",
+				reason: "Invalid URL format.",
+			};
+		}
+	};
+
+	return {
+		matcher: "WebFetch",
+		hooks: [hookCallback],
+		timeout: 5, // 5 second timeout for DNS resolution in isBlockedHost
+	};
+}
+
 /**
  * Build SDK options based on tier and configuration.
  */
@@ -258,6 +357,13 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		network: {
 			allowedDomains,
 		},
+	};
+
+	// CRITICAL: Add PreToolUse hook for network security.
+	// This hook runs UNCONDITIONALLY before every tool use, even if SDK permissions pre-approve.
+	// This ensures private/metadata blocking cannot be bypassed by user/project settings.
+	sdkOpts.hooks = {
+		PreToolUse: [createNetworkSecurityHook(isPermissiveMode, allowedDomains)],
 	};
 
 	// Configure tools based on tier
@@ -362,7 +468,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		}
 
 		// Belt-and-suspenders: Application-layer network check for WebFetch/WebSearch
-		// SDK sandbox provides OS-level enforcement; this is an additional policy check
+		// PRIMARY enforcement is via PreToolUse hook (runs unconditionally).
+		// This canUseTool check is a FALLBACK for cases where the hook might not run.
 		if (toolName === "WebFetch") {
 			const webInput = input as { url?: string };
 			if (webInput.url) {
@@ -409,62 +516,24 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			}
 		}
 
-		// Belt-and-suspenders: Application-layer network check for WebSearch
-		// SDK sandbox provides OS-level enforcement; this is an additional policy check
-		if (toolName === "WebSearch") {
-			const webInput = input as { url?: string; query?: string };
-			// Validate if a custom URL is provided (not just a query string)
-			if (webInput.url) {
-				try {
-					const url = new URL(webInput.url);
-
-					// Block non-HTTP protocols (prevent file:// access)
-					if (!["http:", "https:"].includes(url.protocol)) {
-						logger.warn({ url: webInput.url }, "blocked non-HTTP protocol in WebSearch");
-						return {
-							behavior: "deny",
-							message: "Only HTTP/HTTPS protocols are allowed.",
-						};
-					}
-
-					// Block private networks and metadata endpoints
-					if (await isBlockedHost(url.hostname)) {
-						logger.warn({ host: url.hostname }, "blocked private network access in WebSearch");
-						return {
-							behavior: "deny",
-							message: "Access to private networks, localhost, or metadata endpoints is forbidden.",
-						};
-					}
-
-					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
-					// In permissive mode, skip allowlist check - only block private/metadata above
-					if (
-						!isPermissiveMode &&
-						!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))
-					) {
-						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebSearch");
-						return {
-							behavior: "deny",
-							message: `Domain not in allowlist: ${url.hostname}`,
-						};
-					}
-				} catch {
-					logger.warn({ url: webInput.url }, "invalid URL in WebSearch");
-					return {
-						behavior: "deny",
-						message: "Invalid URL format.",
-					};
-				}
-			}
-		}
+		// NOTE: WebSearch is NOT filtered because:
+		// - WebSearch uses `query` parameter, not `url` - our URL checks would never match
+		// - Search requests are made server-side by Anthropic, not by the local process
+		// - We cannot control which domains Anthropic's search service accesses
 
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// Load skills from both user and project locations
-	if (opts.enableSkills) {
-		sdkOpts.settingSources = ["user", "project"];
-	}
+	// SECURITY: Always load only "project" settings (not "user") to prevent settings bypass.
+	// This blocks attacks where:
+	// - User has disableAllHooks: true in ~/.claude/settings.json (bypasses PreToolUse hook)
+	// - User has permissive WebFetch rules that allow SSRF to private networks
+	// Project settings are controlled by the deployment and can be trusted.
+	// Combined with blocking writes to .claude/settings*.json (via isSensitivePath),
+	// this prevents prompt injection from writing disableAllHooks to project settings.
+	// NOTE: This means user-level model overrides, plugins, etc. won't load in telclaude.
+	// This is intentional - security takes precedence over customization.
+	sdkOpts.settingSources = ["project"];
 
 	// System prompt configuration
 	if (opts.systemPromptAppend) {

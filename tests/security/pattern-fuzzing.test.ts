@@ -490,6 +490,22 @@ describe("Sensitive Path Fuzzing", () => {
 				expect(isSensitivePath(path)).toBe(true);
 			}
 		});
+
+		it("detects Claude Code settings files (prevents disableAllHooks bypass)", () => {
+			// SECURITY: Blocking writes to these prevents prompt injection from setting
+			// disableAllHooks: true, which would disable our PreToolUse security hook.
+			const paths = [
+				".claude/settings.json",
+				".claude/settings.local.json",
+				"/workspace/.claude/settings.json",
+				"/home/user/project/.claude/settings.local.json",
+				"~/.claude/settings.json", // User-level settings (if ever accessed)
+			];
+
+			for (const path of paths) {
+				expect(isSensitivePath(path)).toBe(true);
+			}
+		});
 	});
 
 	describe("False positive resistance", () => {

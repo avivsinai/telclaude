@@ -279,6 +279,11 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/totp_secrets/i, // TOTP table name in queries
 	/totp\.sock/i, // TOTP socket
 
+	// === Claude Code settings (prevent hook bypass via disableAllHooks) ===
+	// SECURITY: Blocking writes to these prevents prompt injection from setting
+	// disableAllHooks: true, which would disable our PreToolUse security hook.
+	/(?:^|[/\\])\.claude[/\\]settings(?:\.local)?\.json$/i, // .claude/settings.json, .claude/settings.local.json
+
 	// === Environment files (secrets!) ===
 	// Match .env anywhere in path (but not .environment or similar)
 	/[/\\]\.env$/i, // Exact .env file
