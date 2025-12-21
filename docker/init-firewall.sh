@@ -14,16 +14,22 @@ set -e
 # Whitelisted Domains
 # ─────────────────────────────────────────────────────────────────────────────────
 
-# IMPORTANT: This list must match src/sandbox/domains.ts
-# If you add domains here, also add them to DEFAULT_ALLOWED_DOMAINS in domains.ts
+# IMPORTANT: Keep in sync with src/sandbox/domains.ts (DEFAULT_ALLOWED_DOMAINS)
+# Note: Wildcard domains (*.example.com) in domains.ts can't be resolved here,
+# so we expand them to known subdomains below.
 ALLOWED_DOMAINS=(
     # ═══════════════════════════════════════════════════════════════════════════
     # Anthropic API + Claude Code
+    # (domains.ts wildcards: *.claude.ai, *.code.anthropic.com)
     # ═══════════════════════════════════════════════════════════════════════════
     "api.anthropic.com"
-    "console.anthropic.com"
     "claude.ai"
     "code.anthropic.com"
+    # Expanded from *.claude.ai
+    "api.claude.ai"
+    "platform.claude.ai"
+    # Expanded from *.code.anthropic.com
+    "api.code.anthropic.com"
 
     # ═══════════════════════════════════════════════════════════════════════════
     # OpenAI API (for image generation, TTS)
@@ -68,11 +74,18 @@ ALLOWED_DOMAINS=(
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Documentation sites
+    # (domains.ts wildcard: *.stackexchange.com)
     # ═══════════════════════════════════════════════════════════════════════════
     "docs.python.org"
     "docs.rs"
     "developer.mozilla.org"
     "stackoverflow.com"
+    # Expanded from *.stackexchange.com (common sites)
+    "superuser.com"
+    "serverfault.com"
+    "askubuntu.com"
+    "unix.stackexchange.com"
+    "security.stackexchange.com"
 
     # ═══════════════════════════════════════════════════════════════════════════
     # CDNs

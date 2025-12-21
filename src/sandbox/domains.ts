@@ -144,16 +144,10 @@ export const DEFAULT_ALLOWED_DOMAIN_NAMES = DEFAULT_ALLOWED_DOMAINS.map((rule) =
  * Supports:
  * - Exact matches: "example.com"
  * - Wildcard subdomain prefixes: "*.example.com"
- * - Catch-all wildcard: "*" (matches any domain)
  */
 export function domainMatchesPattern(domain: string, pattern: string): boolean {
 	const normalizedDomain = domain.toLowerCase();
 	const normalizedPattern = pattern.toLowerCase();
-
-	// Catch-all wildcard matches everything (used in permissive mode)
-	if (normalizedPattern === "*") {
-		return true;
-	}
 
 	if (normalizedPattern.startsWith("*.")) {
 		// Match subdomains only (align with @anthropic-ai/sandbox-runtime behavior)
