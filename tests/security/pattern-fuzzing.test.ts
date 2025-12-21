@@ -506,6 +506,23 @@ describe("Sensitive Path Fuzzing", () => {
 				expect(isSensitivePath(path)).toBe(true);
 			}
 		});
+
+		it("detects Claude Code settings via cd + basename attack", () => {
+			// SECURITY: Catches "cd .claude && cat settings.json" where settings.json
+			// doesn't look like a path (no . or / prefix) but is still sensitive.
+			const commands = [
+				"cd .claude && cat settings.json",
+				"cd .claude; cat settings.local.json",
+				"pushd .claude && vim settings.json",
+				"cat settings.json", // Direct access after cd
+				"echo foo > settings.json", // Write attempt
+				"nano settings.local.json",
+			];
+
+			for (const cmd of commands) {
+				expect(isSensitivePath(cmd)).toBe(true);
+			}
+		});
 	});
 
 	describe("False positive resistance", () => {

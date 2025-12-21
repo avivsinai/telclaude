@@ -328,6 +328,12 @@ const SENSITIVE_BASENAME_PATTERNS: RegExp[] = [
 	/\.pem$/i,
 	/\.key$/i,
 	/\.ppk$/i,
+
+	// === Claude Code settings (prevent disableAllHooks bypass via cd + cat) ===
+	// SECURITY: These catch "cd .claude && cat settings.json" attacks where
+	// the settings.json token doesn't look like a path (no . or / prefix).
+	/^settings\.json$/i,
+	/^settings\.local\.json$/i,
 ];
 
 function isSensitiveBasename(name: string): boolean {
@@ -431,6 +437,15 @@ function commandContainsSensitivePath(command: string): boolean {
 
 	for (const token of tokens) {
 		if (typeof token !== "string") continue;
+
+		// SECURITY: Check basename patterns for ALL tokens, not just path-like ones.
+		// This catches "cd .claude && cat settings.json" where settings.json
+		// doesn't look like a path (no . or / prefix) but is still sensitive.
+		if (isSensitiveBasename(token)) {
+			return true;
+		}
+
+		// For path-like tokens, do additional checks
 		if (!looksLikePath(token)) continue;
 
 		const expanded = expandHomeLike(token);
@@ -445,7 +460,7 @@ function commandContainsSensitivePath(command: string): boolean {
 			return true;
 		}
 
-		// Basename-only detection (e.g., ".env" created after sandbox init)
+		// Basename-only detection for path-like tokens (e.g., "./settings.json")
 		if (isSensitiveBasename(path.basename(expanded))) {
 			return true;
 		}
