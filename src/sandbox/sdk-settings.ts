@@ -10,14 +10,11 @@ import path from "node:path";
 
 import type { PermissionTier } from "../config/config.js";
 import {
-	BLOCKED_METADATA_DOMAINS,
-	BLOCKED_PRIVATE_NETWORKS,
 	DEFAULT_WRITE_PATHS,
 	DENY_WRITE_PATHS,
 	PRIVATE_TMP_PATH,
 	SENSITIVE_READ_PATHS,
 } from "./config.js";
-import { buildAllowedDomainNames } from "./domains.js";
 
 function uniq(values: string[]): string[] {
 	return Array.from(new Set(values));
@@ -42,14 +39,20 @@ function withGlobVariants(p: string): string[] {
 /**
  * Build Claude Code permission rules for @anthropic-ai/claude-agent-sdk.
  *
+ * Network enforcement model:
+ * - Bash: SDK sandbox `allowedDomains` provides OS-level enforcement (strict allowlist always)
+ * - WebFetch/WebSearch: canUseTool callback provides enforcement (respects permissive mode)
+ *
+ * Note: SDK permission rules like `Network(domain:...)` or `WebFetch(domain:...)` are NOT used
+ * because the SDK's domain matcher doesn't support wildcards we need for permissive mode.
+ * All WebFetch/WebSearch domain filtering is done in canUseTool for consistency.
+ *
  * @param tier - Permission tier for the user
- * @param additionalDomains - Extra domains to allow in network rules
- * @param permissiveNetwork - If true, allow all public domains (only deny private/metadata)
+ * @param _additionalDomains - Extra domains (used by sandbox config, not permissions)
  */
 export function buildSdkPermissionsForTier(
 	tier: PermissionTier,
-	additionalDomains: string[] = [],
-	permissiveNetwork = false,
+	_additionalDomains: string[] = [],
 ): {
 	allow: string[];
 	deny: string[];
@@ -71,25 +74,12 @@ export function buildSdkPermissionsForTier(
 	);
 	const denyWrite = DENY_WRITE_PATHS.flatMap((p) => withGlobVariants(p).map((v) => `Write(${v})`));
 
-	// Build network rules
-	// In permissive mode, allow all domains except private/metadata (broad egress)
-	// In strict mode, only allow specific domains from allowlist
-	let allowNetwork: string[];
-	if (permissiveNetwork) {
-		// Allow all domains - rely on deny rules and canUseTool guards for filtering
-		allowNetwork = ["Network(domain:*)"];
-	} else {
-		const allowedDomains = buildAllowedDomainNames(additionalDomains);
-		allowNetwork = allowedDomains.map((d) => `Network(domain:${d})`);
-	}
-
-	// Always deny private networks and metadata endpoints
-	const denyNetwork = [...BLOCKED_METADATA_DOMAINS, ...BLOCKED_PRIVATE_NETWORKS].map(
-		(d) => `Network(domain:${d})`,
-	);
+	// Network rules are NOT included here - see docstring above
+	// WebFetch/WebSearch domain filtering is done in canUseTool (src/sdk/client.ts)
+	// Bash network filtering is done by SDK sandbox allowedDomains
 
 	return {
-		allow: uniq([...allowWrite, ...allowNetwork]),
-		deny: uniq([...denyRead, ...denyWrite, ...denyNetwork]),
+		allow: uniq([...allowWrite]),
+		deny: uniq([...denyRead, ...denyWrite]),
 	};
 }

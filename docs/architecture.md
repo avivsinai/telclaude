@@ -4,8 +4,11 @@ Updated: 2025-12-06
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Runtime guardrail notes (dec 2025)
-- `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for **WebFetch/WebSearch only** via SDK permission rules (`Network(domain:*)`). Private networks and metadata endpoints are still blocked via deny rules and canUseTool guards.
-- **Bash always uses strict domain allowlist** in the SDK sandbox (OS-level enforcement). The SDK sandbox can only whitelist domains, not blacklist IPs within permitted domains. This is a security design choice.
+- **Network enforcement model**:
+  - **Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always)
+  - **WebFetch/WebSearch**: `canUseTool` callback (respects `TELCLAUDE_NETWORK_MODE`)
+- `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for **WebFetch/WebSearch only**. Private/metadata still blocked via `canUseTool`.
+- SDK permission rules for network are NOT used (SDK matcher doesn't support needed wildcards). All WebFetch/WebSearch filtering is in `canUseTool`.
 - Read model is deny-list based: files outside the sensitive path list are readable if the user/agent asks. Seatbelt/bubblewrap plus the sensitive denyRead set provide defense-in-depth, but absolute allow-list reads are not supported by the runtime. For stricter isolation, run inside Docker/WSL with a minimal bind-mounted workspace.
 
 ## System Overview
@@ -72,9 +75,9 @@ TOTP daemon (separate process, keychain-backed)
 - **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.
-- **Network for Bash**: SDK sandbox uses strict domain allowlist (developer-default profile). Bash cannot reach arbitrary public domains even in permissive mode (SDK can't selectively block IPs within permitted domains).
-- **Network for WebFetch/WebSearch**: SDK permission rules control access. `TELCLAUDE_NETWORK_MODE=open|permissive` enables `Network(domain:*)` while deny rules block private/metadata. canUseTool guards provide belt-and-suspenders filtering.
-- SDK sandbox is the primary enforcement layer for all tools. Provides OS-level network isolation via Seatbelt/bubblewrap.
+- **Network for Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always). Bash cannot reach arbitrary domains even in permissive mode.
+- **Network for WebFetch/WebSearch**: `canUseTool` callback enforces domain rules. In permissive mode, allows all public domains while blocking private/metadata.
+- SDK sandbox is the primary enforcement layer for Bash. WebFetch/WebSearch use `canUseTool` for network filtering.
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  

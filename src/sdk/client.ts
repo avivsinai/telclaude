@@ -235,22 +235,20 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		env: sandboxEnv,
 	};
 
-	// Check if permissive network mode is enabled
+	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
 
-	// Build permissions with additional domains from config
-	// In permissive mode, allow all domains for WebFetch/WebSearch (deny rules still block private/metadata)
+	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
-	const permissions = buildSdkPermissionsForTier(opts.tier, additionalDomains, isPermissiveMode);
+	const permissions = buildSdkPermissionsForTier(opts.tier);
 	sdkOpts.extraArgs = {
 		...sdkOpts.extraArgs,
 		settings: JSON.stringify({ permissions }),
 	};
 
-	// SDK sandbox always uses strict allowedDomains for Bash (OS-level enforcement).
-	// Permissive mode only affects WebFetch/WebSearch via permission rules, not Bash.
-	// This is a security design choice: Bash with broad network access is high risk.
+	// SDK sandbox provides OS-level network enforcement for Bash (strict allowlist always).
+	// WebFetch/WebSearch network filtering is done in canUseTool below (respects permissive mode).
 	const allowedDomains = buildAllowedDomainNames(additionalDomains);
 
 	sdkOpts.sandbox = {

@@ -21,9 +21,11 @@
 - Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_LOCAL, and low-confidence WARN; TTL 5 minutes.  
 - Infrastructure secrets (bot tokens, Anthropic keys, private keys) are non-overridable blocks.  
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.  
-- Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`. Network default allowlist (npm/pypi/docs/github/Anthropic API); metadata + RFC1918 always blocked.
-- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch/WebSearch (only blocks private/metadata). **Bash always uses strict allowlist** for security — SDK sandbox can't selectively block IPs within permitted domains.
-- SDK sandbox is the primary enforcement layer for all tools; provides OS-level network isolation.
+- Sandbox enforcement: tier-aligned writes (READ_ONLY none; others = cwd + `~/.telclaude/sandbox-tmp`), deny-read of `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`; private temp at `~/.telclaude/sandbox-tmp`.
+- Network enforcement:
+  - **Bash**: SDK sandbox `allowedDomains` (OS-level, strict allowlist always)
+  - **WebFetch/WebSearch**: `canUseTool` callback (respects `TELCLAUDE_NETWORK_MODE`)
+- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch/WebSearch only. Private/metadata always blocked.
 
 ## Workflow (Opus 4.5 friendly)
 1) Plan → propose files to touch.  
