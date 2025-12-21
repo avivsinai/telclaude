@@ -235,34 +235,31 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		env: sandboxEnv,
 	};
 
+	// Check if permissive network mode is enabled
+	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
+
 	// Build permissions with additional domains from config
+	// In permissive mode, allow all domains for WebFetch/WebSearch (deny rules still block private/metadata)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
-	const permissions = buildSdkPermissionsForTier(opts.tier, additionalDomains);
+	const permissions = buildSdkPermissionsForTier(opts.tier, additionalDomains, isPermissiveMode);
 	sdkOpts.extraArgs = {
 		...sdkOpts.extraArgs,
 		settings: JSON.stringify({ permissions }),
 	};
 
-	// Enable SDK sandbox for OS-level network isolation of ALL tools (Bash, WebFetch, WebSearch)
-	// This provides kernel-enforced blocking of RFC1918/metadata that can't be bypassed by redirects or DNS rebinding
-	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
-	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
-
-	// Build allowedDomains for non-permissive mode
-	// In permissive mode, we don't set allowedDomains - SDK uses its defaults (may allow broader access)
-	// Our canUseTool guards still block private/metadata for WebFetch/WebSearch in either mode
-	const allowedDomains = isPermissiveMode ? undefined : buildAllowedDomainNames(additionalDomains);
+	// SDK sandbox always uses strict allowedDomains for Bash (OS-level enforcement).
+	// Permissive mode only affects WebFetch/WebSearch via permission rules, not Bash.
+	// This is a security design choice: Bash with broad network access is high risk.
+	const allowedDomains = buildAllowedDomainNames(additionalDomains);
 
 	sdkOpts.sandbox = {
 		enabled: true,
 		// SECURITY: Prevent dangerouslyDisableSandbox from bypassing OS-level isolation
 		allowUnsandboxedCommands: false,
-		// Only configure network allowlist in strict mode; permissive mode uses SDK defaults
-		...(allowedDomains && {
-			network: {
-				allowedDomains,
-			},
-		}),
+		network: {
+			allowedDomains,
+		},
 	};
 
 	// Configure tools based on tier
@@ -393,9 +390,9 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 					}
 
 					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
-					// In permissive mode (allowedDomains undefined), skip this check - only block private/metadata
+					// In permissive mode, skip allowlist check - only block private/metadata above
 					if (
-						allowedDomains &&
+						!isPermissiveMode &&
 						!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))
 					) {
 						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebFetch");
@@ -442,9 +439,9 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 					}
 
 					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
-					// In permissive mode (allowedDomains undefined), skip this check - only block private/metadata
+					// In permissive mode, skip allowlist check - only block private/metadata above
 					if (
-						allowedDomains &&
+						!isPermissiveMode &&
 						!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))
 					) {
 						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebSearch");

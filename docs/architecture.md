@@ -4,7 +4,8 @@ Updated: 2025-12-06
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Runtime guardrail notes (dec 2025)
-- Telclaude implements `TELCLAUDE_NETWORK_MODE=open|permissive` via the sandboxAskCallback layer so it can allow broad egress while still blocking metadata endpoints + RFC1918/private networks (a catch‑all allow rule would skip those checks).
+- `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for **WebFetch/WebSearch only** via SDK permission rules (`Network(domain:*)`). Private networks and metadata endpoints are still blocked via deny rules and canUseTool guards.
+- **Bash always uses strict domain allowlist** in the SDK sandbox (OS-level enforcement). The SDK sandbox can only whitelist domains, not blacklist IPs within permitted domains. This is a security design choice.
 - Read model is deny-list based: files outside the sensitive path list are readable if the user/agent asks. Seatbelt/bubblewrap plus the sensitive denyRead set provide defense-in-depth, but absolute allow-list reads are not supported by the runtime. For stricter isolation, run inside Docker/WSL with a minimal bind-mounted workspace.
 
 ## System Overview
@@ -43,10 +44,10 @@ TOTP daemon (separate process, keychain-backed)
 - **test**: disables all enforcement; gated by `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
 
 ## Five Security Pillars
-1) Filesystem isolation (deny sensitive paths; private `/tmp`; host `/tmp`/`/var/tmp`/`/run/user` denied).  
-2) Environment isolation (allowlist env vars).  
-3) Network isolation (profile-based allowlist; default developer profile includes registries/docs/code hosts + Anthropic; package-managers-only profile is used for install-mode narrowing; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains).  
-4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).  
+1) Filesystem isolation (deny sensitive paths; private `/tmp`; host `/tmp`/`/var/tmp`/`/run/user` denied).
+2) Environment isolation (allowlist env vars).
+3) Network isolation (strict default allowlist for Bash; metadata + RFC1918 always blocked; `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for WebFetch/WebSearch only).
+4) Secret output filtering (CORE patterns + entropy, streaming; infrastructure secrets are non-overridable blockers).
 5) Auth/rate limits/audit (identity links, TOTP auth gate for periodic identity verification, SQLite-backed).
 
 ## Design notes
@@ -67,12 +68,13 @@ TOTP daemon (separate process, keychain-backed)
 | FULL_ACCESS | All tools | Approval required unless user is claimed admin | Same sandbox as WRITE_LOCAL; `bypassPermissions` gated by approval/identity |
 
 ## OS-Level Sandbox
-- **macOS**: Seatbelt via `sandbox-exec`.  
-- **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).  
-- Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
-- Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
-- Network: profile-based allowlist (developer-default or package-managers-only). Install-mode can temporarily narrow egress for package installs. `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
-- SDK sandbox is the primary enforcement layer for ALL tools (Bash, WebFetch, WebSearch). Provides OS-level network isolation that blocks RFC1918/metadata and protects against DNS rebinding. We pass our `allowedDomains` to SDK via `sdkOpts.sandbox.network.allowedDomains`. Belt-and-suspenders application-layer guards in `canUseTool` provide additional protection for WebFetch/WebSearch.
+- **macOS**: Seatbelt via `sandbox-exec`.
+- **Linux**: bubblewrap + socat proxy; glob patterns expanded once at startup (newly created matching files after init are not auto-blocked).
+- Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).
+- Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.
+- **Network for Bash**: SDK sandbox uses strict domain allowlist (developer-default profile). Bash cannot reach arbitrary public domains even in permissive mode (SDK can't selectively block IPs within permitted domains).
+- **Network for WebFetch/WebSearch**: SDK permission rules control access. `TELCLAUDE_NETWORK_MODE=open|permissive` enables `Network(domain:*)` while deny rules block private/metadata. canUseTool guards provide belt-and-suspenders filtering.
+- SDK sandbox is the primary enforcement layer for all tools. Provides OS-level network isolation via Seatbelt/bubblewrap.
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  

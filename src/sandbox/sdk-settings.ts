@@ -44,10 +44,12 @@ function withGlobVariants(p: string): string[] {
  *
  * @param tier - Permission tier for the user
  * @param additionalDomains - Extra domains to allow in network rules
+ * @param permissiveNetwork - If true, allow all public domains (only deny private/metadata)
  */
 export function buildSdkPermissionsForTier(
 	tier: PermissionTier,
 	additionalDomains: string[] = [],
+	permissiveNetwork = false,
 ): {
 	allow: string[];
 	deny: string[];
@@ -69,9 +71,19 @@ export function buildSdkPermissionsForTier(
 	);
 	const denyWrite = DENY_WRITE_PATHS.flatMap((p) => withGlobVariants(p).map((v) => `Write(${v})`));
 
-	// Build network allowlist (OpenAI always included - harmless without key exposure)
-	const allowedDomains = buildAllowedDomainNames(additionalDomains);
-	const allowNetwork = allowedDomains.map((d) => `Network(domain:${d})`);
+	// Build network rules
+	// In permissive mode, allow all domains except private/metadata (broad egress)
+	// In strict mode, only allow specific domains from allowlist
+	let allowNetwork: string[];
+	if (permissiveNetwork) {
+		// Allow all domains - rely on deny rules and canUseTool guards for filtering
+		allowNetwork = ["Network(domain:*)"];
+	} else {
+		const allowedDomains = buildAllowedDomainNames(additionalDomains);
+		allowNetwork = allowedDomains.map((d) => `Network(domain:${d})`);
+	}
+
+	// Always deny private networks and metadata endpoints
 	const denyNetwork = [...BLOCKED_METADATA_DOMAINS, ...BLOCKED_PRIVATE_NETWORKS].map(
 		(d) => `Network(domain:${d})`,
 	);
