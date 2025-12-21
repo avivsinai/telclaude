@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Security architecture**: SDK sandbox is now the primary enforcement layer for ALL tools (Bash, WebFetch, WebSearch)
+  - Provides OS-level network isolation that blocks RFC1918/metadata endpoints
+  - Protects against DNS rebinding and redirect-based SSRF attacks
+  - Belt-and-suspenders application-layer guards added for WebFetch/WebSearch in `canUseTool`
+- Docker firewall (`init-firewall.sh`) now matches sandbox allowlist (added OpenAI, more package registries, documentation sites)
+- Docker firewall explicitly blocks metadata endpoints and RFC1918 before allowing whitelisted domains
+
+### Fixed
+
+- Image generation now works correctly through Claude's Bash tool (SDK sandbox properly configured with OpenAI domain)
+- WebFetch/WebSearch now have proper network isolation (previously unprotected when SDK sandbox was disabled)
+
 ## [0.3.0] - 2025-12-17
 
 ### Changed

@@ -50,7 +50,7 @@
 - Typecheck: `pnpm typecheck`
 - Tests: `pnpm test`
 - Git setup: `telclaude setup-git` (interactive), `telclaude git-test` (verify connectivity)
-- SDK sandbox policy is passed per invocation via `--settings` (no writes to `~/.claude`).
+- SDK sandbox provides OS-level network isolation for ALL tools (Bash, WebFetch, WebSearch); blocks RFC1918/metadata endpoints.
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.  

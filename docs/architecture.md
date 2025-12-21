@@ -72,7 +72,7 @@ TOTP daemon (separate process, keychain-backed)
 - Tier-aligned write rules: READ_ONLY (no writes), WRITE_LOCAL/FULL_ACCESS (cwd + `~/.telclaude/sandbox-tmp`).  
 - Deny-read includes `~/.ssh`, `~/.aws`, `~/.telclaude`, shell histories, host `/tmp`/`/var/tmp`/`/run/user`, etc.; private temp at `~/.telclaude/sandbox-tmp`.  
 - Network: profile-based allowlist (developer-default or package-managers-only). Install-mode can temporarily narrow egress for package installs. `TELCLAUDE_NETWORK_MODE=open|permissive` enables broad egress for non-private domains via sandboxAskCallback (metadata endpoints + RFC1918/private networks still blocked).  
-- Claude Code’s built-in sandbox (`srt`) secures Claude tools; telclaude passes our filesystem/network policy via `--settings` for each SDK invocation (no writes to `~/.claude`).
+- SDK sandbox is the primary enforcement layer for ALL tools (Bash, WebFetch, WebSearch). Provides OS-level network isolation that blocks RFC1918/metadata and protects against DNS rebinding. We pass our `allowedDomains` to SDK via `sdkOpts.sandbox.network.allowedDomains`. Belt-and-suspenders application-layer guards in `canUseTool` provide additional protection for WebFetch/WebSearch.
 
 ## Session & Conversation Model
 - Uses stable `query()` API with resume support; 30‑minute cache.  

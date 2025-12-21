@@ -16,15 +16,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { type PermissionTier, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { buildAllowedDomainNames } from "../sandbox/domains.js";
+import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
-import {
-	buildSdkPermissionsForTier,
-	getSandboxConfigForTier,
-	isSandboxInitialized,
-	updateSandboxConfig,
-	wrapCommand,
-} from "../sandbox/index.js";
+import { buildSdkPermissionsForTier } from "../sandbox/index.js";
+import { isBlockedHost } from "../sandbox/network-proxy.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 import { getCachedGitToken } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
@@ -47,7 +42,6 @@ import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 let keysExposedLogged = false;
-const IS_PROD = process.env.TELCLAUDE_ENV === "prod" || process.env.NODE_ENV === "production";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier-Based Key Exposure
@@ -249,13 +243,21 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		settings: JSON.stringify({ permissions }),
 	};
 
-	// Build allowed domains for SDK sandbox network
-	const allowedDomains = buildAllowedDomainNames(additionalDomains);
+	// Enable SDK sandbox for OS-level network isolation of ALL tools (Bash, WebFetch, WebSearch)
+	// This provides kernel-enforced blocking of RFC1918/metadata that can't be bypassed by redirects or DNS rebinding
+	// We pass our allowedDomains so SDK's sandbox matches our security policy
+	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
+	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
+
+	// In permissive mode, use "*" wildcard to allow all domains (SDK sandbox still blocks RFC1918/metadata)
+	// In strict mode, use our explicit allowlist
+	const allowedDomains = isPermissiveMode ? ["*"] : buildAllowedDomainNames(additionalDomains);
+
 	sdkOpts.sandbox = {
 		enabled: true,
+		// SECURITY: Prevent dangerouslyDisableSandbox from bypassing OS-level isolation
+		allowUnsandboxedCommands: false,
 		network: {
-			allowLocalBinding: !IS_PROD,
-			allowAllUnixSockets: !IS_PROD,
 			allowedDomains,
 		},
 	};
@@ -336,7 +338,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		}
 
 		if (toolName === "Bash" && isBashInput(input)) {
-			// Block access to sensitive paths via shell
+			// Block access to sensitive paths via shell (policy layer)
 			if (isSensitivePath(input.command)) {
 				logger.warn({ command: input.command }, "blocked bash access to sensitive path");
 				return {
@@ -345,7 +347,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				};
 			}
 
-			// For WRITE_LOCAL, check for blocked commands
+			// For WRITE_LOCAL, check for blocked commands (policy layer)
 			if (opts.tier === "WRITE_LOCAL") {
 				const blocked = containsBlockedCommand(input.command);
 				if (blocked) {
@@ -357,23 +359,94 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				}
 			}
 
-			// Wrap command with sandbox if available
-			if (isSandboxInitialized()) {
+			// SDK sandbox handles OS-level sandboxing (filesystem + network isolation)
+			// No need to call wrapCommand() - that would cause double-sandboxing
+		}
+
+		// Belt-and-suspenders: Application-layer network check for WebFetch/WebSearch
+		// SDK sandbox provides OS-level enforcement; this is an additional policy check
+		if (toolName === "WebFetch") {
+			const webInput = input as { url?: string };
+			if (webInput.url) {
 				try {
-					const sandboxedCommand = await wrapCommand(input.command);
-					logger.debug(
-						{ original: input.command, sandboxed: sandboxedCommand.substring(0, 100) },
-						"sandboxing bash command",
-					);
-					return {
-						behavior: "allow",
-						updatedInput: { ...input, command: sandboxedCommand },
-					};
-				} catch (err) {
-					logger.error({ error: String(err), command: input.command }, "sandbox wrap failed");
+					const url = new URL(webInput.url);
+
+					// Block non-HTTP protocols (prevent file:// access)
+					if (!["http:", "https:"].includes(url.protocol)) {
+						logger.warn({ url: webInput.url }, "blocked non-HTTP protocol in WebFetch");
+						return {
+							behavior: "deny",
+							message: "Only HTTP/HTTPS protocols are allowed.",
+						};
+					}
+
+					// Block private networks and metadata endpoints
+					if (await isBlockedHost(url.hostname)) {
+						logger.warn({ host: url.hostname }, "blocked private network access in WebFetch");
+						return {
+							behavior: "deny",
+							message: "Access to private networks, localhost, or metadata endpoints is forbidden.",
+						};
+					}
+
+					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
+					if (!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))) {
+						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebFetch");
+						return {
+							behavior: "deny",
+							message: `Domain not in allowlist: ${url.hostname}`,
+						};
+					}
+				} catch {
+					logger.warn({ url: webInput.url }, "invalid URL in WebFetch");
 					return {
 						behavior: "deny",
-						message: "Failed to sandbox command. Execution blocked for security.",
+						message: "Invalid URL format.",
+					};
+				}
+			}
+		}
+
+		// Belt-and-suspenders: Application-layer network check for WebSearch
+		// SDK sandbox provides OS-level enforcement; this is an additional policy check
+		if (toolName === "WebSearch") {
+			const webInput = input as { url?: string; query?: string };
+			// Validate if a custom URL is provided (not just a query string)
+			if (webInput.url) {
+				try {
+					const url = new URL(webInput.url);
+
+					// Block non-HTTP protocols (prevent file:// access)
+					if (!["http:", "https:"].includes(url.protocol)) {
+						logger.warn({ url: webInput.url }, "blocked non-HTTP protocol in WebSearch");
+						return {
+							behavior: "deny",
+							message: "Only HTTP/HTTPS protocols are allowed.",
+						};
+					}
+
+					// Block private networks and metadata endpoints
+					if (await isBlockedHost(url.hostname)) {
+						logger.warn({ host: url.hostname }, "blocked private network access in WebSearch");
+						return {
+							behavior: "deny",
+							message: "Access to private networks, localhost, or metadata endpoints is forbidden.",
+						};
+					}
+
+					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
+					if (!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))) {
+						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebSearch");
+						return {
+							behavior: "deny",
+							message: `Domain not in allowlist: ${url.hostname}`,
+						};
+					}
+				} catch {
+					logger.warn({ url: webInput.url }, "invalid URL in WebSearch");
+					return {
+						behavior: "deny",
+						message: "Invalid URL format.",
 					};
 				}
 			}
@@ -399,26 +472,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	return sdkOpts;
 }
 
-/**
- * Apply tier-aligned sandbox configuration.
- */
-function applyTierSandboxConfig(
-	tier: PermissionTier,
-	cwd: string,
-	additionalDomains: string[] = [],
-): void {
-	if (!isSandboxInitialized()) {
-		return;
-	}
-
-	const allowedDomains = buildAllowedDomainNames(additionalDomains);
-	const tierConfig = getSandboxConfigForTier(tier, cwd, { allowedDomains });
-	updateSandboxConfig(tierConfig);
-	logger.debug(
-		{ tier, cwd, allowWrite: tierConfig.filesystem?.allowWrite },
-		"applied tier-aligned sandbox config",
-	);
-}
+// NOTE: applyTierSandboxConfig() was removed - SDK sandbox handles all sandboxing now
+// We pass allowedDomains to SDK via sdkOpts.sandbox.network.allowedDomains in buildSdkOptions()
 
 /**
  * Execute a query with streaming, yielding chunks as they arrive.
@@ -429,12 +484,7 @@ export async function* executeQueryStream(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	const config = loadConfig();
-	const additionalDomains = config.security?.network?.additionalDomains ?? [];
-
-	// Apply tier-aligned sandbox config
-	applyTierSandboxConfig(inputOpts.tier, inputOpts.cwd, additionalDomains);
-
+	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
 	const sdkOpts = buildSdkOptions({
 		...inputOpts,
 		includePartialMessages: true,
@@ -571,12 +621,8 @@ export async function* executePooledQuery(
 	const startTime = Date.now();
 
 	const opts = inputOpts;
-	const config = loadConfig();
-	const additionalDomains = config.security?.network?.additionalDomains ?? [];
 
-	// Apply tier-aligned sandbox config
-	applyTierSandboxConfig(opts.tier, opts.cwd, additionalDomains);
-
+	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
 	const sdkOpts = buildSdkOptions({
 		...opts,
 		includePartialMessages: true,

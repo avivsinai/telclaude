@@ -14,40 +14,87 @@ set -e
 # Whitelisted Domains
 # ─────────────────────────────────────────────────────────────────────────────────
 
+# IMPORTANT: This list must match src/sandbox/domains.ts
+# If you add domains here, also add them to DEFAULT_ALLOWED_DOMAINS in domains.ts
 ALLOWED_DOMAINS=(
-    # Anthropic API
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Anthropic API + Claude Code
+    # ═══════════════════════════════════════════════════════════════════════════
     "api.anthropic.com"
     "console.anthropic.com"
-
-    # Claude Code / Agent SDK
-    "code.claude.com"
     "claude.ai"
+    "code.anthropic.com"
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # OpenAI API (for image generation, TTS)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "api.openai.com"
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # Telegram API
+    # ═══════════════════════════════════════════════════════════════════════════
     "api.telegram.org"
     "telegram.org"
 
-    # Package registries
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Package registries (read-only)
+    # ═══════════════════════════════════════════════════════════════════════════
     "registry.npmjs.org"
     "registry.yarnpkg.com"
     "pypi.org"
     "files.pythonhosted.org"
+    "crates.io"
+    "static.crates.io"
+    "index.crates.io"
+    "rubygems.org"
+    "repo.maven.apache.org"
+    "repo1.maven.org"
+    "api.nuget.org"
+    "proxy.golang.org"
+    "sum.golang.org"
+    "repo.packagist.org"
 
-    # GitHub (for repos, releases, raw content)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Code hosting (read-only)
+    # ═══════════════════════════════════════════════════════════════════════════
     "github.com"
     "api.github.com"
     "raw.githubusercontent.com"
     "objects.githubusercontent.com"
     "codeload.github.com"
+    "gist.githubusercontent.com"
+    "gitlab.com"
+    "bitbucket.org"
 
-    # Common CDNs
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Documentation sites
+    # ═══════════════════════════════════════════════════════════════════════════
+    "docs.python.org"
+    "docs.rs"
+    "developer.mozilla.org"
+    "stackoverflow.com"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CDNs
+    # ═══════════════════════════════════════════════════════════════════════════
     "cdn.jsdelivr.net"
     "unpkg.com"
 
-    # Docker Hub (if needed)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Docker Hub (for container pulls)
+    # ═══════════════════════════════════════════════════════════════════════════
     "hub.docker.com"
     "registry-1.docker.io"
     "auth.docker.io"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Blocked metadata endpoints (cloud instance metadata - SSRF targets)
+# ─────────────────────────────────────────────────────────────────────────────────
+BLOCKED_METADATA_IPS=(
+    "169.254.169.254"  # AWS/GCP/Azure/OCI/DO metadata
+    "169.254.170.2"    # AWS ECS container metadata
+    "100.100.100.200"  # Alibaba Cloud metadata
 )
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -73,7 +120,29 @@ setup_firewall() {
     # Flush existing OUTPUT rules
     iptables -F OUTPUT 2>/dev/null || true
 
-    # Allow loopback
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK FIRST: Metadata endpoints (SSRF protection - critical!)
+    # These must be blocked BEFORE any allow rules
+    # ═══════════════════════════════════════════════════════════════════════════
+    for ip in "${BLOCKED_METADATA_IPS[@]}"; do
+        iptables -A OUTPUT -d "$ip" -j DROP
+        echo "[firewall] blocked metadata: $ip"
+    done
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK: RFC1918 private networks (prevent internal network access)
+    # ═══════════════════════════════════════════════════════════════════════════
+    iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
+    iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
+    iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
+    iptables -A OUTPUT -d 169.254.0.0/16 -j DROP  # Link-local
+    echo "[firewall] blocked RFC1918 private networks"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ALLOW: Essential services
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Allow loopback (needed for internal communication)
     iptables -A OUTPUT -o lo -j ACCEPT
 
     # Allow established connections
@@ -86,7 +155,9 @@ setup_firewall() {
     # Allow SSH (for git operations)
     iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
 
-    # Resolve and allow whitelisted domains
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ALLOW: Whitelisted domains
+    # ═══════════════════════════════════════════════════════════════════════════
     for domain in "${ALLOWED_DOMAINS[@]}"; do
         # Resolve domain to IP addresses
         ips=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
@@ -101,15 +172,14 @@ setup_firewall() {
         fi
     done
 
-    # Allow HTTPS to any IP (fallback for CDNs with many IPs)
-    # Comment out these lines for stricter isolation
-    # iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
-    # iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
-
-    # Default deny for OUTPUT
+    # ═══════════════════════════════════════════════════════════════════════════
+    # DEFAULT DENY: Block everything else
+    # ═══════════════════════════════════════════════════════════════════════════
     iptables -A OUTPUT -j DROP
 
     echo "[firewall] firewall configured with default-deny policy"
+    echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
+    echo "[firewall] allowed: ${#ALLOWED_DOMAINS[@]} domains + DNS + SSH"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
