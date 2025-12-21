@@ -497,6 +497,12 @@ describe("Sensitive Path Fuzzing", () => {
 			const paths = [
 				".claude/settings.json",
 				".claude/settings.local.json",
+				".claude/./settings.json",
+				".claude//settings.json",
+				".claude/../.claude/settings.json",
+				".claude/settings.json:1",
+				".claude/settings.json:10:3",
+				".claude/settings.json#L12",
 				"/workspace/.claude/settings.json",
 				"/home/user/project/.claude/settings.local.json",
 				"~/.claude/settings.json", // User-level settings (if ever accessed)
@@ -509,18 +515,62 @@ describe("Sensitive Path Fuzzing", () => {
 
 		it("detects Claude Code settings via cd + basename attack", () => {
 			// SECURITY: Catches "cd .claude && cat settings.json" where settings.json
-			// doesn't look like a path (no . or / prefix) but is still sensitive.
+			// doesn't look like a path but is still sensitive in the .claude context.
 			const commands = [
 				"cd .claude && cat settings.json",
 				"cd .claude; cat settings.local.json",
 				"pushd .claude && vim settings.json",
-				"cat settings.json", // Direct access after cd
-				"echo foo > settings.json", // Write attempt
-				"nano settings.local.json",
+				"cd ./.claude && echo foo > settings.json",
+				"cd /project/.claude && nano settings.local.json",
+				"(cd .claude && cat settings.json)",
+				"{ cd .claude; cat settings.local.json; }",
+				"if cd .claude; then cat settings.json; fi",
+				// Variants with ./ prefix on settings.json
+				"cd .claude && cat ./settings.json",
+				"cd .claude && echo foo > ./settings.local.json",
+				// Variants that normalize to .claude/settings.json
+				"cd .claude && cat ././/settings.json",
+				"cd .claude && cat .claude/../.claude/settings.json",
+				// Variants with line/column suffixes (editor formats)
+				"cd .claude && cat settings.json:1",
+				"cd .claude && code settings.json:10:3",
+				"cd .claude && cat settings.json#L12",
+				// Variants with cd flags
+				"cd -P .claude && cat settings.json",
+				"cd -L .claude && cat ./settings.json",
+				"cd -- .claude && echo foo > settings.json",
+				"cd -P -- .claude && cat settings.local.json",
+				// Variants using PWD expansion
+				"cd .claude && cat $PWD/settings.json",
+				"cd .claude && cat ${PWD}/settings.local.json",
+				"cd .claude && cat $(pwd)/settings.json",
+				"cd .claude && cat `pwd`/settings.local.json",
+				// Variants with ../ prefix (escaping from subdir)
+				"cd .claude && cat ../settings.json", // Note: this is ../ which we block
 			];
 
 			for (const cmd of commands) {
 				expect(isSensitivePath(cmd)).toBe(true);
+			}
+		});
+
+		it("does NOT block bare settings.json without cd to .claude", () => {
+			// These are legitimate - settings.json outside of .claude context
+			const commands = [
+				"cat settings.json", // Could be a legitimate project file
+				"nano settings.local.json",
+				"echo foo > settings.json",
+				"cd src && cat settings.json", // cd to non-.claude dir
+				"cd config && vim settings.local.json",
+				"cd .claude && cd .. && cat settings.json", // left .claude before access
+				// ./ variants in non-.claude context
+				"cat ./settings.json",
+				"cd src && cat ./settings.json",
+				"cd -P config && vim ./settings.local.json",
+			];
+
+			for (const cmd of commands) {
+				expect(isSensitivePath(cmd)).toBe(false);
 			}
 		});
 	});
@@ -533,6 +583,9 @@ describe("Sensitive Path Fuzzing", () => {
 				"README.md",
 				"tests/test.ts",
 				"dist/index.js",
+				"settings.json", // Normal project file, NOT .claude/settings.json
+				"config/settings.json", // In project subdirectory
+				"settings.local.json", // Normal project file
 			];
 
 			for (const path of safe) {

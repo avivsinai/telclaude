@@ -328,12 +328,10 @@ const SENSITIVE_BASENAME_PATTERNS: RegExp[] = [
 	/\.pem$/i,
 	/\.key$/i,
 	/\.ppk$/i,
-
-	// === Claude Code settings (prevent disableAllHooks bypass via cd + cat) ===
-	// SECURITY: These catch "cd .claude && cat settings.json" attacks where
-	// the settings.json token doesn't look like a path (no . or / prefix).
-	/^settings\.json$/i,
-	/^settings\.local\.json$/i,
+	// NOTE: settings.json and settings.local.json are NOT blocked globally.
+	// They're protected via detectClaudeSettingsBypass() which catches
+	// "cd .claude && cat settings.json" patterns without blocking legitimate
+	// settings.json files in other directories.
 ];
 
 function isSensitiveBasename(name: string): boolean {
@@ -399,8 +397,23 @@ function looksLikePath(token: string): boolean {
 		token.startsWith("~") ||
 		token.startsWith("/") ||
 		token.startsWith(".") ||
+		token.includes("/") ||
+		token.includes("\\") ||
 		token.includes(path.sep)
 	);
+}
+
+function looksLikeUrl(token: string): boolean {
+	return /^[a-zA-Z][a-zA-Z+.-]*:\/\//.test(token);
+}
+
+function stripPathSuffix(token: string): string {
+	if (looksLikeUrl(token)) {
+		return token;
+	}
+	let cleaned = token.replace(/(?::\d+){1,2}$/i, "");
+	cleaned = cleaned.replace(/#l?\d+(?::\d+)?$/i, "");
+	return cleaned;
 }
 
 /**
@@ -422,6 +435,135 @@ function expandHomeLike(token: string): string {
 	return token;
 }
 
+function normalizePathToken(token: string): string {
+	const expanded = expandHomeLike(token);
+	if (looksLikeUrl(expanded)) {
+		return expanded;
+	}
+	const withoutSuffix = stripPathSuffix(expanded);
+	return path.normalize(withoutSuffix);
+}
+
+/**
+ * Detect "cd .claude && cat settings.json" bypass attempts.
+ * Returns true if the command changes to a .claude directory AND accesses
+ * settings.json or settings.local.json (bare, relative, or editor-suffixed).
+ *
+ * This is more targeted than blocking all settings.json files, which would
+ * break many legitimate projects.
+ *
+ * Handles variants like:
+ * - cd .claude && cat settings.json
+ * - cd -P .claude && cat ./settings.json
+ * - cd -- .claude && echo foo > settings.local.json
+ * - cd .claude && cat $PWD/settings.json
+ * - cd .claude && code settings.json:10:3
+ */
+function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boolean {
+	const settingsPattern = /^(?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
+	const settingsPwdPattern = /^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
+	const claudePathPattern = /(?:^|[/\\])\.claude(?:[/\\]|$)/i;
+	const commandSeparators = new Set([";", "&&", "||", "|", "|&", "\n"]);
+	const controlKeywords = new Set([
+		"if",
+		"then",
+		"elif",
+		"else",
+		"fi",
+		"do",
+		"done",
+		"while",
+		"until",
+		"for",
+		"case",
+		"esac",
+		"select",
+		"function",
+		"{",
+		"}",
+	]);
+
+	const isSeparator = (token: string | { op: string }): boolean => {
+		if (typeof token !== "string") {
+			return commandSeparators.has(token.op);
+		}
+		return commandSeparators.has(token);
+	};
+
+	const isEnvAssignment = (token: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+
+	const findCdTarget = (
+		startIndex: number,
+	): { target?: string; nextIndex: number } => {
+		for (let i = startIndex; i < tokens.length; i++) {
+			const candidate = tokens[i];
+			if (typeof candidate !== "string") {
+				return { nextIndex: i - 1 };
+			}
+			if (candidate === "--") {
+				const next = tokens[i + 1];
+				if (typeof next === "string") {
+					return { target: next, nextIndex: i + 1 };
+				}
+				return { nextIndex: i };
+			}
+			if (candidate.startsWith("-")) {
+				continue;
+			}
+			return { target: candidate, nextIndex: i };
+		}
+		return { nextIndex: tokens.length - 1 };
+	};
+
+	let inClaudeDir = false;
+	let atCommandStart = true;
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (isSeparator(token)) {
+			atCommandStart = true;
+			continue;
+		}
+		if (typeof token !== "string") {
+			continue;
+		}
+
+		const tokenLower = token.toLowerCase();
+		if (atCommandStart && controlKeywords.has(tokenLower)) {
+			continue;
+		}
+		if (atCommandStart && isEnvAssignment(token)) {
+			continue;
+		}
+
+		if (atCommandStart && (tokenLower === "cd" || tokenLower === "pushd")) {
+			const { target, nextIndex } = findCdTarget(i + 1);
+			if (target) {
+				const normalizedTarget = normalizePathToken(target);
+				if (claudePathPattern.test(normalizedTarget) || normalizedTarget === ".claude") {
+					inClaudeDir = true;
+				} else {
+					inClaudeDir = false;
+				}
+			}
+			atCommandStart = false;
+			i = Math.max(i, nextIndex);
+			continue;
+		}
+
+		atCommandStart = false;
+
+		if (inClaudeDir) {
+			const normalizedToken = normalizePathToken(token);
+			if (settingsPattern.test(normalizedToken) || settingsPwdPattern.test(token)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 /**
  * Check if a command string references any sensitive paths.
  * Uses shell-style tokenization to avoid brittle whitespace parsing.
@@ -435,12 +577,17 @@ function commandContainsSensitivePath(command: string): boolean {
 		tokens = command.split(/\s+/).filter((t) => t.length > 0);
 	}
 
+	// SECURITY: Detect "cd .claude && cat settings.json" bypass attempts.
+	// This catches commands that cd to .claude and access settings.json,
+	// without blocking legitimate settings.json files in other directories.
+	if (detectClaudeSettingsBypass(tokens)) {
+		return true;
+	}
+
 	for (const token of tokens) {
 		if (typeof token !== "string") continue;
 
-		// SECURITY: Check basename patterns for ALL tokens, not just path-like ones.
-		// This catches "cd .claude && cat settings.json" where settings.json
-		// doesn't look like a path (no . or / prefix) but is still sensitive.
+		// Check basename patterns for bare filenames (e.g., ".env", "secrets.json").
 		if (isSensitiveBasename(token)) {
 			return true;
 		}
@@ -449,19 +596,24 @@ function commandContainsSensitivePath(command: string): boolean {
 		if (!looksLikePath(token)) continue;
 
 		const expanded = expandHomeLike(token);
+		const normalized = normalizePathToken(token);
 
 		// Check telclaude-specific sensitive patterns on both raw and expanded
-		if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(token) || pattern.test(expanded))) {
+		if (
+			SENSITIVE_PATH_PATTERNS.some(
+				(pattern) => pattern.test(token) || pattern.test(expanded) || pattern.test(normalized),
+			)
+		) {
 			return true;
 		}
 
 		// Check credential roots
-		if (matchesSensitiveCredentialPath(expanded)) {
+		if (!looksLikeUrl(expanded) && matchesSensitiveCredentialPath(expanded)) {
 			return true;
 		}
 
 		// Basename-only detection for path-like tokens (e.g., "./settings.json")
-		if (isSensitiveBasename(path.basename(expanded))) {
+		if (isSensitiveBasename(path.basename(normalized))) {
 			return true;
 		}
 	}
@@ -474,8 +626,13 @@ function commandContainsSensitivePath(command: string): boolean {
  * This includes telclaude internals AND system credential paths.
  */
 export function isSensitivePath(pathOrCommand: string): boolean {
+	const normalized = normalizePathToken(pathOrCommand);
 	// Check telclaude-specific patterns (regex-based for flexibility)
-	if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(pathOrCommand))) {
+	if (
+		SENSITIVE_PATH_PATTERNS.some(
+			(pattern) => pattern.test(pathOrCommand) || pattern.test(normalized),
+		)
+	) {
 		return true;
 	}
 
