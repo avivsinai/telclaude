@@ -525,12 +525,18 @@ describe("Sensitive Path Fuzzing", () => {
 				"(cd .claude && cat settings.json)",
 				"{ cd .claude; cat settings.local.json; }",
 				"if cd .claude; then cat settings.json; fi",
+				"cd .claude\ncat settings.json",
 				// Variants with ./ prefix on settings.json
 				"cd .claude && cat ./settings.json",
 				"cd .claude && echo foo > ./settings.local.json",
 				// Variants that normalize to .claude/settings.json
 				"cd .claude && cat ././/settings.json",
 				"cd .claude && cat .claude/../.claude/settings.json",
+				// Variants using globs/brace expansion
+				"cd .claude && cat *.json",
+				"cd .claude && cat settings*.json",
+				"cd .claude && cat settings.{json,local.json}",
+				"cd .claude && cat [s]ettings.json",
 				// Variants with line/column suffixes (editor formats)
 				"cd .claude && cat settings.json:1",
 				"cd .claude && code settings.json:10:3",
@@ -545,6 +551,12 @@ describe("Sensitive Path Fuzzing", () => {
 				"cd .claude && cat ${PWD}/settings.local.json",
 				"cd .claude && cat $(pwd)/settings.json",
 				"cd .claude && cat `pwd`/settings.local.json",
+				// Variants using env assignments
+				"CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
+				"CLAUDE_DIR=.claude cd $CLAUDE_DIR && cat settings.json",
+				"export CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
+				"FILE=settings.json; cd .claude && cat $FILE",
+				"FILE=settings.local.json; cd .claude && cat ${FILE}",
 				// Variants with ../ prefix (escaping from subdir)
 				"cd .claude && cat ../settings.json", // Note: this is ../ which we block
 			];
@@ -563,6 +575,8 @@ describe("Sensitive Path Fuzzing", () => {
 				"cd src && cat settings.json", // cd to non-.claude dir
 				"cd config && vim settings.local.json",
 				"cd .claude && cd .. && cat settings.json", // left .claude before access
+				"cd .claude\ncd ..\ncat settings.json", // newline-separated commands, left .claude
+				"FILE=settings.json; cd src && cat $FILE", // env var but non-.claude dir
 				// ./ variants in non-.claude context
 				"cat ./settings.json",
 				"cd src && cat ./settings.json",

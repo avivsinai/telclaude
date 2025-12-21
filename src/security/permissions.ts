@@ -444,6 +444,105 @@ function normalizePathToken(token: string): string {
 	return path.normalize(withoutSuffix);
 }
 
+function normalizeGlobPattern(pattern: string): string {
+	// Replace simple character classes with single-char wildcards
+	return pattern.replace(/\[[^\]]*]/g, "?");
+}
+
+function parseEnvAssignment(token: string): { name: string; value: string } | null {
+	if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+		return null;
+	}
+	const eqIndex = token.indexOf("=");
+	if (eqIndex <= 0) return null;
+	const name = token.slice(0, eqIndex);
+	const value = token.slice(eqIndex + 1);
+	return { name, value };
+}
+
+function resolveEnvVars(token: string, env: Map<string, string>): string {
+	return token.replace(/\$(\w+)|\$\{([^}]+)\}/g, (match, var1, var2) => {
+		const name = (var1 ?? var2) as string | undefined;
+		if (!name) return match;
+		const value = env.get(name);
+		return value !== undefined ? value : match;
+	});
+}
+
+function expandBracePatterns(pattern: string): string[] {
+	const braceMatch = pattern.match(/\{([^}]+)\}/);
+	if (!braceMatch) {
+		return [pattern];
+	}
+	const [full, inner] = braceMatch;
+	const parts = inner.split(",").map((part) => part.trim());
+	const expanded: string[] = [];
+	for (const part of parts) {
+		const replaced = pattern.replace(full, part);
+		for (const next of expandBracePatterns(replaced)) {
+			expanded.push(next);
+		}
+	}
+	return expanded;
+}
+
+function wildcardMatch(pattern: string, text: string): boolean {
+	const normalizedPattern = pattern.toLowerCase();
+	const normalizedText = text.toLowerCase();
+	let p = 0;
+	let t = 0;
+	let starIdx = -1;
+	let matchIdx = 0;
+
+	while (t < normalizedText.length) {
+		if (p < normalizedPattern.length) {
+			const ch = normalizedPattern[p];
+			if (ch === "?" || ch === normalizedText[t]) {
+				p++;
+				t++;
+				continue;
+			}
+			if (ch === "*") {
+				starIdx = p;
+				matchIdx = t;
+				p++;
+				continue;
+			}
+		}
+
+		if (starIdx !== -1) {
+			p = starIdx + 1;
+			matchIdx += 1;
+			t = matchIdx;
+			continue;
+		}
+		return false;
+	}
+
+	while (p < normalizedPattern.length && normalizedPattern[p] === "*") {
+		p++;
+	}
+
+	return p === normalizedPattern.length;
+}
+
+function globCouldMatchClaudeSettings(pattern: string): boolean {
+	const normalizedPattern = normalizeGlobPattern(pattern);
+	const expandedPatterns = expandBracePatterns(normalizedPattern);
+	const candidates = [
+		"settings.json",
+		"settings.local.json",
+		"./settings.json",
+		"./settings.local.json",
+		"../settings.json",
+		"../settings.local.json",
+		".claude/settings.json",
+		".claude/settings.local.json",
+	];
+	return expandedPatterns.some((expanded) =>
+		candidates.some((candidate) => wildcardMatch(expanded, candidate)),
+	);
+}
 /**
  * Detect "cd .claude && cat settings.json" bypass attempts.
  * Returns true if the command changes to a .claude directory AND accesses
@@ -461,7 +560,8 @@ function normalizePathToken(token: string): string {
  */
 function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boolean {
 	const settingsPattern = /^(?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
-	const settingsPwdPattern = /^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
+	const settingsPwdPattern =
+		/^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
 	const claudePathPattern = /(?:^|[/\\])\.claude(?:[/\\]|$)/i;
 	const commandSeparators = new Set([";", "&&", "||", "|", "|&", "\n"]);
 	const controlKeywords = new Set([
@@ -482,6 +582,7 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 		"{",
 		"}",
 	]);
+	const envValues = new Map<string, string>();
 
 	const isSeparator = (token: string | { op: string }): boolean => {
 		if (typeof token !== "string") {
@@ -492,9 +593,7 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 
 	const isEnvAssignment = (token: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
 
-	const findCdTarget = (
-		startIndex: number,
-	): { target?: string; nextIndex: number } => {
+	const findCdTarget = (startIndex: number): { target?: string; nextIndex: number } => {
 		for (let i = startIndex; i < tokens.length; i++) {
 			const candidate = tokens[i];
 			if (typeof candidate !== "string") {
@@ -524,22 +623,60 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 			atCommandStart = true;
 			continue;
 		}
-		if (typeof token !== "string") {
+		const tokenValue =
+			typeof token === "string"
+				? token
+				: token.op === "glob"
+					? ((token as { op: string; pattern?: string }).pattern ?? "")
+					: "";
+		if (!tokenValue) {
 			continue;
 		}
 
-		const tokenLower = token.toLowerCase();
+		const tokenLower = tokenValue.toLowerCase();
 		if (atCommandStart && controlKeywords.has(tokenLower)) {
 			continue;
 		}
-		if (atCommandStart && isEnvAssignment(token)) {
+		if (atCommandStart && isEnvAssignment(tokenValue)) {
+			const assignment = parseEnvAssignment(tokenValue);
+			if (assignment) {
+				envValues.set(assignment.name, assignment.value);
+			}
+			continue;
+		}
+
+		if (atCommandStart && tokenLower === "export") {
+			for (let j = i + 1; j < tokens.length; j++) {
+				if (isSeparator(tokens[j])) {
+					i = j - 1;
+					break;
+				}
+				const tok = tokens[j];
+				let exportToken: string;
+				if (typeof tok === "string") {
+					exportToken = tok;
+				} else if (tok.op === "glob") {
+					exportToken = (tok as { op: string; pattern?: string }).pattern ?? "";
+				} else {
+					continue;
+				}
+				if (!exportToken) {
+					continue;
+				}
+				const assignment = parseEnvAssignment(exportToken);
+				if (assignment) {
+					envValues.set(assignment.name, assignment.value);
+				}
+			}
+			atCommandStart = false;
 			continue;
 		}
 
 		if (atCommandStart && (tokenLower === "cd" || tokenLower === "pushd")) {
 			const { target, nextIndex } = findCdTarget(i + 1);
 			if (target) {
-				const normalizedTarget = normalizePathToken(target);
+				const resolvedTarget = resolveEnvVars(target, envValues);
+				const normalizedTarget = normalizePathToken(resolvedTarget);
 				if (claudePathPattern.test(normalizedTarget) || normalizedTarget === ".claude") {
 					inClaudeDir = true;
 				} else {
@@ -554,8 +691,12 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 		atCommandStart = false;
 
 		if (inClaudeDir) {
-			const normalizedToken = normalizePathToken(token);
-			if (settingsPattern.test(normalizedToken) || settingsPwdPattern.test(token)) {
+			const resolvedToken = resolveEnvVars(tokenValue, envValues);
+			const normalizedToken = normalizePathToken(resolvedToken);
+			if (settingsPattern.test(normalizedToken) || settingsPwdPattern.test(resolvedToken)) {
+				return true;
+			}
+			if (/[?*[\]{]/.test(normalizedToken) && globCouldMatchClaudeSettings(normalizedToken)) {
 				return true;
 			}
 		}
@@ -570,11 +711,19 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
  */
 function commandContainsSensitivePath(command: string): boolean {
 	let tokens: Array<string | { op: string }>;
+	const normalizedCommand = command
+		.replace(/\r?\n/g, ";")
+		.replace(/\$\(\s*pwd\s*\)/gi, "$PWD")
+		.replace(/`\s*pwd\s*`/gi, "$PWD");
 	try {
-		tokens = shellParse(command);
+		// Keep variables unexpanded by returning them as-is
+		const keepVars = (key: string): string => `$${key}`;
+		tokens = (
+			shellParse as (cmd: string, env: (k: string) => string) => Array<string | { op: string }>
+		)(normalizedCommand, keepVars);
 	} catch {
 		// Fallback to simple split if parsing fails
-		tokens = command.split(/\s+/).filter((t) => t.length > 0);
+		tokens = normalizedCommand.split(/\s+/).filter((t) => t.length > 0);
 	}
 
 	// SECURITY: Detect "cd .claude && cat settings.json" bypass attempts.
@@ -585,23 +734,29 @@ function commandContainsSensitivePath(command: string): boolean {
 	}
 
 	for (const token of tokens) {
-		if (typeof token !== "string") continue;
+		const tokenValue =
+			typeof token === "string"
+				? token
+				: token.op === "glob"
+					? ((token as { op: string; pattern?: string }).pattern ?? "")
+					: "";
+		if (!tokenValue) continue;
 
 		// Check basename patterns for bare filenames (e.g., ".env", "secrets.json").
-		if (isSensitiveBasename(token)) {
+		if (isSensitiveBasename(tokenValue)) {
 			return true;
 		}
 
 		// For path-like tokens, do additional checks
-		if (!looksLikePath(token)) continue;
+		if (!looksLikePath(tokenValue)) continue;
 
-		const expanded = expandHomeLike(token);
-		const normalized = normalizePathToken(token);
+		const expanded = expandHomeLike(tokenValue);
+		const normalized = normalizePathToken(tokenValue);
 
 		// Check telclaude-specific sensitive patterns on both raw and expanded
 		if (
 			SENSITIVE_PATH_PATTERNS.some(
-				(pattern) => pattern.test(token) || pattern.test(expanded) || pattern.test(normalized),
+				(pattern) => pattern.test(tokenValue) || pattern.test(expanded) || pattern.test(normalized),
 			)
 		) {
 			return true;
