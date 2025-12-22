@@ -5,6 +5,7 @@ import { registerAccessControlCommands } from "./commands/access-control.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
+import { registerSandboxTestCommand } from "./commands/sandbox-test.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
@@ -44,6 +45,7 @@ registerSetupOpenAICommand(program);
 registerSetupGitCommand(program);
 registerGitTestCommand(program);
 registerGitCredentialCommand(program);
+registerSandboxTestCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens
