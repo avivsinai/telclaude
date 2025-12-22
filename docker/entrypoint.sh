@@ -56,6 +56,17 @@ if [ "$(id -u)" = "0" ]; then
         cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
     fi
 
+    # Symlink skills and CLAUDE.md to workspace for SDK's Skill tool discovery
+    # The SDK looks at <cwd>/.claude/skills, not ~/.claude/skills
+    if [ -d "/home/node/.claude/skills" ]; then
+        echo "[entrypoint] Linking skills to workspace"
+        mkdir -p /workspace/.claude
+        ln -sfn /home/node/.claude/skills /workspace/.claude/skills
+        if [ -f "/home/node/.claude/CLAUDE.md" ]; then
+            ln -sfn /home/node/.claude/CLAUDE.md /workspace/.claude/CLAUDE.md
+        fi
+    fi
+
     # Configure git credential helper (uses telclaude's secure storage)
     # This allows git operations without storing plaintext credentials
     echo "[entrypoint] Configuring git credential helper"
