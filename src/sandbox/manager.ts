@@ -10,8 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getChildLogger } from "../logging.js";
-import { getCachedGitToken } from "../services/git-credentials.js";
-import { getCachedOpenAIKey } from "../services/openai-client.js";
+import { getGitCredentials } from "../services/git-credentials.js";
+import { getOpenAIKey } from "../services/openai-client.js";
 import { DEFAULT_SANDBOX_CONFIG, PRIVATE_TMP_PATH, buildSandboxConfig } from "./config.js";
 import { domainMatchesPattern } from "./domains.js";
 import { buildSandboxEnv } from "./env.js";
@@ -231,10 +231,11 @@ function shellEscape(value: string): string {
  * Build environment prefix for commands.
  * Uses `env -i KEY=VALUE...` to ensure only allowed vars reach the command.
  *
- * Dynamically includes cached API keys (OpenAI, GitHub) that were loaded
- * after sandbox initialization from secure storage.
+ * Reads API keys fresh from secure storage on each call for hot-loading support.
+ * If keys are updated via `telclaude setup-openai` or `telclaude setup-git`,
+ * subsequent commands will pick up the new values without restart.
  */
-function buildEnvPrefix(): string {
+async function buildEnvPrefixAsync(): Promise<string> {
 	if (!sanitizedEnv) {
 		return "";
 	}
@@ -242,13 +243,14 @@ function buildEnvPrefix(): string {
 	// Start with the sanitized base env
 	const envToApply: Record<string, string> = { ...sanitizedEnv };
 
-	// Dynamically add cached API keys (loaded from keychain after init)
-	const openaiKey = getCachedOpenAIKey();
+	// Fetch API keys fresh from secure storage (supports hot-loading)
+	const openaiKey = await getOpenAIKey();
 	if (openaiKey) {
 		envToApply.OPENAI_API_KEY = openaiKey;
 	}
 
-	const githubToken = getCachedGitToken() || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+	const gitCreds = await getGitCredentials();
+	const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 	if (githubToken) {
 		envToApply.GITHUB_TOKEN = githubToken;
 		envToApply.GH_TOKEN = githubToken;
@@ -293,7 +295,8 @@ export async function wrapCommand(command: string): Promise<string> {
 
 		// Then wrap with environment isolation
 		// SECURITY: Apply allowlist-only environment
-		const envPrefix = buildEnvPrefix();
+		// Uses async to fetch fresh API keys (supports hot-loading)
+		const envPrefix = await buildEnvPrefixAsync();
 		const fullyWrapped = envPrefix + sandboxWrapped;
 
 		logger.debug(

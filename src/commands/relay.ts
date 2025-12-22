@@ -164,16 +164,25 @@ export function registerRelayCommand(program: Command): void {
 				// Check skills availability
 				const skillsDir = path.join(process.cwd(), ".claude", "skills");
 				try {
-					const skillDirs = await fs.readdir(skillsDir);
-					const skills = skillDirs.filter((d) => !d.startsWith("."));
+					const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
+					const skills = skillDirs
+						.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+						.map((entry) => entry.name)
+						.sort();
 					if (skills.length > 0) {
 						console.log(`Skills: ${skills.length} available (${skills.join(", ")})`);
 					} else {
 						console.log("Skills: none found in .claude/skills/");
 					}
-				} catch {
-					console.log("Skills: directory not found (.claude/skills/)");
-					console.log("  Skills like image-generator won't be available");
+				} catch (err) {
+					const errno = err as NodeJS.ErrnoException | undefined;
+					if (errno?.code === "ENOENT") {
+						console.log("Skills: directory not found (.claude/skills/)");
+						console.log("  Skills like image-generator won't be available");
+					} else {
+						console.log("Skills: unable to read .claude/skills/");
+						logger.warn({ error: String(err) }, "skills directory read failed");
+					}
 				}
 
 				if (cfg.telegram?.allowedChats?.length) {

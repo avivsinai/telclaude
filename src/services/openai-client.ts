@@ -147,6 +147,27 @@ export function getCachedOpenAIKey(): string | null {
 }
 
 /**
+ * Pre-warm the OpenAI key cache.
+ * Call this at startup so getCachedOpenAIKey() works for sandbox env injection.
+ */
+export async function prewarmOpenAIKey(): Promise<boolean> {
+	const key = await getApiKey();
+	return key !== null;
+}
+
+/**
+ * Get OpenAI API key fresh from storage (async).
+ * Use this for hot-loading support - always reads from keychain/env/config.
+ * Returns null if not configured.
+ */
+export async function getOpenAIKey(): Promise<string | null> {
+	// Clear cache to force fresh read
+	cachedApiKey = null;
+	keySourceChecked = false;
+	return getApiKey();
+}
+
+/**
  * Reset the client (for testing).
  */
 export function resetOpenAIClient(): void {
