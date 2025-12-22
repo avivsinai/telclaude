@@ -6,9 +6,15 @@
  * 1. Keychain (via `telclaude setup-openai`)
  * 2. OPENAI_API_KEY environment variable
  * 3. openai.apiKey in config file
+ *
+ * Proxy support:
+ * When HTTP_PROXY or HTTPS_PROXY is set (e.g., inside sandbox), the client
+ * uses undici's ProxyAgent to route requests through the proxy.
+ * Node's native fetch doesn't respect these env vars by default.
  */
 
 import OpenAI from "openai";
+import { ProxyAgent, type Dispatcher } from "undici";
 
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
@@ -62,8 +68,27 @@ async function getApiKey(): Promise<string | null> {
 }
 
 /**
+ * Detect proxy URL from environment variables.
+ * Returns the proxy URL if HTTP_PROXY or HTTPS_PROXY is set.
+ */
+function getProxyUrl(): string | null {
+	// Check both upper and lower case variants (Node convention)
+	const proxyUrl =
+		process.env.HTTPS_PROXY ||
+		process.env.https_proxy ||
+		process.env.HTTP_PROXY ||
+		process.env.http_proxy;
+
+	return proxyUrl || null;
+}
+
+/**
  * Get or create the OpenAI client.
  * Checks keychain first, then env var, then config file.
+ *
+ * IMPORTANT: When running inside the sandbox, HTTP_PROXY/HTTPS_PROXY are set
+ * to route traffic through the sandbox's network proxy. Node's native fetch
+ * doesn't respect these env vars, so we use undici's ProxyAgent.
  */
 export async function getOpenAIClient(): Promise<OpenAI> {
 	if (client) return client;
@@ -81,14 +106,32 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 	const config = loadConfig();
 	const baseURL = config.openai?.baseUrl;
 
+	// Check if we need to use a proxy (sandbox sets HTTP_PROXY/HTTPS_PROXY)
+	const proxyUrl = getProxyUrl();
+	let fetchOptions: OpenAI.RequestOptions["fetchOptions"] | undefined;
+
+	if (proxyUrl) {
+		// Node's native fetch doesn't respect HTTP_PROXY/HTTPS_PROXY env vars.
+		// We must explicitly configure undici's ProxyAgent to route through the proxy.
+		const proxyAgent = new ProxyAgent(proxyUrl);
+		fetchOptions = {
+			dispatcher: proxyAgent as Dispatcher,
+		};
+		logger.debug({ proxyUrl }, "OpenAI client using proxy agent");
+	}
+
 	client = new OpenAI({
 		apiKey,
 		baseURL,
 		timeout: 120_000, // 2 minute timeout for large files
 		maxRetries: 3,
+		fetchOptions,
 	});
 
-	logger.debug({ hasCustomBaseUrl: !!baseURL }, "OpenAI client initialized");
+	logger.debug(
+		{ hasCustomBaseUrl: !!baseURL, hasProxy: !!proxyUrl },
+		"OpenAI client initialized",
+	);
 
 	return client;
 }
