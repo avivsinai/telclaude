@@ -66,6 +66,15 @@ telclaude sandbox-test --openai   # OpenAI API
 
 ## Platform Notes
 
-- **macOS**: RFC1918 test skipped (Seatbelt doesn't block at OS level)
-- **Linux/Docker**: Full network isolation via bubblewrap
+- **macOS**: RFC1918 test skipped (Seatbelt doesn't block at OS level), network tests run directly
+- **Linux/Docker**: Network tests skipped when run standalone (proxy started by SDK). Env tests still verify proxy vars are passed correctly.
 - **No sandbox**: Tests will fail at initialization
+
+## What This Tests vs Full Integration
+
+`sandbox-test` verifies the sandbox configuration is correct:
+- Env vars (HTTP_PROXY, OPENAI_API_KEY) pass through ✓
+- Sandbox initializes correctly ✓
+- RFC1918 blocking works (Linux only) ✓
+
+For full network testing, run image generation via Telegram - this uses the SDK's sandbox which includes the network proxy.

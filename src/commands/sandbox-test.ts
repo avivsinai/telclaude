@@ -254,6 +254,25 @@ async function runEnvTests(verbose?: boolean): Promise<TestResult[]> {
 async function runNetworkTests(verbose?: boolean): Promise<TestResult[]> {
 	const results: TestResult[] = [];
 
+	// Check if proxy is actually reachable (it's started by SDK, not by sandbox-test)
+	const { stdout: proxyCheck } = await execInSandbox(
+		'curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://localhost:3128/ 2>&1 || echo "NO_PROXY"',
+	);
+
+	if (proxyCheck.includes("NO_PROXY") || proxyCheck === "000") {
+		console.log(chalk.yellow("  ○ Network tests skipped (proxy not running)"));
+		console.log(
+			chalk.gray("    Note: Network proxy is started by SDK when running Claude agent."),
+		);
+		console.log(chalk.gray("    To test network, run image generation via Telegram."));
+		results.push({
+			name: "Network",
+			passed: true,
+			message: "Skipped (proxy not running - run via SDK for full test)",
+		});
+		return results;
+	}
+
 	// Test 1: DNS resolution works
 	{
 		const name = "DNS resolution";
@@ -366,6 +385,22 @@ async function runOpenAITests(verbose?: boolean): Promise<TestResult[]> {
 			name: "OpenAI API",
 			passed: true,
 			message: "Skipped (not configured)",
+		});
+		return results;
+	}
+
+	// Check if network is available (proxy running)
+	const { stdout: proxyCheck } = await execInSandbox(
+		'curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://localhost:3128/ 2>&1 || echo "NO_PROXY"',
+	);
+
+	if (proxyCheck.includes("NO_PROXY") || proxyCheck === "000") {
+		console.log(chalk.yellow("  ○ Skipped (proxy not running)"));
+		console.log(chalk.gray("    Note: Run via Telegram to test full OpenAI path."));
+		results.push({
+			name: "OpenAI API",
+			passed: true,
+			message: "Skipped (proxy not running)",
 		});
 		return results;
 	}
