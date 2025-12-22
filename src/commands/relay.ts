@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
@@ -157,6 +159,21 @@ export function registerRelayCommand(program: Command): void {
 				} else {
 					console.log("TOTP daemon: not running (2FA will be unavailable)");
 					console.log("  Start with: telclaude totp-daemon");
+				}
+
+				// Check skills availability
+				const skillsDir = path.join(process.cwd(), ".claude", "skills");
+				try {
+					const skillDirs = await fs.readdir(skillsDir);
+					const skills = skillDirs.filter((d) => !d.startsWith("."));
+					if (skills.length > 0) {
+						console.log(`Skills: ${skills.length} available (${skills.join(", ")})`);
+					} else {
+						console.log("Skills: none found in .claude/skills/");
+					}
+				} catch {
+					console.log("Skills: directory not found (.claude/skills/)");
+					console.log("  Skills like image-generator won't be available");
 				}
 
 				if (cfg.telegram?.allowedChats?.length) {
