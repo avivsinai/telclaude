@@ -66,6 +66,16 @@ export const ENV_ALLOWLIST = [
 	"TMPDIR",
 	"TMP",
 	"TEMP",
+
+	// Proxy configuration (set by sandbox-runtime for network isolation)
+	// These tell Node.js libraries (via undici ProxyAgent) to route traffic through the sandbox proxy.
+	// Safe to pass through - they only configure routing, not secrets.
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"NO_PROXY",
+	"no_proxy",
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
