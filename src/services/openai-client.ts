@@ -117,7 +117,11 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 		fetchOptions = {
 			dispatcher: proxyAgent as Dispatcher,
 		};
-		logger.debug({ proxyUrl }, "OpenAI client using proxy agent");
+		logger.info({ proxyUrl }, "OpenAI client using proxy agent");
+		// Also log to stderr for debugging in sandbox
+		console.error(`[openai-client] Using proxy: ${proxyUrl}`);
+	} else {
+		console.error("[openai-client] No proxy detected, direct connection");
 	}
 
 	client = new OpenAI({
