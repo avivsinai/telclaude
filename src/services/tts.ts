@@ -82,6 +82,13 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 		throw new Error("Text-to-speech is disabled in config");
 	}
 
+	// Currently only OpenAI is implemented
+	if (ttsConfig.provider !== "openai") {
+		throw new Error(
+			`TTS provider '${ttsConfig.provider}' is not yet implemented. Only 'openai' is currently supported.`,
+		);
+	}
+
 	// Rate limiting check (if userId provided)
 	const userId = options?.userId;
 	if (userId) {

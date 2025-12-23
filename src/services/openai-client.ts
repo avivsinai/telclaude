@@ -22,6 +22,24 @@ import { SECRET_KEYS, getSecret } from "../secrets/index.js";
 
 const logger = getChildLogger({ module: "openai-client" });
 
+/**
+ * Redact credentials from a proxy URL for safe logging.
+ * http://user:pass@host:port -> http://[redacted]@host:port
+ */
+function redactProxyCredentials(proxyUrl: string): string {
+	try {
+		const url = new URL(proxyUrl);
+		if (url.username || url.password) {
+			url.username = "[redacted]";
+			url.password = "";
+		}
+		return url.toString();
+	} catch {
+		// If URL parsing fails, mask anything before @
+		return proxyUrl.replace(/\/\/[^@]+@/, "//[redacted]@");
+	}
+}
+
 let client: OpenAI | null = null;
 let cachedApiKey: string | null = null;
 let keySourceChecked = false;
@@ -117,9 +135,11 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 		fetchOptions = {
 			dispatcher: proxyAgent as Dispatcher,
 		};
-		logger.info({ proxyUrl }, "OpenAI client using proxy agent");
+		// Redact credentials from proxy URL for logging (e.g., http://user:pass@host:port -> http://[redacted]@host:port)
+		const redactedProxyUrl = redactProxyCredentials(proxyUrl);
+		logger.info({ proxyUrl: redactedProxyUrl }, "OpenAI client using proxy agent");
 		// Also log to stderr for debugging in sandbox
-		console.error(`[openai-client] Using proxy: ${proxyUrl}`);
+		console.error(`[openai-client] Using proxy: ${redactedProxyUrl}`);
 	} else {
 		console.error("[openai-client] No proxy detected, direct connection");
 	}
