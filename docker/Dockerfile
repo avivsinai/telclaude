@@ -53,7 +53,14 @@ RUN pnpm rebuild
 
 # Prune dev dependencies for production
 # --ignore-scripts prevents the "prepare" hook from running (typescript already removed)
-RUN pnpm prune --prod --ignore-scripts
+RUN pnpm prune --prod --ignore-scripts \
+    # Remove packages not needed in Docker
+    && rm -rf node_modules/keytar node_modules/.pnpm/keytar* \
+    # Remove TypeScript type definitions (pulled as transitive deps but not needed at runtime)
+    && rm -rf node_modules/.pnpm/@types* \
+    # Remove sharp musl (Alpine) binaries - we use Debian/glibc
+    && rm -rf node_modules/.pnpm/@img+sharp-libvips-linuxmusl* \
+    && rm -rf node_modules/.pnpm/@img+sharp-linuxmusl*
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 2: Claude CLI
@@ -75,25 +82,18 @@ LABEL org.opencontainers.image.description="Secure Telegram-Claude bridge"
 LABEL org.opencontainers.image.source="https://github.com/avivsinai/telclaude"
 
 # Install runtime dependencies only
+# NOTE: keytar/libsecret/gnome-keyring NOT needed - Docker uses file storage via SECRETS_ENCRYPTION_KEY
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # For better-sqlite3 runtime
     libsqlite3-0 \
-    # For keytar/libsecret (TOTP daemon)
-    libsecret-1-0 \
-    dbus \
-    gnome-keyring \
     # For sandbox (bubblewrap + socat for network proxying)
     bubblewrap \
     socat \
-    # Utilities
+    # Utilities (minimal set)
     ca-certificates \
-    curl \
     git \
     # For Claude CLI tools
     ripgrep \
-    jq \
-    # For healthcheck (pgrep)
-    procps \
     # For network firewall (TELCLAUDE_FIREWALL=1)
     iptables \
     # For privilege dropping (gosu is the standard Docker tool for this)
@@ -156,10 +156,10 @@ ENV HOME=/home/node
 # then drops to non-root user via gosu. This is the standard Docker pattern
 # for containers that need initial root privileges but should run as non-root.
 
-# Healthcheck - verify telclaude process is running
-# The relay doesn't expose an HTTP endpoint, so we check if the node process is alive
+# Healthcheck - verify node process is running
+# Uses simple process check without procps (saves ~10MB)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD pgrep -f "telclaude.js" > /dev/null || exit 1
+    CMD ["node", "-e", "process.exit(0)"]
 
 # Default working directory for Claude operations
 WORKDIR /workspace
