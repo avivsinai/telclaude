@@ -99,6 +99,7 @@ services:
     tmpfs:
       - /tmp:size=512M,mode=1777
       - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
 
     deploy:
       resources:
