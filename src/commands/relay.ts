@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -37,26 +38,32 @@ function isBinaryAvailable(name: string): boolean {
  * Check host dependencies for native sandbox mode.
  * Returns list of missing dependencies.
  */
-function checkNativeSandboxDeps(): string[] {
-	const missing: string[] = [];
+interface SandboxDepsCheck {
+	criticalMissing: string[]; // Security-critical, hard fail
+	optionalMissing: string[]; // Nice-to-have, warn only
+}
+
+function checkNativeSandboxDeps(): SandboxDepsCheck {
+	const criticalMissing: string[] = [];
+	const optionalMissing: string[] = [];
 	const platform = os.platform();
 
 	if (platform === "linux") {
-		// Linux requires bubblewrap for sandbox
+		// Linux REQUIRES bubblewrap for sandbox (security-critical)
 		if (!isBinaryAvailable("bwrap")) {
-			missing.push("bubblewrap (bwrap)");
+			criticalMissing.push("bubblewrap (bwrap)");
 		}
-		// socat needed for network proxy
+		// socat needed for network proxy (security-critical for network isolation)
 		if (!isBinaryAvailable("socat")) {
-			missing.push("socat");
+			criticalMissing.push("socat");
 		}
 	}
-	// ripgrep needed for Grep tool on all platforms
+	// ripgrep is nice-to-have for Grep tool but not security-critical
 	if (!isBinaryAvailable("rg")) {
-		missing.push("ripgrep (rg)");
+		optionalMissing.push("ripgrep (rg)");
 	}
 
-	return missing;
+	return { criticalMissing, optionalMissing };
 }
 
 export type RelayOptions = {
@@ -143,10 +150,52 @@ export function registerRelayCommand(program: Command): void {
 				const sandboxMode = getSandboxMode();
 				if (sandboxMode === "docker") {
 					console.log("Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)");
-					// Warn if Docker firewall is not enabled
+					// SECURITY: Docker mode REQUIRES firewall for network isolation
+					// Without firewall, Bash can reach arbitrary endpoints including private/metadata
 					if (process.env.TELCLAUDE_FIREWALL !== "1") {
-						console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - Bash has no network isolation");
-						console.warn("     Set TELCLAUDE_FIREWALL=1 for OS-level network filtering");
+						if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
+							console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - Bash has NO network isolation");
+							console.warn("     Running anyway due to TELCLAUDE_ACCEPT_NO_FIREWALL=1");
+							console.warn("     THIS IS A SECURITY RISK - use only for testing");
+							// AUDIT: Log the security bypass
+							logger.warn(
+								{ bypass: "TELCLAUDE_ACCEPT_NO_FIREWALL" },
+								"SECURITY BYPASS: Running Docker mode without network firewall",
+							);
+						} else {
+							console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
+							console.error("In Docker mode, the SDK sandbox is disabled.");
+							console.error(
+								"Without TELCLAUDE_FIREWALL=1, Bash commands have NO network isolation",
+							);
+							console.error("and can reach arbitrary endpoints (including cloud metadata).\n");
+							console.error("To fix:");
+							console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
+							console.error("  - Ensure init-firewall.sh runs (requires NET_ADMIN capability)\n");
+							console.error("To bypass (TESTING ONLY - NOT FOR PRODUCTION):");
+							console.error("  - Set TELCLAUDE_ACCEPT_NO_FIREWALL=1\n");
+							process.exit(1);
+						}
+					} else {
+						// TELCLAUDE_FIREWALL=1 - verify firewall is actually applied via sentinel file
+						const sentinelPath = "/run/telclaude/firewall-active";
+						if (!fsSync.existsSync(sentinelPath)) {
+							console.error("\n❌ SECURITY ERROR: Firewall enabled but not verified.\n");
+							console.error(
+								"TELCLAUDE_FIREWALL=1 is set, but the firewall sentinel file is missing.",
+							);
+							console.error(`Expected: ${sentinelPath}\n`);
+							console.error("This means init-firewall.sh failed or didn't run.");
+							console.error("Possible causes:");
+							console.error("  - Container missing --cap-add=NET_ADMIN capability");
+							console.error("  - iptables not available in container");
+							console.error("  - init-firewall.sh not executed at container start\n");
+							console.error("To fix:");
+							console.error("  - Ensure docker-compose.yml has cap_add: [NET_ADMIN]");
+							console.error("  - Check container logs for firewall setup errors\n");
+							process.exit(1);
+						}
+						console.log("  Firewall: verified (sentinel file present)");
 					}
 				} else {
 					// Native mode: verify SDK sandbox runtime is available
@@ -170,11 +219,28 @@ export function registerRelayCommand(program: Command): void {
 					console.log(`Sandbox: Native mode (SDK sandbox v${sandboxVersion})`);
 
 					// Check for host dependencies (bwrap, socat, rg)
-					const missingDeps = checkNativeSandboxDeps();
-					if (missingDeps.length > 0) {
-						console.warn(`  ⚠️  Missing host dependencies: ${missingDeps.join(", ")}`);
+					const { criticalMissing, optionalMissing } = checkNativeSandboxDeps();
+
+					// Security-critical deps are a hard fail
+					if (criticalMissing.length > 0) {
+						console.error(
+							`\n❌ SECURITY ERROR: Missing critical sandbox dependencies: ${criticalMissing.join(", ")}\n`,
+						);
+						console.error("These are required for secure sandbox operation on Linux.");
+						console.error(
+							"Without them, the sandbox cannot provide filesystem/network isolation.\n",
+						);
+						console.error("To fix:");
+						console.error("  - Install: apt install bubblewrap socat");
+						console.error("  - Or run in Docker mode for container-based isolation\n");
+						process.exit(1);
+					}
+
+					// Optional deps are just a warning
+					if (optionalMissing.length > 0) {
+						console.warn(`  ⚠️  Missing optional: ${optionalMissing.join(", ")}`);
 						if (os.platform() === "linux") {
-							console.warn("     Install: apt install bubblewrap socat ripgrep");
+							console.warn("     Install: apt install ripgrep");
 						} else {
 							console.warn("     Install: brew install ripgrep");
 						}

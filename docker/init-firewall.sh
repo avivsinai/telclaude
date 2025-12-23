@@ -117,15 +117,17 @@ BLOCKED_METADATA_IPS=(
 setup_firewall() {
     # Check if iptables is available
     if ! command -v iptables &> /dev/null; then
-        echo "[firewall] iptables not available, skipping firewall setup"
-        return 0
+        echo "[firewall] ERROR: iptables not available"
+        echo "[firewall] firewall setup FAILED - Bash will have unrestricted network access"
+        return 1
     fi
 
     # Check if we have permissions (need root or CAP_NET_ADMIN)
     if ! iptables -L -n &> /dev/null 2>&1; then
-        echo "[firewall] insufficient permissions for iptables, skipping firewall setup"
+        echo "[firewall] ERROR: insufficient permissions for iptables"
         echo "[firewall] to enable firewall, run container with --cap-add=NET_ADMIN"
-        return 0
+        echo "[firewall] firewall setup FAILED - Bash will have unrestricted network access"
+        return 1
     fi
 
     echo "[firewall] setting up network firewall..."
@@ -193,6 +195,13 @@ setup_firewall() {
     echo "[firewall] firewall configured with default-deny policy"
     echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
     echo "[firewall] allowed: ${#ALLOWED_DOMAINS[@]} domains + DNS + SSH"
+
+    # Write sentinel file to indicate firewall is actually applied
+    # relay.ts checks for this file to verify firewall is working
+    local sentinel_dir="/run/telclaude"
+    mkdir -p "$sentinel_dir" 2>/dev/null || true
+    echo "$(date -Iseconds)" > "$sentinel_dir/firewall-active"
+    echo "[firewall] sentinel written to $sentinel_dir/firewall-active"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -202,7 +211,11 @@ setup_firewall() {
 main() {
     # Only setup firewall if TELCLAUDE_FIREWALL=1
     if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
-        setup_firewall
+        if ! setup_firewall; then
+            echo "[firewall] CRITICAL: firewall setup failed but TELCLAUDE_FIREWALL=1"
+            echo "[firewall] relay will refuse to start without verified firewall"
+            exit 1
+        fi
     else
         echo "[firewall] firewall disabled (set TELCLAUDE_FIREWALL=1 to enable)"
     fi

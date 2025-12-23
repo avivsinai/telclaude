@@ -114,11 +114,14 @@ describe("buildSdkOptions.canUseTool", () => {
 		expect(wrapCommand).not.toHaveBeenCalled();
 	});
 
-	it("denies any tool input containing sensitive path string deeply", async () => {
+	it("only scans path-bearing fields, not arbitrary nested paths", async () => {
+		// Changed behavior: we now only scan known path-bearing fields (file_path, path, pattern, command)
+		// to avoid false positives on content fields like Write.content or Edit.new_string.
+		// Arbitrary nested paths like meta.path are NOT scanned.
 		isSensitivePath.mockReturnValue(true);
 		const sdkOpts = buildSdkOptions({ ...baseOpts });
 		const res = await sdkOpts.canUseTool?.("Read", { meta: { path: "/very/secret" } });
-		expect(res?.behavior).toBe("deny");
+		expect(res?.behavior).toBe("allow"); // Not blocked because meta.path is not a path-bearing field
 	});
 
 	it("allows non-sensitive Read", async () => {

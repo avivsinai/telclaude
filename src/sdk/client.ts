@@ -37,6 +37,7 @@ import {
 	isAssistantMessage,
 	isBashInput,
 	isContentBlockStopEvent,
+	isEditInput,
 	isGlobInput,
 	isGrepInput,
 	isInputJsonDeltaEvent,
@@ -84,24 +85,58 @@ function resolveRealPath(inputPath: string): string {
 }
 
 /**
- * Recursively scan an input payload for any string that hits isSensitivePath().
- * This is a belt-and-suspenders guard when the tool schema isn't path-specific.
+ * Fields that contain paths and should be scanned for sensitive paths.
+ * Excludes content fields like Write.content, Edit.old_string/new_string,
+ * WebSearch.query, etc. to avoid false positives on legitimate content.
+ */
+const PATH_BEARING_FIELDS = new Set([
+	"file_path", // Read, Write, Edit
+	"path", // Glob, Grep
+	"pattern", // Glob (can contain path prefixes)
+	"command", // Bash
+	"notebook_path", // NotebookEdit
+]);
+
+/**
+ * Extract the path prefix from a glob pattern for symlink resolution.
+ * E.g., "src/foo/*.ts" resolves "src/foo", "*.txt" returns "".
+ * Returns the first path segment(s) before any wildcard characters.
+ */
+function extractPathPrefix(pattern: string): string {
+	// Split by path separator
+	const segments = pattern.split("/");
+
+	// Find segments before any wildcard
+	const pathSegments: string[] = [];
+	for (const segment of segments) {
+		if (segment.includes("*") || segment.includes("?") || segment.includes("[")) {
+			break;
+		}
+		pathSegments.push(segment);
+	}
+
+	// Return the path prefix (or empty string if pattern starts with wildcard)
+	return pathSegments.join("/");
+}
+
+/**
+ * Scan ONLY path-bearing fields in an input payload for sensitive paths.
+ * This avoids false positives on content fields (Write.content, Edit.new_string, etc.).
  */
 function inputContainsSensitivePath(payload: unknown): boolean {
-	if (payload == null) {
+	if (payload == null || typeof payload !== "object") {
 		return false;
 	}
 
-	if (typeof payload === "string") {
-		return isSensitivePath(payload);
-	}
+	const obj = payload as Record<string, unknown>;
 
-	if (Array.isArray(payload)) {
-		return payload.some((v) => inputContainsSensitivePath(v));
-	}
-
-	if (typeof payload === "object") {
-		return Object.values(payload).some((v) => inputContainsSensitivePath(v));
+	for (const [key, value] of Object.entries(obj)) {
+		// Only check known path-bearing fields
+		if (PATH_BEARING_FIELDS.has(key) && typeof value === "string") {
+			if (isSensitivePath(value)) {
+				return true;
+			}
+		}
 	}
 
 	return false;
@@ -330,32 +365,50 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		}
 
 		// Check Edit tool
-		if (toolName === "Edit") {
-			const filePath = toolInput.file_path as string | undefined;
-			if (filePath) {
-				const realPath = resolveRealPath(filePath);
-				if (isSensitivePath(realPath) || isSensitivePath(filePath)) {
-					logger.warn({ path: filePath }, "[hook] blocked edit of sensitive path");
-					return denyHookResponse("Editing this file is not permitted for security reasons.");
+		if (toolName === "Edit" && isEditInput(toolInput)) {
+			const realPath = resolveRealPath(toolInput.file_path);
+			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
+				logger.warn({ path: toolInput.file_path }, "[hook] blocked edit of sensitive path");
+				return denyHookResponse("Editing this file is not permitted for security reasons.");
+			}
+		}
+
+		// Check Glob tool (resolve path prefix symlinks to prevent bypass)
+		if (toolName === "Glob" && isGlobInput(toolInput)) {
+			// Use path if provided, otherwise extract prefix from pattern
+			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
+			if (searchPath) {
+				const realPath = resolveRealPath(searchPath);
+				if (isSensitivePath(realPath) || isSensitivePath(searchPath)) {
+					logger.warn({ path: searchPath, realPath }, "[hook] blocked glob of sensitive path");
+					return denyHookResponse("Searching this location is not permitted for security reasons.");
 				}
 			}
-		}
-
-		// Check Glob tool
-		if (toolName === "Glob" && isGlobInput(toolInput)) {
-			const searchPath = toolInput.path ?? toolInput.pattern;
-			if (searchPath && isSensitivePath(searchPath)) {
-				logger.warn({ path: searchPath }, "[hook] blocked glob of sensitive path");
+			// Also check the full pattern for obvious sensitive paths
+			if (isSensitivePath(toolInput.pattern)) {
+				logger.warn(
+					{ pattern: toolInput.pattern },
+					"[hook] blocked glob pattern targeting sensitive path",
+				);
 				return denyHookResponse("Searching this location is not permitted for security reasons.");
 			}
 		}
 
-		// Check Grep tool
+		// Check Grep tool (resolve path prefix symlinks to prevent bypass)
 		if (toolName === "Grep" && isGrepInput(toolInput)) {
 			const searchPath = toolInput.path ?? "";
-			if (isSensitivePath(searchPath)) {
-				logger.warn({ path: searchPath }, "[hook] blocked grep of sensitive path");
-				return denyHookResponse("Searching this location is not permitted for security reasons.");
+			if (searchPath) {
+				// Extract path prefix if the path contains wildcards
+				const pathPrefix = extractPathPrefix(searchPath);
+				const realPath = pathPrefix ? resolveRealPath(pathPrefix) : "";
+				if (
+					(realPath && isSensitivePath(realPath)) ||
+					isSensitivePath(searchPath) ||
+					(pathPrefix && isSensitivePath(pathPrefix))
+				) {
+					logger.warn({ path: searchPath, realPath }, "[hook] blocked grep of sensitive path");
+					return denyHookResponse("Searching this location is not permitted for security reasons.");
+				}
 			}
 		}
 
@@ -378,7 +431,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		}
 
 		// Generic guard: scan all input for sensitive paths
-		if (inputContainsSensitivePath(toolInput)) {
+		// Exclude WebSearch - it uses `query` parameter (not paths) and requests are
+		// made server-side by Anthropic. Blocking would cause false positives on
+		// search queries like "how to access ~/.ssh"
+		if (toolName !== "WebSearch" && inputContainsSensitivePath(toolInput)) {
 			logger.warn({ toolName, input: toolInput }, "[hook] blocked input containing sensitive path");
 			return denyHookResponse("Input contains reference to sensitive paths.");
 		}
@@ -539,7 +595,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		);
 
 		// Generic guard: block any input that references sensitive paths
-		if (inputContainsSensitivePath(input)) {
+		// Exclude WebSearch - uses `query` (not paths), server-side requests
+		if (toolName !== "WebSearch" && inputContainsSensitivePath(input)) {
 			logger.warn({ toolName, input }, "blocked tool input containing sensitive path");
 			return {
 				behavior: "deny",
@@ -547,9 +604,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			};
 		}
 
-		// Block access to sensitive paths
+		// Block access to sensitive paths (with symlink resolution for bypass prevention)
 		if (toolName === "Read" && isReadInput(input)) {
-			if (isPathSensitive(input.file_path)) {
+			const realPath = resolveRealPath(input.file_path);
+			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
 				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
 				return {
 					behavior: "deny",
@@ -559,7 +617,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		}
 
 		if (toolName === "Write" && isWriteInput(input)) {
-			if (isPathSensitive(input.file_path)) {
+			const realPath = resolveRealPath(input.file_path);
+			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
 				logger.warn({ path: input.file_path }, "blocked write to sensitive path");
 				return {
 					behavior: "deny",
@@ -568,10 +627,34 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			}
 		}
 
+		// CRITICAL: Edit tool must be checked (was missing - security gap!)
+		if (toolName === "Edit" && isEditInput(input)) {
+			const realPath = resolveRealPath(input.file_path);
+			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
+				logger.warn({ path: input.file_path }, "blocked edit of sensitive path");
+				return {
+					behavior: "deny",
+					message: "Editing this file is not permitted for security reasons.",
+				};
+			}
+		}
+
 		if (toolName === "Glob" && isGlobInput(input)) {
-			const searchPath = input.path ?? input.pattern;
-			if (isPathSensitive(searchPath)) {
-				logger.warn({ path: searchPath }, "blocked glob of sensitive path");
+			// Use path if provided, otherwise extract prefix from pattern
+			const searchPath = input.path ?? extractPathPrefix(input.pattern);
+			if (searchPath) {
+				const realPath = resolveRealPath(searchPath);
+				if (isPathSensitive(realPath) || isPathSensitive(searchPath)) {
+					logger.warn({ path: searchPath }, "blocked glob of sensitive path");
+					return {
+						behavior: "deny",
+						message: "Searching this location is not permitted for security reasons.",
+					};
+				}
+			}
+			// Also check the full pattern for obvious sensitive paths
+			if (isPathSensitive(input.pattern)) {
+				logger.warn({ pattern: input.pattern }, "blocked glob pattern targeting sensitive path");
 				return {
 					behavior: "deny",
 					message: "Searching this location is not permitted for security reasons.",
@@ -581,12 +664,21 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 		if (toolName === "Grep" && isGrepInput(input)) {
 			const searchPath = input.path ?? "";
-			if (isPathSensitive(searchPath)) {
-				logger.warn({ path: searchPath }, "blocked grep of sensitive path");
-				return {
-					behavior: "deny",
-					message: "Searching this location is not permitted for security reasons.",
-				};
+			if (searchPath) {
+				// Extract path prefix if the path contains wildcards
+				const pathPrefix = extractPathPrefix(searchPath);
+				const realPath = pathPrefix ? resolveRealPath(pathPrefix) : "";
+				if (
+					(realPath && isPathSensitive(realPath)) ||
+					isPathSensitive(searchPath) ||
+					(pathPrefix && isPathSensitive(pathPrefix))
+				) {
+					logger.warn({ path: searchPath }, "blocked grep of sensitive path");
+					return {
+						behavior: "deny",
+						message: "Searching this location is not permitted for security reasons.",
+					};
+				}
 			}
 		}
 

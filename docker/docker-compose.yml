@@ -59,7 +59,8 @@ services:
       # TOTP daemon socket (shared with sidecar)
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
 
-      # Enable network firewall (requires --cap-add=NET_ADMIN)
+      # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
+      # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
 
       # Run as root (bubblewrap handles isolation)

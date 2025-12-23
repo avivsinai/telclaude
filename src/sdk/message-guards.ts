@@ -186,6 +186,20 @@ export function isWriteInput(input: unknown): input is { file_path: string; cont
 }
 
 /**
+ * Type guard for Edit tool input.
+ */
+export function isEditInput(
+	input: unknown,
+): input is { file_path: string; old_string: string; new_string: string } {
+	return (
+		typeof input === "object" &&
+		input !== null &&
+		"file_path" in input &&
+		typeof (input as { file_path: unknown }).file_path === "string"
+	);
+}
+
+/**
  * Type guard for Glob tool input.
  */
 export function isGlobInput(input: unknown): input is { pattern: string; path?: string } {
