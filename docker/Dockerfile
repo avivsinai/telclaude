@@ -101,7 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean \
     # Verify gosu works
-    && gosu nobody true
+    && gosu nobody true \
+    # Set setuid bit on bwrap for network namespace creation
+    # Required for --unshare-net to work when running as non-root
+    && chmod u+s /usr/bin/bwrap
 
 # Modify the existing node user to match desired UID/GID
 # The node base image already has a 'node' user with UID/GID 1000

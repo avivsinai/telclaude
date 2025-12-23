@@ -19,6 +19,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { type PermissionTier, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { buildSandboxEnv } from "../sandbox/env.js";
 import { buildSdkPermissionsForTier } from "../sandbox/index.js";
@@ -298,6 +299,19 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 	const sandboxEnv = buildSandboxEnv(process.env);
 	const config = loadConfig();
+
+	// IMPORTANT: Get proxy ports from SandboxManager AFTER it's been initialized.
+	// The sandbox-runtime sets up HTTP/SOCKS proxies during initialization.
+	// We need to pass these to the SDK so commands inside the sandbox can use them.
+	const httpProxyPort = SandboxManager.getProxyPort();
+	const socksProxyPort = SandboxManager.getSocksProxyPort();
+	if (httpProxyPort) {
+		sandboxEnv.HTTP_PROXY = `http://localhost:${httpProxyPort}`;
+		sandboxEnv.HTTPS_PROXY = `http://localhost:${httpProxyPort}`;
+		sandboxEnv.http_proxy = `http://localhost:${httpProxyPort}`;
+		sandboxEnv.https_proxy = `http://localhost:${httpProxyPort}`;
+		logger.debug({ httpProxyPort, socksProxyPort }, "added proxy env vars to sandbox");
+	}
 
 	// Tier-based key exposure: WRITE_LOCAL+ gets configured keys
 	if (shouldExposeKeys(opts.tier)) {
