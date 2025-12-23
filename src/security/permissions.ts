@@ -20,7 +20,7 @@ import { parse as shellParse } from "shell-quote";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
-import { isSandboxInitialized } from "../sandbox/index.js";
+import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { chatIdToString } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
@@ -124,14 +124,14 @@ export function getUserPermissionTier(
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
 
-	// Note: Sandbox is now mandatory at relay startup (fail-fast).
-	// This check remains as a safety net in case of edge cases.
-	if (tier === "FULL_ACCESS" && !isSandboxInitialized()) {
-		logger.error(
-			{ userId: normalizedId, originalTier: tier },
-			"FULL_ACCESS denied: sandbox not initialized (this should not happen)",
+	// Note: In native mode, SDK sandbox provides isolation.
+	// In Docker mode, the container provides isolation.
+	// FULL_ACCESS is safe in both cases since there's always a security boundary.
+	if (tier === "FULL_ACCESS" && !shouldEnableSdkSandbox()) {
+		logger.debug(
+			{ userId: normalizedId, tier },
+			"FULL_ACCESS granted (Docker mode - container provides isolation)",
 		);
-		return "WRITE_LOCAL";
 	}
 
 	return tier;

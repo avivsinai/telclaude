@@ -1,11 +1,11 @@
 ---
 name: image-generator
-description: Generates images using GPT Image 1.5 API. Use when users request image creation, illustration, or visual content.
+description: Generates images using OpenAI's gpt-image-1.5 API. Use when users request image creation, illustration, or visual content.
 ---
 
 # Image Generation Skill
 
-You can generate images using the GPT Image 1.5 API when users request visual content.
+Generate images using OpenAI's gpt-image-1.5 API when users request visual content.
 
 ## When to Use
 
@@ -16,55 +16,52 @@ Use this skill when users:
 
 ## How to Generate Images
 
-To generate an image, use the Bash tool to run the telclaude image generation command:
+Use curl to call the OpenAI API directly. The `OPENAI_API_KEY` environment variable is available.
 
 ```bash
-telclaude generate-image "your detailed prompt here"
+# Generate image and save to file (uses current directory)
+curl -s https://api.openai.com/v1/images/generations \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1.5","prompt":"YOUR_PROMPT_HERE","size":"1024x1024","output_format":"png"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > ./generated-image.png
 ```
 
-### Options
-
-- `--size`: Image dimensions. Default: 1024x1024
-  - `auto`: Let the model choose optimal size
-  - `1024x1024`: Square (default)
-  - `1536x1024`: Landscape
-  - `1024x1536`: Portrait
-- `--quality`: Quality tier (low, medium, high). Default: medium
-  - low: ~$0.01/image, fastest
-  - medium: ~$0.04/image, balanced
-  - high: ~$0.17/image, best quality
+**Parameters in the JSON body:**
+- `prompt`: Text description of the image (required)
+- `size`: "1024x1024" (square), "1536x1024" (landscape), "1024x1536" (portrait)
+- `output_format`: "png" (required for base64 output)
 
 ### Example
 
+To generate a landscape sunset image:
 ```bash
-telclaude generate-image "A serene mountain landscape at sunset with a lake reflection" --quality high --size 1536x1024
+curl -s https://api.openai.com/v1/images/generations \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-1.5","prompt":"A serene mountain landscape at sunset with a lake reflection","size":"1536x1024","output_format":"png"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > ./sunset.png
 ```
 
 ## Response Format
 
-After generation, the command outputs:
-- The local file path where the image was saved
-- File size in KB
-- Model used
+After running the curl command, verify the file was created:
+```bash
+ls -la ./*.png
+```
 
-**Important**: Tell the user the image has been generated and include the file path in your response. The image file is saved locally and the user can access it at that path.
+**Important**: Tell the user the image has been generated and include the file path. Use the Read tool to show the image to the user.
 
 ## Best Practices
 
 1. **Be Descriptive**: Include details about style, mood, colors, composition
 2. **Specify Style**: Mention if you want photorealistic, illustration, cartoon, etc.
 3. **Avoid Prohibited Content**: No copyrighted characters, real people, or inappropriate content
-4. **Consider Cost**: Use "low" quality for quick drafts, "high" for final images
+4. **Consider Cost**: Use "low" for quick drafts, "high" for final images
 
 ## Limitations
 
-- Maximum 10 images per hour per user (configurable)
-- Maximum 50 images per day per user (configurable)
+- Maximum 10 images per hour per user
+- Maximum 50 images per day per user
 - Some content may be blocked by OpenAI's safety filters
 - Images are stored temporarily and cleaned up after 24 hours
-
-## Cost Awareness
-
-Inform users of approximate costs when generating multiple images:
-- 1024x1024 medium quality: ~$0.04 each
-- High quality or larger sizes cost more

@@ -6,17 +6,12 @@ import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
 	DEFAULT_NETWORK_CONFIG,
-	DENY_WRITE_PATHS,
 	MIN_SANDBOX_RUNTIME_VERSION,
-	SENSITIVE_READ_PATHS,
-	analyzeGlobPatterns,
 	buildAllowedDomainNames,
 	buildAllowedDomains,
-	getEnvIsolationSummary,
 	getNetworkIsolationSummary,
+	getSandboxMode,
 	getSandboxRuntimeVersion,
-	isLinux,
-	isSandboxAvailable,
 	isSandboxRuntimeAtLeast,
 	runNetworkSelfTest,
 } from "../sandbox/index.js";
@@ -99,8 +94,8 @@ export function registerDoctorCommand(program: Command): void {
 				// Skills check (repo-local)
 				const skills = findSkills(process.cwd());
 
-				// Sandbox check
-				const sandboxAvailable = await isSandboxAvailable();
+				// Sandbox mode check
+				const sandboxMode = getSandboxMode();
 
 				// TOTP daemon check
 				const totpDaemonAvailable = await isTOTPDaemonAvailable();
@@ -115,9 +110,6 @@ export function registerDoctorCommand(program: Command): void {
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
-
-				// Environment isolation summary
-				const envSummary = getEnvIsolationSummary(process.env);
 
 				console.log("=== telclaude doctor ===\n");
 
@@ -151,12 +143,12 @@ export function registerDoctorCommand(program: Command): void {
 
 				// Five pillars status
 				console.log("\n🛡️  Security Pillars");
-				console.log(
-					`   1. Filesystem isolation: ${sandboxAvailable ? "✓ available" : "✗ unavailable"}`,
-				);
-				console.log(
-					`   2. Environment isolation: ✓ ${envSummary.allowed} allowed, ${envSummary.blocked} blocked`,
-				);
+				const sandboxDesc =
+					sandboxMode === "docker"
+						? "Docker container (SDK sandbox disabled)"
+						: "SDK sandbox (bubblewrap/Seatbelt)";
+				console.log(`   1. Filesystem isolation: ✓ ${sandboxDesc}`);
+				console.log("   2. Environment isolation: ✓ minimal env vars passed to sandbox");
 
 				// Network isolation - default is strict allowlist
 				const netSummaryPillars = getNetworkIsolationSummary(
@@ -188,33 +180,20 @@ export function registerDoctorCommand(program: Command): void {
 
 				// Sandbox details
 				console.log("\n📦 Sandbox");
-				console.log(`   Status: ${sandboxAvailable ? "✓ available" : "✗ unavailable (REQUIRED)"}`);
-				if (!sandboxAvailable) {
-					console.log("   Install: bubblewrap (Linux) or run on macOS (Seatbelt)");
-				}
-				console.log(
-					`   Runtime: ${sandboxRuntimeVersion ?? "not found"}${
-						sandboxRuntimeVersion ? "" : " (install via package manager)"
-					}`,
-				);
-				if (sandboxRuntimeVersion && !sandboxRuntimePatched) {
+				console.log(`   Mode: ${sandboxMode === "docker" ? "Docker" : "Native"}`);
+				if (sandboxMode === "docker") {
+					console.log("   SDK sandbox: disabled (container provides isolation)");
+				} else {
+					console.log("   SDK sandbox: enabled (bubblewrap/Seatbelt)");
 					console.log(
-						`   ⚠️  Upgrade @anthropic-ai/sandbox-runtime to >= ${MIN_SANDBOX_RUNTIME_VERSION} (fixes CVE-2025-66479 network allowlist bug)`,
+						`   Runtime: ${sandboxRuntimeVersion ?? "not found"}${
+							sandboxRuntimeVersion ? "" : " (install via package manager)"
+						}`,
 					);
-				}
-
-				// Linux glob expansion status
-				if (isLinux()) {
-					const globAnalysis = analyzeGlobPatterns({
-						denyRead: SENSITIVE_READ_PATHS,
-						denyWrite: DENY_WRITE_PATHS,
-					});
-					if (globAnalysis.hasIssues) {
-						console.log("   Linux glob workaround: ✓ active");
+					if (sandboxRuntimeVersion && !sandboxRuntimePatched) {
 						console.log(
-							`     Expanding ${globAnalysis.denyReadGlobs.length} read + ${globAnalysis.denyWriteGlobs.length} write patterns`,
+							`   ⚠️  Upgrade @anthropic-ai/sandbox-runtime to >= ${MIN_SANDBOX_RUNTIME_VERSION} (fixes CVE-2025-66479)`,
 						);
-						console.log("     Note: Patterns expanded to literal paths at startup");
 					}
 				}
 
@@ -229,8 +208,11 @@ export function registerDoctorCommand(program: Command): void {
 				console.log("\n📊 Overall Health");
 				const issues: string[] = [];
 				if (!loggedIn) issues.push("Claude not logged in");
-				if (!sandboxAvailable) issues.push("Sandbox unavailable (CRITICAL)");
 				if (!totpDaemonAvailable) issues.push("TOTP daemon not running");
+				// In native mode, missing sandbox runtime is a critical issue
+				if (sandboxMode === "native" && !sandboxRuntimeVersion) {
+					issues.push("SDK sandbox runtime not found (required for native mode)");
+				}
 
 				if (issues.length === 0) {
 					console.log("   ✓ All checks passed");
@@ -241,7 +223,11 @@ export function registerDoctorCommand(program: Command): void {
 					}
 				}
 
-				if (!loggedIn || !sandboxAvailable) {
+				if (!loggedIn) {
+					process.exitCode = 1;
+				}
+				// Missing sandbox runtime in native mode should also set exit code
+				if (sandboxMode === "native" && !sandboxRuntimeVersion) {
 					process.exitCode = 1;
 				}
 

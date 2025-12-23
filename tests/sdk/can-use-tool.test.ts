@@ -274,13 +274,35 @@ describe("buildSdkOptions PreToolUse hook", () => {
 		if (!hooks || hooks.length === 0) {
 			return { continue: true };
 		}
+		// Network hook is the first hook
 		const hookMatcher = hooks[0] as { hooks: Array<(input: unknown) => Promise<unknown>> };
 		const hookFn = hookMatcher.hooks[0];
-		return (await hookFn({
+		const rawResult = (await hookFn({
 			hook_event_name: "PreToolUse",
 			tool_name: "WebFetch",
 			tool_input: { url },
-		})) as { continue?: boolean; decision?: string; reason?: string };
+		})) as {
+			hookSpecificOutput?: {
+				hookEventName?: string;
+				permissionDecision?: string;
+				permissionDecisionReason?: string;
+			};
+		};
+
+		// Map new format to old test format for compatibility
+		const hookOutput = rawResult.hookSpecificOutput;
+		if (!hookOutput) {
+			return { continue: true };
+		}
+
+		if (hookOutput.permissionDecision === "deny") {
+			return { decision: "block", reason: hookOutput.permissionDecisionReason };
+		}
+		if (hookOutput.permissionDecision === "allow") {
+			return { continue: true };
+		}
+
+		return { continue: true };
 	}
 
 	beforeEach(() => {
@@ -366,13 +388,18 @@ describe("buildSdkOptions PreToolUse hook", () => {
 			const hookFn = hookMatcher?.hooks[0];
 			if (!hookFn) return;
 
-			// WebSearch should pass through (hook only matches WebFetch)
-			const res = await hookFn({
+			// WebSearch should pass through (network hook only applies to WebFetch)
+			const res = (await hookFn({
 				hook_event_name: "PreToolUse",
 				tool_name: "WebSearch",
 				tool_input: { query: "anything" },
-			});
-			expect((res as { continue?: boolean }).continue).toBe(true);
+			})) as {
+				hookSpecificOutput?: {
+					permissionDecision?: string;
+				};
+			};
+			// Network hook returns "allow" for non-WebFetch tools
+			expect(res.hookSpecificOutput?.permissionDecision).toBe("allow");
 		});
 	});
 

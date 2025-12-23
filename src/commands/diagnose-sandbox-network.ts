@@ -7,8 +7,8 @@
  * Run inside container: telclaude diagnose-sandbox-network
  */
 
-import type { Command } from "commander";
 import * as net from "node:net";
+import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 
 export function registerDiagnoseSandboxNetworkCommand(program: Command): void {
@@ -71,9 +71,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 			: "FAILED to connect to proxy port",
 		error: proxyConnectResult.error,
 	});
-	console.log(
-		`   Result: ${proxyConnectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`,
-	);
+	console.log(`   Result: ${proxyConnectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`);
 	if (proxyConnectResult.error) {
 		console.log(`   Error: ${proxyConnectResult.error}`);
 	}
@@ -90,9 +88,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 			: "FAILED to connect to SOCKS port",
 		error: socksConnectResult.error,
 	});
-	console.log(
-		`   Result: ${socksConnectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`,
-	);
+	console.log(`   Result: ${socksConnectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`);
 	if (socksConnectResult.error) {
 		console.log(`   Error: ${socksConnectResult.error}`);
 	}
@@ -101,13 +97,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 	// Step 4: Test HTTP CONNECT through proxy
 	if (proxyConnectResult.success) {
 		console.log("4. Testing HTTP CONNECT through proxy...");
-		const connectResult = await testHttpConnect(
-			"127.0.0.1",
-			3128,
-			"api.openai.com",
-			443,
-			5000,
-		);
+		const connectResult = await testHttpConnect("127.0.0.1", 3128, "api.openai.com", 443, 5000);
 		results.push({
 			step: "HTTP CONNECT through proxy",
 			success: connectResult.success,
@@ -116,9 +106,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 				: "FAILED to establish tunnel",
 			error: connectResult.error,
 		});
-		console.log(
-			`   Result: ${connectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`,
-		);
+		console.log(`   Result: ${connectResult.success ? "✓ SUCCESS" : "✗ FAILED"}`);
 		if (connectResult.response) {
 			console.log(`   Response: ${connectResult.response}`);
 		}
@@ -146,9 +134,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 			: "DNS failed as expected in sandbox",
 		error: dnsResult.error,
 	});
-	console.log(
-		`   Result: ${dnsResult.success ? "⚠ UNEXPECTED SUCCESS" : "✓ FAILED (expected)"}`,
-	);
+	console.log(`   Result: ${dnsResult.success ? "⚠ UNEXPECTED SUCCESS" : "✓ FAILED (expected)"}`);
 	if (dnsResult.addresses) {
 		console.log(`   Addresses: ${dnsResult.addresses.join(", ")}`);
 	}
@@ -173,9 +159,7 @@ export async function diagnoseSandboxNetwork(): Promise<void> {
 				: "FAILED to fetch through proxy",
 			error: fetchResult.error,
 		});
-		console.log(
-			`   Result: ${fetchResult.success ? "✓ SUCCESS" : "✗ FAILED"}`,
-		);
+		console.log(`   Result: ${fetchResult.success ? "✓ SUCCESS" : "✗ FAILED"}`);
 		if (fetchResult.status) {
 			console.log(`   Status: ${fetchResult.status} ${fetchResult.statusText}`);
 		}
@@ -251,9 +235,7 @@ async function testHttpConnect(
 		socket.connect(proxyPort, proxyHost, () => {
 			// Send HTTP CONNECT request
 			socket.write(
-				`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
-					`Host: ${targetHost}:${targetPort}\r\n` +
-					`\r\n`,
+				`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n\r\n`,
 			);
 		});
 

@@ -2,13 +2,12 @@
 
 import { createProgram } from "./cli/program.js";
 import { registerAccessControlCommands } from "./commands/access-control.js";
+import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
-import { registerIntegrationTestCommand } from "./commands/integration-test.js";
-import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
-import { registerSandboxTestCommand } from "./commands/sandbox-test.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
+import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
@@ -47,7 +46,6 @@ registerSetupOpenAICommand(program);
 registerSetupGitCommand(program);
 registerGitTestCommand(program);
 registerGitCredentialCommand(program);
-registerSandboxTestCommand(program);
 registerIntegrationTestCommand(program);
 registerDiagnoseSandboxNetworkCommand(program);
 

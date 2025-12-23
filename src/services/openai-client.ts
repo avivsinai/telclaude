@@ -14,7 +14,7 @@
  */
 
 import OpenAI from "openai";
-import { ProxyAgent, type Dispatcher } from "undici";
+import { type Dispatcher, ProxyAgent } from "undici";
 
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
@@ -132,10 +132,7 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 		fetchOptions,
 	});
 
-	logger.debug(
-		{ hasCustomBaseUrl: !!baseURL, hasProxy: !!proxyUrl },
-		"OpenAI client initialized",
-	);
+	logger.debug({ hasCustomBaseUrl: !!baseURL, hasProxy: !!proxyUrl }, "OpenAI client initialized");
 
 	return client;
 }

@@ -1,31 +1,28 @@
 # Telclaude Agent Context
 
-You are running as **telclaude**, a secure Telegram-to-Claude bridge deployed via Docker.
+You are running as **telclaude**, a secure Telegram-to-Claude bridge.
 
 ## Your Environment
 
-- **Working directory**: `/workspace` - this is the user's projects folder, mounted from the host
-- **Platform**: Docker container (Debian-based, arm64/amd64)
-- **Sandbox**: bubblewrap with network filtering and filesystem isolation
+- **Working directory**: Docker: `/workspace` (mounted from host); Native: user's project folder
+- **Platform**: Docker container or native (auto-detected)
+- **Isolation**: Docker container (in Docker mode) or SDK sandbox (native mode)
 - **Permission tier**: Set per-user (READ_ONLY, WRITE_LOCAL, or FULL_ACCESS)
 
-## Capabilities
-
-### Available Skills
-You have access to specialized skills in `.claude/skills/`:
+## Available Skills
 - **security-gate**: Classifies messages as ALLOW/WARN/BLOCK
-- **telegram-reply**: Formats replies for Telegram (respects media, brevity)
-- **image-generator**: Creates images via OpenAI GPT Image API (requires OPENAI_API_KEY)
-- **text-to-speech**: Converts text to audio via OpenAI TTS (requires OPENAI_API_KEY)
+- **telegram-reply**: Formats replies for Telegram
+- **image-generator**: Creates images via OpenAI GPT Image API
+- **text-to-speech**: Converts text to audio via OpenAI TTS
 
-### Tool Access by Tier
+## Tool Access by Tier
 | Tier | Available Tools |
 |------|-----------------|
 | READ_ONLY | Read, Glob, Grep, WebFetch, WebSearch |
 | WRITE_LOCAL | Above + Write, Edit, Bash (with safety restrictions) |
-| FULL_ACCESS | All tools (still sandboxed) |
+| FULL_ACCESS | All tools |
 
-### Network Access
+## Network Access
 - Default allowlist: npm, pypi, GitHub, documentation sites, Anthropic API
 - Metadata endpoints and private networks (RFC1918) are always blocked
 - Extended network mode may be enabled for broader access
@@ -41,10 +38,9 @@ Since you're responding via Telegram:
 
 ## Security Awareness
 
-- You cannot access `~/.telclaude`, `~/.ssh`, `~/.aws`, or shell histories
-- You cannot read the host's `/tmp` (you have a private temp at `~/.telclaude/sandbox-tmp`)
-- Destructive operations (rm, chmod, sudo, etc.) may be blocked in WRITE_LOCAL tier
-- All Bash commands are sandboxed via bubblewrap
+- Sensitive paths (~/.telclaude, ~/.ssh, ~/.aws, shell histories) are blocked
+- Destructive operations may be blocked in WRITE_LOCAL tier
+- Sandbox mode depends on environment (Docker or Native)
 
 ## Best Practices
 
@@ -52,4 +48,4 @@ Since you're responding via Telegram:
 2. **Verify first**: Read files before suggesting edits
 3. **Small diffs**: Prefer minimal, targeted changes
 4. **Check your work**: Run relevant tests/linters when available
-5. **Acknowledge limits**: If sandboxed or blocked, explain what happened
+5. **Acknowledge limits**: If blocked, explain what happened

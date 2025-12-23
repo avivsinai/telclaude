@@ -1,4 +1,6 @@
+import { execSync } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
@@ -9,18 +11,53 @@ import {
 	DEFAULT_NETWORK_CONFIG,
 	buildAllowedDomainNames,
 	buildAllowedDomains,
-	buildSandboxConfig,
 	getNetworkIsolationSummary,
-	initializeSandbox,
-	isSandboxAvailable,
-	prewarmSandboxConfigCache,
-	resetSandbox,
+	getSandboxMode,
+	getSandboxRuntimeVersion,
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
+
+/**
+ * Check if a binary is available on PATH.
+ */
+function isBinaryAvailable(name: string): boolean {
+	try {
+		execSync(`which ${name}`, { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Check host dependencies for native sandbox mode.
+ * Returns list of missing dependencies.
+ */
+function checkNativeSandboxDeps(): string[] {
+	const missing: string[] = [];
+	const platform = os.platform();
+
+	if (platform === "linux") {
+		// Linux requires bubblewrap for sandbox
+		if (!isBinaryAvailable("bwrap")) {
+			missing.push("bubblewrap (bwrap)");
+		}
+		// socat needed for network proxy
+		if (!isBinaryAvailable("socat")) {
+			missing.push("socat");
+		}
+	}
+	// ripgrep needed for Grep tool on all platforms
+	if (!isBinaryAvailable("rg")) {
+		missing.push("ripgrep (rg)");
+	}
+
+	return missing;
+}
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -102,35 +139,46 @@ export function registerRelayCommand(program: Command): void {
 				);
 				console.log("  Secret filtering: enabled (CORE patterns + entropy detection)");
 
-				// Initialize sandbox for OS-level isolation (MANDATORY)
-				const sandboxAvailable = await isSandboxAvailable();
-				if (!sandboxAvailable) {
-					console.error(
-						"\n❌ Sandbox unavailable - telclaude requires OS-level sandboxing for security.\n",
-					);
-					console.error("Install dependencies:");
-					console.error("  macOS: brew install ripgrep");
-					console.error("         (Seatbelt is built-in)");
-					console.error("  Linux: apt install bubblewrap ripgrep socat (Debian/Ubuntu)");
-					console.error("         dnf install bubblewrap ripgrep socat (Fedora)");
-					console.error("         pacman -S bubblewrap ripgrep socat (Arch)");
-					console.error("  Windows: Not supported\n");
-					console.error("Required tools:");
-					console.error("  - ripgrep (rg): Used by sandbox-runtime for file operations");
-					console.error("  - socat: Required on Linux for network proxying\n");
-					console.error("Or run in Docker for containerized isolation.");
-					process.exit(1);
-				}
+				// Detect sandbox mode and verify sandbox availability
+				const sandboxMode = getSandboxMode();
+				if (sandboxMode === "docker") {
+					console.log("Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)");
+					// Warn if Docker firewall is not enabled
+					if (process.env.TELCLAUDE_FIREWALL !== "1") {
+						console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - Bash has no network isolation");
+						console.warn("     Set TELCLAUDE_FIREWALL=1 for OS-level network filtering");
+					}
+				} else {
+					// Native mode: verify SDK sandbox runtime is available
+					const sandboxVersion = getSandboxRuntimeVersion();
+					if (!sandboxVersion) {
+						console.error("\n❌ SECURITY ERROR: Sandbox runtime not available.\n");
+						console.error(
+							"In native mode, the SDK sandbox (@anthropic-ai/sandbox-runtime) is required.",
+						);
+						console.error(
+							"This provides filesystem and network isolation via bubblewrap (Linux) or Seatbelt (macOS).\n",
+						);
+						console.error("To fix:");
+						console.error(
+							"  - Run: pnpm install (sandbox-runtime should be installed as a dependency)",
+						);
+						console.error("  - On Linux: ensure bubblewrap is installed (apt install bubblewrap)");
+						console.error("  - Alternatively, run in Docker mode for container-based isolation\n");
+						process.exit(1);
+					}
+					console.log(`Sandbox: Native mode (SDK sandbox v${sandboxVersion})`);
 
-				const sandboxConfig = buildSandboxConfig({
-					allowedDomains: allowedDomainNames,
-					cwd: process.cwd(),
-				});
-				const sandboxResult = await initializeSandbox(sandboxConfig);
-				if (sandboxResult.initialized) {
-					console.log("Sandbox: enabled (srt)");
-					// Pre-warm tier config cache to avoid slow glob expansion on first message
-					prewarmSandboxConfigCache(process.cwd(), allowedDomainNames);
+					// Check for host dependencies (bwrap, socat, rg)
+					const missingDeps = checkNativeSandboxDeps();
+					if (missingDeps.length > 0) {
+						console.warn(`  ⚠️  Missing host dependencies: ${missingDeps.join(", ")}`);
+						if (os.platform() === "linux") {
+							console.warn("     Install: apt install bubblewrap socat ripgrep");
+						} else {
+							console.warn("     Install: brew install ripgrep");
+						}
+					}
 				}
 
 				// Network policy - default is strict allowlist
@@ -203,10 +251,6 @@ export function registerRelayCommand(program: Command): void {
 					// Clean up session pool
 					await destroySessionManager();
 					logger.info("session pool destroyed");
-
-					// Clean up sandbox
-					await resetSandbox();
-					logger.info("sandbox reset");
 				};
 
 				process.on("SIGINT", () => void shutdown());
@@ -222,7 +266,6 @@ export function registerRelayCommand(program: Command): void {
 
 				// Final cleanup after monitor exits
 				await destroySessionManager();
-				await resetSandbox();
 
 				console.log("Relay stopped.");
 			} catch (err) {

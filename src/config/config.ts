@@ -53,7 +53,7 @@ const SdkConfigSchema = z.object({
 });
 
 // OpenAI configuration schema (for Whisper, GPT Image, TTS)
-// NOTE: To expose OpenAI key to sandbox, use TELCLAUDE_OPENAI_SANDBOX_EXPOSE=1 env var
+// NOTE: Keys are automatically exposed to sandbox for WRITE_LOCAL and FULL_ACCESS tiers.
 const OpenAIConfigSchema = z.object({
 	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
 	baseUrl: z.string().optional(), // Custom endpoint for local inference servers

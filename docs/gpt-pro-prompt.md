@@ -1253,7 +1253,7 @@ export const ANTHROPIC_DOMAINS: DomainRule[] = [
 
 /**
  * OpenAI API domains.
- * Always included in allowlist - harmless without TELCLAUDE_OPENAI_SANDBOX_EXPOSE=1.
+ * Always included in allowlist. Keys are exposed for WRITE_LOCAL and FULL_ACCESS tiers.
  */
 export const OPENAI_DOMAINS: DomainRule[] = [
 	{ domain: "api.openai.com", methods: ["GET", "HEAD", "POST"] },

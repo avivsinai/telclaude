@@ -4,7 +4,14 @@
  * Provides a typed interface to the Claude Agent SDK with:
  * - Session pooling with resume for multi-turn conversations
  * - Tier-aligned sandbox configurations
- * - Security enforcement via canUseTool callback
+ * - Security enforcement via PreToolUse hooks (PRIMARY) and canUseTool (FALLBACK)
+ *
+ * IMPORTANT: Security enforcement uses PreToolUse hooks as PRIMARY enforcement.
+ * The canUseTool callback is a FALLBACK only - it does NOT fire in acceptEdits mode.
+ * See: https://code.claude.com/docs/en/sdk/sdk-permissions
+ *
+ * Hook response format (per https://docs.claude.com/en/docs/claude-code/hooks):
+ * { hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "..." } }
  */
 
 import fs from "node:fs";
@@ -19,11 +26,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { type PermissionTier, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
-import { buildSandboxEnv } from "../sandbox/env.js";
-import { buildSdkPermissionsForTier } from "../sandbox/index.js";
+import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { isBlockedHost } from "../sandbox/network-proxy.js";
+import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
 import { getCachedGitToken } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
@@ -187,40 +193,60 @@ export type StreamChunk =
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Helper to create a deny response in the correct hook format.
+ * Per https://docs.claude.com/en/docs/claude-code/hooks:
+ * "Use hookSpecificOutput.permissionDecision instead of deprecated decision field."
+ * The hookEventName field is required by the SDK types.
+ */
+function denyHookResponse(reason: string) {
+	return {
+		hookSpecificOutput: {
+			hookEventName: "PreToolUse" as const,
+			permissionDecision: "deny" as const,
+			permissionDecisionReason: reason,
+		},
+	};
+}
+
+/**
+ * Helper to create an allow response in the correct hook format.
+ */
+function allowHookResponse() {
+	return {
+		hookSpecificOutput: {
+			hookEventName: "PreToolUse" as const,
+			permissionDecision: "allow" as const,
+		},
+	};
+}
+
+/**
  * Create a PreToolUse hook that blocks WebFetch to private networks and metadata endpoints.
  *
- * CRITICAL: This hook runs UNCONDITIONALLY before every tool use, regardless of SDK permission decisions.
- * This is necessary because the SDK's canUseTool callback is only called when the SDK's permission
- * resolver returns "ask" - if settings pre-approve a domain, canUseTool is bypassed.
+ * CRITICAL: PreToolUse hooks run UNCONDITIONALLY before every tool use.
+ * Unlike canUseTool (which does NOT fire in acceptEdits mode), PreToolUse hooks
+ * are guaranteed to run. This is the PRIMARY enforcement mechanism.
+ * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
- * NOTE: WebSearch is NOT filtered here because:
- * - WebSearch uses a `query` parameter, not a `url` parameter
- * - Search requests are made server-side by Anthropic, not by the local process
- * - We cannot control which domains Anthropic's search accesses
- *
- * This hook ensures WebFetch private/metadata blocking cannot be bypassed by project settings.
- * User settings are already excluded via settingSources: ["project"].
+ * NOTE: WebSearch is NOT filtered - it uses server-side requests by Anthropic.
  */
 function createNetworkSecurityHook(
 	isPermissiveMode: boolean,
 	allowedDomains: string[],
 ): HookCallbackMatcher {
 	const hookCallback: HookCallback = async (input: HookInput) => {
-		// Only handle PreToolUse events for WebFetch
 		if (input.hook_event_name !== "PreToolUse") {
-			return { continue: true };
+			return allowHookResponse();
 		}
 
 		const toolName = input.tool_name;
-
-		// Only filter WebFetch - WebSearch uses server-side requests we can't control
 		if (toolName !== "WebFetch") {
-			return { continue: true };
+			return allowHookResponse();
 		}
 
 		const toolInput = input.tool_input as { url?: string };
 		if (!toolInput.url) {
-			return { continue: true };
+			return allowHookResponse();
 		}
 
 		try {
@@ -229,22 +255,18 @@ function createNetworkSecurityHook(
 			// Block non-HTTP protocols
 			if (!["http:", "https:"].includes(url.protocol)) {
 				logger.warn({ url: toolInput.url, tool: toolName }, "[hook] blocked non-HTTP protocol");
-				return {
-					decision: "block",
-					reason: "Only HTTP/HTTPS protocols are allowed.",
-				};
+				return denyHookResponse("Only HTTP/HTTPS protocols are allowed.");
 			}
 
-			// Block private networks and metadata endpoints (ALWAYS enforced, cannot be bypassed)
+			// Block private networks and metadata endpoints (ALWAYS enforced)
 			if (await isBlockedHost(url.hostname)) {
 				logger.warn(
 					{ host: url.hostname, tool: toolName },
 					"[hook] blocked private/metadata access",
 				);
-				return {
-					decision: "block",
-					reason: "Access to private networks, localhost, or metadata endpoints is forbidden.",
-				};
+				return denyHookResponse(
+					"Access to private networks, localhost, or metadata endpoints is forbidden.",
+				);
 			}
 
 			// In strict mode, also check domain allowlist
@@ -254,32 +276,129 @@ function createNetworkSecurityHook(
 						{ host: url.hostname, tool: toolName },
 						"[hook] blocked non-allowlisted domain",
 					);
-					return {
-						decision: "block",
-						reason: `Domain not in allowlist: ${url.hostname}`,
-					};
+					return denyHookResponse(`Domain not in allowlist: ${url.hostname}`);
 				}
 			}
 
-			return { continue: true };
+			return allowHookResponse();
 		} catch {
 			logger.warn({ url: toolInput.url, tool: toolName }, "[hook] invalid URL");
-			return {
-				decision: "block",
-				reason: "Invalid URL format.",
-			};
+			return denyHookResponse("Invalid URL format.");
 		}
 	};
 
 	return {
 		matcher: "WebFetch",
 		hooks: [hookCallback],
-		timeout: 5, // 5 second timeout for DNS resolution in isBlockedHost
+		timeout: 5,
+	};
+}
+
+/**
+ * Create a PreToolUse hook for sensitive path protection on filesystem tools.
+ *
+ * CRITICAL: This is the PRIMARY enforcement for sensitive path blocking.
+ * The canUseTool callback does NOT fire in acceptEdits mode, so PreToolUse
+ * hooks are required for guaranteed enforcement.
+ * See: https://code.claude.com/docs/en/sdk/sdk-permissions
+ */
+function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+
+		const toolName = input.tool_name;
+		const toolInput = input.tool_input as Record<string, unknown>;
+
+		// Check Read tool
+		if (toolName === "Read" && isReadInput(toolInput)) {
+			const realPath = resolveRealPath(toolInput.file_path);
+			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
+				logger.warn({ path: toolInput.file_path }, "[hook] blocked read of sensitive path");
+				return denyHookResponse("Access to this file is not permitted for security reasons.");
+			}
+		}
+
+		// Check Write tool
+		if (toolName === "Write" && isWriteInput(toolInput)) {
+			const realPath = resolveRealPath(toolInput.file_path);
+			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
+				logger.warn({ path: toolInput.file_path }, "[hook] blocked write to sensitive path");
+				return denyHookResponse("Writing to this location is not permitted for security reasons.");
+			}
+		}
+
+		// Check Edit tool
+		if (toolName === "Edit") {
+			const filePath = toolInput.file_path as string | undefined;
+			if (filePath) {
+				const realPath = resolveRealPath(filePath);
+				if (isSensitivePath(realPath) || isSensitivePath(filePath)) {
+					logger.warn({ path: filePath }, "[hook] blocked edit of sensitive path");
+					return denyHookResponse("Editing this file is not permitted for security reasons.");
+				}
+			}
+		}
+
+		// Check Glob tool
+		if (toolName === "Glob" && isGlobInput(toolInput)) {
+			const searchPath = toolInput.path ?? toolInput.pattern;
+			if (searchPath && isSensitivePath(searchPath)) {
+				logger.warn({ path: searchPath }, "[hook] blocked glob of sensitive path");
+				return denyHookResponse("Searching this location is not permitted for security reasons.");
+			}
+		}
+
+		// Check Grep tool
+		if (toolName === "Grep" && isGrepInput(toolInput)) {
+			const searchPath = toolInput.path ?? "";
+			if (isSensitivePath(searchPath)) {
+				logger.warn({ path: searchPath }, "[hook] blocked grep of sensitive path");
+				return denyHookResponse("Searching this location is not permitted for security reasons.");
+			}
+		}
+
+		// Check Bash tool
+		if (toolName === "Bash" && isBashInput(toolInput)) {
+			// Block access to sensitive paths via shell
+			if (isSensitivePath(toolInput.command)) {
+				logger.warn({ command: toolInput.command }, "[hook] blocked bash access to sensitive path");
+				return denyHookResponse("Access to sensitive paths via shell is not permitted.");
+			}
+
+			// For WRITE_LOCAL, check for blocked commands
+			if (tier === "WRITE_LOCAL") {
+				const blocked = containsBlockedCommand(toolInput.command);
+				if (blocked) {
+					logger.warn({ command: toolInput.command, blocked }, "[hook] blocked dangerous command");
+					return denyHookResponse(`Command contains blocked operation: ${blocked}`);
+				}
+			}
+		}
+
+		// Generic guard: scan all input for sensitive paths
+		if (inputContainsSensitivePath(toolInput)) {
+			logger.warn({ toolName, input: toolInput }, "[hook] blocked input containing sensitive path");
+			return denyHookResponse("Input contains reference to sensitive paths.");
+		}
+
+		return allowHookResponse();
+	};
+
+	// No matcher specified = runs for ALL tools. The callback filters by tool name internally.
+	return {
+		hooks: [hookCallback],
+		timeout: 5,
 	};
 }
 
 /**
  * Build SDK options based on tier and configuration.
+ *
+ * Sandbox mode detection:
+ * - Docker: SDK sandbox DISABLED. Docker container provides isolation.
+ * - Native: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
  */
 export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	// Create abort controller with timeout if specified
@@ -297,21 +416,21 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		abortController = controller;
 	}
 
-	const sandboxEnv = buildSandboxEnv(process.env);
 	const config = loadConfig();
+	const sandboxEnabled = shouldEnableSdkSandbox();
 
-	// IMPORTANT: Get proxy ports from SandboxManager AFTER it's been initialized.
-	// The sandbox-runtime sets up HTTP/SOCKS proxies during initialization.
-	// We need to pass these to the SDK so commands inside the sandbox can use them.
-	const httpProxyPort = SandboxManager.getProxyPort();
-	const socksProxyPort = SandboxManager.getSocksProxyPort();
-	if (httpProxyPort) {
-		sandboxEnv.HTTP_PROXY = `http://localhost:${httpProxyPort}`;
-		sandboxEnv.HTTPS_PROXY = `http://localhost:${httpProxyPort}`;
-		sandboxEnv.http_proxy = `http://localhost:${httpProxyPort}`;
-		sandboxEnv.https_proxy = `http://localhost:${httpProxyPort}`;
-		logger.debug({ httpProxyPort, socksProxyPort }, "added proxy env vars to sandbox");
-	}
+	// Build environment for SDK
+	// In Docker mode, env vars are passed through directly
+	// In native mode, SDK sandbox handles env isolation
+	const sandboxEnv: Record<string, string> = {
+		// Basic system vars
+		HOME: process.env.HOME ?? "",
+		USER: process.env.USER ?? "",
+		PATH: process.env.PATH ?? "",
+		SHELL: process.env.SHELL ?? "/bin/sh",
+		TERM: process.env.TERM ?? "xterm-256color",
+		LANG: process.env.LANG ?? "en_US.UTF-8",
+	};
 
 	// Tier-based key exposure: WRITE_LOCAL+ gets configured keys
 	if (shouldExposeKeys(opts.tier)) {
@@ -360,24 +479,37 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		settings: JSON.stringify({ permissions }),
 	};
 
-	// SDK sandbox provides OS-level network enforcement for Bash (strict allowlist always).
-	// WebFetch/WebSearch network filtering is done in canUseTool below (respects permissive mode).
+	// Build allowed domains for network filtering
 	const allowedDomains = buildAllowedDomainNames(additionalDomains);
 
-	sdkOpts.sandbox = {
-		enabled: true,
-		// SECURITY: Prevent dangerouslyDisableSandbox from bypassing OS-level isolation
-		allowUnsandboxedCommands: false,
-		network: {
-			allowedDomains,
-		},
-	};
+	// Sandbox configuration based on environment:
+	// - Docker: SDK sandbox DISABLED (container provides isolation)
+	// - Native: SDK sandbox ENABLED (bubblewrap/Seatbelt)
+	if (sandboxEnabled) {
+		logger.debug("native mode: enabling SDK sandbox");
+		sdkOpts.sandbox = {
+			enabled: true,
+			allowUnsandboxedCommands: false,
+			network: {
+				allowedDomains,
+			},
+		};
+	} else {
+		logger.debug("docker mode: SDK sandbox disabled (container provides isolation)");
+		sdkOpts.sandbox = {
+			enabled: false,
+		};
+	}
 
-	// CRITICAL: Add PreToolUse hook for network security.
-	// This hook runs UNCONDITIONALLY before every tool use, even if SDK permissions pre-approve.
-	// This ensures private/metadata blocking cannot be bypassed by user/project settings.
+	// CRITICAL: PreToolUse hooks are the PRIMARY enforcement mechanism.
+	// They run UNCONDITIONALLY before every tool use, even in acceptEdits mode.
+	// Unlike canUseTool (which does NOT fire in acceptEdits mode), these are guaranteed.
+	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.hooks = {
-		PreToolUse: [createNetworkSecurityHook(isPermissiveMode, allowedDomains)],
+		PreToolUse: [
+			createNetworkSecurityHook(isPermissiveMode, allowedDomains),
+			createSensitivePathHook(opts.tier),
+		],
 	};
 
 	// Configure tools based on tier
@@ -396,11 +528,14 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		sdkOpts.betas = opts.betas;
 	}
 
-	// Add canUseTool for ALL tiers to protect sensitive paths
+	// FALLBACK: canUseTool does NOT fire in acceptEdits mode.
+	// PRIMARY enforcement is via PreToolUse hooks above.
+	// This is belt-and-suspenders for cases where hooks might not run.
+	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.canUseTool = async (toolName, input) => {
 		logger.debug(
 			{ toolName, input: JSON.stringify(input).substring(0, 200) },
-			"canUseTool invoked",
+			"canUseTool invoked (fallback)",
 		);
 
 		// Generic guard: block any input that references sensitive paths

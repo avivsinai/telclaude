@@ -41,7 +41,7 @@ export function registerIntegrationTestCommand(program: Command): void {
 		.option("--timeout <ms>", "Query timeout in ms", "120000")
 		.action(async (opts: IntegrationTestOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
-			const timeoutMs = parseInt(opts.timeout ?? "120000", 10);
+			const timeoutMs = Number.parseInt(opts.timeout ?? "120000", 10);
 
 			const runAll = opts.all || (!opts.image && !opts.echo && !opts.env && !opts.network);
 			const runImage = opts.image || runAll;
@@ -204,16 +204,16 @@ async function testEcho(
 		if (output.includes("INTEGRATION_TEST_OK")) {
 			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
 			return { name, passed: true, message: "OK", duration };
-		} else if (error) {
+		}
+		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
-		} else {
-			console.log(chalk.red(`  ✗ ${name}: Marker not found in output`));
-			if (verbose) {
-				console.log(chalk.gray(`    Output: ${output.substring(0, 300)}`));
-			}
-			return { name, passed: false, message: "Unexpected output" };
 		}
+		console.log(chalk.red(`  ✗ ${name}: Marker not found in output`));
+		if (verbose) {
+			console.log(chalk.gray(`    Output: ${output.substring(0, 300)}`));
+		}
+		return { name, passed: false, message: "Unexpected output" };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));
@@ -275,25 +275,25 @@ async function testEnvPassing(
 				console.log(chalk.gray(`    Checked: ${checkVar} is set in sandbox environment`));
 			}
 			return { name, passed: true, message: "OK", duration };
-		} else if (isEmpty) {
+		}
+		if (isEmpty) {
 			// This is expected if we're checking OPENAI_API_KEY and it wasn't injected
 			if (expectOpenAIKey) {
 				console.log(chalk.red(`  ✗ ${name}: OPENAI_API_KEY not passed to sandbox`));
 				return { name, passed: false, message: "OPENAI_API_KEY not in sandbox env" };
-			} else {
-				console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
-				return { name, passed: true, message: "OK (no key expected)", duration };
 			}
-		} else if (error) {
+			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
+			return { name, passed: true, message: "OK (no key expected)", duration };
+		}
+		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
-		} else {
-			console.log(chalk.red(`  ✗ ${name}: Unexpected output`));
-			if (verbose) {
-				console.log(chalk.gray(`    Output: ${output.substring(0, 300)}`));
-			}
-			return { name, passed: false, message: "Unexpected output" };
 		}
+		console.log(chalk.red(`  ✗ ${name}: Unexpected output`));
+		if (verbose) {
+			console.log(chalk.gray(`    Output: ${output.substring(0, 300)}`));
+		}
+		return { name, passed: false, message: "Unexpected output" };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));
@@ -322,13 +322,20 @@ async function testImageGeneration(
 
 		let imagePath = "";
 
-		// Use a simpler prompt that doesn't rely on telclaude CLI
-		// The agent should use curl or node to call OpenAI's API directly
+		// Use curl to call OpenAI API directly (CLI can't access ~/.telclaude in sandbox)
+		// Uses gpt-image-1.5 with b64_json output to match prod (image-generation.ts)
 		const { output, error } = await runSdkQuery(
-			`Generate a test image of a red circle on white background using OpenAI's GPT Image API.
-The OPENAI_API_KEY environment variable should be available.
-You can use curl to call the API: curl https://api.openai.com/v1/images/generations with the API key in the Authorization header.
-Save the generated image as a PNG file and tell me the absolute file path.`,
+			`Generate a simple test image using the OpenAI API. The OPENAI_API_KEY env var is available.
+
+Run this curl command to generate an image and save it:
+curl -s https://api.openai.com/v1/images/generations \\
+  -H "Authorization: Bearer $OPENAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model":"gpt-image-1.5","prompt":"red circle on white background","size":"1024x1024","output_format":"png"}' \\
+  | jq -r '.data[0].b64_json' | base64 -d > ./test-image.png
+
+Verify the file was created with: ls -la ./test-image.png
+Tell me the absolute path to the saved PNG file.`,
 			{
 				enableSkills: true,
 				timeoutMs,
@@ -369,10 +376,12 @@ Save the generated image as a PNG file and tell me the absolute file path.`,
 			}
 
 			return { name, passed: true, message: "OK", duration };
-		} else if (error) {
+		}
+		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
-		} else if (
+		}
+		if (
 			output.toLowerCase().includes("error") ||
 			output.toLowerCase().includes("failed") ||
 			output.toLowerCase().includes("timeout") ||
@@ -385,13 +394,12 @@ Save the generated image as a PNG file and tell me the absolute file path.`,
 			// Extract error message if present
 			const errMatch = output.match(/error[:\s]+([^\n]+)/i);
 			return { name, passed: false, message: errMatch?.[1] ?? "Generation failed" };
-		} else {
-			console.log(chalk.red(`  ✗ ${name}: No image path found`));
-			if (verbose) {
-				console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
-			}
-			return { name, passed: false, message: "No image path in output" };
 		}
+		console.log(chalk.red(`  ✗ ${name}: No image path found`));
+		if (verbose) {
+			console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
+		}
+		return { name, passed: false, message: "No image path in output" };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));
@@ -472,7 +480,8 @@ Report results clearly. Mark "FETCH_SUCCESS" if curl returns any JSON (even 401)
 		if (fetchSuccess && !fetchFail) {
 			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
 			return { name, passed: true, message: "Proxy working - HTTPS fetch succeeded", duration };
-		} else if (fetchFail) {
+		}
+		if (fetchFail) {
 			// This is the actual failure case we're investigating
 			const reason = output.includes("EAI_AGAIN")
 				? "DNS resolution failed (EAI_AGAIN)"
@@ -486,19 +495,20 @@ Report results clearly. Mark "FETCH_SUCCESS" if curl returns any JSON (even 401)
 				console.log(chalk.gray(`    Full output: ${output.substring(0, 800)}`));
 			}
 			return { name, passed: false, message: reason };
-		} else if (!hasProxy) {
+		}
+		if (!hasProxy) {
 			console.log(chalk.red(`  ✗ ${name}: No proxy environment vars`));
 			return { name, passed: false, message: "HTTP_PROXY not set in sandbox" };
-		} else if (error) {
+		}
+		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
-		} else {
-			console.log(chalk.yellow(`  ? ${name}: Unexpected output`));
-			if (verbose) {
-				console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
-			}
-			return { name, passed: false, message: "Unexpected output" };
 		}
+		console.log(chalk.yellow(`  ? ${name}: Unexpected output`));
+		if (verbose) {
+			console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
+		}
+		return { name, passed: false, message: "Unexpected output" };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));
