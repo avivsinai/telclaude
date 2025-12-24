@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
-import { type TelclaudeConfig, type TranscriptionConfig, loadConfig } from "../config/config.js";
+import { loadConfig, type TelclaudeConfig, type TranscriptionConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 

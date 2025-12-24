@@ -12,13 +12,13 @@ import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
 import {
-	type GitCredentials,
-	SECRET_KEYS,
 	deleteSecret,
+	type GitCredentials,
 	getSecret,
 	getStorageProviderName,
 	hasSecret,
 	isSecretsStorageAvailable,
+	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
 import {

@@ -3,9 +3,9 @@
  */
 
 export {
-	TOTPClient,
+	type CheckResult,
 	getTOTPClient,
 	resetTOTPClient,
 	type SetupResult,
-	type CheckResult,
+	TOTPClient,
 } from "./client.js";

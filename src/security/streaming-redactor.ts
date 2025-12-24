@@ -13,12 +13,12 @@
 
 import { getChildLogger } from "../logging.js";
 import {
-	SECRET_PATTERNS,
-	type SecretFilterConfig,
 	filterOutput,
 	filterOutputWithConfig,
 	redactSecrets,
 	redactSecretsWithConfig,
+	SECRET_PATTERNS,
+	type SecretFilterConfig,
 } from "./output-filter.js";
 
 const logger = getChildLogger({ module: "streaming-redactor" });

@@ -3,20 +3,12 @@
  */
 
 export {
-	executeQueryStream,
 	executePooledQuery,
+	executeQueryStream,
+	type PooledQueryOptions,
 	type StreamChunk,
 	type TelclaudeQueryOptions,
-	type PooledQueryOptions,
 } from "./client.js";
-
-export {
-	getSessionManager,
-	destroySessionManager,
-	executeWithSession,
-	type SessionInfo,
-} from "./session-manager.js";
-
 export {
 	isAssistantMessage,
 	isBashInput,
@@ -31,3 +23,9 @@ export {
 	isToolUseStartEvent,
 	isWriteInput,
 } from "./message-guards.js";
+export {
+	destroySessionManager,
+	executeWithSession,
+	getSessionManager,
+	type SessionInfo,
+} from "./session-manager.js";

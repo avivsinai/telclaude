@@ -5,7 +5,7 @@
  * Session IDs are captured from result messages and used for resume.
  */
 
-import { type SDKMessage, type Options as SDKOptions, query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type SDKMessage, type Options as SDKOptions } from "@anthropic-ai/claude-agent-sdk";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "session-manager" });

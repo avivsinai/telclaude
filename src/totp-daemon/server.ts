@@ -11,15 +11,15 @@
  */
 
 import fs from "node:fs";
-import { type Server, type Socket, createServer } from "node:net";
+import { createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
 import { getChildLogger } from "../logging.js";
 import * as keychain from "./keychain.js";
 import {
+	getDefaultSocketPath,
 	type TOTPRequest,
 	TOTPRequestSchema,
 	type TOTPResponse,
-	getDefaultSocketPath,
 } from "./protocol.js";
 
 const logger = getChildLogger({ module: "totp-server" });

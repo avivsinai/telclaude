@@ -15,70 +15,66 @@
  * - Streaming redaction
  */
 
-// Security pipeline abstraction
-export {
-	buildSecurityPipeline,
-	type SecurityPipeline,
-	type SecurityProfile,
-	type MessageContext,
-	type SecurityDecision,
-	type ExecutionResult,
-	type RedactionResult,
-	type RedactionEvent,
-	type SecretFilterConfig,
-	type PipelineConfig,
-	calculateEntropy,
-	detectHighEntropyBlobs,
-} from "./pipeline.js";
-
-// Streaming redactor for chunk boundary handling
-export {
-	StreamingRedactor,
-	createStreamingRedactor,
-	processChunks,
-	redactStream,
-	getLongestPatternLength,
-	getPatternNames,
-	type RedactionStats,
-} from "./streaming-redactor.js";
-
-// Output filter for exfiltration prevention
-export {
-	filterOutput,
-	filterInfrastructureSecrets,
-	ChunkBuffer,
-	SECRET_PATTERNS,
-	CORE_SECRET_PATTERNS,
-	redactSecrets,
-	type FilterResult,
-	type FilterMatch,
-	type SecretPattern,
-} from "./output-filter.js";
-
-// Re-export other security modules as they exist
-export * from "./types.js";
-export * from "./fast-path.js";
-export * from "./permissions.js";
-export * from "./rate-limit.js";
-export * from "./audit.js";
-export * from "./linking.js";
-export * from "./approvals.js";
-export * from "./totp-session.js";
-
 // Admin claim flow for single-user deployments
 export {
-	hasAdmin,
-	isAdminChat,
-	startAdminClaim,
-	consumeAdminClaim,
-	completeAdminClaim,
-	getPendingAdminClaim,
 	cleanupExpiredAdminClaims,
-	handleFirstMessageIfNoAdmin,
-	handleAdminClaimApproval,
+	completeAdminClaim,
+	consumeAdminClaim,
+	ensureAdminClaimTable,
 	formatAdminClaimPrompt,
 	formatAdminClaimSuccess,
 	formatGroupRejection,
-	ensureAdminClaimTable,
+	getPendingAdminClaim,
+	handleAdminClaimApproval,
+	handleFirstMessageIfNoAdmin,
+	hasAdmin,
+	isAdminChat,
 	type PendingAdminClaim,
+	startAdminClaim,
 } from "./admin-claim.js";
+export * from "./approvals.js";
+export * from "./audit.js";
+export * from "./fast-path.js";
+export * from "./linking.js";
+// Output filter for exfiltration prevention
+export {
+	ChunkBuffer,
+	CORE_SECRET_PATTERNS,
+	type FilterMatch,
+	type FilterResult,
+	filterInfrastructureSecrets,
+	filterOutput,
+	redactSecrets,
+	SECRET_PATTERNS,
+	type SecretPattern,
+} from "./output-filter.js";
+export * from "./permissions.js";
+// Security pipeline abstraction
+export {
+	buildSecurityPipeline,
+	calculateEntropy,
+	detectHighEntropyBlobs,
+	type ExecutionResult,
+	type MessageContext,
+	type PipelineConfig,
+	type RedactionEvent,
+	type RedactionResult,
+	type SecretFilterConfig,
+	type SecurityDecision,
+	type SecurityPipeline,
+	type SecurityProfile,
+} from "./pipeline.js";
+export * from "./rate-limit.js";
+// Streaming redactor for chunk boundary handling
+export {
+	createStreamingRedactor,
+	getLongestPatternLength,
+	getPatternNames,
+	processChunks,
+	type RedactionStats,
+	redactStream,
+	StreamingRedactor,
+} from "./streaming-redactor.js";
+export * from "./totp-session.js";
+// Re-export other security modules as they exist
+export * from "./types.js";

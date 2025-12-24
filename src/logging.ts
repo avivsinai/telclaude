@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import pino, { type Bindings, type LevelWithSilent, type Logger } from "pino";
-import { type TelclaudeConfig, loadConfig } from "./config/config.js";
+import { loadConfig, type TelclaudeConfig } from "./config/config.js";
 import { isVerbose } from "./globals.js";
 import { CONFIG_DIR } from "./utils.js";
 

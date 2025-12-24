@@ -9,12 +9,12 @@ import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
 import {
-	SECRET_KEYS,
 	deleteSecret,
 	getSecret,
 	getStorageProviderName,
 	hasSecret,
 	isSecretsStorageAvailable,
+	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
 import { clearOpenAICache } from "../services/openai-client.js";

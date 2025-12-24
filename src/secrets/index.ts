@@ -5,6 +5,7 @@
  * using OS keychain (macOS/Linux/Windows) or encrypted file storage.
  */
 
+export type { GitCredentials } from "./keychain.js";
 export {
 	deleteSecret,
 	getSecret,
@@ -14,5 +15,3 @@ export {
 	SECRET_KEYS,
 	storeSecret,
 } from "./keychain.js";
-
-export type { GitCredentials } from "./keychain.js";

@@ -25,11 +25,11 @@ import type { AuditLogger } from "./audit.js";
 import { checkInfrastructureSecrets } from "./fast-path.js";
 import { isAdmin } from "./linking.js";
 import {
-	type SecretFilterConfig,
 	calculateEntropy,
 	detectHighEntropyBlobs,
 	filterOutput,
 	redactSecrets,
+	type SecretFilterConfig,
 } from "./output-filter.js";
 import { getUserPermissionTier } from "./permissions.js";
 import type { RateLimiter } from "./rate-limit.js";

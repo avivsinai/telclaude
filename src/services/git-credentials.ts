@@ -11,7 +11,7 @@
 import { spawnSync } from "node:child_process";
 
 import { getChildLogger } from "../logging.js";
-import { type GitCredentials, SECRET_KEYS, getSecret, hasSecret } from "../secrets/index.js";
+import { type GitCredentials, getSecret, hasSecret, SECRET_KEYS } from "../secrets/index.js";
 
 const logger = getChildLogger({ module: "git-credentials" });
 

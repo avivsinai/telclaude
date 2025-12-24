@@ -34,8 +34,8 @@ import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js"
 import {
 	DEFAULT_ALLOWED_DOMAINS,
 	type DomainRule,
-	type HttpMethod,
 	domainMatchesPattern,
+	type HttpMethod,
 } from "./domains.js";
 
 const logger = getChildLogger({ module: "network-proxy" });
@@ -148,8 +148,8 @@ export function getDNSCacheStats(): { size: number; ttlMs: number } {
 	};
 }
 
-export { DEFAULT_ALLOWED_DOMAINS } from "./domains.js";
 export type { DomainRule, HttpMethod } from "./domains.js";
+export { DEFAULT_ALLOWED_DOMAINS } from "./domains.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types

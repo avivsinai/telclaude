@@ -5,14 +5,14 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
-	DEFAULT_NETWORK_CONFIG,
-	MIN_SANDBOX_RUNTIME_VERSION,
 	buildAllowedDomainNames,
 	buildAllowedDomains,
+	DEFAULT_NETWORK_CONFIG,
 	getNetworkIsolationSummary,
 	getSandboxMode,
 	getSandboxRuntimeVersion,
 	isSandboxRuntimeAtLeast,
+	MIN_SANDBOX_RUNTIME_VERSION,
 	runNetworkSelfTest,
 } from "../sandbox/index.js";
 import { CORE_SECRET_PATTERNS, filterOutput, redactSecrets } from "../security/index.js";
@@ -72,7 +72,7 @@ export function registerDoctorCommand(program: Command): void {
 						encoding: "utf8",
 						stdio: ["ignore", "pipe", "pipe"],
 					}).trim();
-				} catch (err) {
+				} catch {
 					console.error(
 						"Claude CLI not found. Install it first (e.g., brew install anthropic-ai/cli/claude).",
 					);

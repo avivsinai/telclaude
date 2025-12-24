@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { type VideoProcessingConfig, loadConfig } from "../config/config.js";
+import { loadConfig, type VideoProcessingConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { cleanupOldMedia, createMediaSubdir } from "../media/store.js";
 import { getTranscriptionAvailability, transcribeAudio } from "./transcription.js";

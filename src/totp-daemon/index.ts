@@ -5,13 +5,13 @@
  * as a standalone daemon process.
  */
 
-export { startServer, type ServerHandle, type ServerOptions } from "./server.js";
 export {
-	type TOTPRequest,
-	type TOTPResponse,
-	type SetupResponse,
-	type VerifyResponse,
 	type CheckResponse,
 	type DisableResponse,
 	getDefaultSocketPath,
+	type SetupResponse,
+	type TOTPRequest,
+	type TOTPResponse,
+	type VerifyResponse,
 } from "./protocol.js";
+export { type ServerHandle, type ServerOptions, startServer } from "./server.js";

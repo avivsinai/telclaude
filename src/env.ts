@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadConfig } from "./config/config.js";
-import { type RuntimeEnv, defaultRuntime } from "./runtime.js";
+import { defaultRuntime, type RuntimeEnv } from "./runtime.js";
 import { CONFIG_DIR } from "./utils.js";
 
 const TelclaudeEnvSchema = z.object({

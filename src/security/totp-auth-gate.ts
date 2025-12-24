@@ -19,8 +19,8 @@ import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import type { TelegramMediaType } from "../telegram/types.js";
 import { getIdentityLink } from "./linking.js";
-import { createTOTPSession, hasTOTPSession } from "./totp-session.js";
 import { hasTOTP, verifyTOTP } from "./totp.js";
+import { createTOTPSession, hasTOTPSession } from "./totp-session.js";
 
 const logger = getChildLogger({ module: "totp-auth-gate" });
 

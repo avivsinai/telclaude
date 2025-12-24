@@ -3,19 +3,19 @@ import type { Bot, Context } from "grammy";
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
-import { type SecretFilterConfig, filterOutputWithConfig } from "../security/output-filter.js";
+import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
-import { SECRET_BLOCKED_MESSAGE, convertAndSendMessage, sendMediaToChat } from "./outbound.js";
+import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
 	type BotInfo,
-	type TelegramInboundMessage,
-	type TelegramListenerCloseReason,
-	type TelegramMediaPayload,
 	buildPushName,
 	getFileIdFromMessage,
 	getMediaTypeFromMessage,
 	getMimeTypeFromMessage,
+	type TelegramInboundMessage,
+	type TelegramListenerCloseReason,
+	type TelegramMediaPayload,
 } from "./types.js";
 
 export type InboxMonitorOptions = {

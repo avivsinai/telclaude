@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
-import { type TTSConfig, loadConfig } from "../config/config.js";
+import { loadConfig, type TTSConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
