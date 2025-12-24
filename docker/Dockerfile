@@ -94,6 +94,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     # For Claude CLI tools
     ripgrep \
+    # For audio conversion (TTS voice messages need OGG/Opus)
+    ffmpeg \
     # For network firewall (TELCLAUDE_FIREWALL=1)
     iptables \
     # For privilege dropping (gosu is the standard Docker tool for this)

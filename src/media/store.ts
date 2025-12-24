@@ -19,7 +19,8 @@ const MEDIA_ROOT = path.join(WORKSPACE, ".telclaude-media");
 export type MediaCategory =
 	| "incoming" // Received from Telegram
 	| "generated" // AI-generated images
-	| "tts" // Text-to-speech audio
+	| "tts" // Text-to-speech audio (sent as audio file)
+	| "voice" // Voice messages (OGG/Opus for Telegram voice display)
 	| "video-frames"; // Extracted video frames
 
 // Maximum media file size (20MB - Telegram bot API limit)

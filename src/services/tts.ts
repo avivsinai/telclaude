@@ -3,6 +3,7 @@
  * Generates speech audio from text for voice message responses.
  */
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 
 import { type TTSConfig, loadConfig } from "../config/config.js";
@@ -12,6 +13,60 @@ import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "tts" });
+
+/**
+ * Convert audio buffer to OGG/Opus format using ffmpeg.
+ * This format is required for proper Telegram voice message display (waveform).
+ *
+ * @param inputBuffer - Input audio buffer (any format ffmpeg supports)
+ * @returns OGG/Opus encoded buffer
+ */
+async function convertToOggOpus(inputBuffer: Buffer): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const ffmpeg = spawn("ffmpeg", [
+			"-i",
+			"pipe:0", // Read from stdin
+			"-c:a",
+			"libopus", // Opus codec
+			"-b:a",
+			"32k", // 32kbps - good for voice, keeps file small
+			"-ar",
+			"48000", // 48kHz sample rate (Opus standard)
+			"-ac",
+			"1", // Mono (required for Telegram voice)
+			"-f",
+			"ogg", // OGG container
+			"pipe:1", // Write to stdout
+		]);
+
+		const chunks: Buffer[] = [];
+		let stderr = "";
+
+		ffmpeg.stdout.on("data", (chunk: Buffer) => {
+			chunks.push(chunk);
+		});
+
+		ffmpeg.stderr.on("data", (data: Buffer) => {
+			stderr += data.toString();
+		});
+
+		ffmpeg.on("close", (code) => {
+			if (code === 0) {
+				resolve(Buffer.concat(chunks));
+			} else {
+				reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+			}
+		});
+
+		ffmpeg.on("error", (err) => {
+			reject(new Error(`ffmpeg spawn error: ${err.message}`));
+		});
+
+		// Write input buffer to ffmpeg stdin
+		ffmpeg.stdin.write(inputBuffer);
+		ffmpeg.stdin.end();
+	});
+}
 
 /**
  * TTS generation options.
@@ -27,6 +82,12 @@ export type TTSOptions = {
 	model?: "tts-1" | "tts-1-hd";
 	/** User ID for rate limiting (chat_id or local_user_id) */
 	userId?: string;
+	/**
+	 * Output as Telegram voice message format (OGG/Opus).
+	 * When true, converts output to OGG container with Opus codec,
+	 * which displays as a voice message waveform in Telegram.
+	 */
+	voiceMessage?: boolean;
 };
 
 /**
@@ -109,7 +170,11 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 	const voice = options?.voice ?? ttsConfig.voice ?? "alloy";
 	const speed = options?.speed ?? ttsConfig.speed ?? 1.0;
 	const model = options?.model ?? "tts-1";
-	const responseFormat = options?.responseFormat ?? "mp3";
+	const voiceMessage = options?.voiceMessage ?? false;
+
+	// For voice messages, we'll get opus from OpenAI and convert to OGG container
+	// For regular audio, use the requested format
+	const responseFormat = voiceMessage ? "opus" : (options?.responseFormat ?? "mp3");
 
 	// Truncate very long text (OpenAI has a 4096 character limit)
 	const maxLength = 4096;
@@ -121,6 +186,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 			voice,
 			speed,
 			model,
+			voiceMessage,
 		},
 		"generating speech",
 	);
@@ -140,13 +206,25 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 
 		// Convert response to buffer
 		const arrayBuffer = await response.arrayBuffer();
-		const buffer = Buffer.from(arrayBuffer);
+		let buffer = Buffer.from(arrayBuffer);
+
+		// For voice messages, convert to OGG/Opus format for proper Telegram display
+		let finalFormat: string = responseFormat;
+		let finalMimeType = `audio/${responseFormat === "mp3" ? "mpeg" : responseFormat}`;
+
+		if (voiceMessage) {
+			logger.debug("converting to OGG/Opus for Telegram voice message");
+			buffer = Buffer.from(await convertToOggOpus(buffer));
+			finalFormat = "ogg";
+			finalMimeType = "audio/ogg";
+		}
 
 		// Save using centralized media store
+		// Use "voice" category for voice messages so media detection can identify them
 		const saved = await saveMediaBuffer(buffer, {
-			mimeType: `audio/${responseFormat === "mp3" ? "mpeg" : responseFormat}`,
-			category: "tts",
-			extension: `.${responseFormat}`,
+			mimeType: finalMimeType,
+			category: voiceMessage ? "voice" : "tts",
+			extension: `.${finalFormat}`,
 		});
 
 		const stat = await fs.promises.stat(saved.path);
@@ -162,6 +240,8 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 				voice,
 				speed,
 				model,
+				voiceMessage,
+				format: finalFormat,
 				durationMs,
 				sizeBytes: stat.size,
 				estimatedDurationSeconds,
@@ -177,7 +257,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 
 		return {
 			path: saved.path,
-			format: responseFormat,
+			format: finalFormat,
 			sizeBytes: stat.size,
 			voice,
 			speed,

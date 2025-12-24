@@ -23,6 +23,7 @@ import type { TelegramMediaType } from "./types.js";
  * Matches paths like:
  * - /workspace/.telclaude-media/generated/1234567890-abc123.png (absolute)
  * - /path/to/.telclaude-media/tts/1234567890-abc123.mp3 (absolute)
+ * - /path/to/.telclaude-media/voice/1234567890-abc123.ogg (voice messages)
  * - .telclaude-media/generated/file.png (relative, no prefix)
  * - some/path/.telclaude-media/tts/file.mp3 (relative with prefix)
  * - /Users/name/My Projects/.telclaude-media/generated/file.png (paths with spaces)
@@ -33,7 +34,7 @@ import type { TelegramMediaType } from "./types.js";
  * Note: For paths with spaces, they need to be quoted in the text
  * (e.g., "/path/with spaces/.telclaude-media/generated/file.png")
  */
-const GENERATED_MEDIA_PATTERN = /(\S*\.telclaude-media\/(?:generated|tts)\/\S+)/g;
+const GENERATED_MEDIA_PATTERN = /(\S*\.telclaude-media\/(?:generated|tts|voice)\/\S+)/g;
 
 /**
  * Image extensions we support sending.
@@ -44,6 +45,11 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
  * Audio extensions we support sending.
  */
 const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus", ".aac"]);
+
+/**
+ * Voice message extensions that should be sent via sendVoice.
+ */
+const VOICE_EXTENSIONS = new Set([".ogg", ".opus"]);
 
 export type DetectedMedia = {
 	path: string;
@@ -158,7 +164,20 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 }
 
 /**
- * Infer Telegram media type from file extension.
+ * Check if a path is in the voice messages directory.
+ */
+function isVoiceMessagePath(filePath: string): boolean {
+	// Check for .telclaude-media/voice/ in the path
+	return (
+		filePath.includes(".telclaude-media/voice/") || filePath.includes(".telclaude-media\\voice\\")
+	);
+}
+
+/**
+ * Infer Telegram media type from file path and extension.
+ *
+ * Files in the .telclaude-media/voice/ directory are sent as voice messages
+ * (using sendVoice API) which display with waveform in Telegram.
  *
  * @param filePath - Path to the media file
  * @returns The Telegram media type, or null if not a supported type
@@ -169,6 +188,13 @@ export function inferMediaType(filePath: string): TelegramMediaType | null {
 	if (IMAGE_EXTENSIONS.has(ext)) {
 		return "photo";
 	}
+
+	// Voice messages directory -> send as voice (waveform display)
+	if (isVoiceMessagePath(filePath) && VOICE_EXTENSIONS.has(ext)) {
+		return "voice";
+	}
+
+	// Regular audio files -> send as audio (music player display)
 	if (AUDIO_EXTENSIONS.has(ext)) {
 		return "audio";
 	}

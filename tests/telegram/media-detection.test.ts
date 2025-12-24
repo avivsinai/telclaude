@@ -9,23 +9,30 @@ describe("media-detection", () => {
 	let tempDir: string;
 	let audioPath: string;
 	let imagePath: string;
+	let voicePath: string;
 	// Real paths after symlink resolution (e.g., /var -> /private/var on macOS)
 	let realAudioPath: string;
 	let realImagePath: string;
+	let realVoicePath: string;
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-media-"));
 		const ttsDir = path.join(tempDir, ".telclaude-media", "tts");
 		const genDir = path.join(tempDir, ".telclaude-media", "generated");
+		const voiceDir = path.join(tempDir, ".telclaude-media", "voice");
 		fs.mkdirSync(ttsDir, { recursive: true });
 		fs.mkdirSync(genDir, { recursive: true });
+		fs.mkdirSync(voiceDir, { recursive: true });
 		audioPath = path.join(ttsDir, "sample.aac");
 		imagePath = path.join(genDir, "image.png");
+		voicePath = path.join(voiceDir, "sample.ogg");
 		fs.writeFileSync(audioPath, "fake audio data");
 		fs.writeFileSync(imagePath, "fake image data");
+		fs.writeFileSync(voicePath, "fake voice data");
 		// Get the real paths (resolves symlinks like /var -> /private/var on macOS)
 		realAudioPath = fs.realpathSync(audioPath);
 		realImagePath = fs.realpathSync(imagePath);
+		realVoicePath = fs.realpathSync(voicePath);
 	});
 
 	afterEach(() => {
@@ -39,6 +46,16 @@ describe("media-detection", () => {
 
 		it("infers PNG image files", () => {
 			expect(inferMediaType(imagePath)).toBe("photo");
+		});
+
+		it("infers voice messages for OGG files in voice directory", () => {
+			expect(inferMediaType(voicePath)).toBe("voice");
+		});
+
+		it("does not treat non-voice extensions in voice directory as voice", () => {
+			const wavPath = path.join(path.dirname(voicePath), "sample.wav");
+			fs.writeFileSync(wavPath, "fake wav data");
+			expect(inferMediaType(wavPath)).toBe("audio");
 		});
 
 		it("returns null for unsupported extensions", () => {
@@ -86,6 +103,12 @@ describe("media-detection", () => {
 			// Results use real paths (symlinks resolved)
 			expect(results).toContainEqual({ path: realAudioPath, type: "audio" });
 			expect(results).toContainEqual({ path: realImagePath, type: "photo" });
+		});
+
+		it("detects voice message paths", () => {
+			const text = `Voice message: ${voicePath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toEqual([{ path: realVoicePath, type: "voice" }]);
 		});
 
 		it("deduplicates repeated paths", () => {

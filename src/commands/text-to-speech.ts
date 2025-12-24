@@ -15,6 +15,7 @@ export type TextToSpeechOptions = {
 	speed?: string;
 	model?: "tts-1" | "tts-1-hd";
 	format?: "mp3" | "opus" | "aac" | "flac" | "wav";
+	voiceMessage?: boolean;
 	verbose?: boolean;
 };
 
@@ -28,6 +29,7 @@ export function registerTextToSpeechCommand(program: Command): void {
 		.option("-s, --speed <speed>", "Speed: 0.25 to 4.0", "1.0")
 		.option("-m, --model <model>", "Model: tts-1, tts-1-hd", "tts-1")
 		.option("-f, --format <format>", "Format: mp3, opus, aac, flac, wav", "mp3")
+		.option("--voice-message", "Output as Telegram voice message (OGG/Opus with waveform)")
 		.action(async (text: string, opts: TextToSpeechOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
 
@@ -48,11 +50,15 @@ export function registerTextToSpeechCommand(program: Command): void {
 				const speed = validateSpeed(opts.speed);
 				const model = validateModel(opts.model);
 				const format = validateFormat(opts.format);
+				const voiceMessage = opts.voiceMessage ?? false;
 
 				if (verbose) {
 					const cost = getEstimatedTTSCost(text.length, model);
 					console.log(`Generating speech with ${voice} voice at ${speed}x speed...`);
 					console.log(`Estimated cost: $${cost.toFixed(4)}`);
+					if (voiceMessage) {
+						console.log("Output: Telegram voice message (OGG/Opus)");
+					}
 				}
 
 				const result = await textToSpeech(text, {
@@ -60,6 +66,7 @@ export function registerTextToSpeechCommand(program: Command): void {
 					speed,
 					model,
 					responseFormat: format,
+					voiceMessage,
 				});
 
 				// Output in a format that's easy to parse
