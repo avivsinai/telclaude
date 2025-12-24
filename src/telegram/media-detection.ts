@@ -174,6 +174,39 @@ function isVoiceMessagePath(filePath: string): boolean {
 }
 
 /**
+ * Check if a response is essentially just a media path with minimal extra text.
+ * Used to determine if we should send only media (no text message).
+ *
+ * Returns true if the response is primarily just the media path,
+ * possibly with some whitespace or minimal surrounding text.
+ *
+ * @param response - The full response text
+ * @param mediaPath - The detected media path
+ * @returns True if the response is "media-only" (path with minimal text)
+ */
+export function isMediaOnlyResponse(response: string, mediaPath: string): boolean {
+	// Remove the media path and see what's left
+	const withoutPath = response.replace(mediaPath, "").trim();
+
+	// If nothing left, or only whitespace/newlines, it's media-only
+	if (!withoutPath) {
+		return true;
+	}
+
+	// If what's left is very short (< 20 chars) and doesn't contain
+	// substantive content, consider it media-only.
+	// This catches cases like "Here's the audio:" being accidentally left in.
+	// But we want to preserve meaningful context if Claude added any.
+	if (withoutPath.length < 20) {
+		// Check if it's just punctuation, whitespace, or very short phrases
+		const stripped = withoutPath.replace(/[.,!?:;\s\n\r]+/g, "");
+		return stripped.length < 10;
+	}
+
+	return false;
+}
+
+/**
  * Infer Telegram media type from file path and extension.
  *
  * Files in the .telclaude-media/voice/ directory are sent as voice messages

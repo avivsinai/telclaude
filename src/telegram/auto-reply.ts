@@ -51,7 +51,7 @@ import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
-import { extractGeneratedMediaPaths } from "./media-detection.js";
+import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
@@ -469,24 +469,45 @@ async function executeWithSession(
 				}
 
 				if (finalResponse) {
-					// Add to recentlySent BEFORE sending to prevent echo race condition
-					const recentKey = makeRecentSentKey(msg.chatId, finalResponse);
-					recentlySent.add(recentKey);
-					setTimeout(() => recentlySent.delete(recentKey), 30000);
-
-					await msg.reply(finalResponse);
-
-					// Auto-detect generated media in Claude's response and send to Telegram.
+					// Auto-detect generated media in Claude's response.
 					// This enables skills like image-generator and text-to-speech to work:
 					// - Skill teaches Claude to generate media and include path in response
 					// - Relay detects the path and sends the file to the user
 					// See: .claude/skills/image-generator/SKILL.md
 					const generatedMedia = extractGeneratedMediaPaths(finalResponse, process.cwd());
+
+					// Check if this is a "voice-only" response (just a file path, no real content)
+					// This enables natural voice replies - when responding with voice,
+					// Claude outputs just the path and we only send the voice message,
+					// no text. Like a human would.
+					const isVoiceOnlyResponse =
+						generatedMedia.length === 1 &&
+						generatedMedia[0].type === "voice" &&
+						isMediaOnlyResponse(finalResponse, generatedMedia[0].path);
+
+					// Add to recentlySent BEFORE sending to prevent echo race condition
+					const recentKey = makeRecentSentKey(msg.chatId, finalResponse);
+					recentlySent.add(recentKey);
+					setTimeout(() => recentlySent.delete(recentKey), 30000);
+
+					// Track if we need to fall back to text for voice-only responses
+					let voiceOnlySendFailed = false;
+
+					// Send text only if this is NOT a voice-only response
+					if (!isVoiceOnlyResponse) {
+						await msg.reply(finalResponse);
+					}
+
 					for (const media of generatedMedia) {
 						try {
 							await msg.sendMedia({ type: media.type, source: media.path });
 							logger.info(
-								{ path: media.path, type: media.type, chatId: msg.chatId },
+								{
+									path: media.path,
+									type: media.type,
+									chatId: msg.chatId,
+									voiceOnly: isVoiceOnlyResponse,
+								},
 								"auto-sent generated media to Telegram",
 							);
 						} catch (mediaErr) {
@@ -494,7 +515,18 @@ async function executeWithSession(
 								{ path: media.path, type: media.type, error: String(mediaErr) },
 								"failed to auto-send generated media",
 							);
+							// Track failure for voice-only fallback
+							if (isVoiceOnlyResponse) {
+								voiceOnlySendFailed = true;
+							}
 						}
+					}
+
+					// Fallback: if voice-only response failed to send media, send text instead
+					// so user doesn't receive silent failure
+					if (voiceOnlySendFailed) {
+						logger.info({ chatId: msg.chatId }, "voice-only send failed, falling back to text");
+						await msg.reply(finalResponse);
 					}
 
 					// Update session in SQLite

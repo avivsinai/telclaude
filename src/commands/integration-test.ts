@@ -1,9 +1,8 @@
 /**
  * Integration test command for testing the full SDK path.
  *
- * Unlike sandbox-test (which tests our sandbox wrapper), this command
- * runs queries through the actual Claude SDK, testing:
- * - SDK sandbox initialization
+ * This command runs queries through the actual Claude SDK, testing:
+ * - SDK sandbox initialization (native mode)
  * - Network proxy setup by SDK
  * - Skill execution (image-generator, etc.)
  *

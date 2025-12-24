@@ -1,13 +1,13 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2025-12-23
+Updated: 2025-12-24
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
 
 Telclaude uses a simplified dual-mode architecture for isolation:
 
-- **Docker mode**: SDK sandbox disabled. Docker container provides filesystem and network isolation.
+- **Docker mode**: SDK sandbox disabled. Docker container + firewall provide filesystem and network isolation.
 - **Native mode**: SDK sandbox enabled. bubblewrap (Linux) or Seatbelt (macOS) provides isolation.
 
 Mode is auto-detected at startup via `/.dockerenv` or `TELCLAUDE_DOCKER=1` env var.
@@ -49,7 +49,7 @@ TOTP daemon (separate process, keychain-backed)
 ## Five Security Pillars
 1) **Filesystem isolation**: Docker container or SDK sandbox; sensitive paths blocked via canUseTool.
 2) **Environment isolation**: minimal env vars passed to SDK.
-3) **Network isolation**: PreToolUse hook blocks RFC1918/metadata for WebFetch; SDK sandbox allowedDomains for Bash in native mode.
+3) **Network isolation**: PreToolUse hook blocks RFC1918/metadata for WebFetch; SDK sandbox allowedDomains for Bash in native mode; Docker mode relies on the container firewall.
 4) **Secret output filtering**: CORE patterns + entropy detection; infrastructure secrets are non-overridable blockers.
 5) **Auth/rate limits/audit**: identity links, TOTP auth gate, SQLite-backed.
 
@@ -63,7 +63,7 @@ TOTP daemon (separate process, keychain-backed)
 
 ## Network Enforcement
 
-- **Bash**: SDK sandbox `allowedDomains` in native mode; Docker network in container mode.
+- **Bash**: SDK sandbox `allowedDomains` in native mode; Docker firewall in container mode.
 - **WebFetch**: PreToolUse hook (blocks RFC1918/metadata) + canUseTool domain allowlist.
 - **WebSearch**: NOT filtered (server-side by Anthropic).
 - `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only.
@@ -115,14 +115,14 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 ## Deployment
 
 ### Docker (Production)
-- SDK sandbox disabled; container provides isolation.
+- SDK sandbox disabled; container + firewall provide isolation.
 - TOTP daemon uses encrypted file backend.
 - Read-only root FS, dropped caps.
 
 ### Native (Development)
 - SDK sandbox enabled (bubblewrap/Seatbelt).
 - TOTP daemon uses OS keychain.
-- macOS 14+ or Linux with bubblewrap, socat, ripgrep on PATH.
+- Native mode requires macOS 14+ or Linux with bubblewrap, socat, ripgrep on PATH.
 
 ## File Map
 - `src/security/*` — pipeline, permissions, observer, approvals, rate limits.

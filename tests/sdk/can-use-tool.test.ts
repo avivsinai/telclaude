@@ -1,15 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoist shared mocks
-const { containsBlockedCommand, isSensitivePath, isSandboxInitialized, wrapCommand, isBlockedHost } = vi.hoisted(
-	() => ({
-		containsBlockedCommand: vi.fn<string | null, [string]>(() => null),
-		isSensitivePath: vi.fn<boolean, [string]>(() => false),
-		isSandboxInitialized: vi.fn<boolean, []>(() => false),
-		wrapCommand: vi.fn<Promise<string>, [string]>(),
-		isBlockedHost: vi.fn<Promise<boolean>, [string]>(() => Promise.resolve(false)),
-	}),
-);
+const { containsBlockedCommand, isSensitivePath, isBlockedHost } = vi.hoisted(() => ({
+	containsBlockedCommand: vi.fn<string | null, [string]>(() => null),
+	isSensitivePath: vi.fn<boolean, [string]>(() => false),
+	isBlockedHost: vi.fn<Promise<boolean>, [string]>(() => Promise.resolve(false)),
+}));
 
 vi.mock("../../src/security/permissions.js", async () => {
 	const actual = await vi.importActual<typeof import("../../src/security/permissions.js")>(
@@ -24,19 +20,6 @@ vi.mock("../../src/security/permissions.js", async () => {
 		},
 		containsBlockedCommand,
 		isSensitivePath,
-	};
-});
-
-vi.mock("../../src/sandbox/index.js", async () => {
-	const actual = await vi.importActual<typeof import("../../src/sandbox/index.js")>(
-		"../../src/sandbox/index.js",
-	);
-	return {
-		...actual,
-		isSandboxInitialized,
-		wrapCommand,
-		getSandboxConfigForTier: vi.fn(() => ({})),
-		updateSandboxConfig: vi.fn(),
 	};
 });
 
@@ -77,8 +60,6 @@ beforeEach(() => {
 afterEach(() => {
 	containsBlockedCommand.mockReset();
 	isSensitivePath.mockReset();
-	isSandboxInitialized.mockReset();
-	wrapCommand.mockReset();
 	isBlockedHost.mockReset();
 	// Restore original env
 	if (originalNetworkMode === undefined) {
@@ -104,15 +85,14 @@ describe("buildSdkOptions.canUseTool", () => {
 		expect(res?.message).toContain("blocked operation");
 	});
 
-	it("allows Bash without wrapping (SDK sandbox handles isolation)", async () => {
-		// SDK sandbox handles OS-level sandboxing directly - no wrapCommand() call needed
-		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
-		const res = await sdkOpts.canUseTool?.("Bash", { command: "echo ok" });
-		expect(res?.behavior).toBe("allow");
-		// Command is passed through unchanged - SDK sandbox handles isolation
-		expect((res as any).updatedInput.command).toBe("echo ok");
-		expect(wrapCommand).not.toHaveBeenCalled();
-	});
+it("allows Bash without altering the command (SDK sandbox handles isolation)", async () => {
+	// SDK sandbox handles OS-level isolation for Bash; no command wrapping required.
+	const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
+	const res = await sdkOpts.canUseTool?.("Bash", { command: "echo ok" });
+	expect(res?.behavior).toBe("allow");
+	// Command is passed through unchanged - SDK sandbox handles isolation
+	expect((res as any).updatedInput.command).toBe("echo ok");
+});
 
 	it("only scans path-bearing fields, not arbitrary nested paths", async () => {
 		// Changed behavior: we now only scan known path-bearing fields (file_path, path, pattern, command)

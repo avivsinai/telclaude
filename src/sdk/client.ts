@@ -715,8 +715,8 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 				}
 			}
 
-			// SDK sandbox handles OS-level sandboxing (filesystem + network isolation)
-			// No need to call wrapCommand() - that would cause double-sandboxing
+			// SDK sandbox handles OS-level isolation for Bash when enabled.
+			// No additional wrapping is needed here.
 		}
 
 		// Belt-and-suspenders: Application-layer network check for WebFetch/WebSearch

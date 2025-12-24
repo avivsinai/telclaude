@@ -18,9 +18,11 @@ Use this skill when users:
 
 ## Protocol Alignment
 
-**Important**: When a user sends you a voice message, you should respond with a voice message too. This creates a natural conversational flow. Use the `--voice-message` flag for proper Telegram voice message display.
+**Important**: When a user sends you a voice message, respond with a voice message too. This creates a natural conversational flow. Use the `--voice-message` flag for proper Telegram voice message display.
 
-The only exception is if the user explicitly asks for a text response.
+**Critical UX rule**: When replying with voice, DO NOT add extra text commentary. Just output the file path alone - the relay will send only the voice message. A human wouldn't write AND talk; neither should you.
+
+The only exception is if the user explicitly asks for a text response or requests details about the generated file.
 
 ## How to Generate Speech
 
@@ -89,28 +91,32 @@ After generation, the command outputs:
 - Voice used
 - Estimated duration
 
-**Important**: Include the full file path in your response. The telclaude relay automatically detects paths to generated audio and sends the file to the user via Telegram.
+**Important**: The telclaude relay automatically detects paths to generated audio and sends the file to the user via Telegram.
 
-**Example response for voice message:**
+### Voice message replies (responding to incoming voice)
+
+When replying with voice to a voice message, output ONLY the file path - no text:
+
 ```
-I've generated a voice reply:
 /workspace/.telclaude-media/voice/1234567890-abc123.ogg
-
-[The relay will automatically send this as a voice message]
 ```
 
-**Example response for audio file:**
+That's it. No "I've generated..." or "Here's your audio...". The relay sends just the voice message, like a human would.
+
+### Audio files or text+audio responses
+
+If the user requested an audio FILE (not a voice reply), or you need to include text context:
+
 ```
-I've generated the audio:
+Here's the summary as audio:
 /workspace/.telclaude-media/tts/1234567890-abc123.mp3
-
-[The relay will automatically send the audio to you]
 ```
 
 **Key points:**
 - Voice messages go to `.telclaude-media/voice/` and display with waveform
 - Audio files go to `.telclaude-media/tts/` and display as music files
-- Always include the full path from the command output in your response
+- For voice replies: path only, no text
+- For audio files: text context is OK
 - The relay automatically detects and sends the media
 
 ## Best Practices

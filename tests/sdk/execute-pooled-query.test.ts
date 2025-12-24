@@ -6,18 +6,6 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 	query: (...args: unknown[]) => queryMock(...args),
 }));
 
-vi.mock("../../src/sandbox/index.js", async () => {
-	const actual = await vi.importActual<typeof import("../../src/sandbox/index.js")>(
-		"../../src/sandbox/index.js",
-	);
-	return {
-		...actual,
-		isSandboxInitialized: vi.fn(() => false),
-		getSandboxConfigForTier: vi.fn(() => ({})),
-		updateSandboxConfig: vi.fn(),
-	};
-});
-
 vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => ({
 		info: vi.fn(),

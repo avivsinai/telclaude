@@ -210,19 +210,11 @@ This bypass is logged to the audit log.
 
 ## Troubleshooting
 
-### "Sandbox unavailable"
+### "Sandbox unavailable" (native mode only)
 
-The container includes `bubblewrap` for sandboxing. If it fails:
-
-```powershell
-# Check if bubblewrap works
-docker compose exec telclaude bwrap --version
-
-# May need additional capabilities (already in docker-compose.yml)
-cap_add:
-  - SYS_ADMIN
-  - NET_ADMIN
-```
+Docker mode disables the SDK sandbox, so this error should not appear inside the container.
+If you see it, you are likely running native mode outside Docker. On Linux, install
+`bubblewrap` and `socat` and retry.
 
 ### "Permission denied" on workspace
 
