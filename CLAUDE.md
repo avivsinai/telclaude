@@ -92,3 +92,9 @@ API keys (OpenAI, GitHub) are exposed for WRITE_LOCAL and FULL_ACCESS tiers. REA
 - **Node version**: Docker images use `node:22-bookworm-slim`.
 - **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
+- **Weak local servers**: Build locally and transfer images instead of building on device:
+  ```bash
+  cd docker && docker compose build
+  docker save telclaude:latest telclaude-totp:latest | ssh <server> "docker load"
+  ssh <server> "cd telclaude/docker && docker compose up -d"
+  ```
