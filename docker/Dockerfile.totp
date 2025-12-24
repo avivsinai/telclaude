@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+# Install pnpm via npm (corepack not available in all Node versions)
+RUN npm install -g pnpm@9.15.0
 
 WORKDIR /build
 

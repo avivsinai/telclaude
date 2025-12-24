@@ -14,40 +14,100 @@ set -e
 # Whitelisted Domains
 # ─────────────────────────────────────────────────────────────────────────────────
 
+# IMPORTANT: Keep in sync with src/sandbox/domains.ts (DEFAULT_ALLOWED_DOMAINS)
+# Note: Wildcard domains (*.example.com) in domains.ts can't be resolved here,
+# so we expand them to known subdomains below.
 ALLOWED_DOMAINS=(
-    # Anthropic API
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Anthropic API + Claude Code
+    # (domains.ts wildcards: *.claude.ai, *.code.anthropic.com)
+    # ═══════════════════════════════════════════════════════════════════════════
     "api.anthropic.com"
-    "console.anthropic.com"
-
-    # Claude Code / Agent SDK
-    "code.claude.com"
     "claude.ai"
+    "code.anthropic.com"
+    # Expanded from *.claude.ai
+    "api.claude.ai"
+    "platform.claude.ai"
+    # Expanded from *.code.anthropic.com
+    "api.code.anthropic.com"
 
+    # ═══════════════════════════════════════════════════════════════════════════
+    # OpenAI API (for image generation, TTS)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "api.openai.com"
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # Telegram API
+    # ═══════════════════════════════════════════════════════════════════════════
     "api.telegram.org"
     "telegram.org"
 
-    # Package registries
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Package registries (read-only)
+    # ═══════════════════════════════════════════════════════════════════════════
     "registry.npmjs.org"
     "registry.yarnpkg.com"
     "pypi.org"
     "files.pythonhosted.org"
+    "crates.io"
+    "static.crates.io"
+    "index.crates.io"
+    "rubygems.org"
+    "repo.maven.apache.org"
+    "repo1.maven.org"
+    "api.nuget.org"
+    "proxy.golang.org"
+    "sum.golang.org"
+    "repo.packagist.org"
 
-    # GitHub (for repos, releases, raw content)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Code hosting (read-only)
+    # ═══════════════════════════════════════════════════════════════════════════
     "github.com"
     "api.github.com"
     "raw.githubusercontent.com"
     "objects.githubusercontent.com"
     "codeload.github.com"
+    "gist.githubusercontent.com"
+    "gitlab.com"
+    "bitbucket.org"
 
-    # Common CDNs
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Documentation sites
+    # (domains.ts wildcard: *.stackexchange.com)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "docs.python.org"
+    "docs.rs"
+    "developer.mozilla.org"
+    "stackoverflow.com"
+    # Expanded from *.stackexchange.com (common sites)
+    "superuser.com"
+    "serverfault.com"
+    "askubuntu.com"
+    "unix.stackexchange.com"
+    "security.stackexchange.com"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CDNs
+    # ═══════════════════════════════════════════════════════════════════════════
     "cdn.jsdelivr.net"
     "unpkg.com"
 
-    # Docker Hub (if needed)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Docker Hub (for container pulls)
+    # ═══════════════════════════════════════════════════════════════════════════
     "hub.docker.com"
     "registry-1.docker.io"
     "auth.docker.io"
+)
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Blocked metadata endpoints (cloud instance metadata - SSRF targets)
+# ─────────────────────────────────────────────────────────────────────────────────
+BLOCKED_METADATA_IPS=(
+    "169.254.169.254"  # AWS/GCP/Azure/OCI/DO metadata
+    "169.254.170.2"    # AWS ECS container metadata
+    "100.100.100.200"  # Alibaba Cloud metadata
 )
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -57,15 +117,17 @@ ALLOWED_DOMAINS=(
 setup_firewall() {
     # Check if iptables is available
     if ! command -v iptables &> /dev/null; then
-        echo "[firewall] iptables not available, skipping firewall setup"
-        return 0
+        echo "[firewall] ERROR: iptables not available"
+        echo "[firewall] firewall setup FAILED - Bash will have unrestricted network access"
+        return 1
     fi
 
     # Check if we have permissions (need root or CAP_NET_ADMIN)
     if ! iptables -L -n &> /dev/null 2>&1; then
-        echo "[firewall] insufficient permissions for iptables, skipping firewall setup"
+        echo "[firewall] ERROR: insufficient permissions for iptables"
         echo "[firewall] to enable firewall, run container with --cap-add=NET_ADMIN"
-        return 0
+        echo "[firewall] firewall setup FAILED - Bash will have unrestricted network access"
+        return 1
     fi
 
     echo "[firewall] setting up network firewall..."
@@ -73,7 +135,29 @@ setup_firewall() {
     # Flush existing OUTPUT rules
     iptables -F OUTPUT 2>/dev/null || true
 
-    # Allow loopback
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK FIRST: Metadata endpoints (SSRF protection - critical!)
+    # These must be blocked BEFORE any allow rules
+    # ═══════════════════════════════════════════════════════════════════════════
+    for ip in "${BLOCKED_METADATA_IPS[@]}"; do
+        iptables -A OUTPUT -d "$ip" -j DROP
+        echo "[firewall] blocked metadata: $ip"
+    done
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK: RFC1918 private networks (prevent internal network access)
+    # ═══════════════════════════════════════════════════════════════════════════
+    iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
+    iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
+    iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
+    iptables -A OUTPUT -d 169.254.0.0/16 -j DROP  # Link-local
+    echo "[firewall] blocked RFC1918 private networks"
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ALLOW: Essential services
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Allow loopback (needed for internal communication)
     iptables -A OUTPUT -o lo -j ACCEPT
 
     # Allow established connections
@@ -86,10 +170,13 @@ setup_firewall() {
     # Allow SSH (for git operations)
     iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
 
-    # Resolve and allow whitelisted domains
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ALLOW: Whitelisted domains
+    # ═══════════════════════════════════════════════════════════════════════════
     for domain in "${ALLOWED_DOMAINS[@]}"; do
-        # Resolve domain to IP addresses
-        ips=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+        # Resolve domain to IPv4 addresses only (iptables doesn't handle IPv6)
+        # Filter: grep for lines with dots (IPv4) and exclude colons (IPv6)
+        ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
 
         if [ -n "$ips" ]; then
             for ip in $ips; do
@@ -101,15 +188,80 @@ setup_firewall() {
         fi
     done
 
-    # Allow HTTPS to any IP (fallback for CDNs with many IPs)
-    # Comment out these lines for stricter isolation
-    # iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
-    # iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
-
-    # Default deny for OUTPUT
+    # ═══════════════════════════════════════════════════════════════════════════
+    # DEFAULT DENY: Block everything else
+    # ═══════════════════════════════════════════════════════════════════════════
     iptables -A OUTPUT -j DROP
 
     echo "[firewall] firewall configured with default-deny policy"
+    echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
+    echo "[firewall] allowed: ${#ALLOWED_DOMAINS[@]} domains + DNS + SSH"
+
+    # Write sentinel file to indicate firewall is actually applied
+    # relay.ts checks for this file to verify firewall is working
+    local sentinel_dir="/run/telclaude"
+    mkdir -p "$sentinel_dir" 2>/dev/null || true
+    echo "$(date -Iseconds)" > "$sentinel_dir/firewall-active"
+    echo "[firewall] sentinel written to $sentinel_dir/firewall-active"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────────
+# Refresh firewall rules (updates IP addresses for allowed domains)
+# ─────────────────────────────────────────────────────────────────────────────────
+
+refresh_firewall() {
+    if ! command -v iptables &> /dev/null; then
+        echo "[firewall-refresh] ERROR: iptables not available"
+        return 1
+    fi
+
+    if ! iptables -L -n &> /dev/null 2>&1; then
+        echo "[firewall-refresh] ERROR: insufficient permissions for iptables"
+        return 1
+    fi
+
+    echo "[firewall-refresh] refreshing allowed domain IPs..."
+
+    local updated=0
+    local failed=0
+
+    for domain in "${ALLOWED_DOMAINS[@]}"; do
+        # Resolve domain to current IP addresses
+        local new_ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+
+        if [ -z "$new_ips" ]; then
+            echo "[firewall-refresh] warning: could not resolve $domain"
+            ((failed++)) || true
+            continue
+        fi
+
+        # Add new IPs that aren't already allowed
+        for ip in $new_ips; do
+            if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
+                # Rule doesn't exist, add it (before the final DROP rule)
+                # Insert at position -2 to be before the DROP rule
+                iptables -I OUTPUT -d "$ip" -j ACCEPT 2>/dev/null || true
+                echo "[firewall-refresh] added: $domain -> $ip"
+                ((updated++)) || true
+            fi
+        done
+    done
+
+    if [ $updated -gt 0 ]; then
+        echo "[firewall-refresh] updated $updated rules"
+    else
+        echo "[firewall-refresh] no updates needed"
+    fi
+
+    if [ $failed -gt 0 ]; then
+        echo "[firewall-refresh] warning: $failed domains failed to resolve"
+    fi
+
+    # Update sentinel timestamp
+    local sentinel_dir="/run/telclaude"
+    if [ -d "$sentinel_dir" ]; then
+        echo "$(date -Iseconds) (refreshed)" > "$sentinel_dir/firewall-active"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -117,9 +269,21 @@ setup_firewall() {
 # ─────────────────────────────────────────────────────────────────────────────────
 
 main() {
+    # Check for --refresh-only mode (used by firewall-refresh.sh daemon)
+    if [ "$1" = "--refresh-only" ]; then
+        if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
+            refresh_firewall
+        fi
+        exit 0
+    fi
+
     # Only setup firewall if TELCLAUDE_FIREWALL=1
     if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
-        setup_firewall
+        if ! setup_firewall; then
+            echo "[firewall] CRITICAL: firewall setup failed but TELCLAUDE_FIREWALL=1"
+            echo "[firewall] relay will refuse to start without verified firewall"
+            exit 1
+        fi
     else
         echo "[firewall] firewall disabled (set TELCLAUDE_FIREWALL=1 to enable)"
     fi

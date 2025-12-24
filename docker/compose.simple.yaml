@@ -15,9 +15,16 @@ services:
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # For secure API key storage (telclaude setup-openai, setup-git)
+      # Generate with: openssl rand -base64 32
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-}
+      # API keys (tier-based: auto-exposed for WRITE_LOCAL+)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # SECURITY: Firewall REQUIRED - set TELCLAUDE_FIREWALL=1 for network isolation
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
       - TELCLAUDE_RUN_AS_ROOT=1
       - NODE_ENV=production

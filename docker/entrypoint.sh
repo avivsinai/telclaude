@@ -36,15 +36,67 @@ if [ "$(id -u)" = "0" ]; then
     # The script checks TELCLAUDE_FIREWALL internally
     /usr/local/bin/init-firewall.sh
 
+    # Start firewall refresh daemon in background (if firewall is enabled)
+    # This periodically updates iptables rules when domain IPs change
+    if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
+        /usr/local/bin/firewall-refresh.sh &
+        echo "[entrypoint] Started firewall refresh daemon (interval: ${FIREWALL_REFRESH_INTERVAL:-3600}s)"
+    fi
+
     # Create /tmp/claude for sandbox-runtime CWD tracking
     # srt hardcodes this path internally regardless of TMPDIR
     mkdir -p /tmp/claude
     chmod 1777 /tmp/claude
 
+    # Install bundled skills to ~/.claude/skills (done at runtime so volumes don't obscure them)
+    if [ -d "/app/.claude/skills" ]; then
+        echo "[entrypoint] Installing bundled skills"
+        mkdir -p /home/node/.claude/skills
+        cp -a /app/.claude/skills/. /home/node/.claude/skills/
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude
+    fi
+
+    # Install bundled CLAUDE.md (agent playbook) if present
+    if [ -f "/app/.claude/CLAUDE.md" ]; then
+        echo "[entrypoint] Installing bundled CLAUDE.md"
+        mkdir -p /home/node/.claude
+        cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
+    fi
+
+    # Skills are installed at user-level (~/.claude/skills/) above.
+    # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
+    # Create symlink if /workspace/.claude/skills/ doesn't exist (preserves user's own skills if present).
+    if [ ! -e "/workspace/.claude/skills" ]; then
+        echo "[entrypoint] Symlinking skills to workspace"
+        mkdir -p /workspace/.claude
+        ln -s /home/node/.claude/skills /workspace/.claude/skills
+        chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills
+    fi
+
+    # Configure git credential helper (uses telclaude's secure storage)
+    # This allows git operations without storing plaintext credentials
+    echo "[entrypoint] Configuring git credential helper"
+    git config --global credential.helper "/app/bin/telclaude.js git-credential"
+    git config --global credential.useHttpPath true
+
+    # Apply git identity if credentials are stored
+    if /app/bin/telclaude.js git-identity --check 2>/dev/null; then
+        echo "[entrypoint] Applying git identity from secure storage"
+        /app/bin/telclaude.js git-identity 2>/dev/null || true
+    else
+        # Check for environment variable fallback
+        if [ -n "$GIT_USERNAME" ] && [ -n "$GIT_EMAIL" ]; then
+            echo "[entrypoint] Applying git identity from environment"
+            git config --global user.name "$GIT_USERNAME"
+            git config --global user.email "$GIT_EMAIL"
+        fi
+    fi
+
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
-    for dir in /data /home/node/.claude /home/node/.telclaude; do
+    # NOTE: /home/node must be writable for Claude CLI to create .claude.json
+    for dir in /data /home/node /home/node/.claude /home/node/.telclaude; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
@@ -56,7 +108,8 @@ if [ "$(id -u)" = "0" ]; then
 
     # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)
     if [ "${TELCLAUDE_RUN_AS_ROOT:-0}" = "1" ]; then
-        echo "[entrypoint] Running as root (TELCLAUDE_RUN_AS_ROOT=1, needed for bubblewrap in Docker)"
+        echo "[entrypoint] Running as root (TELCLAUDE_RUN_AS_ROOT=1)"
+        echo "[entrypoint] WARNING: Consider setting TELCLAUDE_RUN_AS_ROOT=0 for better security"
         exec /app/bin/telclaude.js "$@"
     else
         echo "[entrypoint] Dropping privileges to user: $TELCLAUDE_USER"

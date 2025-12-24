@@ -20,7 +20,8 @@ import { parse as shellParse } from "shell-quote";
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
-import { isSandboxInitialized } from "../sandbox/index.js";
+import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
+import { VALIDATED_DATA_DIR, escapeRegex } from "../utils.js";
 import { chatIdToString } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
@@ -124,17 +125,52 @@ export function getUserPermissionTier(
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
 
-	// Note: Sandbox is now mandatory at relay startup (fail-fast).
-	// This check remains as a safety net in case of edge cases.
-	if (tier === "FULL_ACCESS" && !isSandboxInitialized()) {
-		logger.error(
-			{ userId: normalizedId, originalTier: tier },
-			"FULL_ACCESS denied: sandbox not initialized (this should not happen)",
+	// Note: In native mode, SDK sandbox provides isolation.
+	// In Docker mode, the container provides isolation.
+	// FULL_ACCESS is safe in both cases since there's always a security boundary.
+	if (tier === "FULL_ACCESS" && !shouldEnableSdkSandbox()) {
+		logger.debug(
+			{ userId: normalizedId, tier },
+			"FULL_ACCESS granted (Docker mode - container provides isolation)",
 		);
-		return "WRITE_LOCAL";
 	}
 
 	return tier;
+}
+
+/**
+ * Get per-user rate limit overrides, if configured.
+ *
+ * Resolution order matches getUserPermissionTier():
+ * 1) Identity link -> localUserId entry
+ * 2) Raw chatId entry
+ * 3) tg:chatId entry
+ */
+export function getUserRateLimitOverride(
+	userId: string | number,
+	securityConfig?: SecurityConfig,
+): { perMinute?: number; perHour?: number } | undefined {
+	const userPerms = securityConfig?.permissions?.users;
+	if (!userPerms) return undefined;
+
+	const normalizedId = typeof userId === "number" ? String(userId) : userId;
+	const numericId = typeof userId === "number" ? userId : Number.parseInt(userId, 10);
+	const withPrefix = chatIdToString(userId);
+
+	// 1. Check identity link first
+	if (!Number.isNaN(numericId)) {
+		const link = getIdentityLink(numericId);
+		if (link) {
+			const linkedPerms = userPerms[link.localUserId];
+			if (linkedPerms?.rateLimit) {
+				return linkedPerms.rateLimit;
+			}
+		}
+	}
+
+	// 2. Check user-specific permissions by chatId
+	const directPerms = userPerms[normalizedId] ?? userPerms[withPrefix];
+	return directPerms?.rateLimit;
 }
 
 /**
@@ -218,11 +254,43 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
+ * Command wrappers that execute the following command.
+ * These can be used to bypass blocked command detection.
+ */
+const COMMAND_WRAPPERS = new Set([
+	"command", // command rm
+	"env", // env rm
+	"exec", // exec rm
+	"builtin", // builtin rm (though rm isn't a builtin)
+	"nice", // nice rm
+	"nohup", // nohup rm
+	"time", // time rm
+	"timeout", // timeout 10 rm
+	"xargs", // echo foo | xargs rm (handled separately)
+	"strace", // strace rm
+	"ltrace", // ltrace rm
+]);
+
+/**
+ * Normalize a command token to its base command name.
+ * Handles absolute paths like /bin/rm -> rm
+ */
+function normalizeCommandToken(token: string): string {
+	// Handle absolute/relative paths: /bin/rm, ./rm, ../bin/rm -> rm
+	const basename = path.basename(token);
+	return basename.toLowerCase();
+}
+
+/**
  * Check if a command contains blocked operations for WRITE_LOCAL tier.
  * Returns the reason if blocked, null if allowed.
  *
  * Uses tokenization for more reliable detection than pure regex.
  * Splits on shell operators and whitespace to find command tokens.
+ *
+ * SECURITY: Handles bypass attempts via:
+ * - Absolute paths: /bin/rm, /usr/bin/rm
+ * - Command wrappers: command rm, env rm, exec rm
  */
 export function containsBlockedCommand(command: string): string | null {
 	// Tokenize: split by shell operators and whitespace to get individual tokens
@@ -232,20 +300,47 @@ export function containsBlockedCommand(command: string): string | null {
 		.split(/[\s;|&]+/)
 		.filter((t) => t.length > 0);
 
+	// Pre-compute normalized tokens and check for blocked commands (O(n) instead of O(n²))
+	const normalizedTokens = tokens.map(normalizeCommandToken);
+	const blockedSet = new Set(WRITE_LOCAL_BLOCKED_COMMANDS);
+	const hasBlockedCommand = normalizedTokens.some((t) => blockedSet.has(t));
+
+	// Track if we're after a wrapper command (next non-flag token is the real command)
+	let afterWrapper = false;
+
 	// Check if any token is a blocked command
-	for (const token of tokens) {
-		// Strip leading dashes for flag detection, but check full token for commands
-		const cleanToken = token.replace(/^-+/, "");
-		if (WRITE_LOCAL_BLOCKED_COMMANDS.includes(token)) {
-			return token;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		const normalizedToken = normalizedTokens[i];
+
+		// Skip flags
+		if (token.startsWith("-")) {
+			// But check long-form flags like --recursive that map to rm behavior
+			const cleanToken = token.replace(/^-+/, "");
+			if (hasBlockedCommand) {
+				if (cleanToken === "recursive") {
+					return "rm --recursive";
+				}
+				if (cleanToken === "force") {
+					return "rm --force";
+				}
+			}
+			continue;
 		}
-		// Also check long-form flags like --recursive that map to rm behavior
-		if (cleanToken === "recursive" && tokens.includes("rm")) {
-			return "rm --recursive";
+
+		// Check if this is a wrapper command
+		if (COMMAND_WRAPPERS.has(normalizedToken)) {
+			afterWrapper = true;
+			continue;
 		}
-		if (cleanToken === "force" && tokens.includes("rm")) {
-			return "rm --force";
+
+		// Check if this token (or the one after a wrapper) is blocked
+		if (blockedSet.has(normalizedToken)) {
+			return afterWrapper ? `${tokens[i - 1]} ${normalizedToken}` : normalizedToken;
 		}
+
+		// Reset wrapper flag after processing a non-flag, non-wrapper token
+		afterWrapper = false;
 	}
 
 	// Check dangerous patterns (these need regex for complex matching)
@@ -276,8 +371,17 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/\.telclaude(\/|$)/i, // Config directory with database (with or without trailing slash)
 	/telclaude\.db/i, // Database file directly
 	/telclaude\.json/i, // Config file
-	/totp_secrets/i, // TOTP table name in queries
+	/totp[-_]secrets/i, // TOTP secrets file (totp-secrets.json) and table name
 	/totp\.sock/i, // TOTP socket
+	// Docker mode: TELCLAUDE_DATA_DIR=/data contains logs, audit, secrets
+	// This pattern catches /data/logs, /data/telclaude.db, etc.
+	// Uses validated/escaped value to prevent regex injection and trailing slash issues
+	...(VALIDATED_DATA_DIR ? [new RegExp(`^${escapeRegex(VALIDATED_DATA_DIR)}(\\/|$)`, "i")] : []),
+
+	// === Claude Code settings (prevent hook bypass via disableAllHooks) ===
+	// SECURITY: Blocking writes to these prevents prompt injection from setting
+	// disableAllHooks: true, which would disable our PreToolUse security hook.
+	/(?:^|[/\\])\.claude[/\\]settings(?:\.local)?\.json$/i, // .claude/settings.json, .claude/settings.local.json
 
 	// === Environment files (secrets!) ===
 	// Match .env anywhere in path (but not .environment or similar)
@@ -323,6 +427,10 @@ const SENSITIVE_BASENAME_PATTERNS: RegExp[] = [
 	/\.pem$/i,
 	/\.key$/i,
 	/\.ppk$/i,
+	// NOTE: settings.json and settings.local.json are NOT blocked globally.
+	// They're protected via detectClaudeSettingsBypass() which catches
+	// "cd .claude && cat settings.json" patterns without blocking legitimate
+	// settings.json files in other directories.
 ];
 
 function isSensitiveBasename(name: string): boolean {
@@ -388,8 +496,23 @@ function looksLikePath(token: string): boolean {
 		token.startsWith("~") ||
 		token.startsWith("/") ||
 		token.startsWith(".") ||
+		token.includes("/") ||
+		token.includes("\\") ||
 		token.includes(path.sep)
 	);
+}
+
+function looksLikeUrl(token: string): boolean {
+	return /^[a-zA-Z][a-zA-Z+.-]*:\/\//.test(token);
+}
+
+function stripPathSuffix(token: string): string {
+	if (looksLikeUrl(token)) {
+		return token;
+	}
+	let cleaned = token.replace(/(?::\d+){1,2}$/i, "");
+	cleaned = cleaned.replace(/#l?\d+(?::\d+)?$/i, "");
+	return cleaned;
 }
 
 /**
@@ -411,37 +534,340 @@ function expandHomeLike(token: string): string {
 	return token;
 }
 
+function normalizePathToken(token: string): string {
+	const expanded = expandHomeLike(token);
+	if (looksLikeUrl(expanded)) {
+		return expanded;
+	}
+	const withoutSuffix = stripPathSuffix(expanded);
+	return path.normalize(withoutSuffix);
+}
+
+function normalizeGlobPattern(pattern: string): string {
+	// Replace simple character classes with single-char wildcards
+	return pattern.replace(/\[[^\]]*]/g, "?");
+}
+
+function parseEnvAssignment(token: string): { name: string; value: string } | null {
+	if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+		return null;
+	}
+	const eqIndex = token.indexOf("=");
+	if (eqIndex <= 0) return null;
+	const name = token.slice(0, eqIndex);
+	const value = token.slice(eqIndex + 1);
+	return { name, value };
+}
+
+function resolveEnvVars(token: string, env: Map<string, string>): string {
+	return token.replace(/\$(\w+)|\$\{([^}]+)\}/g, (match, var1, var2) => {
+		const name = (var1 ?? var2) as string | undefined;
+		if (!name) return match;
+		const value = env.get(name);
+		return value !== undefined ? value : match;
+	});
+}
+
+function expandBracePatterns(pattern: string): string[] {
+	const braceMatch = pattern.match(/\{([^}]+)\}/);
+	if (!braceMatch) {
+		return [pattern];
+	}
+	const [full, inner] = braceMatch;
+	const parts = inner.split(",").map((part) => part.trim());
+	const expanded: string[] = [];
+	for (const part of parts) {
+		const replaced = pattern.replace(full, part);
+		for (const next of expandBracePatterns(replaced)) {
+			expanded.push(next);
+		}
+	}
+	return expanded;
+}
+
+function wildcardMatch(pattern: string, text: string): boolean {
+	const normalizedPattern = pattern.toLowerCase();
+	const normalizedText = text.toLowerCase();
+	let p = 0;
+	let t = 0;
+	let starIdx = -1;
+	let matchIdx = 0;
+
+	while (t < normalizedText.length) {
+		if (p < normalizedPattern.length) {
+			const ch = normalizedPattern[p];
+			if (ch === "?" || ch === normalizedText[t]) {
+				p++;
+				t++;
+				continue;
+			}
+			if (ch === "*") {
+				starIdx = p;
+				matchIdx = t;
+				p++;
+				continue;
+			}
+		}
+
+		if (starIdx !== -1) {
+			p = starIdx + 1;
+			matchIdx += 1;
+			t = matchIdx;
+			continue;
+		}
+		return false;
+	}
+
+	while (p < normalizedPattern.length && normalizedPattern[p] === "*") {
+		p++;
+	}
+
+	return p === normalizedPattern.length;
+}
+
+function globCouldMatchClaudeSettings(pattern: string): boolean {
+	const normalizedPattern = normalizeGlobPattern(pattern);
+	const expandedPatterns = expandBracePatterns(normalizedPattern);
+	const candidates = [
+		"settings.json",
+		"settings.local.json",
+		"./settings.json",
+		"./settings.local.json",
+		"../settings.json",
+		"../settings.local.json",
+		".claude/settings.json",
+		".claude/settings.local.json",
+	];
+	return expandedPatterns.some((expanded) =>
+		candidates.some((candidate) => wildcardMatch(expanded, candidate)),
+	);
+}
+/**
+ * Detect "cd .claude && cat settings.json" bypass attempts.
+ * Returns true if the command changes to a .claude directory AND accesses
+ * settings.json or settings.local.json (bare, relative, or editor-suffixed).
+ *
+ * This is more targeted than blocking all settings.json files, which would
+ * break many legitimate projects.
+ *
+ * Handles variants like:
+ * - cd .claude && cat settings.json
+ * - cd -P .claude && cat ./settings.json
+ * - cd -- .claude && echo foo > settings.local.json
+ * - cd .claude && cat $PWD/settings.json
+ * - cd .claude && code settings.json:10:3
+ */
+function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boolean {
+	const settingsPattern = /^(?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
+	const settingsPwdPattern =
+		/^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
+	const claudePathPattern = /(?:^|[/\\])\.claude(?:[/\\]|$)/i;
+	const commandSeparators = new Set([";", "&&", "||", "|", "|&", "\n"]);
+	const controlKeywords = new Set([
+		"if",
+		"then",
+		"elif",
+		"else",
+		"fi",
+		"do",
+		"done",
+		"while",
+		"until",
+		"for",
+		"case",
+		"esac",
+		"select",
+		"function",
+		"{",
+		"}",
+	]);
+	const envValues = new Map<string, string>();
+
+	const isSeparator = (token: string | { op: string }): boolean => {
+		if (typeof token !== "string") {
+			return commandSeparators.has(token.op);
+		}
+		return commandSeparators.has(token);
+	};
+
+	const isEnvAssignment = (token: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+
+	const findCdTarget = (startIndex: number): { target?: string; nextIndex: number } => {
+		for (let i = startIndex; i < tokens.length; i++) {
+			const candidate = tokens[i];
+			if (typeof candidate !== "string") {
+				return { nextIndex: i - 1 };
+			}
+			if (candidate === "--") {
+				const next = tokens[i + 1];
+				if (typeof next === "string") {
+					return { target: next, nextIndex: i + 1 };
+				}
+				return { nextIndex: i };
+			}
+			if (candidate.startsWith("-")) {
+				continue;
+			}
+			return { target: candidate, nextIndex: i };
+		}
+		return { nextIndex: tokens.length - 1 };
+	};
+
+	let inClaudeDir = false;
+	let atCommandStart = true;
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		if (isSeparator(token)) {
+			atCommandStart = true;
+			continue;
+		}
+		const tokenValue =
+			typeof token === "string"
+				? token
+				: token.op === "glob"
+					? ((token as { op: string; pattern?: string }).pattern ?? "")
+					: "";
+		if (!tokenValue) {
+			continue;
+		}
+
+		const tokenLower = tokenValue.toLowerCase();
+		if (atCommandStart && controlKeywords.has(tokenLower)) {
+			continue;
+		}
+		if (atCommandStart && isEnvAssignment(tokenValue)) {
+			const assignment = parseEnvAssignment(tokenValue);
+			if (assignment) {
+				envValues.set(assignment.name, assignment.value);
+			}
+			continue;
+		}
+
+		if (atCommandStart && tokenLower === "export") {
+			for (let j = i + 1; j < tokens.length; j++) {
+				if (isSeparator(tokens[j])) {
+					i = j - 1;
+					break;
+				}
+				const tok = tokens[j];
+				let exportToken: string;
+				if (typeof tok === "string") {
+					exportToken = tok;
+				} else if (tok.op === "glob") {
+					exportToken = (tok as { op: string; pattern?: string }).pattern ?? "";
+				} else {
+					continue;
+				}
+				if (!exportToken) {
+					continue;
+				}
+				const assignment = parseEnvAssignment(exportToken);
+				if (assignment) {
+					envValues.set(assignment.name, assignment.value);
+				}
+			}
+			atCommandStart = false;
+			continue;
+		}
+
+		if (atCommandStart && (tokenLower === "cd" || tokenLower === "pushd")) {
+			const { target, nextIndex } = findCdTarget(i + 1);
+			if (target) {
+				const resolvedTarget = resolveEnvVars(target, envValues);
+				const normalizedTarget = normalizePathToken(resolvedTarget);
+				if (claudePathPattern.test(normalizedTarget) || normalizedTarget === ".claude") {
+					inClaudeDir = true;
+				} else {
+					inClaudeDir = false;
+				}
+			}
+			atCommandStart = false;
+			i = Math.max(i, nextIndex);
+			continue;
+		}
+
+		atCommandStart = false;
+
+		if (inClaudeDir) {
+			const resolvedToken = resolveEnvVars(tokenValue, envValues);
+			const normalizedToken = normalizePathToken(resolvedToken);
+			if (settingsPattern.test(normalizedToken) || settingsPwdPattern.test(resolvedToken)) {
+				return true;
+			}
+			if (/[?*[\]{]/.test(normalizedToken) && globCouldMatchClaudeSettings(normalizedToken)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
 /**
  * Check if a command string references any sensitive paths.
  * Uses shell-style tokenization to avoid brittle whitespace parsing.
  */
 function commandContainsSensitivePath(command: string): boolean {
 	let tokens: Array<string | { op: string }>;
+	const normalizedCommand = command
+		.replace(/\r?\n/g, ";")
+		.replace(/\$\(\s*pwd\s*\)/gi, "$PWD")
+		.replace(/`\s*pwd\s*`/gi, "$PWD");
 	try {
-		tokens = shellParse(command);
+		// Keep variables unexpanded by returning them as-is
+		const keepVars = (key: string): string => `$${key}`;
+		tokens = (
+			shellParse as (cmd: string, env: (k: string) => string) => Array<string | { op: string }>
+		)(normalizedCommand, keepVars);
 	} catch {
 		// Fallback to simple split if parsing fails
-		tokens = command.split(/\s+/).filter((t) => t.length > 0);
+		tokens = normalizedCommand.split(/\s+/).filter((t) => t.length > 0);
+	}
+
+	// SECURITY: Detect "cd .claude && cat settings.json" bypass attempts.
+	// This catches commands that cd to .claude and access settings.json,
+	// without blocking legitimate settings.json files in other directories.
+	if (detectClaudeSettingsBypass(tokens)) {
+		return true;
 	}
 
 	for (const token of tokens) {
-		if (typeof token !== "string") continue;
-		if (!looksLikePath(token)) continue;
+		const tokenValue =
+			typeof token === "string"
+				? token
+				: token.op === "glob"
+					? ((token as { op: string; pattern?: string }).pattern ?? "")
+					: "";
+		if (!tokenValue) continue;
 
-		const expanded = expandHomeLike(token);
+		// Check basename patterns for bare filenames (e.g., ".env", "secrets.json").
+		if (isSensitiveBasename(tokenValue)) {
+			return true;
+		}
+
+		// For path-like tokens, do additional checks
+		if (!looksLikePath(tokenValue)) continue;
+
+		const expanded = expandHomeLike(tokenValue);
+		const normalized = normalizePathToken(tokenValue);
 
 		// Check telclaude-specific sensitive patterns on both raw and expanded
-		if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(token) || pattern.test(expanded))) {
+		if (
+			SENSITIVE_PATH_PATTERNS.some(
+				(pattern) => pattern.test(tokenValue) || pattern.test(expanded) || pattern.test(normalized),
+			)
+		) {
 			return true;
 		}
 
 		// Check credential roots
-		if (matchesSensitiveCredentialPath(expanded)) {
+		if (!looksLikeUrl(expanded) && matchesSensitiveCredentialPath(expanded)) {
 			return true;
 		}
 
-		// Basename-only detection (e.g., ".env" created after sandbox init)
-		if (isSensitiveBasename(path.basename(expanded))) {
+		// Basename-only detection for path-like tokens (e.g., "./settings.json")
+		if (isSensitiveBasename(path.basename(normalized))) {
 			return true;
 		}
 	}
@@ -454,8 +880,13 @@ function commandContainsSensitivePath(command: string): boolean {
  * This includes telclaude internals AND system credential paths.
  */
 export function isSensitivePath(pathOrCommand: string): boolean {
+	const normalized = normalizePathToken(pathOrCommand);
 	// Check telclaude-specific patterns (regex-based for flexibility)
-	if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(pathOrCommand))) {
+	if (
+		SENSITIVE_PATH_PATTERNS.some(
+			(pattern) => pattern.test(pathOrCommand) || pattern.test(normalized),
+		)
+	) {
 		return true;
 	}
 

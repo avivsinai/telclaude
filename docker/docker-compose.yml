@@ -43,6 +43,14 @@ services:
       # Optional: Anthropic API key (if not using claude login)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 
+      # Secrets storage encryption (reuses TOTP key for convenience)
+      # Enables `telclaude setup-openai` and `telclaude setup-git`
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
+      # API keys (tier-based: auto-exposed for WRITE_LOCAL+, use setup-* commands or env vars)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GH_TOKEN:-}
+
       # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
@@ -51,11 +59,13 @@ services:
       # TOTP daemon socket (shared with sidecar)
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
 
-      # Enable network firewall (requires --cap-add=NET_ADMIN)
+      # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
+      # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
 
-      # Run as root (bubblewrap handles isolation)
-      - TELCLAUDE_RUN_AS_ROOT=1
+      # Drop privileges after firewall init (gosu -> node user)
+      # Docker mode: SDK sandbox disabled, container provides isolation
+      - TELCLAUDE_RUN_AS_ROOT=0
 
       # Node environment
       - NODE_ENV=production
@@ -76,20 +86,30 @@ services:
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
 
-    # Privileged needed for bubblewrap user namespaces in Docker
-    privileged: true
-
-    # Run as root - bubblewrap handles isolation
+    # Start as root for firewall init, then drop to node via gosu
+    # Docker mode: SDK sandbox disabled, container provides isolation
     user: "0:0"
 
+    # Explicit capability management (no privileged mode)
+    # Note: Some kernels (e.g., Raspberry Pi OS) require explicit caps even for root
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN   # Required for iptables firewall initialization
+      - DAC_OVERRIDE  # Required for file access as root on some kernels
+      - CHOWN       # Required for changing file ownership
+      - FOWNER      # Required for bypassing ownership checks
+      - SETUID      # Required for gosu privilege dropping
+      - SETGID      # Required for gosu privilege dropping
+
     security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+      - no-new-privileges:true
 
     read_only: true
     tmpfs:
       - /tmp:size=512M,mode=1777
       - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
 
     deploy:
       resources:

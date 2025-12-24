@@ -6,6 +6,19 @@ import { z } from "zod";
 import { CONFIG_DIR } from "../utils.js";
 import { resolveConfigPath } from "./path.js";
 
+// Lazy logger to avoid circular dependency (logging.ts imports config.ts)
+type Logger = ReturnType<typeof import("../logging.js").getChildLogger>;
+let _logger: Logger | null = null;
+function getLogger(): Logger {
+	if (!_logger) {
+		// Dynamic import at runtime to break circular dependency
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const { getChildLogger } = require("../logging.js");
+		_logger = getChildLogger({ module: "config" }) as Logger;
+	}
+	return _logger;
+}
+
 // Session configuration schema
 const SessionConfigSchema = z.object({
 	scope: z.enum(["per-sender", "global"]).default("per-sender"),
@@ -15,28 +28,77 @@ const SessionConfigSchema = z.object({
 });
 
 // Reply configuration schema (SDK-based)
-const ReplyConfigSchema = z.object({
-	enabled: z.boolean().default(true),
-	timeoutSeconds: z.number().int().positive().default(600),
-	session: SessionConfigSchema.optional(),
-	typingIntervalSeconds: z.number().positive().default(8),
-});
+const ReplyConfigSchema = z
+	.object({
+		enabled: z.boolean().default(true),
+		timeoutSeconds: z.number().int().positive().default(600),
+		session: SessionConfigSchema.optional(),
+		typingIntervalSeconds: z.number().positive().default(8),
+	})
+	.default({});
 
 // Inbound (auto-reply) configuration schema
-const InboundConfigSchema = z.object({
-	transcribeAudio: z
-		.object({
-			command: z.array(z.string()),
-			timeoutSeconds: z.number().int().positive().default(45),
-		})
-		.optional(),
-	reply: ReplyConfigSchema.optional(),
-});
+const InboundConfigSchema = z
+	.object({
+		reply: ReplyConfigSchema,
+	})
+	.default({});
 
 // SDK configuration schema (for Claude Agent SDK options)
 const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
 const SdkConfigSchema = z.object({
 	betas: z.array(SdkBetaEnum).default([]),
+});
+
+// OpenAI configuration schema (for Whisper, GPT Image, TTS)
+// NOTE: Keys are automatically exposed to sandbox for WRITE_LOCAL and FULL_ACCESS tiers.
+const OpenAIConfigSchema = z.object({
+	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
+	baseUrl: z.string().optional(), // Custom endpoint for local inference servers
+});
+
+// Transcription configuration schema
+const TranscriptionConfigSchema = z.object({
+	provider: z.enum(["openai", "deepgram", "command"]).default("openai"),
+	model: z.string().default("whisper-1"), // Any valid OpenAI transcription model
+	language: z.string().optional(), // Auto-detect if not set
+	// For provider: "command" - CLI-based transcription (like clawdis)
+	command: z.array(z.string()).optional(),
+	timeoutSeconds: z.number().int().positive().default(60),
+});
+
+// Image generation configuration schema (GPT Image 1.5)
+const ImageGenerationConfigSchema = z.object({
+	provider: z.enum(["gpt-image", "disabled"]).default("gpt-image"),
+	model: z.string().default("gpt-image-1.5"), // GPT image model (gpt-image-1.5, gpt-image-1, etc.)
+	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("1024x1024"),
+	quality: z.enum(["low", "medium", "high"]).default("medium"),
+	// Rate limiting for cost control
+	maxPerHourPerUser: z.number().int().positive().default(10),
+	maxPerDayPerUser: z.number().int().positive().default(50),
+});
+
+// Video processing configuration schema
+// SECURITY: Disabled by default - FFmpeg runs unsandboxed and has historical parsing vulnerabilities.
+// Enable only if you trust all users in allowedChats and accept the risk of processing untrusted video.
+const VideoProcessingConfigSchema = z.object({
+	enabled: z.boolean().default(false),
+	frameInterval: z.number().positive().default(1), // Seconds between frames
+	maxFrames: z.number().int().positive().default(30),
+	maxDurationSeconds: z.number().int().positive().default(300), // 5 min max
+	extractAudio: z.boolean().default(true), // Transcribe audio track
+});
+
+// Text-to-speech configuration schema
+const TTSConfigSchema = z.object({
+	provider: z.enum(["openai", "elevenlabs", "disabled"]).default("openai"),
+	voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).default("alloy"),
+	speed: z.number().min(0.25).max(4.0).default(1.0),
+	// Enable auto-read for voice responses
+	autoReadResponses: z.boolean().default(false),
+	// Rate limiting for cost control
+	maxPerHourPerUser: z.number().int().positive().default(30),
+	maxPerDayPerUser: z.number().int().positive().default(100),
 });
 
 // Security profile - determines which security layers are active
@@ -86,6 +148,12 @@ const SecretFilterConfigSchema = z.object({
 			minLength: z.number().int().positive().default(32),
 		})
 		.optional(),
+});
+
+// Network isolation configuration schema (simplified)
+const NetworkConfigSchema = z.object({
+	// Additional domains to allow beyond the default developer allowlist
+	additionalDomains: z.array(z.string()).default([]),
 });
 
 // Security configuration schema
@@ -152,14 +220,21 @@ const SecurityConfigSchema = z.object({
 			sessionTtlMinutes: z.number().int().positive().default(240), // 4 hours
 		})
 		.optional(),
+	network: NetworkConfigSchema.optional(),
 });
 
 // Telegram configuration schema
+const TelegramGroupChatConfigSchema = z.object({
+	// When enabled, group/supergroup messages must mention the bot (or reply to the bot)
+	requireMention: z.boolean().default(false),
+});
+
 const TelegramConfigSchema = z.object({
 	// Bot token - stored here (in ~/.telclaude/) rather than .env for security
 	// The ~/.telclaude/ directory is blocked from Claude's sandbox
 	botToken: z.string().optional(),
 	allowedChats: z.array(z.union([z.number(), z.string()])).optional(),
+	groupChat: TelegramGroupChatConfigSchema.optional(),
 	polling: z
 		.object({
 			timeout: z.number().int().positive().default(30),
@@ -193,11 +268,17 @@ const LoggingConfigSchema = z.object({
 
 // Main config schema
 const TelclaudeConfigSchema = z.object({
-	security: SecurityConfigSchema.optional(),
-	telegram: TelegramConfigSchema.optional(),
-	inbound: InboundConfigSchema.optional(),
-	logging: LoggingConfigSchema.optional(),
-	sdk: SdkConfigSchema.optional(),
+	security: SecurityConfigSchema.default({}),
+	telegram: TelegramConfigSchema.default({}),
+	inbound: InboundConfigSchema,
+	logging: LoggingConfigSchema.default({}),
+	sdk: SdkConfigSchema.default({}),
+	// Multimedia capabilities
+	openai: OpenAIConfigSchema.default({}),
+	transcription: TranscriptionConfigSchema.default({}),
+	imageGeneration: ImageGenerationConfigSchema.default({}),
+	videoProcessing: VideoProcessingConfigSchema.default({}),
+	tts: TTSConfigSchema.default({}),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -206,6 +287,11 @@ export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
+export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
+export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
+export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
+export type TTSConfig = z.infer<typeof TTSConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
@@ -235,9 +321,15 @@ export function loadConfig(): TelclaudeConfig {
 
 		return validated;
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			// No config file, return defaults
-			return {};
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			// No config file - use schema defaults
+			return TelclaudeConfigSchema.parse({});
+		}
+		if (code === "EACCES") {
+			// Permission denied (e.g., running in sandbox where ~/.telclaude is blocked)
+			getLogger().debug({ configPath }, "config file not accessible (EACCES), using defaults");
+			return TelclaudeConfigSchema.parse({});
 		}
 		throw err;
 	}

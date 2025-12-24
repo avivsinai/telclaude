@@ -25,6 +25,9 @@ export type InboxMonitorOptions = {
 	dryRun?: boolean;
 	onMessage: (msg: TelegramInboundMessage) => Promise<void>;
 	allowedChats?: (number | string)[];
+	groupChat?: {
+		requireMention?: boolean;
+	};
 	secretFilterConfig?: SecretFilterConfig;
 };
 
@@ -46,6 +49,7 @@ export async function monitorTelegramInbox(
 		dryRun = false,
 		onMessage,
 		allowedChats,
+		groupChat,
 		secretFilterConfig,
 	} = options;
 	const logger = getChildLogger({ module: "telegram-inbound" });
@@ -57,6 +61,37 @@ export async function monitorTelegramInbox(
 	});
 
 	const botIdStr = chatIdToString(botInfo.id);
+	const botUsername = botInfo.username?.toLowerCase();
+
+	const requiresGroupMention = groupChat?.requireMention ?? false;
+
+	const isGroupChat = (chatType: string) => ["group", "supergroup"].includes(chatType);
+
+	const isMessageTargetingBot = (message: Context["message"]): boolean => {
+		if (!message) return false;
+		if (message.reply_to_message?.from?.id === botInfo.id) return true;
+
+		if (!botUsername) return false;
+
+		const bodyRaw = message.text ?? message.caption ?? "";
+		const bodyLower = bodyRaw.toLowerCase();
+		if (bodyLower.includes(`@${botUsername}`)) return true;
+
+		const entities = message.entities ?? message.caption_entities ?? [];
+		for (const entity of entities) {
+			if (entity.type === "text_mention" && entity.user?.id === botInfo.id) {
+				return true;
+			}
+			if (entity.type === "mention" || entity.type === "bot_command") {
+				const segment = bodyRaw.slice(entity.offset, entity.offset + entity.length).toLowerCase();
+				if (segment === `@${botUsername}` || segment.includes(`@${botUsername}`)) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	};
 
 	// Helper to check if chat is allowed
 	// SECURITY: Fails CLOSED - if no allowedChats configured, deny ALL
@@ -139,6 +174,18 @@ export async function monitorTelegramInbox(
 			return null;
 		}
 
+		if (requiresGroupMention && isGroupChat(chat.type)) {
+			if (!isMessageTargetingBot(message)) {
+				if (verbose) {
+					logger.debug(
+						{ chatId: chat.id, chatType: chat.type },
+						"group message missing bot mention/reply; ignoring",
+					);
+				}
+				return null;
+			}
+		}
+
 		const chatId = chatIdToString(chat.id);
 		const body = message.text || message.caption || "";
 
@@ -162,7 +209,7 @@ export async function monitorTelegramInbox(
 						throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 					}
 					// Stream directly to file to prevent OOM on large files
-					const saved = await saveMediaStream(response, mimeType);
+					const saved = await saveMediaStream(response, { mimeType, category: "incoming" });
 					mediaPath = saved.path;
 					mimeType = saved.contentType;
 				}

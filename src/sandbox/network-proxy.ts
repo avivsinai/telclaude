@@ -25,8 +25,10 @@
  * - Output filter is the primary defense for secrets
  */
 
+import type { LookupAddress } from "node:dns";
 import dns from "node:dns/promises";
 import net from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { getChildLogger } from "../logging.js";
 import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
 import {
@@ -37,6 +39,114 @@ import {
 } from "./domains.js";
 
 const logger = getChildLogger({ module: "network-proxy" });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DNS Cache (prevents DNS rebinding attacks)
+//
+// SECURITY: DNS rebinding attacks work by returning different IP addresses
+// for the same hostname on subsequent DNS queries. By caching the first
+// result, we ensure the same IP is used for both security check and connection.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface CachedDNSResult {
+	addresses: string[];
+	blocked: boolean;
+	expireAt: number;
+}
+
+const DNS_CACHE = new Map<string, CachedDNSResult>();
+const DNS_CACHE_TTL_MS = 60_000; // 60 seconds
+const DNS_LOOKUP_TIMEOUT_MS = 3_000; // 3 seconds
+
+/**
+ * Perform DNS lookup with timeout.
+ *
+ * @param host - Hostname to resolve
+ * @param timeoutMs - Timeout in milliseconds (default: 3000)
+ * @returns Resolved addresses or null on timeout/error
+ */
+async function lookupWithTimeout(
+	host: string,
+	timeoutMs = DNS_LOOKUP_TIMEOUT_MS,
+): Promise<LookupAddress[] | null> {
+	try {
+		const result = await Promise.race([
+			dns.lookup(host, { all: true }),
+			delay(timeoutMs).then(() => {
+				throw new Error("DNS lookup timeout");
+			}),
+		]);
+		return result as LookupAddress[];
+	} catch (error) {
+		if ((error as Error).message === "DNS lookup timeout") {
+			logger.warn({ host, timeoutMs }, "DNS lookup timed out");
+		}
+		return null;
+	}
+}
+
+/**
+ * Cached DNS lookup to prevent DNS rebinding attacks.
+ *
+ * SECURITY: This function caches DNS results for 60 seconds, ensuring that:
+ * 1. The same IP is used for security check and actual connection
+ * 2. Attacker cannot change DNS response between check and use
+ * 3. Reduced DNS query load
+ *
+ * @param host - Hostname to resolve
+ * @returns Array of resolved IP addresses, or null on failure
+ */
+export async function cachedDNSLookup(host: string): Promise<string[] | null> {
+	const now = Date.now();
+	const cached = DNS_CACHE.get(host);
+
+	if (cached && cached.expireAt > now) {
+		return cached.addresses;
+	}
+
+	const results = await lookupWithTimeout(host);
+
+	if (results) {
+		const addresses = results.map((r) => r.address);
+		DNS_CACHE.set(host, {
+			addresses,
+			blocked: addresses.some((addr) => isBlockedIP(addr)),
+			expireAt: now + DNS_CACHE_TTL_MS,
+		});
+		return addresses;
+	}
+
+	// Cache negative results too (prevents repeated slow lookups)
+	DNS_CACHE.set(host, {
+		addresses: [],
+		blocked: false,
+		expireAt: now + DNS_CACHE_TTL_MS,
+	});
+	return null;
+}
+
+/**
+ * Clear DNS cache entries.
+ *
+ * @param host - Specific host to clear, or undefined to clear all
+ */
+export function clearDNSCache(host?: string): void {
+	if (host) {
+		DNS_CACHE.delete(host);
+	} else {
+		DNS_CACHE.clear();
+	}
+}
+
+/**
+ * Get DNS cache statistics for diagnostics.
+ */
+export function getDNSCacheStats(): { size: number; ttlMs: number } {
+	return {
+		size: DNS_CACHE.size,
+		ttlMs: DNS_CACHE_TTL_MS,
+	};
+}
 
 export { DEFAULT_ALLOWED_DOMAINS } from "./domains.js";
 export type { DomainRule, HttpMethod } from "./domains.js";
@@ -178,20 +288,19 @@ function ipv6InCidr(ipBig: bigint, cidr: string): boolean {
 /**
  * Check if a host should be blocked due to resolving to a private/metadata IP.
  *
- * NOTE: DNS resolution is only used at runtime (sandboxAskCallback). Policy checks
- * in checkNetworkRequest() remain domain-only and may not catch DNS rebinding.
+ * SECURITY: Uses cached DNS lookup to prevent DNS rebinding attacks.
+ * The cache ensures the same IP is used for security check and actual connection.
+ *
+ * @param host - Hostname or IP address to check
+ * @returns true if the host resolves to a blocked IP, false otherwise
  */
 export async function isBlockedHost(host: string): Promise<boolean> {
 	// Fast path for literal IPs and localhost
 	if (isBlockedIP(host)) return true;
 
-	// Attempt DNS resolution for hostnames. If lookup fails, fall back to domain rules.
-	try {
-		const results = await dns.lookup(host, { all: true });
-		return results.some((r) => isBlockedIP(r.address));
-	} catch {
-		return false;
-	}
+	// Use cached DNS lookup (prevents rebinding attacks)
+	const addresses = await cachedDNSLookup(host);
+	return addresses?.some((addr) => isBlockedIP(addr)) ?? false;
 }
 
 /**

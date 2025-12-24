@@ -361,10 +361,13 @@ describe("Blocked Command Fuzzing", () => {
 				expect(containsBlockedCommand(cmd)).not.toBeNull();
 			}
 
-			// KNOWN LIMITATION: Full paths bypass tokenization
-			// "/bin/rm" becomes ["/bin/rm"] which doesn't match "rm"
-			// This is documented in permissions.ts - WRITE_LOCAL is for accidents, not attacks
-			expect(containsBlockedCommand("/bin/rm file.txt")).toBeNull();
+			// Absolute paths are now blocked (path.basename normalization)
+			expect(containsBlockedCommand("/bin/rm file.txt")).not.toBeNull();
+			expect(containsBlockedCommand("/usr/bin/rm file.txt")).not.toBeNull();
+
+			// Command wrappers are also blocked
+			expect(containsBlockedCommand("command rm file.txt")).not.toBeNull();
+			expect(containsBlockedCommand("env rm file.txt")).not.toBeNull();
 		});
 
 		it("blocks curl/wget piped to shell", () => {
@@ -490,6 +493,103 @@ describe("Sensitive Path Fuzzing", () => {
 				expect(isSensitivePath(path)).toBe(true);
 			}
 		});
+
+		it("detects Claude Code settings files (prevents disableAllHooks bypass)", () => {
+			// SECURITY: Blocking writes to these prevents prompt injection from setting
+			// disableAllHooks: true, which would disable our PreToolUse security hook.
+			const paths = [
+				".claude/settings.json",
+				".claude/settings.local.json",
+				".claude/./settings.json",
+				".claude//settings.json",
+				".claude/../.claude/settings.json",
+				".claude/settings.json:1",
+				".claude/settings.json:10:3",
+				".claude/settings.json#L12",
+				"/workspace/.claude/settings.json",
+				"/home/user/project/.claude/settings.local.json",
+				"~/.claude/settings.json", // User-level settings (if ever accessed)
+			];
+
+			for (const path of paths) {
+				expect(isSensitivePath(path)).toBe(true);
+			}
+		});
+
+		it("detects Claude Code settings via cd + basename attack", () => {
+			// SECURITY: Catches "cd .claude && cat settings.json" where settings.json
+			// doesn't look like a path but is still sensitive in the .claude context.
+			const commands = [
+				"cd .claude && cat settings.json",
+				"cd .claude; cat settings.local.json",
+				"pushd .claude && vim settings.json",
+				"cd ./.claude && echo foo > settings.json",
+				"cd /project/.claude && nano settings.local.json",
+				"(cd .claude && cat settings.json)",
+				"{ cd .claude; cat settings.local.json; }",
+				"if cd .claude; then cat settings.json; fi",
+				"cd .claude\ncat settings.json",
+				// Variants with ./ prefix on settings.json
+				"cd .claude && cat ./settings.json",
+				"cd .claude && echo foo > ./settings.local.json",
+				// Variants that normalize to .claude/settings.json
+				"cd .claude && cat ././/settings.json",
+				"cd .claude && cat .claude/../.claude/settings.json",
+				// Variants using globs/brace expansion
+				"cd .claude && cat *.json",
+				"cd .claude && cat settings*.json",
+				"cd .claude && cat settings.{json,local.json}",
+				"cd .claude && cat [s]ettings.json",
+				// Variants with line/column suffixes (editor formats)
+				"cd .claude && cat settings.json:1",
+				"cd .claude && code settings.json:10:3",
+				"cd .claude && cat settings.json#L12",
+				// Variants with cd flags
+				"cd -P .claude && cat settings.json",
+				"cd -L .claude && cat ./settings.json",
+				"cd -- .claude && echo foo > settings.json",
+				"cd -P -- .claude && cat settings.local.json",
+				// Variants using PWD expansion
+				"cd .claude && cat $PWD/settings.json",
+				"cd .claude && cat ${PWD}/settings.local.json",
+				"cd .claude && cat $(pwd)/settings.json",
+				"cd .claude && cat `pwd`/settings.local.json",
+				// Variants using env assignments
+				"CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
+				"CLAUDE_DIR=.claude cd $CLAUDE_DIR && cat settings.json",
+				"export CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
+				"FILE=settings.json; cd .claude && cat $FILE",
+				"FILE=settings.local.json; cd .claude && cat ${FILE}",
+				// Variants with ../ prefix (escaping from subdir)
+				"cd .claude && cat ../settings.json", // Note: this is ../ which we block
+			];
+
+			for (const cmd of commands) {
+				expect(isSensitivePath(cmd)).toBe(true);
+			}
+		});
+
+		it("does NOT block bare settings.json without cd to .claude", () => {
+			// These are legitimate - settings.json outside of .claude context
+			const commands = [
+				"cat settings.json", // Could be a legitimate project file
+				"nano settings.local.json",
+				"echo foo > settings.json",
+				"cd src && cat settings.json", // cd to non-.claude dir
+				"cd config && vim settings.local.json",
+				"cd .claude && cd .. && cat settings.json", // left .claude before access
+				"cd .claude\ncd ..\ncat settings.json", // newline-separated commands, left .claude
+				"FILE=settings.json; cd src && cat $FILE", // env var but non-.claude dir
+				// ./ variants in non-.claude context
+				"cat ./settings.json",
+				"cd src && cat ./settings.json",
+				"cd -P config && vim ./settings.local.json",
+			];
+
+			for (const cmd of commands) {
+				expect(isSensitivePath(cmd)).toBe(false);
+			}
+		});
 	});
 
 	describe("False positive resistance", () => {
@@ -500,6 +600,9 @@ describe("Sensitive Path Fuzzing", () => {
 				"README.md",
 				"tests/test.ts",
 				"dist/index.js",
+				"settings.json", // Normal project file, NOT .claude/settings.json
+				"config/settings.json", // In project subdirectory
+				"settings.local.json", // Normal project file
 			];
 
 			for (const path of safe) {

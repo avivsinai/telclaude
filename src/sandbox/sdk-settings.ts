@@ -1,16 +1,15 @@
+/**
+ * SDK permission settings builder.
+ *
+ * Builds permission rules for @anthropic-ai/claude-agent-sdk.
+ * These are passed via `--settings` per SDK invocation.
+ */
+
 import os from "node:os";
 import path from "node:path";
 
 import type { PermissionTier } from "../config/config.js";
-import {
-	BLOCKED_METADATA_DOMAINS,
-	BLOCKED_PRIVATE_NETWORKS,
-	DEFAULT_WRITE_PATHS,
-	DENY_WRITE_PATHS,
-	PRIVATE_TMP_PATH,
-	SENSITIVE_READ_PATHS,
-} from "./config.js";
-import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "./domains.js";
+import { DENY_WRITE_PATHS, SENSITIVE_READ_PATHS } from "./config.js";
 
 function uniq(values: string[]): string[] {
 	return Array.from(new Set(values));
@@ -35,37 +34,36 @@ function withGlobVariants(p: string): string[] {
 /**
  * Build Claude Code permission rules for @anthropic-ai/claude-agent-sdk.
  *
- * Telclaude passes these rules via `--settings` per SDK invocation (no writes to ~/.claude).
- * Rules are used by Claude Code to configure its built-in sandbox policy.
+ * Filesystem isolation is handled by:
+ * - Docker mode: Container filesystem isolation
+ * - Native mode: SDK sandbox (bubblewrap/Seatbelt)
+ *
+ * These permission rules provide defense-in-depth via canUseTool callback.
+ *
+ * @param tier - Permission tier for the user
  */
-export function buildSdkPermissionsForTier(tier: PermissionTier): {
+export function buildSdkPermissionsForTier(
+	tier: PermissionTier,
+	_additionalDomains: string[] = [],
+): {
 	allow: string[];
 	deny: string[];
 } {
 	const allowWrite: string[] = [];
 	if (tier !== "READ_ONLY") {
-		// Allow writing to the SDK CWD (workspace) for WRITE_LOCAL/FULL_ACCESS.
-		// `Write(.)` is interpreted relative to the Claude Code process cwd.
+		// Allow writing to the SDK CWD (workspace) for WRITE_LOCAL/FULL_ACCESS
 		allowWrite.push("Write(.)");
 	}
 
-	allowWrite.push(
-		...DEFAULT_WRITE_PATHS.flatMap((p) => withGlobVariants(p).map((v) => `Write(${v})`)),
-		...withGlobVariants(PRIVATE_TMP_PATH).map((p) => `Write(${p})`),
-	);
-
-	const denyRead = SENSITIVE_READ_PATHS.flatMap((p) =>
+	const denyRead = SENSITIVE_READ_PATHS.flatMap((p: string) =>
 		withGlobVariants(p).map((v) => `Read(${v})`),
 	);
-	const denyWrite = DENY_WRITE_PATHS.flatMap((p) => withGlobVariants(p).map((v) => `Write(${v})`));
-
-	const allowNetwork = DEFAULT_ALLOWED_DOMAIN_NAMES.map((d) => `Network(domain:${d})`);
-	const denyNetwork = [...BLOCKED_METADATA_DOMAINS, ...BLOCKED_PRIVATE_NETWORKS].map(
-		(d) => `Network(domain:${d})`,
+	const denyWrite = DENY_WRITE_PATHS.flatMap((p: string) =>
+		withGlobVariants(p).map((v) => `Write(${v})`),
 	);
 
 	return {
-		allow: uniq([...allowWrite, ...allowNetwork]),
-		deny: uniq([...denyRead, ...denyWrite, ...denyNetwork]),
+		allow: uniq([...allowWrite]),
+		deny: uniq([...denyRead, ...denyWrite]),
 	};
 }
