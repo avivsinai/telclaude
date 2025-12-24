@@ -174,8 +174,9 @@ setup_firewall() {
     # ALLOW: Whitelisted domains
     # ═══════════════════════════════════════════════════════════════════════════
     for domain in "${ALLOWED_DOMAINS[@]}"; do
-        # Resolve domain to IP addresses
-        ips=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+        # Resolve domain to IPv4 addresses only (iptables doesn't handle IPv6)
+        # Filter: grep for lines with dots (IPv4) and exclude colons (IPv6)
+        ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
 
         if [ -n "$ips" ]; then
             for ip in $ips; do
