@@ -51,6 +51,7 @@ import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
+import { extractGeneratedMediaPaths } from "./media-detection.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
@@ -474,6 +475,27 @@ async function executeWithSession(
 					setTimeout(() => recentlySent.delete(recentKey), 30000);
 
 					await msg.reply(finalResponse);
+
+					// Auto-detect generated media in Claude's response and send to Telegram.
+					// This enables skills like image-generator and text-to-speech to work:
+					// - Skill teaches Claude to generate media and include path in response
+					// - Relay detects the path and sends the file to the user
+					// See: .claude/skills/image-generator/SKILL.md
+					const generatedMedia = extractGeneratedMediaPaths(finalResponse, process.cwd());
+					for (const media of generatedMedia) {
+						try {
+							await msg.sendMedia({ type: media.type, source: media.path });
+							logger.info(
+								{ path: media.path, type: media.type, chatId: msg.chatId },
+								"auto-sent generated media to Telegram",
+							);
+						} catch (mediaErr) {
+							logger.warn(
+								{ path: media.path, type: media.type, error: String(mediaErr) },
+								"failed to auto-send generated media",
+							);
+						}
+					}
 
 					// Update session in SQLite
 					sessionEntry.updatedAt = Date.now();

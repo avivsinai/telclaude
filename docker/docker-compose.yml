@@ -63,8 +63,9 @@ services:
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
 
-      # Run as root (bubblewrap handles isolation)
-      - TELCLAUDE_RUN_AS_ROOT=1
+      # Drop privileges after firewall init (gosu -> node user)
+      # Docker mode: SDK sandbox disabled, container provides isolation
+      - TELCLAUDE_RUN_AS_ROOT=0
 
       # Node environment
       - NODE_ENV=production
@@ -85,15 +86,18 @@ services:
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
 
-    # Privileged needed for bubblewrap user namespaces in Docker
-    privileged: true
-
-    # Run as root - bubblewrap handles isolation
+    # Start as root for firewall init, then drop to node via gosu
+    # Docker mode: SDK sandbox disabled, container provides isolation
     user: "0:0"
 
+    # Explicit capability management (no privileged mode)
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN  # Required for iptables firewall initialization
+
     security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+      - no-new-privileges:true
 
     read_only: true
     tmpfs:

@@ -206,10 +206,77 @@ setup_firewall() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
+# Refresh firewall rules (updates IP addresses for allowed domains)
+# ─────────────────────────────────────────────────────────────────────────────────
+
+refresh_firewall() {
+    if ! command -v iptables &> /dev/null; then
+        echo "[firewall-refresh] ERROR: iptables not available"
+        return 1
+    fi
+
+    if ! iptables -L -n &> /dev/null 2>&1; then
+        echo "[firewall-refresh] ERROR: insufficient permissions for iptables"
+        return 1
+    fi
+
+    echo "[firewall-refresh] refreshing allowed domain IPs..."
+
+    local updated=0
+    local failed=0
+
+    for domain in "${ALLOWED_DOMAINS[@]}"; do
+        # Resolve domain to current IP addresses
+        local new_ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
+
+        if [ -z "$new_ips" ]; then
+            echo "[firewall-refresh] warning: could not resolve $domain"
+            ((failed++)) || true
+            continue
+        fi
+
+        # Add new IPs that aren't already allowed
+        for ip in $new_ips; do
+            if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
+                # Rule doesn't exist, add it (before the final DROP rule)
+                # Insert at position -2 to be before the DROP rule
+                iptables -I OUTPUT -d "$ip" -j ACCEPT 2>/dev/null || true
+                echo "[firewall-refresh] added: $domain -> $ip"
+                ((updated++)) || true
+            fi
+        done
+    done
+
+    if [ $updated -gt 0 ]; then
+        echo "[firewall-refresh] updated $updated rules"
+    else
+        echo "[firewall-refresh] no updates needed"
+    fi
+
+    if [ $failed -gt 0 ]; then
+        echo "[firewall-refresh] warning: $failed domains failed to resolve"
+    fi
+
+    # Update sentinel timestamp
+    local sentinel_dir="/run/telclaude"
+    if [ -d "$sentinel_dir" ]; then
+        echo "$(date -Iseconds) (refreshed)" > "$sentinel_dir/firewall-active"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────────
 
 main() {
+    # Check for --refresh-only mode (used by firewall-refresh.sh daemon)
+    if [ "$1" = "--refresh-only" ]; then
+        if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
+            refresh_firewall
+        fi
+        exit 0
+    fi
+
     # Only setup firewall if TELCLAUDE_FIREWALL=1
     if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
         if ! setup_firewall; then

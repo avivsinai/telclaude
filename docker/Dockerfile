@@ -138,10 +138,11 @@ COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
 
-# Copy firewall initialization script and entrypoint wrapper
+# Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY --chown=node:node docker/firewall-refresh.sh /usr/local/bin/firewall-refresh.sh
 COPY --chown=node:node docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh /usr/local/bin/entrypoint.sh
 
 # Create symlink for telclaude command
 RUN ln -s /app/bin/telclaude.js /usr/local/bin/telclaude

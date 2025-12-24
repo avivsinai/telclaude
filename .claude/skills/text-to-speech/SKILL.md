@@ -69,7 +69,20 @@ After generation, the command outputs:
 - Voice used
 - Estimated duration
 
-**Important**: Tell the user the audio has been generated and include the file path in your response. The audio file is saved locally and the user can access it at that path.
+**Important**: Include the full file path in your response. The telclaude relay automatically detects paths to generated audio and sends the file to the user via Telegram.
+
+**Example response:**
+```
+I've generated the audio and saved it to:
+/workspace/.telclaude-media/tts/1234567890-abc123.mp3
+
+[The relay will automatically send the audio to you]
+```
+
+**Key points:**
+- Always include the full path from the command output in your response
+- The relay detects `.telclaude-media/tts/` paths and sends them automatically
+- No additional commands are needed - just include the path
 
 ## Best Practices
 

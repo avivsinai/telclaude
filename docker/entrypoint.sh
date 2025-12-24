@@ -36,6 +36,13 @@ if [ "$(id -u)" = "0" ]; then
     # The script checks TELCLAUDE_FIREWALL internally
     /usr/local/bin/init-firewall.sh
 
+    # Start firewall refresh daemon in background (if firewall is enabled)
+    # This periodically updates iptables rules when domain IPs change
+    if [ "${TELCLAUDE_FIREWALL:-0}" = "1" ]; then
+        /usr/local/bin/firewall-refresh.sh &
+        echo "[entrypoint] Started firewall refresh daemon (interval: ${FIREWALL_REFRESH_INTERVAL:-3600}s)"
+    fi
+
     # Create /tmp/claude for sandbox-runtime CWD tracking
     # srt hardcodes this path internally regardless of TMPDIR
     mkdir -p /tmp/claude
@@ -101,7 +108,8 @@ if [ "$(id -u)" = "0" ]; then
 
     # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)
     if [ "${TELCLAUDE_RUN_AS_ROOT:-0}" = "1" ]; then
-        echo "[entrypoint] Running as root (TELCLAUDE_RUN_AS_ROOT=1, needed for bubblewrap in Docker)"
+        echo "[entrypoint] Running as root (TELCLAUDE_RUN_AS_ROOT=1)"
+        echo "[entrypoint] WARNING: Consider setting TELCLAUDE_RUN_AS_ROOT=0 for better security"
         exec /app/bin/telclaude.js "$@"
     else
         echo "[entrypoint] Dropping privileges to user: $TELCLAUDE_USER"

@@ -49,9 +49,20 @@ Model: gpt-image-1.5
 
 ## Response Format
 
-After running the command, use the Read tool to show the image to the user by reading the output file path.
+After running the command, **include the full file path in your response**. The telclaude relay automatically detects paths to generated media and sends the file to the user via Telegram.
 
-**Important**: Tell the user the image has been generated and show them the image.
+**Example response:**
+```
+I've generated your image and saved it to:
+/workspace/.telclaude-media/generated/1234567890-abc123.png
+
+[The relay will automatically send the image to you]
+```
+
+**Important:**
+- Always include the full path from the command output in your response
+- The relay detects `.telclaude-media/generated/` paths and sends them automatically
+- No additional commands are needed - just include the path
 
 ## Best Practices
 

@@ -54,6 +54,12 @@ import { executeWithSession, getSessionManager } from "./session-manager.js";
 const logger = getChildLogger({ module: "sdk-client" });
 let keysExposedLogged = false;
 
+/**
+ * Timeout for PreToolUse hooks in seconds.
+ * Set to 10s to allow for DNS lookups (3s timeout) + validation overhead.
+ */
+const HOOK_TIMEOUT_SECONDS = 10;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tier-Based Key Exposure
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -325,7 +331,7 @@ function createNetworkSecurityHook(
 	return {
 		matcher: "WebFetch",
 		hooks: [hookCallback],
-		timeout: 5,
+		timeout: HOOK_TIMEOUT_SECONDS,
 	};
 }
 
@@ -445,7 +451,7 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 	// No matcher specified = runs for ALL tools. The callback filters by tool name internally.
 	return {
 		hooks: [hookCallback],
-		timeout: 5,
+		timeout: HOOK_TIMEOUT_SECONDS,
 	};
 }
 
@@ -478,11 +484,16 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	// Build environment for SDK
 	// In Docker mode, env vars are passed through directly
 	// In native mode, SDK sandbox handles env isolation
+	//
+	// SECURITY: Use explicit safe PATH instead of host PATH to prevent
+	// attacker-controlled directories from being in the PATH
+	const SAFE_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
 	const sandboxEnv: Record<string, string> = {
 		// Basic system vars
 		HOME: process.env.HOME ?? "",
 		USER: process.env.USER ?? "",
-		PATH: process.env.PATH ?? "",
+		PATH: sandboxEnabled ? SAFE_PATH : (process.env.PATH ?? SAFE_PATH),
 		SHELL: process.env.SHELL ?? "/bin/sh",
 		TERM: process.env.TERM ?? "xterm-256color",
 		LANG: process.env.LANG ?? "en_US.UTF-8",

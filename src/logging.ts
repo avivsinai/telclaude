@@ -90,14 +90,25 @@ function buildLogger(settings: ResolvedSettings): { logger: Logger; destination:
 	}
 
 	// Ensure file exists with 0600 to prevent world-readable logs
-	if (!fs.existsSync(settings.file)) {
-		fs.closeSync(fs.openSync(settings.file, "a", 0o600));
-	} else {
-		try {
-			fs.chmodSync(settings.file, 0o600);
-		} catch {
-			// Ignore chmod errors; destination below will still open the file
+	// SECURITY: Use O_CREAT to atomically create if not exists (avoids TOCTOU)
+	try {
+		// Try to create with O_CREAT | O_EXCL (atomic create-if-not-exists)
+		const fd = fs.openSync(
+			settings.file,
+			fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
+			0o600,
+		);
+		fs.closeSync(fd);
+	} catch (err) {
+		// File already exists (EEXIST) - that's fine, try to fix permissions
+		if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+			try {
+				fs.chmodSync(settings.file, 0o600);
+			} catch {
+				// Ignore chmod errors; destination below will still open the file
+			}
 		}
+		// Other errors: let pino.destination handle it
 	}
 
 	const destination = pino.destination({
