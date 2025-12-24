@@ -57,5 +57,8 @@ docker-compose*.yml
 # Local development
 *.local
 
+# Telclaude local data (media cache, etc.)
+.telclaude*
+
 # Note: .claude/ directory is included (see !.claude/**/*.md exception above)
 # It contains skills (SKILL.md files) needed by the Claude Agent SDK
