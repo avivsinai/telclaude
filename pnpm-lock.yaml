@@ -60,8 +60,8 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
       rate-limiter-flexible:
-        specifier: ^5.0.5
-        version: 5.0.5
+        specifier: ^9.0.1
+        version: 9.0.1
       shell-quote:
         specifier: ^1.8.3
         version: 1.8.3
@@ -1296,8 +1296,8 @@ packages:
   quick-format-unescaped@4.0.4:
     resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
 
-  rate-limiter-flexible@5.0.5:
-    resolution: {integrity: sha512-+/dSQfo+3FYwYygUs/V2BBdwGa9nFtakDwKt4l0bnvNB53TNT++QSFewwHX9qXrZJuMe9j+TUaU21lm5ARgqdQ==}
+  rate-limiter-flexible@9.0.1:
+    resolution: {integrity: sha512-sO+QdoGPCxroi4VkO2FIVjfUGuexhRkBc9ROHqu5eVEEz+oPHzQqvCc25ajFfMUBosbNGb6qpNa8xmxH9YNZsg==}
 
   rc@1.2.8:
     resolution: {integrity: sha512-y3bGgqKj3QBdxLbLkomlohkvsA8gdAiUQlSBJnBhfn+BPxg4bc62d8TcBW15wavDfgexCgccckhcZvywyQYPOw==}
@@ -2842,7 +2842,7 @@ snapshots:
 
   quick-format-unescaped@4.0.4: {}
 
-  rate-limiter-flexible@5.0.5: {}
+  rate-limiter-flexible@9.0.1: {}
 
   rc@1.2.8:
     dependencies:
