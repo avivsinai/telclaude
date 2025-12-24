@@ -63,15 +63,14 @@ if [ "$(id -u)" = "0" ]; then
         cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
     fi
 
-    # Symlink skills and CLAUDE.md to workspace for SDK's Skill tool discovery
-    # The SDK looks at <cwd>/.claude/skills, not ~/.claude/skills
-    if [ -d "/home/node/.claude/skills" ]; then
-        echo "[entrypoint] Linking skills to workspace"
+    # Skills are installed at user-level (~/.claude/skills/) above.
+    # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
+    # Create symlink if /workspace/.claude/skills/ doesn't exist (preserves user's own skills if present).
+    if [ ! -e "/workspace/.claude/skills" ]; then
+        echo "[entrypoint] Symlinking skills to workspace"
         mkdir -p /workspace/.claude
-        ln -sfn /home/node/.claude/skills /workspace/.claude/skills
-        if [ -f "/home/node/.claude/CLAUDE.md" ]; then
-            ln -sfn /home/node/.claude/CLAUDE.md /workspace/.claude/CLAUDE.md
-        fi
+        ln -s /home/node/.claude/skills /workspace/.claude/skills
+        chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills
     fi
 
     # Configure git credential helper (uses telclaude's secure storage)

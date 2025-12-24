@@ -5,7 +5,33 @@ description: Converts text to speech audio using OpenAI TTS API. Use when users 
 
 # Text-to-Speech Skill
 
-You can convert text to speech using the OpenAI TTS API when users request audio content.
+## CRITICAL: Voice Message Reply Rules
+
+When a user sends you a voice message, follow these rules:
+
+1. **ALWAYS use `--voice-message` flag** - Required for Telegram waveform display
+2. **Generate TTS in the SAME LANGUAGE the user spoke** - If they spoke English, generate English audio
+3. **Output ONLY the file path** - No text commentary alongside the voice reply
+
+**Exception**: If the user explicitly asks for a text response (e.g., "respond in text", "don't send voice"), respond with text instead.
+
+### Correct Example (user sent voice in English):
+```bash
+telclaude tts "Hello! How can I help you today?" --voice-message
+```
+Then output ONLY:
+```
+/workspace/.telclaude-media/voice/1234567890-abc123.ogg
+```
+
+### WRONG - Do NOT do this:
+```
+Hello! Here is the audio you requested:
+/workspace/.telclaude-media/tts/1234567890-abc123.mp3
+```
+This is wrong because: (1) added text alongside voice, (2) missing --voice-message flag, (3) mp3 instead of ogg, (4) wrong directory
+
+---
 
 ## When to Use
 
@@ -14,15 +40,7 @@ Use this skill when users:
 - Request audio versions of text content
 - Want voice messages or audio responses
 - Ask for text to be converted to speech
-- **Send a voice message** (protocol alignment - respond in voice)
-
-## Protocol Alignment
-
-**Important**: When a user sends you a voice message, respond with a voice message too. This creates a natural conversational flow. Use the `--voice-message` flag for proper Telegram voice message display.
-
-**Critical UX rule**: When replying with voice, DO NOT add extra text commentary. Just output the file path alone - the relay will send only the voice message. A human wouldn't write AND talk; neither should you.
-
-The only exception is if the user explicitly asks for a text response or requests details about the generated file.
+- **Send a voice message** (respond in voice - see CRITICAL rules above)
 
 ## How to Generate Speech
 
@@ -84,18 +102,11 @@ telclaude tts "Important announcement" --voice onyx --model tts-1-hd --speed 0.9
 
 ## Response Format
 
-After generation, the command outputs:
-- The local file path where the audio was saved
-- File size in KB
-- Audio format
-- Voice used
-- Estimated duration
-
-**Important**: The telclaude relay automatically detects paths to generated audio and sends the file to the user via Telegram.
+The `telclaude tts` command outputs metadata (file path, size, format, voice, duration). **You only need to include the file path in your response** - the relay handles sending it to Telegram.
 
 ### Voice message replies (responding to incoming voice)
 
-When replying with voice to a voice message, output ONLY the file path - no text:
+Output ONLY the file path - no commentary:
 
 ```
 /workspace/.telclaude-media/voice/1234567890-abc123.ogg
@@ -113,11 +124,9 @@ Here's the summary as audio:
 ```
 
 **Key points:**
-- Voice messages go to `.telclaude-media/voice/` and display with waveform
-- Audio files go to `.telclaude-media/tts/` and display as music files
-- For voice replies: path only, no text
-- For audio files: text context is OK
-- The relay automatically detects and sends the media
+- Voice messages: `.telclaude-media/voice/*.ogg` - waveform display, path only
+- Audio files: `.telclaude-media/tts/*.mp3` - music player display, text OK
+- The relay automatically detects paths and sends the media
 
 ## Best Practices
 

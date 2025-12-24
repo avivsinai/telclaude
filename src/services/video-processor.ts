@@ -11,7 +11,7 @@ import path from "node:path";
 import { type VideoProcessingConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { cleanupOldMedia, createMediaSubdir } from "../media/store.js";
-import { isTranscriptionAvailable, transcribeAudio } from "./transcription.js";
+import { getTranscriptionAvailability, transcribeAudio } from "./transcription.js";
 
 const logger = getChildLogger({ module: "video-processor" });
 
@@ -155,7 +155,10 @@ export async function processVideo(
 		let transcript: string | undefined;
 		let language: string | undefined;
 
-		if (videoConfig.extractAudio && isTranscriptionAvailable()) {
+		const transcriptionAvailability = videoConfig.extractAudio
+			? await getTranscriptionAvailability()
+			: null;
+		if (videoConfig.extractAudio && transcriptionAvailability?.available) {
 			try {
 				const audioPath = path.join(outputDir, "audio.mp3");
 				await extractAudio(videoPath, audioPath, effectiveDuration);

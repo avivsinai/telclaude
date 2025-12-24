@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
-import { type TranscriptionConfig, loadConfig } from "../config/config.js";
+import { type TelclaudeConfig, type TranscriptionConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
@@ -30,6 +30,78 @@ const DEFAULT_CONFIG: TranscriptionConfig = {
 	timeoutSeconds: 60,
 };
 
+type EffectiveTranscriptionConfig = TranscriptionConfig & {
+	provider: "openai" | "deepgram" | "command";
+	command?: string[];
+};
+
+function resolveTranscriptionConfig(
+	config: TelclaudeConfig,
+	options?: Partial<TranscriptionConfig>,
+): EffectiveTranscriptionConfig {
+	const merged: EffectiveTranscriptionConfig = {
+		...DEFAULT_CONFIG,
+		...config.transcription,
+		...options,
+	};
+
+	if (options?.command?.length && options.provider === undefined) {
+		merged.provider = "command";
+	}
+
+	return merged;
+}
+
+export type TranscriptionAvailability = {
+	available: boolean;
+	reason?: string;
+	provider: "openai" | "deepgram" | "command";
+};
+
+/**
+ * Check if transcription is available (async, includes keychain lookup).
+ */
+export async function getTranscriptionAvailability(): Promise<TranscriptionAvailability> {
+	const config = loadConfig();
+	const resolved = resolveTranscriptionConfig(config);
+
+	switch (resolved.provider) {
+		case "openai": {
+			const configured = await isOpenAIConfigured();
+			return configured
+				? { available: true, provider: "openai" }
+				: {
+						available: false,
+						provider: "openai",
+						reason:
+							"OpenAI API key not configured. Run `telclaude setup-openai` or set OPENAI_API_KEY.",
+					};
+		}
+		case "command": {
+			const hasCommand = !!resolved.command?.length;
+			return hasCommand
+				? { available: true, provider: "command" }
+				: {
+						available: false,
+						provider: "command",
+						reason: "No transcription command configured.",
+					};
+		}
+		case "deepgram":
+			return {
+				available: false,
+				provider: "deepgram",
+				reason: "Deepgram transcription not yet implemented.",
+			};
+		default:
+			return {
+				available: false,
+				provider: "openai",
+				reason: "Unknown transcription provider.",
+			};
+	}
+}
+
 /**
  * Transcribe audio file to text.
  *
@@ -42,11 +114,7 @@ export async function transcribeAudio(
 	options?: Partial<TranscriptionConfig>,
 ): Promise<TranscriptionResult> {
 	const config = loadConfig();
-	const transcriptionConfig = {
-		...DEFAULT_CONFIG,
-		...config.transcription,
-		...options,
-	};
+	const transcriptionConfig = resolveTranscriptionConfig(config, options);
 
 	logger.debug({ filePath, provider: transcriptionConfig.provider }, "starting transcription");
 
@@ -195,14 +263,14 @@ async function transcribeWithCommand(
  */
 export function isTranscriptionAvailable(): boolean {
 	const config = loadConfig();
-	const provider = config.transcription?.provider ?? "openai";
+	const resolved = resolveTranscriptionConfig(config);
 
-	switch (provider) {
+	switch (resolved.provider) {
 		case "openai":
 			// Use sync check for quick availability; actual key from keychain is checked at call time
 			return isOpenAIConfiguredSync();
 		case "command":
-			return !!config.transcription?.command?.length;
+			return !!resolved.command?.length;
 		case "deepgram":
 			return false; // Not yet implemented
 		default:

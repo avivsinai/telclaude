@@ -21,6 +21,7 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
+import { VALIDATED_DATA_DIR, escapeRegex } from "../utils.js";
 import { chatIdToString } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
@@ -135,6 +136,41 @@ export function getUserPermissionTier(
 	}
 
 	return tier;
+}
+
+/**
+ * Get per-user rate limit overrides, if configured.
+ *
+ * Resolution order matches getUserPermissionTier():
+ * 1) Identity link -> localUserId entry
+ * 2) Raw chatId entry
+ * 3) tg:chatId entry
+ */
+export function getUserRateLimitOverride(
+	userId: string | number,
+	securityConfig?: SecurityConfig,
+): { perMinute?: number; perHour?: number } | undefined {
+	const userPerms = securityConfig?.permissions?.users;
+	if (!userPerms) return undefined;
+
+	const normalizedId = typeof userId === "number" ? String(userId) : userId;
+	const numericId = typeof userId === "number" ? userId : Number.parseInt(userId, 10);
+	const withPrefix = chatIdToString(userId);
+
+	// 1. Check identity link first
+	if (!Number.isNaN(numericId)) {
+		const link = getIdentityLink(numericId);
+		if (link) {
+			const linkedPerms = userPerms[link.localUserId];
+			if (linkedPerms?.rateLimit) {
+				return linkedPerms.rateLimit;
+			}
+		}
+	}
+
+	// 2. Check user-specific permissions by chatId
+	const directPerms = userPerms[normalizedId] ?? userPerms[withPrefix];
+	return directPerms?.rateLimit;
 }
 
 /**
@@ -335,8 +371,12 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	/\.telclaude(\/|$)/i, // Config directory with database (with or without trailing slash)
 	/telclaude\.db/i, // Database file directly
 	/telclaude\.json/i, // Config file
-	/totp_secrets/i, // TOTP table name in queries
+	/totp[-_]secrets/i, // TOTP secrets file (totp-secrets.json) and table name
 	/totp\.sock/i, // TOTP socket
+	// Docker mode: TELCLAUDE_DATA_DIR=/data contains logs, audit, secrets
+	// This pattern catches /data/logs, /data/telclaude.db, etc.
+	// Uses validated/escaped value to prevent regex injection and trailing slash issues
+	...(VALIDATED_DATA_DIR ? [new RegExp(`^${escapeRegex(VALIDATED_DATA_DIR)}(\\/|$)`, "i")] : []),
 
 	// === Claude Code settings (prevent hook bypass via disableAllHooks) ===
 	// SECURITY: Blocking writes to these prevents prompt injection from setting

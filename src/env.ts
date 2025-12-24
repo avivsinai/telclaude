@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadConfig } from "./config/config.js";
 import { type RuntimeEnv, defaultRuntime } from "./runtime.js";
+import { CONFIG_DIR } from "./utils.js";
 
 const TelclaudeEnvSchema = z.object({
 	telegramBotToken: z.string().min(1),
@@ -14,11 +15,12 @@ let cachedEnv: TelclaudeEnv | null = null;
  * Read and validate required environment variables.
  *
  * SECURITY: Token loading priority:
- * 1. Config file (~/.telclaude/telclaude.json) - preferred for native deployments
+ * 1. Config file (CONFIG_DIR/telclaude.json) - preferred for native deployments
  *    because this directory is blocked from Claude's sandbox
  * 2. TELEGRAM_BOT_TOKEN env var - allowed for Docker deployments where
  *    container isolation provides equivalent security
  *
+ * CONFIG_DIR defaults to ~/.telclaude but can be overridden via TELCLAUDE_DATA_DIR.
  * In Docker, the container itself provides isolation, so env vars are acceptable.
  * For native deployments, prefer the config file approach.
  */
@@ -53,7 +55,7 @@ export function readEnv(runtime: RuntimeEnv = defaultRuntime): TelclaudeEnv {
 		}
 		runtime.error("");
 		runtime.error("Option 1 - Config file (recommended for native deployments):");
-		runtime.error("  Add to ~/.telclaude/telclaude.json:");
+		runtime.error(`  Add to ${CONFIG_DIR}/telclaude.json:`);
 		runtime.error('  { "telegram": { "botToken": "your-token-here" } }');
 		runtime.error("");
 		runtime.error("Option 2 - Environment variable (for Docker):");

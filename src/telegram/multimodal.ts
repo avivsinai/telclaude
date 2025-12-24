@@ -11,7 +11,7 @@ import {
 	type FeatureRateLimitConfig,
 	getMultimediaRateLimiter,
 } from "../services/multimedia-rate-limit.js";
-import { isTranscriptionAvailable, transcribeAudio } from "../services/transcription.js";
+import { getTranscriptionAvailability, transcribeAudio } from "../services/transcription.js";
 import { isVideoProcessingAvailable, processVideo } from "../services/video-processor.js";
 import type { TelegramMediaType } from "./types.js";
 
@@ -97,7 +97,7 @@ export async function processMultimodalContext(
 	const rateLimiter = userId ? getMultimediaRateLimiter() : null;
 
 	// Check if this is transcribable audio/voice
-	if (AUDIO_MEDIA_TYPES.includes(mediaType) && !transcript && isTranscriptionAvailable()) {
+	if (AUDIO_MEDIA_TYPES.includes(mediaType) && !transcript) {
 		// Check rate limit if userId provided
 		if (rateLimiter && userId) {
 			const limits = DEFAULT_TRANSCRIPTION_LIMITS;
@@ -109,6 +109,17 @@ export async function processMultimodalContext(
 					transcript: `[Transcription skipped: ${limitResult.reason}]`,
 				};
 			}
+		}
+
+		const availability = await getTranscriptionAvailability();
+		if (!availability.available) {
+			if (availability.reason) {
+				return {
+					...ctx,
+					transcript: `[Transcription unavailable: ${availability.reason}]`,
+				};
+			}
+			return ctx;
 		}
 
 		try {

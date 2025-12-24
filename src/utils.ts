@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 
 export async function ensureDir(dir: string) {
 	await fs.promises.mkdir(dir, { recursive: true });
@@ -63,4 +64,45 @@ export function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export const CONFIG_DIR = `${os.homedir()}/.telclaude`;
+/**
+ * Validate and resolve TELCLAUDE_DATA_DIR.
+ * Rejects: ~ paths (not expanded), relative paths, empty strings.
+ * Returns normalized path (no trailing slash) or null if invalid.
+ */
+function resolveDataDir(): string | null {
+	const dataDir = process.env.TELCLAUDE_DATA_DIR;
+	if (!dataDir) return null;
+
+	// Reject ~ paths (shell doesn't expand in env vars)
+	if (dataDir.startsWith("~")) {
+		console.error(
+			`ERROR: TELCLAUDE_DATA_DIR contains ~ which won't expand. Use absolute path like /data or ${os.homedir()}/.telclaude`,
+		);
+		return null;
+	}
+
+	// Reject relative paths (security risk: could place files in workspace)
+	if (!path.isAbsolute(dataDir)) {
+		console.error(`ERROR: TELCLAUDE_DATA_DIR must be absolute path, got: ${dataDir}`);
+		return null;
+	}
+
+	// Normalize: remove trailing slash for consistent matching
+	return dataDir.replace(/\/+$/, "");
+}
+
+/**
+ * Escape special regex characters in a string.
+ */
+export function escapeRegex(str: string): string {
+	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Validated TELCLAUDE_DATA_DIR (null if not set or invalid).
+ * Use this for sensitive path checks instead of raw process.env.
+ */
+export const VALIDATED_DATA_DIR = resolveDataDir();
+
+// Use TELCLAUDE_DATA_DIR if set and valid (Docker), otherwise ~/.telclaude (native)
+export const CONFIG_DIR = VALIDATED_DATA_DIR || `${os.homedir()}/.telclaude`;

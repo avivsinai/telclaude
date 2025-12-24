@@ -28,23 +28,21 @@ const SessionConfigSchema = z.object({
 });
 
 // Reply configuration schema (SDK-based)
-const ReplyConfigSchema = z.object({
-	enabled: z.boolean().default(true),
-	timeoutSeconds: z.number().int().positive().default(600),
-	session: SessionConfigSchema.optional(),
-	typingIntervalSeconds: z.number().positive().default(8),
-});
+const ReplyConfigSchema = z
+	.object({
+		enabled: z.boolean().default(true),
+		timeoutSeconds: z.number().int().positive().default(600),
+		session: SessionConfigSchema.optional(),
+		typingIntervalSeconds: z.number().positive().default(8),
+	})
+	.default({});
 
 // Inbound (auto-reply) configuration schema
-const InboundConfigSchema = z.object({
-	transcribeAudio: z
-		.object({
-			command: z.array(z.string()),
-			timeoutSeconds: z.number().int().positive().default(45),
-		})
-		.optional(),
-	reply: ReplyConfigSchema.optional(),
-});
+const InboundConfigSchema = z
+	.object({
+		reply: ReplyConfigSchema,
+	})
+	.default({});
 
 // SDK configuration schema (for Claude Agent SDK options)
 const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
@@ -270,17 +268,17 @@ const LoggingConfigSchema = z.object({
 
 // Main config schema
 const TelclaudeConfigSchema = z.object({
-	security: SecurityConfigSchema.optional(),
-	telegram: TelegramConfigSchema.optional(),
-	inbound: InboundConfigSchema.optional(),
-	logging: LoggingConfigSchema.optional(),
-	sdk: SdkConfigSchema.optional(),
+	security: SecurityConfigSchema.default({}),
+	telegram: TelegramConfigSchema.default({}),
+	inbound: InboundConfigSchema,
+	logging: LoggingConfigSchema.default({}),
+	sdk: SdkConfigSchema.default({}),
 	// Multimedia capabilities
-	openai: OpenAIConfigSchema.optional(),
-	transcription: TranscriptionConfigSchema.optional(),
-	imageGeneration: ImageGenerationConfigSchema.optional(),
-	videoProcessing: VideoProcessingConfigSchema.optional(),
-	tts: TTSConfigSchema.optional(),
+	openai: OpenAIConfigSchema.default({}),
+	transcription: TranscriptionConfigSchema.default({}),
+	imageGeneration: ImageGenerationConfigSchema.default({}),
+	videoProcessing: VideoProcessingConfigSchema.default({}),
+	tts: TTSConfigSchema.default({}),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -325,13 +323,13 @@ export function loadConfig(): TelclaudeConfig {
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code === "ENOENT") {
-			// No config file - use defaults
-			return {};
+			// No config file - use schema defaults
+			return TelclaudeConfigSchema.parse({});
 		}
 		if (code === "EACCES") {
 			// Permission denied (e.g., running in sandbox where ~/.telclaude is blocked)
 			getLogger().debug({ configPath }, "config file not accessible (EACCES), using defaults");
-			return {};
+			return TelclaudeConfigSchema.parse({});
 		}
 		throw err;
 	}

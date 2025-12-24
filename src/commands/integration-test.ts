@@ -22,6 +22,7 @@ type IntegrationTestOptions = {
 	echo?: boolean;
 	env?: boolean;
 	network?: boolean;
+	voice?: boolean;
 	all?: boolean;
 	verbose?: boolean;
 	timeout?: string;
@@ -35,6 +36,7 @@ export function registerIntegrationTestCommand(program: Command): void {
 		.option("--echo", "Test simple echo command through SDK")
 		.option("--env", "Test environment variable passing through SDK")
 		.option("--network", "Test sandbox network proxy configuration")
+		.option("--voice", "Test voice message response (TTS skill)")
 		.option("--all", "Run all integration tests")
 		.option("-v, --verbose", "Show detailed output")
 		.option("--timeout <ms>", "Query timeout in ms", "120000")
@@ -42,11 +44,13 @@ export function registerIntegrationTestCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 			const timeoutMs = Number.parseInt(opts.timeout ?? "120000", 10);
 
-			const runAll = opts.all || (!opts.image && !opts.echo && !opts.env && !opts.network);
+			const runAll =
+				opts.all || (!opts.image && !opts.echo && !opts.env && !opts.network && !opts.voice);
 			const runImage = opts.image || runAll;
 			const runEcho = opts.echo || runAll;
 			const runEnv = opts.env || runAll;
 			const runNetwork = opts.network || runAll;
+			const runVoice = opts.voice || runAll;
 
 			console.log(chalk.bold("\n🔬 Telclaude Integration Test\n"));
 			console.log("This tests the full SDK path (not just sandbox config).\n");
@@ -98,6 +102,23 @@ export function registerIntegrationTestCommand(program: Command): void {
 						console.log(chalk.gray("  The SDK should inject OPENAI_API_KEY into the environment."));
 					}
 					const result = await testImageGeneration(verbose, timeoutMs);
+					results.push(result);
+				}
+				console.log();
+			}
+
+			if (runVoice) {
+				console.log(chalk.bold("── Voice Message Response Test ──"));
+				const hasKey = await getOpenAIKey();
+				if (!hasKey) {
+					console.log(chalk.yellow("  ○ Skipped (OPENAI_API_KEY not configured)"));
+					results.push({
+						name: "Voice message response",
+						passed: true,
+						message: "Skipped (no API key)",
+					});
+				} else {
+					const result = await testVoiceMessageResponse(verbose, timeoutMs);
 					results.push(result);
 				}
 				console.log();
@@ -508,6 +529,170 @@ Report results clearly. Mark "FETCH_SUCCESS" if curl returns any JSON (even 401)
 			console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
 		}
 		return { name, passed: false, message: "Unexpected output" };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		console.log(chalk.red(`  ✗ ${name}: ${message}`));
+		return { name, passed: false, message };
+	}
+}
+
+/**
+ * Test voice message response through SDK.
+ * Simulates receiving a voice message and verifies Claude follows the TTS skill:
+ * 1. Uses --voice-message flag (creates .ogg in /voice/ not .mp3 in /tts/)
+ * 2. Outputs ONLY the file path (no extra text)
+ * 3. Responds in the same language as the input
+ */
+async function testVoiceMessageResponse(
+	verbose: boolean,
+	timeoutMs: number,
+): Promise<{ name: string; passed: boolean; message: string; duration?: number }> {
+	const name = "Voice message response";
+
+	try {
+		console.log("  Testing voice message response via SDK...");
+		console.log(chalk.gray("  Simulating incoming voice message and checking response format..."));
+		const startTime = Date.now();
+
+		let voicePath = "";
+		let bashCommand = "";
+
+		// Simulate a voice message being received (this is how it appears to Claude via Telegram)
+		const { output, error } = await runSdkQuery(
+			`You just received a voice message from a user. Here is the transcript:
+
+[Voice Message Transcript]: "Hello, how are you doing today?"
+
+According to your text-to-speech skill, when a user sends a voice message, you MUST:
+1. Use the --voice-message flag with telclaude tts
+2. Reply in the SAME language (English in this case)
+3. Output ONLY the file path - no other text
+
+Respond to this voice message now.`,
+			{
+				enableSkills: true,
+				timeoutMs,
+				onText: (text) => {
+					if (verbose) {
+						process.stdout.write(chalk.gray(text));
+					}
+					// Look for voice file path
+					const voiceMatch = text.match(/\/[^\s"']*\.telclaude-media\/voice\/[^\s"']+\.ogg/);
+					if (voiceMatch) {
+						voicePath = voiceMatch[0];
+					}
+					// Also check for wrong path (tts instead of voice)
+					const ttsMatch = text.match(/\/[^\s"']*\.telclaude-media\/tts\/[^\s"']+\.mp3/);
+					if (ttsMatch && !voicePath) {
+						voicePath = ttsMatch[0]; // Will be flagged as wrong format
+					}
+				},
+				onToolUse: (toolName, input) => {
+					if (toolName === "Bash" && typeof input === "object" && input !== null) {
+						const cmd = (input as { command?: string }).command ?? "";
+						if (cmd.includes("telclaude tts")) {
+							bashCommand = cmd;
+						}
+					}
+				},
+			},
+		);
+
+		const duration = Date.now() - startTime;
+
+		// Also scan full output for paths
+		if (!voicePath) {
+			const voiceMatch = output.match(/\/[^\s"']*\.telclaude-media\/voice\/[^\s"']+\.ogg/);
+			if (voiceMatch) {
+				voicePath = voiceMatch[0];
+			}
+			const ttsMatch = output.match(/\/[^\s"']*\.telclaude-media\/tts\/[^\s"']+\.mp3/);
+			if (ttsMatch && !voicePath) {
+				voicePath = ttsMatch[0];
+			}
+		}
+
+		// Validation checks
+		const issues: string[] = [];
+
+		// Check 0: Did it call telclaude tts at all?
+		if (!bashCommand) {
+			issues.push("No telclaude tts command was executed");
+		}
+
+		// Check 1: Did it use --voice-message flag?
+		if (bashCommand && !bashCommand.includes("--voice-message")) {
+			issues.push("Missing --voice-message flag");
+		}
+
+		// Check 2: Is the file in /voice/ directory (not /tts/)?
+		if (voicePath && !voicePath.includes(".telclaude-media/voice/")) {
+			issues.push("Wrong directory: used /tts/ instead of /voice/");
+		}
+
+		// Check 3: Is the format .ogg (not .mp3)?
+		if (voicePath && !voicePath.endsWith(".ogg")) {
+			issues.push("Wrong format: used .mp3 instead of .ogg");
+		}
+
+		// Check 4: Does the file actually exist? (prevents hallucinated paths)
+		if (voicePath) {
+			try {
+				if (!fs.existsSync(voicePath)) {
+					issues.push("Voice file does not exist (path may be hallucinated)");
+				}
+			} catch {
+				issues.push("Could not verify voice file existence");
+			}
+		}
+
+		// Check 5: Is the output minimal (just path, no extra text)?
+		// Allow some leeway for thinking/tool output but flag excessive text
+		const outputLines = output
+			.trim()
+			.split("\n")
+			.filter((l) => l.trim());
+		const nonPathLines = outputLines.filter(
+			(l) => !l.includes(".telclaude-media") && l.trim().length > 0,
+		);
+		const hasExcessiveText = nonPathLines.length > 3 || output.length > 500;
+		if (hasExcessiveText && voicePath) {
+			issues.push("Excessive text in response (should be path only)");
+		}
+
+		// Results
+		if (voicePath && issues.length === 0) {
+			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
+			if (verbose) {
+				console.log(chalk.gray(`    Voice file: ${voicePath}`));
+				console.log(chalk.gray(`    Command: ${bashCommand.substring(0, 100)}...`));
+			}
+			return { name, passed: true, message: "OK", duration };
+		}
+
+		if (voicePath && issues.length > 0) {
+			// Partial success - generated audio but with issues
+			console.log(chalk.yellow(`  ⚠ ${name}: Generated audio but with issues`));
+			for (const issue of issues) {
+				console.log(chalk.yellow(`    • ${issue}`));
+			}
+			if (verbose) {
+				console.log(chalk.gray(`    Path: ${voicePath}`));
+				console.log(chalk.gray(`    Command: ${bashCommand}`));
+			}
+			return { name, passed: false, message: issues.join("; "), duration };
+		}
+
+		if (error) {
+			console.log(chalk.red(`  ✗ ${name}: ${error}`));
+			return { name, passed: false, message: error };
+		}
+
+		console.log(chalk.red(`  ✗ ${name}: No voice file generated`));
+		if (verbose) {
+			console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
+		}
+		return { name, passed: false, message: "No voice file generated" };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));

@@ -1,3 +1,5 @@
+import { VALIDATED_DATA_DIR } from "../utils.js";
+
 /**
  * Sandbox configuration constants for telclaude.
  *
@@ -18,6 +20,8 @@
 export const SENSITIVE_READ_PATHS = [
 	// === Telclaude data ===
 	"~/.telclaude",
+	// Dynamic: TELCLAUDE_DATA_DIR (Docker uses /data) - only if validated
+	...(VALIDATED_DATA_DIR ? [VALIDATED_DATA_DIR] : []),
 
 	// === Environment files (secrets!) ===
 	"**/.env",

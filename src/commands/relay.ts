@@ -19,6 +19,7 @@ import {
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
+import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
 
@@ -303,7 +304,7 @@ export function registerRelayCommand(program: Command): void {
 					console.log(`Allowed chats: ${cfg.telegram.allowedChats.join(", ")}`);
 				} else {
 					console.log(
-						"Warning: No allowed chats configured - bot will DENY all chats (fail-closed). Add chat IDs to ~/.telclaude/telclaude.json to permit access.",
+						`Warning: No allowed chats configured - bot will DENY all chats (fail-closed). Add chat IDs to ${CONFIG_DIR}/telclaude.json to permit access.`,
 					);
 				}
 
