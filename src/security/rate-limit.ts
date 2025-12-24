@@ -8,6 +8,7 @@
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import { getUserRateLimitOverride } from "./permissions.js";
 import type { RateLimitResult } from "./types.js";
 
 const logger = getChildLogger({ module: "rate-limit" });
@@ -46,6 +47,7 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 // Window durations in milliseconds
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Get the start of the current window for a given duration.
@@ -61,9 +63,11 @@ function getWindowStart(durationMs: number): number {
  */
 export class RateLimiter {
 	private config: RateLimitConfig;
+	private securityConfig?: SecurityConfig;
 
 	constructor(securityConfig?: SecurityConfig) {
 		this.config = this.mergeConfig(securityConfig);
+		this.securityConfig = securityConfig;
 	}
 
 	private mergeConfig(securityConfig?: SecurityConfig): RateLimitConfig {
@@ -136,6 +140,11 @@ export class RateLimiter {
 		try {
 			const minuteWindow = getWindowStart(MINUTE_MS);
 			const hourWindow = getWindowStart(HOUR_MS);
+			const userOverride = getUserRateLimitOverride(userId, this.securityConfig);
+			const perUserLimits = {
+				perMinute: userOverride?.perMinute ?? this.config.perUser.perMinute,
+				perHour: userOverride?.perHour ?? this.config.perUser.perHour,
+			};
 
 			// Check all limits before consuming
 			// Global minute
@@ -154,14 +163,14 @@ export class RateLimiter {
 
 			// Per-user minute
 			const userMinutePoints = this.getPoints("user_minute", userId, minuteWindow);
-			if (userMinutePoints >= this.config.perUser.perMinute) {
+			if (userMinutePoints >= perUserLimits.perMinute) {
 				logger.info({ userId }, "per-user minute rate limit hit");
 				return { allowed: false, remaining: 0, resetMs: MINUTE_MS, limitType: "user" };
 			}
 
 			// Per-user hour
 			const userHourPoints = this.getPoints("user_hour", userId, hourWindow);
-			if (userHourPoints >= this.config.perUser.perHour) {
+			if (userHourPoints >= perUserLimits.perHour) {
 				logger.info({ userId }, "per-user hour rate limit hit");
 				return { allowed: false, remaining: 0, resetMs: HOUR_MS, limitType: "user" };
 			}
@@ -192,9 +201,10 @@ export class RateLimiter {
 				this.incrementPoints(`tier_hour_${tier}`, userId, hourWindow);
 			})();
 
-			// Calculate remaining based on tier minute limit (most restrictive for UX)
+			// Calculate remaining based on the most restrictive minute limit (tier vs per-user)
+			const effectiveMinuteLimit = Math.min(tierLimits.perMinute, perUserLimits.perMinute);
 			const newTierMinutePoints = tierMinutePoints + 1;
-			const remaining = Math.max(0, tierLimits.perMinute - newTierMinutePoints);
+			const remaining = Math.max(0, effectiveMinuteLimit - newTierMinutePoints);
 			const resetMs = MINUTE_MS - (Date.now() - minuteWindow);
 
 			return {
@@ -266,7 +276,14 @@ export class RateLimiter {
 	cleanup(): number {
 		const db = getDb();
 		const oneHourAgo = Date.now() - HOUR_MS;
-		const result = db.prepare("DELETE FROM rate_limits WHERE window_start < ?").run(oneHourAgo);
+		const oneDayAgo = Date.now() - DAY_MS;
+		const result = db
+			.prepare(
+				`DELETE FROM rate_limits
+				 WHERE (limiter_type LIKE 'multimedia_%' AND window_start < ?)
+				    OR (limiter_type NOT LIKE 'multimedia_%' AND window_start < ?)`,
+			)
+			.run(oneDayAgo, oneHourAgo);
 
 		if (result.changes > 0) {
 			logger.debug({ cleaned: result.changes }, "cleaned old rate limit windows");

@@ -42,7 +42,7 @@ Based on [2025 Docker security best practices](https://cloudnativenow.com/topics
 | **Capability dropping** | `--cap-drop=ALL` with only required caps added back |
 | **Read-only root** | Root filesystem is read-only; `/tmp` uses tmpfs |
 | **Resource limits** | CPU and memory limits prevent resource exhaustion |
-| **Network isolation** | Optional firewall restricts outbound connections (requires root at startup) |
+| **Network isolation** | **Required** firewall restricts outbound connections (requires root at startup) |
 | **Named volumes** | Persistent data isolated from host filesystem |
 | **Multi-stage build** | Minimal runtime image without build tools |
 
@@ -119,7 +119,7 @@ This stores credentials in the `telclaude-claude` volume.
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELCLAUDE_FIREWALL` | No | Set to `1` to enable network firewall |
+| `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (relay will refuse to start without it) |
 
 ### Custom Configuration
 
@@ -174,36 +174,47 @@ docker compose exec telclaude claude login
 docker volume ls | grep telclaude
 ```
 
-## Enabling Network Firewall
+## Network Firewall (Required)
 
-For stricter security, enable the network firewall:
+**The network firewall is required for Docker mode.** The relay will refuse to start without it because Docker mode disables the SDK sandbox, leaving Bash with no network isolation.
+
+### Configuration
 
 1. Set in `.env`:
    ```bash
    TELCLAUDE_FIREWALL=1
    ```
 
-2. The container will restrict outbound connections to:
+2. Ensure docker-compose.yml has `cap_add: [NET_ADMIN]` (already included by default).
+
+3. The container will restrict outbound connections to:
    - Anthropic API (api.anthropic.com)
    - Telegram API (api.telegram.org)
    - Package registries (npm, PyPI)
    - GitHub
 
+### Verification
+
+The firewall creates a sentinel file at `/run/telclaude/firewall-active` when successfully applied. The relay checks for this file and fails if missing.
+
+### Bypass (Testing Only)
+
+**SECURITY WARNING:** For testing only. Never use in production.
+
+```bash
+# Disables firewall requirement (Bash will have unrestricted network access)
+TELCLAUDE_ACCEPT_NO_FIREWALL=1
+```
+
+This bypass is logged to the audit log.
+
 ## Troubleshooting
 
-### "Sandbox unavailable"
+### "Sandbox unavailable" (native mode only)
 
-The container includes `bubblewrap` for sandboxing. If it fails:
-
-```powershell
-# Check if bubblewrap works
-docker compose exec telclaude bwrap --version
-
-# May need additional capabilities (already in docker-compose.yml)
-cap_add:
-  - SYS_ADMIN
-  - NET_ADMIN
-```
+Docker mode disables the SDK sandbox, so this error should not appear inside the container.
+If you see it, you are likely running native mode outside Docker. On Linux, install
+`bubblewrap` and `socat` and retry.
 
 ### "Permission denied" on workspace
 

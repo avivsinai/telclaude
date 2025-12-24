@@ -8,7 +8,11 @@
     "allowedChats": [
       123456789,   // Admin's DM
       -100987654   // Team group chat (groups have negative IDs)
-    ]
+    ],
+    // Optional group guardrail: ignore group/supergroup messages unless bot is mentioned or replied to
+    "groupChat": {
+      "requireMention": true
+    }
   },
 
   "security": {

@@ -13,6 +13,7 @@ import {
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
+import { cleanupOldMedia } from "../media/store.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
 import { getSessionManager } from "../sdk/session-manager.js";
@@ -42,12 +43,15 @@ import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
 import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
 import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
+import { initializeGitCredentials } from "../services/git-credentials.js";
+import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { getDb } from "../storage/db.js";
 import { cleanupExpired } from "../storage/db.js";
-import { buildMultimodalPrompt } from "./multimodal.js";
+import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
+import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
@@ -354,13 +358,19 @@ async function executeWithSession(
 	}, typingInterval);
 
 	try {
-		// Build prompt with multimodal context (handles empty body + media)
-		const queryPrompt = buildMultimodalPrompt({
-			body: msg.body,
-			mediaPath: ctx.mediaPath,
-			mediaType: ctx.mediaType,
-			mimeType: msg.mimeType,
-		});
+		// Process multimodal context (transcribes audio if available)
+		const processedContext = await processMultimodalContext(
+			{
+				body: msg.body,
+				mediaPath: ctx.mediaPath,
+				mediaType: ctx.mediaType,
+				mimeType: msg.mimeType,
+			},
+			{ userId },
+		);
+
+		// Build prompt with multimodal context (handles empty body + media + transcripts)
+		const queryPrompt = buildMultimodalPrompt(processedContext);
 
 		// SECURITY: Run infrastructure secret checks on the final prompt (post-templating)
 		const infraPromptCheck = checkInfrastructureSecrets(queryPrompt);
@@ -459,12 +469,65 @@ async function executeWithSession(
 				}
 
 				if (finalResponse) {
+					// Auto-detect generated media in Claude's response.
+					// This enables skills like image-generator and text-to-speech to work:
+					// - Skill teaches Claude to generate media and include path in response
+					// - Relay detects the path and sends the file to the user
+					// See: .claude/skills/image-generator/SKILL.md
+					const generatedMedia = extractGeneratedMediaPaths(finalResponse, process.cwd());
+
+					// Check if this is a "voice-only" response (just a file path, no real content)
+					// This enables natural voice replies - when responding with voice,
+					// Claude outputs just the path and we only send the voice message,
+					// no text. Like a human would.
+					const isVoiceOnlyResponse =
+						generatedMedia.length === 1 &&
+						generatedMedia[0].type === "voice" &&
+						isMediaOnlyResponse(finalResponse, generatedMedia[0].path);
+
 					// Add to recentlySent BEFORE sending to prevent echo race condition
 					const recentKey = makeRecentSentKey(msg.chatId, finalResponse);
 					recentlySent.add(recentKey);
 					setTimeout(() => recentlySent.delete(recentKey), 30000);
 
-					await msg.reply(finalResponse);
+					// Track if we need to fall back to text for voice-only responses
+					let voiceOnlySendFailed = false;
+
+					// Send text only if this is NOT a voice-only response
+					if (!isVoiceOnlyResponse) {
+						await msg.reply(finalResponse);
+					}
+
+					for (const media of generatedMedia) {
+						try {
+							await msg.sendMedia({ type: media.type, source: media.path });
+							logger.info(
+								{
+									path: media.path,
+									type: media.type,
+									chatId: msg.chatId,
+									voiceOnly: isVoiceOnlyResponse,
+								},
+								"auto-sent generated media to Telegram",
+							);
+						} catch (mediaErr) {
+							logger.warn(
+								{ path: media.path, type: media.type, error: String(mediaErr) },
+								"failed to auto-send generated media",
+							);
+							// Track failure for voice-only fallback
+							if (isVoiceOnlyResponse) {
+								voiceOnlySendFailed = true;
+							}
+						}
+					}
+
+					// Fallback: if voice-only response failed to send media, send text instead
+					// so user doesn't receive silent failure
+					if (voiceOnlySendFailed) {
+						logger.info({ chatId: msg.chatId }, "voice-only send failed, falling back to text");
+						await msg.reply(finalResponse);
+					}
 
 					// Update session in SQLite
 					sessionEntry.updatedAt = Date.now();
@@ -563,6 +626,38 @@ export async function monitorTelegramProvider(
 		logger.info("security profile: simple (hard enforcement only)");
 	}
 
+	// Initialize API key lookups (checks keychain, env, config)
+	// This populates caches so sync availability checks work correctly
+	let openaiConfigured = await initializeOpenAIKey();
+	if (openaiConfigured) {
+		logger.info("OpenAI services available (image generation, TTS, transcription)");
+	} else {
+		logger.debug("OpenAI not configured - multimedia features disabled");
+	}
+
+	const gitConfigured = await initializeGitCredentials();
+	if (gitConfigured) {
+		logger.info("Git credentials available (GitHub token will be exposed to sandbox)");
+	}
+
+	// If not configured, periodically re-check so a later setup-openai is picked up.
+	const OPENAI_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
+	let openaiRecheckInterval: NodeJS.Timeout | null = null;
+	if (!openaiConfigured) {
+		openaiRecheckInterval = setInterval(async () => {
+			clearOpenAICache();
+			const available = await initializeOpenAIKey();
+			if (available) {
+				openaiConfigured = true;
+				logger.info("OpenAI configured - multimedia features now enabled");
+				if (openaiRecheckInterval) {
+					clearInterval(openaiRecheckInterval);
+					openaiRecheckInterval = null;
+				}
+			}
+		}, OPENAI_RECHECK_INTERVAL_MS);
+	}
+
 	// SECURITY: One-time cleanup of expired security artifacts on startup
 	// This runs BEFORE entering the connection loop to ensure stale approvals,
 	// link codes, TOTP sessions, and admin claims are purged on every run.
@@ -602,6 +697,29 @@ export async function monitorTelegramProvider(
 		}
 	}, RATE_LIMIT_CLEANUP_INTERVAL_MS);
 
+	// Clean up old media files at startup
+	try {
+		const mediaRemoved = await cleanupOldMedia();
+		if (mediaRemoved > 0) {
+			logger.info({ filesRemoved: mediaRemoved }, "startup cleanup of old media completed");
+		}
+	} catch (err) {
+		logger.error({ error: String(err) }, "startup media cleanup failed");
+	}
+
+	// Set up periodic cleanup for old media files (every 30 minutes)
+	const MEDIA_CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+	const mediaCleanupInterval = setInterval(async () => {
+		try {
+			const removed = await cleanupOldMedia();
+			if (removed > 0) {
+				logger.info({ filesRemoved: removed }, "periodic media cleanup completed");
+			}
+		} catch (err) {
+			logger.error({ error: String(err) }, "periodic media cleanup failed");
+		}
+	}, MEDIA_CLEANUP_INTERVAL_MS);
+
 	const recentlySent = new Set<string>();
 
 	let reconnectAttempts = 0;
@@ -625,6 +743,7 @@ export async function monitorTelegramProvider(
 				verbose,
 				dryRun,
 				allowedChats: cfg.telegram?.allowedChats,
+				groupChat: cfg.telegram?.groupChat,
 				secretFilterConfig: cfg.security?.secretFilter,
 				onMessage: async (msg) => {
 					await handleInboundMessage(
@@ -715,8 +834,12 @@ export async function monitorTelegramProvider(
 		}
 	}
 
-	// Clean up the rate limit interval when exiting
+	// Clean up intervals when exiting
 	clearInterval(rateLimitCleanupInterval);
+	clearInterval(mediaCleanupInterval);
+	if (openaiRecheckInterval) {
+		clearInterval(openaiRecheckInterval);
+	}
 }
 
 /**

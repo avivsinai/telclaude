@@ -102,7 +102,9 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 	// === HIGH: API keys and tokens ===
 	{
 		name: "openai_api_key",
-		pattern: /\bsk-[A-Za-z0-9]{48,}\b/,
+		// Matches old format (sk-xxx) and new formats (sk-proj-xxx, sk-svcacct-xxx)
+		// OpenAI keys can contain hyphens and underscores in newer formats
+		pattern: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}\b/,
 		severity: "high",
 		description: "OpenAI API key",
 		core: true,

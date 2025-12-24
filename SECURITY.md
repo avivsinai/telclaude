@@ -45,7 +45,7 @@ We protect against:
 | **1. Screening** | Fast Path + Observer | Blocks dangerous prompts before execution |
 | **2. Policy** | Rate Limiter + Approvals | Prevents abuse, human-in-loop for risky ops |
 | **3. Permissions** | Tier System | Controls which tools Claude can use |
-| **4. Enforcement** | OS Sandbox | Kernel-level isolation of file/network access |
+| **4. Enforcement** | Isolation boundary | SDK sandbox (native) or Docker container + firewall |
 
 ---
 
@@ -81,16 +81,16 @@ Maximum privilege tier. No tool restrictions.
 
 ---
 
-## OS-Level Sandbox
+## Isolation Boundary (Mode-Dependent)
 
-All Claude queries execute inside an OS-level sandbox:
+All Claude queries execute inside a single isolation boundary:
 
-- **macOS**: Seatbelt (`sandbox-exec`) — kernel-level enforcement
-- **Linux**: bubblewrap — namespace-based isolation
+- **Docker mode**: container boundary + firewall (SDK sandbox disabled)
+- **Native mode**: SDK sandbox via Seatbelt (`sandbox-exec`) on macOS or bubblewrap on Linux
 
 ### Blocked Paths
 
-The sandbox prevents access to:
+In native mode, the SDK sandbox prevents access to:
 
 - `~/.telclaude/` — Configuration and secrets
 - `~/.ssh/` — SSH keys
@@ -99,10 +99,12 @@ The sandbox prevents access to:
 - `~/.config/` — Application secrets
 - `/etc/passwd`, `/etc/shadow` — System files
 
+In Docker mode, the container filesystem should not include these host paths; application guards still block sensitive paths if they appear.
+
 ### Write Restrictions
 
-- **READ_ONLY**: No writes allowed
-- **WRITE_LOCAL/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`). Host `/tmp`/`/var/tmp` are deny-read.
+- **READ_ONLY**: No writes allowed (policy + sandbox in native mode)
+- **WRITE_LOCAL/FULL_ACCESS**: Writes limited to current working directory + private temp (`~/.telclaude/sandbox-tmp`) in native mode; Docker mode relies on container filesystem boundaries and policy checks.
 
 ---
 

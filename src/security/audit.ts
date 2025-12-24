@@ -85,25 +85,42 @@ export class AuditLogger {
 		const dir = path.dirname(this.logFile);
 
 		try {
-			// Create directory with restricted permissions
-			if (!fs.existsSync(dir)) {
-				fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+			// Create directory with restricted permissions (atomic with recursive: true)
+			fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+
+			// SECURITY: Use lstatSync to avoid TOCTOU and prevent symlink attacks
+			// lstatSync doesn't follow symlinks, so we can detect and reject them
+			try {
+				const dirStats = fs.lstatSync(dir);
+				// Reject if directory is a symlink
+				if (dirStats.isSymbolicLink()) {
+					logger.warn({ dir }, "audit directory is a symlink - skipping");
+					this.initialized = false;
+					return;
+				}
+				const dirMode = dirStats.mode & 0o777;
+				if (dirMode !== 0o700) {
+					fs.chmodSync(dir, 0o700);
+					logger.info(
+						{ dir, oldMode: dirMode.toString(8), newMode: "700" },
+						"fixed audit directory permissions",
+					);
+				}
+			} catch {
+				// Directory doesn't exist after mkdir - something is wrong
+				this.initialized = false;
+				return;
 			}
 
-			// Verify/fix directory permissions
-			const dirStats = fs.statSync(dir);
-			const dirMode = dirStats.mode & 0o777;
-			if (dirMode !== 0o700) {
-				fs.chmodSync(dir, 0o700);
-				logger.info(
-					{ dir, oldMode: dirMode.toString(8), newMode: "700" },
-					"fixed audit directory permissions",
-				);
-			}
-
-			// Create or verify file permissions if file exists
-			if (fs.existsSync(this.logFile)) {
-				const fileStats = fs.statSync(this.logFile);
+			// SECURITY: Use lstatSync to check file without TOCTOU vulnerability
+			try {
+				const fileStats = fs.lstatSync(this.logFile);
+				// Reject if file is a symlink
+				if (fileStats.isSymbolicLink()) {
+					logger.warn({ file: this.logFile }, "audit file is a symlink - skipping");
+					this.initialized = false;
+					return;
+				}
 				const fileMode = fileStats.mode & 0o777;
 				if (fileMode !== 0o600) {
 					fs.chmodSync(this.logFile, 0o600);
@@ -112,6 +129,8 @@ export class AuditLogger {
 						"fixed audit file permissions",
 					);
 				}
+			} catch {
+				// File doesn't exist yet - that's fine, it will be created on first write
 			}
 
 			this.initialized = true;
