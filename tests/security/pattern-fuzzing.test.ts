@@ -361,10 +361,13 @@ describe("Blocked Command Fuzzing", () => {
 				expect(containsBlockedCommand(cmd)).not.toBeNull();
 			}
 
-			// KNOWN LIMITATION: Full paths bypass tokenization
-			// "/bin/rm" becomes ["/bin/rm"] which doesn't match "rm"
-			// This is documented in permissions.ts - WRITE_LOCAL is for accidents, not attacks
-			expect(containsBlockedCommand("/bin/rm file.txt")).toBeNull();
+			// Absolute paths are now blocked (path.basename normalization)
+			expect(containsBlockedCommand("/bin/rm file.txt")).not.toBeNull();
+			expect(containsBlockedCommand("/usr/bin/rm file.txt")).not.toBeNull();
+
+			// Command wrappers are also blocked
+			expect(containsBlockedCommand("command rm file.txt")).not.toBeNull();
+			expect(containsBlockedCommand("env rm file.txt")).not.toBeNull();
 		});
 
 		it("blocks curl/wget piped to shell", () => {

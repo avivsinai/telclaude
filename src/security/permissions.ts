@@ -218,11 +218,43 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
+ * Command wrappers that execute the following command.
+ * These can be used to bypass blocked command detection.
+ */
+const COMMAND_WRAPPERS = new Set([
+	"command", // command rm
+	"env", // env rm
+	"exec", // exec rm
+	"builtin", // builtin rm (though rm isn't a builtin)
+	"nice", // nice rm
+	"nohup", // nohup rm
+	"time", // time rm
+	"timeout", // timeout 10 rm
+	"xargs", // echo foo | xargs rm (handled separately)
+	"strace", // strace rm
+	"ltrace", // ltrace rm
+]);
+
+/**
+ * Normalize a command token to its base command name.
+ * Handles absolute paths like /bin/rm -> rm
+ */
+function normalizeCommandToken(token: string): string {
+	// Handle absolute/relative paths: /bin/rm, ./rm, ../bin/rm -> rm
+	const basename = path.basename(token);
+	return basename.toLowerCase();
+}
+
+/**
  * Check if a command contains blocked operations for WRITE_LOCAL tier.
  * Returns the reason if blocked, null if allowed.
  *
  * Uses tokenization for more reliable detection than pure regex.
  * Splits on shell operators and whitespace to find command tokens.
+ *
+ * SECURITY: Handles bypass attempts via:
+ * - Absolute paths: /bin/rm, /usr/bin/rm
+ * - Command wrappers: command rm, env rm, exec rm
  */
 export function containsBlockedCommand(command: string): string | null {
 	// Tokenize: split by shell operators and whitespace to get individual tokens
@@ -232,20 +264,47 @@ export function containsBlockedCommand(command: string): string | null {
 		.split(/[\s;|&]+/)
 		.filter((t) => t.length > 0);
 
+	// Pre-compute normalized tokens and check for blocked commands (O(n) instead of O(n²))
+	const normalizedTokens = tokens.map(normalizeCommandToken);
+	const blockedSet = new Set(WRITE_LOCAL_BLOCKED_COMMANDS);
+	const hasBlockedCommand = normalizedTokens.some((t) => blockedSet.has(t));
+
+	// Track if we're after a wrapper command (next non-flag token is the real command)
+	let afterWrapper = false;
+
 	// Check if any token is a blocked command
-	for (const token of tokens) {
-		// Strip leading dashes for flag detection, but check full token for commands
-		const cleanToken = token.replace(/^-+/, "");
-		if (WRITE_LOCAL_BLOCKED_COMMANDS.includes(token)) {
-			return token;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i];
+		const normalizedToken = normalizedTokens[i];
+
+		// Skip flags
+		if (token.startsWith("-")) {
+			// But check long-form flags like --recursive that map to rm behavior
+			const cleanToken = token.replace(/^-+/, "");
+			if (hasBlockedCommand) {
+				if (cleanToken === "recursive") {
+					return "rm --recursive";
+				}
+				if (cleanToken === "force") {
+					return "rm --force";
+				}
+			}
+			continue;
 		}
-		// Also check long-form flags like --recursive that map to rm behavior
-		if (cleanToken === "recursive" && tokens.includes("rm")) {
-			return "rm --recursive";
+
+		// Check if this is a wrapper command
+		if (COMMAND_WRAPPERS.has(normalizedToken)) {
+			afterWrapper = true;
+			continue;
 		}
-		if (cleanToken === "force" && tokens.includes("rm")) {
-			return "rm --force";
+
+		// Check if this token (or the one after a wrapper) is blocked
+		if (blockedSet.has(normalizedToken)) {
+			return afterWrapper ? `${tokens[i - 1]} ${normalizedToken}` : normalizedToken;
 		}
+
+		// Reset wrapper flag after processing a non-flag, non-wrapper token
+		afterWrapper = false;
 	}
 
 	// Check dangerous patterns (these need regex for complex matching)

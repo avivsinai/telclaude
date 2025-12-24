@@ -248,7 +248,8 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 	if ([".mp4", ".webm", ".mov", ".avi"].includes(ext)) {
 		return { type: "video", source, caption };
 	}
-	if ([".mp3", ".m4a", ".wav", ".flac"].includes(ext)) {
+	// Audio formats including AAC and Opus (TTS supports these)
+	if ([".mp3", ".m4a", ".wav", ".flac", ".aac", ".opus"].includes(ext)) {
 		return { type: "audio", source, caption };
 	}
 	if ([".ogg", ".oga"].includes(ext)) {

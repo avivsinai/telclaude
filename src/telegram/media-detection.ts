@@ -25,19 +25,15 @@ import type { TelegramMediaType } from "./types.js";
  * - /path/to/.telclaude-media/tts/1234567890-abc123.mp3 (absolute)
  * - .telclaude-media/generated/file.png (relative, no prefix)
  * - some/path/.telclaude-media/tts/file.mp3 (relative with prefix)
+ * - /Users/name/My Projects/.telclaude-media/generated/file.png (paths with spaces)
  *
- * Design: Uses delimiters and path separators to avoid false positives
- * while being flexible enough to match various path formats.
+ * Design: Simple pattern that finds non-whitespace sequences containing the marker.
+ * Trailing punctuation is stripped after matching.
  *
- * Regex breakdown:
- * - (?:^|[\s"'`(\[]) - Anchor: start of string or delimiter
- * - ((?:\/[\w.-]+)+\/|(?:[\w.-]+\/)+)? - Optional path prefix (absolute or relative)
- * - \.telclaude-media\/(?:generated|tts)\/ - The marker directory
- * - [\w.-]+\.\w+ - Filename with extension
- * - Lookahead for valid terminators (whitespace, punctuation, end)
+ * Note: For paths with spaces, they need to be quoted in the text
+ * (e.g., "/path/with spaces/.telclaude-media/generated/file.png")
  */
-const GENERATED_MEDIA_PATTERN =
-	/(?:^|[\s"'`(\[])((?:(?:\/[\w.-]+)+\/|(?:[\w.-]+\/)+)?\.telclaude-media\/(?:generated|tts)\/[\w.-]+\.\w+)(?=$|[\s"'`)\],;:!?]|\.(?=$|[\s"'`)\],;:!?]))/gm;
+const GENERATED_MEDIA_PATTERN = /(\S*\.telclaude-media\/(?:generated|tts)\/\S+)/g;
 
 /**
  * Image extensions we support sending.
@@ -55,16 +51,49 @@ export type DetectedMedia = {
 };
 
 /**
+ * Safely resolve a path to its real location, checking for symlinks in the chain.
+ * Returns null if any component is a symlink or if resolution fails.
+ *
+ * SECURITY: This prevents symlink attacks where a parent directory is a symlink
+ * pointing outside the expected media root.
+ */
+function safeResolvePath(inputPath: string): string | null {
+	try {
+		// fs.realpathSync follows ALL symlinks and returns the canonical path
+		const realPath = fs.realpathSync(inputPath);
+
+		// Verify the real path still contains .telclaude-media
+		// This catches cases where a symlinked parent redirects outside
+		if (!realPath.includes("/.telclaude-media/") && !realPath.includes("\\.telclaude-media\\")) {
+			return null;
+		}
+
+		// Double-check the normalized real path still contains the marker
+		// (realpathSync should have caught this, but defense-in-depth)
+		const normalizedReal = path.normalize(realPath);
+		if (!normalizedReal.includes(".telclaude-media")) {
+			return null;
+		}
+
+		return realPath;
+	} catch {
+		// Resolution failed - file doesn't exist or permission denied
+		return null;
+	}
+}
+
+/**
  * Extract generated media paths from Claude's response text.
  *
  * This function scans Claude's response for file paths that point to
  * generated media (images, audio) in the .telclaude-media directory.
  * Detected files are verified to exist before being returned.
  *
- * SECURITY: Uses lstatSync (not following symlinks) to prevent TOCTOU attacks.
- * - Rejects symlinks entirely (Claude should create regular files, not symlinks)
- * - Verifies file is a regular file before including
- * - No time gap between check and use
+ * SECURITY:
+ * - Uses realpathSync to resolve the canonical path (catches symlinked parents)
+ * - Uses lstatSync to reject symlinked leaf files
+ * - Verifies the resolved real path is still under .telclaude-media
+ * - No time gap between check and use (atomic operations)
  *
  * @param text - Claude's response text
  * @param workingDir - Current working directory for resolving relative paths
@@ -78,7 +107,8 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 	GENERATED_MEDIA_PATTERN.lastIndex = 0;
 
 	for (const match of text.matchAll(GENERATED_MEDIA_PATTERN)) {
-		const rawPath = match[1];
+		// Strip trailing punctuation that's not part of the path
+		const rawPath = match[1].replace(/[.,!?;:'")\]]+$/, "");
 		if (!rawPath || seen.has(rawPath)) continue;
 		seen.add(rawPath);
 
@@ -87,11 +117,18 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 			? rawPath
 			: path.resolve(workingDir ?? process.cwd(), rawPath);
 
-		// SECURITY: Use lstatSync which does NOT follow symlinks (prevents TOCTOU)
-		// This is atomic - no gap between checking and using the file info
+		// SECURITY: Resolve the real path, catching symlinked parent directories
+		// This prevents attacks like: /tmp/symlink-to-root/.telclaude-media/... -> /etc/passwd
+		const realPath = safeResolvePath(absolutePath);
+		if (!realPath) {
+			continue;
+		}
+
+		// SECURITY: Use lstatSync on the REAL path (doesn't follow symlinks)
+		// This catches symlinked leaf files
 		let stats: fs.Stats;
 		try {
-			stats = fs.lstatSync(absolutePath);
+			stats = fs.lstatSync(realPath);
 		} catch {
 			// File doesn't exist or can't be accessed - skip
 			continue;
@@ -110,17 +147,11 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 			continue;
 		}
 
-		// SECURITY: Verify the path contains .telclaude-media (defense-in-depth)
-		// The regex already requires this, but we double-check for safety
-		if (!absolutePath.includes("/.telclaude-media/")) {
-			continue;
-		}
-
 		// Determine media type from extension
-		const type = inferMediaType(absolutePath);
+		const type = inferMediaType(realPath);
 		if (!type) continue;
 
-		results.push({ path: absolutePath, type });
+		results.push({ path: realPath, type });
 	}
 
 	return results;

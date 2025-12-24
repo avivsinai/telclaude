@@ -130,6 +130,11 @@ RUN groupmod -g ${USER_GID} node \
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
 COPY --from=claude-cli /usr/local/bin/claude /usr/local/bin/claude
 
+# Claude Code expects ripgrep at a specific path - create symlink to system rg
+# This is needed because Claude CLI bundles its own rg but we use the system one
+RUN mkdir -p /usr/local/bin/vendor/ripgrep/arm64-linux \
+    && ln -s /usr/bin/rg /usr/local/bin/vendor/ripgrep/arm64-linux/rg
+
 # Copy built application
 WORKDIR /app
 COPY --from=builder --chown=node:node /build/dist ./dist

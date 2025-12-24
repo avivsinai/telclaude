@@ -9,6 +9,9 @@ describe("media-detection", () => {
 	let tempDir: string;
 	let audioPath: string;
 	let imagePath: string;
+	// Real paths after symlink resolution (e.g., /var -> /private/var on macOS)
+	let realAudioPath: string;
+	let realImagePath: string;
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-media-"));
@@ -20,6 +23,9 @@ describe("media-detection", () => {
 		imagePath = path.join(genDir, "image.png");
 		fs.writeFileSync(audioPath, "fake audio data");
 		fs.writeFileSync(imagePath, "fake image data");
+		// Get the real paths (resolves symlinks like /var -> /private/var on macOS)
+		realAudioPath = fs.realpathSync(audioPath);
+		realImagePath = fs.realpathSync(imagePath);
 	});
 
 	afterEach(() => {
@@ -44,7 +50,8 @@ describe("media-detection", () => {
 		it("detects absolute paths", () => {
 			const text = `Saved audio to ${audioPath}.`;
 			const results = extractGeneratedMediaPaths(text);
-			expect(results).toEqual([{ path: audioPath, type: "audio" }]);
+			// Result uses real path (symlinks resolved)
+			expect(results).toEqual([{ path: realAudioPath, type: "audio" }]);
 		});
 
 		it("detects relative paths without prefix", () => {
@@ -54,11 +61,12 @@ describe("media-detection", () => {
 			fs.mkdirSync(relativeDir, { recursive: true });
 			const relativeFile = path.join(relativeDir, "relative.mp3");
 			fs.writeFileSync(relativeFile, "fake audio");
+			const realRelativeFile = fs.realpathSync(relativeFile);
 
 			try {
 				const text = "Generated audio at .telclaude-media/tts/relative.mp3 for you.";
 				const results = extractGeneratedMediaPaths(text, cwd);
-				expect(results).toEqual([{ path: relativeFile, type: "audio" }]);
+				expect(results).toEqual([{ path: realRelativeFile, type: "audio" }]);
 			} finally {
 				fs.rmSync(path.join(cwd, ".telclaude-media"), { recursive: true, force: true });
 			}
@@ -67,15 +75,17 @@ describe("media-detection", () => {
 		it("detects paths followed by punctuation", () => {
 			const text = `Here's your image: ${imagePath}!`;
 			const results = extractGeneratedMediaPaths(text);
-			expect(results).toEqual([{ path: imagePath, type: "photo" }]);
+			// Result uses real path (symlinks resolved)
+			expect(results).toEqual([{ path: realImagePath, type: "photo" }]);
 		});
 
 		it("detects multiple paths in same text", () => {
 			const text = `Audio: ${audioPath} and image: ${imagePath}.`;
 			const results = extractGeneratedMediaPaths(text);
 			expect(results).toHaveLength(2);
-			expect(results).toContainEqual({ path: audioPath, type: "audio" });
-			expect(results).toContainEqual({ path: imagePath, type: "photo" });
+			// Results use real paths (symlinks resolved)
+			expect(results).toContainEqual({ path: realAudioPath, type: "audio" });
+			expect(results).toContainEqual({ path: realImagePath, type: "photo" });
 		});
 
 		it("deduplicates repeated paths", () => {
