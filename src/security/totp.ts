@@ -12,7 +12,7 @@
  */
 
 import { getChildLogger } from "../logging.js";
-import { type SetupResult, getTOTPClient } from "../totp-client/index.js";
+import { getTOTPClient, type SetupResult } from "../totp-client/index.js";
 import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "totp" });

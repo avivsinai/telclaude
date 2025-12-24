@@ -5,13 +5,13 @@
  * Provides a high-level API for TOTP operations.
  */
 
-import { type Socket, createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { getChildLogger } from "../logging.js";
 import {
+	getDefaultSocketPath,
 	type TOTPRequest,
 	type TOTPResponse,
 	TOTPResponseSchema,
-	getDefaultSocketPath,
 } from "../totp-daemon/protocol.js";
 
 const logger = getChildLogger({ module: "totp-client" });

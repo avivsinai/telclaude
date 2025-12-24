@@ -8,49 +8,46 @@
  * Application-level security (canUseTool, PreToolUse hooks) provides defense-in-depth.
  */
 
+// Constants for application-level security checks
+export {
+	BLOCKED_METADATA_DOMAINS,
+	BLOCKED_PRIVATE_NETWORKS,
+	DENY_WRITE_PATHS,
+	SENSITIVE_READ_PATHS,
+} from "./config.js";
+// Domain builders (for SDK sandbox network config)
+export {
+	buildAllowedDomainNames,
+	buildAllowedDomains,
+	domainMatchesPattern,
+	OPENAI_DOMAINS,
+} from "./domains.js";
 // Mode detection
 export {
 	getSandboxMode,
 	isDockerEnvironment,
-	shouldEnableSdkSandbox,
 	type SandboxMode,
+	shouldEnableSdkSandbox,
 } from "./mode.js";
-
-// Constants for application-level security checks
-export {
-	SENSITIVE_READ_PATHS,
-	BLOCKED_METADATA_DOMAINS,
-	BLOCKED_PRIVATE_NETWORKS,
-	DENY_WRITE_PATHS,
-} from "./config.js";
-
-// SDK settings builder (for allowedTools per tier)
-export { buildSdkPermissionsForTier } from "./sdk-settings.js";
 
 // Network proxy (for isBlockedHost in canUseTool)
 export {
 	checkNetworkRequest,
-	getNetworkIsolationSummary,
-	runNetworkSelfTest,
-	isBlockedIP,
-	isBlockedHost,
-	DEFAULT_NETWORK_CONFIG,
 	DEFAULT_ALLOWED_DOMAINS,
-	type NetworkProxyConfig,
+	DEFAULT_NETWORK_CONFIG,
 	type DomainRule,
+	getNetworkIsolationSummary,
 	type HttpMethod,
-	type NetworkRequestCheck,
+	isBlockedHost,
+	isBlockedIP,
 	type NetworkIsolationSummary,
+	type NetworkProxyConfig,
+	type NetworkRequestCheck,
 	type NetworkSelfTestResult,
+	runNetworkSelfTest,
 } from "./network-proxy.js";
-
-// Domain builders (for SDK sandbox network config)
-export {
-	buildAllowedDomains,
-	buildAllowedDomainNames,
-	domainMatchesPattern,
-	OPENAI_DOMAINS,
-} from "./domains.js";
+// SDK settings builder (for allowedTools per tier)
+export { buildSdkPermissionsForTier } from "./sdk-settings.js";
 
 // Version helper
 export {

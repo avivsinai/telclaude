@@ -9,9 +9,9 @@ import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import {
-	DEFAULT_NETWORK_CONFIG,
 	buildAllowedDomainNames,
 	buildAllowedDomains,
+	DEFAULT_NETWORK_CONFIG,
 	getNetworkIsolationSummary,
 	getSandboxMode,
 	getSandboxRuntimeVersion,

@@ -18,7 +18,7 @@ import { type Dispatcher, ProxyAgent } from "undici";
 
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { SECRET_KEYS, getSecret } from "../secrets/index.js";
+import { getSecret, SECRET_KEYS } from "../secrets/index.js";
 
 const logger = getChildLogger({ module: "openai-client" });
 

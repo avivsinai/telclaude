@@ -21,8 +21,7 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
-import { VALIDATED_DATA_DIR, escapeRegex } from "../utils.js";
-import { chatIdToString } from "../utils.js";
+import { chatIdToString, escapeRegex, VALIDATED_DATA_DIR } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "permissions" });
@@ -184,7 +183,7 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 	{ pattern: /pip\s+install\s+.*--system\b/i, reason: "system pip install" },
 	// Shell redirects to sensitive files
 	{
-		pattern: />+\s*[~\/]*(\.bashrc|\.profile|\.zshrc|\.bash_profile)/i,
+		pattern: />+\s*[~/]*(\.bashrc|\.profile|\.zshrc|\.bash_profile)/i,
 		reason: "redirect to shell config",
 	},
 	{ pattern: />+\s*\/etc\//i, reason: "redirect to /etc" },
@@ -528,7 +527,9 @@ function expandHomeLike(token: string): string {
 	if (token.startsWith("$HOME/")) {
 		return path.join(process.env.HOME ?? "", token.slice("$HOME/".length));
 	}
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${HOME} check for shell expansion
 	if (token.startsWith("${HOME}/")) {
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: literal ${HOME} check for shell expansion
 		return path.join(process.env.HOME ?? "", token.slice("${HOME}/".length));
 	}
 	return token;

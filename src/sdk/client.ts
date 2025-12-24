@@ -20,17 +20,17 @@ import {
 	type HookCallbackMatcher,
 	type HookInput,
 	type PermissionMode,
+	query,
 	type Options as SDKOptions,
 	type SdkBeta,
-	query,
 } from "@anthropic-ai/claude-agent-sdk";
-import { type PermissionTier, loadConfig } from "../config/config.js";
+import { loadConfig, type PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { isBlockedHost } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
-import { TIER_TOOLS, containsBlockedCommand, isSensitivePath } from "../security/permissions.js";
+import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
 import { getCachedGitToken } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {

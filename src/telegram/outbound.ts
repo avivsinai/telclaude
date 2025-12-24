@@ -643,4 +643,4 @@ export async function safeReply(
 /**
  * Re-export filter utilities for use in other modules.
  */
-export { filterOutput, type FilterResult } from "../security/output-filter.js";
+export { type FilterResult, filterOutput } from "../security/output-filter.js";

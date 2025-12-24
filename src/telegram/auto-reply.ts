@@ -2,13 +2,13 @@ import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
 
-import { type PermissionTier, type TelclaudeConfig, loadConfig } from "../config/config.js";
+import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
 	DEFAULT_IDLE_MINUTES,
-	type SessionEntry,
 	deleteSession,
 	deriveSessionKey,
 	getSession,
+	type SessionEntry,
 	setSession,
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
@@ -23,35 +23,33 @@ import {
 	handleFirstMessageIfNoAdmin,
 } from "../security/admin-claim.js";
 import {
-	type PendingApproval,
 	consumeApproval,
 	createApproval,
 	denyApproval,
 	formatApprovalRequest,
 	getMostRecentPendingApproval,
+	type PendingApproval,
 	requiresApproval,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
 import { isChatBanned } from "../security/banned-chats.js";
 import { checkInfrastructureSecrets } from "../security/fast-path.js";
 import { consumeLinkCode, getIdentityLink, isAdmin } from "../security/linking.js";
-import { type SecurityObserver, createObserver } from "../security/observer.js";
+import { createObserver, type SecurityObserver } from "../security/observer.js";
 import { getUserPermissionTier } from "../security/permissions.js";
-import { type RateLimiter, createRateLimiter } from "../security/rate-limit.js";
+import { createRateLimiter, type RateLimiter } from "../security/rate-limit.js";
 import { createStreamingRedactor } from "../security/streaming-redactor.js";
+import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import { checkTOTPAuthGate } from "../security/totp-auth-gate.js";
 import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/totp-session.js";
-import { disableTOTP, isTOTPDaemonAvailable, verifyTOTP } from "../security/totp.js";
 import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
-import { getDb } from "../storage/db.js";
-import { cleanupExpired } from "../storage/db.js";
-import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
-
+import { cleanupExpired, getDb } from "../storage/db.js";
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
+import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 

@@ -29,7 +29,7 @@ const TRUNCATION_WARNING = "\n\n⚠️ [Response truncated - exceeded 500KB limi
  * Kept for potential future use with system messages.
  */
 export function escapeMarkdownV2(text: string): string {
-	return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
+	return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }
 
 /**
@@ -37,7 +37,7 @@ export function escapeMarkdownV2(text: string): string {
  * Used by formatSystemMessage() for controlled system output.
  */
 export function escapeMarkdown(text: string): string {
-	return text.replace(/([_*`\[])/g, "\\$1");
+	return text.replace(/([_*`[])/g, "\\$1");
 }
 
 /**
