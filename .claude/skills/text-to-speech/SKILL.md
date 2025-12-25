@@ -21,13 +21,13 @@ telclaude tts "Hello! How can I help you today?" --voice-message
 ```
 Then output ONLY:
 ```
-/workspace/.telclaude-media/voice/1234567890-abc123.ogg
+/media/outbox/voice/1234567890-abc123.ogg
 ```
 
 ### WRONG - Do NOT do this:
 ```
 Hello! Here is the audio you requested:
-/workspace/.telclaude-media/tts/1234567890-abc123.mp3
+/media/outbox/tts/1234567890-abc123.mp3
 ```
 This is wrong because: (1) added text alongside voice, (2) missing --voice-message flag, (3) mp3 instead of ogg, (4) wrong directory
 
@@ -109,7 +109,7 @@ The `telclaude tts` command outputs metadata (file path, size, format, voice, du
 Output ONLY the file path - no commentary:
 
 ```
-/workspace/.telclaude-media/voice/1234567890-abc123.ogg
+/media/outbox/voice/1234567890-abc123.ogg
 ```
 
 That's it. No "I've generated..." or "Here's your audio...". The relay sends just the voice message, like a human would.
@@ -120,13 +120,14 @@ If the user requested an audio FILE (not a voice reply), or you need to include 
 
 ```
 Here's the summary as audio:
-/workspace/.telclaude-media/tts/1234567890-abc123.mp3
+/media/outbox/tts/1234567890-abc123.mp3
 ```
 
 **Key points:**
-- Voice messages: `.telclaude-media/voice/*.ogg` - waveform display, path only
-- Audio files: `.telclaude-media/tts/*.mp3` - music player display, text OK
+- Voice messages: `.../voice/*.ogg` - waveform display, path only
+- Audio files: `.../tts/*.mp3` - music player display, text OK
 - The relay automatically detects paths and sends the media
+- Paths live under `TELCLAUDE_MEDIA_OUTBOX_DIR` (default `.telclaude-media` in native mode; `/media/outbox` in Docker)
 
 ## Best Practices
 

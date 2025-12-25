@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
 import { sendTelegramMessage } from "../telegram/outbound.js";
@@ -24,6 +25,7 @@ export function registerSendCommand(program: Command): void {
 
 			try {
 				const env = readEnv();
+				const cfg = loadConfig();
 				const token = env.telegramBotToken;
 
 				const numericChatId = Number.parseInt(chatId, 10);
@@ -47,6 +49,7 @@ export function registerSendCommand(program: Command): void {
 					text: message,
 					mediaPath: opts.media,
 					caption: opts.caption,
+					secretFilterConfig: cfg.security?.secretFilter,
 				});
 
 				if (result.success) {

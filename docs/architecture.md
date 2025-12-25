@@ -1,13 +1,13 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2025-12-24
+Updated: 2025-12-25
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
 
-Telclaude uses a simplified dual-mode architecture for isolation:
+Telclaude uses a dual-mode architecture for isolation:
 
-- **Docker mode**: SDK sandbox disabled. Docker container + firewall provide filesystem and network isolation.
+- **Docker mode**: Relay and agent run in separate containers. The SDK sandbox is disabled in Docker; the **agent container** provides isolation with a firewall and locked-down volumes, while the **relay container** holds secrets and does not mount the workspace (firewall-enabled for egress control).
 - **Native mode**: SDK sandbox enabled. bubblewrap (Linux) or Seatbelt (macOS) provides isolation.
 
 Mode is auto-detected at startup via `/.dockerenv` or `TELCLAUDE_DOCKER=1` env var.
@@ -19,27 +19,36 @@ Telegram Bot API
       │
       ▼
 ┌────────────────────────────────────────────┐
-│ Security Layer                             │
-│ • Fast-path regex (part of observer)       │
-│ • Security observer (security-gate skill)  │
+│ Relay (security + secrets)                 │
+│ • Fast-path + observer                     │
 │ • Permission tiers & approvals             │
 │ • Rate limits & audit                      │
-│ • Identity linking                         │
+│ • Identity linking + TOTP socket           │
 └────────────────────────────────────────────┘
-      │
+      │ internal HTTP
       ▼
 ┌────────────────────────────────────────────┐
-│ Isolation (mode-dependent)                 │
-│ • Docker: container isolation              │
-│ • Native: SDK sandbox (bwrap/Seatbelt)     │
+│ Agent worker (SDK + tools, no secrets)     │
+│ • Workspace mounted                        │
+│ • Media inbox/outbox volumes               │
 └────────────────────────────────────────────┘
       │
       ▼
 Claude Agent SDK (allowedTools per tier)
-      │
-      ▼
-TOTP daemon (separate process, keychain-backed)
 ```
+
+## Docker Split Topology (Production)
+
+- **Relay container**: Telegram + security policy + secrets (OpenAI/GitHub), TOTP socket.
+- **Agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
+- **Shared media volumes**:
+  - `media_inbox` (relay writes Telegram downloads, agent reads)
+  - `media_outbox` (relay writes generated media; relay reads to send)
+- **Internal RPC**:
+  - Relay → Agent: `/v1/query` (HMAC-signed)
+  - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
+- **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
+- **RPC auth**: set `TELCLAUDE_INTERNAL_RPC_SECRET` in both containers; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.
@@ -47,7 +56,7 @@ TOTP daemon (separate process, keychain-backed)
 - **test**: disables all enforcement; gated by `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
 
 ## Five Security Pillars
-1) **Filesystem isolation**: Docker container or SDK sandbox; sensitive paths blocked via canUseTool.
+1) **Filesystem isolation**: Docker mode splits relay/agent containers (agent mounts workspace + media only; relay holds secrets). Native mode uses SDK sandbox; sensitive paths blocked via hooks.
 2) **Environment isolation**: minimal env vars passed to SDK.
 3) **Network isolation**: PreToolUse hook blocks RFC1918/metadata for WebFetch; SDK sandbox allowedDomains for Bash in native mode; Docker mode relies on the container firewall.
 4) **Secret output filtering**: CORE patterns + entropy detection; infrastructure secrets are non-overridable blockers.
@@ -63,10 +72,12 @@ TOTP daemon (separate process, keychain-backed)
 
 ## Network Enforcement
 
-- **Bash**: SDK sandbox `allowedDomains` in native mode; Docker firewall in container mode.
+- **Bash**: SDK sandbox `allowedDomains` in native mode; Docker firewall enforced in containers (agent runs tools; relay still restricts egress).
 - **WebFetch**: PreToolUse hook (blocks RFC1918/metadata) + canUseTool domain allowlist.
 - **WebSearch**: NOT filtered (server-side by Anthropic).
 - `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only.
+- Internal relay ↔ agent RPC is allowed via hostname allowlist in the firewall script.
+- **Allowlist scope**: Domain allowlists are enforced, but HTTP method restrictions are not enforced at runtime.
 
 ## Application-Level Security
 
@@ -115,7 +126,9 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 ## Deployment
 
 ### Docker (Production)
-- SDK sandbox disabled; container + firewall provide isolation.
+- SDK sandbox disabled; relay + agent containers provide isolation.
+- Firewall enforced in agent container (tool runner).
+- Relay holds secrets and does not mount the workspace.
 - TOTP daemon uses encrypted file backend.
 - Read-only root FS, dropped caps.
 

@@ -2,10 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const imagesGenerate = vi.hoisted(() => vi.fn());
 const loadConfigMock = vi.hoisted(() => vi.fn());
+const relayGenerateImage = vi.hoisted(() => vi.fn());
 
 vi.mock("../../src/services/openai-client.js", () => ({
 	getOpenAIClient: () =>
@@ -28,6 +29,10 @@ vi.mock("../../src/logging.js", () => ({
 		error: vi.fn(),
 		debug: vi.fn(),
 	}),
+}));
+
+vi.mock("../../src/relay/capabilities-client.js", () => ({
+	relayGenerateImage: (...args: unknown[]) => relayGenerateImage(...args),
 }));
 
 let workspaceDir: string;
@@ -62,6 +67,10 @@ const oneByOnePng = Buffer.from(
 );
 
 describe("image-generation", () => {
+	afterEach(() => {
+		relayGenerateImage.mockReset();
+	});
+
 	it("uses base64 output for GPT Image 1.5", async () => {
 		let capturedRequest: any;
 
@@ -107,5 +116,39 @@ describe("image-generation", () => {
 		});
 
 		await expect(generateImage("test")).rejects.toThrow(/not supported/);
+	});
+
+	it("forwards userId to relay when capabilities are enabled", async () => {
+		const prevCapabilitiesUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+		process.env.TELCLAUDE_CAPABILITIES_URL = "http://relay";
+
+		try {
+			relayGenerateImage.mockResolvedValueOnce({
+				path: "/tmp/relay-image.png",
+				bytes: 1234,
+				model: "gpt-image-1.5",
+				quality: "low",
+			});
+
+			const result = await generateImage("relay test", {
+				size: "1024x1024",
+				quality: "low",
+				userId: "user-123",
+			});
+
+			expect(relayGenerateImage).toHaveBeenCalledWith({
+				prompt: "relay test",
+				size: "1024x1024",
+				quality: "low",
+				userId: "user-123",
+			});
+			expect(result.path).toBe("/tmp/relay-image.png");
+		} finally {
+			if (prevCapabilitiesUrl === undefined) {
+				delete process.env.TELCLAUDE_CAPABILITIES_URL;
+			} else {
+				process.env.TELCLAUDE_CAPABILITIES_URL = prevCapabilitiesUrl;
+			}
+		}
 	});
 });

@@ -27,6 +27,8 @@ export type VideoProcessingOptions = {
 	maxDurationSeconds?: number;
 	/** Whether to extract and transcribe audio. Default: true */
 	extractAudio?: boolean;
+	/** User ID for rate limiting (relay transcription). */
+	userId?: string;
 };
 
 /**
@@ -95,10 +97,11 @@ export async function processVideo(
 	options?: VideoProcessingOptions,
 ): Promise<ProcessedVideo> {
 	const config = loadConfig();
+	const { userId, ...configOverrides } = options ?? {};
 	const videoConfig = {
 		...DEFAULT_CONFIG,
 		...config.videoProcessing,
-		...options,
+		...configOverrides,
 	};
 
 	if (!videoConfig.enabled) {
@@ -163,7 +166,7 @@ export async function processVideo(
 				const audioPath = path.join(outputDir, "audio.mp3");
 				await extractAudio(videoPath, audioPath, effectiveDuration);
 
-				const transcription = await transcribeAudio(audioPath);
+				const transcription = await transcribeAudio(audioPath, { userId });
 				transcript = transcription.text;
 				language = transcription.language;
 

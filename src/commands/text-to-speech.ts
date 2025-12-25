@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { relayTextToSpeech } from "../relay/capabilities-client.js";
 import { initializeOpenAIKey } from "../services/openai-client.js";
 import { getEstimatedTTSCost, isTTSAvailable, textToSpeech } from "../services/tts.js";
 
@@ -17,6 +18,7 @@ export type TextToSpeechOptions = {
 	format?: "mp3" | "opus" | "aac" | "flac" | "wav";
 	voiceMessage?: boolean;
 	verbose?: boolean;
+	userId?: string;
 };
 
 export function registerTextToSpeechCommand(program: Command): void {
@@ -30,10 +32,35 @@ export function registerTextToSpeechCommand(program: Command): void {
 		.option("-m, --model <model>", "Model: tts-1, tts-1-hd", "tts-1")
 		.option("-f, --format <format>", "Format: mp3, opus, aac, flac, wav", "mp3")
 		.option("--voice-message", "Output as Telegram voice message (OGG/Opus with waveform)")
+		.option("--user-id <id>", "User ID for rate limiting (optional)")
 		.action(async (text: string, opts: TextToSpeechOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
+				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
+				const voice = validateVoice(opts.voice);
+				const speed = validateSpeed(opts.speed);
+				const model = validateModel(opts.model);
+				const format = validateFormat(opts.format);
+				const voiceMessage = opts.voiceMessage ?? false;
+				const requestUserId = opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID;
+
+				if (useRelay) {
+					const result = await relayTextToSpeech({
+						text,
+						voice,
+						speed,
+						voiceMessage,
+						userId: requestUserId,
+					});
+
+					console.log(`Generated audio saved to: ${result.path}`);
+					console.log(`Size: ${(result.bytes / 1024).toFixed(1)} KB`);
+					console.log(`Format: ${result.format}`);
+					console.log(`Voice: ${result.voice}`);
+					return;
+				}
+
 				// Initialize keychain lookup so isTTSAvailable() works correctly
 				await initializeOpenAIKey();
 
@@ -45,12 +72,6 @@ export function registerTextToSpeechCommand(program: Command): void {
 					);
 					process.exit(1);
 				}
-
-				const voice = validateVoice(opts.voice);
-				const speed = validateSpeed(opts.speed);
-				const model = validateModel(opts.model);
-				const format = validateFormat(opts.format);
-				const voiceMessage = opts.voiceMessage ?? false;
 
 				if (verbose) {
 					const cost = getEstimatedTTSCost(text.length, model);
@@ -67,6 +88,7 @@ export function registerTextToSpeechCommand(program: Command): void {
 					model,
 					responseFormat: format,
 					voiceMessage,
+					userId: requestUserId,
 				});
 
 				// Output in a format that's easy to parse

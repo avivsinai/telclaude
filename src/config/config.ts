@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 
 import JSON5 from "json5";
 import { z } from "zod";
@@ -9,10 +10,10 @@ import { resolveConfigPath } from "./path.js";
 // Lazy logger to avoid circular dependency (logging.ts imports config.ts)
 type Logger = ReturnType<typeof import("../logging.js").getChildLogger>;
 let _logger: Logger | null = null;
+const require = createRequire(import.meta.url);
 function getLogger(): Logger {
 	if (!_logger) {
 		// Dynamic import at runtime to break circular dependency
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
 		const { getChildLogger } = require("../logging.js");
 		_logger = getChildLogger({ module: "config" }) as Logger;
 	}
@@ -51,7 +52,7 @@ const SdkConfigSchema = z.object({
 });
 
 // OpenAI configuration schema (for Whisper, GPT Image, TTS)
-// NOTE: Keys are automatically exposed to sandbox for WRITE_LOCAL and FULL_ACCESS tiers.
+// NOTE: Keys are automatically exposed to sandbox for FULL_ACCESS tier only.
 const OpenAIConfigSchema = z.object({
 	apiKey: z.string().optional(), // OPENAI_API_KEY env var takes precedence
 	baseUrl: z.string().optional(), // Custom endpoint for local inference servers

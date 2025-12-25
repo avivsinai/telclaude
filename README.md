@@ -10,7 +10,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 > **Alpha** — Security-first defaults; expect breaking changes until 1.0.
 
 ## Highlights
-- Mandatory isolation boundary: SDK sandbox (Seatbelt/bubblewrap) in native mode, Docker container + firewall in Docker mode.
+- Mandatory isolation boundary: SDK sandbox (Seatbelt/bubblewrap) in native mode, relay+agent containers + firewall in Docker mode.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
@@ -64,8 +64,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
                                v
 +--------------------------------------------------------------+
 |           Isolation Boundary (mode-dependent)                |
-|  Docker: container + firewall  |  Native: SDK sandbox         |
-|             (SDK sandbox off)  |  (Seatbelt/bwrap)            |
+|  Docker: relay+agent + firewall | Native: SDK sandbox         |
+|             (SDK sandbox off)   | (Seatbelt/bwrap)            |
 +--------------------------------------------------------------+
                                |
                                v
@@ -78,7 +78,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Requirements
 - Node 25+, pnpm 9.x
-- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed relay; use `claude login` so tokens live in `~/.claude`.
+- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed agent; use `claude login` so tokens live in `~/.claude`.
 - Telegram bot token from @BotFather
 - Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
 - Docker/WSL: Docker + Compose (no host bubblewrap required)
@@ -91,11 +91,12 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 ```bash
 git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN and WORKSPACE_PATH
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, TELCLAUDE_INTERNAL_RPC_SECRET
 docker compose up -d --build
-docker compose exec telclaude claude login  # required; API key is not forwarded into sandbox
+docker compose exec telclaude-agent claude login  # required; API key is not forwarded into sandbox
 ```
 See `docker/README.md` for firewall, volume, and upgrade details.
+This starts `telclaude` (relay) and `telclaude-agent` (SDK + tools).
 
 ## Quick start (local)
 1) Clone and install
@@ -125,7 +126,7 @@ Notes: `defaultTier=FULL_ACCESS` is intentionally rejected at runtime. Prefer pu
 
 3) Authenticate Claude
 ```bash
-claude login             # API key is not forwarded into sandboxed relay
+claude login             # API key is not forwarded into sandboxed agent
 ```
 
 4) (Recommended) Start TOTP daemon in another terminal
@@ -168,10 +169,10 @@ docker compose exec telclaude pnpm start relay --profile strict
 - Optional group guardrail:
   - `telegram.groupChat.requireMention: true` to ignore group/supergroup messages unless they mention the bot or reply to it.
 - OpenAI/GitHub key exposure (tier-based):
-  - WRITE_LOCAL and FULL_ACCESS tiers automatically get configured API keys (OpenAI, GitHub) exposed to sandbox.
-  - READ_ONLY tier never gets keys (no Bash access anyway).
+  - FULL_ACCESS tier automatically gets configured API keys (OpenAI, GitHub) exposed to sandbox.
+  - READ_ONLY and WRITE_LOCAL tiers never get keys.
   - Configure keys via `telclaude setup-openai` / `telclaude setup-git` or env vars.
-  - **Security note:** keys are exposed to the model in WRITE_LOCAL+ tiers; use restricted keys if concerned.
+  - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
 ## CLI
@@ -203,7 +204,7 @@ pnpm dev relay --profile strict
 Use `pnpm dev <command>` during development (tsx). For production: `pnpm build && pnpm start <command>` (runs from `dist/`).
 
 ## Deployment
-- **Production (mandatory): Docker/WSL Compose stack** (`docker/README.md`). Container boundary + firewall; SDK sandbox disabled in Docker mode. Use this on shared or multi-tenant hosts.
+- **Production (mandatory): Docker/WSL Compose stack** (`docker/README.md`). Relay+agent containers + firewall; SDK sandbox disabled in Docker mode. Use this on shared or multi-tenant hosts.
 - **Development:** Native macOS/Linux with SDK sandbox (Seatbelt/bubblewrap). SDK sandbox provides OS-level isolation for Bash; WebFetch/WebSearch are filtered by hooks/allowlists. Keep `~/.telclaude/telclaude.json` chmod 600.
 
 ## Development
@@ -216,7 +217,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 
 ## Security & reporting
 - Default stance is fail-closed (empty `allowedChats` denies all; `defaultTier=FULL_ACCESS` is rejected).
-- Native mode requires the SDK sandbox; relay exits if Seatbelt/bubblewrap (or socat on Linux) is unavailable. Docker mode requires the firewall.
+- Native mode requires the SDK sandbox; relay exits if Seatbelt/bubblewrap (or socat on Linux) is unavailable. Docker mode requires the firewall (containers enforce it).
 - Vulnerabilities: please follow `SECURITY.md` for coordinated disclosure.
 - Security contact: project maintainer(s) via GitHub security advisory.
 

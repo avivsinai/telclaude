@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
-
+import { executeRemoteQuery } from "../agent/client.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
 	DEFAULT_IDLE_MINUTES,
@@ -404,16 +404,38 @@ async function executeWithSession(
 		// Pass config for additional patterns and entropy detection
 		const redactor = createStreamingRedactor(undefined, ctx.config.security?.secretFilter);
 
+		// Protocol alignment: voice in → voice out (via system prompt for stronger adherence)
+		const voiceProtocolInstruction = processedContext.wasVoiceMessage
+			? 'IMPORTANT: The user sent a voice message. You MUST respond with a voice message using `telclaude tts "your response" --voice-message`. Output ONLY the resulting file path, no text. Exception: if user explicitly asks for text response.'
+			: undefined;
+
+		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+		const queryStream = useRemoteAgent
+			? executeRemoteQuery(queryPrompt, {
+					cwd: process.cwd(),
+					tier,
+					poolKey: sessionKey,
+					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+					enableSkills: tier !== "READ_ONLY",
+					timeoutMs: timeoutSeconds * 1000,
+					betas: ctx.config.sdk?.betas,
+					userId,
+					systemPromptAppend: voiceProtocolInstruction,
+				})
+			: executePooledQuery(queryPrompt, {
+					cwd: process.cwd(),
+					tier,
+					poolKey: sessionKey,
+					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+					enableSkills: tier !== "READ_ONLY",
+					timeoutMs: timeoutSeconds * 1000,
+					betas: ctx.config.sdk?.betas,
+					userId,
+					systemPromptAppend: voiceProtocolInstruction,
+				});
+
 		// Execute with session pool for connection reuse and timeout
-		for await (const chunk of executePooledQuery(queryPrompt, {
-			cwd: process.cwd(),
-			tier,
-			poolKey: sessionKey,
-			resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-			enableSkills: tier !== "READ_ONLY",
-			timeoutMs: timeoutSeconds * 1000,
-			betas: ctx.config.sdk?.betas,
-		})) {
+		for await (const chunk of queryStream) {
 			if (chunk.type === "text") {
 				// Process through streaming redactor to catch secrets
 				const safeContent = redactor.processChunk(chunk.content);
@@ -635,7 +657,7 @@ export async function monitorTelegramProvider(
 
 	const gitConfigured = await initializeGitCredentials();
 	if (gitConfigured) {
-		logger.info("Git credentials available (GitHub token will be exposed to sandbox)");
+		logger.info("Git credentials available (tokens exposed only in FULL_ACCESS tier)");
 	}
 
 	// If not configured, periodically re-check so a later setup-openai is picked up.

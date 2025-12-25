@@ -54,14 +54,14 @@ After running the command, **include the full file path in your response**. The 
 **Example response:**
 ```
 I've generated your image and saved it to:
-/workspace/.telclaude-media/generated/1234567890-abc123.png
+/media/outbox/generated/1234567890-abc123.png
 
 [The relay will automatically send the image to you]
 ```
 
 **Important:**
 - Always include the full path from the command output in your response
-- The relay detects `.telclaude-media/generated/` paths and sends them automatically
+- The relay detects paths under `TELCLAUDE_MEDIA_OUTBOX_DIR` (default `.telclaude-media` in native mode; `/media/outbox` in Docker) and sends them automatically
 - No additional commands are needed - just include the path
 
 ## Best Practices

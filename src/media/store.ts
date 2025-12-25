@@ -8,12 +8,24 @@ import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "media-store" });
 
-// Store media in workspace so Claude can read it.
-// ~/.telclaude is blocked by sandbox, so we use a hidden dir in workspace instead.
-// In Docker: /workspace/.telclaude-media
-// Native: <cwd>/.telclaude-media
-const WORKSPACE = process.env.TELCLAUDE_WORKSPACE ?? process.cwd();
-const MEDIA_ROOT = path.join(WORKSPACE, ".telclaude-media");
+// Store media in a dedicated media directory so Claude can read it without
+// exposing relay secrets. Defaults to a hidden dir in workspace for native/dev.
+// In Docker (split mode): set TELCLAUDE_MEDIA_INBOX_DIR and TELCLAUDE_MEDIA_OUTBOX_DIR.
+//
+// NOTE: These are functions that read env vars at call time (not module load time).
+// This allows tests to override the paths by setting env vars before calling.
+function getDefaultMediaRoot(): string {
+	const workspace = process.env.TELCLAUDE_WORKSPACE ?? process.cwd();
+	return path.join(workspace, ".telclaude-media");
+}
+
+function getMediaInboxPath(): string {
+	return process.env.TELCLAUDE_MEDIA_INBOX_DIR ?? path.join(getDefaultMediaRoot(), "incoming");
+}
+
+function getMediaOutboxPath(): string {
+	return process.env.TELCLAUDE_MEDIA_OUTBOX_DIR ?? getDefaultMediaRoot();
+}
 
 /** Media categories for organized storage */
 export type MediaCategory =
@@ -31,12 +43,18 @@ export type SavedMedia = {
 	contentType: string;
 };
 
+function resolveMediaDir(category?: MediaCategory): string {
+	if (!category) return getMediaOutboxPath();
+	if (category === "incoming") return getMediaInboxPath();
+	return path.join(getMediaOutboxPath(), category);
+}
+
 /**
  * Get the media directory path for a category.
  * Creates the directory if it doesn't exist.
  */
 export async function getMediaDir(category?: MediaCategory): Promise<string> {
-	const dir = category ? path.join(MEDIA_ROOT, category) : MEDIA_ROOT;
+	const dir = resolveMediaDir(category);
 	await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
 	return dir;
 }
@@ -45,7 +63,15 @@ export async function getMediaDir(category?: MediaCategory): Promise<string> {
  * Get the media root directory path (synchronous, for module initialization).
  */
 export function getMediaRootSync(): string {
-	return MEDIA_ROOT;
+	return getMediaOutboxPath();
+}
+
+export function getMediaInboxDirSync(): string {
+	return getMediaInboxPath();
+}
+
+export function getMediaOutboxDirSync(): string {
+	return getMediaOutboxPath();
 }
 
 /**
@@ -213,7 +239,7 @@ export async function cleanupOldMedia(
 	category?: MediaCategory,
 	recursive?: boolean,
 ): Promise<number> {
-	const targetDir = category ? path.join(MEDIA_ROOT, category) : MEDIA_ROOT;
+	const targetDir = resolveMediaDir(category);
 
 	try {
 		const shouldRecurse = recursive ?? !category;

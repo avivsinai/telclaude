@@ -381,6 +381,9 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	// SECURITY: Blocking writes to these prevents prompt injection from setting
 	// disableAllHooks: true, which would disable our PreToolUse security hook.
 	/(?:^|[/\\])\.claude[/\\]settings(?:\.local)?\.json$/i, // .claude/settings.json, .claude/settings.local.json
+	// === Security-critical skills ===
+	// SECURITY: Prevents self-modification of the security-gate skill prompt.
+	/(?:^|[/\\])\.claude[/\\]skills[/\\]security-gate(?:[/\\]|$)/i,
 
 	// === Environment files (secrets!) ===
 	// Match .env anywhere in path (but not .environment or similar)

@@ -12,7 +12,7 @@
 - Skills live under `.claude/skills/` and auto-load from repo root.
 
 ## Dual-Mode Architecture
-- **Docker mode**: SDK sandbox disabled. Container provides isolation.
+- **Docker mode**: SDK sandbox disabled. Relay + agent containers provide isolation; firewall enforced in Docker.
 - **Native mode**: SDK sandbox enabled. bubblewrap (Linux) or Seatbelt (macOS).
 - Mode auto-detected via `/.dockerenv` or `TELCLAUDE_DOCKER=1` env var.
 
@@ -81,7 +81,7 @@
 - Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
 
 ## Tier-based key exposure
-API keys (OpenAI, GitHub) are exposed for WRITE_LOCAL and FULL_ACCESS tiers. READ_ONLY never gets keys. Configure via `setup-openai`/`setup-git` or env vars.
+API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.
 
 ## Troubleshooting
 - Bot silent: confirm `allowedChats`, rate limits, and observer not blocking.
