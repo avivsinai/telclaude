@@ -2,6 +2,7 @@ import http from "node:http";
 
 import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
+import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 
@@ -119,6 +120,15 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 		req.on("end", () => {
 			try {
 				const body = Buffer.concat(chunks).toString("utf-8");
+				const authResult = verifyInternalAuth(req, body);
+				if (!authResult.ok) {
+					logger.warn(
+						{ reason: authResult.reason, url: req.url },
+						"agent request failed internal auth",
+					);
+					writeJson(res, authResult.status, { error: authResult.error });
+					return;
+				}
 				const parsed = JSON.parse(body) as QueryRequest;
 
 				if (!parsed.prompt || typeof parsed.prompt !== "string") {

@@ -1,3 +1,4 @@
+import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "relay-capabilities-client" });
@@ -12,12 +13,14 @@ function getCapabilitiesUrl(): string {
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
 	const baseUrl = getCapabilitiesUrl();
+	const payload = JSON.stringify(body);
 	const response = await fetch(`${baseUrl}${path}`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
+			...buildInternalAuthHeaders("POST", path, payload),
 		},
-		body: JSON.stringify(body),
+		body: payload,
 	});
 
 	if (!response.ok) {
@@ -44,4 +47,12 @@ export async function relayTextToSpeech(input: {
 	voiceMessage?: boolean;
 }): Promise<{ path: string; bytes: number; format: string; voice: string; speed: number }> {
 	return postJson("/v1/tts.speak", input);
+}
+
+export async function relayTranscribe(input: {
+	path: string;
+	language?: string;
+	model?: string;
+}): Promise<{ text: string; language?: string; durationSeconds?: number }> {
+	return postJson("/v1/transcribe", input);
 }

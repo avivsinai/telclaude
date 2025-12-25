@@ -1,9 +1,14 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 
 import { loadConfig } from "../config/config.js";
+import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
+import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
@@ -11,7 +16,9 @@ const logger = getChildLogger({ module: "relay-capabilities" });
 const DEFAULT_BODY_LIMIT = 262144;
 const DEFAULT_PROMPT_LIMIT = 8000;
 const DEFAULT_TTS_LIMIT = 4000;
+const DEFAULT_PATH_LIMIT = 4096;
 const MAX_INFLIGHT = 4;
+const DEFAULT_TRANSCRIPTION_LIMITS = { maxPerHourPerUser: 20, maxPerDayPerUser: 50 };
 
 type CapabilityServerOptions = {
 	port?: number;
@@ -29,6 +36,12 @@ type TTSRequest = {
 	voice?: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
 	speed?: number;
 	voiceMessage?: boolean;
+};
+
+type TranscriptionRequest = {
+	path: string;
+	language?: string;
+	model?: string;
 };
 
 function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -98,13 +111,57 @@ function resolveTtsPolicy(request: TTSRequest) {
 	];
 
 	const voice = ttsConfig?.voice ?? "alloy";
-	const speed = ttsConfig?.speed ?? 1.0;
+	const defaultSpeed = ttsConfig?.speed ?? 1.0;
 	const voiceMessage = Boolean(request.voiceMessage);
 
 	const requestedVoice = request.voice ?? voice;
 	const safeVoice = allowedVoices.includes(requestedVoice) ? requestedVoice : voice;
+	const requestedSpeed = typeof request.speed === "number" ? request.speed : undefined;
+	const safeSpeed = Number.isFinite(requestedSpeed)
+		? Math.min(4.0, Math.max(0.25, requestedSpeed as number))
+		: defaultSpeed;
 
-	return { voice: safeVoice, speed, voiceMessage };
+	return { voice: safeVoice, speed: safeSpeed, voiceMessage };
+}
+
+function resolveMediaPath(inputPath: string): string | null {
+	const absolutePath = path.isAbsolute(inputPath)
+		? inputPath
+		: path.resolve(process.cwd(), inputPath);
+
+	let realPath: string;
+	try {
+		const stat = fs.lstatSync(absolutePath);
+		if (stat.isSymbolicLink()) {
+			return null;
+		}
+		realPath = fs.realpathSync(absolutePath);
+	} catch {
+		return null;
+	}
+
+	const roots = [getMediaInboxDirSync(), getMediaOutboxDirSync()].map((root) => {
+		try {
+			return fs.realpathSync(root);
+		} catch {
+			return path.resolve(root);
+		}
+	});
+
+	if (!roots.some((root) => realPath === root || realPath.startsWith(root + path.sep))) {
+		return null;
+	}
+
+	try {
+		const stat = fs.lstatSync(realPath);
+		if (!stat.isFile()) {
+			return null;
+		}
+	} catch {
+		return null;
+	}
+
+	return realPath;
 }
 
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
@@ -114,6 +171,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 	const bodyLimit = Number(process.env.TELCLAUDE_CAP_BODY_LIMIT ?? DEFAULT_BODY_LIMIT);
 	const promptLimit = Number(process.env.TELCLAUDE_CAP_PROMPT_LIMIT ?? DEFAULT_PROMPT_LIMIT);
 	const ttsLimit = Number(process.env.TELCLAUDE_CAP_TTS_LIMIT ?? DEFAULT_TTS_LIMIT);
+	const pathLimit = Number(process.env.TELCLAUDE_CAP_PATH_LIMIT ?? DEFAULT_PATH_LIMIT);
 
 	let inFlight = 0;
 
@@ -148,7 +206,16 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 		try {
 			const body = await parseBody(req, bodyLimit);
-			const parsed = JSON.parse(body) as ImageRequest & TTSRequest;
+			const authResult = verifyInternalAuth(req, body);
+			if (!authResult.ok) {
+				logger.warn(
+					{ reason: authResult.reason, url: req.url },
+					"capability request failed internal auth",
+				);
+				writeJson(res, authResult.status, { error: authResult.error });
+				return;
+			}
+			const parsed = JSON.parse(body) as ImageRequest & TTSRequest & TranscriptionRequest;
 
 			if (req.url === "/v1/image.generate") {
 				if (!parsed.prompt || typeof parsed.prompt !== "string") {
@@ -224,6 +291,50 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					format: result.format,
 					voice: result.voice,
 					speed: result.speed,
+				});
+				return;
+			}
+
+			if (req.url === "/v1/transcribe") {
+				const typed = parsed as TranscriptionRequest;
+				if (!typed.path || typeof typed.path !== "string") {
+					writeJson(res, 400, { error: "Missing path." });
+					return;
+				}
+				if (typed.path.length > pathLimit) {
+					writeJson(res, 413, { error: "Path too long." });
+					return;
+				}
+
+				const resolvedPath = resolveMediaPath(typed.path);
+				if (!resolvedPath) {
+					writeJson(res, 400, { error: "Invalid media path." });
+					return;
+				}
+
+				const rateLimiter = getMultimediaRateLimiter();
+				const limitResult = rateLimiter.checkLimit(
+					"transcription",
+					"agent",
+					DEFAULT_TRANSCRIPTION_LIMITS,
+				);
+				if (!limitResult.allowed) {
+					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
+					return;
+				}
+
+				const result = await transcribeAudio(resolvedPath, {
+					useRelay: false,
+					language: typed.language,
+					model: typed.model,
+				});
+
+				rateLimiter.consume("transcription", "agent");
+
+				writeJson(res, 200, {
+					text: result.text,
+					language: result.language,
+					durationSeconds: result.durationSeconds,
 				});
 				return;
 			}

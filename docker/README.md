@@ -117,8 +117,14 @@ This stores credentials in the shared `telclaude-claude` volume (usable by both 
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
+| `TELCLAUDE_INTERNAL_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
 | `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent`) |
+| `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
+| `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
+| `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
+
+Use the same `TELCLAUDE_INTERNAL_RPC_SECRET` value in both relay and agent containers.
 
 ### Custom Configuration
 
@@ -197,6 +203,10 @@ docker volume ls | grep telclaude
 ### Verification
 
 The firewall creates a sentinel file at `/run/telclaude/firewall-active` when successfully applied. Containers check for this file and fail if missing.
+
+### IPv6
+
+If Docker IPv6 is enabled, the firewall enforces a default-deny IPv6 policy. When IPv6 is enabled but `ip6tables` is unavailable, the container will fail to start by default (`TELCLAUDE_IPV6_FAIL_CLOSED=1`). You can override this (not recommended) with `TELCLAUDE_IPV6_FAIL_CLOSED=0`.
 
 Internal RPC between the agent and relay is allowed by hostname. If you rename the
 services, set `TELCLAUDE_INTERNAL_HOSTS` (comma-separated) to match.

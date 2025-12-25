@@ -59,6 +59,7 @@ services:
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_CAPABILITIES_ENABLED=1
+      - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
@@ -176,6 +177,7 @@ services:
 
       # Relay capability broker
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
 
       # Media paths (inbox/outbox split)
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
@@ -183,6 +185,9 @@ services:
 
       # Config (read-only)
       - TELCLAUDE_CONFIG=/config/telclaude.json
+
+      # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
 
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
@@ -226,7 +231,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=512M,mode=1777
-      - /home/node:size=256M,mode=0755
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
       - /run/telclaude:size=1M,mode=0755
 
     # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)

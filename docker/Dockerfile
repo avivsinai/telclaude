@@ -98,6 +98,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     # For network firewall (TELCLAUDE_FIREWALL=1)
     iptables \
+    # For IPv6 detection in firewall setup (ip -6)
+    iproute2 \
     # For privilege dropping (gosu is the standard Docker tool for this)
     gosu \
     && rm -rf /var/lib/apt/lists/* \

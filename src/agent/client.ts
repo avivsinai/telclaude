@@ -1,3 +1,4 @@
+import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 
@@ -33,20 +34,24 @@ export async function* executeRemoteQuery(
 	}
 
 	try {
-		const response = await fetch(`${agentUrl.replace(/\/+$/, "")}/v1/query`, {
+		const path = "/v1/query";
+		const payload = JSON.stringify({
+			prompt,
+			tier: options.tier,
+			poolKey: options.poolKey,
+			enableSkills: options.enableSkills,
+			timeoutMs: options.timeoutMs,
+			resumeSessionId: options.resumeSessionId,
+			betas: options.betas,
+		});
+		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
+		const response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				...buildInternalAuthHeaders("POST", path, payload),
 			},
-			body: JSON.stringify({
-				prompt,
-				tier: options.tier,
-				poolKey: options.poolKey,
-				enableSkills: options.enableSkills,
-				timeoutMs: options.timeoutMs,
-				resumeSessionId: options.resumeSessionId,
-				betas: options.betas,
-			}),
+			body: payload,
 			signal: controller.signal,
 		});
 

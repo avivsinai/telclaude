@@ -289,28 +289,37 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Start with: telclaude totp-daemon");
 				}
 
-				// Check skills availability
-				const skillsDir = path.join(process.cwd(), ".claude", "skills");
-				try {
-					const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
-					const skills = skillDirs
-						.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-						.map((entry) => entry.name)
-						.sort();
-					if (skills.length > 0) {
-						console.log(`Skills: ${skills.length} available (${skills.join(", ")})`);
-					} else {
-						console.log("Skills: none found in .claude/skills/");
+				// Check skills availability (project-level and user-level)
+				const skillsDirs = [
+					path.join(process.cwd(), ".claude", "skills"), // project-level
+					path.join(os.homedir(), ".claude", "skills"), // user-level
+				];
+				const allSkills = new Set<string>();
+				let foundDir: string | null = null;
+
+				for (const skillsDir of skillsDirs) {
+					try {
+						const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
+						const skills = skillDirs
+							.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+							.map((entry) => entry.name);
+						for (const skill of skills) {
+							allSkills.add(skill);
+						}
+						if (skills.length > 0 && !foundDir) {
+							foundDir = skillsDir;
+						}
+					} catch {
+						// Directory doesn't exist or not readable, try next
 					}
-				} catch (err) {
-					const errno = err as NodeJS.ErrnoException | undefined;
-					if (errno?.code === "ENOENT") {
-						console.log("Skills: directory not found (.claude/skills/)");
-						console.log("  Skills like image-generator won't be available");
-					} else {
-						console.log("Skills: unable to read .claude/skills/");
-						logger.warn({ error: String(err) }, "skills directory read failed");
-					}
+				}
+
+				if (allSkills.size > 0) {
+					const skillList = Array.from(allSkills).sort();
+					console.log(`Skills: ${skillList.length} available (${skillList.join(", ")})`);
+				} else {
+					console.log("Skills: none found");
+					console.log("  Skills like image-generator won't be available");
 				}
 
 				if (cfg.telegram?.allowedChats?.length) {

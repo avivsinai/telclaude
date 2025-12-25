@@ -12,7 +12,7 @@ export function registerAgentCommand(program: Command): void {
 		.description("Start the agent worker server (SDK runner)")
 		.option("--port <port>", "Port to bind the agent server")
 		.option("--host <host>", "Host to bind the agent server")
-		.action((opts: { port?: string; host?: string }) => {
+		.action(async (opts: { port?: string; host?: string }) => {
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
 
@@ -59,5 +59,8 @@ export function registerAgentCommand(program: Command): void {
 			});
 
 			logger.info({ port, host }, "agent server started");
+
+			// Keep the process alive (server runs indefinitely)
+			await new Promise(() => {});
 		});
 }
