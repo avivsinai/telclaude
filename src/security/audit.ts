@@ -8,6 +8,8 @@ import type { AuditEntry, SecurityClassification } from "./types.js";
 
 const DEFAULT_AUDIT_DIR = path.join(CONFIG_DIR, "logs");
 const DEFAULT_AUDIT_FILE = path.join(DEFAULT_AUDIT_DIR, "audit.log");
+const DEFAULT_FLAGGED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const DEFAULT_FLAGGED_HISTORY_LIMIT = 500;
 
 const logger = getChildLogger({ module: "audit" });
 
@@ -66,6 +68,8 @@ export class AuditLogger {
 	private config: AuditConfig;
 	private logFile: string;
 	private initialized = false;
+	private flaggedHistory = new Map<string, number>();
+	private flaggedHistoryHydrated = false;
 
 	constructor(config: AuditConfig) {
 		this.config = config;
@@ -195,9 +199,57 @@ export class AuditLogger {
 				},
 				"audit entry logged",
 			);
+
+			// Track recent WARN/BLOCK classifications for flagged-history checks
+			if (
+				entry.observerClassification &&
+				this.isFlaggedClassification(entry.observerClassification)
+			) {
+				this.flaggedHistory.set(entry.telegramUserId, entry.timestamp.getTime());
+			}
 		} catch (err) {
 			logger.error({ error: String(err) }, "failed to write audit log");
 		}
+	}
+
+	private isFlaggedClassification(classification: SecurityClassification): boolean {
+		return classification === "WARN" || classification === "BLOCK";
+	}
+
+	private async hydrateFlaggedHistory(limit = DEFAULT_FLAGGED_HISTORY_LIMIT): Promise<void> {
+		if (this.flaggedHistoryHydrated || !this.config.enabled) return;
+		const entries = await this.readRecent(limit);
+		for (const entry of entries) {
+			if (
+				entry.observerClassification &&
+				this.isFlaggedClassification(entry.observerClassification)
+			) {
+				this.flaggedHistory.set(entry.telegramUserId, entry.timestamp.getTime());
+			}
+		}
+		this.flaggedHistoryHydrated = true;
+	}
+
+	/**
+	 * Check whether a user has recent WARN/BLOCK classifications.
+	 */
+	async hasFlaggedHistory(
+		telegramUserId: string,
+		windowMs = DEFAULT_FLAGGED_HISTORY_WINDOW_MS,
+	): Promise<boolean> {
+		if (!this.config.enabled) return false;
+
+		await this.hydrateFlaggedHistory();
+
+		const lastFlaggedAt = this.flaggedHistory.get(telegramUserId);
+		if (!lastFlaggedAt) return false;
+
+		if (Date.now() - lastFlaggedAt > windowMs) {
+			this.flaggedHistory.delete(telegramUserId);
+			return false;
+		}
+
+		return true;
 	}
 
 	/**

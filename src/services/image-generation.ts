@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { type ImageGenerationConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
+import { relayGenerateImage } from "../relay/capabilities-client.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
@@ -26,6 +27,8 @@ export type ImageGenerationOptions = {
 	quality?: "low" | "medium" | "high";
 	/** User ID for rate limiting (chat_id or local_user_id) */
 	userId?: string;
+	/** Skip internal rate limiting checks (relay handles this). */
+	skipRateLimit?: boolean;
 };
 
 /**
@@ -70,6 +73,21 @@ export async function generateImage(
 	prompt: string,
 	options?: ImageGenerationOptions,
 ): Promise<GeneratedImage> {
+	// Route through relay when running on agent container
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		const size = options?.size ?? "1024x1024";
+		const quality = options?.quality ?? "medium";
+		const userId = options?.userId;
+		logger.debug({ prompt: prompt.slice(0, 50), userId }, "routing image generation through relay");
+		const result = await relayGenerateImage({ prompt, size, quality, userId });
+		return {
+			path: result.path,
+			sizeBytes: result.bytes,
+			model: result.model,
+			quality: result.quality,
+		};
+	}
+
 	if (!(await isOpenAIConfigured())) {
 		throw new Error("OpenAI API key not configured for image generation");
 	}
@@ -87,7 +105,7 @@ export async function generateImage(
 
 	// Rate limiting check (if userId provided)
 	const userId = options?.userId;
-	if (userId) {
+	if (userId && !options?.skipRateLimit) {
 		const rateLimiter = getMultimediaRateLimiter();
 		const rateLimitConfig = {
 			maxPerHourPerUser: imageConfig.maxPerHourPerUser,
@@ -165,7 +183,7 @@ export async function generateImage(
 		);
 
 		// Consume rate limit point after successful generation
-		if (userId) {
+		if (userId && !options?.skipRateLimit) {
 			const rateLimiter = getMultimediaRateLimiter();
 			rateLimiter.consume("image_generation", userId);
 		}
@@ -212,6 +230,11 @@ export async function generateImages(
  * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isImageGenerationAvailable(): boolean {
+	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		return Boolean(process.env.TELCLAUDE_INTERNAL_RPC_SECRET);
+	}
+
 	const config = loadConfig();
 
 	if (config.imageGeneration?.provider === "disabled") {

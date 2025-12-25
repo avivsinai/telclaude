@@ -1,25 +1,39 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { extractGeneratedMediaPaths, inferMediaType } from "../../src/telegram/media-detection.js";
+let extractGeneratedMediaPaths: typeof import("../../src/telegram/media-detection.js").extractGeneratedMediaPaths;
+let inferMediaType: typeof import("../../src/telegram/media-detection.js").inferMediaType;
+let __resetPatternCache: typeof import("../../src/telegram/media-detection.js").__resetPatternCache;
+
+const ORIGINAL_MEDIA_OUTBOX = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
 
 describe("media-detection", () => {
 	let tempDir: string;
 	let audioPath: string;
 	let imagePath: string;
 	let voicePath: string;
+	let mediaRoot: string;
 	// Real paths after symlink resolution (e.g., /var -> /private/var on macOS)
 	let realAudioPath: string;
 	let realImagePath: string;
 	let realVoicePath: string;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-media-"));
-		const ttsDir = path.join(tempDir, ".telclaude-media", "tts");
-		const genDir = path.join(tempDir, ".telclaude-media", "generated");
-		const voiceDir = path.join(tempDir, ".telclaude-media", "voice");
+		mediaRoot = path.join(tempDir, ".telclaude-media");
+		process.env.TELCLAUDE_MEDIA_OUTBOX_DIR = mediaRoot;
+		vi.resetModules();
+		({ extractGeneratedMediaPaths, inferMediaType, __resetPatternCache } = await import(
+			"../../src/telegram/media-detection.js"
+		));
+		// Reset cached pattern to pick up new env var
+		__resetPatternCache();
+
+		const ttsDir = path.join(mediaRoot, "tts");
+		const genDir = path.join(mediaRoot, "generated");
+		const voiceDir = path.join(mediaRoot, "voice");
 		fs.mkdirSync(ttsDir, { recursive: true });
 		fs.mkdirSync(genDir, { recursive: true });
 		fs.mkdirSync(voiceDir, { recursive: true });
@@ -37,6 +51,11 @@ describe("media-detection", () => {
 
 	afterEach(() => {
 		fs.rmSync(tempDir, { recursive: true, force: true });
+		if (ORIGINAL_MEDIA_OUTBOX === undefined) {
+			delete process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+		} else {
+			process.env.TELCLAUDE_MEDIA_OUTBOX_DIR = ORIGINAL_MEDIA_OUTBOX;
+		}
 	});
 
 	describe("inferMediaType", () => {
@@ -73,20 +92,15 @@ describe("media-detection", () => {
 
 		it("detects relative paths without prefix", () => {
 			// Create a file in current working directory structure
-			const cwd = process.cwd();
+			const cwd = tempDir;
 			const relativeDir = path.join(cwd, ".telclaude-media", "tts");
-			fs.mkdirSync(relativeDir, { recursive: true });
 			const relativeFile = path.join(relativeDir, "relative.mp3");
 			fs.writeFileSync(relativeFile, "fake audio");
 			const realRelativeFile = fs.realpathSync(relativeFile);
 
-			try {
-				const text = "Generated audio at .telclaude-media/tts/relative.mp3 for you.";
-				const results = extractGeneratedMediaPaths(text, cwd);
-				expect(results).toEqual([{ path: realRelativeFile, type: "audio" }]);
-			} finally {
-				fs.rmSync(path.join(cwd, ".telclaude-media"), { recursive: true, force: true });
-			}
+			const text = "Generated audio at .telclaude-media/tts/relative.mp3 for you.";
+			const results = extractGeneratedMediaPaths(text, cwd);
+			expect(results).toEqual([{ path: realRelativeFile, type: "audio" }]);
 		});
 
 		it("detects paths followed by punctuation", () => {
@@ -118,7 +132,7 @@ describe("media-detection", () => {
 		});
 
 		it("rejects symlinks for security", () => {
-			const symlinkPath = path.join(tempDir, ".telclaude-media", "tts", "symlink.mp3");
+			const symlinkPath = path.join(mediaRoot, "tts", "symlink.mp3");
 			fs.symlinkSync("/etc/passwd", symlinkPath);
 
 			const text = `Audio at ${symlinkPath}`;
@@ -127,7 +141,7 @@ describe("media-detection", () => {
 		});
 
 		it("rejects non-existent files", () => {
-			const fakePath = path.join(tempDir, ".telclaude-media", "tts", "nonexistent.mp3");
+			const fakePath = path.join(mediaRoot, "tts", "nonexistent.mp3");
 			const text = `Audio at ${fakePath}`;
 			const results = extractGeneratedMediaPaths(text);
 			expect(results).toEqual([]);

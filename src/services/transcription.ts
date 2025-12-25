@@ -8,6 +8,7 @@ import fs from "node:fs";
 
 import { loadConfig, type TelclaudeConfig, type TranscriptionConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { relayTranscribe } from "../relay/capabilities-client.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "transcription" });
@@ -55,13 +56,24 @@ function resolveTranscriptionConfig(
 export type TranscriptionAvailability = {
 	available: boolean;
 	reason?: string;
-	provider: "openai" | "deepgram" | "command";
+	provider: "openai" | "deepgram" | "command" | "relay";
 };
 
 /**
  * Check if transcription is available (async, includes keychain lookup).
  */
 export async function getTranscriptionAvailability(): Promise<TranscriptionAvailability> {
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		if (!process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
+			return {
+				available: false,
+				provider: "relay",
+				reason: "TELCLAUDE_INTERNAL_RPC_SECRET is required for relay transcription.",
+			};
+		}
+		return { available: true, provider: "relay" };
+	}
+
 	const config = loadConfig();
 	const resolved = resolveTranscriptionConfig(config);
 
@@ -102,6 +114,11 @@ export async function getTranscriptionAvailability(): Promise<TranscriptionAvail
 	}
 }
 
+export type TranscriptionOptions = Partial<TranscriptionConfig> & {
+	useRelay?: boolean;
+	userId?: string;
+};
+
 /**
  * Transcribe audio file to text.
  *
@@ -111,10 +128,29 @@ export async function getTranscriptionAvailability(): Promise<TranscriptionAvail
  */
 export async function transcribeAudio(
 	filePath: string,
-	options?: Partial<TranscriptionConfig>,
+	options?: TranscriptionOptions,
 ): Promise<TranscriptionResult> {
+	const useRelay = options?.useRelay ?? Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
+	if (useRelay) {
+		const relayUserId = options?.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID;
+		const result = await relayTranscribe({
+			path: filePath,
+			language: options?.language,
+			model: options?.model,
+			userId: relayUserId,
+		});
+		return {
+			text: result.text,
+			language: result.language,
+			durationSeconds: result.durationSeconds,
+		};
+	}
+
 	const config = loadConfig();
-	const transcriptionConfig = resolveTranscriptionConfig(config, options);
+	const { useRelay: _useRelay, userId: _userId, ...localOptions } = options ?? {};
+	void _useRelay;
+	void _userId;
+	const transcriptionConfig = resolveTranscriptionConfig(config, localOptions);
 
 	logger.debug({ filePath, provider: transcriptionConfig.provider }, "starting transcription");
 

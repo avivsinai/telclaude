@@ -8,6 +8,7 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
+import { startCapabilityServer } from "../relay/capabilities.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -147,15 +148,29 @@ export function registerRelayCommand(program: Command): void {
 				);
 				console.log("  Secret filtering: enabled (CORE patterns + entropy detection)");
 
+				const capabilitiesEnabled = process.env.TELCLAUDE_CAPABILITIES_ENABLED !== "0";
+				if (capabilitiesEnabled) {
+					startCapabilityServer();
+					console.log("  Capabilities: enabled (relay broker)");
+				} else {
+					console.log("  Capabilities: disabled");
+				}
+
 				// Detect sandbox mode and verify sandbox availability
 				const sandboxMode = getSandboxMode();
+				const usesRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 				if (sandboxMode === "docker") {
-					console.log("Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)");
+					if (usesRemoteAgent) {
+						console.log("Sandbox: Docker mode (relay-only, SDK runs in agent container)");
+					} else {
+						console.log(
+							"Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)",
+						);
+					}
 					// SECURITY: Docker mode REQUIRES firewall for network isolation
-					// Without firewall, Bash can reach arbitrary endpoints including private/metadata
 					if (process.env.TELCLAUDE_FIREWALL !== "1") {
 						if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
-							console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - Bash has NO network isolation");
+							console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - network isolation is OFF");
 							console.warn("     Running anyway due to TELCLAUDE_ACCEPT_NO_FIREWALL=1");
 							console.warn("     THIS IS A SECURITY RISK - use only for testing");
 							// AUDIT: Log the security bypass
@@ -166,9 +181,7 @@ export function registerRelayCommand(program: Command): void {
 						} else {
 							console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
 							console.error("In Docker mode, the SDK sandbox is disabled.");
-							console.error(
-								"Without TELCLAUDE_FIREWALL=1, Bash commands have NO network isolation",
-							);
+							console.error("Without TELCLAUDE_FIREWALL=1, container egress is not isolated");
 							console.error("and can reach arbitrary endpoints (including cloud metadata).\n");
 							console.error("To fix:");
 							console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
@@ -276,28 +289,37 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Start with: telclaude totp-daemon");
 				}
 
-				// Check skills availability
-				const skillsDir = path.join(process.cwd(), ".claude", "skills");
-				try {
-					const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
-					const skills = skillDirs
-						.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-						.map((entry) => entry.name)
-						.sort();
-					if (skills.length > 0) {
-						console.log(`Skills: ${skills.length} available (${skills.join(", ")})`);
-					} else {
-						console.log("Skills: none found in .claude/skills/");
+				// Check skills availability (project-level and user-level)
+				const skillsDirs = [
+					path.join(process.cwd(), ".claude", "skills"), // project-level
+					path.join(os.homedir(), ".claude", "skills"), // user-level
+				];
+				const allSkills = new Set<string>();
+				let foundDir: string | null = null;
+
+				for (const skillsDir of skillsDirs) {
+					try {
+						const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
+						const skills = skillDirs
+							.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+							.map((entry) => entry.name);
+						for (const skill of skills) {
+							allSkills.add(skill);
+						}
+						if (skills.length > 0 && !foundDir) {
+							foundDir = skillsDir;
+						}
+					} catch {
+						// Directory doesn't exist or not readable, try next
 					}
-				} catch (err) {
-					const errno = err as NodeJS.ErrnoException | undefined;
-					if (errno?.code === "ENOENT") {
-						console.log("Skills: directory not found (.claude/skills/)");
-						console.log("  Skills like image-generator won't be available");
-					} else {
-						console.log("Skills: unable to read .claude/skills/");
-						logger.warn({ error: String(err) }, "skills directory read failed");
-					}
+				}
+
+				if (allSkills.size > 0) {
+					const skillList = Array.from(allSkills).sort();
+					console.log(`Skills: ${skillList.length} available (${skillList.join(", ")})`);
+				} else {
+					console.log("Skills: none found");
+					console.log("  Skills like image-generator won't be available");
 				}
 
 				if (cfg.telegram?.allowedChats?.length) {

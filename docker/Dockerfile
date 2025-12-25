@@ -98,6 +98,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     # For network firewall (TELCLAUDE_FIREWALL=1)
     iptables \
+    # For IPv6 detection in firewall setup (ip -6)
+    iproute2 \
     # For privilege dropping (gosu is the standard Docker tool for this)
     gosu \
     && rm -rf /var/lib/apt/lists/* \
@@ -134,8 +136,10 @@ COPY --from=claude-cli /usr/local/bin/claude /usr/local/bin/claude
 
 # Claude Code expects ripgrep at a specific path - create symlink to system rg
 # This is needed because Claude CLI bundles its own rg but we use the system one
-RUN mkdir -p /usr/local/bin/vendor/ripgrep/arm64-linux \
-    && ln -s /usr/bin/rg /usr/local/bin/vendor/ripgrep/arm64-linux/rg
+# Detect architecture dynamically to support both ARM64 (Raspberry Pi) and x86_64
+RUN ARCH=$(uname -m | sed 's/aarch64/arm64/' | sed 's/x86_64/x64/') \
+    && mkdir -p /usr/local/bin/vendor/ripgrep/${ARCH}-linux \
+    && ln -s /usr/bin/rg /usr/local/bin/vendor/ripgrep/${ARCH}-linux/rg
 
 # Copy built application
 WORKDIR /app

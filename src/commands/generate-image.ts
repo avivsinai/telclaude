@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { relayGenerateImage } from "../relay/capabilities-client.js";
 import {
 	generateImage,
 	getEstimatedCost,
@@ -20,6 +21,7 @@ export type GenerateImageOptions = {
 	size?: ImageSize;
 	quality?: "low" | "medium" | "high";
 	verbose?: boolean;
+	userId?: string;
 };
 
 export function registerGenerateImageCommand(program: Command): void {
@@ -29,10 +31,30 @@ export function registerGenerateImageCommand(program: Command): void {
 		.argument("<prompt>", "Text description of the image to generate")
 		.option("-s, --size <size>", "Image size: auto, 1024x1024, 1536x1024, 1024x1536", "1024x1024")
 		.option("-q, --quality <quality>", "Quality tier: low, medium, high", "medium")
+		.option("--user-id <id>", "User ID for rate limiting (optional)")
 		.action(async (prompt: string, opts: GenerateImageOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
+				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
+				const size = validateSize(opts.size);
+				const quality = validateQuality(opts.quality);
+				const requestUserId = opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID;
+
+				if (useRelay) {
+					const result = await relayGenerateImage({
+						prompt,
+						size,
+						quality,
+						userId: requestUserId,
+					});
+
+					console.log(`Generated image saved to: ${result.path}`);
+					console.log(`Size: ${(result.bytes / 1024).toFixed(1)} KB`);
+					console.log(`Model: ${result.model}`);
+					return;
+				}
+
 				// Initialize keychain lookup so isImageGenerationAvailable() works correctly
 				await initializeOpenAIKey();
 
@@ -45,9 +67,6 @@ export function registerGenerateImageCommand(program: Command): void {
 					process.exit(1);
 				}
 
-				const size = validateSize(opts.size);
-				const quality = validateQuality(opts.quality);
-
 				if (verbose) {
 					const cost = getEstimatedCost(size, quality);
 					console.log(`Generating image with ${quality} quality at ${size}...`);
@@ -57,6 +76,7 @@ export function registerGenerateImageCommand(program: Command): void {
 				const result = await generateImage(prompt, {
 					size,
 					quality,
+					userId: requestUserId,
 				});
 
 				// Output in a format that's easy to parse

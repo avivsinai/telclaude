@@ -66,11 +66,15 @@ if [ "$(id -u)" = "0" ]; then
     # Skills are installed at user-level (~/.claude/skills/) above.
     # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
     # Create symlink if /workspace/.claude/skills/ doesn't exist (preserves user's own skills if present).
-    if [ ! -e "/workspace/.claude/skills" ]; then
-        echo "[entrypoint] Symlinking skills to workspace"
-        mkdir -p /workspace/.claude
-        ln -s /home/node/.claude/skills /workspace/.claude/skills
-        chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills
+    if [ -d "/workspace" ] && [ -w "/workspace" ]; then
+        if [ ! -e "/workspace/.claude/skills" ]; then
+            echo "[entrypoint] Symlinking skills to workspace"
+            mkdir -p /workspace/.claude
+            ln -s /home/node/.claude/skills /workspace/.claude/skills
+            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills
+        fi
+    else
+        echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
     fi
 
     # Configure git credential helper (uses telclaude's secure storage)
@@ -96,7 +100,8 @@ if [ "$(id -u)" = "0" ]; then
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
     # NOTE: /home/node must be writable for Claude CLI to create .claude.json
-    for dir in /data /home/node /home/node/.claude /home/node/.telclaude; do
+    # NOTE: /media/outbox needs write access for generated content (relay container)
+    for dir in /data /home/node /home/node/.claude /home/node/.telclaude /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
