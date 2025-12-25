@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { relayTextToSpeech } from "../relay/capabilities-client.js";
 import { initializeOpenAIKey } from "../services/openai-client.js";
 import { getEstimatedTTSCost, isTTSAvailable, textToSpeech } from "../services/tts.js";
 
@@ -34,6 +35,28 @@ export function registerTextToSpeechCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
+				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
+				const voice = validateVoice(opts.voice);
+				const speed = validateSpeed(opts.speed);
+				const model = validateModel(opts.model);
+				const format = validateFormat(opts.format);
+				const voiceMessage = opts.voiceMessage ?? false;
+
+				if (useRelay) {
+					const result = await relayTextToSpeech({
+						text,
+						voice,
+						speed,
+						voiceMessage,
+					});
+
+					console.log(`Generated audio saved to: ${result.path}`);
+					console.log(`Size: ${(result.bytes / 1024).toFixed(1)} KB`);
+					console.log(`Format: ${result.format}`);
+					console.log(`Voice: ${result.voice}`);
+					return;
+				}
+
 				// Initialize keychain lookup so isTTSAvailable() works correctly
 				await initializeOpenAIKey();
 
@@ -45,12 +68,6 @@ export function registerTextToSpeechCommand(program: Command): void {
 					);
 					process.exit(1);
 				}
-
-				const voice = validateVoice(opts.voice);
-				const speed = validateSpeed(opts.speed);
-				const model = validateModel(opts.model);
-				const format = validateFormat(opts.format);
-				const voiceMessage = opts.voiceMessage ?? false;
 
 				if (verbose) {
 					const cost = getEstimatedTTSCost(text.length, model);

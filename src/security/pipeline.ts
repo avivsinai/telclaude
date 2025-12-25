@@ -166,11 +166,11 @@ class StrictPipeline implements SecurityPipeline {
 	constructor(
 		private securityConfig: SecurityConfig | undefined,
 		private rateLimiter: RateLimiter,
-		_auditLogger: AuditLogger, // Accepted for interface consistency; audit logging handled externally
+		private auditLogger: AuditLogger, // Used for flagged-history lookups
 		private observer: {
 			analyze: (
 				message: string,
-				context: { permissionTier: PermissionTier },
+				context: { permissionTier: PermissionTier; hasFlaggedHistory?: boolean },
 			) => Promise<ObserverResult>;
 		},
 		private requiresApprovalFn: (
@@ -213,7 +213,16 @@ class StrictPipeline implements SecurityPipeline {
 		}
 
 		// 4. Security observer analysis
-		const observerResult = await this.observer.analyze(ctx.body, { permissionTier: tier });
+		let hasFlaggedHistory = false;
+		try {
+			hasFlaggedHistory = await this.auditLogger.hasFlaggedHistory(ctx.userId);
+		} catch (err) {
+			logger.warn({ error: String(err), userId: ctx.userId }, "failed to load flagged history");
+		}
+		const observerResult = await this.observer.analyze(ctx.body, {
+			permissionTier: tier,
+			hasFlaggedHistory,
+		});
 
 		// 5. Check if approval is required
 		const admin = isAdmin(ctx.chatId);

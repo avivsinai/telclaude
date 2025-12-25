@@ -16,16 +16,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { getMediaOutboxDirSync } from "../media/store.js";
 import type { TelegramMediaType } from "./types.js";
 
 /**
  * Pattern to match generated media paths.
  * Matches paths like:
- * - /workspace/.telclaude-media/generated/1234567890-abc123.png (absolute)
- * - /path/to/.telclaude-media/tts/1234567890-abc123.mp3 (absolute)
- * - /path/to/.telclaude-media/voice/1234567890-abc123.ogg (voice messages)
- * - .telclaude-media/generated/file.png (relative, no prefix)
- * - some/path/.telclaude-media/tts/file.mp3 (relative with prefix)
+ * - /media/outbox/generated/1234567890-abc123.png (absolute)
+ * - /media/outbox/tts/1234567890-abc123.mp3 (absolute)
+ * - /media/outbox/voice/1234567890-abc123.ogg (voice messages)
+ * - /workspace/.telclaude-media/generated/file.png (legacy default)
  * - /Users/name/My Projects/.telclaude-media/generated/file.png (paths with spaces)
  *
  * Design: Simple pattern that finds non-whitespace sequences containing the marker.
@@ -34,7 +34,59 @@ import type { TelegramMediaType } from "./types.js";
  * Note: For paths with spaces, they need to be quoted in the text
  * (e.g., "/path/with spaces/.telclaude-media/generated/file.png")
  */
-const GENERATED_MEDIA_PATTERN = /(\S*\.telclaude-media\/(?:generated|tts|voice)\/\S+)/g;
+
+function escapeRegex(input: string): string {
+	return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Lazy-initialized pattern to allow env vars to be set before first use (for testing)
+let _cachedPattern: RegExp | null = null;
+let _cachedMediaOutboxRoot: string | null = null;
+let _cachedLegacyMediaRoot: string | null = null;
+
+function getMediaRoots(): { outbox: string; legacy: string } {
+	return {
+		outbox: getMediaOutboxDirSync(),
+		legacy: path.join(process.cwd(), ".telclaude-media"),
+	};
+}
+
+function getGeneratedMediaPattern(): RegExp {
+	const roots = getMediaRoots();
+
+	// Invalidate cache if roots changed (happens when env var changes in tests)
+	if (
+		_cachedPattern &&
+		_cachedMediaOutboxRoot === roots.outbox &&
+		_cachedLegacyMediaRoot === roots.legacy
+	) {
+		return _cachedPattern;
+	}
+
+	const mediaRootsPattern = [
+		escapeRegex(roots.outbox.replace(/\\/g, "/")),
+		escapeRegex(roots.legacy.replace(/\\/g, "/")),
+		"\\.telclaude-media",
+	]
+		.filter(Boolean)
+		.join("|");
+
+	_cachedPattern = new RegExp(`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice)/\\S+)`, "g");
+	_cachedMediaOutboxRoot = roots.outbox;
+	_cachedLegacyMediaRoot = roots.legacy;
+
+	return _cachedPattern;
+}
+
+/**
+ * Reset the cached pattern. For testing only.
+ * @internal
+ */
+export function __resetPatternCache(): void {
+	_cachedPattern = null;
+	_cachedMediaOutboxRoot = null;
+	_cachedLegacyMediaRoot = null;
+}
 
 /**
  * Image extensions we support sending.
@@ -57,27 +109,44 @@ export type DetectedMedia = {
 };
 
 /**
- * Safely resolve a path to its real location, checking for symlinks in the chain.
- * Returns null if any component is a symlink or if resolution fails.
+ * Check if a path is under one of the allowed media roots.
  *
  * SECURITY: This prevents symlink attacks where a parent directory is a symlink
  * pointing outside the expected media root.
+ *
+ * Handles macOS symlinks like /var -> /private/var by resolving both the
+ * input path and the allowed roots to their real paths.
  */
+function isUnderAllowedRoot(inputPath: string): boolean {
+	// Resolve the input path to its real location
+	let normalizedReal: string;
+	try {
+		normalizedReal = fs.realpathSync(inputPath);
+	} catch {
+		normalizedReal = path.resolve(inputPath);
+	}
+
+	const mediaRoots = getMediaRoots();
+	// Also resolve the roots to their real paths (handles macOS /var -> /private/var symlink)
+	const roots = [mediaRoots.outbox, mediaRoots.legacy].map((root) => {
+		try {
+			return fs.realpathSync(root);
+		} catch {
+			return path.resolve(root);
+		}
+	});
+	return roots.some(
+		(root) => normalizedReal === root || normalizedReal.startsWith(root + path.sep),
+	);
+}
+
 function safeResolvePath(inputPath: string): string | null {
 	try {
 		// fs.realpathSync follows ALL symlinks and returns the canonical path
 		const realPath = fs.realpathSync(inputPath);
 
-		// Verify the real path still contains .telclaude-media
-		// This catches cases where a symlinked parent redirects outside
-		if (!realPath.includes("/.telclaude-media/") && !realPath.includes("\\.telclaude-media\\")) {
-			return null;
-		}
-
-		// Double-check the normalized real path still contains the marker
-		// (realpathSync should have caught this, but defense-in-depth)
-		const normalizedReal = path.normalize(realPath);
-		if (!normalizedReal.includes(".telclaude-media")) {
+		// Verify the real path still resolves under the allowed media roots
+		if (!isUnderAllowedRoot(realPath)) {
 			return null;
 		}
 
@@ -109,10 +178,10 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
 	const results: DetectedMedia[] = [];
 	const seen = new Set<string>();
 
-	// Reset regex state for global matching
-	GENERATED_MEDIA_PATTERN.lastIndex = 0;
+	// Get pattern dynamically (allows env vars to be set before first use)
+	const pattern = getGeneratedMediaPattern();
 
-	for (const match of text.matchAll(GENERATED_MEDIA_PATTERN)) {
+	for (const match of text.matchAll(pattern)) {
 		// Strip trailing punctuation that's not part of the path
 		const rawPath = match[1].replace(/[.,!?;:'")\]]+$/, "");
 		if (!rawPath || seen.has(rawPath)) continue;
@@ -167,10 +236,8 @@ export function extractGeneratedMediaPaths(text: string, workingDir?: string): D
  * Check if a path is in the voice messages directory.
  */
 function isVoiceMessagePath(filePath: string): boolean {
-	// Check for .telclaude-media/voice/ in the path
-	return (
-		filePath.includes(".telclaude-media/voice/") || filePath.includes(".telclaude-media\\voice\\")
-	);
+	const normalized = filePath.replace(/\\/g, "/");
+	return normalized.includes("/voice/") && isUnderAllowedRoot(filePath);
 }
 
 /**

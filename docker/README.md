@@ -9,25 +9,22 @@ Secure containerized deployment for telclaude on Windows (WSL2) or Linux hosts.
 │                    Windows Host (WSL2)                          │
 │                                                                 │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │                 Docker Container                          │  │
+│  │                 Docker Network                            │  │
 │  │                                                           │  │
-│  │  ┌─────────────────┐    ┌─────────────────────────────┐  │  │
-│  │  │    telclaude    │───▶│     Claude Code CLI        │  │  │
-│  │  │     relay       │    │  (tools: Read, Write, etc)  │  │  │
-│  │  └────────┬────────┘    └──────────────┬──────────────┘  │  │
-│  │           │                            │                  │  │
-│  │           ▼                            ▼                  │  │
-│  │  ┌─────────────────┐    ┌─────────────────────────────┐  │  │
-│  │  │   /data volume  │    │     /workspace volume       │  │  │
-│  │  │  (SQLite, cfg)  │    │   (your projects folder)    │  │  │
-│  │  └─────────────────┘    └──────────────┬──────────────┘  │  │
-│  │                                        │                  │  │
-│  └────────────────────────────────────────┼──────────────────┘  │
-│                                           │                     │
-│                    ┌──────────────────────┘                     │
-│                    ▼                                            │
-│         C:\Users\YourName\Projects                              │
-│         (host filesystem - ONLY this folder exposed)            │
+│  │  ┌─────────────────┐    internal    ┌─────────────────┐  │  │
+│  │  │    telclaude    │◀──────────────▶│ telclaude-agent  │  │  │
+│  │  │     relay       │                │  SDK + tools     │  │  │
+│  │  └────────┬────────┘                └────────┬────────┘  │  │
+│  │           │                                 │             │  │
+│  │   /data volume (secrets, DB)       /workspace volume       │  │
+│  │   /media inbox/outbox (shared)     (your projects folder)  │  │
+│  │                                                           │  │
+│  └────────────────────────────────────────────┬───────────────┘  │
+│                                               │                  │
+│                    ┌──────────────────────────┘                  │
+│                    ▼                                             │
+│         C:\Users\YourName\Projects                               │
+│         (host filesystem - ONLY this folder exposed)             │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -96,20 +93,21 @@ for containers that need initial root privileges.
 If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude:
 
 ```powershell
-docker compose exec telclaude claude login
+docker compose exec telclaude-agent claude login
 ```
 
-This stores credentials in the `telclaude-claude` volume.
+This stores credentials in the shared `telclaude-claude` volume (usable by both containers).
 
 ## Configuration
 
 ### Volume Mounts
 
-| Container Path | Purpose | Persisted |
-|---------------|---------|-----------|
-| `/workspace` | Your projects folder | Host mount |
-| `/data` | SQLite DB, config, sessions | Named volume |
-| `/home/node/.claude` | Claude credentials | Named volume |
+| Container | Path | Purpose | Persisted |
+|----------|------|---------|-----------|
+| `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
+| `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
+| `telclaude` + `telclaude-agent` | `/home/node/.claude` | Claude credentials | Named volume |
+| `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 
 ### Environment Variables
 
@@ -119,7 +117,8 @@ This stores credentials in the `telclaude-claude` volume.
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (relay will refuse to start without it) |
+| `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
+| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent`) |
 
 ### Custom Configuration
 
@@ -157,18 +156,20 @@ docker compose down
 
 # View logs
 docker compose logs -f telclaude
+docker compose logs -f telclaude-agent
 
 # Rebuild after code changes
 docker compose up -d --build
 
 # Shell into container
 docker compose exec telclaude bash
+docker compose exec telclaude-agent bash
 
 # Run telclaude doctor
 docker compose exec telclaude telclaude doctor
 
 # Claude login (if not using API key)
-docker compose exec telclaude claude login
+docker compose exec telclaude-agent claude login
 
 # View volumes
 docker volume ls | grep telclaude
@@ -176,7 +177,7 @@ docker volume ls | grep telclaude
 
 ## Network Firewall (Required)
 
-**The network firewall is required for Docker mode.** The relay will refuse to start without it because Docker mode disables the SDK sandbox, leaving Bash with no network isolation.
+**The network firewall is required for Docker mode.** Both relay and agent enable it by default; the agent (tool runner) refuses to start without it because Docker mode disables the SDK sandbox, leaving Bash with no network isolation.
 
 ### Configuration
 
@@ -187,7 +188,7 @@ docker volume ls | grep telclaude
 
 2. Ensure docker-compose.yml has `cap_add: [NET_ADMIN]` (already included by default).
 
-3. The container will restrict outbound connections to:
+3. The firewall will restrict outbound connections to:
    - Anthropic API (api.anthropic.com)
    - Telegram API (api.telegram.org)
    - Package registries (npm, PyPI)
@@ -195,7 +196,14 @@ docker volume ls | grep telclaude
 
 ### Verification
 
-The firewall creates a sentinel file at `/run/telclaude/firewall-active` when successfully applied. The relay checks for this file and fails if missing.
+The firewall creates a sentinel file at `/run/telclaude/firewall-active` when successfully applied. Containers check for this file and fail if missing.
+
+Internal RPC between the agent and relay is allowed by hostname. If you rename the
+services, set `TELCLAUDE_INTERNAL_HOSTS` (comma-separated) to match.
+
+Note: The compose files enable the firewall in both relay and agent containers
+by default. The agent enforces the tool boundary; the relay firewall limits
+egress even though it does not run tools.
 
 ### Bypass (Testing Only)
 
@@ -229,10 +237,10 @@ wsl ls /mnt/c/Users/YourName/Projects
 
 ```powershell
 # Check Claude version
-docker compose exec telclaude claude --version
+docker compose exec telclaude-agent claude --version
 
 # Re-authenticate
-docker compose exec telclaude claude login
+docker compose exec telclaude-agent claude login
 ```
 
 ### Reset all data

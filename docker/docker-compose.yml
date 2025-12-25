@@ -31,10 +31,12 @@ services:
     image: telclaude:latest
     container_name: telclaude
 
-    # Wait for TOTP daemon to be ready
+    # Wait for TOTP daemon and agent to be ready
     depends_on:
       totp:
         condition: service_healthy
+      telclaude-agent:
+        condition: service_started
 
     environment:
       # Required: Telegram bot token
@@ -55,13 +57,17 @@ services:
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
+      - TELCLAUDE_CAPABILITIES_ENABLED=1
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
       # TOTP daemon socket (shared with sidecar)
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
 
       # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -71,9 +77,6 @@ services:
       - NODE_ENV=production
 
     volumes:
-      # Workspace: Your projects folder (Claude will work here)
-      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
-
       # Persistent data (SQLite DB, sessions, config)
       - telclaude-data:/data:rw
 
@@ -85,6 +88,10 @@ services:
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
+
+      # Shared media volumes (inbox/outbox split)
+      - media-inbox:/media/inbox:rw
+      - media-outbox:/media/outbox:rw
 
     # Start as root for firewall init, then drop to node via gosu
     # Docker mode: SDK sandbox disabled, container provides isolation
@@ -111,6 +118,10 @@ services:
       - /home/node:size=256M,mode=0755
       - /run/telclaude:size=1M,mode=0755
 
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 4G
+    cpus: 4
+
     deploy:
       resources:
         limits:
@@ -121,7 +132,9 @@ services:
           memory: 512M
 
     networks:
-      - telclaude-net
+      - agent-relay-net
+      - relay-totp-net
+      - relay-egress
 
     restart: unless-stopped
 
@@ -139,10 +152,111 @@ services:
         max-file: "3"
 
   # ─────────────────────────────────────────────────────────────────────────────
+  # Agent Worker (SDK + Tools, no secrets)
+  # ─────────────────────────────────────────────────────────────────────────────
+  telclaude-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude:latest
+    container_name: telclaude-agent
+
+
+    environment:
+      # Optional: Anthropic API key (if not using claude login)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # Agent server
+      - TELCLAUDE_AGENT_PORT=8788
+      - TELCLAUDE_AGENT_WORKDIR=/workspace
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+
+      # Relay capability broker
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+
+      # Media paths (inbox/outbox split)
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
+
+      # Config (read-only)
+      - TELCLAUDE_CONFIG=/config/telclaude.json
+
+      # SECURITY: Network firewall for tool egress control (Docker mode)
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+
+      # Drop privileges after firewall init
+      - TELCLAUDE_RUN_AS_ROOT=0
+
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      # Workspace: Your projects folder (Claude works here)
+      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+
+      # Read-only config file
+      - ./telclaude.json:/config/telclaude.json:ro
+
+      # Claude Code configuration (credentials, settings)
+      - telclaude-claude:/home/node/.claude:rw
+
+      # Shared media volumes (inbox/outbox split)
+      - media-inbox:/media/inbox:ro
+      - media-outbox:/media/outbox:ro
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
+
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 4G
+    cpus: 4
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+    networks:
+      - agent-relay-net
+      - agent-egress
+
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────────
   # TOTP Daemon Sidecar
   #
   # Handles 2FA operations with encrypted file storage.
   # Communicates with relay via Unix socket on shared volume.
+  #
+  # SECURITY: Network isolation enforced via internal-only network (relay-totp-net).
+  # The TOTP container has NO external network connectivity - it only talks to relay
+  # via the shared socket. No iptables/firewall needed since there's no egress route.
   # ─────────────────────────────────────────────────────────────────────────────
   totp:
     build:
@@ -190,6 +304,10 @@ services:
       - /tmp:size=64M,mode=1777
       - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
 
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 128M
+    cpus: 0.5
+
     deploy:
       resources:
         limits:
@@ -200,7 +318,7 @@ services:
           memory: 32M
 
     networks:
-      - telclaude-net
+      - relay-totp-net
 
     restart: unless-stopped
 
@@ -243,10 +361,37 @@ volumes:
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
 
+  # Shared media inbox (agent RO, relay RW) - size capped
+  media-inbox:
+    name: telclaude-media-inbox
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=512M,uid=1000,gid=1000,mode=0700
+
+  # Shared media outbox (relay RW, agent RO)
+  media-outbox:
+    name: telclaude-media-outbox
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks
 # ═══════════════════════════════════════════════════════════════════════════════
 networks:
-  telclaude-net:
-    name: telclaude-net
+  agent-relay-net:
+    name: telclaude-agent-relay
+    driver: bridge
+    internal: true
+
+  relay-totp-net:
+    name: telclaude-relay-totp
+    driver: bridge
+    internal: true
+
+  agent-egress:
+    name: telclaude-agent-egress
+    driver: bridge
+
+  relay-egress:
+    name: telclaude-relay-egress
     driver: bridge

@@ -1,7 +1,10 @@
 # Telclaude Docker Compose - Simple (no TOTP)
-# Usage: docker compose -f docker-compose.simple.yml up -d --build
+# Usage: docker compose -f docker/compose.simple.yaml up -d --build
 
 services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Relay Service (Telegram + secrets)
+  # ─────────────────────────────────────────────────────────────────────────────
   telclaude:
     build:
       context: ..
@@ -12,42 +15,56 @@ services:
     image: telclaude:latest
     container_name: telclaude
 
+
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # For secure API key storage (telclaude setup-openai, setup-git)
-      # Generate with: openssl rand -base64 32
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-}
-      # API keys (tier-based: auto-exposed for WRITE_LOCAL+)
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GH_TOKEN:-}
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      # SECURITY: Firewall REQUIRED - set TELCLAUDE_FIREWALL=1 for network isolation
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
-      - TELCLAUDE_RUN_AS_ROOT=1
+      - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
+      - TELCLAUDE_CAPABILITIES_ENABLED=1
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_RUN_AS_ROOT=0
       - NODE_ENV=production
 
     volumes:
-      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - telclaude-data:/data:rw
-      - telclaude-home:/home/node:rw
+      - telclaude-claude:/home/node/.claude:rw
       - ./telclaude.json:/data/telclaude.json:ro
+      - media-inbox:/media/inbox:rw
+      - media-outbox:/media/outbox:rw
 
-    # Privileged needed for bubblewrap user namespaces in Docker
-    privileged: true
-
-    # Run as root - bubblewrap handles isolation
     user: "0:0"
 
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
     security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+      - no-new-privileges:true
 
     read_only: true
     tmpfs:
       - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
+
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 4G
+    cpus: 4
 
     deploy:
       resources:
@@ -59,7 +76,8 @@ services:
           memory: 512M
 
     networks:
-      - telclaude-net
+      - agent-relay-net
+      - relay-egress
 
     restart: unless-stopped
 
@@ -76,13 +94,108 @@ services:
         max-size: "10m"
         max-file: "3"
 
+    depends_on:
+      telclaude-agent:
+        condition: service_started
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Agent Worker (SDK + tools, no secrets)
+  # ─────────────────────────────────────────────────────────────────────────────
+  telclaude-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude:latest
+    container_name: telclaude-agent
+
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - TELCLAUDE_AGENT_PORT=8788
+      - TELCLAUDE_AGENT_WORKDIR=/workspace
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
+      - TELCLAUDE_CONFIG=/config/telclaude.json
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+      - ./telclaude.json:/config/telclaude.json:ro
+      - telclaude-claude:/home/node/.claude:rw
+      - media-inbox:/media/inbox:ro
+      - media-outbox:/media/outbox:ro
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
+
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 4G
+    cpus: 4
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 512M
+
+    networks:
+      - agent-relay-net
+      - agent-egress
+
+    restart: unless-stopped
+
 volumes:
   telclaude-data:
     name: telclaude-data
-  telclaude-home:
-    name: telclaude-home
+  telclaude-claude:
+    name: telclaude-claude
+  media-inbox:
+    name: telclaude-media-inbox
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=512M,uid=1000,gid=1000,mode=0700
+  media-outbox:
+    name: telclaude-media-outbox
 
 networks:
-  telclaude-net:
-    name: telclaude-net
+  agent-relay-net:
+    name: telclaude-agent-relay
+    driver: bridge
+    internal: true
+  agent-egress:
+    name: telclaude-agent-egress
+    driver: bridge
+  relay-egress:
+    name: telclaude-relay-egress
     driver: bridge

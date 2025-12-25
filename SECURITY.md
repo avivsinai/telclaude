@@ -45,7 +45,7 @@ We protect against:
 | **1. Screening** | Fast Path + Observer | Blocks dangerous prompts before execution |
 | **2. Policy** | Rate Limiter + Approvals | Prevents abuse, human-in-loop for risky ops |
 | **3. Permissions** | Tier System | Controls which tools Claude can use |
-| **4. Enforcement** | Isolation boundary | SDK sandbox (native) or Docker container + firewall |
+| **4. Enforcement** | Isolation boundary | SDK sandbox (native) or relay+agent containers + firewall |
 
 ---
 
@@ -85,7 +85,7 @@ Maximum privilege tier. No tool restrictions.
 
 All Claude queries execute inside a single isolation boundary:
 
-- **Docker mode**: container boundary + firewall (SDK sandbox disabled)
+- **Docker mode**: relay+agent containers + firewall (SDK sandbox disabled)
 - **Native mode**: SDK sandbox via Seatbelt (`sandbox-exec`) on macOS or bubblewrap on Linux
 
 ### Blocked Paths
@@ -99,7 +99,7 @@ In native mode, the SDK sandbox prevents access to:
 - `~/.config/` — Application secrets
 - `/etc/passwd`, `/etc/shadow` — System files
 
-In Docker mode, the container filesystem should not include these host paths; application guards still block sensitive paths if they appear.
+In Docker mode, the relay container does not mount the workspace; the agent container mounts only the workspace and media volumes. Application guards still block sensitive paths if they appear.
 
 ### Write Restrictions
 
@@ -228,7 +228,17 @@ When `TELCLAUDE_NETWORK_MODE=open` or `permissive`, the DNS resolution check can
 
 **Mitigation**: Keep the default strict network allowlist. Only use `open`/`permissive` mode on isolated networks.
 
-### 4. Output Filter Bypass
+### 4. HTTP Method Restrictions Are Not Enforced
+
+Domain allowlists are enforced, but HTTP method restrictions (GET-only vs POST) are not enforced at runtime.
+If a domain is allowlisted, the tool can still make non-GET requests and send data in request bodies.
+
+**Mitigation**:
+- Treat domain allowlists as the only enforced control.
+- Use a proxy or firewall that can enforce method/body restrictions if needed.
+- Avoid exposing bearer tokens to tool environments unless absolutely necessary.
+
+### 5. Output Filter Bypass
 
 The secret output filter uses regex patterns. Obfuscation can bypass detection:
 ```
@@ -268,6 +278,7 @@ By default, Claude has network access for web fetching. Malicious prompts could 
 
 **Mitigation**:
 - Configure network allowlists in sandbox configuration
+- In Docker mode, the firewall enforces egress allowlists (agent runs tools; relay still restricted)
 - Monitor audit logs for suspicious network activity
 
 ### Approval Shows Request, Not Commands

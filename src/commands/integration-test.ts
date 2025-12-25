@@ -10,10 +10,13 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 import chalk from "chalk";
 import type { Command } from "commander";
 
+import type { PermissionTier } from "../config/config.js";
+import { getMediaOutboxDirSync } from "../media/store.js";
 import { executeQueryStream } from "../sdk/client.js";
 import { getOpenAIKey } from "../services/openai-client.js";
 
@@ -95,11 +98,15 @@ export function registerIntegrationTestCommand(program: Command): void {
 				} else {
 					// Note: Image generation through SDK sandbox may fail locally because:
 					// - The telclaude CLI inside sandbox can't access ~/.telclaude (blocked)
-					// - However, OPENAI_API_KEY is injected via env var by buildSdkOptions()
+					// - However, OPENAI_API_KEY is injected via env var by buildSdkOptions() (FULL_ACCESS tier)
 					// - In Docker, this works because the key comes from env var, not keychain
 					if (verbose) {
 						console.log(chalk.gray("  Note: Testing image generation through SDK sandbox..."));
-						console.log(chalk.gray("  The SDK should inject OPENAI_API_KEY into the environment."));
+						console.log(
+							chalk.gray(
+								"  The SDK should inject OPENAI_API_KEY into the environment (FULL_ACCESS).",
+							),
+						);
 					}
 					const result = await testImageGeneration(verbose, timeoutMs);
 					results.push(result);
@@ -150,6 +157,7 @@ async function runSdkQuery(
 	opts: {
 		enableSkills: boolean;
 		timeoutMs: number;
+		tier?: PermissionTier;
 		onText?: (text: string) => void;
 		onToolUse?: (name: string, input: unknown) => void;
 	},
@@ -163,7 +171,7 @@ async function runSdkQuery(
 
 	try {
 		const stream = executeQueryStream(prompt, {
-			tier: "WRITE_LOCAL",
+			tier: opts.tier ?? "WRITE_LOCAL",
 			enableSkills: opts.enableSkills,
 			permissionMode: "acceptEdits",
 			cwd: process.cwd(),
@@ -190,6 +198,35 @@ async function runSdkQuery(
 	}
 
 	return { output, success: querySuccess, error };
+}
+
+function escapeRegExp(input: string): string {
+	return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeSlashes(input: string): string {
+	return input.replace(/\\/g, "/");
+}
+
+function getMediaRootsForTests(): string[] {
+	const outboxRoot = getMediaOutboxDirSync();
+	const legacyRoot = path.join(process.cwd(), ".telclaude-media");
+	const roots = [outboxRoot, legacyRoot];
+	return Array.from(new Set(roots.filter(Boolean)));
+}
+
+function buildMediaPattern(roots: string[], category: string, ext: string): RegExp {
+	const rootPattern = roots
+		.map((root) => escapeRegExp(normalizeSlashes(root)))
+		.filter(Boolean)
+		.join("|");
+	return new RegExp(`(?:${rootPattern})[/\\\\]${category}[/\\\\][^\\s"']+\\.${ext}`, "i");
+}
+
+function extractMediaPath(text: string, pattern: RegExp): string | null {
+	const match = text.match(pattern);
+	if (!match) return null;
+	return match[0].replace(/[.,!?;:'")\]]+$/, "");
 }
 
 /**
@@ -243,7 +280,8 @@ async function testEcho(
 
 /**
  * Test environment variable passing through SDK.
- * Verifies that the SDK properly injects env vars (like OPENAI_API_KEY) into the sandbox.
+ * Verifies that the SDK properly injects env vars (like OPENAI_API_KEY) into the sandbox
+ * when running in FULL_ACCESS tier.
  */
 async function testEnvPassing(
 	verbose: boolean,
@@ -263,6 +301,7 @@ async function testEnvPassing(
 			{
 				enableSkills: false,
 				timeoutMs,
+				tier: expectOpenAIKey ? "FULL_ACCESS" : "WRITE_LOCAL",
 				onText: (text) => {
 					if (verbose) {
 						process.stdout.write(chalk.gray(text));
@@ -328,7 +367,7 @@ async function testEnvPassing(
  * Note: This test verifies the SDK can make OpenAI API calls from within the sandbox.
  * The `telclaude generate-image` CLI won't work inside the sandbox because it needs
  * access to ~/.telclaude for config. Instead, we test that the API is reachable and
- * that the OPENAI_API_KEY is properly passed.
+ * that the OPENAI_API_KEY is properly passed (FULL_ACCESS tier).
  */
 async function testImageGeneration(
 	verbose: boolean,
@@ -359,6 +398,7 @@ Tell me the absolute path to the saved PNG file.`,
 			{
 				enableSkills: true,
 				timeoutMs,
+				tier: "FULL_ACCESS",
 				onText: (text) => {
 					if (verbose) {
 						process.stdout.write(chalk.gray(text));
@@ -556,6 +596,13 @@ async function testVoiceMessageResponse(
 
 		let voicePath = "";
 		let bashCommand = "";
+		const mediaRoots = getMediaRootsForTests();
+		const voicePattern = buildMediaPattern(mediaRoots, "voice", "ogg");
+		const ttsPattern = buildMediaPattern(mediaRoots, "tts", "mp3");
+		const normalizedVoiceRoots = mediaRoots.map((root) => {
+			const normalized = normalizeSlashes(path.join(root, "voice"));
+			return normalized.endsWith("/") ? normalized : `${normalized}/`;
+		});
 
 		// Simulate a voice message being received (this is how it appears to Claude via Telegram)
 		const { output, error } = await runSdkQuery(
@@ -572,19 +619,20 @@ Respond to this voice message now.`,
 			{
 				enableSkills: true,
 				timeoutMs,
+				tier: "FULL_ACCESS",
 				onText: (text) => {
 					if (verbose) {
 						process.stdout.write(chalk.gray(text));
 					}
 					// Look for voice file path
-					const voiceMatch = text.match(/\/[^\s"']*\.telclaude-media\/voice\/[^\s"']+\.ogg/);
+					const voiceMatch = extractMediaPath(text, voicePattern);
 					if (voiceMatch) {
-						voicePath = voiceMatch[0];
+						voicePath = voiceMatch;
 					}
 					// Also check for wrong path (tts instead of voice)
-					const ttsMatch = text.match(/\/[^\s"']*\.telclaude-media\/tts\/[^\s"']+\.mp3/);
+					const ttsMatch = extractMediaPath(text, ttsPattern);
 					if (ttsMatch && !voicePath) {
-						voicePath = ttsMatch[0]; // Will be flagged as wrong format
+						voicePath = ttsMatch; // Will be flagged as wrong format
 					}
 				},
 				onToolUse: (toolName, input) => {
@@ -602,13 +650,13 @@ Respond to this voice message now.`,
 
 		// Also scan full output for paths
 		if (!voicePath) {
-			const voiceMatch = output.match(/\/[^\s"']*\.telclaude-media\/voice\/[^\s"']+\.ogg/);
+			const voiceMatch = extractMediaPath(output, voicePattern);
 			if (voiceMatch) {
-				voicePath = voiceMatch[0];
+				voicePath = voiceMatch;
 			}
-			const ttsMatch = output.match(/\/[^\s"']*\.telclaude-media\/tts\/[^\s"']+\.mp3/);
+			const ttsMatch = extractMediaPath(output, ttsPattern);
 			if (ttsMatch && !voicePath) {
-				voicePath = ttsMatch[0];
+				voicePath = ttsMatch;
 			}
 		}
 
@@ -626,8 +674,12 @@ Respond to this voice message now.`,
 		}
 
 		// Check 2: Is the file in /voice/ directory (not /tts/)?
-		if (voicePath && !voicePath.includes(".telclaude-media/voice/")) {
-			issues.push("Wrong directory: used /tts/ instead of /voice/");
+		if (voicePath) {
+			const normalizedPath = normalizeSlashes(voicePath);
+			const isVoiceDir = normalizedVoiceRoots.some((root) => normalizedPath.startsWith(root));
+			if (!isVoiceDir) {
+				issues.push("Wrong directory: expected /voice/ within media outbox");
+			}
 		}
 
 		// Check 3: Is the format .ogg (not .mp3)?
@@ -652,9 +704,11 @@ Respond to this voice message now.`,
 			.trim()
 			.split("\n")
 			.filter((l) => l.trim());
-		const nonPathLines = outputLines.filter(
-			(l) => !l.includes(".telclaude-media") && l.trim().length > 0,
-		);
+		const nonPathLines = outputLines.filter((line) => {
+			const normalized = normalizeSlashes(line);
+			const containsRoot = mediaRoots.some((root) => normalized.includes(normalizeSlashes(root)));
+			return !containsRoot && !line.includes(".telclaude-media") && line.trim().length > 0;
+		});
 		const hasExcessiveText = nonPathLines.length > 3 || output.length > 500;
 		if (hasExcessiveText && voicePath) {
 			issues.push("Excessive text in response (should be path only)");

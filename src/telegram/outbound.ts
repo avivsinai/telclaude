@@ -6,7 +6,14 @@ import type { Message } from "grammy/types";
 import { convert as convertToTelegramMarkdown } from "telegram-markdown-v2";
 
 import { getChildLogger } from "../logging.js";
-import { type FilterResult, filterOutput } from "../security/output-filter.js";
+import {
+	type FilterResult,
+	filterOutput,
+	filterOutputWithConfig,
+	redactSecrets,
+	redactSecretsWithConfig,
+	type SecretFilterConfig,
+} from "../security/output-filter.js";
 import { stringToChatId } from "../utils.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
@@ -33,8 +40,10 @@ export class SecretExfiltrationBlockedError extends Error {
  * SECURITY: This is the last line of defense against secret exfiltration.
  * All outbound text MUST pass through this filter.
  */
-function filterBeforeSend(text: string): void {
-	const result = filterOutput(text);
+function filterBeforeSend(text: string, secretFilterConfig?: SecretFilterConfig): void {
+	const result = secretFilterConfig
+		? filterOutputWithConfig(text, secretFilterConfig)
+		: filterOutput(text);
 	if (result.blocked) {
 		logger.error(
 			{
@@ -64,6 +73,7 @@ export type SendMessageOptions = {
 	mediaPath?: string;
 	parseMode?: "Markdown" | "HTML" | "MarkdownV2";
 	replyToMessageId?: number;
+	secretFilterConfig?: SecretFilterConfig;
 };
 
 export type SendResult = {
@@ -121,7 +131,7 @@ export async function sendMessageTelegram(
 
 	// SECURITY: Filter output for secrets
 	try {
-		filterBeforeSend(body);
+		filterBeforeSend(body, options.secretFilterConfig);
 	} catch (err) {
 		if (err instanceof SecretExfiltrationBlockedError) {
 			// Send blocked notification instead
@@ -158,7 +168,13 @@ export async function sendMessageTelegram(
 	const mediaSource = options.mediaPath;
 	if (mediaSource) {
 		const payload = inferMediaPayload(mediaSource, formattedChunks[0]); // Use first chunk as caption
-		const result = await sendMediaToChat(bot.api, chatId, payload, effectiveParseMode);
+		const result = await sendMediaToChat(
+			bot.api,
+			chatId,
+			payload,
+			effectiveParseMode,
+			options.secretFilterConfig,
+		);
 		// Send remaining chunks as follow-up messages
 		for (let i = 1; i < formattedChunks.length; i++) {
 			await sendWithMarkdownFallback(
@@ -209,8 +225,28 @@ export async function convertAndSendMessage(
 	api: Api,
 	chatId: number,
 	text: string,
-	options?: { parseMode?: "Markdown" | "HTML" | "MarkdownV2"; replyToMessageId?: number },
+	options?: {
+		parseMode?: "Markdown" | "HTML" | "MarkdownV2";
+		replyToMessageId?: number;
+		secretFilterConfig?: SecretFilterConfig;
+	},
 ): Promise<Message> {
+	// SECURITY: Filter output for secrets
+	try {
+		filterBeforeSend(text, options?.secretFilterConfig);
+	} catch (err) {
+		if (err instanceof SecretExfiltrationBlockedError) {
+			logger.warn(
+				{ chatId, patterns: err.filterResult.matches.map((m) => m.pattern) },
+				"BLOCKED: Secret detected in outbound message, sending blocked notification",
+			);
+			return api.sendMessage(chatId, SECRET_BLOCKED_MESSAGE, {
+				reply_to_message_id: options?.replyToMessageId,
+			});
+		}
+		throw err;
+	}
+
 	const parseMode = options?.parseMode ?? "MarkdownV2";
 	// Convert to MarkdownV2 unless caller explicitly wants HTML or legacy Markdown
 	const shouldConvert = parseMode === "MarkdownV2";
@@ -305,8 +341,15 @@ function isProbablyText(buf: Buffer): boolean {
  *
  * Uses async I/O to avoid blocking the event loop on large files.
  */
+function redactForLog(text: string, secretFilterConfig?: SecretFilterConfig): string {
+	return secretFilterConfig
+		? redactSecretsWithConfig(text, secretFilterConfig)
+		: redactSecrets(text);
+}
+
 async function scanFileForSecrets(
 	source: string | Buffer,
+	secretFilterConfig?: SecretFilterConfig,
 ): Promise<{ safe: boolean; reason?: string }> {
 	try {
 		let content: string;
@@ -346,10 +389,15 @@ async function scanFileForSecrets(
 			content = buf.toString("utf-8");
 		} else {
 			// URL - still check the URL string for obvious secrets, but avoid downloading
-			const filterResult = filterOutput(source);
+			const filterResult = secretFilterConfig
+				? filterOutputWithConfig(source, secretFilterConfig)
+				: filterOutput(source);
 			if (filterResult.blocked) {
 				logger.error(
-					{ source, patterns: filterResult.matches.map((m) => m.pattern) },
+					{
+						source: redactForLog(source, secretFilterConfig),
+						patterns: filterResult.matches.map((m) => m.pattern),
+					},
 					"BLOCKED: Secret-looking data detected in media URL",
 				);
 				return {
@@ -363,7 +411,9 @@ async function scanFileForSecrets(
 		}
 
 		// Filter file content
-		const filterResult = filterOutput(content);
+		const filterResult = secretFilterConfig
+			? filterOutputWithConfig(content, secretFilterConfig)
+			: filterOutput(content);
 		if (filterResult.blocked) {
 			logger.error(
 				{
@@ -397,9 +447,10 @@ export async function sendMediaToChat(
 	chatId: number,
 	payload: TelegramMediaPayload,
 	parseMode?: "Markdown" | "MarkdownV2" | "HTML",
+	secretFilterConfig?: SecretFilterConfig,
 ): Promise<Message> {
 	// SECURITY: Scan file content for secrets before sending (async to avoid blocking)
-	const fileScan = await scanFileForSecrets(payload.source);
+	const fileScan = await scanFileForSecrets(payload.source, secretFilterConfig);
 	if (!fileScan.safe) {
 		logger.error(
 			{ chatId, reason: fileScan.reason },
@@ -418,7 +469,9 @@ export async function sendMediaToChat(
 	// Note: sticker type doesn't have caption, so we check if it exists
 	let safeCaption: string | undefined;
 	if ("caption" in payload && payload.caption) {
-		const filterResult = filterOutput(payload.caption);
+		const filterResult = secretFilterConfig
+			? filterOutputWithConfig(payload.caption, secretFilterConfig)
+			: filterOutput(payload.caption);
 		if (filterResult.blocked) {
 			logger.error(
 				{
@@ -508,6 +561,7 @@ export type SendTelegramMessageOptions = {
 	text?: string;
 	mediaPath?: string;
 	caption?: string;
+	secretFilterConfig?: SecretFilterConfig;
 };
 
 export type SendTelegramMessageResult = {
@@ -526,7 +580,7 @@ export async function sendTelegramMessage(
 		// SECURITY: Filter BOTH text AND caption for secrets (not just one)
 		if (options.text) {
 			try {
-				filterBeforeSend(options.text);
+				filterBeforeSend(options.text, options.secretFilterConfig);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
 					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
@@ -537,7 +591,7 @@ export async function sendTelegramMessage(
 		}
 		if (options.caption) {
 			try {
-				filterBeforeSend(options.caption);
+				filterBeforeSend(options.caption, options.secretFilterConfig);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
 					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
@@ -549,7 +603,13 @@ export async function sendTelegramMessage(
 
 		if (options.mediaPath) {
 			const payload = inferMediaPayload(options.mediaPath, options.caption ?? options.text);
-			const result = await sendMediaToChat(bot.api, options.chatId, payload);
+			const result = await sendMediaToChat(
+				bot.api,
+				options.chatId,
+				payload,
+				undefined,
+				options.secretFilterConfig,
+			);
 			return { success: true, messageId: result.message_id };
 		}
 
@@ -593,14 +653,18 @@ export async function safeReply(
 	ctx: Context,
 	text: string,
 	options?: Parameters<Context["reply"]>[1],
+	secretFilterConfig?: SecretFilterConfig,
 ): Promise<Message> {
 	// SECURITY: Filter output for secrets
 	try {
-		filterBeforeSend(text);
+		filterBeforeSend(text, secretFilterConfig);
 	} catch (err) {
 		if (err instanceof SecretExfiltrationBlockedError) {
 			logger.warn(
-				{ chatId: ctx.chat?.id, patterns: err.filterResult.matches.map((m) => m.pattern) },
+				{
+					chatId: ctx.chat?.id,
+					patterns: err.filterResult.matches.map((m) => m.pattern),
+				},
 				"BLOCKED: Secret detected in reply, sending blocked notification",
 			);
 			return ctx.reply(SECRET_BLOCKED_MESSAGE);

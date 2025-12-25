@@ -30,6 +30,7 @@ import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domain
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { isBlockedHost } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
+import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
 import { getCachedGitToken } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
@@ -66,11 +67,11 @@ const HOOK_TIMEOUT_SECONDS = 10;
 
 /**
  * Check if keys should be exposed to sandbox based on tier.
- * WRITE_LOCAL and FULL_ACCESS tiers get configured keys exposed.
+ * Only FULL_ACCESS tier gets configured keys exposed.
  * READ_ONLY tier never gets keys (no Bash access anyway).
  */
 function shouldExposeKeys(tier: PermissionTier): boolean {
-	return tier === "FULL_ACCESS" || tier === "WRITE_LOCAL";
+	return tier === "FULL_ACCESS";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -81,6 +82,23 @@ function shouldExposeKeys(tier: PermissionTier): boolean {
  * Resolve symlinks to get the real path.
  * Returns the original path if the file doesn't exist or resolution fails.
  */
+const TOOL_INPUT_LOG_LIMIT = 200;
+
+function formatToolInputForLog(input: unknown, limit = TOOL_INPUT_LOG_LIMIT): string {
+	let serialized: string;
+	try {
+		serialized = JSON.stringify(input);
+	} catch {
+		serialized = String(input);
+	}
+	const redacted = redactSecrets(serialized);
+	return redacted.length > limit ? `${redacted.slice(0, limit)}...` : redacted;
+}
+
+function redactForLog(value: string): string {
+	return redactSecrets(value);
+}
+
 function resolveRealPath(inputPath: string): string {
 	try {
 		return fs.realpathSync(inputPath);
@@ -295,7 +313,10 @@ function createNetworkSecurityHook(
 
 			// Block non-HTTP protocols
 			if (!["http:", "https:"].includes(url.protocol)) {
-				logger.warn({ url: toolInput.url, tool: toolName }, "[hook] blocked non-HTTP protocol");
+				logger.warn(
+					{ url: redactForLog(toolInput.url), tool: toolName },
+					"[hook] blocked non-HTTP protocol",
+				);
 				return denyHookResponse("Only HTTP/HTTPS protocols are allowed.");
 			}
 
@@ -323,7 +344,7 @@ function createNetworkSecurityHook(
 
 			return allowHookResponse();
 		} catch {
-			logger.warn({ url: toolInput.url, tool: toolName }, "[hook] invalid URL");
+			logger.warn({ url: redactForLog(toolInput.url), tool: toolName }, "[hook] invalid URL");
 			return denyHookResponse("Invalid URL format.");
 		}
 	};
@@ -356,7 +377,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		if (toolName === "Read" && isReadInput(toolInput)) {
 			const realPath = resolveRealPath(toolInput.file_path);
 			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn({ path: toolInput.file_path }, "[hook] blocked read of sensitive path");
+				logger.warn(
+					{ path: redactForLog(toolInput.file_path) },
+					"[hook] blocked read of sensitive path",
+				);
 				return denyHookResponse("Access to this file is not permitted for security reasons.");
 			}
 		}
@@ -365,7 +389,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		if (toolName === "Write" && isWriteInput(toolInput)) {
 			const realPath = resolveRealPath(toolInput.file_path);
 			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn({ path: toolInput.file_path }, "[hook] blocked write to sensitive path");
+				logger.warn(
+					{ path: redactForLog(toolInput.file_path) },
+					"[hook] blocked write to sensitive path",
+				);
 				return denyHookResponse("Writing to this location is not permitted for security reasons.");
 			}
 		}
@@ -374,7 +401,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		if (toolName === "Edit" && isEditInput(toolInput)) {
 			const realPath = resolveRealPath(toolInput.file_path);
 			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn({ path: toolInput.file_path }, "[hook] blocked edit of sensitive path");
+				logger.warn(
+					{ path: redactForLog(toolInput.file_path) },
+					"[hook] blocked edit of sensitive path",
+				);
 				return denyHookResponse("Editing this file is not permitted for security reasons.");
 			}
 		}
@@ -386,14 +416,17 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 			if (searchPath) {
 				const realPath = resolveRealPath(searchPath);
 				if (isSensitivePath(realPath) || isSensitivePath(searchPath)) {
-					logger.warn({ path: searchPath, realPath }, "[hook] blocked glob of sensitive path");
+					logger.warn(
+						{ path: redactForLog(searchPath), realPath: redactForLog(realPath) },
+						"[hook] blocked glob of sensitive path",
+					);
 					return denyHookResponse("Searching this location is not permitted for security reasons.");
 				}
 			}
 			// Also check the full pattern for obvious sensitive paths
 			if (isSensitivePath(toolInput.pattern)) {
 				logger.warn(
-					{ pattern: toolInput.pattern },
+					{ pattern: redactForLog(toolInput.pattern) },
 					"[hook] blocked glob pattern targeting sensitive path",
 				);
 				return denyHookResponse("Searching this location is not permitted for security reasons.");
@@ -412,7 +445,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 					isSensitivePath(searchPath) ||
 					(pathPrefix && isSensitivePath(pathPrefix))
 				) {
-					logger.warn({ path: searchPath, realPath }, "[hook] blocked grep of sensitive path");
+					logger.warn(
+						{ path: redactForLog(searchPath), realPath: redactForLog(realPath) },
+						"[hook] blocked grep of sensitive path",
+					);
 					return denyHookResponse("Searching this location is not permitted for security reasons.");
 				}
 			}
@@ -422,7 +458,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		if (toolName === "Bash" && isBashInput(toolInput)) {
 			// Block access to sensitive paths via shell
 			if (isSensitivePath(toolInput.command)) {
-				logger.warn({ command: toolInput.command }, "[hook] blocked bash access to sensitive path");
+				logger.warn(
+					{ command: redactForLog(toolInput.command) },
+					"[hook] blocked bash access to sensitive path",
+				);
 				return denyHookResponse("Access to sensitive paths via shell is not permitted.");
 			}
 
@@ -430,7 +469,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 			if (tier === "WRITE_LOCAL") {
 				const blocked = containsBlockedCommand(toolInput.command);
 				if (blocked) {
-					logger.warn({ command: toolInput.command, blocked }, "[hook] blocked dangerous command");
+					logger.warn(
+						{ command: redactForLog(toolInput.command), blocked },
+						"[hook] blocked dangerous command",
+					);
 					return denyHookResponse(`Command contains blocked operation: ${blocked}`);
 				}
 			}
@@ -441,7 +483,10 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		// made server-side by Anthropic. Blocking would cause false positives on
 		// search queries like "how to access ~/.ssh"
 		if (toolName !== "WebSearch" && inputContainsSensitivePath(toolInput)) {
-			logger.warn({ toolName, input: toolInput }, "[hook] blocked input containing sensitive path");
+			logger.warn(
+				{ toolName, input: formatToolInputForLog(toolInput) },
+				"[hook] blocked input containing sensitive path",
+			);
 			return denyHookResponse("Input contains reference to sensitive paths.");
 		}
 
@@ -499,7 +544,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		LANG: process.env.LANG ?? "en_US.UTF-8",
 	};
 
-	// Tier-based key exposure: WRITE_LOCAL+ gets configured keys
+	// Tier-based key exposure: FULL_ACCESS gets configured keys
 	if (shouldExposeKeys(opts.tier)) {
 		const exposedKeys: string[] = [];
 
@@ -601,14 +646,17 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.canUseTool = async (toolName, input) => {
 		logger.debug(
-			{ toolName, input: JSON.stringify(input).substring(0, 200) },
+			{ toolName, input: formatToolInputForLog(input) },
 			"canUseTool invoked (fallback)",
 		);
 
 		// Generic guard: block any input that references sensitive paths
 		// Exclude WebSearch - uses `query` (not paths), server-side requests
 		if (toolName !== "WebSearch" && inputContainsSensitivePath(input)) {
-			logger.warn({ toolName, input }, "blocked tool input containing sensitive path");
+			logger.warn(
+				{ toolName, input: formatToolInputForLog(input) },
+				"blocked tool input containing sensitive path",
+			);
 			return {
 				behavior: "deny",
 				message: "Access to sensitive paths is not permitted for security reasons.",
@@ -619,7 +667,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		if (toolName === "Read" && isReadInput(input)) {
 			const realPath = resolveRealPath(input.file_path);
 			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: input.file_path }, "blocked read of sensitive path");
+				logger.warn({ path: redactForLog(input.file_path) }, "blocked read of sensitive path");
 				return {
 					behavior: "deny",
 					message: "Access to this file is not permitted for security reasons.",
@@ -630,7 +678,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		if (toolName === "Write" && isWriteInput(input)) {
 			const realPath = resolveRealPath(input.file_path);
 			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: input.file_path }, "blocked write to sensitive path");
+				logger.warn({ path: redactForLog(input.file_path) }, "blocked write to sensitive path");
 				return {
 					behavior: "deny",
 					message: "Writing to this location is not permitted for security reasons.",
@@ -642,7 +690,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		if (toolName === "Edit" && isEditInput(input)) {
 			const realPath = resolveRealPath(input.file_path);
 			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: input.file_path }, "blocked edit of sensitive path");
+				logger.warn({ path: redactForLog(input.file_path) }, "blocked edit of sensitive path");
 				return {
 					behavior: "deny",
 					message: "Editing this file is not permitted for security reasons.",
@@ -656,7 +704,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			if (searchPath) {
 				const realPath = resolveRealPath(searchPath);
 				if (isPathSensitive(realPath) || isPathSensitive(searchPath)) {
-					logger.warn({ path: searchPath }, "blocked glob of sensitive path");
+					logger.warn({ path: redactForLog(searchPath) }, "blocked glob of sensitive path");
 					return {
 						behavior: "deny",
 						message: "Searching this location is not permitted for security reasons.",
@@ -665,7 +713,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			}
 			// Also check the full pattern for obvious sensitive paths
 			if (isPathSensitive(input.pattern)) {
-				logger.warn({ pattern: input.pattern }, "blocked glob pattern targeting sensitive path");
+				logger.warn(
+					{ pattern: redactForLog(input.pattern) },
+					"blocked glob pattern targeting sensitive path",
+				);
 				return {
 					behavior: "deny",
 					message: "Searching this location is not permitted for security reasons.",
@@ -684,7 +735,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 					isPathSensitive(searchPath) ||
 					(pathPrefix && isPathSensitive(pathPrefix))
 				) {
-					logger.warn({ path: searchPath }, "blocked grep of sensitive path");
+					logger.warn({ path: redactForLog(searchPath) }, "blocked grep of sensitive path");
 					return {
 						behavior: "deny",
 						message: "Searching this location is not permitted for security reasons.",
@@ -696,7 +747,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		if (toolName === "Bash" && isBashInput(input)) {
 			// Block access to sensitive paths via shell (policy layer)
 			if (isSensitivePath(input.command)) {
-				logger.warn({ command: input.command }, "blocked bash access to sensitive path");
+				logger.warn(
+					{ command: redactForLog(input.command) },
+					"blocked bash access to sensitive path",
+				);
 				return {
 					behavior: "deny",
 					message: "Access to sensitive paths via shell is not permitted.",
@@ -707,7 +761,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			if (opts.tier === "WRITE_LOCAL") {
 				const blocked = containsBlockedCommand(input.command);
 				if (blocked) {
-					logger.warn({ command: input.command, blocked }, "blocked dangerous bash command");
+					logger.warn(
+						{ command: redactForLog(input.command), blocked },
+						"blocked dangerous bash command",
+					);
 					return {
 						behavior: "deny",
 						message: `Command contains blocked operation: ${blocked}`,
@@ -730,7 +787,10 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 
 					// Block non-HTTP protocols (prevent file:// access)
 					if (!["http:", "https:"].includes(url.protocol)) {
-						logger.warn({ url: webInput.url }, "blocked non-HTTP protocol in WebFetch");
+						logger.warn(
+							{ url: redactForLog(webInput.url) },
+							"blocked non-HTTP protocol in WebFetch",
+						);
 						return {
 							behavior: "deny",
 							message: "Only HTTP/HTTPS protocols are allowed.",
@@ -759,7 +819,7 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 						};
 					}
 				} catch {
-					logger.warn({ url: webInput.url }, "invalid URL in WebFetch");
+					logger.warn({ url: redactForLog(webInput.url) }, "invalid URL in WebFetch");
 					return {
 						behavior: "deny",
 						message: "Invalid URL format.",

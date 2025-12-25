@@ -2,6 +2,7 @@
 
 import { createProgram } from "./cli/program.js";
 import { registerAccessControlCommands } from "./commands/access-control.js";
+import { registerAgentCommand } from "./commands/agent.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
@@ -31,6 +32,7 @@ const program = createProgram();
 // Register commands
 registerSendCommand(program);
 registerRelayCommand(program);
+registerAgentCommand(program);
 registerStatusCommand(program);
 registerLinkCommand(program);
 registerDoctorCommand(program);

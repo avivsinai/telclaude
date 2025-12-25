@@ -296,6 +296,7 @@ export async function monitorTelegramInbox(
 						// Convert Claude's markdown to Telegram MarkdownV2
 						await convertAndSendMessage(bot.api, chat.id, chunk, {
 							replyToMessageId: i === 0 ? message.message_id : undefined,
+							secretFilterConfig,
 						});
 					}
 				}
@@ -312,7 +313,7 @@ export async function monitorTelegramInbox(
 					);
 					return;
 				}
-				await sendMediaToChat(bot.api, chat.id, payload);
+				await sendMediaToChat(bot.api, chat.id, payload, undefined, secretFilterConfig);
 			},
 			raw: message,
 		};
