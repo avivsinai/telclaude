@@ -58,7 +58,7 @@
 - `src/sdk/` — Claude SDK integration, session manager.
 - `src/telegram/` — inbound/outbound bot.
 - `src/commands/` — CLI commands.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator skills.
+- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
 - `docs/architecture.md` — deep architecture & flow.
 - `docker/` — container stack.
 

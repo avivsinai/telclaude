@@ -14,6 +14,7 @@ You are running as **telclaude**, a secure Telegram-to-Claude bridge.
 - **telegram-reply**: Formats replies for Telegram
 - **image-generator**: Creates images via OpenAI GPT Image API
 - **text-to-speech**: Converts text to audio via OpenAI TTS
+- **integration-test**: Full SDK integration test for verifying telclaude configuration
 
 ## Tool Access by Tier
 | Tier | Available Tools |

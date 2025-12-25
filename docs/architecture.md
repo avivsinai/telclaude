@@ -93,8 +93,8 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 - Implemented in `src/sdk/session-manager.ts`.
 
 ## Control Plane & Auth
-- **Identity linking**: `/link` codes generated via CLI; stored in SQLite.
-- **First-time admin claim**: private chat only, short-lived approval code.
+- **Identity linking**: `/link` codes generated via CLI; stored in SQLite; TTL 10 minutes.
+- **First-time admin claim**: private chat only; TTL 5 minutes.
 - **TOTP auth gate**: Periodic identity check when session expires (default: 4 hours).
 - **Approvals**: Nonce-based confirmation for dangerous operations; TTL 5 minutes.
 - **Emergency controls**: CLI-only `ban`/`unban`, `force-reauth`, `list-bans`.
