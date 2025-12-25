@@ -77,7 +77,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 ```
 
 ## Requirements
-- Node 25+, pnpm 9.x
+- Node 20+, pnpm 9.x
 - Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed agent; use `claude login` so tokens live in `~/.claude`.
 - Telegram bot token from @BotFather
 - Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
