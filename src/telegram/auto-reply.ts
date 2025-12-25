@@ -404,6 +404,11 @@ async function executeWithSession(
 		// Pass config for additional patterns and entropy detection
 		const redactor = createStreamingRedactor(undefined, ctx.config.security?.secretFilter);
 
+		// Protocol alignment: voice in → voice out (via system prompt for stronger adherence)
+		const voiceProtocolInstruction = processedContext.wasVoiceMessage
+			? 'IMPORTANT: The user sent a voice message. You MUST respond with a voice message using `telclaude tts "your response" --voice-message`. Output ONLY the resulting file path, no text. Exception: if user explicitly asks for text response.'
+			: undefined;
+
 		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const queryStream = useRemoteAgent
 			? executeRemoteQuery(queryPrompt, {
@@ -415,6 +420,7 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
+					systemPromptAppend: voiceProtocolInstruction,
 				})
 			: executePooledQuery(queryPrompt, {
 					cwd: process.cwd(),
@@ -425,6 +431,7 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
+					systemPromptAppend: voiceProtocolInstruction,
 				});
 
 		// Execute with session pool for connection reuse and timeout

@@ -38,6 +38,8 @@ export type MultimodalContext = {
 	transcript?: string;
 	/** Extracted video frame paths (if video processed) */
 	framePaths?: string[];
+	/** True if input was a voice message (for protocol alignment) */
+	wasVoiceMessage?: boolean;
 };
 
 /**
@@ -144,6 +146,7 @@ export async function processMultimodalContext(
 			return {
 				...ctx,
 				transcript: result.text,
+				wasVoiceMessage: mediaType === "voice",
 			};
 		} catch (error) {
 			logger.error({ mediaPath, error }, "audio transcription failed");
@@ -311,12 +314,7 @@ function getMediaInstruction(
 	// Audio/voice - show transcript if available
 	if (AUDIO_MEDIA_TYPES.includes(mediaType)) {
 		if (transcript) {
-			// Add protocol alignment instruction for voice messages
-			const voiceInstruction =
-				mediaType === "voice"
-					? "\n\n[Protocol Alignment: The user sent a voice message. Respond with a voice message using the text-to-speech skill with --voice-message flag, unless they explicitly ask for text.]"
-					: "";
-			return `[Voice/Audio Transcript]\n${transcript}${voiceInstruction}`;
+			return `[Voice/Audio Transcript]\n${transcript}`;
 		}
 		return `Audio file saved at: ${mediaPath}\nNote: I cannot directly listen to audio. If you need the content transcribed, please describe what you'd like me to help with.`;
 	}

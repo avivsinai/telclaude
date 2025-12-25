@@ -369,7 +369,7 @@ volumes:
       device: tmpfs
       o: size=512M,uid=1000,gid=1000,mode=0700
 
-  # Shared media outbox (relay RW, agent RO)
+  # Shared media outbox (relay RW, agent RO) - persistent for generated content
   media-outbox:
     name: telclaude-media-outbox
 

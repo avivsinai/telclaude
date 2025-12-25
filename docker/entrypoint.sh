@@ -100,7 +100,8 @@ if [ "$(id -u)" = "0" ]; then
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
     # NOTE: /home/node must be writable for Claude CLI to create .claude.json
-    for dir in /data /home/node /home/node/.claude /home/node/.telclaude; do
+    # NOTE: /media/outbox needs write access for generated content (relay container)
+    for dir in /data /home/node /home/node/.claude /home/node/.telclaude /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then

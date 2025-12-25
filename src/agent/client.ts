@@ -44,6 +44,7 @@ export async function* executeRemoteQuery(
 			resumeSessionId: options.resumeSessionId,
 			betas: options.betas,
 			userId: options.userId,
+			systemPromptAppend: options.systemPromptAppend,
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
 		const response = await fetch(endpoint, {

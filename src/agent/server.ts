@@ -24,6 +24,7 @@ type QueryRequest = {
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
 	userId?: string;
+	systemPromptAppend?: string;
 };
 
 type AgentServerOptions = {
@@ -71,6 +72,7 @@ async function streamQuery(
 		timeoutMs: req.timeoutMs,
 		abortController,
 		betas: req.betas,
+		systemPromptAppend: req.systemPromptAppend,
 	})) {
 		if (abortController.signal.aborted) {
 			break;

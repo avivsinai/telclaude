@@ -261,11 +261,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					maxPerHourPerUser: config.imageGeneration?.maxPerHourPerUser ?? 10,
 					maxPerDayPerUser: config.imageGeneration?.maxPerDayPerUser ?? 50,
 				};
-				const limitResult = rateLimiter.checkLimit(
-					"image_generation",
-					rateLimitUserId,
-					rateConfig,
-				);
+				const limitResult = rateLimiter.checkLimit("image_generation", rateLimitUserId, rateConfig);
 				if (!limitResult.allowed) {
 					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
 					return;
