@@ -43,6 +43,7 @@ export async function* executeRemoteQuery(
 			timeoutMs: options.timeoutMs,
 			resumeSessionId: options.resumeSessionId,
 			betas: options.betas,
+			userId: options.userId,
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
 		const response = await fetch(endpoint, {

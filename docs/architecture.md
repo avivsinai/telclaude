@@ -40,15 +40,15 @@ Claude Agent SDK (allowedTools per tier)
 ## Docker Split Topology (Production)
 
 - **Relay container**: Telegram + security policy + secrets (OpenAI/GitHub), TOTP socket.
-- **Agent container**: Claude SDK + tools, no secrets, workspace mounted.
+- **Agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
 - **Shared media volumes**:
   - `media_inbox` (relay writes Telegram downloads, agent reads)
-  - `media_outbox` (agent writes generated media, relay reads to send)
+  - `media_outbox` (relay writes generated media; relay reads to send)
 - **Internal RPC**:
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: set `TELCLAUDE_INTERNAL_RPC_SECRET` in both containers; internal servers default-bind to `127.0.0.1`.
+- **RPC auth**: set `TELCLAUDE_INTERNAL_RPC_SECRET` in both containers; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.

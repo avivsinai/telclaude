@@ -4,6 +4,7 @@ import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 
 const logger = getChildLogger({ module: "agent-server" });
@@ -22,6 +23,7 @@ type QueryRequest = {
 	timeoutMs?: number;
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
+	userId?: string;
 };
 
 type AgentServerOptions = {
@@ -63,6 +65,7 @@ async function streamQuery(
 		cwd: AGENT_WORKDIR,
 		tier: req.tier,
 		poolKey: req.poolKey,
+		userId: req.userId,
 		resumeSessionId: req.resumeSessionId,
 		enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
 		timeoutMs: req.timeoutMs,
@@ -80,7 +83,7 @@ async function streamQuery(
 
 export function startAgentServer(options: AgentServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_AGENT_PORT ?? 8788);
-	const host = options.host ?? "0.0.0.0";
+	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
 
 	const server = http.createServer((req, res) => {
 		if (!req.url) {
@@ -147,12 +150,16 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					writeJson(res, 400, { error: "Invalid permission tier." });
 					return;
 				}
+				if (parsed.userId !== undefined && typeof parsed.userId !== "string") {
+					writeJson(res, 400, { error: "Invalid userId." });
+					return;
+				}
 
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
 				const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
 
-				req.on("close", () => {
+				res.on("close", () => {
 					abortController.abort();
 				});
 

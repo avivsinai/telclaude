@@ -6,6 +6,7 @@ import { loadConfig } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
+import { getSandboxMode } from "../sandbox/index.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { transcribeAudio } from "../services/transcription.js";
@@ -29,6 +30,7 @@ type ImageRequest = {
 	prompt: string;
 	size?: "auto" | "1024x1024" | "1536x1024" | "1024x1536";
 	quality?: "low" | "medium" | "high";
+	userId?: string;
 };
 
 type TTSRequest = {
@@ -36,12 +38,14 @@ type TTSRequest = {
 	voice?: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
 	speed?: number;
 	voiceMessage?: boolean;
+	userId?: string;
 };
 
 type TranscriptionRequest = {
 	path: string;
 	language?: string;
 	model?: string;
+	userId?: string;
 };
 
 function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -164,9 +168,26 @@ function resolveMediaPath(inputPath: string): string | null {
 	return realPath;
 }
 
+function parseUserId(input: unknown): { userId?: string; error?: string } {
+	if (input === undefined || input === null) {
+		return {};
+	}
+	if (typeof input !== "string") {
+		return { error: "Invalid userId." };
+	}
+	const trimmed = input.trim();
+	if (!trimmed) {
+		return {};
+	}
+	if (trimmed.length > 128) {
+		return { error: "userId too long." };
+	}
+	return { userId: trimmed };
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
-	const host = options.host ?? "0.0.0.0";
+	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
 
 	const bodyLimit = Number(process.env.TELCLAUDE_CAP_BODY_LIMIT ?? DEFAULT_BODY_LIMIT);
 	const promptLimit = Number(process.env.TELCLAUDE_CAP_PROMPT_LIMIT ?? DEFAULT_PROMPT_LIMIT);
@@ -216,6 +237,13 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				return;
 			}
 			const parsed = JSON.parse(body) as ImageRequest & TTSRequest & TranscriptionRequest;
+			const userIdResult = parseUserId(parsed.userId);
+			if (userIdResult.error) {
+				writeJson(res, 400, { error: userIdResult.error });
+				return;
+			}
+			const userId = userIdResult.userId;
+			const rateLimitUserId = userId ?? "agent";
 
 			if (req.url === "/v1/image.generate") {
 				if (!parsed.prompt || typeof parsed.prompt !== "string") {
@@ -233,7 +261,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					maxPerHourPerUser: config.imageGeneration?.maxPerHourPerUser ?? 10,
 					maxPerDayPerUser: config.imageGeneration?.maxPerDayPerUser ?? 50,
 				};
-				const limitResult = rateLimiter.checkLimit("image_generation", "agent", rateConfig);
+				const limitResult = rateLimiter.checkLimit(
+					"image_generation",
+					rateLimitUserId,
+					rateConfig,
+				);
 				if (!limitResult.allowed) {
 					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
 					return;
@@ -241,10 +273,13 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 				const policy = resolveImagePolicy(parsed);
 				const result = await generateImage(parsed.prompt, {
-					userId: "agent",
+					userId,
+					skipRateLimit: true,
 					size: policy.size,
 					quality: policy.quality,
 				});
+
+				rateLimiter.consume("image_generation", rateLimitUserId);
 
 				writeJson(res, 200, {
 					path: result.path,
@@ -271,7 +306,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					maxPerHourPerUser: config.tts?.maxPerHourPerUser ?? 30,
 					maxPerDayPerUser: config.tts?.maxPerDayPerUser ?? 100,
 				};
-				const limitResult = rateLimiter.checkLimit("tts", "agent", rateConfig);
+				const limitResult = rateLimiter.checkLimit("tts", rateLimitUserId, rateConfig);
 				if (!limitResult.allowed) {
 					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
 					return;
@@ -279,11 +314,14 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 				const policy = resolveTtsPolicy(parsed);
 				const result = await textToSpeech(parsed.text, {
-					userId: "agent",
+					userId,
+					skipRateLimit: true,
 					voice: policy.voice,
 					speed: policy.speed,
 					voiceMessage: policy.voiceMessage,
 				});
+
+				rateLimiter.consume("tts", rateLimitUserId);
 
 				writeJson(res, 200, {
 					path: result.path,
@@ -315,7 +353,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				const rateLimiter = getMultimediaRateLimiter();
 				const limitResult = rateLimiter.checkLimit(
 					"transcription",
-					"agent",
+					rateLimitUserId,
 					DEFAULT_TRANSCRIPTION_LIMITS,
 				);
 				if (!limitResult.allowed) {
@@ -329,7 +367,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					model: typed.model,
 				});
 
-				rateLimiter.consume("transcription", "agent");
+				rateLimiter.consume("transcription", rateLimitUserId);
 
 				writeJson(res, 200, {
 					text: result.text,

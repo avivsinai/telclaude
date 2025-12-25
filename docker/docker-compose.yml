@@ -183,9 +183,6 @@ services:
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
-      # Config (read-only)
-      - TELCLAUDE_CONFIG=/config/telclaude.json
-
       # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
 
@@ -202,9 +199,6 @@ services:
     volumes:
       # Workspace: Your projects folder (Claude works here)
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
-
-      # Read-only config file
-      - ./telclaude.json:/config/telclaude.json:ro
 
       # Claude Code configuration (credentials, settings)
       - telclaude-claude:/home/node/.claude:rw

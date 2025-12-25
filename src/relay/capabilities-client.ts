@@ -36,6 +36,7 @@ export async function relayGenerateImage(input: {
 	prompt: string;
 	size?: "auto" | "1024x1024" | "1536x1024" | "1024x1536";
 	quality?: "low" | "medium" | "high";
+	userId?: string;
 }): Promise<{ path: string; bytes: number; model: string; quality: string }> {
 	return postJson("/v1/image.generate", input);
 }
@@ -45,6 +46,7 @@ export async function relayTextToSpeech(input: {
 	voice?: "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
 	speed?: number;
 	voiceMessage?: boolean;
+	userId?: string;
 }): Promise<{ path: string; bytes: number; format: string; voice: string; speed: number }> {
 	return postJson("/v1/tts.speak", input);
 }
@@ -53,6 +55,7 @@ export async function relayTranscribe(input: {
 	path: string;
 	language?: string;
 	model?: string;
+	userId?: string;
 }): Promise<{ text: string; language?: string; durationSeconds?: number }> {
 	return postJson("/v1/transcribe", input);
 }

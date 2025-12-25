@@ -124,7 +124,7 @@ export async function processMultimodalContext(
 
 		try {
 			logger.info({ mediaPath, mediaType }, "transcribing audio");
-			const result = await transcribeAudio(mediaPath);
+			const result = await transcribeAudio(mediaPath, { userId });
 
 			// Consume rate limit point on success
 			if (rateLimiter && userId) {
@@ -172,7 +172,7 @@ export async function processMultimodalContext(
 
 		try {
 			logger.info({ mediaPath, mediaType }, "processing video");
-			const result = await processVideo(mediaPath);
+			const result = await processVideo(mediaPath, { userId });
 
 			// Consume rate limit point on success
 			if (rateLimiter && userId) {

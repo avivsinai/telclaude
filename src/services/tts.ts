@@ -9,6 +9,7 @@ import fs from "node:fs";
 import { loadConfig, type TTSConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
+import { relayTextToSpeech } from "../relay/capabilities-client.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
 
@@ -82,6 +83,8 @@ export type TTSOptions = {
 	model?: "tts-1" | "tts-1-hd";
 	/** User ID for rate limiting (chat_id or local_user_id) */
 	userId?: string;
+	/** Skip internal rate limiting checks (relay handles this). */
+	skipRateLimit?: boolean;
 	/**
 	 * Output as Telegram voice message format (OGG/Opus).
 	 * When true, converts output to OGG container with Opus codec,
@@ -129,6 +132,26 @@ const DEFAULT_CONFIG: TTSConfig = {
  * @throws Error if rate limited or generation fails
  */
 export async function textToSpeech(text: string, options?: TTSOptions): Promise<GeneratedSpeech> {
+	// Route through relay when running on agent container
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		const voice = options?.voice ?? "alloy";
+		const speed = options?.speed ?? 1.0;
+		const voiceMessage = options?.voiceMessage ?? false;
+		const userId = options?.userId;
+		logger.debug({ textLength: text.length, userId }, "routing TTS through relay");
+		const result = await relayTextToSpeech({ text, voice, speed, voiceMessage, userId });
+		const wordCount = text.split(/\s+/).length;
+		const estimatedDurationSeconds = (wordCount / (150 * speed)) * 60;
+		return {
+			path: result.path,
+			format: result.format,
+			sizeBytes: result.bytes,
+			voice: result.voice,
+			speed: result.speed,
+			estimatedDurationSeconds,
+		};
+	}
+
 	if (!(await isOpenAIConfigured())) {
 		throw new Error("OpenAI API key not configured for text-to-speech");
 	}
@@ -152,7 +175,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 
 	// Rate limiting check (if userId provided)
 	const userId = options?.userId;
-	if (userId) {
+	if (userId && !options?.skipRateLimit) {
 		const rateLimiter = getMultimediaRateLimiter();
 		const rateLimitConfig = {
 			maxPerHourPerUser: ttsConfig.maxPerHourPerUser,
@@ -250,7 +273,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 		);
 
 		// Consume rate limit point after successful generation
-		if (userId) {
+		if (userId && !options?.skipRateLimit) {
 			const rateLimiter = getMultimediaRateLimiter();
 			rateLimiter.consume("tts", userId);
 		}
@@ -274,6 +297,11 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
  * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isTTSAvailable(): boolean {
+	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		return Boolean(process.env.TELCLAUDE_INTERNAL_RPC_SECRET);
+	}
+
 	const config = loadConfig();
 
 	if (config.tts?.provider === "disabled") {

@@ -414,6 +414,7 @@ async function executeWithSession(
 					enableSkills: tier !== "READ_ONLY",
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
+					userId,
 				})
 			: executePooledQuery(queryPrompt, {
 					cwd: process.cwd(),
@@ -423,6 +424,7 @@ async function executeWithSession(
 					enableSkills: tier !== "READ_ONLY",
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
+					userId,
 				});
 
 		// Execute with session pool for connection reuse and timeout

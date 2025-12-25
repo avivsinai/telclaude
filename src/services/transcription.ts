@@ -116,6 +116,7 @@ export async function getTranscriptionAvailability(): Promise<TranscriptionAvail
 
 export type TranscriptionOptions = Partial<TranscriptionConfig> & {
 	useRelay?: boolean;
+	userId?: string;
 };
 
 /**
@@ -131,10 +132,12 @@ export async function transcribeAudio(
 ): Promise<TranscriptionResult> {
 	const useRelay = options?.useRelay ?? Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
 	if (useRelay) {
+		const relayUserId = options?.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID;
 		const result = await relayTranscribe({
 			path: filePath,
 			language: options?.language,
 			model: options?.model,
+			userId: relayUserId,
 		});
 		return {
 			text: result.text,
@@ -144,7 +147,9 @@ export async function transcribeAudio(
 	}
 
 	const config = loadConfig();
-	const { useRelay: _, ...localOptions } = options ?? {};
+	const { useRelay: _useRelay, userId: _userId, ...localOptions } = options ?? {};
+	void _useRelay;
+	void _userId;
 	const transcriptionConfig = resolveTranscriptionConfig(config, localOptions);
 
 	logger.debug({ filePath, provider: transcriptionConfig.provider }, "starting transcription");

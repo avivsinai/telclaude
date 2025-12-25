@@ -195,6 +195,9 @@ export type TelclaudeQueryOptions = {
 	/** Permission tier controlling which tools are available. */
 	tier: PermissionTier;
 
+	/** Request-scoped user identifier for rate limiting (e.g., Telegram chat/user ID). */
+	userId?: string;
+
 	/** Resume a previous session by ID for conversation continuity. */
 	resumeSessionId?: string;
 
@@ -543,6 +546,26 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 		TERM: process.env.TERM ?? "xterm-256color",
 		LANG: process.env.LANG ?? "en_US.UTF-8",
 	};
+
+	if (opts.userId) {
+		sandboxEnv.TELCLAUDE_REQUEST_USER_ID = opts.userId;
+	}
+
+	// Pass relay capability config for image/TTS/transcription commands
+	// These are needed by `telclaude generate-image` etc. when run via Bash
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
+	}
+	if (process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
+		sandboxEnv.TELCLAUDE_INTERNAL_RPC_SECRET = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+	}
+	// Media directories for generated content
+	if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
+		sandboxEnv.TELCLAUDE_MEDIA_INBOX_DIR = process.env.TELCLAUDE_MEDIA_INBOX_DIR;
+	}
+	if (process.env.TELCLAUDE_MEDIA_OUTBOX_DIR) {
+		sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+	}
 
 	// Tier-based key exposure: FULL_ACCESS gets configured keys
 	if (shouldExposeKeys(opts.tier)) {
