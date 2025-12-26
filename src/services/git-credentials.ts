@@ -5,13 +5,14 @@
  * Credential resolution order:
  * 1. Keychain/encrypted storage (via `telclaude setup-git`)
  * 2. Environment variables (GIT_USERNAME, GIT_EMAIL, GITHUB_TOKEN)
- * 3. git.* in config file (future)
+ * 3. GitHub App installation token (via `telclaude setup-github-app`)
  */
 
 import { spawnSync } from "node:child_process";
 
 import { getChildLogger } from "../logging.js";
 import { type GitCredentials, getSecret, hasSecret, SECRET_KEYS } from "../secrets/index.js";
+import { getGitHubAppIdentity, getInstallationToken, isGitHubAppConfigured } from "./github-app.js";
 
 const logger = getChildLogger({ module: "git-credentials" });
 
@@ -72,6 +73,20 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 		);
 	}
 
+	// 3. Try GitHub App installation token
+	if (await isGitHubAppConfigured()) {
+		const [token, identity] = await Promise.all([getInstallationToken(), getGitHubAppIdentity()]);
+		if (token && identity) {
+			cachedCredentials = {
+				username: identity.username,
+				email: identity.email,
+				token,
+			};
+			logger.debug("using git credentials from GitHub App");
+			return cachedCredentials;
+		}
+	}
+
 	return null;
 }
 
@@ -120,6 +135,11 @@ export async function getGitCredentialsSource(): Promise<string | null> {
 	const envToken = process.env.GITHUB_TOKEN || process.env.GIT_TOKEN;
 	if (process.env.GIT_USERNAME && process.env.GIT_EMAIL && envToken) {
 		return "environment variables";
+	}
+
+	// Check GitHub App
+	if (await isGitHubAppConfigured()) {
+		return "GitHub App";
 	}
 
 	return null;
