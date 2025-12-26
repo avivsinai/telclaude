@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as readline from "node:readline";
 
 import type { Command } from "commander";
@@ -165,14 +166,17 @@ async function setupWithOptions(
 	privateKeyPath: string,
 	providerName: string,
 ): Promise<void> {
+	const expandedPath = privateKeyPath.replace(/^~/, process.env.HOME || "");
+	const resolvedPath = resolve(expandedPath);
+
 	// Validate private key file exists
-	if (!existsSync(privateKeyPath)) {
-		console.error(`Error: Private key file not found: ${privateKeyPath}`);
+	if (!existsSync(resolvedPath)) {
+		console.error(`Error: Private key file not found: ${resolvedPath}`);
 		process.exit(1);
 	}
 
 	// Read and validate PEM
-	const privateKey = readFileSync(privateKeyPath, "utf8");
+	const privateKey = readFileSync(resolvedPath, "utf8");
 	if (!privateKey.includes("-----BEGIN")) {
 		console.error("Error: Invalid PEM file format");
 		process.exit(1);
@@ -181,7 +185,7 @@ async function setupWithOptions(
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
-		privateKey: privateKeyPath, // Store path, not content
+		privateKey: resolvedPath, // Store path, not content
 		appSlug: "telclaude",
 		botUserId: 251589752,
 	};

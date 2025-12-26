@@ -233,19 +233,41 @@ export async function testGitHubAppConnectivity(): Promise<{
 			per_page: 5,
 		});
 
+		let installationAccount: string | undefined;
+		try {
+			const privateKey = getPrivateKeyContent(config.privateKey);
+			const appAuth = createAppAuth({
+				appId: Number(config.appId),
+				privateKey,
+			});
+			const { token: appToken } = await appAuth({ type: "app" });
+			const appOctokit = new Octokit({ auth: appToken });
+			const { data: installation } = await appOctokit.rest.apps.getInstallation({
+				installation_id: Number(config.installationId),
+			});
+			const account = installation.account;
+			installationAccount =
+				account && "login" in account ? account.login : (account?.name ?? undefined);
+		} catch (err) {
+			logger.debug({ error: String(err) }, "failed to fetch installation account");
+		}
+
 		const repoCount = reposData.total_count;
 		const repoNames = reposData.repositories.map((r) => r.name).slice(0, 3);
+		const details: Record<string, unknown> = {
+			appName: config.appSlug,
+			appSlug: config.appSlug,
+			repositorySelection: `${repoCount} repos (${repoNames.join(", ")}${repoCount > 3 ? "..." : ""})`,
+			permissions: {},
+		};
+		if (installationAccount) {
+			details.installationAccount = installationAccount;
+		}
 
 		return {
 			success: true,
 			message: `Connected as ${config.appSlug}[bot]`,
-			details: {
-				appName: config.appSlug,
-				appSlug: config.appSlug,
-				installationAccount: "avivsinai",
-				repositorySelection: `${repoCount} repos (${repoNames.join(", ")}${repoCount > 3 ? "..." : ""})`,
-				permissions: {},
-			},
+			details,
 		};
 	} catch (err) {
 		const errorStr = String(err);
