@@ -295,6 +295,7 @@ async function getStorageProvider(): Promise<SecretsStorageProvider> {
 export const SECRET_KEYS = {
 	OPENAI_API_KEY: "openai-api-key",
 	GIT_CREDENTIALS: "git-credentials",
+	GITHUB_APP: "github-app",
 } as const;
 
 /** Git credentials structure stored in secrets */
