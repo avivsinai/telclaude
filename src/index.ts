@@ -7,6 +7,7 @@ import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandb
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
+import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerLinkCommand } from "./commands/link.js";
@@ -15,6 +16,7 @@ import { registerResetAuthCommand } from "./commands/reset-auth.js";
 import { registerResetDbCommand } from "./commands/reset-db.js";
 import { registerSendCommand } from "./commands/send.js";
 import { registerSetupGitCommand } from "./commands/setup-git.js";
+import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
@@ -46,8 +48,10 @@ registerGenerateImageCommand(program);
 registerTextToSpeechCommand(program);
 registerSetupOpenAICommand(program);
 registerSetupGitCommand(program);
+registerSetupGitHubAppCommand(program);
 registerGitTestCommand(program);
 registerGitCredentialCommand(program);
+registerGitProxyInitCommand(program);
 registerIntegrationTestCommand(program);
 registerDiagnoseSandboxNetworkCommand(program);
 
