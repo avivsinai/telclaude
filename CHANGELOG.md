@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-12-27
+
+### Added
+
+- **Quickstart command** - `telclaude quickstart` for easy first-time setup with minimal configuration
+- **Streaming responses** - Real-time message updates using Telegram editMessageText with debouncing
+- **Inline keyboards** - Copy, expand, and regenerate buttons on responses
+
 ### Changed
 
 - **Security architecture**: Single isolation boundary by mode (SDK sandbox in native mode; Docker container + firewall in Docker mode)
@@ -14,9 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - WebFetch/WebSearch are filtered by PreToolUse hooks + `canUseTool` allowlists
 - Docker firewall (`init-firewall.sh`) now matches the allowlist (added OpenAI, more package registries, documentation sites)
 - Docker firewall explicitly blocks metadata endpoints and RFC1918 before allowing whitelisted domains
+- User ID for rate limiting now passed via system prompt to avoid race conditions in concurrent requests
 
 ### Fixed
 
+- Fixed SDK hang when using custom env with sandbox enabled (don't pass custom env in sandbox mode)
+- Fixed command injection vulnerability in git-proxy-init (use execFileSync with argument arrays)
+- Fixed SSRF vulnerability in git-proxy (added host allowlist, only github.com allowed)
+- Fixed TOCTOU race condition in quickstart config file creation (atomic write pattern)
 - Image generation now works correctly through Claude's Bash tool (SDK sandbox properly configured with OpenAI domain)
 - WebFetch/WebSearch network isolation now enforced via hooks/allowlists in all modes
 
