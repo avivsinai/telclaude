@@ -5,6 +5,7 @@ import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
+import { registerKeyboardHandlers } from "./keyboard-handlers.js";
 import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
@@ -17,7 +18,6 @@ import {
 	type TelegramListenerCloseReason,
 	type TelegramMediaPayload,
 } from "./types.js";
-import { registerKeyboardHandlers } from "./keyboard-handlers.js";
 
 export type InboxMonitorOptions = {
 	bot: Bot;

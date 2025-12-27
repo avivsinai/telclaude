@@ -6,9 +6,9 @@
  */
 
 import type { Bot, CallbackQueryContext, Context } from "grammy";
-import { getChildLogger } from "../logging.js";
 import type { TelclaudeConfig } from "../config/config.js";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
+import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
 
 const logger = getChildLogger({ module: "keyboard-handlers" });

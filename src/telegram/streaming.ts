@@ -27,7 +27,7 @@ import { convert as convertToTelegramMarkdown } from "telegram-markdown-v2";
 
 import { getChildLogger } from "../logging.js";
 import type { SecretFilterConfig } from "../security/output-filter.js";
-import { filterOutputWithConfig, filterOutput } from "../security/output-filter.js";
+import { filterOutput, filterOutputWithConfig } from "../security/output-filter.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
 const logger = getChildLogger({ module: "telegram-streaming" });
@@ -297,11 +297,11 @@ export class StreamingResponse {
 		// Keep the end of the content (most recent) if truncating
 		let displayContent = this.content;
 		if (displayContent.length > 3900) {
-			displayContent = "...\n" + displayContent.slice(-3850);
+			displayContent = `...\n${displayContent.slice(-3850)}`;
 		}
 
 		// Add streaming indicator
-		const streamingContent = displayContent + "\n\n⏳ _generating..._";
+		const streamingContent = `${displayContent}\n\n⏳ _generating..._`;
 
 		try {
 			// Convert to MarkdownV2 if we haven't fallen back to plain text
@@ -312,7 +312,7 @@ export class StreamingResponse {
 				textToSend = convertToTelegramMarkdown(streamingContent);
 				parseMode = "MarkdownV2";
 			} else {
-				textToSend = displayContent + "\n\n⏳ generating...";
+				textToSend = `${displayContent}\n\n⏳ generating...`;
 				parseMode = undefined;
 			}
 
@@ -375,16 +375,18 @@ export class StreamingResponse {
 			this.useMarkdown = false;
 
 			// Retry immediately with plain text
-			try {
-				await this.api.editMessageText(
-					this.chatId,
-					this.messageId!,
-					displayContent + "\n\n⏳ generating...",
-				);
-				this.lastSentContent = this.content;
-				this.lastUpdateTime = Date.now();
-			} catch (fallbackErr) {
-				logger.error({ error: String(fallbackErr) }, "plain text fallback also failed");
+			if (this.messageId) {
+				try {
+					await this.api.editMessageText(
+						this.chatId,
+						this.messageId,
+						`${displayContent}\n\n⏳ generating...`,
+					);
+					this.lastSentContent = this.content;
+					this.lastUpdateTime = Date.now();
+				} catch (fallbackErr) {
+					logger.error({ error: String(fallbackErr) }, "plain text fallback also failed");
+				}
 			}
 			return;
 		}
@@ -538,21 +540,23 @@ export class StreamingResponse {
 		) {
 			logger.warn({ error: errStr }, "markdown parse error on finish, retrying with plain text");
 
-			try {
-				const result = await this.api.editMessageText(this.chatId, this.messageId!, chunks[0], {
-					reply_markup: chunks.length === 1 ? keyboard : undefined,
-				});
-
-				let lastResult: Message = result as Message;
-				for (let i = 1; i < chunks.length; i++) {
-					const isLast = i === chunks.length - 1;
-					lastResult = await this.api.sendMessage(this.chatId, chunks[i], {
-						reply_markup: isLast ? keyboard : undefined,
+			if (this.messageId) {
+				try {
+					const result = await this.api.editMessageText(this.chatId, this.messageId, chunks[0], {
+						reply_markup: chunks.length === 1 ? keyboard : undefined,
 					});
+
+					let lastResult: Message = result as Message;
+					for (let i = 1; i < chunks.length; i++) {
+						const isLast = i === chunks.length - 1;
+						lastResult = await this.api.sendMessage(this.chatId, chunks[i], {
+							reply_markup: isLast ? keyboard : undefined,
+						});
+					}
+					return lastResult;
+				} catch (fallbackErr) {
+					logger.error({ error: String(fallbackErr) }, "plain text finish also failed");
 				}
-				return lastResult;
-			} catch (fallbackErr) {
-				logger.error({ error: String(fallbackErr) }, "plain text finish also failed");
 			}
 		}
 

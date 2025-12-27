@@ -50,8 +50,8 @@ import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
-import type { StreamingResponse } from "./streaming.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
+import type { StreamingResponse } from "./streaming.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
