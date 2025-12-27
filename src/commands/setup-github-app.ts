@@ -20,12 +20,19 @@ import {
 	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
+import { clearGitCredentialsCache } from "../services/git-credentials.js";
 import {
 	clearGitHubAppCache,
 	type GitHubAppConfig,
 	listAccessibleRepositories,
 	testGitHubAppConnectivity,
 } from "../services/github-app.js";
+
+/** Clear both GitHub App and git credentials caches. */
+function clearAllGitHubCaches(): void {
+	clearGitHubAppCache();
+	clearGitCredentialsCache();
+}
 
 const logger = getChildLogger({ module: "cmd-setup-github-app" });
 
@@ -66,7 +73,7 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 					// Handle --delete
 					if (opts.delete) {
 						const deleted = await deleteSecret(SECRET_KEYS.GITHUB_APP);
-						clearGitHubAppCache();
+						clearAllGitHubCaches();
 						if (deleted) {
 							console.log("GitHub App credentials removed from secure storage.");
 						} else {
@@ -110,7 +117,7 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 
 					// Handle --test
 					if (opts.test) {
-						clearGitHubAppCache(); // Ensure fresh config
+						clearAllGitHubCaches(); // Ensure fresh config
 						console.log("Testing GitHub App connectivity...");
 						const result = await testGitHubAppConnectivity();
 						if (result.success) {
@@ -132,7 +139,7 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 
 					// Handle --repos
 					if (opts.repos) {
-						clearGitHubAppCache(); // Ensure fresh config
+						clearAllGitHubCaches(); // Ensure fresh config
 						console.log("Listing accessible repositories...");
 						const repos = await listAccessibleRepositories();
 						if (repos.length === 0) {
@@ -194,7 +201,7 @@ async function setupWithOptions(
 	};
 
 	await storeSecret(SECRET_KEYS.GITHUB_APP, JSON.stringify(config));
-	clearGitHubAppCache();
+	clearAllGitHubCaches();
 
 	console.log(`GitHub App credentials stored securely in ${providerName}.`);
 
@@ -293,7 +300,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	};
 
 	await storeSecret(SECRET_KEYS.GITHUB_APP, JSON.stringify(config));
-	clearGitHubAppCache();
+	clearAllGitHubCaches();
 
 	console.log("");
 	console.log(`GitHub App credentials stored securely in ${providerName}.`);

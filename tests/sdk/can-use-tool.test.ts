@@ -72,14 +72,14 @@ afterEach(() => {
 describe("buildSdkOptions.canUseTool", () => {
 	it("denies Read on sensitive path", async () => {
 		isSensitivePath.mockReturnValueOnce(true);
-		const sdkOpts = buildSdkOptions({ ...baseOpts });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts });
 		const res = await sdkOpts.canUseTool?.("Read", { file_path: "/secret" });
 		expect(res?.behavior).toBe("deny");
 	});
 
 	it("denies Bash with blocked command in WRITE_LOCAL", async () => {
 		containsBlockedCommand.mockReturnValueOnce("rm");
-		const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
 		const res = await sdkOpts.canUseTool?.("Bash", { command: "rm -rf /" });
 		expect(res?.behavior).toBe("deny");
 		expect(res?.message).toContain("blocked operation");
@@ -87,7 +87,7 @@ describe("buildSdkOptions.canUseTool", () => {
 
 it("allows Bash without altering the command (SDK sandbox handles isolation)", async () => {
 	// SDK sandbox handles OS-level isolation for Bash; no command wrapping required.
-	const sdkOpts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
+	const sdkOpts = await buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL" });
 	const res = await sdkOpts.canUseTool?.("Bash", { command: "echo ok" });
 	expect(res?.behavior).toBe("allow");
 	// Command is passed through unchanged - SDK sandbox handles isolation
@@ -99,13 +99,13 @@ it("allows Bash without altering the command (SDK sandbox handles isolation)", a
 		// to avoid false positives on content fields like Write.content or Edit.new_string.
 		// Arbitrary nested paths like meta.path are NOT scanned.
 		isSensitivePath.mockReturnValue(true);
-		const sdkOpts = buildSdkOptions({ ...baseOpts });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts });
 		const res = await sdkOpts.canUseTool?.("Read", { meta: { path: "/very/secret" } });
 		expect(res?.behavior).toBe("allow"); // Not blocked because meta.path is not a path-bearing field
 	});
 
 	it("allows non-sensitive Read", async () => {
-		const sdkOpts = buildSdkOptions({ ...baseOpts });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts });
 		const res = await sdkOpts.canUseTool?.("Read", { file_path: "/safe/path.txt" });
 		expect(res?.behavior).toBe("allow");
 	});
@@ -118,13 +118,13 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("allows WebFetch to allowlisted domain", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "https://api.github.com/repos" });
 			expect(res?.behavior).toBe("allow");
 		});
 
 		it("denies WebFetch to non-allowlisted domain", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "https://evil.example.com/data" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("not in allowlist");
@@ -132,7 +132,7 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 
 		it("denies WebFetch to private network (localhost)", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://127.0.0.1:8080/api" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
@@ -140,14 +140,14 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 
 		it("denies WebFetch to metadata endpoint", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://169.254.169.254/latest/meta-data" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
 		});
 
 		it("denies WebFetch to non-HTTP protocol", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "file:///etc/passwd" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("HTTP/HTTPS");
@@ -156,7 +156,7 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		it("allows WebSearch (uses query, not url - server-side requests)", async () => {
 			// WebSearch uses `query` parameter, not `url`. Requests are made server-side by Anthropic.
 			// We don't filter WebSearch because we can't control Anthropic's search service.
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebSearch", { query: "how to hack servers" });
 			expect(res?.behavior).toBe("allow");
 		});
@@ -168,20 +168,20 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("allows WebFetch to allowlisted domain", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "https://api.github.com/repos" });
 			expect(res?.behavior).toBe("allow");
 		});
 
 		it("allows WebFetch to non-allowlisted public domain", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "https://random-website.example.com/data" });
 			expect(res?.behavior).toBe("allow");
 		});
 
 		it("still denies WebFetch to private network (localhost)", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://127.0.0.1:8080/api" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
@@ -189,7 +189,7 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 
 		it("still denies WebFetch to RFC1918 addresses", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://192.168.1.1/admin" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
@@ -197,14 +197,14 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 
 		it("still denies WebFetch to metadata endpoint", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://169.254.169.254/latest/meta-data" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
 		});
 
 		it("still denies WebFetch to non-HTTP protocol", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "file:///etc/passwd" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("HTTP/HTTPS");
@@ -213,7 +213,7 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		it("allows WebSearch (server-side, uses query not url)", async () => {
 			// WebSearch uses `query` parameter, not `url`. Requests are made server-side by Anthropic.
 			// We don't filter WebSearch because we can't control Anthropic's search service.
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebSearch", { query: "private network 10.0.0.1" });
 			expect(res?.behavior).toBe("allow");
 		});
@@ -225,14 +225,14 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("allows WebFetch to non-allowlisted public domain", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "https://any-domain.example.org/api" });
 			expect(res?.behavior).toBe("allow");
 		});
 
 		it("still denies WebFetch to private network", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://172.16.0.1/admin" });
 			expect(res?.behavior).toBe("deny");
 			expect((res as any)?.message).toContain("private networks");
@@ -240,7 +240,7 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 
 		it("allows WebSearch (server-side, uses query not url)", async () => {
 			// WebSearch is not filtered in any mode - requests are made server-side by Anthropic
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebSearch", { query: "anything goes" });
 			expect(res?.behavior).toBe("allow");
 		});
@@ -299,7 +299,7 @@ describe("buildSdkOptions PreToolUse hook", () => {
 	describe("hook runs unconditionally (defense-in-depth)", () => {
 		it("blocks private network via hook even if canUseTool would allow", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://127.0.0.1:8080/api");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("private networks");
@@ -307,21 +307,21 @@ describe("buildSdkOptions PreToolUse hook", () => {
 
 		it("blocks metadata endpoint via hook", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://169.254.169.254/latest/meta-data");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("private networks");
 		});
 
 		it("blocks non-HTTP protocol via hook", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "file:///etc/passwd");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("HTTP/HTTPS");
 		});
 
 		it("blocks invalid URL via hook", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "not-a-valid-url");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("Invalid URL");
@@ -330,14 +330,14 @@ describe("buildSdkOptions PreToolUse hook", () => {
 
 	describe("strict mode (default)", () => {
 		it("blocks non-allowlisted domain via hook", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "https://evil.example.com/data");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("not in allowlist");
 		});
 
 		it("allows allowlisted domain via hook", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "https://api.github.com/repos");
 			expect(res.continue).toBe(true);
 		});
@@ -349,14 +349,14 @@ describe("buildSdkOptions PreToolUse hook", () => {
 		});
 
 		it("allows non-allowlisted public domain via hook", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "https://random-site.example.com/api");
 			expect(res.continue).toBe(true);
 		});
 
 		it("still blocks private network via hook", async () => {
 			isBlockedHost.mockResolvedValueOnce(true);
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://192.168.1.1/admin");
 			expect(res.decision).toBe("block");
 			expect(res.reason).toContain("private networks");
@@ -365,7 +365,7 @@ describe("buildSdkOptions PreToolUse hook", () => {
 
 	describe("hook only applies to WebFetch", () => {
 		it("continues for non-WebFetch tools", async () => {
-			const sdkOpts = buildSdkOptions({ ...baseOpts });
+			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const hooks = sdkOpts.hooks?.PreToolUse;
 			const hookMatcher = hooks?.[0] as { hooks: Array<(input: unknown) => Promise<unknown>> };
 			const hookFn = hookMatcher?.hooks[0];
@@ -387,14 +387,14 @@ describe("buildSdkOptions PreToolUse hook", () => {
 	});
 
 	describe("settingSources prevents user bypass", () => {
-		it("always loads only project settings to prevent disableAllHooks bypass", () => {
+		it("always loads only project settings to prevent disableAllHooks bypass", async () => {
 			// SECURITY: settingSources must always be ["project"] to prevent:
 			// - User settings with disableAllHooks: true
 			// - User settings with permissive WebFetch rules
-			const sdkOptsWithSkills = buildSdkOptions({ ...baseOpts, enableSkills: true });
+			const sdkOptsWithSkills = await buildSdkOptions({ ...baseOpts, enableSkills: true });
 			expect(sdkOptsWithSkills.settingSources).toEqual(["project"]);
 
-			const sdkOptsWithoutSkills = buildSdkOptions({ ...baseOpts, enableSkills: false });
+			const sdkOptsWithoutSkills = await buildSdkOptions({ ...baseOpts, enableSkills: false });
 			expect(sdkOptsWithoutSkills.settingSources).toEqual(["project"]);
 		});
 	});

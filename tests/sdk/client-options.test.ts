@@ -17,8 +17,8 @@ const baseOpts = {
 } as const;
 
 describe("buildSdkOptions", () => {
-	it("READ_ONLY allowlists built-in tools and adds Skill when enabled", () => {
-		const opts = buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", enableSkills: true });
+	it("READ_ONLY allowlists built-in tools and adds Skill when enabled", async () => {
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", enableSkills: true });
 
 		expect(opts.tools).toEqual(TIER_TOOLS.READ_ONLY);
 		expect(opts.allowedTools).toEqual([...TIER_TOOLS.READ_ONLY, "Skill"]);
@@ -26,16 +26,16 @@ describe("buildSdkOptions", () => {
 		expect(opts.betas).toBeUndefined();
 	});
 
-	it("WRITE_LOCAL allowlists built-in tools without Skill when disabled", () => {
-		const opts = buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL", enableSkills: false });
+	it("WRITE_LOCAL allowlists built-in tools without Skill when disabled", async () => {
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "WRITE_LOCAL", enableSkills: false });
 
 		expect(opts.tools).toEqual(TIER_TOOLS.WRITE_LOCAL);
 		expect(opts.allowedTools).toEqual(TIER_TOOLS.WRITE_LOCAL);
 		expect(opts.permissionMode).toBe("acceptEdits");
 	});
 
-	it("FULL_ACCESS leaves tools undefined and keeps permission controls intact", () => {
-		const opts = buildSdkOptions({ ...baseOpts, tier: "FULL_ACCESS" });
+	it("FULL_ACCESS leaves tools undefined and keeps permission controls intact", async () => {
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "FULL_ACCESS" });
 
 		expect(opts.tools).toBeUndefined();
 		expect(opts.allowedTools).toBeUndefined();
@@ -43,14 +43,14 @@ describe("buildSdkOptions", () => {
 		expect(opts.allowDangerouslySkipPermissions).toBe(false);
 	});
 
-	it("passes through beta headers when provided", () => {
+	it("passes through beta headers when provided", async () => {
 		const betas = ["context-1m-2025-08-07"] as const;
-		const opts = buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", betas });
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", betas });
 		expect(opts.betas).toEqual(betas);
 	});
 
-	it("creates an AbortController when timeoutMs is set", () => {
-		const opts = buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", timeoutMs: 10 });
+	it("creates an AbortController when timeoutMs is set", async () => {
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", timeoutMs: 10 });
 		expect(opts.abortController).toBeInstanceOf(AbortController);
 	});
 });
