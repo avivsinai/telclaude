@@ -82,18 +82,6 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 		return cachedCredentials;
 	}
 
-	// Partial env var configuration - log warning
-	if (envUsername || envEmail || envToken) {
-		logger.warn(
-			{
-				hasUsername: !!envUsername,
-				hasEmail: !!envEmail,
-				hasToken: !!envToken,
-			},
-			"partial git credentials in environment - all of GIT_USERNAME, GIT_EMAIL, and GITHUB_TOKEN are required",
-		);
-	}
-
 	// 3. Try GitHub App installation token
 	if (await isGitHubAppConfigured()) {
 		const [tokenInfo, identity] = await Promise.all([
@@ -111,6 +99,18 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 			logger.debug("using git credentials from GitHub App");
 			return cachedCredentials;
 		}
+	}
+
+	// Warn about partial env config only if no other source worked
+	if (envUsername || envEmail || envToken) {
+		logger.debug(
+			{
+				hasUsername: !!envUsername,
+				hasEmail: !!envEmail,
+				hasToken: !!envToken,
+			},
+			"partial git credentials in environment (GitHub App not configured)",
+		);
 	}
 
 	return null;
