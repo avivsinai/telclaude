@@ -77,13 +77,34 @@ if [ "$(id -u)" = "0" ]; then
         echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
     fi
 
+    # Ensure data directories have correct ownership
+    # This handles the case where volumes are mounted from host
+    # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
+    # NOTE: /home/node must be writable for Claude CLI to create .claude.json
+    # NOTE: /media/outbox needs write access for generated content (relay container)
+    # Create logs directory and file with correct ownership for pino logger
+    # Must be done before dropping privileges since tmpfs dirs created as root
+    mkdir -p /home/node/.telclaude/logs
+    touch /home/node/.telclaude/logs/telclaude.log
+    chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude
+
+    for dir in /data /home/node /home/node/.claude /media/inbox /media/outbox; do
+        if [ -d "$dir" ]; then
+            # Only chown if not already owned by the target user
+            if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
+                echo "[entrypoint] Fixing ownership of $dir"
+                chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "$dir" 2>/dev/null || true
+            fi
+        fi
+    done
+
     # Git configuration: Use proxy in agent container, minimal config in relay
     if [ -n "$TELCLAUDE_GIT_PROXY_URL" ]; then
         # Agent container: Configure git to use the relay's git proxy
         # The proxy adds GitHub authentication transparently - agent never sees the token
-        # Run as daemon to refresh token before expiry (prevents git auth failures in long sessions)
+        # Run as daemon with gosu to drop privileges (least privilege principle)
         echo "[entrypoint] Configuring git to use relay proxy"
-        /app/bin/telclaude.js git-proxy-init --daemon &
+        gosu "$TELCLAUDE_USER" /app/bin/telclaude.js git-proxy-init --daemon &
         GIT_PROXY_PID=$!
 
         # Wait a moment for initial configuration
@@ -102,21 +123,6 @@ if [ "$(id -u)" = "0" ]; then
         git config --global init.defaultBranch main
         git config --global core.autocrlf input
     fi
-
-    # Ensure data directories have correct ownership
-    # This handles the case where volumes are mounted from host
-    # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
-    # NOTE: /home/node must be writable for Claude CLI to create .claude.json
-    # NOTE: /media/outbox needs write access for generated content (relay container)
-    for dir in /data /home/node /home/node/.claude /home/node/.telclaude /media/inbox /media/outbox; do
-        if [ -d "$dir" ]; then
-            # Only chown if not already owned by the target user
-            if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
-                echo "[entrypoint] Fixing ownership of $dir"
-                chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "$dir" 2>/dev/null || true
-            fi
-        fi
-    done
 
     # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)
     if [ "${TELCLAUDE_RUN_AS_ROOT:-0}" = "1" ]; then

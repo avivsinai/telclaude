@@ -63,27 +63,37 @@ async function fetchGitIdentity(proxyUrl: string): Promise<GitIdentity | null> {
  * validation failures in the proxy.
  */
 function configureGit(proxyUrl: string, sessionToken: string, identity: GitIdentity): void {
-	// Helper to set a git config value, replacing any existing value
+	// Helper to set a single-value git config, replacing any existing
 	const gitConfigSet = (key: string, value: string) => {
-		// First unset any existing values to avoid duplicates
 		try {
 			execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
 		} catch {
-			// Ignore errors if key doesn't exist
+			// Ignore if key doesn't exist
 		}
 		execSync(`git config --global ${key} "${value}"`, { stdio: "inherit" });
 	};
 
-	// Helper for extraHeader which needs special handling
-	// extraHeader can have multiple values, but we want exactly one session header
+	// Helper to add a multi-value git config (like insteadOf)
+	// Unsets all values first, then adds each one
+	const gitConfigMulti = (key: string, values: string[]) => {
+		try {
+			execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
+		} catch {
+			// Ignore if key doesn't exist
+		}
+		for (const value of values) {
+			execSync(`git config --global --add ${key} "${value}"`, { stdio: "inherit" });
+		}
+	};
+
+	// Helper for extraHeader
 	const gitConfigHeader = (section: string, header: string) => {
-		// Remove any existing X-Telclaude-Session headers for this section
 		try {
 			execSync(`git config --global --unset-all http."${section}".extraHeader`, {
 				stdio: "ignore",
 			});
 		} catch {
-			// Ignore errors if key doesn't exist
+			// Ignore if key doesn't exist
 		}
 		execSync(`git config --global --add http."${section}".extraHeader "${header}"`, {
 			stdio: "inherit",
@@ -91,10 +101,12 @@ function configureGit(proxyUrl: string, sessionToken: string, identity: GitIdent
 	};
 
 	// URL rewriting: GitHub URLs → proxy
-	// This covers all common forms of GitHub URLs
-	gitConfigSet(`url."${proxyUrl}/github.com/".insteadOf`, "https://github.com/");
-	gitConfigSet(`url."${proxyUrl}/github.com/".insteadOf`, "git@github.com:");
-	gitConfigSet(`url."${proxyUrl}/github.com/".insteadOf`, "ssh://git@github.com/");
+	// All three URL schemes need to be rewritten to the proxy
+	gitConfigMulti(`url."${proxyUrl}/github.com/".insteadOf`, [
+		"https://github.com/",
+		"git@github.com:",
+		"ssh://git@github.com/",
+	]);
 
 	// Add session token header for proxy authentication
 	gitConfigHeader(`${proxyUrl}/`, `X-Telclaude-Session: ${sessionToken}`);
@@ -134,8 +146,8 @@ async function initializeGitProxy(
 
 	if (!identity) {
 		// Fallback to environment variables or defaults
-		const envName = process.env.GIT_USER_NAME;
-		const envEmail = process.env.GIT_USER_EMAIL;
+		const envName = process.env.GIT_USERNAME;
+		const envEmail = process.env.GIT_EMAIL;
 
 		if (envName && envEmail) {
 			console.log("[git-proxy-init] Using git identity from environment");
@@ -187,6 +199,10 @@ export function registerGitProxyInitCommand(program: Command): void {
 			}
 
 			const ttlMinutes = Number.parseInt(opts.ttl ?? "60", 10);
+			if (Number.isNaN(ttlMinutes) || ttlMinutes < 1) {
+				console.error(`[git-proxy-init] Invalid TTL: ${opts.ttl} (must be a positive integer)`);
+				process.exit(1);
+			}
 			const ttlMs = ttlMinutes * 60 * 1000;
 
 			console.log("[git-proxy-init] Configuring git to use relay proxy...");
