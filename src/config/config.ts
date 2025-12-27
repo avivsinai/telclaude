@@ -14,6 +14,16 @@ const SessionConfigSchema = z.object({
 	store: z.string().optional(),
 });
 
+// Streaming configuration schema for real-time Telegram updates
+const StreamingConfigSchema = z.object({
+	/** Enable streaming responses (editMessageText). Default: true */
+	enabled: z.boolean().default(true),
+	/** Minimum interval between updates in ms. Default: 1500 */
+	minUpdateIntervalMs: z.number().int().positive().default(1500),
+	/** Show inline keyboard buttons after responses. Default: true */
+	showInlineKeyboard: z.boolean().default(true),
+});
+
 // Reply configuration schema (SDK-based)
 const ReplyConfigSchema = z
 	.object({
@@ -21,6 +31,8 @@ const ReplyConfigSchema = z
 		timeoutSeconds: z.number().int().positive().default(600),
 		session: SessionConfigSchema.optional(),
 		typingIntervalSeconds: z.number().positive().default(8),
+		/** Streaming response configuration */
+		streaming: StreamingConfigSchema.optional(),
 	})
 	.default({});
 
@@ -317,7 +329,9 @@ export function loadConfig(): TelclaudeConfig {
 			// Permission denied (e.g., running in sandbox where ~/.telclaude is blocked)
 			// NOTE: Cannot use getLogger() here - would cause circular dependency with logging.ts
 			if (process.env.TELCLAUDE_LOG_LEVEL === "debug") {
-				console.debug(`[config] config file not accessible (EACCES), using defaults: ${configPath}`);
+				console.debug(
+					`[config] config file not accessible (EACCES), using defaults: ${configPath}`,
+				);
 			}
 			return TelclaudeConfigSchema.parse({});
 		}

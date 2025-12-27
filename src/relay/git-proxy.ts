@@ -97,6 +97,9 @@ setInterval(
  * Input: /github.com/owner/repo.git/info/refs
  * Output: { host: "github.com", owner: "owner", repo: "repo", path: "/info/refs" }
  */
+// Allowed upstream hosts - prevents SSRF by restricting to known git hosts
+const ALLOWED_GIT_HOSTS = new Set(["github.com"]);
+
 function parseGitUrl(url: string): ParsedGitUrl | null {
 	// Remove query string for parsing, but preserve for path
 	const [pathPart, queryPart] = url.split("?");
@@ -110,6 +113,13 @@ function parseGitUrl(url: string): ParsedGitUrl | null {
 	}
 
 	const [, host, owner, repo, , gitPath] = match;
+
+	// SECURITY: Validate host against allowlist to prevent SSRF
+	if (!ALLOWED_GIT_HOSTS.has(host.toLowerCase())) {
+		logger.warn({ host, url }, "git proxy: blocked request to non-allowed host");
+		return null;
+	}
+
 	return {
 		host,
 		owner,

@@ -529,70 +529,80 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	const config = loadConfig();
 	const sandboxEnabled = shouldEnableSdkSandbox();
 
-	// Build environment for SDK
-	// In Docker mode, env vars are passed through directly
-	// In native mode, SDK sandbox handles env isolation
+	// Environment handling for SDK spawn process
 	//
-	// SECURITY: Use explicit safe PATH instead of host PATH to prevent
-	// attacker-controlled directories from being in the PATH
-	const SAFE_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+	// IMPORTANT: When sandbox is enabled, do NOT pass custom `env` option to SDK.
+	// The SDK sandbox handles environment isolation internally, and passing
+	// a custom env causes the spawn process to hang. Instead, set variables in
+	// process.env before calling the SDK - the sandbox inherits from process.env.
+	//
+	// In Docker mode (sandbox disabled), pass explicit env to control what
+	// variables the spawned process sees.
+	let sandboxEnv: Record<string, string> | undefined;
 
-	const sandboxEnv: Record<string, string> = {
-		// Basic system vars
-		HOME: process.env.HOME ?? "",
-		USER: process.env.USER ?? "",
-		PATH: sandboxEnabled ? SAFE_PATH : (process.env.PATH ?? SAFE_PATH),
-		SHELL: process.env.SHELL ?? "/bin/sh",
-		TERM: process.env.TERM ?? "xterm-256color",
-		LANG: process.env.LANG ?? "en_US.UTF-8",
-	};
+	if (sandboxEnabled) {
+		// Native mode: Don't pass custom env (causes hang with sandbox.enabled).
+		// User ID for rate limiting is passed via system prompt below instead of
+		// env var to avoid race conditions with concurrent requests.
+		// OPENAI_API_KEY and GITHUB_TOKEN should already be in process.env.
+	} else {
+		// Docker mode: Pass explicit env since container provides isolation
+		sandboxEnv = {
+			HOME: process.env.HOME ?? "",
+			USER: process.env.USER ?? "",
+			PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+			SHELL: process.env.SHELL ?? "/bin/sh",
+			TERM: process.env.TERM ?? "xterm-256color",
+			LANG: process.env.LANG ?? "en_US.UTF-8",
+		};
 
-	if (opts.userId) {
-		sandboxEnv.TELCLAUDE_REQUEST_USER_ID = opts.userId;
-	}
-
-	// Pass relay capability config for image/TTS/transcription commands
-	// These are needed by `telclaude generate-image` etc. when run via Bash
-	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
-	}
-	if (process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
-		sandboxEnv.TELCLAUDE_INTERNAL_RPC_SECRET = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
-	}
-	// Media directories for generated content
-	if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
-		sandboxEnv.TELCLAUDE_MEDIA_INBOX_DIR = process.env.TELCLAUDE_MEDIA_INBOX_DIR;
-	}
-	if (process.env.TELCLAUDE_MEDIA_OUTBOX_DIR) {
-		sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
-	}
-
-	// Tier-based key exposure: FULL_ACCESS gets configured keys
-	if (shouldExposeKeys(opts.tier)) {
-		const exposedKeys: string[] = [];
-
-		// OpenAI key
-		const openaiKey = getCachedOpenAIKey();
-		if (openaiKey) {
-			sandboxEnv.OPENAI_API_KEY = openaiKey;
-			exposedKeys.push("OPENAI_API_KEY");
+		if (opts.userId) {
+			sandboxEnv.TELCLAUDE_REQUEST_USER_ID = opts.userId;
 		}
 
-		// GitHub token - from setup-git/setup-github-app or env vars
-		// NOTE: Token is refreshed per-query, but once set in sandbox env it's static for
-		// the session lifetime. If a single session exceeds GitHub App token TTL (~1h),
-		// git/gh calls will fail. In practice, sessions are short-lived (30min idle timeout).
-		const gitCreds = await getGitCredentials();
-		const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-		if (githubToken) {
-			sandboxEnv.GITHUB_TOKEN = githubToken;
-			sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this
-			exposedKeys.push("GITHUB_TOKEN");
+		// Pass relay capability config for image/TTS/transcription commands
+		// These are needed by `telclaude generate-image` etc. when run via Bash
+		if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+			sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
+		}
+		if (process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
+			sandboxEnv.TELCLAUDE_INTERNAL_RPC_SECRET = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+		}
+		// Media directories for generated content
+		if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
+			sandboxEnv.TELCLAUDE_MEDIA_INBOX_DIR = process.env.TELCLAUDE_MEDIA_INBOX_DIR;
+		}
+		if (process.env.TELCLAUDE_MEDIA_OUTBOX_DIR) {
+			sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
 		}
 
-		if (exposedKeys.length > 0 && !keysExposedLogged) {
-			keysExposedLogged = true;
-			logger.info({ tier: opts.tier, keys: exposedKeys }, "API keys exposed to sandbox");
+		// Tier-based key exposure: FULL_ACCESS gets configured keys
+		if (shouldExposeKeys(opts.tier)) {
+			const exposedKeys: string[] = [];
+
+			// OpenAI key
+			const openaiKey = getCachedOpenAIKey();
+			if (openaiKey) {
+				sandboxEnv.OPENAI_API_KEY = openaiKey;
+				exposedKeys.push("OPENAI_API_KEY");
+			}
+
+			// GitHub token - from setup-git/setup-github-app or env vars
+			// NOTE: Token is refreshed per-query, but once set in sandbox env it's static for
+			// the session lifetime. If a single session exceeds GitHub App token TTL (~1h),
+			// git/gh calls will fail. In practice, sessions are short-lived (30min idle timeout).
+			const gitCreds = await getGitCredentials();
+			const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+			if (githubToken) {
+				sandboxEnv.GITHUB_TOKEN = githubToken;
+				sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this
+				exposedKeys.push("GITHUB_TOKEN");
+			}
+
+			if (exposedKeys.length > 0 && !keysExposedLogged) {
+				keysExposedLogged = true;
+				logger.info({ tier: opts.tier, keys: exposedKeys }, "API keys exposed to sandbox");
+			}
 		}
 	}
 
@@ -603,7 +613,9 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		includePartialMessages: opts.includePartialMessages,
 		abortController,
 		resume: opts.resumeSessionId,
-		env: sandboxEnv,
+		// Only pass env in Docker mode (when sandboxEnv is defined)
+		// In native mode, let SDK use process.env and handle sandbox env internally
+		...(sandboxEnv && { env: sandboxEnv }),
 	};
 
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
@@ -875,11 +887,18 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	sdkOpts.settingSources = ["project"];
 
 	// System prompt configuration
-	if (opts.systemPromptAppend) {
+	// In native mode, include user ID in system prompt for rate limiting attribution
+	// (can't use env var due to SDK hang with custom env + sandbox.enabled)
+	let systemPromptAppend = opts.systemPromptAppend ?? "";
+	if (sandboxEnabled && opts.userId) {
+		const userIdLine = `\n\n<request-context user-id="${opts.userId}" />`;
+		systemPromptAppend = systemPromptAppend + userIdLine;
+	}
+	if (systemPromptAppend) {
 		sdkOpts.systemPrompt = {
 			type: "preset",
 			preset: "claude_code",
-			append: opts.systemPromptAppend,
+			append: systemPromptAppend,
 		};
 	}
 

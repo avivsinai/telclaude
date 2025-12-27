@@ -55,6 +55,14 @@ export type TelegramInboundMessage = {
 	 *  Set useMarkdown: true only for trusted system messages. */
 	reply: (text: string, options?: { useMarkdown?: boolean }) => Promise<void>;
 	sendMedia: (payload: TelegramMediaPayload) => Promise<void>;
+	/**
+	 * Start a streaming response. Returns a StreamingResponse instance
+	 * that can be used to append content and finalize the response.
+	 * Returns null if streaming is not available.
+	 */
+	startStreaming?: (
+		config?: import("./streaming.js").StreamingConfig,
+	) => Promise<import("./streaming.js").StreamingResponse | null>;
 
 	// Raw message for advanced use
 	raw?: Message;

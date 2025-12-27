@@ -5,6 +5,7 @@ import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
+import { registerKeyboardHandlers } from "./keyboard-handlers.js";
 import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
@@ -29,6 +30,8 @@ export type InboxMonitorOptions = {
 		requireMention?: boolean;
 	};
 	secretFilterConfig?: SecretFilterConfig;
+	/** Enable inline keyboard buttons on responses. Default: true */
+	enableKeyboards?: boolean;
 };
 
 export type InboxMonitorHandle = {
@@ -51,6 +54,7 @@ export async function monitorTelegramInbox(
 		allowedChats,
 		groupChat,
 		secretFilterConfig,
+		enableKeyboards = true,
 	} = options;
 	const logger = getChildLogger({ module: "telegram-inbound" });
 	const seen = new Set<string>();
@@ -315,11 +319,29 @@ export async function monitorTelegramInbox(
 				}
 				await sendMediaToChat(bot.api, chat.id, payload, undefined, secretFilterConfig);
 			},
+			startStreaming: async (streamingConfig) => {
+				if (dryRun) {
+					logger.info({ chatId: chat.id }, "dry-run: would start streaming response");
+					return null;
+				}
+				const { createStreamingResponse } = await import("./streaming.js");
+				const streamer = createStreamingResponse(bot.api, chat.id, {
+					...(streamingConfig ?? {}),
+					secretFilterConfig,
+				});
+				await streamer.start();
+				return streamer;
+			},
 			raw: message,
 		};
 
 		return inboundMsg;
 	};
+
+	// Register keyboard handlers (callback queries must be registered before message handlers)
+	if (enableKeyboards) {
+		registerKeyboardHandlers(bot, {} as import("../config/config.js").TelclaudeConfig);
+	}
 
 	// Handle text messages
 	logger.debug("registering message:text handler");

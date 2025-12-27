@@ -18,7 +18,7 @@
  *   TELCLAUDE_GIT_PROXY_SECRET - Shared secret for token generation
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { generateSessionId, generateSessionToken } from "../relay/git-proxy-auth.js";
@@ -64,38 +64,40 @@ async function fetchGitIdentity(proxyUrl: string): Promise<GitIdentity | null> {
  */
 function configureGit(proxyUrl: string, sessionToken: string, identity: GitIdentity): void {
 	// Helper to set a single-value git config, replacing any existing
+	// Uses execFileSync with argument arrays to prevent command injection
 	const gitConfigSet = (key: string, value: string) => {
 		try {
-			execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
+			execFileSync("git", ["config", "--global", "--unset-all", key], { stdio: "ignore" });
 		} catch {
 			// Ignore if key doesn't exist
 		}
-		execSync(`git config --global ${key} "${value}"`, { stdio: "inherit" });
+		execFileSync("git", ["config", "--global", key, value], { stdio: "inherit" });
 	};
 
 	// Helper to add a multi-value git config (like insteadOf)
 	// Unsets all values first, then adds each one
 	const gitConfigMulti = (key: string, values: string[]) => {
 		try {
-			execSync(`git config --global --unset-all ${key}`, { stdio: "ignore" });
+			execFileSync("git", ["config", "--global", "--unset-all", key], { stdio: "ignore" });
 		} catch {
 			// Ignore if key doesn't exist
 		}
 		for (const value of values) {
-			execSync(`git config --global --add ${key} "${value}"`, { stdio: "inherit" });
+			execFileSync("git", ["config", "--global", "--add", key, value], { stdio: "inherit" });
 		}
 	};
 
 	// Helper for extraHeader
 	const gitConfigHeader = (section: string, header: string) => {
+		const configKey = `http.${section}.extraHeader`;
 		try {
-			execSync(`git config --global --unset-all http."${section}".extraHeader`, {
+			execFileSync("git", ["config", "--global", "--unset-all", configKey], {
 				stdio: "ignore",
 			});
 		} catch {
 			// Ignore if key doesn't exist
 		}
-		execSync(`git config --global --add http."${section}".extraHeader "${header}"`, {
+		execFileSync("git", ["config", "--global", "--add", configKey, header], {
 			stdio: "inherit",
 		});
 	};
@@ -217,7 +219,14 @@ export function registerGitProxyInitCommand(program: Command): void {
 			// Verify configuration
 			console.log("[git-proxy-init] URL rewrites:");
 			try {
-				execSync("git config --global --get-regexp '^url\\.' | head -3", { stdio: "inherit" });
+				const output = execFileSync("git", ["config", "--global", "--get-regexp", "^url\\."], {
+					encoding: "utf8",
+				});
+				// Show first 3 lines
+				const lines = output.split("\n").slice(0, 3);
+				for (const line of lines) {
+					if (line.trim()) console.log(line);
+				}
 			} catch {
 				// Ignore errors from git config --get-regexp
 			}

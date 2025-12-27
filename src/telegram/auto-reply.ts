@@ -51,6 +51,7 @@ import { monitorTelegramInbox } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
+import type { StreamingResponse } from "./streaming.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
@@ -355,6 +356,9 @@ async function executeWithSession(
 		msg.sendComposing().catch(() => {});
 	}, typingInterval);
 
+	// Streaming response holder (declared here for access in catch block)
+	let streamer: StreamingResponse | null = null;
+
 	try {
 		// Process multimodal context (transcribes audio if available)
 		const processedContext = await processMultimodalContext(
@@ -434,12 +438,34 @@ async function executeWithSession(
 					systemPromptAppend: voiceProtocolInstruction,
 				});
 
+		// Determine if streaming is enabled
+		const streamingConfig = ctx.config.inbound?.reply?.streaming;
+		const streamingEnabled =
+			streamingConfig?.enabled !== false && !processedContext.wasVoiceMessage;
+
+		// Start streaming response if enabled
+		if (streamingEnabled && msg.startStreaming) {
+			try {
+				streamer = await msg.startStreaming(streamingConfig);
+			} catch (err) {
+				logger.warn(
+					{ error: String(err) },
+					"failed to start streaming, falling back to non-streaming",
+				);
+			}
+		}
+
 		// Execute with session pool for connection reuse and timeout
 		for await (const chunk of queryStream) {
 			if (chunk.type === "text") {
 				// Process through streaming redactor to catch secrets
 				const safeContent = redactor.processChunk(chunk.content);
 				responseText += safeContent;
+
+				// Update streaming display if enabled
+				if (streamer) {
+					await streamer.append(safeContent);
+				}
 			} else if (chunk.type === "done") {
 				if (!chunk.result.success) {
 					const errorMsg = chunk.result.error?.includes("aborted")
@@ -447,7 +473,13 @@ async function executeWithSession(
 						: `Request failed: ${chunk.result.error ?? "Unknown error"}`;
 
 					logger.warn({ requestId, error: chunk.result.error }, "SDK query failed");
-					await msg.reply(errorMsg);
+
+					// Abort streaming response or send error directly
+					if (streamer) {
+						await streamer.abort(errorMsg);
+					} else {
+						await msg.reply(errorMsg);
+					}
 					await auditLogger.log({
 						timestamp: new Date(),
 						requestId,
@@ -515,7 +547,18 @@ async function executeWithSession(
 
 					// Send text only if this is NOT a voice-only response
 					if (!isVoiceOnlyResponse) {
-						await msg.reply(finalResponse);
+						if (streamer) {
+							// Finish the streaming response with keyboard
+							// The streamer already has the content from append() calls
+							await streamer.finish();
+						} else {
+							// Non-streaming fallback
+							await msg.reply(finalResponse);
+						}
+					} else if (streamer) {
+						// Voice-only response but streaming was started - abort it cleanly
+						// (the voice message will be sent below)
+						await streamer.abort();
 					}
 
 					for (const media of generatedMedia) {
@@ -588,7 +631,12 @@ async function executeWithSession(
 			errorType: String(err),
 		});
 
-		await msg.reply("An error occurred while processing your request. Please try again.");
+		// Abort streaming if active, otherwise send error reply
+		if (streamer) {
+			await streamer.abort("An error occurred while processing your request. Please try again.");
+		} else {
+			await msg.reply("An error occurred while processing your request. Please try again.");
+		}
 	} finally {
 		clearInterval(typingTimer);
 	}
