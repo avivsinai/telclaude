@@ -50,3 +50,7 @@ package-lock.json
 # Docker local config (contains secrets/chat IDs)
 docker/.env
 docker/telclaude.json
+
+# Secrets (GitHub App keys, etc.)
+secrets/
+*.pem

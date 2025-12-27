@@ -60,6 +60,7 @@ services:
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_CAPABILITIES_ENABLED=1
       - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELCLAUDE_INTERNAL_RPC_SECRET}}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
@@ -178,6 +179,11 @@ services:
       # Relay capability broker
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
+
+      # Git proxy for secure git operations (token never exposed to agent)
+      # The proxy intercepts git requests and adds authentication transparently
+      - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELCLAUDE_INTERNAL_RPC_SECRET}}
 
       # Media paths (inbox/outbox split)
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox

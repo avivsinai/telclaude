@@ -32,7 +32,7 @@ import { isBlockedHost } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
-import { getCachedGitToken } from "../services/git-credentials.js";
+import { getGitCredentials } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {
 	isAssistantMessage,
@@ -510,7 +510,7 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
  * - Docker: SDK sandbox DISABLED. Docker container provides isolation.
  * - Native: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
  */
-export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
+export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKOptions> {
 	// Create abort controller with timeout if specified
 	let abortController = opts.abortController;
 	if (opts.timeoutMs && !abortController) {
@@ -578,8 +578,12 @@ export function buildSdkOptions(opts: TelclaudeQueryOptions): SDKOptions {
 			exposedKeys.push("OPENAI_API_KEY");
 		}
 
-		// GitHub token - from setup-git cache or env vars
-		const githubToken = getCachedGitToken() || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+		// GitHub token - from setup-git/setup-github-app or env vars
+		// NOTE: Token is refreshed per-query, but once set in sandbox env it's static for
+		// the session lifetime. If a single session exceeds GitHub App token TTL (~1h),
+		// git/gh calls will fail. In practice, sessions are short-lived (30min idle timeout).
+		const gitCreds = await getGitCredentials();
+		const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 		if (githubToken) {
 			sandboxEnv.GITHUB_TOKEN = githubToken;
 			sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this
@@ -895,7 +899,7 @@ export async function* executeQueryStream(
 	const startTime = Date.now();
 
 	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
-	const sdkOpts = buildSdkOptions({
+	const sdkOpts = await buildSdkOptions({
 		...inputOpts,
 		includePartialMessages: true,
 	});
@@ -1033,7 +1037,7 @@ export async function* executePooledQuery(
 	const opts = inputOpts;
 
 	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
-	const sdkOpts = buildSdkOptions({
+	const sdkOpts = await buildSdkOptions({
 		...opts,
 		includePartialMessages: true,
 	});
