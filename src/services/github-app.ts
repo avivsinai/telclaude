@@ -43,6 +43,11 @@ interface CachedToken {
 	expiresAt: Date;
 }
 
+export interface InstallationTokenInfo {
+	token: string;
+	expiresAt: Date;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Token Cache
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -129,7 +134,7 @@ function getPrivateKeyContent(privateKey: string): string {
  *
  * Token is valid for 1 hour from generation.
  */
-export async function getInstallationToken(): Promise<string | null> {
+export async function getInstallationTokenInfo(): Promise<InstallationTokenInfo | null> {
 	const config = await getGitHubAppConfig();
 	if (!config) {
 		return null;
@@ -141,7 +146,7 @@ export async function getInstallationToken(): Promise<string | null> {
 		const bufferMs = 5 * 60 * 1000; // 5 minutes
 		if (cachedToken.expiresAt.getTime() - bufferMs > now.getTime()) {
 			logger.debug("using cached installation token");
-			return cachedToken.token;
+			return { token: cachedToken.token, expiresAt: cachedToken.expiresAt };
 		}
 		logger.debug("cached token expired, generating new one");
 	}
@@ -167,11 +172,16 @@ export async function getInstallationToken(): Promise<string | null> {
 			"generated new installation token",
 		);
 
-		return token;
+		return { token, expiresAt: cachedToken.expiresAt };
 	} catch (err) {
 		logger.error({ error: String(err) }, "failed to generate installation token");
 		return null;
 	}
+}
+
+export async function getInstallationToken(): Promise<string | null> {
+	const info = await getInstallationTokenInfo();
+	return info?.token ?? null;
 }
 
 /**
