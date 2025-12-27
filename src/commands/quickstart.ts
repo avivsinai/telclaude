@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -119,8 +120,14 @@ export function registerQuickstartCommand(program: Command): void {
 				// Ensure config directory exists
 				fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 
-				// Write config with secure permissions
-				fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+				// Write config atomically to avoid TOCTOU race conditions
+				// Write to temp file first, then rename
+				const tempPath = path.join(
+					CONFIG_DIR,
+					`.config.${crypto.randomBytes(8).toString("hex")}.tmp`,
+				);
+				fs.writeFileSync(tempPath, JSON.stringify(config, null, 2), { mode: 0o600 });
+				fs.renameSync(tempPath, configPath);
 
 				console.log("\n✅ Config created successfully!\n");
 				console.log(`   Location: ${configPath}`);
