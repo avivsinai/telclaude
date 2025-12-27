@@ -578,7 +578,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			exposedKeys.push("OPENAI_API_KEY");
 		}
 
-		// GitHub token - from setup-git/setup-github-app or env vars (async to refresh expired tokens)
+		// GitHub token - from setup-git/setup-github-app or env vars
+		// NOTE: Token is refreshed per-query, but once set in sandbox env it's static for
+		// the session lifetime. If a single session exceeds GitHub App token TTL (~1h),
+		// git/gh calls will fail. In practice, sessions are short-lived (30min idle timeout).
 		const gitCreds = await getGitCredentials();
 		const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 		if (githubToken) {
