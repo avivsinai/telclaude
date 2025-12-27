@@ -7,7 +7,6 @@ import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import { getSandboxMode } from "../sandbox/index.js";
-import { getGitCredentials } from "../services/git-credentials.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { transcribeAudio } from "../services/transcription.js";
@@ -370,22 +369,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					text: result.text,
 					language: result.language,
 					durationSeconds: result.durationSeconds,
-				});
-				return;
-			}
-
-			// Git credentials endpoint - agent calls this to get credentials from relay
-			if (req.url === "/v1/git.credentials") {
-				const creds = await getGitCredentials();
-				if (!creds) {
-					writeJson(res, 404, { error: "No git credentials configured." });
-					return;
-				}
-
-				writeJson(res, 200, {
-					username: creds.username,
-					email: creds.email,
-					token: creds.token,
 				});
 				return;
 			}

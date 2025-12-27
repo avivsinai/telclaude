@@ -77,23 +77,30 @@ if [ "$(id -u)" = "0" ]; then
         echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
     fi
 
-    # Configure git credential helper (uses telclaude's secure storage)
-    # This allows git operations without storing plaintext credentials
-    echo "[entrypoint] Configuring git credential helper"
-    git config --global credential.helper "/app/bin/telclaude.js git-credential"
-    git config --global credential.useHttpPath true
+    # Git configuration: Use proxy in agent container, minimal config in relay
+    if [ -n "$TELCLAUDE_GIT_PROXY_URL" ]; then
+        # Agent container: Configure git to use the relay's git proxy
+        # The proxy adds GitHub authentication transparently - agent never sees the token
+        # Run as daemon to refresh token before expiry (prevents git auth failures in long sessions)
+        echo "[entrypoint] Configuring git to use relay proxy"
+        /app/bin/telclaude.js git-proxy-init --daemon &
+        GIT_PROXY_PID=$!
 
-    # Apply git identity if credentials are stored
-    if /app/bin/telclaude.js git-identity --check 2>/dev/null; then
-        echo "[entrypoint] Applying git identity from secure storage"
-        /app/bin/telclaude.js git-identity 2>/dev/null || true
-    else
-        # Check for environment variable fallback
-        if [ -n "$GIT_USERNAME" ] && [ -n "$GIT_EMAIL" ]; then
-            echo "[entrypoint] Applying git identity from environment"
-            git config --global user.name "$GIT_USERNAME"
-            git config --global user.email "$GIT_EMAIL"
+        # Wait a moment for initial configuration
+        sleep 1
+
+        # Verify git-proxy-init is running
+        if ! kill -0 $GIT_PROXY_PID 2>/dev/null; then
+            echo "[entrypoint] WARNING: git-proxy-init failed, git operations may not work"
+        else
+            echo "[entrypoint] git-proxy-init daemon started (PID $GIT_PROXY_PID)"
         fi
+    else
+        # Relay container: Minimal git config (relay doesn't do git operations)
+        # Just set safe defaults for any incidental git usage
+        echo "[entrypoint] Relay mode: minimal git config"
+        git config --global init.defaultBranch main
+        git config --global core.autocrlf input
     fi
 
     # Ensure data directories have correct ownership

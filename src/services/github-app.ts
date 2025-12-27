@@ -216,6 +216,68 @@ export async function getGitHubAppIdentity(): Promise<{ username: string; email:
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// App Metadata
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface GitHubAppMetadata {
+	appId: number;
+	appSlug: string;
+	appName: string;
+	botUserId: number;
+}
+
+/**
+ * Fetch app metadata from GitHub API.
+ * Used during setup to get the correct slug and bot user ID.
+ */
+export async function fetchGitHubAppMetadata(
+	appId: string | number,
+	privateKeyPath: string,
+): Promise<GitHubAppMetadata> {
+	const privateKey = getPrivateKeyContent(privateKeyPath);
+
+	const auth = createAppAuth({
+		appId: Number(appId),
+		privateKey,
+	});
+
+	// Get app-level token (JWT) to query /app endpoint
+	const { token } = await auth({ type: "app" });
+	const octokit = new Octokit({ auth: token });
+
+	// GET /app returns the authenticated app's info
+	const { data: app } = await octokit.rest.apps.getAuthenticated();
+
+	if (!app) {
+		throw new Error("Failed to fetch app info: empty response");
+	}
+
+	const appSlug = app.slug ?? app.name.toLowerCase().replace(/\s+/g, "-");
+
+	// The bot user ID is derived from the app ID
+	// GitHub assigns bot users with IDs in a specific pattern
+	// We can get the actual bot user by looking up the slug
+	let botUserId = app.id;
+	try {
+		// Try to get the actual bot user ID by looking up the bot user
+		const { data: botUser } = await octokit.rest.users.getByUsername({
+			username: `${appSlug}[bot]`,
+		});
+		botUserId = botUser.id;
+	} catch {
+		// Fall back to app ID if bot user lookup fails
+		// This can happen for new apps that haven't been used yet
+	}
+
+	return {
+		appId: app.id,
+		appSlug,
+		appName: app.name,
+		botUserId,
+	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Verification
 // ═══════════════════════════════════════════════════════════════════════════════
 

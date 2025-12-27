@@ -7,6 +7,7 @@ import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandb
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
+import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerLinkCommand } from "./commands/link.js";
@@ -50,6 +51,7 @@ registerSetupGitCommand(program);
 registerSetupGitHubAppCommand(program);
 registerGitTestCommand(program);
 registerGitCredentialCommand(program);
+registerGitProxyInitCommand(program);
 registerIntegrationTestCommand(program);
 registerDiagnoseSandboxNetworkCommand(program);
 

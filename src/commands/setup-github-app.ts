@@ -5,6 +5,7 @@
  * for git operations with automatically signed commits.
  */
 
+import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as readline from "node:readline";
@@ -23,10 +24,14 @@ import {
 import { clearGitCredentialsCache } from "../services/git-credentials.js";
 import {
 	clearGitHubAppCache,
+	fetchGitHubAppMetadata,
 	type GitHubAppConfig,
+	getGitHubAppIdentity,
 	listAccessibleRepositories,
 	testGitHubAppConnectivity,
 } from "../services/github-app.js";
+
+const logger = getChildLogger({ module: "cmd-setup-github-app" });
 
 /** Clear both GitHub App and git credentials caches. */
 function clearAllGitHubCaches(): void {
@@ -34,7 +39,25 @@ function clearAllGitHubCaches(): void {
 	clearGitCredentialsCache();
 }
 
-const logger = getChildLogger({ module: "cmd-setup-github-app" });
+/**
+ * Apply git identity (user.name and user.email) globally.
+ * This ensures commits are attributed to the GitHub App bot user.
+ */
+async function applyGitIdentity(): Promise<boolean> {
+	const identity = await getGitHubAppIdentity();
+	if (!identity) {
+		return false;
+	}
+
+	try {
+		execSync(`git config --global user.name "${identity.username}"`, { stdio: "pipe" });
+		execSync(`git config --global user.email "${identity.email}"`, { stdio: "pipe" });
+		return true;
+	} catch (err) {
+		logger.warn({ error: String(err) }, "failed to apply git identity");
+		return false;
+	}
+}
 
 export function registerSetupGitHubAppCommand(program: Command): void {
 	program
@@ -192,18 +215,36 @@ async function setupWithOptions(
 		process.exit(1);
 	}
 
+	// Fetch app metadata from GitHub API
+	console.log("Fetching app metadata from GitHub...");
+	let appSlug: string;
+	let botUserId: number;
+	try {
+		const metadata = await fetchGitHubAppMetadata(appId, resolvedPath);
+		appSlug = metadata.appSlug;
+		botUserId = metadata.botUserId;
+		console.log(`  App: ${metadata.appName} (${appSlug})`);
+		console.log(`  Bot user ID: ${botUserId}`);
+	} catch (err) {
+		console.error(
+			`Error: Failed to fetch app metadata: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		console.error("Check your App ID and private key.");
+		process.exit(1);
+	}
+
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
 		privateKey: resolvedPath, // Store path, not content
-		appSlug: "telclaude",
-		botUserId: 251589752,
+		appSlug,
+		botUserId,
 	};
 
 	await storeSecret(SECRET_KEYS.GITHUB_APP, JSON.stringify(config));
 	clearAllGitHubCaches();
 
-	console.log(`GitHub App credentials stored securely in ${providerName}.`);
+	console.log(`\nGitHub App credentials stored securely in ${providerName}.`);
 
 	// Test connectivity
 	console.log("\nTesting connectivity...");
@@ -213,6 +254,14 @@ async function setupWithOptions(
 	} else {
 		console.warn(`⚠ ${result.message}`);
 		console.log("Credentials saved but connectivity test failed. Check your configuration.");
+	}
+
+	// Apply git identity
+	console.log("\nApplying git identity...");
+	if (await applyGitIdentity()) {
+		console.log(`✓ Git identity set to ${appSlug}[bot]`);
+	} else {
+		console.warn("⚠ Failed to apply git identity. Set manually with git config.");
 	}
 }
 
@@ -290,13 +339,32 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 		return;
 	}
 
+	// Fetch app metadata from GitHub API
+	console.log("");
+	console.log("Fetching app metadata from GitHub...");
+	let appSlug: string;
+	let botUserId: number;
+	try {
+		const metadata = await fetchGitHubAppMetadata(appId, resolvedPath);
+		appSlug = metadata.appSlug;
+		botUserId = metadata.botUserId;
+		console.log(`  App: ${metadata.appName} (${appSlug})`);
+		console.log(`  Bot user ID: ${botUserId}`);
+	} catch (err) {
+		console.error(
+			`Error: Failed to fetch app metadata: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		console.error("Check your App ID and private key.");
+		return;
+	}
+
 	// Store config
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
 		privateKey: resolvedPath,
-		appSlug: "telclaude",
-		botUserId: 251589752,
+		appSlug,
+		botUserId,
 	};
 
 	await storeSecret(SECRET_KEYS.GITHUB_APP, JSON.stringify(config));
@@ -341,15 +409,28 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 		}
 	}
 
+	// Apply git identity
+	const applyIdentity = await promptYesNo("Apply git identity globally?");
+	if (applyIdentity) {
+		if (await applyGitIdentity()) {
+			console.log(`✓ Git identity set to ${appSlug}[bot]`);
+		} else {
+			console.warn("⚠ Failed to apply git identity. Set manually with git config.");
+		}
+	}
+
 	console.log("");
-	console.log("Setup complete! Telclaude can now authenticate as telclaude[bot].");
+	console.log(`Setup complete! Telclaude can now authenticate as ${appSlug}[bot].`);
 	console.log("");
 	console.log("Usage:");
 	console.log("  telclaude setup-github-app --show   # View stored config");
 	console.log("  telclaude setup-github-app --test   # Test connectivity");
 	console.log("  telclaude setup-github-app --repos  # List accessible repos");
 
-	logger.info({ appId, installationId, provider: providerName }, "GitHub App credentials stored");
+	logger.info(
+		{ appId, installationId, appSlug, provider: providerName },
+		"GitHub App credentials stored",
+	);
 }
 
 function maskPrivateKey(keyOrPath: string): string {
@@ -362,32 +443,44 @@ function maskPrivateKey(keyOrPath: string): string {
 
 async function promptForInput(prompt: string): Promise<string | null> {
 	return new Promise((resolve) => {
+		let resolved = false;
 		const rl = readline.createInterface({
 			input: process.stdin,
 			output: process.stdout,
 		});
 
 		rl.question(prompt, (answer) => {
+			resolved = true;
 			rl.close();
 			resolve(answer.trim() || null);
 		});
 
 		rl.on("close", () => {
-			resolve(null);
+			if (!resolved) {
+				resolve(null);
+			}
 		});
 	});
 }
 
 async function promptYesNo(question: string): Promise<boolean> {
 	return new Promise((resolve) => {
+		let resolved = false;
 		const rl = readline.createInterface({
 			input: process.stdin,
 			output: process.stdout,
 		});
 
 		rl.question(`${question} (y/N): `, (answer) => {
+			resolved = true;
 			rl.close();
 			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
+		});
+
+		rl.on("close", () => {
+			if (!resolved) {
+				resolve(false); // Default to "no" if closed without answer
+			}
 		});
 	});
 }
