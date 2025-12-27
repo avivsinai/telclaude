@@ -117,7 +117,10 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 							console.log(`✓ ${result.message}`);
 							if (result.details) {
 								console.log(`  App: ${result.details.appName} (${result.details.appSlug})`);
-								console.log(`  Account: ${result.details.installationAccount}`);
+								const account = result.details.installationAccount;
+								if (typeof account === "string" && account.length > 0) {
+									console.log(`  Account: ${account}`);
+								}
 								console.log(`  Repo access: ${result.details.repositorySelection}`);
 							}
 						} else {
@@ -268,12 +271,13 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 
 	// Validate PEM file
 	const expandedPath = privateKeyPath.replace(/^~/, process.env.HOME || "");
-	if (!existsSync(expandedPath)) {
-		console.error(`Error: File not found: ${expandedPath}`);
+	const resolvedPath = resolve(expandedPath);
+	if (!existsSync(resolvedPath)) {
+		console.error(`Error: File not found: ${resolvedPath}`);
 		return;
 	}
 
-	const pemContent = readFileSync(expandedPath, "utf8");
+	const pemContent = readFileSync(resolvedPath, "utf8");
 	if (!pemContent.includes("-----BEGIN")) {
 		console.error("Error: Invalid PEM file format");
 		return;
@@ -283,7 +287,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
-		privateKey: expandedPath,
+		privateKey: resolvedPath,
 		appSlug: "telclaude",
 		botUserId: 251589752,
 	};
@@ -304,7 +308,10 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 			console.log(`✓ ${result.message}`);
 			if (result.details) {
 				console.log(`  App: ${result.details.appName}`);
-				console.log(`  Account: ${result.details.installationAccount}`);
+				const account = result.details.installationAccount;
+				if (typeof account === "string" && account.length > 0) {
+					console.log(`  Account: ${account}`);
+				}
 			}
 		} else {
 			console.warn(`✗ ${result.message}`);

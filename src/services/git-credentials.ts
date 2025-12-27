@@ -12,18 +12,35 @@ import { spawnSync } from "node:child_process";
 
 import { getChildLogger } from "../logging.js";
 import { type GitCredentials, getSecret, hasSecret, SECRET_KEYS } from "../secrets/index.js";
-import { getGitHubAppIdentity, getInstallationToken, isGitHubAppConfigured } from "./github-app.js";
+import {
+	getGitHubAppIdentity,
+	getInstallationTokenInfo,
+	isGitHubAppConfigured,
+} from "./github-app.js";
 
 const logger = getChildLogger({ module: "git-credentials" });
 
+const GITHUB_APP_TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
 let cachedCredentials: GitCredentials | null = null;
+let cachedCredentialsSource: "secure-storage" | "environment" | "github-app" | null = null;
+let cachedGitHubTokenExpiresAt: Date | null = null;
+
+function isCachedGitHubTokenFresh(): boolean {
+	if (!cachedGitHubTokenExpiresAt) return false;
+	return cachedGitHubTokenExpiresAt.getTime() - GITHUB_APP_TOKEN_REFRESH_BUFFER_MS > Date.now();
+}
 
 /**
  * Get git credentials from keychain, env, or config.
  * Caches the result for performance.
  */
 export async function getGitCredentials(): Promise<GitCredentials | null> {
-	if (cachedCredentials) return cachedCredentials;
+	if (cachedCredentials) {
+		if (cachedCredentialsSource !== "github-app" || isCachedGitHubTokenFresh()) {
+			return cachedCredentials;
+		}
+	}
 
 	// 1. Try keychain/encrypted storage first
 	try {
@@ -34,6 +51,8 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 				// Validate required fields
 				if (parsed.username && parsed.email && parsed.token) {
 					cachedCredentials = parsed;
+					cachedCredentialsSource = "secure-storage";
+					cachedGitHubTokenExpiresAt = null;
 					logger.debug("using git credentials from secure storage");
 					return cachedCredentials;
 				}
@@ -57,6 +76,8 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 			email: envEmail,
 			token: envToken,
 		};
+		cachedCredentialsSource = "environment";
+		cachedGitHubTokenExpiresAt = null;
 		logger.debug("using git credentials from environment variables");
 		return cachedCredentials;
 	}
@@ -75,13 +96,18 @@ export async function getGitCredentials(): Promise<GitCredentials | null> {
 
 	// 3. Try GitHub App installation token
 	if (await isGitHubAppConfigured()) {
-		const [token, identity] = await Promise.all([getInstallationToken(), getGitHubAppIdentity()]);
-		if (token && identity) {
+		const [tokenInfo, identity] = await Promise.all([
+			getInstallationTokenInfo(),
+			getGitHubAppIdentity(),
+		]);
+		if (tokenInfo && identity) {
 			cachedCredentials = {
 				username: identity.username,
 				email: identity.email,
-				token,
+				token: tokenInfo.token,
 			};
+			cachedCredentialsSource = "github-app";
+			cachedGitHubTokenExpiresAt = tokenInfo.expiresAt;
 			logger.debug("using git credentials from GitHub App");
 			return cachedCredentials;
 		}
@@ -151,6 +177,8 @@ export async function getGitCredentialsSource(): Promise<string | null> {
  */
 export function clearGitCredentialsCache(): void {
 	cachedCredentials = null;
+	cachedCredentialsSource = null;
+	cachedGitHubTokenExpiresAt = null;
 	logger.debug("git credentials cache cleared");
 }
 
@@ -160,6 +188,9 @@ export function clearGitCredentialsCache(): void {
  * Use this for sync access to the token (e.g., in sandbox env building).
  */
 export function getCachedGitToken(): string | null {
+	if (cachedCredentialsSource === "github-app" && !isCachedGitHubTokenFresh()) {
+		return null;
+	}
 	return cachedCredentials?.token ?? null;
 }
 
