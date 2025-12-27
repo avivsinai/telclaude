@@ -193,24 +193,59 @@ describe("git-proxy-auth", () => {
 });
 
 describe("git-proxy URL parsing", () => {
-	// Import the internal functions for testing
-	// We'll test the parseGitUrl function through integration tests
-	// since it's not exported, but we can test the expected behavior
+	// Import parseGitUrl for testing
+	let parseGitUrl: (url: string) => { host: string; owner: string; repo: string; path: string } | null;
 
-	describe("expected URL patterns", () => {
-		it("should describe supported URL formats", () => {
-			// These are the URL formats the proxy should handle:
-			const supportedPatterns = [
-				"/github.com/owner/repo.git/info/refs",
-				"/github.com/owner/repo.git/info/refs?service=git-upload-pack",
-				"/github.com/owner/repo.git/info/refs?service=git-receive-pack",
-				"/github.com/owner/repo.git/git-upload-pack",
-				"/github.com/owner/repo.git/git-receive-pack",
-				"/github.com/owner/repo/info/refs", // Without .git
-			];
+	beforeAll(async () => {
+		const module = await import("../../src/relay/git-proxy.js");
+		parseGitUrl = module.parseGitUrl;
+	});
 
-			// All these patterns should be parseable
-			expect(supportedPatterns.length).toBe(6);
+	describe("parseGitUrl", () => {
+		it("should parse standard git URLs with .git suffix", () => {
+			const result = parseGitUrl("/github.com/owner/repo.git/info/refs");
+			expect(result).toEqual({
+				host: "github.com",
+				owner: "owner",
+				repo: "repo",
+				path: "/info/refs",
+			});
+		});
+
+		it("should parse git URLs without .git suffix", () => {
+			const result = parseGitUrl("/github.com/owner/repo/info/refs");
+			expect(result).toEqual({
+				host: "github.com",
+				owner: "owner",
+				repo: "repo",
+				path: "/info/refs",
+			});
+		});
+
+		it("should preserve query strings", () => {
+			const result = parseGitUrl("/github.com/owner/repo.git/info/refs?service=git-upload-pack");
+			expect(result).toEqual({
+				host: "github.com",
+				owner: "owner",
+				repo: "repo",
+				path: "/info/refs?service=git-upload-pack",
+			});
+		});
+
+		it("should parse git-upload-pack paths", () => {
+			const result = parseGitUrl("/github.com/owner/repo.git/git-upload-pack");
+			expect(result?.path).toBe("/git-upload-pack");
+		});
+
+		it("should parse git-receive-pack paths", () => {
+			const result = parseGitUrl("/github.com/owner/repo.git/git-receive-pack");
+			expect(result?.path).toBe("/git-receive-pack");
+		});
+
+		it("should return null for invalid URLs", () => {
+			expect(parseGitUrl("/invalid")).toBeNull();
+			expect(parseGitUrl("")).toBeNull();
+			expect(parseGitUrl("/")).toBeNull();
 		});
 	});
 });
