@@ -59,20 +59,3 @@ export async function relayTranscribe(input: {
 }): Promise<{ text: string; language?: string; durationSeconds?: number }> {
 	return postJson("/v1/transcribe", input);
 }
-
-/**
- * Get git credentials from the relay.
- * Used by agent container to get credentials from relay (which has secrets).
- */
-export async function relayGitCredentials(): Promise<{
-	username: string;
-	email: string;
-	token: string;
-} | null> {
-	try {
-		return await postJson("/v1/git.credentials", {});
-	} catch (err) {
-		logger.debug({ error: String(err) }, "failed to get git credentials from relay");
-		return null;
-	}
-}

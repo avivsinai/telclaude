@@ -3,27 +3,23 @@
  * Provides secure credential retrieval for git operations.
  *
  * Credential resolution order:
- * 0. Relay RPC (Docker agent mode - agent has no secrets, relay does)
  * 1. Keychain/encrypted storage (via `telclaude setup-git`)
  * 2. Environment variables (GIT_USERNAME, GIT_EMAIL, GITHUB_TOKEN)
  * 3. GitHub App installation token (via `telclaude setup-github-app`)
+ *
+ * Note: In Docker mode, credentials are handled by the git proxy (relay)
+ * and never exposed to the agent container. See src/relay/git-proxy.ts.
  */
 
 import { spawnSync } from "node:child_process";
 
 import { getChildLogger } from "../logging.js";
-import { relayGitCredentials } from "../relay/capabilities-client.js";
 import { type GitCredentials, getSecret, hasSecret, SECRET_KEYS } from "../secrets/index.js";
 import {
 	getGitHubAppIdentity,
 	getInstallationTokenInfo,
 	isGitHubAppConfigured,
 } from "./github-app.js";
-
-/** Check if we're in Docker agent mode (should use relay RPC for credentials) */
-function isDockerAgentMode(): boolean {
-	return !!process.env.TELCLAUDE_CAPABILITIES_URL;
-}
 
 const logger = getChildLogger({ module: "git-credentials" });
 
@@ -41,25 +37,15 @@ function isCachedGitHubTokenFresh(): boolean {
 /**
  * Get git credentials from keychain, env, or config.
  * Caches the result for performance.
+ *
+ * Note: In Docker mode, the agent container uses the git proxy instead
+ * of directly accessing credentials. This function is used by the relay.
  */
 export async function getGitCredentials(): Promise<GitCredentials | null> {
 	if (cachedCredentials) {
 		if (cachedCredentialsSource !== "github-app" || isCachedGitHubTokenFresh()) {
 			return cachedCredentials;
 		}
-	}
-
-	// In Docker agent mode, get credentials from relay (relay has secrets, agent doesn't)
-	if (isDockerAgentMode()) {
-		const relayCreds = await relayGitCredentials();
-		if (relayCreds) {
-			cachedCredentials = relayCreds;
-			cachedCredentialsSource = "github-app"; // Treat as short-lived token
-			cachedGitHubTokenExpiresAt = new Date(Date.now() + 55 * 60 * 1000); // ~55 min TTL
-			logger.debug("using git credentials from relay RPC");
-			return cachedCredentials;
-		}
-		// Fall through to try local sources (env vars might be set)
 	}
 
 	// 1. Try keychain/encrypted storage first

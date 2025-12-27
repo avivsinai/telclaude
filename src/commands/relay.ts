@@ -9,6 +9,7 @@ import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { startCapabilityServer } from "../relay/capabilities.js";
+import { startGitProxyServer } from "../relay/git-proxy.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -152,6 +153,13 @@ export function registerRelayCommand(program: Command): void {
 				if (capabilitiesEnabled) {
 					startCapabilityServer();
 					console.log("  Capabilities: enabled (relay broker)");
+
+					// Start git proxy if in Docker mode with remote agent
+					// This allows secure git operations without exposing tokens to the agent
+					if (process.env.TELCLAUDE_AGENT_URL) {
+						startGitProxyServer();
+						console.log("  Git proxy: enabled (transparent auth injection)");
+					}
 				} else {
 					console.log("  Capabilities: disabled");
 				}
