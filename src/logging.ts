@@ -50,9 +50,14 @@ function resolveSettings(): ResolvedSettings {
 	return { level, file };
 }
 
-function settingsChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
+function filePathChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
 	if (!a) return true;
-	return a.level !== b.level || a.file !== b.file;
+	return a.file !== b.file;
+}
+
+function levelChanged(a: ResolvedSettings | null, b: ResolvedSettings) {
+	if (!a) return false;
+	return a.level !== b.level;
 }
 
 function closeDestination(dest: unknown): void {
@@ -129,7 +134,9 @@ function buildLogger(settings: ResolvedSettings): { logger: Logger; destination:
 
 export function getLogger(): Logger {
 	const settings = resolveSettings();
-	if (!cachedLogger || settingsChanged(cachedSettings, settings)) {
+
+	// Need to rebuild logger if no cache or file path changed
+	if (!cachedLogger || filePathChanged(cachedSettings, settings)) {
 		if (cachedDestination) {
 			closeDestination(cachedDestination);
 			cachedDestination = null;
@@ -138,7 +145,14 @@ export function getLogger(): Logger {
 		cachedLogger = built.logger;
 		cachedDestination = built.destination;
 		cachedSettings = settings;
+	} else if (levelChanged(cachedSettings, settings)) {
+		// Only level changed - update in place without destroying destination.
+		// This prevents "SonicBoom destroyed" errors for child loggers that
+		// still reference the same destination.
+		cachedLogger.level = settings.level;
+		cachedSettings = settings;
 	}
+
 	return cachedLogger;
 }
 
