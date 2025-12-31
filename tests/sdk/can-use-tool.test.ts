@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoist shared mocks
-const { containsBlockedCommand, isSensitivePath, isBlockedHost } = vi.hoisted(() => ({
+const { containsBlockedCommand, isSensitivePath, checkPrivateNetworkAccess } = vi.hoisted(() => ({
 	containsBlockedCommand: vi.fn<string | null, [string]>(() => null),
 	isSensitivePath: vi.fn<boolean, [string]>(() => false),
-	isBlockedHost: vi.fn<Promise<boolean>, [string]>(() => Promise.resolve(false)),
+	checkPrivateNetworkAccess: vi.fn(() =>
+		Promise.resolve({ allowed: true, matchedEndpoint: undefined }),
+	),
 }));
 
 vi.mock("../../src/security/permissions.js", async () => {
@@ -38,7 +40,7 @@ vi.mock("../../src/sandbox/network-proxy.js", async () => {
 	);
 	return {
 		...actual,
-		isBlockedHost,
+		checkPrivateNetworkAccess,
 	};
 });
 
@@ -60,7 +62,8 @@ beforeEach(() => {
 afterEach(() => {
 	containsBlockedCommand.mockReset();
 	isSensitivePath.mockReset();
-	isBlockedHost.mockReset();
+	checkPrivateNetworkAccess.mockReset();
+		checkPrivateNetworkAccess.mockResolvedValue({ allowed: true, matchedEndpoint: undefined });
 	// Restore original env
 	if (originalNetworkMode === undefined) {
 		delete process.env.TELCLAUDE_NETWORK_MODE;
@@ -131,19 +134,25 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("denies WebFetch to private network (localhost)", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://127.0.0.1:8080/api" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("denies WebFetch to metadata endpoint", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://169.254.169.254/latest/meta-data" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("denies WebFetch to non-HTTP protocol", async () => {
@@ -180,27 +189,36 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("still denies WebFetch to private network (localhost)", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://127.0.0.1:8080/api" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("still denies WebFetch to RFC1918 addresses", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://192.168.1.1/admin" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("still denies WebFetch to metadata endpoint", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://169.254.169.254/latest/meta-data" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("still denies WebFetch to non-HTTP protocol", async () => {
@@ -231,11 +249,14 @@ describe("buildSdkOptions.canUseTool network filtering", () => {
 		});
 
 		it("still denies WebFetch to private network", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await sdkOpts.canUseTool?.("WebFetch", { url: "http://172.16.0.1/admin" });
 			expect(res?.behavior).toBe("deny");
-			expect((res as any)?.message).toContain("private networks");
+			expect((res as any)?.message).toContain("not in the allowlist");
 		});
 
 		it("allows WebSearch (server-side, uses query not url)", async () => {
@@ -293,24 +314,31 @@ describe("buildSdkOptions PreToolUse hook", () => {
 	});
 
 	afterEach(() => {
-		isBlockedHost.mockReset();
+		checkPrivateNetworkAccess.mockReset();
+		checkPrivateNetworkAccess.mockResolvedValue({ allowed: true, matchedEndpoint: undefined });
 	});
 
 	describe("hook runs unconditionally (defense-in-depth)", () => {
 		it("blocks private network via hook even if canUseTool would allow", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://127.0.0.1:8080/api");
 			expect(res.decision).toBe("block");
-			expect(res.reason).toContain("private networks");
+			expect(res.reason).toContain("not in the allowlist");
 		});
 
 		it("blocks metadata endpoint via hook", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://169.254.169.254/latest/meta-data");
 			expect(res.decision).toBe("block");
-			expect(res.reason).toContain("private networks");
+			expect(res.reason).toContain("not in the allowlist");
 		});
 
 		it("blocks non-HTTP protocol via hook", async () => {
@@ -355,11 +383,14 @@ describe("buildSdkOptions PreToolUse hook", () => {
 		});
 
 		it("still blocks private network via hook", async () => {
-			isBlockedHost.mockResolvedValueOnce(true);
+			checkPrivateNetworkAccess.mockResolvedValueOnce({
+				allowed: false,
+				reason: "Private IP 192.168.1.1 is not in the allowlist",
+			});
 			const sdkOpts = await buildSdkOptions({ ...baseOpts });
 			const res = await invokeWebFetchHook(sdkOpts, "http://192.168.1.1/admin");
 			expect(res.decision).toBe("block");
-			expect(res.reason).toContain("private networks");
+			expect(res.reason).toContain("not in the allowlist");
 		});
 	});
 

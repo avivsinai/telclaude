@@ -24,11 +24,11 @@ import {
 	type Options as SDKOptions,
 	type SdkBeta,
 } from "@anthropic-ai/claude-agent-sdk";
-import { loadConfig, type PermissionTier } from "../config/config.js";
+import { loadConfig, type PermissionTier, type PrivateEndpoint } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
-import { isBlockedHost } from "../sandbox/network-proxy.js";
+import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
@@ -290,11 +290,17 @@ function allowHookResponse() {
  * are guaranteed to run. This is the PRIMARY enforcement mechanism.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
+ * SECURITY ALGORITHM (per Gemini 2.5 Pro review):
+ * 1. Check for non-overridable blocks (metadata, link-local) - ALWAYS blocked
+ * 2. For private IPs, check against privateEndpoints allowlist with port enforcement
+ * 3. For public domains, check against domain allowlist (in strict mode)
+ *
  * NOTE: WebSearch is NOT filtered - it uses server-side requests by Anthropic.
  */
 function createNetworkSecurityHook(
 	isPermissiveMode: boolean,
 	allowedDomains: string[],
+	privateEndpoints: PrivateEndpoint[],
 ): HookCallbackMatcher {
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -323,18 +329,34 @@ function createNetworkSecurityHook(
 				return denyHookResponse("Only HTTP/HTTPS protocols are allowed.");
 			}
 
-			// Block private networks and metadata endpoints (ALWAYS enforced)
-			if (await isBlockedHost(url.hostname)) {
+			// Extract port (default: 443 for https, 80 for http)
+			const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
+
+			// Check private network access with allowlist and port enforcement
+			const privateCheck = await checkPrivateNetworkAccess(url.hostname, port, privateEndpoints);
+
+			if (!privateCheck.allowed) {
 				logger.warn(
-					{ host: url.hostname, tool: toolName },
-					"[hook] blocked private/metadata access",
+					{ host: url.hostname, port, tool: toolName, reason: privateCheck.reason },
+					"[hook] blocked network access",
 				);
-				return denyHookResponse(
-					"Access to private networks, localhost, or metadata endpoints is forbidden.",
-				);
+				return denyHookResponse(privateCheck.reason || "Network access denied.");
 			}
 
-			// In strict mode, also check domain allowlist
+			// If it matched a private endpoint, allow it (port already checked)
+			if (privateCheck.matchedEndpoint) {
+				logger.debug(
+					{
+						host: url.hostname,
+						port,
+						endpoint: privateCheck.matchedEndpoint.label,
+					},
+					"[hook] allowed private endpoint access",
+				);
+				return allowHookResponse();
+			}
+
+			// For non-private addresses, check domain allowlist in strict mode
 			if (!isPermissiveMode) {
 				if (!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))) {
 					logger.warn(
@@ -624,6 +646,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
+	const privateEndpoints = config.security?.network?.privateEndpoints ?? [];
 	const permissions = buildSdkPermissionsForTier(opts.tier);
 	sdkOpts.extraArgs = {
 		...sdkOpts.extraArgs,
@@ -658,7 +681,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.hooks = {
 		PreToolUse: [
-			createNetworkSecurityHook(isPermissiveMode, allowedDomains),
+			createNetworkSecurityHook(isPermissiveMode, allowedDomains, privateEndpoints),
 			createSensitivePathHook(opts.tier),
 		],
 	};
@@ -836,13 +859,42 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 						};
 					}
 
-					// Block private networks and metadata endpoints
-					if (await isBlockedHost(url.hostname)) {
-						logger.warn({ host: url.hostname }, "blocked private network access in WebFetch");
+					// Extract port (default: 443 for https, 80 for http)
+					const port = url.port
+						? Number.parseInt(url.port, 10)
+						: url.protocol === "https:"
+							? 443
+							: 80;
+
+					// Check private network access with allowlist and port enforcement
+					const privateCheck = await checkPrivateNetworkAccess(
+						url.hostname,
+						port,
+						privateEndpoints,
+					);
+
+					if (!privateCheck.allowed) {
+						logger.warn(
+							{ host: url.hostname, port, reason: privateCheck.reason },
+							"blocked network access in WebFetch (canUseTool fallback)",
+						);
 						return {
 							behavior: "deny",
-							message: "Access to private networks, localhost, or metadata endpoints is forbidden.",
+							message: privateCheck.reason || "Network access denied.",
 						};
+					}
+
+					// If matched a private endpoint, allow it (port already checked)
+					if (privateCheck.matchedEndpoint) {
+						logger.debug(
+							{
+								host: url.hostname,
+								port,
+								endpoint: privateCheck.matchedEndpoint.label,
+							},
+							"allowed private endpoint access in WebFetch (canUseTool fallback)",
+						);
+						return { behavior: "allow", updatedInput: input };
 					}
 
 					// Check domain allowlist (belt-and-suspenders with SDK sandbox)

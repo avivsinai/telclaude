@@ -29,6 +29,8 @@ import type { LookupAddress } from "node:dns";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { IPv4, IPv4CidrRange, IPv6, IPv6CidrRange, Validator } from "ip-num";
+import type { PrivateEndpoint } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { BLOCKED_METADATA_DOMAINS, BLOCKED_PRIVATE_NETWORKS } from "./config.js";
 import {
@@ -286,24 +288,6 @@ function ipv6InCidr(ipBig: bigint, cidr: string): boolean {
 }
 
 /**
- * Check if a host should be blocked due to resolving to a private/metadata IP.
- *
- * SECURITY: Uses cached DNS lookup to prevent DNS rebinding attacks.
- * The cache ensures the same IP is used for security check and actual connection.
- *
- * @param host - Hostname or IP address to check
- * @returns true if the host resolves to a blocked IP, false otherwise
- */
-export async function isBlockedHost(host: string): Promise<boolean> {
-	// Fast path for literal IPs and localhost
-	if (isBlockedIP(host)) return true;
-
-	// Use cached DNS lookup (prevents rebinding attacks)
-	const addresses = await cachedDNSLookup(host);
-	return addresses?.some((addr) => isBlockedIP(addr)) ?? false;
-}
-
-/**
  * Check if a domain is a blocked metadata endpoint.
  */
 function isBlockedMetadata(domain: string): boolean {
@@ -322,6 +306,360 @@ function isBlockedMetadata(domain: string): boolean {
 	}
 
 	return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Private Network Allowlist (for local services like Home Assistant, NAS, Plex)
+//
+// SECURITY: This allows controlled access to private network endpoints.
+// - Only explicitly listed hosts/CIDRs are allowed
+// - Port enforcement is REQUIRED (prevents service probing)
+// - Metadata endpoints remain NON-OVERRIDABLE (always blocked)
+// - ALL resolved IPs must match an allowlist entry (prevents bypass via dual-stack DNS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Default ports allowed when no ports specified in config */
+const DEFAULT_ALLOWED_PORTS = [80, 443];
+
+/** Non-overridable blocked ranges (metadata, link-local) - cannot be allowlisted */
+const NON_OVERRIDABLE_BLOCKS = [
+	"169.254.0.0/16", // Link-local / APIPA
+	"169.254.169.254", // AWS/GCP/Azure metadata
+	"169.254.170.2", // AWS ECS metadata
+	"100.100.100.200", // Alibaba Cloud metadata
+	"fe80::/10", // IPv6 link-local
+];
+
+/**
+ * Check if an IP is in a non-overridable blocked range (metadata, link-local).
+ * These CANNOT be allowlisted under any circumstances.
+ */
+export function isNonOverridableBlock(ip: string): boolean {
+	// Fast path: literal matches
+	if (NON_OVERRIDABLE_BLOCKS.includes(ip)) return true;
+
+	const ipType = net.isIP(ip);
+
+	if (ipType === 4) {
+		// Check IPv4 link-local (169.254.0.0/16)
+		const match = ip.match(/^(\d+)\.(\d+)\./);
+		if (match) {
+			const [, a, b] = match.map(Number);
+			if (a === 169 && b === 254) return true;
+			// Alibaba Cloud metadata
+			if (a === 100 && ip === "100.100.100.200") return true;
+		}
+	} else if (ipType === 6) {
+		// Check IPv6 link-local (fe80::/10)
+		const lower = ip.toLowerCase();
+		if (
+			lower.startsWith("fe8") ||
+			lower.startsWith("fe9") ||
+			lower.startsWith("fea") ||
+			lower.startsWith("feb")
+		) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Check if an IP is a private/RFC1918 address (but NOT non-overridable like metadata).
+ * This is used to determine if we need to check the privateEndpoints allowlist.
+ */
+export function isPrivateIP(ip: string): boolean {
+	// Non-overridable blocks are a subset of "private" - but handled separately
+	if (isNonOverridableBlock(ip)) return false;
+
+	const ipType = net.isIP(ip);
+
+	if (ipType === 4) {
+		const match = ip.match(/^(\d+)\.(\d+)\./);
+		if (!match) return false;
+		const [, a, b] = match.map(Number);
+
+		// 127.0.0.0/8 (loopback)
+		if (a === 127) return true;
+		// 10.0.0.0/8
+		if (a === 10) return true;
+		// 172.16.0.0/12
+		if (a === 172 && b >= 16 && b <= 31) return true;
+		// 192.168.0.0/16
+		if (a === 192 && b === 168) return true;
+	} else if (ipType === 6) {
+		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1)
+		if (ip.includes(".")) {
+			const maybeV4 = ip.slice(ip.lastIndexOf(":") + 1);
+			if (net.isIP(maybeV4) === 4) {
+				return isPrivateIP(maybeV4);
+			}
+		}
+
+		// fc00::/7 (Unique Local Addresses)
+		const lower = ip.toLowerCase();
+		if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+
+		// ::1 (loopback)
+		if (ip === "::1") return true;
+	}
+
+	return false;
+}
+
+/**
+ * Canonicalize an IP address for comparison.
+ * Handles obfuscation attempts like hex/octal notation.
+ */
+function canonicalizeIP(input: string): string | null {
+	// Try IPv4 first
+	const [isValidV4] = Validator.isValidIPv4String(input);
+	if (isValidV4) {
+		try {
+			return IPv4.fromDecimalDottedString(input).toString();
+		} catch {
+			// Fall through to IPv6 check
+		}
+	}
+
+	// Try IPv6
+	const [isValidV6] = Validator.isValidIPv6String(input);
+	if (isValidV6) {
+		try {
+			return IPv6.fromString(input).toString();
+		} catch {
+			return null;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Check if an IP matches a CIDR range using ip-num library.
+ * Handles both IPv4 and IPv6 with proper canonicalization.
+ */
+function ipMatchesCidr(ip: string, cidr: string): boolean {
+	try {
+		// IPv4 CIDR
+		if (cidr.includes(".") && cidr.includes("/")) {
+			const [isValidRange] = Validator.isValidIPv4CidrRange(cidr);
+			if (!isValidRange) return false;
+
+			const range = IPv4CidrRange.fromCidr(cidr);
+			const [isValidIP] = Validator.isValidIPv4String(ip);
+			if (!isValidIP) return false;
+
+			const ipAddr = IPv4.fromDecimalDottedString(ip);
+			return range.contains(ipAddr);
+		}
+
+		// IPv6 CIDR
+		if (cidr.includes(":") && cidr.includes("/")) {
+			const [isValidRange] = Validator.isValidIPv6CidrRange(cidr);
+			if (!isValidRange) return false;
+
+			const range = IPv6CidrRange.fromCidr(cidr);
+			const [isValidIP] = Validator.isValidIPv6String(ip);
+			if (!isValidIP) return false;
+
+			const ipAddr = IPv6.fromString(ip);
+			return range.contains(ipAddr);
+		}
+
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+export interface PrivateEndpointMatch {
+	matched: boolean;
+	endpoint?: PrivateEndpoint;
+	reason?: string;
+}
+
+/**
+ * Find a matching private endpoint for an IP address.
+ * Uses ip-num for robust CIDR matching and handles IP canonicalization.
+ *
+ * @param ip - The IP address to check (already resolved)
+ * @param endpoints - Array of configured private endpoints
+ * @returns Match result with the matched endpoint if found
+ */
+export function findMatchingPrivateEndpoint(
+	ip: string,
+	endpoints: PrivateEndpoint[],
+): PrivateEndpointMatch {
+	// Canonicalize input IP to prevent obfuscation bypasses
+	const canonicalIP = canonicalizeIP(ip);
+	if (!canonicalIP) {
+		return { matched: false, reason: `Invalid IP address: ${ip}` };
+	}
+
+	for (const endpoint of endpoints) {
+		// Check CIDR match
+		if (endpoint.cidr) {
+			if (ipMatchesCidr(canonicalIP, endpoint.cidr)) {
+				return { matched: true, endpoint };
+			}
+			continue;
+		}
+
+		// Check host match (could be IP or hostname)
+		if (endpoint.host) {
+			// Direct IP comparison
+			const hostCanonical = canonicalizeIP(endpoint.host);
+			if (hostCanonical && hostCanonical === canonicalIP) {
+				return { matched: true, endpoint };
+			}
+		}
+	}
+
+	return { matched: false };
+}
+
+/**
+ * Check if a port is allowed by a private endpoint.
+ * If no ports specified in config, defaults to 80/443.
+ */
+export function isPortAllowedByEndpoint(port: number, endpoint: PrivateEndpoint): boolean {
+	const allowedPorts = endpoint.ports ?? DEFAULT_ALLOWED_PORTS;
+	return allowedPorts.includes(port);
+}
+
+export interface PrivateNetworkCheckResult {
+	allowed: boolean;
+	reason?: string;
+	matchedEndpoint?: PrivateEndpoint;
+}
+
+/**
+ * Check if access to a private network host/port is allowed.
+ *
+ * SECURITY ALGORITHM (per Gemini review):
+ * 1. Check for non-overridable blocks (metadata, link-local) - ALWAYS blocked
+ * 2. Resolve hostname to IPs using cached DNS lookup
+ * 3. Check if ANY resolved IP is in a non-overridable block - if so, BLOCK
+ * 4. Check if ALL resolved IPs are in the privateEndpoints allowlist - if not, BLOCK
+ * 5. Check if port is allowed by ALL matching endpoints
+ *
+ * @param hostname - Target hostname or IP
+ * @param port - Target port (default: 443)
+ * @param endpoints - Configured private endpoints from config
+ */
+export async function checkPrivateNetworkAccess(
+	hostname: string,
+	port: number,
+	endpoints: PrivateEndpoint[],
+): Promise<PrivateNetworkCheckResult> {
+	// 1. Fast-path: Check if hostname is a blocked metadata domain
+	if (isBlockedMetadata(hostname)) {
+		return {
+			allowed: false,
+			reason: `Metadata endpoint access is forbidden: ${hostname}`,
+		};
+	}
+
+	// 2. Fast-path: Check if hostname is a literal non-overridable IP
+	const canonicalHostname = canonicalizeIP(hostname);
+	if (canonicalHostname && isNonOverridableBlock(canonicalHostname)) {
+		return {
+			allowed: false,
+			reason: `Non-overridable blocked IP: ${hostname}`,
+		};
+	}
+
+	// 3. Resolve hostname to IPs using cached DNS lookup (prevents rebinding)
+	let targetIPs: string[];
+	if (canonicalHostname) {
+		// It's already a valid IP - use directly
+		targetIPs = [canonicalHostname];
+	} else {
+		// It's a hostname - resolve via cached DNS
+		const resolved = await cachedDNSLookup(hostname);
+		if (!resolved || resolved.length === 0) {
+			return {
+				allowed: false,
+				reason: `Failed to resolve hostname: ${hostname}`,
+			};
+		}
+		targetIPs = resolved;
+	}
+
+	// 4. Check EACH resolved IP
+	const matchedEndpoints: PrivateEndpoint[] = [];
+
+	for (const ip of targetIPs) {
+		const canonicalIP = canonicalizeIP(ip);
+		if (!canonicalIP) {
+			return {
+				allowed: false,
+				reason: `Invalid resolved IP: ${ip}`,
+			};
+		}
+
+		// 4a. Non-overridable block check (after resolution)
+		if (isNonOverridableBlock(canonicalIP)) {
+			return {
+				allowed: false,
+				reason: `Resolved to non-overridable blocked IP: ${ip}`,
+			};
+		}
+
+		// 4b. Check if IP is private - if so, must be in allowlist
+		if (isPrivateIP(canonicalIP)) {
+			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints);
+			if (!match.matched) {
+				return {
+					allowed: false,
+					reason: `Private IP ${ip} is not in the allowlist`,
+				};
+			}
+			if (match.endpoint) {
+				matchedEndpoints.push(match.endpoint);
+			}
+		}
+		// If it's a public IP, it's handled by the regular domain allowlist
+	}
+
+	// 5. Port enforcement - check ALL matched endpoints
+	if (matchedEndpoints.length > 0) {
+		for (const endpoint of matchedEndpoints) {
+			if (!isPortAllowedByEndpoint(port, endpoint)) {
+				const allowedPorts = endpoint.ports ?? DEFAULT_ALLOWED_PORTS;
+				return {
+					allowed: false,
+					reason: `Port ${port} is not allowed for ${endpoint.label || "endpoint"} (allowed: ${allowedPorts.join(", ")})`,
+				};
+			}
+		}
+	}
+
+	// All checks passed
+	return {
+		allowed: true,
+		matchedEndpoint: matchedEndpoints[0],
+	};
+}
+
+/**
+ * Check if a host should be blocked due to resolving to a private/metadata IP.
+ *
+ * SECURITY: Uses cached DNS lookup to prevent DNS rebinding attacks.
+ * The cache ensures the same IP is used for security check and actual connection.
+ *
+ * @param host - Hostname or IP address to check
+ * @returns true if the host resolves to a blocked IP, false otherwise
+ */
+export async function isBlockedHost(host: string): Promise<boolean> {
+	// Fast path for literal IPs and localhost
+	if (isBlockedIP(host)) return true;
+
+	// Use cached DNS lookup (prevents rebinding attacks)
+	const addresses = await cachedDNSLookup(host);
+	return addresses?.some((addr) => isBlockedIP(addr)) ?? false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
