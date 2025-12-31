@@ -73,11 +73,51 @@ Claude Agent SDK (allowedTools per tier)
 ## Network Enforcement
 
 - **Bash**: SDK sandbox `allowedDomains` in native mode; Docker firewall enforced in containers (agent runs tools; relay still restricts egress).
-- **WebFetch**: PreToolUse hook (blocks RFC1918/metadata) + canUseTool domain allowlist.
+- **WebFetch**: PreToolUse hook (blocks RFC1918/metadata) + canUseTool domain allowlist + private endpoint allowlist.
 - **WebSearch**: NOT filtered (server-side by Anthropic).
 - `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only.
 - Internal relay ↔ agent RPC is allowed via hostname allowlist in the firewall script.
 - **Allowlist scope**: Domain allowlists are enforced, but HTTP method restrictions are not enforced at runtime.
+
+### Private Network Allowlist
+
+For local services (Home Assistant, Plex, NAS, etc.), you can configure explicit private network endpoints:
+
+```json
+{
+  "security": {
+    "network": {
+      "privateEndpoints": [
+        {
+          "label": "home-assistant",
+          "host": "192.168.1.100",
+          "ports": [8123],
+          "description": "Home automation MCP server"
+        },
+        {
+          "label": "homelab-subnet",
+          "cidr": "192.168.1.0/24",
+          "ports": [80, 443]
+        }
+      ]
+    }
+  }
+}
+```
+
+**Security design** (per Gemini 2.5 Pro review):
+- **Port enforcement**: Only listed ports are allowed (defaults to 80/443 if not specified)
+- **Non-overridable blocks**: Metadata endpoints (169.254.169.254) and link-local remain ALWAYS blocked
+- **All resolved IPs must match**: DNS returning multiple IPs requires ALL to be in allowlist
+- **CIDR matching**: Uses ip-num library for robust IPv4/IPv6 handling
+
+**CLI commands**:
+```bash
+telclaude network list                      # List configured endpoints
+telclaude network add ha --host 192.168.1.100 --ports 8123
+telclaude network remove ha
+telclaude network test http://192.168.1.100:8123/api
+```
 
 ## Application-Level Security
 

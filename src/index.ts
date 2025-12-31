@@ -11,6 +11,7 @@ import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerLinkCommand } from "./commands/link.js";
+import { registerNetworkCommand } from "./commands/network.js";
 import { registerQuickstartCommand } from "./commands/quickstart.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
@@ -56,6 +57,7 @@ registerGitProxyInitCommand(program);
 registerIntegrationTestCommand(program);
 registerDiagnoseSandboxNetworkCommand(program);
 registerQuickstartCommand(program);
+registerNetworkCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

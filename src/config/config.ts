@@ -149,10 +149,35 @@ const SecretFilterConfigSchema = z.object({
 		.optional(),
 });
 
-// Network isolation configuration schema (simplified)
+// Private network endpoint schema for local service allowlisting
+// Allows access to specific private network hosts/CIDRs (e.g., Home Assistant, NAS, Plex)
+// Security: Port enforcement is REQUIRED - without ports, only 80/443 are allowed
+const PrivateEndpointSchema = z
+	.object({
+		// Human-readable label (like K8s metadata.name)
+		label: z.string().min(1).max(64),
+		// Target specification - exactly ONE of host or cidr must be provided
+		host: z.string().optional(), // Single IP "192.168.1.100" or hostname "homeassistant.local"
+		cidr: z.string().optional(), // CIDR range "192.168.1.0/24"
+		// Allowed ports (REQUIRED for security - prevents service probing)
+		// If not specified, only ports 80 and 443 are allowed
+		ports: z.array(z.number().int().positive().max(65535)).optional(),
+		// Optional documentation
+		description: z.string().max(256).optional(),
+	})
+	.refine((data) => (data.host !== undefined) !== (data.cidr !== undefined), {
+		message: "Exactly one of 'host' or 'cidr' must be provided for each private endpoint.",
+	});
+
+export type PrivateEndpoint = z.infer<typeof PrivateEndpointSchema>;
+
+// Network isolation configuration schema
 const NetworkConfigSchema = z.object({
 	// Additional domains to allow beyond the default developer allowlist
 	additionalDomains: z.array(z.string()).default([]),
+	// Private network endpoints allowlist (default-deny: only listed endpoints allowed)
+	// Metadata endpoints (169.254.169.254) and link-local remain ALWAYS blocked
+	privateEndpoints: z.array(PrivateEndpointSchema).default([]),
 });
 
 // Security configuration schema
@@ -284,6 +309,7 @@ export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
 export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
+export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
