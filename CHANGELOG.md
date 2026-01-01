@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-01-02
+
 ### Fixed
 
 - **Streaming drops tail content** - Flushed content from redactor now appended to streamer, fixing incomplete/empty responses for short messages
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Secret filter bypass in fallback** - Fallback redactor now receives custom secretFilter config
 - **Duplicate typing indicators** - Outer typing timer now only runs when streaming is disabled
 - **Inline keyboards too noisy** - Changed `showInlineKeyboard` default to `false`
+- **Streaming disabled by default** - Typing indicator is sufficient; streaming can be re-enabled in config
 
 ## [0.4.0] - 2025-12-27
 
