@@ -3,7 +3,7 @@
 @docs/architecture.md
 
 ## Intent
-- Status: alpha (0.1.x); breaking changes allowed until 1.0.
+- Status: alpha (0.x); breaking changes allowed until 1.0.
 - Goal: keep this file lean for Opus 4.5 project memory; use imports for depth.
 
 ## Ground rules

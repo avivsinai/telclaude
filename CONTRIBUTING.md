@@ -25,7 +25,7 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 
 ### Prerequisites
 
-- **Node.js 22+**
+- **Node.js 20+**
 - **pnpm 9.15+**
 - **Claude CLI** (for testing)
 - **Git**

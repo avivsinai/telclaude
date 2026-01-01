@@ -1,6 +1,6 @@
 # Governance
 
-Status: alpha (0.1.x). Maintained by @avivsinai.
+Status: alpha (0.x). Maintained by @avivsinai.
 
 ## Roles
 - **Maintainer**: approves/merges PRs, cuts releases, manages security disclosures.
