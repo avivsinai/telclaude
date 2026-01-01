@@ -20,8 +20,8 @@ const StreamingConfigSchema = z.object({
 	enabled: z.boolean().default(true),
 	/** Minimum interval between updates in ms. Default: 1500 */
 	minUpdateIntervalMs: z.number().int().positive().default(1500),
-	/** Show inline keyboard buttons after responses. Default: true */
-	showInlineKeyboard: z.boolean().default(true),
+	/** Show inline keyboard buttons after responses. Default: false (can be noisy on mobile) */
+	showInlineKeyboard: z.boolean().default(false),
 });
 
 // Reply configuration schema (SDK-based)

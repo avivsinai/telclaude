@@ -349,15 +349,20 @@ async function executeWithSession(
 		isNewSession = false;
 	}
 
-	// Typing indicator refresh
-	const replyConfig = ctx.config.inbound?.reply;
-	const typingInterval = (replyConfig?.typingIntervalSeconds ?? 8) * 1000;
-	const typingTimer = setInterval(() => {
-		msg.sendComposing().catch(() => {});
-	}, typingInterval);
-
 	// Streaming response holder (declared here for access in catch block)
 	let streamer: StreamingResponse | null = null;
+
+	// Typing indicator refresh - only used when streaming is disabled or unavailable
+	// (StreamingResponse has its own typing indicator to avoid duplicates)
+	const replyConfig = ctx.config.inbound?.reply;
+	const typingInterval = (replyConfig?.typingIntervalSeconds ?? 8) * 1000;
+	let typingTimer: NodeJS.Timeout | null = null;
+	const startTypingTimer = () => {
+		if (typingTimer) return;
+		typingTimer = setInterval(() => {
+			msg.sendComposing().catch(() => {});
+		}, typingInterval);
+	};
 
 	try {
 		// Process multimodal context (transcribes audio if available)
@@ -439,9 +444,13 @@ async function executeWithSession(
 				});
 
 		// Determine if streaming is enabled
-		const streamingConfig = ctx.config.inbound?.reply?.streaming;
+		const streamingConfig = replyConfig?.streaming;
 		const streamingEnabled =
 			streamingConfig?.enabled !== false && !processedContext.wasVoiceMessage;
+		const canStream = streamingEnabled && Boolean(msg.startStreaming);
+		if (!canStream) {
+			startTypingTimer();
+		}
 
 		// Start streaming response if enabled
 		if (streamingEnabled && msg.startStreaming) {
@@ -452,7 +461,10 @@ async function executeWithSession(
 					{ error: String(err) },
 					"failed to start streaming, falling back to non-streaming",
 				);
+				startTypingTimer();
 			}
+		} else if (streamingEnabled && !msg.startStreaming) {
+			startTypingTimer();
 		}
 
 		// Execute with session pool for connection reuse and timeout
@@ -501,12 +513,21 @@ async function executeWithSession(
 				const flushedContent = redactor.flush();
 				responseText += flushedContent;
 
+				// IMPORTANT: Also append flushed content to streamer so it has complete response
+				// Without this, streamer.content would be missing the tail (~100 chars overlap buffer)
+				if (streamer && flushedContent) {
+					await streamer.append(flushedContent);
+				}
+
 				// Use accumulated response or fallback to chunk result
 				// If using fallback response, also run it through redactor
 				let finalResponse = responseText;
 				if (!finalResponse && chunk.result.response) {
-					// Fallback response needs redaction too
-					const fallbackRedactor = createStreamingRedactor();
+					// Fallback response needs redaction too - use same config for consistency
+					const fallbackRedactor = createStreamingRedactor(
+						undefined,
+						ctx.config.security?.secretFilter,
+					);
 					finalResponse = fallbackRedactor.processChunk(chunk.result.response);
 					finalResponse += fallbackRedactor.flush();
 				}
@@ -556,9 +577,9 @@ async function executeWithSession(
 							await msg.reply(finalResponse);
 						}
 					} else if (streamer) {
-						// Voice-only response but streaming was started - abort it cleanly
+						// Voice-only response but streaming was started - replace with voice indicator
 						// (the voice message will be sent below)
-						await streamer.abort();
+						await streamer.abort("🎤");
 					}
 
 					for (const media of generatedMedia) {
@@ -638,7 +659,9 @@ async function executeWithSession(
 			await msg.reply("An error occurred while processing your request. Please try again.");
 		}
 	} finally {
-		clearInterval(typingTimer);
+		if (typingTimer) {
+			clearInterval(typingTimer);
+		}
 	}
 }
 
