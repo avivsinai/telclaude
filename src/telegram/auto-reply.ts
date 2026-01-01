@@ -438,10 +438,10 @@ async function executeWithSession(
 					systemPromptAppend: voiceProtocolInstruction,
 				});
 
-		// Determine if streaming is enabled (disabled by default - typing indicator is enough)
+		// Determine if streaming is enabled
 		const streamingConfig = ctx.config.inbound?.reply?.streaming;
 		const streamingEnabled =
-			streamingConfig?.enabled === true && !processedContext.wasVoiceMessage;
+			streamingConfig?.enabled !== false && !processedContext.wasVoiceMessage;
 
 		// Start streaming response if enabled
 		if (streamingEnabled && msg.startStreaming) {
