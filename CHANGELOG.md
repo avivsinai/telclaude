@@ -7,13 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Streaming drops tail content** - Flushed content from redactor now appended to streamer, fixing incomplete/empty responses for short messages
+- **Voice-only responses show false error** - Voice responses now show "🎤" indicator instead of error message
+- **Secret filter bypass in fallback** - Fallback redactor now receives custom secretFilter config
+- **Duplicate typing indicators** - Outer typing timer now only runs when streaming is disabled
+- **Inline keyboards too noisy** - Changed `showInlineKeyboard` default to `false`
+
 ## [0.4.0] - 2025-12-27
 
 ### Added
 
 - **Quickstart command** - `telclaude quickstart` for easy first-time setup with minimal configuration
 - **Streaming responses** - Real-time message updates using Telegram editMessageText with debouncing
-- **Inline keyboards** - Copy, expand, and regenerate buttons on responses
+- **Inline keyboards** - Copy, expand, and regenerate buttons on responses (disabled by default)
 
 ### Changed
 
@@ -37,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking**: Minimum Node.js version upgraded from 22 to 25
+- **Breaking**: Minimum Node.js version is 20+ (LTS)
 - Simplified CI workflows with tag-based action versions (maintainability over SHA pinning)
 
 ### Added
@@ -105,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/avivsinai/telclaude/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/avivsinai/telclaude/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/avivsinai/telclaude/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/avivsinai/telclaude/releases/tag/v0.1.0

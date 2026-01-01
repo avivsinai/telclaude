@@ -1,6 +1,6 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2025-12-25
+Updated: 2026-01-01
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture

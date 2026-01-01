@@ -87,7 +87,7 @@ const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig">> = {
 	maxUpdateIntervalMs: 5000,
 	minCharsForUpdate: 50,
 	initialMessage: "🤔 Thinking...",
-	showInlineKeyboard: true,
+	showInlineKeyboard: false, // Disabled by default - can be noisy on mobile
 	showTypingIndicator: true,
 };
 
