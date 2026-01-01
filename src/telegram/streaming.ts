@@ -86,8 +86,8 @@ const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig">> = {
 	minUpdateIntervalMs: 1500,
 	maxUpdateIntervalMs: 5000,
 	minCharsForUpdate: 50,
-	initialMessage: "🤔 Thinking...",
-	showInlineKeyboard: true,
+	initialMessage: "", // No initial placeholder - just show content as it arrives
+	showInlineKeyboard: false, // Disabled - too noisy for mobile
 	showTypingIndicator: true,
 };
 
@@ -163,7 +163,9 @@ export class StreamingResponse {
 	 * Also starts a typing indicator interval if configured.
 	 */
 	async start(): Promise<Message> {
-		const message = await this.api.sendMessage(this.chatId, this.config.initialMessage);
+		// Use minimal placeholder if no initial message configured (Telegram requires non-empty)
+		const initialText = this.config.initialMessage || "...";
+		const message = await this.api.sendMessage(this.chatId, initialText);
 		this.messageId = message.message_id;
 		this.lastUpdateTime = Date.now();
 
@@ -300,19 +302,16 @@ export class StreamingResponse {
 			displayContent = `...\n${displayContent.slice(-3850)}`;
 		}
 
-		// Add streaming indicator
-		const streamingContent = `${displayContent}\n\n⏳ _generating..._`;
-
 		try {
 			// Convert to MarkdownV2 if we haven't fallen back to plain text
 			let textToSend: string;
 			let parseMode: "MarkdownV2" | undefined;
 
 			if (this.useMarkdown) {
-				textToSend = convertToTelegramMarkdown(streamingContent);
+				textToSend = convertToTelegramMarkdown(displayContent);
 				parseMode = "MarkdownV2";
 			} else {
-				textToSend = `${displayContent}\n\n⏳ generating...`;
+				textToSend = displayContent;
 				parseMode = undefined;
 			}
 
@@ -377,11 +376,7 @@ export class StreamingResponse {
 			// Retry immediately with plain text
 			if (this.messageId) {
 				try {
-					await this.api.editMessageText(
-						this.chatId,
-						this.messageId,
-						`${displayContent}\n\n⏳ generating...`,
-					);
+					await this.api.editMessageText(this.chatId, this.messageId, displayContent);
 					this.lastSentContent = this.content;
 					this.lastUpdateTime = Date.now();
 				} catch (fallbackErr) {
