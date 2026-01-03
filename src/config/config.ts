@@ -180,6 +180,18 @@ const NetworkConfigSchema = z.object({
 	privateEndpoints: z.array(PrivateEndpointSchema).default([]),
 });
 
+// External provider configuration (sidecar services)
+const ExternalProviderSchema = z.object({
+	// Provider identifier (e.g., "citizen-services")
+	id: z.string().min(1).max(64),
+	// Base URL for provider API (should be localhost/private network)
+	baseUrl: z.string().url(),
+	// Service identifiers handled by this provider (e.g., "poalim", "clalit")
+	services: z.array(z.string()).default([]),
+	// Optional description for admin/operator clarity
+	description: z.string().max(256).optional(),
+});
+
 // Security configuration schema
 const SecurityConfigSchema = z.object({
 	// Security profile determines which layers are active
@@ -303,6 +315,8 @@ const TelclaudeConfigSchema = z.object({
 	imageGeneration: ImageGenerationConfigSchema.default({}),
 	videoProcessing: VideoProcessingConfigSchema.default({}),
 	tts: TTSConfigSchema.default({}),
+	// External providers (sidecars) - optional
+	providers: z.array(ExternalProviderSchema).default([]),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -310,6 +324,7 @@ export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;
 export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
+export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;

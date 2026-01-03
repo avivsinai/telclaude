@@ -79,6 +79,34 @@ Claude Agent SDK (allowedTools per tier)
 - Internal relay ↔ agent RPC is allowed via hostname allowlist in the firewall script.
 - **Allowlist scope**: Domain allowlists are enforced, but HTTP method restrictions are not enforced at runtime.
 
+## External Providers (Sidecars)
+
+Telclaude can call private sidecar services over `WebFetch` via `privateEndpoints`.
+This keeps telclaude OSS generic while allowing country- or org-specific integrations.
+
+**Config example:**
+```json
+{
+  "providers": [
+    {
+      "id": "citizen-services",
+      "baseUrl": "http://127.0.0.1:3001",
+      "services": ["clalit", "poalim", "massad"],
+      "description": "Local citizen services sidecar"
+    }
+  ],
+  "security": {
+    "network": {
+      "privateEndpoints": [
+        { "label": "citizen-services", "host": "127.0.0.1", "ports": [3001] }
+      ]
+    }
+  }
+}
+```
+
+**OTP routing** (relay-only): `/otp <service> <code>` sends OTP directly to the provider's `/v1/challenge/respond` endpoint (never to the LLM).
+
 ### Private Network Allowlist
 
 For local services (Home Assistant, Plex, NAS, etc.), you can configure explicit private network endpoints:

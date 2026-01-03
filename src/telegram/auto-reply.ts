@@ -14,6 +14,7 @@ import {
 import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
 import { cleanupOldMedia } from "../media/store.js";
+import { sendProviderOtp } from "../providers/external-provider.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { executePooledQuery } from "../sdk/client.js";
 import { getSessionManager } from "../sdk/session-manager.js";
@@ -1067,7 +1068,9 @@ async function handleInboundMessage(
 	const isControlCommand =
 		trimmedBody.startsWith("/link ") ||
 		trimmedBody.startsWith("/approve ") ||
-		trimmedBody.startsWith("/deny ");
+		trimmedBody.startsWith("/deny ") ||
+		trimmedBody === "/otp" ||
+		trimmedBody.startsWith("/otp ");
 
 	if (isControlCommand && !checkControlCommandRateLimit(userId)) {
 		logger.warn({ userId }, "control command rate limited");
@@ -1090,6 +1093,61 @@ async function handleInboundMessage(
 	if (trimmedBody.startsWith("/deny ")) {
 		const nonce = trimmedBody.split(/\s+/)[1]?.trim();
 		await handleDenyCommand(msg, nonce, auditLogger);
+		return;
+	}
+
+	if (trimmedBody === "/otp" || trimmedBody.startsWith("/otp ")) {
+		const parts = trimmedBody.split(/\s+/).filter(Boolean);
+		const service = parts[1]?.trim();
+		const maybeChallengeId = parts[2]?.trim();
+		const maybeCode = parts[3]?.trim();
+
+		if (!service) {
+			await msg.reply("Usage: /otp <service> <code> OR /otp <service> <challengeId> <code>");
+			return;
+		}
+
+		let challengeId: string | undefined;
+		let code: string | undefined;
+		if (maybeCode) {
+			challengeId = maybeChallengeId;
+			code = maybeCode;
+		} else {
+			code = maybeChallengeId;
+		}
+
+		if (!code) {
+			await msg.reply("Usage: /otp <service> <code> OR /otp <service> <challengeId> <code>");
+			return;
+		}
+
+		const link = getIdentityLink(msg.chatId);
+		if (!link) {
+			await msg.reply(
+				"This chat is not linked to a local user. Use `telclaude link <user-id>` first.",
+			);
+			return;
+		}
+
+		try {
+			const response = await sendProviderOtp({
+				service,
+				code,
+				challengeId,
+				actorUserId: link.localUserId,
+				requestId,
+			});
+
+			if (response.status && response.status !== "ok") {
+				await msg.reply(`OTP rejected: ${response.message ?? response.detail ?? response.status}`);
+				return;
+			}
+
+			await msg.reply("OTP accepted. Continuing authentication.");
+		} catch (err) {
+			logger.warn({ error: String(err), service }, "provider OTP failed");
+			await msg.reply(`OTP failed for service '${service}'. Check provider status and try again.`);
+		}
 		return;
 	}
 
