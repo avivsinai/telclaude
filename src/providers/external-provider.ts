@@ -114,6 +114,7 @@ export async function sendProviderOtp(request: ProviderOtpRequest): Promise<Prov
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				"x-actor-user-id": request.actorUserId,
 				"x-request-id": request.requestId ?? "",
 			},
 			body: JSON.stringify({
