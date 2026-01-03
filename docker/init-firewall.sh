@@ -284,8 +284,10 @@ setup_firewall() {
     done
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # DEFAULT DENY: Block everything else
+    # DEFAULT DENY: Block everything else (must be LAST rule)
     # ═══════════════════════════════════════════════════════════════════════════
+    # Remove any stale DROP-all rules first to ensure only one at the end
+    while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
     iptables -A OUTPUT -j DROP
 
     echo "[firewall] IPv4 firewall configured with default-deny policy"
@@ -454,10 +456,17 @@ refresh_firewall() {
                 # Insert at position 1 (top) to ensure it's before RFC1918 drops
                 iptables -I OUTPUT 1 -d "$ip" -j ACCEPT 2>/dev/null || true
                 echo "[firewall-refresh] added internal: $host -> $ip"
+                ((internal_updated++)) || true
                 ((updated++)) || true
             fi
         done
     done
+
+    # Ensure DROP-all is at end after internal host updates
+    if [ ${internal_updated:-0} -gt 0 ]; then
+        while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
+        iptables -A OUTPUT -j DROP
+    fi
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Refresh allowed domain IPs (handles DNS changes)
@@ -476,13 +485,20 @@ refresh_firewall() {
         # Add new IPs that aren't already allowed
         for ip in $new_ips; do
             if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
-                # Rule doesn't exist, add it (before the final DROP rule)
-                iptables -I OUTPUT -d "$ip" -j ACCEPT 2>/dev/null || true
+                # Rule doesn't exist, add it at position 1 (top, before any DROP rules)
+                iptables -I OUTPUT 1 -d "$ip" -j ACCEPT 2>/dev/null || true
                 echo "[firewall-refresh] added: $domain -> $ip"
                 ((updated++)) || true
             fi
         done
     done
+
+    # Ensure DROP-all rule is at the very end (refresh inserts may have shifted it)
+    if [ $updated -gt 0 ]; then
+        # Remove and re-add DROP-all to ensure it's last
+        while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
+        iptables -A OUTPUT -j DROP
+    fi
 
     if [ $updated -gt 0 ]; then
         echo "[firewall-refresh] updated $updated rules"
