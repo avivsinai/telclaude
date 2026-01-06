@@ -141,7 +141,7 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "node", "-e", "process.exit(0)"]
+      test: ["CMD", "telclaude", "provider-health", "--json"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -175,6 +175,7 @@ services:
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CONFIG=/data/telclaude.json
 
       # Relay capability broker
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
@@ -208,6 +209,9 @@ services:
 
       # Claude Code configuration (credentials, settings)
       - telclaude-claude:/home/node/.claude:rw
+
+      # Configuration file (for provider allowlist + health checks)
+      - ./telclaude.json:/data/telclaude.json:ro
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro

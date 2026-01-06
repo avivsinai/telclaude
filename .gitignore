@@ -54,3 +54,5 @@ docker/telclaude.json
 # Secrets (GitHub App keys, etc.)
 secrets/
 *.pem
+.agent-mail/
+docker/docker-compose.override.yml

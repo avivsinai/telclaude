@@ -171,7 +171,7 @@ ENV HOME=/home/node
 # Healthcheck - verify node process is running
 # Uses simple process check without procps (saves ~10MB)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD ["node", "-e", "process.exit(0)"]
+    CMD ["telclaude", "provider-health", "--json"]
 
 # Default working directory for Claude operations
 WORKDIR /workspace
