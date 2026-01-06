@@ -119,6 +119,10 @@ Control commands (including `/otp`) are rate-limited to 5 attempts per minute pe
   `skills/`, `agents/`, `commands/`, or `hooks/` folders.
 - To install plugins, add a marketplace (`/plugin marketplace add ./path`) and install with `/plugin install name@marketplace`.
   Team workflows can pin marketplaces/plugins in `.claude/settings.json` so installs happen automatically when the repo is trusted.
+- **Private/local plugins**: while a plugin repo is private, add its repo root as a *local* marketplace path
+  (the repo must contain `.claude-plugin/marketplace.json`), then install the plugin by name. Example:
+  ` /plugin marketplace add /Users/you/MyProjects/israel-services `
+  then ` /plugin install israel-services@israel-services-marketplace `.
 
 ### Private Network Allowlist
 

@@ -55,3 +55,4 @@ docker/telclaude.json
 secrets/
 *.pem
 .agent-mail/
+docker/docker-compose.override.yml

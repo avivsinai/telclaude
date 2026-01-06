@@ -1,0 +1,51 @@
+# NFS Volume Override Example
+#
+# Copy this file to docker-compose.override.yml (gitignored) and customize.
+# This enables NFS-backed storage for production deployments.
+#
+# Prerequisites:
+#   1. NFS share exported and accessible (e.g., from QNAP NAS)
+#   2. Directories exist on NFS share:
+#      - /pi4docker/telclaude-data
+#      - /pi4docker/telclaude-claude
+#      - /pi4docker/telclaude-totp-data
+#      - /pi4docker/telclaude-media-outbox
+#   3. Proper permissions (containers run as UID 1000)
+#
+# Usage:
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   # Edit NAS_IP below
+#   docker compose up -d
+
+volumes:
+  telclaude-data:
+    name: telclaude-data
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NAS_IP:-10.0.0.35},rw,nolock,soft
+      device: ":/pi4docker/telclaude-data"
+
+  telclaude-claude:
+    name: telclaude-claude
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NAS_IP:-10.0.0.35},rw,nolock,soft
+      device: ":/pi4docker/telclaude-claude"
+
+  totp-data:
+    name: telclaude-totp-data
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NAS_IP:-10.0.0.35},rw,nolock,soft
+      device: ":/pi4docker/telclaude-totp-data"
+
+  media-outbox:
+    name: telclaude-media-outbox
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=${NAS_IP:-10.0.0.35},rw,nolock,soft
+      device: ":/pi4docker/telclaude-media-outbox"
