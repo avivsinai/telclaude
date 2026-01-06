@@ -388,6 +388,8 @@ export function isPrivateIP(ip: string): boolean {
 		if (a === 172 && b >= 16 && b <= 31) return true;
 		// 192.168.0.0/16
 		if (a === 192 && b === 168) return true;
+		// 100.64.0.0/10 (CGNAT / Tailscale) - RFC 6598 shared address space
+		if (a === 100 && b >= 64 && b <= 127) return true;
 	} else if (ipType === 6) {
 		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1)
 		if (ip.includes(".")) {

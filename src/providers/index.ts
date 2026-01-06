@@ -5,3 +5,4 @@ export {
 	resolveProviderForService,
 	sendProviderOtp,
 } from "./external-provider.js";
+export { validateProviderBaseUrl } from "./provider-validation.js";

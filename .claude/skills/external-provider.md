@@ -12,9 +12,11 @@ Check the provider configuration to see which services are available. Common exa
 ## How to Use
 
 1. **Fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
+   - Determine the base URL from `telclaude.json` (`providers[].baseUrl`)
+   - If multiple providers exist, choose the one mapped to the service
    ```
    WebFetch({
-     url: "http://127.0.0.1:3001/v1/{service}/{endpoint}",
+     url: "<provider.baseUrl>/v1/{service}/{endpoint}",
      method: "POST",
      body: "{\"subjectUserId\":\"<target-user-id>\",\"params\":{...}}"
    })
@@ -70,7 +72,8 @@ Check the provider configuration to see which services are available. Common exa
 
 ## Endpoints Reference
 
-Common provider endpoints (actual availability depends on configuration):
+Common provider endpoints (actual availability depends on configuration). For the
+authoritative list, see the Provider Schemas section below.
 
 | Endpoint | Description |
 |----------|-------------|
@@ -80,3 +83,8 @@ Common provider endpoints (actual availability depends on configuration):
 | `/v1/{service}/balance` | Current balance |
 | `/v1/health` | Provider health status |
 | `/v1/challenge/respond` | OTP submission (relay-only) |
+
+## Provider Schemas (auto-generated)
+<!-- PROVIDER_SCHEMA_START -->
+Schemas will be injected here at runtime.
+<!-- PROVIDER_SCHEMA_END -->

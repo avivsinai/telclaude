@@ -78,6 +78,7 @@ Claude Agent SDK (allowedTools per tier)
 - `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only.
 - Internal relay ↔ agent RPC is allowed via hostname allowlist in the firewall script.
 - **Allowlist scope**: Domain allowlists are enforced, but HTTP method restrictions are not enforced at runtime.
+- **CGNAT/Tailscale**: The private IP matcher treats 100.64.0.0/10 (RFC 6598) as private to support Tailscale.
 
 ## External Providers (Sidecars)
 
@@ -106,6 +107,7 @@ This keeps telclaude OSS generic while allowing country- or org-specific integra
 ```
 
 **OTP routing** (relay-only): `/otp <service> <code>` sends OTP directly to the provider's `/v1/challenge/respond` endpoint (never to the LLM).
+Control commands (including `/otp`) are rate-limited to 5 attempts per minute per user to reduce brute-force risk.
 
 ### Private Network Allowlist
 

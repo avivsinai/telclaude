@@ -263,7 +263,10 @@ type ExecutionContext = {
 async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const { msg, config } = ctx;
 
-	const userId = String(msg.chatId);
+	// Use localUserId if chat is linked, otherwise fall back to chatId.
+	// Note: /otp requires a linked identity and will error if unlinked.
+	const identityLink = getIdentityLink(msg.chatId);
+	const userId = identityLink?.localUserId ?? String(msg.chatId);
 	const startTime = Date.now();
 
 	const replyConfig = config.inbound?.reply;

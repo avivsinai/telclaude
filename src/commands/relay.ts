@@ -20,6 +20,13 @@ import {
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
+import {
+	checkProviderHealth,
+	computeProviderHealthExitCode,
+	formatProviderHealthSummary,
+	logProviderHealthResults,
+} from "../providers/provider-health.js";
+import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { CONFIG_DIR } from "../utils.js";
 
@@ -286,6 +293,28 @@ export function registerRelayCommand(program: Command): void {
 					console.log(
 						`  Network mode override: TELCLAUDE_NETWORK_MODE=${process.env.TELCLAUDE_NETWORK_MODE}`,
 					);
+				}
+
+				// External providers: update skills and verify health before continuing
+				const providers = cfg.providers ?? [];
+				if (providers.length > 0) {
+					console.log(`Providers: ${providers.length} configured`);
+					await refreshExternalProviderSkill(providers);
+
+					const results = await Promise.all(
+						providers.map((provider) =>
+							checkProviderHealth(provider.id, provider.baseUrl),
+						),
+					);
+
+					logProviderHealthResults(results);
+					const exitCode = computeProviderHealthExitCode(results);
+					if (exitCode > 0) {
+						console.error(
+							`Provider health check failed: ${formatProviderHealthSummary(results)}`,
+						);
+						process.exit(exitCode);
+					}
 				}
 
 				// Check TOTP daemon availability

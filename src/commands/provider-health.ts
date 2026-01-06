@@ -17,116 +17,12 @@ import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
-	cachedDNSLookup,
-	checkPrivateNetworkAccess,
-	isPrivateIP,
-} from "../sandbox/network-proxy.js";
+	checkProviderHealth,
+	computeProviderHealthExitCode,
+	type HealthCheckResult,
+} from "../providers/provider-health.js";
 
 const logger = getChildLogger({ module: "cmd-provider-health" });
-
-// Health response from provider
-interface ConnectorHealth {
-	status: "ok" | "auth_expired" | "drift_detected" | "error";
-	lastSuccess?: string;
-	lastAttempt?: string;
-	failureCount?: number;
-	driftSignals?: string[];
-}
-
-interface HealthAlert {
-	level: "warn" | "error";
-	connector: string;
-	message: string;
-	since?: string;
-}
-
-interface ProviderHealthResponse {
-	status: "healthy" | "degraded" | "unhealthy";
-	connectors?: Record<string, ConnectorHealth>;
-	alerts?: HealthAlert[];
-	error?: string;
-}
-
-interface HealthCheckResult {
-	providerId: string;
-	baseUrl: string;
-	reachable: boolean;
-	response?: ProviderHealthResponse;
-	error?: string;
-}
-
-async function checkProviderHealth(
-	providerId: string,
-	baseUrl: string,
-): Promise<HealthCheckResult> {
-	const result: HealthCheckResult = {
-		providerId,
-		baseUrl,
-		reachable: false,
-	};
-
-	try {
-		// Parse and validate URL
-		const url = new URL("/v1/health", baseUrl);
-		const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
-
-		// Verify it's in private endpoint allowlist
-		const cfg = loadConfig();
-		const endpoints = cfg.security?.network?.privateEndpoints ?? [];
-
-		const privateCheck = await checkPrivateNetworkAccess(url.hostname, port, endpoints);
-		if (!privateCheck.allowed) {
-			result.error = `Provider URL not in private endpoints allowlist: ${privateCheck.reason}`;
-			return result;
-		}
-
-		// Verify IPs are private
-		const resolved = await cachedDNSLookup(url.hostname);
-		const ips = resolved && resolved.length > 0 ? resolved : [url.hostname];
-		const nonPrivate = ips.filter((ip) => !isPrivateIP(ip));
-		if (nonPrivate.length > 0) {
-			result.error = `Provider resolves to non-private IPs: ${nonPrivate.join(", ")}`;
-			return result;
-		}
-
-		// Make health check request
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 10000);
-
-		try {
-			const response = await fetch(url.toString(), {
-				method: "GET",
-				headers: {
-					accept: "application/json",
-				},
-				signal: controller.signal,
-			});
-
-			if (!response.ok) {
-				result.error = `HTTP ${response.status}: ${response.statusText}`;
-				return result;
-			}
-
-			const text = await response.text();
-			try {
-				result.response = JSON.parse(text) as ProviderHealthResponse;
-				result.reachable = true;
-			} catch {
-				result.error = "Invalid JSON response from health endpoint";
-			}
-		} finally {
-			clearTimeout(timeout);
-		}
-	} catch (err) {
-		if (err instanceof Error && err.name === "AbortError") {
-			result.error = "Request timeout (10s)";
-		} else {
-			result.error = String(err);
-		}
-	}
-
-	return result;
-}
 
 function formatHealthOutput(results: HealthCheckResult[], json: boolean): string {
 	if (json) {
@@ -190,38 +86,6 @@ function formatHealthOutput(results: HealthCheckResult[], json: boolean): string
 	return lines.join("\n");
 }
 
-function computeExitCode(results: HealthCheckResult[]): number {
-	let hasError = false;
-	let hasWarn = false;
-
-	for (const result of results) {
-		if (!result.reachable) {
-			hasError = true;
-			continue;
-		}
-
-		const status = result.response?.status;
-		if (status === "unhealthy") {
-			hasError = true;
-		} else if (status === "degraded") {
-			hasWarn = true;
-		}
-
-		// Also check for error-level alerts
-		for (const alert of result.response?.alerts ?? []) {
-			if (alert.level === "error") {
-				hasError = true;
-			} else if (alert.level === "warn") {
-				hasWarn = true;
-			}
-		}
-	}
-
-	if (hasError) return 2;
-	if (hasWarn) return 1;
-	return 0;
-}
-
 export function registerProviderHealthCommand(program: Command): void {
 	program
 		.command("provider-health")
@@ -273,7 +137,7 @@ export function registerProviderHealthCommand(program: Command): void {
 				console.log(formatHealthOutput(results, options.json ?? false));
 
 				// Compute exit code
-				const exitCode = computeExitCode(results);
+				const exitCode = computeProviderHealthExitCode(results);
 				process.exitCode = exitCode;
 
 				// Send Telegram alert if requested and there are issues
