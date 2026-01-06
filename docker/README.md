@@ -128,14 +128,21 @@ Use the same `TELCLAUDE_INTERNAL_RPC_SECRET` value in both relay and agent conta
 
 ### Custom Configuration
 
-Mount a custom config file:
+**Required:** Create `telclaude.json` before starting:
+
+```bash
+cp telclaude.json.example telclaude.json
+# Edit telclaude.json with your chat ID and settings
+```
+
+The config file is mounted into both containers:
 
 ```yaml
 volumes:
   - ./telclaude.json:/data/telclaude.json:ro
 ```
 
-Example `telclaude.json`:
+Minimal `telclaude.json`:
 ```json
 {
   "telegram": {
@@ -150,6 +157,44 @@ Example `telclaude.json`:
 ```
 
 > **Important:** `allowedChats` is required. The container ignores all chats that are not explicitly listed, even for the first admin claim. Add your own chat ID (e.g., from `@userinfobot`) before running `docker compose up` or the bot will not respond.
+
+### External Providers (Sidecars)
+
+Telclaude can communicate with private REST APIs (sidecars) for services like health records, banking, or government portals.
+
+**Setup:**
+
+1. **Configure the provider** in `telclaude.json`:
+   ```json
+   {
+     "providers": [{
+       "id": "my-sidecar",
+       "baseUrl": "http://127.0.0.1:3001",
+       "services": ["health-api", "bank-api"],
+       "description": "My local sidecar"
+     }],
+     "security": {
+       "network": {
+         "privateEndpoints": [{
+           "label": "my-sidecar",
+           "host": "127.0.0.1",
+           "ports": [3001]
+         }]
+       }
+     }
+   }
+   ```
+
+2. **Start your sidecar** - it should expose `/v1/{service}/{action}` endpoints.
+
+3. **The firewall auto-allows** provider hosts (parsed from config at startup).
+
+**OTP flow:** When a provider returns `challenge_pending`, the user completes verification via Telegram:
+```
+/otp <service> <code>
+```
+
+See `telclaude.json.example` for a full configuration template.
 
 ## Commands
 
