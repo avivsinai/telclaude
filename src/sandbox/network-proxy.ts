@@ -388,6 +388,8 @@ export function isPrivateIP(ip: string): boolean {
 		if (a === 172 && b >= 16 && b <= 31) return true;
 		// 192.168.0.0/16
 		if (a === 192 && b === 168) return true;
+		// 100.64.0.0/10 (CGNAT / Tailscale) - RFC 6598 shared address space
+		if (a === 100 && b >= 64 && b <= 127) return true;
 	} else if (ipType === 6) {
 		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1)
 		if (ip.includes(".")) {
@@ -486,11 +488,13 @@ export interface PrivateEndpointMatch {
  *
  * @param ip - The IP address to check (already resolved)
  * @param endpoints - Array of configured private endpoints
+ * @param originalHostname - The original hostname before DNS resolution (for hostname matching)
  * @returns Match result with the matched endpoint if found
  */
 export function findMatchingPrivateEndpoint(
 	ip: string,
 	endpoints: PrivateEndpoint[],
+	originalHostname?: string,
 ): PrivateEndpointMatch {
 	// Canonicalize input IP to prevent obfuscation bypasses
 	const canonicalIP = canonicalizeIP(ip);
@@ -513,6 +517,16 @@ export function findMatchingPrivateEndpoint(
 			const hostCanonical = canonicalizeIP(endpoint.host);
 			if (hostCanonical && hostCanonical === canonicalIP) {
 				return { matched: true, endpoint };
+			}
+
+			// Hostname comparison (for Docker/internal hostnames)
+			// If endpoint.host is a hostname (not an IP), compare against original hostname
+			if (!hostCanonical && originalHostname) {
+				const normalizedEndpoint = endpoint.host.toLowerCase();
+				const normalizedOriginal = originalHostname.toLowerCase();
+				if (normalizedEndpoint === normalizedOriginal) {
+					return { matched: true, endpoint };
+				}
 			}
 		}
 	}
@@ -610,7 +624,7 @@ export async function checkPrivateNetworkAccess(
 
 		// 4b. Check if IP is private - if so, must be in allowlist
 		if (isPrivateIP(canonicalIP)) {
-			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints);
+			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints, hostname);
 			if (!match.matched) {
 				return {
 					allowed: false,

@@ -53,7 +53,8 @@ if [ "$(id -u)" = "0" ]; then
         echo "[entrypoint] Installing bundled skills"
         mkdir -p /home/node/.claude/skills
         cp -a /app/.claude/skills/. /home/node/.claude/skills/
-        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude
+        # chown may fail on NFS with UID squashing - that's OK, files are still accessible
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude 2>/dev/null || true
     fi
 
     # Install bundled CLAUDE.md (agent playbook) if present
@@ -71,7 +72,7 @@ if [ "$(id -u)" = "0" ]; then
             echo "[entrypoint] Symlinking skills to workspace"
             mkdir -p /workspace/.claude
             ln -s /home/node/.claude/skills /workspace/.claude/skills
-            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills
+            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills 2>/dev/null || true
         fi
     else
         echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
@@ -86,7 +87,7 @@ if [ "$(id -u)" = "0" ]; then
     # Must be done before dropping privileges since tmpfs dirs created as root
     mkdir -p /home/node/.telclaude/logs
     touch /home/node/.telclaude/logs/telclaude.log
-    chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude
+    chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude 2>/dev/null || true
 
     for dir in /data /home/node /home/node/.claude /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then

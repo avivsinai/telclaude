@@ -120,6 +120,77 @@ else
     INTERNAL_HOSTS=("telclaude" "telclaude-agent")
 fi
 
+# Append a host if it's not already in INTERNAL_HOSTS
+append_internal_host() {
+    local host="$1"
+    if [ -z "$host" ]; then
+        return 0
+    fi
+    for existing in "${INTERNAL_HOSTS[@]}"; do
+        if [ "$existing" = "$host" ]; then
+            return 0
+        fi
+    done
+    INTERNAL_HOSTS+=("$host")
+}
+
+# Auto-include provider hosts from telclaude.json (for sidecar services)
+TELCLAUDE_CONFIG_PATH="${TELCLAUDE_CONFIG:-/data/telclaude.json}"
+PROVIDER_HOSTS_RAW=""
+if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+    PROVIDER_HOSTS_RAW="$(
+        TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
+const fs = require("fs");
+const configPath = process.env.TELCLAUDE_CONFIG_PATH || "/data/telclaude.json";
+if (!fs.existsSync(configPath)) process.exit(0);
+let JSON5;
+try {
+  JSON5 = require("/app/node_modules/json5");
+} catch {
+  try {
+    JSON5 = require("json5");
+  } catch {
+    process.exit(0);
+  }
+}
+let raw;
+try {
+  raw = fs.readFileSync(configPath, "utf8");
+} catch {
+  process.exit(0);
+}
+let cfg;
+try {
+  cfg = JSON5.parse(raw);
+} catch {
+  process.exit(0);
+}
+const providers = Array.isArray(cfg.providers) ? cfg.providers : [];
+const hosts = [];
+const seen = new Set();
+for (const provider of providers) {
+  if (!provider || typeof provider.baseUrl !== "string") continue;
+  try {
+    const host = new URL(provider.baseUrl).hostname;
+    if (host && !seen.has(host)) {
+      seen.add(host);
+      hosts.push(host);
+    }
+  } catch {}
+}
+process.stdout.write(hosts.join(","));
+NODE
+    )"
+fi
+
+if [ -n "$PROVIDER_HOSTS_RAW" ]; then
+    IFS=',' read -r -a PROVIDER_HOSTS <<< "$PROVIDER_HOSTS_RAW"
+    for host in "${PROVIDER_HOSTS[@]}"; do
+        append_internal_host "$host"
+    done
+    echo "[firewall] added provider hosts: ${PROVIDER_HOSTS[*]}"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Blocked metadata endpoints (cloud instance metadata - SSRF targets)
 # ─────────────────────────────────────────────────────────────────────────────────
