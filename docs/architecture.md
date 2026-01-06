@@ -109,6 +109,15 @@ This keeps telclaude OSS generic while allowing country- or org-specific integra
 **OTP routing** (relay-only): `/otp <service> <code>` sends OTP directly to the provider's `/v1/challenge/respond` endpoint (never to the LLM).
 Control commands (including `/otp`) are rate-limited to 5 attempts per minute per user to reduce brute-force risk.
 
+## Skills & Plugins
+
+- Skills are stored as folders containing `SKILL.md` under `.claude/skills` (project) or `~/.claude/skills` (user).
+- Telclaude ships built-in skills in `.claude/skills`; the Docker entrypoint copies them to `/home/node/.claude/skills`
+  and symlinks `/workspace/.claude/skills` for the SDK.
+- To add new skills, place a skill folder in `.claude/skills` or mount it into `/home/node/.claude/skills` (volume).
+- For sharing skills across repos, use Claude Code plugins (plugin root with `skills/` and `plugin.json`) and enable them
+  via `.claude/settings.json` (`extraKnownMarketplaces` + `enabledPlugins`).
+
 ### Private Network Allowlist
 
 For local services (Home Assistant, Plex, NAS, etc.), you can configure explicit private network endpoints:

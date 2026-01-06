@@ -488,11 +488,13 @@ export interface PrivateEndpointMatch {
  *
  * @param ip - The IP address to check (already resolved)
  * @param endpoints - Array of configured private endpoints
+ * @param originalHostname - The original hostname before DNS resolution (for hostname matching)
  * @returns Match result with the matched endpoint if found
  */
 export function findMatchingPrivateEndpoint(
 	ip: string,
 	endpoints: PrivateEndpoint[],
+	originalHostname?: string,
 ): PrivateEndpointMatch {
 	// Canonicalize input IP to prevent obfuscation bypasses
 	const canonicalIP = canonicalizeIP(ip);
@@ -515,6 +517,16 @@ export function findMatchingPrivateEndpoint(
 			const hostCanonical = canonicalizeIP(endpoint.host);
 			if (hostCanonical && hostCanonical === canonicalIP) {
 				return { matched: true, endpoint };
+			}
+
+			// Hostname comparison (for Docker/internal hostnames)
+			// If endpoint.host is a hostname (not an IP), compare against original hostname
+			if (!hostCanonical && originalHostname) {
+				const normalizedEndpoint = endpoint.host.toLowerCase();
+				const normalizedOriginal = originalHostname.toLowerCase();
+				if (normalizedEndpoint === normalizedOriginal) {
+					return { matched: true, endpoint };
+				}
 			}
 		}
 	}
@@ -612,7 +624,7 @@ export async function checkPrivateNetworkAccess(
 
 		// 4b. Check if IP is private - if so, must be in allowlist
 		if (isPrivateIP(canonicalIP)) {
-			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints);
+			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints, hostname);
 			if (!match.matched) {
 				return {
 					allowed: false,

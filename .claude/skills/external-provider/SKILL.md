@@ -1,4 +1,10 @@
-# External Service Provider
+---
+name: external-provider
+description: Access configured sidecar providers (health, banking, government) via WebFetch.
+allowed-tools: [WebFetch]
+---
+
+# External Provider
 
 Use this skill when the user asks about data from configured external providers (citizen services, banking, health, etc.).
 
@@ -85,6 +91,5 @@ authoritative list, see the Provider Schemas section below.
 | `/v1/challenge/respond` | OTP submission (relay-only) |
 
 ## Provider Schemas (auto-generated)
-<!-- PROVIDER_SCHEMA_START -->
-Schemas will be injected here at runtime.
-<!-- PROVIDER_SCHEMA_END -->
+
+See `references/provider-schema.md` for the latest schema fetched from `/v1/schema`.

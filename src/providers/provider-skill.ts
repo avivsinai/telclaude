@@ -8,13 +8,25 @@ import { validateProviderBaseUrl } from "./provider-validation.js";
 
 const logger = getChildLogger({ module: "provider-skill" });
 
-const SKILL_FILE = "external-provider.md";
-const SCHEMA_MARKER_START = "<!-- PROVIDER_SCHEMA_START -->";
-const SCHEMA_MARKER_END = "<!-- PROVIDER_SCHEMA_END -->";
+const SKILL_DIR = "external-provider";
+const SKILL_FILE = "SKILL.md";
+const SCHEMA_REFERENCE_FILE = path.join("references", "provider-schema.md");
 
 type ActionDoc = {
 	id: string;
 	description?: string;
+	method?: string;
+	mode?: string;
+	requiresAuth?: boolean;
+	params?: Record<
+		string,
+		{
+			type?: string;
+			required?: boolean;
+			default?: unknown;
+			description?: string;
+		}
+	>;
 };
 
 type ServiceDoc = {
@@ -60,12 +72,21 @@ function normalizeActions(value: unknown): ActionDoc[] {
 						coerceDescription(record.action) ??
 						coerceDescription(record.key);
 					if (!id) return null;
+					const params =
+						record.params && typeof record.params === "object"
+							? (record.params as ActionDoc["params"])
+							: undefined;
 					return {
 						id,
 						description:
 							coerceDescription(record.description) ??
 							coerceDescription(record.summary) ??
 							coerceDescription(record.label),
+						method: coerceDescription(record.method) ?? coerceDescription(record.httpMethod),
+						mode: coerceDescription(record.mode),
+						requiresAuth:
+							typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
+						params,
 					};
 				}
 				return null;
@@ -80,7 +101,19 @@ function normalizeActions(value: unknown): ActionDoc[] {
 					coerceDescription(record.summary) ??
 					coerceDescription(record.label)
 				: undefined;
-			return { id: key, description };
+			const params =
+				record?.params && typeof record.params === "object"
+					? (record.params as ActionDoc["params"])
+					: undefined;
+			return {
+				id: key,
+				description,
+				method: record ? coerceDescription(record.method) ?? coerceDescription(record.httpMethod) : undefined,
+				mode: record ? coerceDescription(record.mode) : undefined,
+				requiresAuth:
+					record && typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
+				params,
+			};
 		});
 	}
 	return [];
@@ -206,7 +239,17 @@ function formatServiceDoc(service: ServiceDoc): string[] {
 	if (service.actions.length > 0) {
 		for (const action of service.actions) {
 			const actionDesc = action.description ? ` — ${action.description}` : "";
-			lines.push(`  - /v1/${service.id}/${action.id}${actionDesc}`);
+			const meta: string[] = [];
+			if (action.mode) meta.push(`mode: ${action.mode}`);
+			if (action.method) meta.push(`http: ${action.method}`);
+			if (typeof action.requiresAuth === "boolean") {
+				meta.push(`auth: ${action.requiresAuth ? "required" : "none"}`);
+			}
+			if (action.params && Object.keys(action.params).length > 0) {
+				meta.push(`params: ${Object.keys(action.params).join(", ")}`);
+			}
+			const metaText = meta.length > 0 ? ` (${meta.join(", ")})` : "";
+			lines.push(`  - /v1/${service.id}/${action.id}${actionDesc}${metaText}`);
 		}
 	}
 	return lines;
@@ -214,6 +257,8 @@ function formatServiceDoc(service: ServiceDoc): string[] {
 
 function buildSchemaMarkdown(results: ProviderSchemaResult[]): string {
 	const lines: string[] = [];
+	lines.push("# Provider Schemas (auto-generated)");
+	lines.push("");
 	lines.push(`Last updated: ${new Date().toISOString()}`);
 	lines.push("");
 
@@ -230,6 +275,14 @@ function buildSchemaMarkdown(results: ProviderSchemaResult[]): string {
 			lines.push(`Schema fetch failed: ${result.error}`);
 			lines.push("");
 			continue;
+		}
+
+		if (result.schema && typeof result.schema === "object") {
+			const schemaRecord = result.schema as Record<string, unknown>;
+			const version = coerceDescription(schemaRecord.version);
+			const generatedAt = coerceDescription(schemaRecord.generatedAt);
+			if (version) lines.push(`Schema version: ${version}`);
+			if (generatedAt) lines.push(`Schema generated at: ${generatedAt}`);
 		}
 
 		const services = extractServiceDocs(result.schema);
@@ -250,35 +303,30 @@ function buildSchemaMarkdown(results: ProviderSchemaResult[]): string {
 	return lines.join("\n");
 }
 
-function upsertSchemaSection(content: string, section: string): string {
-	const start = content.indexOf(SCHEMA_MARKER_START);
-	const end = content.indexOf(SCHEMA_MARKER_END);
+type SkillLocation = {
+	rootDir: string;
+	skillPath: string;
+	referencePath: string;
+};
 
-	if (start !== -1 && end !== -1 && end > start) {
-		const before = content.slice(0, start + SCHEMA_MARKER_START.length);
-		const after = content.slice(end);
-		return `${before}\n${section}\n${after}`;
-	}
-
-	const suffix = content.endsWith("\n") ? "" : "\n";
-	return (
-		`${content}${suffix}\n## Provider Schemas (auto-generated)\n` +
-		`${SCHEMA_MARKER_START}\n${section}\n${SCHEMA_MARKER_END}\n`
-	);
-}
-
-async function resolveSkillPath(): Promise<string | null> {
+async function resolveSkillLocation(): Promise<SkillLocation | null> {
 	const candidates = [
-		path.join(process.cwd(), ".claude", "skills", SKILL_FILE),
-		path.join("/workspace", ".claude", "skills", SKILL_FILE),
-		path.join(os.homedir(), ".claude", "skills", SKILL_FILE),
-		path.join("/app", ".claude", "skills", SKILL_FILE),
+		path.join(process.cwd(), ".claude", "skills", SKILL_DIR),
+		path.join("/workspace", ".claude", "skills", SKILL_DIR),
+		path.join(os.homedir(), ".claude", "skills", SKILL_DIR),
+		path.join("/app", ".claude", "skills", SKILL_DIR),
 	];
 
-	for (const candidate of candidates) {
+	for (const rootDir of candidates) {
+		const skillPath = path.join(rootDir, SKILL_FILE);
 		try {
-			await fs.access(candidate, fsConstants.W_OK);
-			return candidate;
+			await fs.access(skillPath, fsConstants.R_OK);
+			await fs.access(rootDir, fsConstants.W_OK);
+			return {
+				rootDir,
+				skillPath,
+				referencePath: path.join(rootDir, SCHEMA_REFERENCE_FILE),
+			};
 		} catch {
 			// skip
 		}
@@ -290,9 +338,9 @@ async function resolveSkillPath(): Promise<string | null> {
 export async function refreshExternalProviderSkill(
 	providers: ExternalProviderConfig[],
 ): Promise<void> {
-	const skillPath = await resolveSkillPath();
-	if (!skillPath) {
-		logger.warn("external-provider skill not found; skipping schema injection");
+	const skillLocation = await resolveSkillLocation();
+	if (!skillLocation) {
+		logger.warn("external-provider skill not found or not writable; skipping schema update");
 		return;
 	}
 
@@ -304,12 +352,12 @@ export async function refreshExternalProviderSkill(
 	const section = buildSchemaMarkdown(results);
 
 	try {
-		const existing = await fs.readFile(skillPath, "utf8");
-		const updated = upsertSchemaSection(existing, section);
-		if (updated !== existing) {
-			await fs.writeFile(skillPath, updated, "utf8");
-		}
+		await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
+		await fs.writeFile(skillLocation.referencePath, section, "utf8");
 	} catch (err) {
-		logger.warn({ error: String(err), skillPath }, "failed to update external provider skill");
+		logger.warn(
+			{ error: String(err), path: skillLocation.referencePath },
+			"failed to update external provider schema reference",
+		);
 	}
 }
