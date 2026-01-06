@@ -92,7 +92,7 @@ This keeps telclaude OSS generic while allowing country- or org-specific integra
     {
       "id": "citizen-services",
       "baseUrl": "http://127.0.0.1:3001",
-      "services": ["clalit", "poalim", "massad"],
+      "services": ["health-api", "bank-api", "gov-api"],
       "description": "Local citizen services sidecar"
     }
   ],
@@ -121,8 +121,8 @@ Control commands (including `/otp`) are rate-limited to 5 attempts per minute pe
   Team workflows can pin marketplaces/plugins in `.claude/settings.json` so installs happen automatically when the repo is trusted.
 - **Private/local plugins**: while a plugin repo is private, add its repo root as a *local* marketplace path
   (the repo must contain `.claude-plugin/marketplace.json`), then install the plugin by name. Example:
-  ` /plugin marketplace add /Users/you/MyProjects/israel-services `
-  then ` /plugin install israel-services@israel-services-marketplace `.
+  ` /plugin marketplace add /Users/you/MyProjects/my-local-services `
+  then ` /plugin install my-local-services@my-local-services-marketplace `.
 
 ### Private Network Allowlist
 

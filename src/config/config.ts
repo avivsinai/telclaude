@@ -186,7 +186,7 @@ const ExternalProviderSchema = z.object({
 	id: z.string().min(1).max(64),
 	// Base URL for provider API (should be localhost/private network)
 	baseUrl: z.string().url(),
-	// Service identifiers handled by this provider (e.g., "poalim", "clalit")
+	// Service identifiers handled by this provider (e.g., "health-api", "bank-api")
 	services: z.array(z.string()).default([]),
 	// Optional description for admin/operator clarity
 	description: z.string().max(256).optional(),

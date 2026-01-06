@@ -68,7 +68,7 @@ Check the provider configuration to see which services are available. Common exa
 "Your next appointment is on January 15th at 2:30 PM with Dr. Cohen (Cardiology). This information was last updated 5 minutes ago."
 
 ### Challenge pending:
-"To access your bank balance, please complete verification. Check your phone for an SMS code, then reply with `/otp poalim <code>`."
+"To access your bank balance, please complete verification. Check your phone for an SMS code, then reply with `/otp bank <code>`."
 
 ### Auth required:
 "This service needs to be set up first. Please ask the operator to configure authentication for the banking service."
