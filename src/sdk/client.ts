@@ -24,7 +24,12 @@ import {
 	type Options as SDKOptions,
 	type SdkBeta,
 } from "@anthropic-ai/claude-agent-sdk";
-import { loadConfig, type PermissionTier, type PrivateEndpoint } from "../config/config.js";
+import {
+	type ExternalProviderConfig,
+	loadConfig,
+	type PermissionTier,
+	type PrivateEndpoint,
+} from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
@@ -273,13 +278,58 @@ function denyHookResponse(reason: string) {
 /**
  * Helper to create an allow response in the correct hook format.
  */
-function allowHookResponse() {
+function allowHookResponse(updatedInput?: Record<string, unknown>) {
 	return {
 		hookSpecificOutput: {
 			hookEventName: "PreToolUse" as const,
 			permissionDecision: "allow" as const,
+			...(updatedInput ? { updatedInput } : {}),
 		},
 	};
+}
+
+function matchProviderForUrl(
+	url: URL,
+	providers: ExternalProviderConfig[],
+): ExternalProviderConfig | null {
+	for (const provider of providers) {
+		try {
+			const base = new URL(provider.baseUrl);
+			const basePort =
+				base.port || (base.protocol === "https:" ? "443" : base.protocol === "http:" ? "80" : "");
+			const urlPort =
+				url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
+			if (base.hostname === url.hostname && basePort === urlPort) {
+				return provider;
+			}
+		} catch {
+			logger.warn({ provider: provider.id }, "invalid provider baseUrl");
+		}
+	}
+	return null;
+}
+
+function injectProviderHeaders(
+	toolInput: { method?: string; headers?: Record<string, string> },
+	url: URL,
+	actorUserId: string,
+): Record<string, unknown> {
+	const headers = { ...(toolInput.headers ?? {}) };
+	headers["x-actor-user-id"] = actorUserId;
+
+	const updated: Record<string, unknown> = {
+		...toolInput,
+		headers,
+	};
+
+	if (url.pathname !== "/v1/health") {
+		const method = toolInput.method?.toUpperCase();
+		if (!method) {
+			updated.method = "POST";
+		}
+	}
+
+	return updated;
 }
 
 /**
@@ -301,6 +351,8 @@ function createNetworkSecurityHook(
 	isPermissiveMode: boolean,
 	allowedDomains: string[],
 	privateEndpoints: PrivateEndpoint[],
+	providers: ExternalProviderConfig[],
+	actorUserId?: string,
 ): HookCallbackMatcher {
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -312,13 +364,19 @@ function createNetworkSecurityHook(
 			return allowHookResponse();
 		}
 
-		const toolInput = input.tool_input as { url?: string };
+		const toolInput = input.tool_input as {
+			url?: string;
+			method?: string;
+			headers?: Record<string, string>;
+			body?: unknown;
+		};
 		if (!toolInput.url) {
 			return allowHookResponse();
 		}
 
 		try {
 			const url = new URL(toolInput.url);
+			const providerMatch = matchProviderForUrl(url, providers);
 
 			// Block non-HTTP protocols
 			if (!["http:", "https:"].includes(url.protocol)) {
@@ -345,6 +403,17 @@ function createNetworkSecurityHook(
 
 			// If it matched a private endpoint, allow it (port already checked)
 			if (privateCheck.matchedEndpoint) {
+				if (providerMatch) {
+					if (!actorUserId) {
+						return denyHookResponse("Missing user context for provider request.");
+					}
+					const method = toolInput.method?.toUpperCase();
+					if (url.pathname !== "/v1/health" && method && method !== "POST") {
+						return denyHookResponse("Provider endpoints require POST (except /v1/health).");
+					}
+					const updatedInput = injectProviderHeaders(toolInput, url, actorUserId);
+					return allowHookResponse(updatedInput);
+				}
 				logger.debug(
 					{
 						host: url.hostname,
@@ -681,7 +750,13 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.hooks = {
 		PreToolUse: [
-			createNetworkSecurityHook(isPermissiveMode, allowedDomains, privateEndpoints),
+			createNetworkSecurityHook(
+				isPermissiveMode,
+				allowedDomains,
+				privateEndpoints,
+				config.providers ?? [],
+				opts.userId,
+			),
 			createSensitivePathHook(opts.tier),
 		],
 	};

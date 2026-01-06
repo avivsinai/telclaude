@@ -1,0 +1,78 @@
+{
+  // Telclaude Configuration Example
+  // Copy to telclaude.json and customize before running docker compose up
+  //
+  // JSON5 format - comments allowed, trailing commas OK
+
+  "telegram": {
+    // REQUIRED: Your Telegram chat ID(s) - bot ignores unlisted chats
+    // Get your ID from @userinfobot on Telegram
+    "allowedChats": [123456789]
+  },
+
+  "security": {
+    "permissions": {
+      // Default tier for new/unlinked users: READ_ONLY, WRITE_LOCAL, or FULL_ACCESS
+      "defaultTier": "READ_ONLY"
+    },
+    "network": {
+      // Private endpoints allow WebFetch to local network services
+      // Required for external providers (sidecars)
+      "privateEndpoints": [
+        // Example: Local sidecar on port 3001
+        // {
+        //   "label": "citizen-services",
+        //   "host": "127.0.0.1",
+        //   "ports": [3001],
+        //   "description": "Local citizen services sidecar"
+        // },
+        //
+        // Example: Home Assistant on LAN
+        // {
+        //   "label": "home-assistant",
+        //   "host": "192.168.1.100",
+        //   "ports": [8123],
+        //   "description": "Home automation"
+        // },
+        //
+        // Example: Docker service by hostname
+        // {
+        //   "label": "my-sidecar",
+        //   "host": "my-sidecar-container",
+        //   "ports": [8080]
+        // }
+      ]
+    }
+  },
+
+  // External providers (sidecar services)
+  // These are private REST APIs that telclaude can call via WebFetch
+  "providers": [
+    // Example: Citizen services sidecar
+    // {
+    //   "id": "citizen-services",
+    //   "baseUrl": "http://127.0.0.1:3001",
+    //   "services": ["health-api", "bank-api", "gov-api"],
+    //   "description": "Local citizen services sidecar"
+    // }
+    //
+    // To use providers:
+    // 1. Uncomment and configure a provider above
+    // 2. Add matching privateEndpoint in security.network.privateEndpoints
+    // 3. Start your sidecar service
+    // 4. The agent can now call /v1/{service}/{action} endpoints
+    //
+    // OTP flow: When provider returns challenge_pending, user sends /otp <service> <code>
+  ],
+
+  "inbound": {
+    "reply": {
+      "enabled": true
+    }
+  },
+
+  "logging": {
+    // debug, info, warn, error
+    "level": "info"
+  }
+}
