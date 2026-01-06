@@ -1,7 +1,7 @@
 ---
 name: external-provider
 description: Access configured sidecar providers (health, banking, government) via WebFetch.
-allowed-tools: [WebFetch]
+allowed-tools: WebFetch
 ---
 
 # External Provider

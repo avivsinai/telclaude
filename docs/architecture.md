@@ -111,12 +111,14 @@ Control commands (including `/otp`) are rate-limited to 5 attempts per minute pe
 
 ## Skills & Plugins
 
-- Skills are stored as folders containing `SKILL.md` under `.claude/skills` (project) or `~/.claude/skills` (user).
+- Skills are folders with `SKILL.md`, discoverable from `~/.claude/skills` (user), `.claude/skills` (project),
+  or bundled inside plugins. Use `allowed-tools` in SKILL.md frontmatter to scope tool access.
 - Telclaude ships built-in skills in `.claude/skills`; the Docker entrypoint copies them to `/home/node/.claude/skills`
   and symlinks `/workspace/.claude/skills` for the SDK.
-- To add new skills, place a skill folder in `.claude/skills` or mount it into `/home/node/.claude/skills` (volume).
-- For sharing skills across repos, use Claude Code plugins (plugin root with `skills/` and `plugin.json`) and enable them
-  via `.claude/settings.json` (`extraKnownMarketplaces` + `enabledPlugins`).
+- Plugins are the idiomatic distribution mechanism: plugin root contains `.claude-plugin/plugin.json` and optional
+  `skills/`, `agents/`, `commands/`, or `hooks/` folders.
+- To install plugins, add a marketplace (`/plugin marketplace add ./path`) and install with `/plugin install name@marketplace`.
+  Team workflows can pin marketplaces/plugins in `.claude/settings.json` so installs happen automatically when the repo is trusted.
 
 ### Private Network Allowlist
 
