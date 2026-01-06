@@ -97,9 +97,9 @@ function normalizeActions(value: unknown): ActionDoc[] {
 		return Object.entries(value as Record<string, unknown>).map(([key, entry]) => {
 			const record = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : null;
 			const description = record
-				? coerceDescription(record.description) ??
+				? (coerceDescription(record.description) ??
 					coerceDescription(record.summary) ??
-					coerceDescription(record.label)
+					coerceDescription(record.label))
 				: undefined;
 			const params =
 				record?.params && typeof record.params === "object"
@@ -108,7 +108,9 @@ function normalizeActions(value: unknown): ActionDoc[] {
 			return {
 				id: key,
 				description,
-				method: record ? coerceDescription(record.method) ?? coerceDescription(record.httpMethod) : undefined,
+				method: record
+					? (coerceDescription(record.method) ?? coerceDescription(record.httpMethod))
+					: undefined,
 				mode: record ? coerceDescription(record.mode) : undefined,
 				requiresAuth:
 					record && typeof record.requiresAuth === "boolean" ? record.requiresAuth : undefined,
@@ -148,8 +150,7 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 			services.push({
 				id,
 				name: coerceDescription(service.name) ?? coerceDescription(service.label),
-				description:
-					coerceDescription(service.description) ?? coerceDescription(docs?.description),
+				description: coerceDescription(service.description) ?? coerceDescription(docs?.description),
 				actions,
 			});
 		}
@@ -171,8 +172,7 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 			services.push({
 				id,
 				name: coerceDescription(service.name) ?? coerceDescription(service.label),
-				description:
-					coerceDescription(service.description) ?? coerceDescription(docs?.description),
+				description: coerceDescription(service.description) ?? coerceDescription(docs?.description),
 				actions,
 			});
 		}

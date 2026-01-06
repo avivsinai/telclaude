@@ -8,6 +8,13 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
+import {
+	checkProviderHealth,
+	computeProviderHealthExitCode,
+	formatProviderHealthSummary,
+	logProviderHealthResults,
+} from "../providers/provider-health.js";
+import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import {
@@ -20,13 +27,6 @@ import {
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
-import {
-	checkProviderHealth,
-	computeProviderHealthExitCode,
-	formatProviderHealthSummary,
-	logProviderHealthResults,
-} from "../providers/provider-health.js";
-import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { CONFIG_DIR } from "../utils.js";
 
@@ -302,17 +302,13 @@ export function registerRelayCommand(program: Command): void {
 					await refreshExternalProviderSkill(providers);
 
 					const results = await Promise.all(
-						providers.map((provider) =>
-							checkProviderHealth(provider.id, provider.baseUrl),
-						),
+						providers.map((provider) => checkProviderHealth(provider.id, provider.baseUrl)),
 					);
 
 					logProviderHealthResults(results);
 					const exitCode = computeProviderHealthExitCode(results);
 					if (exitCode > 0) {
-						console.error(
-							`Provider health check failed: ${formatProviderHealthSummary(results)}`,
-						);
+						console.error(`Provider health check failed: ${formatProviderHealthSummary(results)}`);
 						process.exit(exitCode);
 					}
 				}
