@@ -92,6 +92,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities (minimal set)
     ca-certificates \
     git \
+    curl \
     # For Claude CLI tools
     ripgrep \
     # For audio conversion (TTS voice messages need OGG/Opus)
@@ -103,9 +104,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # For privilege dropping (gosu is the standard Docker tool for this)
     gosu \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    # Verify gosu works
-    && gosu nobody true \
+    && apt-get clean
+
+# Install GitHub CLI (gh) for issue/PR management
+# Uses official GitHub apt repository for reliable updates
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Post-install setup
+RUN gosu nobody true \
     # Set setuid bit on bwrap for network namespace creation
     # Required for --unshare-net to work when running as non-root
     && chmod u+s /usr/bin/bwrap
