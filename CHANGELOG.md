@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-11
+
+### Added
+
+- **External provider support** - Skills can now integrate with external services (sidecars) that return structured data with attachments
+- **Document detection for media auto-send** - Files in `/documents/` directory are automatically sent via Telegram as documents (preserves files without compression)
+
+### Fixed
+
+- **Firewall DROP-all rule ordering** - Ensures DROP rule stays at end of chain after dynamic rule additions
+
 ## [0.4.1] - 2026-01-02
 
 ### Fixed
@@ -116,7 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/avivsinai/telclaude/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/avivsinai/telclaude/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/avivsinai/telclaude/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/avivsinai/telclaude/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/avivsinai/telclaude/compare/v0.1.0...v0.2.0
