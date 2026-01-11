@@ -25,6 +25,7 @@ import type { TelegramMediaType } from "./types.js";
  * - /media/outbox/generated/1234567890-abc123.png (absolute)
  * - /media/outbox/tts/1234567890-abc123.mp3 (absolute)
  * - /media/outbox/voice/1234567890-abc123.ogg (voice messages)
+ * - /media/outbox/documents/form17.pdf (document attachments from external providers)
  * - /workspace/.telclaude-media/generated/file.png (legacy default)
  * - /Users/name/My Projects/.telclaude-media/generated/file.png (paths with spaces)
  *
@@ -71,7 +72,7 @@ function getGeneratedMediaPattern(): RegExp {
 		.filter(Boolean)
 		.join("|");
 
-	_cachedPattern = new RegExp(`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice)/\\S+)`, "g");
+	_cachedPattern = new RegExp(`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice|documents)/\\S+)`, "g");
 	_cachedMediaOutboxRoot = roots.outbox;
 	_cachedLegacyMediaRoot = roots.legacy;
 
@@ -274,16 +275,35 @@ export function isMediaOnlyResponse(response: string, mediaPath: string): boolea
 }
 
 /**
+ * Check if a path is in the documents directory.
+ */
+function isDocumentsPath(filePath: string): boolean {
+	const normalized = filePath.replace(/\\/g, "/");
+	return normalized.includes("/documents/") && isUnderAllowedRoot(filePath);
+}
+
+/**
  * Infer Telegram media type from file path and extension.
  *
  * Files in the .telclaude-media/voice/ directory are sent as voice messages
  * (using sendVoice API) which display with waveform in Telegram.
+ *
+ * Files in the .telclaude-media/documents/ directory are sent as documents
+ * (using sendDocument API) for file attachments from external providers.
+ * Documents directory takes priority over extension-based detection to preserve
+ * files as-is (no compression like photos).
  *
  * @param filePath - Path to the media file
  * @returns The Telegram media type, or null if not a supported type
  */
 export function inferMediaType(filePath: string): TelegramMediaType | null {
 	const ext = path.extname(filePath).toLowerCase();
+
+	// Documents directory takes priority - always send as document to preserve file
+	// (external provider attachments should not be compressed like photos)
+	if (isDocumentsPath(filePath)) {
+		return "document";
+	}
 
 	if (IMAGE_EXTENSIONS.has(ext)) {
 		return "photo";
