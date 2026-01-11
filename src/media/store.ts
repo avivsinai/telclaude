@@ -33,7 +33,8 @@ export type MediaCategory =
 	| "generated" // AI-generated images
 	| "tts" // Text-to-speech audio (sent as audio file)
 	| "voice" // Voice messages (OGG/Opus for Telegram voice display)
-	| "video-frames"; // Extracted video frames
+	| "video-frames" // Extracted video frames
+	| "documents"; // Document attachments from external providers (PDFs, etc.)
 
 // Maximum media file size (20MB - Telegram bot API limit)
 const MAX_MEDIA_SIZE = 20 * 1024 * 1024;
