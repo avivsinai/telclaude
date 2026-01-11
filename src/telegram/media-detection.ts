@@ -72,7 +72,10 @@ function getGeneratedMediaPattern(): RegExp {
 		.filter(Boolean)
 		.join("|");
 
-	_cachedPattern = new RegExp(`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice|documents)/\\S+)`, "g");
+	_cachedPattern = new RegExp(
+		`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice|documents)/\\S+)`,
+		"g",
+	);
 	_cachedMediaOutboxRoot = roots.outbox;
 	_cachedLegacyMediaRoot = roots.legacy;
 
