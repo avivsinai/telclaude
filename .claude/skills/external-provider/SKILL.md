@@ -43,7 +43,17 @@ Check the provider configuration to see which services are available. Common exa
        "type": "sms_otp" | "app_otp" | "push",
        "hint": "sent to ***1234",
        "service": "service-name"
-     }
+     },
+     "attachments": [
+       {
+         "id": "att_abc123.<expires>.<sig>",
+         "filename": "document.pdf",
+         "mimeType": "application/pdf",
+         "size": 12345,
+         "expiresAt": "ISO timestamp",
+         "inline": "base64-content-if-small"
+       }
+     ]
    }
    ```
 
@@ -53,6 +63,13 @@ Check the provider configuration to see which services are available. Common exa
    - `challenge_pending`: Tell user to complete OTP via `/otp <service> <code>`
    - `parse_error`: Service data couldn't be parsed; may need maintenance
    - `error`: Show error message to user
+
+4. **Handle attachments** (if present):
+   - The `id` is a signed token: `att_<hash>.<expiresTimestamp>.<signature>`
+   - Small files (≤256KB) include `inline` base64 content
+   - Large files omit `inline` - fetch via `/v1/attachment/{id}` endpoint using the full signed ID
+   - Attachments expire after ~15 minutes (check `expiresAt`)
+   - Mention available attachments to the user (filename, type, size)
 
 ## Important Rules
 
@@ -89,6 +106,7 @@ authoritative list, see the Provider Schemas section below.
 | `/v1/{service}/balance` | Current balance |
 | `/v1/health` | Provider health status |
 | `/v1/challenge/respond` | OTP submission (relay-only) |
+| `/v1/attachment/{id}` | Download attachment by signed ID |
 
 ## Provider Schemas (auto-generated)
 
