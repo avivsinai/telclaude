@@ -33,11 +33,16 @@ Check the provider configuration to see which services are available. Common exa
 2. **Parse the JSON response**. Expected shape:
    ```json
    {
-     "status": "ok" | "auth_required" | "challenge_pending" | "parse_error" | "error",
-     "data": { ... },
+     "status": "ok" | "auth_required" | "challenge_pending" | "extraction_error" | "error",
+     "data": {
+       "noResults": "Optional - if present, means no data found (valid response)",
+       "items": [],
+       ...
+     },
      "confidence": 0.0-1.0,
      "lastUpdated": "ISO timestamp",
-     "error": "message if status is error",
+     "error": "message if status is error or extraction_error",
+     "partial": { ... },
      "challenge": {
        "id": "challenge-id",
        "type": "sms_otp" | "app_otp" | "push",
@@ -58,10 +63,10 @@ Check the provider configuration to see which services are available. Common exa
    ```
 
 3. **Handle status codes**:
-   - `ok`: Present the data with confidence level and last-updated time
+   - `ok`: Present the data. **IMPORTANT**: Check for `noResults` field in data - if present, tell user "no records found" (this is NOT an error, just empty results)
    - `auth_required`: Inform user that service needs authentication setup
    - `challenge_pending`: Tell user to complete OTP via `/otp <service> <code>`
-   - `parse_error`: Service data couldn't be parsed; may need maintenance
+   - `extraction_error`: Some data couldn't be extracted; check `partial` for available data and `error` for details
    - `error`: Show error message to user
 
 4. **Handle attachments** (if present):
@@ -90,8 +95,11 @@ Check the provider configuration to see which services are available. Common exa
 ### Auth required:
 "This service needs to be set up first. Please ask the operator to configure authentication for the banking service."
 
-### Parse error:
-"I couldn't retrieve your appointments - the service may need maintenance. Try again later or contact the operator."
+### No results found (status ok, but noResults field present):
+"I checked your hospital summaries but there are no records available. This means there are no discharge summaries on file for the selected hospital."
+
+### Extraction error:
+"I couldn't fully retrieve your data - some information may be missing. Here's what I found: [partial data]. The service may need maintenance if this persists."
 
 ## Endpoints Reference
 
