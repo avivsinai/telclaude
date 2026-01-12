@@ -10,16 +10,18 @@ Use this skill when the user asks about data from configured external providers 
 
 ## Available Services
 
-Check the provider configuration to see which services are available. Common examples:
+Check the provider configuration to see which services are available. The authoritative list is the provider's `/v1/schema` response (cached in `references/provider-schema.md` when available). Common examples:
 - Health services (appointments, records)
 - Banking services (balance, transactions)
 - Government services (documents, status)
+If the schema includes `credentialFields`, use them to explain which fields an operator must configure (never ask users for credentials).
 
 ## How to Use
 
 1. **Fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
    - Determine the base URL from `telclaude.json` (`providers[].baseUrl`)
    - If multiple providers exist, choose the one mapped to the service
+   - Use `/v1/schema` or `references/provider-schema.md` to confirm service/action names
    ```
    WebFetch({
      url: "<provider.baseUrl>/v1/{service}/{endpoint}",
@@ -27,13 +29,14 @@ Check the provider configuration to see which services are available. Common exa
      body: "{\"subjectUserId\":\"<target-user-id>\",\"params\":{...}}"
    })
    ```
+   - Telclaude injects `x-actor-user-id` for provider calls automatically; do not fabricate headers
    - If the user is requesting their own data, omit `subjectUserId`.
    - Use `/v1/health` with GET only when checking provider status.
 
-2. **Parse the JSON response**. Expected shape:
+2. **Parse the JSON response**. Expected shape (provider-defined fields may vary):
    ```json
    {
-     "status": "ok" | "auth_required" | "challenge_pending" | "extraction_error" | "error",
+     "status": "ok" | "auth_required" | "challenge_pending" | "error" | "<provider-specific>",
      "data": {
        "noResults": "Optional - if present, means no data found (valid response)",
        "items": [],
@@ -41,13 +44,17 @@ Check the provider configuration to see which services are available. Common exa
      },
      "confidence": 0.0-1.0,
      "lastUpdated": "ISO timestamp",
-     "error": "message if status is error or extraction_error",
+     "error": "message if status indicates failure",
      "partial": { ... },
      "challenge": {
        "id": "challenge-id",
-       "type": "sms_otp" | "app_otp" | "push",
+       "type": "<provider-specific challenge type>",
        "hint": "sent to ***1234",
-       "service": "service-name"
+       "service": "service-name",
+       "prompt": "SMS verification code",
+       "captureMethod": "text" | "browser",
+       "interactUrl": "https://... (if browser-based)",
+       "instructions": "Optional instructions"
      },
      "attachments": [
        {
@@ -64,9 +71,9 @@ Check the provider configuration to see which services are available. Common exa
 
 3. **Handle status codes**:
    - `ok`: Present the data. **IMPORTANT**: Check for `noResults` field in data - if present, tell user "no records found" (this is NOT an error, just empty results)
-   - `auth_required`: Inform user that service needs authentication setup
-   - `challenge_pending`: Tell user to complete OTP via `/otp <service> <code>`
-   - `extraction_error`: Some data couldn't be extracted; check `partial` for available data and `error` for details
+   - `auth_required`: Inform user that service needs authentication setup (never ask for credentials)
+   - `challenge_pending`: Ask user to complete verification via `/otp <service> <code>` (or include `challengeId` if provided)
+   - `parse_error`/`extraction_error` (if returned): Some data couldn't be extracted; check `partial` for available data and `error` for details
    - `error`: Show error message to user
 
 4. **Handle attachments** (if present):
@@ -83,6 +90,7 @@ Check the provider configuration to see which services are available. Common exa
 3. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
 4. **Show freshness** - Always tell user when data was last updated
 5. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
+6. **Browser challenges** - If `captureMethod` is `browser` or `interactUrl` is present, give the user the link and instructions to complete it
 
 ## Example Responses
 
@@ -90,7 +98,7 @@ Check the provider configuration to see which services are available. Common exa
 "Your next appointment is on January 15th at 2:30 PM with Dr. Cohen (Cardiology). This information was last updated 5 minutes ago."
 
 ### Challenge pending:
-"To access your bank balance, please complete verification. Check your phone for an SMS code, then reply with `/otp bank <code>`."
+"To access your bank balance, please complete verification. Check your phone for an SMS code, then reply with `/otp <service> <code>`."
 
 ### Auth required:
 "This service needs to be set up first. Please ask the operator to configure authentication for the banking service."
@@ -98,7 +106,7 @@ Check the provider configuration to see which services are available. Common exa
 ### No results found (status ok, but noResults field present):
 "I checked your hospital summaries but there are no records available. This means there are no discharge summaries on file for the selected hospital."
 
-### Extraction error:
+### Partial/parse error:
 "I couldn't fully retrieve your data - some information may be missing. Here's what I found: [partial data]. The service may need maintenance if this persists."
 
 ## Endpoints Reference
