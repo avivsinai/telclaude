@@ -29,10 +29,20 @@ type ActionDoc = {
 	>;
 };
 
+type CredentialFieldDoc = {
+	field: string;
+	label?: string;
+	secret?: boolean;
+	optional?: boolean;
+};
+
 type ServiceDoc = {
 	id: string;
 	name?: string;
 	description?: string;
+	category?: string;
+	credentials?: string[];
+	credentialFields?: CredentialFieldDoc[];
 	actions: ActionDoc[];
 };
 
@@ -121,6 +131,24 @@ function normalizeActions(value: unknown): ActionDoc[] {
 	return [];
 }
 
+function normalizeCredentialFields(value: unknown): CredentialFieldDoc[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((entry) => {
+			if (!entry || typeof entry !== "object") return null;
+			const record = entry as Record<string, unknown>;
+			const field = coerceDescription(record.field) ?? coerceDescription(record.id);
+			if (!field) return null;
+			return {
+				field,
+				label: coerceDescription(record.label) ?? coerceDescription(record.name),
+				secret: typeof record.secret === "boolean" ? record.secret : undefined,
+				optional: typeof record.optional === "boolean" ? record.optional : undefined,
+			};
+		})
+		.filter((entry): entry is CredentialFieldDoc => Boolean(entry));
+}
+
 function extractServiceDocs(schema: unknown): ServiceDoc[] {
 	if (!schema || typeof schema !== "object") return [];
 	const record = schema as Record<string, unknown>;
@@ -146,11 +174,18 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 				normalizeActions(service.endpoints),
 				normalizeActions(availableActions),
 			];
+			const credentialFields = normalizeCredentialFields(service.credentialFields);
+			const credentials = Array.isArray(service.credentials)
+				? service.credentials.filter((item): item is string => typeof item === "string")
+				: undefined;
 			const actions = actionCandidates.find((list) => list.length > 0) ?? [];
 			services.push({
 				id,
 				name: coerceDescription(service.name) ?? coerceDescription(service.label),
 				description: coerceDescription(service.description) ?? coerceDescription(docs?.description),
+				category: coerceDescription(service.category),
+				credentials,
+				credentialFields: credentialFields.length > 0 ? credentialFields : undefined,
 				actions,
 			});
 		}
@@ -168,11 +203,18 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 				normalizeActions(service.endpoints),
 				normalizeActions(availableActions),
 			];
+			const credentialFields = normalizeCredentialFields(service.credentialFields);
+			const credentials = Array.isArray(service.credentials)
+				? service.credentials.filter((item): item is string => typeof item === "string")
+				: undefined;
 			const actions = actionCandidates.find((list) => list.length > 0) ?? [];
 			services.push({
 				id,
 				name: coerceDescription(service.name) ?? coerceDescription(service.label),
 				description: coerceDescription(service.description) ?? coerceDescription(docs?.description),
+				category: coerceDescription(service.category),
+				credentials,
+				credentialFields: credentialFields.length > 0 ? credentialFields : undefined,
 				actions,
 			});
 		}
@@ -230,10 +272,35 @@ async function fetchProviderSchema(
 function formatServiceDoc(service: ServiceDoc): string[] {
 	const lines: string[] = [];
 	const description = service.description || service.name;
+	const meta: string[] = [];
+	if (service.category) meta.push(`category: ${service.category}`);
 	if (description) {
-		lines.push(`- ${service.id} — ${description}`);
+		const suffix = meta.length > 0 ? ` (${meta.join(", ")})` : "";
+		lines.push(`- ${service.id} — ${description}${suffix}`);
 	} else {
-		lines.push(`- ${service.id}`);
+		const suffix = meta.length > 0 ? ` (${meta.join(", ")})` : "";
+		lines.push(`- ${service.id}${suffix}`);
+	}
+
+	const credentialFields = service.credentialFields?.length
+		? service.credentialFields
+		: undefined;
+	const credentials = service.credentials?.length ? service.credentials : undefined;
+	if (credentialFields || credentials) {
+		const items =
+			credentialFields?.map((field) => {
+				const details: string[] = [];
+				if (field.label) details.push(field.label);
+				if (field.secret) details.push("secret");
+				if (field.optional) details.push("optional");
+				const detailText = details.length > 0 ? ` (${details.join(", ")})` : "";
+				return `\`${field.field}\`${detailText}`;
+			}) ??
+			credentials?.map((field) => `\`${field}\``) ??
+			[];
+		if (items.length > 0) {
+			lines.push(`  - credentials: ${items.join(", ")}`);
+		}
 	}
 
 	if (service.actions.length > 0) {
