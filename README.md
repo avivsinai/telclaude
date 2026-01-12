@@ -175,6 +175,24 @@ docker compose exec telclaude pnpm start relay --profile strict
   - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
+## External providers (sidecars)
+Telclaude can integrate with private REST APIs (“sidecars”) over WebFetch without assuming any specific vendor or schema.
+
+**Configuration (generic):**
+- Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
+- Allowlist the provider host/port under `security.network.privateEndpoints`.
+- See `docker/README.md` for the full config shape and examples.
+
+**Recommended contract (best-effort):**
+- `GET /v1/schema` — optional but recommended; used for auto-discovery and skills docs.
+- `GET /v1/health` — health check (expected to return JSON with a status field).
+- `POST /v1/{service}/{action}` — perform actions (Telclaude injects `x-actor-user-id` automatically).
+- `POST /v1/challenge/respond` — OTP/2FA completion (handled via Telegram `/otp`, never by the LLM).
+
+**Schema notes:**
+- Telclaude tolerates provider-specific shapes and extracts services/actions if present.
+- Optional `credentialFields` metadata is supported to describe required fields for operators; it is never shown as a request for user credentials.
+
 ## CLI
 - `telclaude relay [--profile simple|strict|test] [--dry-run]`
 - `telclaude doctor [--network] [--secrets]`
