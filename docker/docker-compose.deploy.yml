@@ -1,0 +1,176 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Telclaude Docker Compose - Single-Relay Deployment
+#
+# For deployment targets (Pi, VPS) with pre-built images.
+# Uses single-relay mode with TOTP sidecar.
+#
+# Usage:
+#   1. Build images locally: docker build -t telclaude:latest -f docker/Dockerfile .
+#   2. Ship to target: docker save telclaude:latest | gzip | ssh target docker load
+#   3. Copy this file and .env to target
+#   4. docker compose -f docker-compose.deploy.yml up -d
+#
+# Networks:
+#   - telclaude-net: Internal relay ↔ totp communication
+#   - telclaude-agent-egress: Allows external services (israel-services) to reach relay
+#   - telclaude-relay-egress: Allows relay to reach external APIs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  telclaude:
+    image: telclaude:latest
+    container_name: telclaude
+
+    depends_on:
+      totp:
+        condition: service_healthy
+
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GH_TOKEN=${GH_TOKEN:-}
+      - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-}
+      - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
+      - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
+      - TELCLAUDE_RUN_AS_ROOT=1
+      - NODE_ENV=production
+
+    volumes:
+      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+      - telclaude-data:/data:rw
+      - ./telclaude.json:/data/telclaude.json:ro
+      - telclaude-claude:/home/node/.claude:rw
+      - totp-socket:/run/totp:rw
+
+    privileged: true
+    user: "0:0"
+
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755
+
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+    networks:
+      - telclaude-net
+      - agent-egress
+      - relay-egress
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  totp:
+    image: telclaude-totp:latest
+    container_name: telclaude-totp
+
+    environment:
+      - TOTP_STORAGE_BACKEND=file
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:?TOTP_ENCRYPTION_KEY is required}
+      - TOTP_SECRETS_FILE=/data/totp-secrets.json
+      - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - NODE_ENV=production
+
+    volumes:
+      - totp-data:/data:rw
+      - totp-socket:/run/totp:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 32M
+
+    networks:
+      - telclaude-net
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/totp/totp.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  telclaude-data:
+    name: telclaude-data
+  telclaude-claude:
+    name: telclaude-claude
+  totp-data:
+    name: telclaude-totp-data
+  totp-socket:
+    name: telclaude-totp-socket
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
+
+networks:
+  telclaude-net:
+    name: telclaude-net
+    driver: bridge
+    internal: true
+  agent-egress:
+    name: telclaude-agent-egress
+    driver: bridge
+  relay-egress:
+    name: telclaude-relay-egress
+    driver: bridge
