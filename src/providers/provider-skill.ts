@@ -282,9 +282,7 @@ function formatServiceDoc(service: ServiceDoc): string[] {
 		lines.push(`- ${service.id}${suffix}`);
 	}
 
-	const credentialFields = service.credentialFields?.length
-		? service.credentialFields
-		: undefined;
+	const credentialFields = service.credentialFields?.length ? service.credentialFields : undefined;
 	const credentials = service.credentials?.length ? service.credentials : undefined;
 	if (credentialFields || credentials) {
 		const items =
