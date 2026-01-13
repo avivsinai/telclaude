@@ -7,6 +7,11 @@ permissions:
 
 You help users access their Israeli citizen services through the israel-services API.
 
+## Getting the User ID
+
+**CRITICAL**: Extract the user ID from `<request-context user-id="..." />` in your system prompt.
+Use this user ID in all API calls as the `X-Actor-User-Id` header.
+
 ## Available Services
 
 Currently supported:
@@ -36,7 +41,7 @@ When a user asks for the FULL visit summary content (not just metadata/list), yo
 ```bash
 curl -s -X POST http://israel-services:3001/v1/clalit/visit_summary_pdf \
   -H "Content-Type: application/json" \
-  -H "X-Actor-User-Id: {telegram_user_id}" \
+  -H "X-Actor-User-Id: $USER_ID" \
   -d '{}'
 ```
 
@@ -51,7 +56,7 @@ Make HTTP requests to the israel-services API:
 ```bash
 curl -s -X POST http://israel-services:3001/v1/clalit/{action} \
   -H "Content-Type: application/json" \
-  -H "X-Actor-User-Id: {telegram_user_id}" \
+  -H "X-Actor-User-Id: $USER_ID" \
   -d '{}'
 ```
 
@@ -59,7 +64,7 @@ For actions requiring hospital parameter:
 ```bash
 curl -s -X POST http://israel-services:3001/v1/clalit/hospital_summaries \
   -H "Content-Type: application/json" \
-  -H "X-Actor-User-Id: {telegram_user_id}" \
+  -H "X-Actor-User-Id: $USER_ID" \
   -d '{"hospital": "שיבא"}'
 ```
 
