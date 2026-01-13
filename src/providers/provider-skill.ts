@@ -133,20 +133,20 @@ function normalizeActions(value: unknown): ActionDoc[] {
 
 function normalizeCredentialFields(value: unknown): CredentialFieldDoc[] {
 	if (!Array.isArray(value)) return [];
-	return value
-		.map((entry) => {
-			if (!entry || typeof entry !== "object") return null;
-			const record = entry as Record<string, unknown>;
-			const field = coerceDescription(record.field) ?? coerceDescription(record.id);
-			if (!field) return null;
-			return {
-				field,
-				label: coerceDescription(record.label) ?? coerceDescription(record.name),
-				secret: typeof record.secret === "boolean" ? record.secret : undefined,
-				optional: typeof record.optional === "boolean" ? record.optional : undefined,
-			};
-		})
-		.filter((entry): entry is CredentialFieldDoc => Boolean(entry));
+	const results: CredentialFieldDoc[] = [];
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		const field = coerceDescription(record.field) ?? coerceDescription(record.id);
+		if (!field) continue;
+		const doc: CredentialFieldDoc = { field };
+		const label = coerceDescription(record.label) ?? coerceDescription(record.name);
+		if (label) doc.label = label;
+		if (typeof record.secret === "boolean") doc.secret = record.secret;
+		if (typeof record.optional === "boolean") doc.optional = record.optional;
+		results.push(doc);
+	}
+	return results;
 }
 
 function extractServiceDocs(schema: unknown): ServiceDoc[] {
