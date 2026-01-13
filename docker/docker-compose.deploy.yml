@@ -12,7 +12,7 @@
 #
 # Networks:
 #   - telclaude-net: Internal relay ↔ totp communication
-#   - telclaude-agent-egress: Allows external provider sidecars to reach relay
+#   - telclaude-agent-egress: Allows external services (israel-services) to reach relay
 #   - telclaude-relay-egress: Allows relay to reach external APIs
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -148,26 +148,13 @@ services:
         max-size: "5m"
         max-file: "2"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Named Volumes
-#
-# CRITICAL: Run `docker/setup-volumes.sh` before first `docker compose up`.
-# NEVER run `docker compose down -v` - it will delete non-external volumes!
-# ═══════════════════════════════════════════════════════════════════════════════
 volumes:
   telclaude-data:
     name: telclaude-data
-
-  # CRITICAL SECRETS - External volumes (protected from accidental deletion)
   telclaude-claude:
     name: telclaude-claude
-    external: true  # Pre-create with: docker volume create telclaude-claude
-
   totp-data:
     name: telclaude-totp-data
-    external: true  # Pre-create with: docker volume create telclaude-totp-data
-    # ⚠️  Contains encrypted 2FA secrets - CANNOT BE RECOVERED IF DELETED
-
   totp-socket:
     name: telclaude-totp-socket
     driver: local
