@@ -346,19 +346,33 @@ services:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Named Volumes
+#
+# CRITICAL: Some volumes contain secrets that CANNOT be recovered if deleted.
+# Run `docker/setup-volumes.sh` before first `docker compose up`.
+# NEVER run `docker compose down -v` - it will delete all volumes!
 # ═══════════════════════════════════════════════════════════════════════════════
 volumes:
   # Main relay data: SQLite DB, sessions, identity links, approvals
   telclaude-data:
     name: telclaude-data
 
-  # Claude Code credentials and settings
+  # ┌─────────────────────────────────────────────────────────────────────────────┐
+  # │ CRITICAL SECRETS - External volumes (protected from accidental deletion)   │
+  # │ These must be pre-created: docker volume create <name>                      │
+  # │ `docker compose down -v` CANNOT delete external volumes                     │
+  # └─────────────────────────────────────────────────────────────────────────────┘
+
+  # Claude Code credentials and settings (OAuth tokens)
+  # Can be recreated via `claude login` but causes service interruption
   telclaude-claude:
     name: telclaude-claude
+    external: true
 
-  # TOTP daemon data: encrypted secrets file
+  # TOTP daemon data: encrypted 2FA secrets
+  # ⚠️  CANNOT BE RECOVERED IF DELETED - user must re-enroll all 2FA
   totp-data:
     name: telclaude-totp-data
+    external: true
 
   # Shared Unix socket for relay ↔ TOTP communication
   # Uses tmpfs for better performance and automatic cleanup

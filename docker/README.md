@@ -88,6 +88,18 @@ for containers that need initial root privileges.
    docker compose logs -f
    ```
 
+### First-Time Volume Setup
+
+**Before first run**, create the external volumes that protect your secrets:
+
+```bash
+./setup-volumes.sh
+```
+
+This creates `telclaude-claude` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+
+**Note:** `docker compose up` will fail if these volumes don't exist. Always run `setup-volumes.sh` first.
+
 ### First-Time Authentication
 
 If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude:
@@ -97,6 +109,50 @@ docker compose exec telclaude-agent claude login
 ```
 
 This stores credentials in the shared `telclaude-claude` volume (usable by both containers).
+
+## Volume Safety
+
+Some volumes contain **critical secrets** that cannot be recovered if deleted.
+
+### Critical Volumes (External)
+
+| Volume | Contains | If Deleted |
+|--------|----------|------------|
+| `telclaude-claude` | Claude OAuth tokens | Must re-run `claude login` |
+| `telclaude-totp-data` | Encrypted 2FA secrets | **UNRECOVERABLE** - must re-enroll all 2FA |
+
+These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
+
+### Safe Operations
+
+```bash
+# Safe - preserves all data
+docker compose restart
+docker compose down && docker compose up -d
+```
+
+### Dangerous Operations
+
+```bash
+# DANGEROUS - deletes non-external volumes (telclaude-data)
+docker compose down -v
+
+# DANGEROUS - can delete ALL volumes including external ones
+docker volume prune
+docker volume rm telclaude-totp-data  # DO NOT RUN
+```
+
+### Backup Critical Volumes
+
+```bash
+# Backup TOTP secrets (CRITICAL - do this regularly)
+docker run --rm -v telclaude-totp-data:/data:ro -v $(pwd):/backup \
+  alpine tar czf /backup/totp-backup-$(date +%Y%m%d).tar.gz -C /data .
+
+# Backup Claude credentials
+docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
+  alpine tar czf /backup/claude-backup-$(date +%Y%m%d).tar.gz -C /data .
+```
 
 ## Configuration
 
@@ -298,15 +354,17 @@ docker compose exec telclaude-agent claude --version
 docker compose exec telclaude-agent claude login
 ```
 
-### Reset all data
+### Reset session data (keeps secrets)
 
 ```powershell
-# Remove containers and volumes
+# Remove containers and non-external volumes (keeps TOTP secrets and Claude creds)
 docker compose down -v
 
 # Rebuild fresh
 docker compose up -d --build
 ```
+
+**Note:** External volumes (`telclaude-claude`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
 
 ## TOTP Daemon (2FA Support)
 
