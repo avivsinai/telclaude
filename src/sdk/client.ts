@@ -1014,10 +1014,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	sdkOpts.settingSources = ["project"];
 
 	// System prompt configuration
-	// In native mode, include user ID in system prompt for rate limiting attribution
+	// Include user ID in system prompt for skills that need to make authenticated API calls
 	// (can't use env var due to SDK hang with custom env + sandbox.enabled)
 	let systemPromptAppend = opts.systemPromptAppend ?? "";
-	if (sandboxEnabled && opts.userId) {
+	if (opts.userId) {
 		const userIdLine = `\n\n<request-context user-id="${opts.userId}" />`;
 		systemPromptAppend = systemPromptAppend + userIdLine;
 	}
