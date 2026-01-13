@@ -9,8 +9,20 @@ You help users access their Israeli citizen services through the citizen-service
 
 ## Getting the User ID
 
-**CRITICAL**: Extract the user ID from `<request-context user-id="..." />` in your system prompt.
-Use this user ID in all API calls as the `X-Actor-User-Id` header.
+**CRITICAL**: Your system prompt contains a tag like `<request-context user-id="453371121" />`.
+Extract the numeric user ID from this tag and use it in ALL API calls.
+
+**FIRST**, before any curl command, set the USER_ID variable:
+```bash
+USER_ID="<the number from request-context user-id attribute>"
+```
+
+For example, if your system prompt contains `<request-context user-id="453371121" />`, then:
+```bash
+USER_ID="453371121"
+```
+
+Then use `$USER_ID` in the `X-Actor-User-Id` header for all API calls.
 
 ## Available Services
 
