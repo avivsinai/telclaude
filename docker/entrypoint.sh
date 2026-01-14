@@ -99,6 +99,15 @@ if [ "$(id -u)" = "0" ]; then
         fi
     done
 
+    # Fix /data/logs permissions created by root before dropping privileges.
+    # Some deployments create 600-perm log files as root, which blocks the node user.
+    # Only run if /data is mounted and writable (relay container, not agent).
+    if [ -d "/data" ] && [ -w "/data" ]; then
+        mkdir -p /data/logs
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /data/logs 2>/dev/null || true
+        chmod -R a+rwX /data/logs 2>/dev/null || true
+    fi
+
     # Git configuration: Use proxy in agent container, minimal config in relay
     if [ -n "$TELCLAUDE_GIT_PROXY_URL" ]; then
         # Agent container: Configure git to use the relay's git proxy
