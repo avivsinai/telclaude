@@ -158,7 +158,10 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				}
 
 				// DEBUG: Log userId to verify it's being passed
-				logger.info({ userId: parsed.userId, poolKey: parsed.poolKey }, "agent received query request");
+				logger.info(
+					{ userId: parsed.userId, poolKey: parsed.poolKey },
+					"agent received query request",
+				);
 
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
