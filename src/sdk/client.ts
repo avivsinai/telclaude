@@ -1020,6 +1020,9 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	if (opts.userId) {
 		const userIdLine = `\n\n<request-context user-id="${opts.userId}" />`;
 		systemPromptAppend = systemPromptAppend + userIdLine;
+		logger.info({ userId: opts.userId }, "appending request-context to system prompt");
+	} else {
+		logger.warn("no userId provided, request-context will not be appended");
 	}
 	if (systemPromptAppend) {
 		sdkOpts.systemPrompt = {
