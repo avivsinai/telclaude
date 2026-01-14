@@ -378,6 +378,19 @@ function createNetworkSecurityHook(
 			const url = new URL(toolInput.url);
 			const providerMatch = matchProviderForUrl(url, providers);
 
+			// DEBUG: Log WebFetch interception
+			logger.debug(
+				{
+					url: toolInput.url,
+					hostname: url.hostname,
+					port: url.port,
+					providerMatch: providerMatch?.id ?? null,
+					providersCount: providers.length,
+					actorUserId: actorUserId ?? null,
+				},
+				"[hook] WebFetch intercepted",
+			);
+
 			// Block non-HTTP protocols
 			if (!["http:", "https:"].includes(url.protocol)) {
 				logger.warn(
@@ -412,6 +425,10 @@ function createNetworkSecurityHook(
 						return denyHookResponse("Provider endpoints require POST (except /v1/health).");
 					}
 					const updatedInput = injectProviderHeaders(toolInput, url, actorUserId);
+					logger.info(
+						{ provider: providerMatch.id, actorUserId, url: url.pathname },
+						"[hook] injected x-actor-user-id header for provider call",
+					);
 					return allowHookResponse(updatedInput);
 				}
 				logger.debug(
