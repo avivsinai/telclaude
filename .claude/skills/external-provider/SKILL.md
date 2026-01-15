@@ -1,7 +1,7 @@
 ---
 name: external-provider
-description: Access configured sidecar providers (health, banking, government) via CLI commands.
-allowed-tools: Read, Bash
+description: Access configured sidecar providers (health, banking, government) via WebFetch.
+allowed-tools: Read, WebFetch
 ---
 
 # External Provider
@@ -17,148 +17,78 @@ Check the provider schema to see which services are available. The authoritative
 
 ## How to Use
 
-**IMPORTANT: Use the `telclaude` CLI commands for all provider operations.**
-- Do NOT use WebFetch or curl to call provider endpoints directly
-- Use Bash only to run `telclaude` CLI commands (provider-query, send-attachment, etc.)
-- The CLI handles HMAC authentication through the relay
-- Direct HTTP calls will fail with "Missing internal auth headers"
-- The relay sanitizes responses (strips inline base64, stores attachments)
+**CRITICAL: You MUST read `references/provider-schema.md` BEFORE making any WebFetch calls.**
+Never guess or fabricate URLs. The schema file contains the exact base URL and available endpoints.
 
-### User ID (REQUIRED)
+1. **First, read the schema file** to get the provider's base URL and available endpoints:
+   ```
+   Read references/provider-schema.md
+   ```
+   This file shows the exact base URL (e.g., `http://israel-services:3001`) and all available service endpoints.
 
-**You MUST extract the user ID from `<request-context>` and pass it to ALL provider commands.**
+2. **Then fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
+   - Use the EXACT base URL from the schema (do NOT use localhost, 127.0.0.1, or made-up hostnames)
+   - Use the EXACT endpoint paths from the schema (e.g., `/v1/clalit/visit_summaries`)
+   ```
+   WebFetch({
+     url: "<exact-base-url-from-schema>/v1/{service}/{endpoint}",
+     method: "POST",
+     body: "{\"subjectUserId\":\"<target-user-id>\",\"params\":{...}}"
+   })
+   ```
+   - Telclaude injects `x-actor-user-id` for provider calls automatically; do not fabricate headers
+   - If the user is requesting their own data, omit `subjectUserId`.
+   - Use `/v1/health` with GET only when checking provider status.
 
-Look for this tag in your system context:
-```
-<request-context user-id="admin" />
-```
+3. **Parse the JSON response**. Expected shape (provider-defined fields may vary):
+   ```json
+   {
+     "status": "ok" | "auth_required" | "challenge_pending" | "error" | "<provider-specific>",
+     "data": {
+       "noResults": "Optional - if present, means no data found (valid response)",
+       "items": [],
+       ...
+     },
+     "confidence": 0.0-1.0,
+     "lastUpdated": "ISO timestamp",
+     "error": "message if status indicates failure",
+     "partial": { ... },
+     "challenge": {
+       "id": "challenge-id",
+       "type": "<provider-specific challenge type>",
+       "hint": "sent to ***1234",
+       "service": "service-name",
+       "prompt": "SMS verification code",
+       "captureMethod": "text" | "browser",
+       "interactUrl": "https://... (if browser-based)",
+       "instructions": "Optional instructions"
+     },
+     "attachments": [
+       {
+         "id": "att_abc123.<expires>.<sig>",
+         "filename": "document.pdf",
+         "mimeType": "application/pdf",
+         "size": 12345,
+         "expiresAt": "ISO timestamp",
+         "inline": "base64-content-if-small"
+       }
+     ]
+   }
+   ```
 
-Extract the `user-id` value and pass it via `--user-id` flag. Without this, requests will fail with 401.
+4. **Handle status codes**:
+   - `ok`: Present the data. **IMPORTANT**: Check for `noResults` field in data - if present, tell user "no records found" (this is NOT an error, just empty results)
+   - `auth_required`: Inform user that service needs authentication setup (never ask for credentials)
+   - `challenge_pending`: Ask user to complete verification via `/otp <service> <code>` (or include `challengeId` if provided)
+   - `parse_error`/`extraction_error` (if returned): Some data couldn't be extracted; check `partial` for available data and `error` for details
+   - `error`: Show error message to user
 
-### 1. Read the schema file
-
-```
-Read references/provider-schema.md
-```
-
-This shows the provider ID and available services/actions.
-
-### 2. Query the provider via CLI
-
-```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId>
-```
-
-With parameters:
-```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId> --params '{"key": "value"}'
-```
-
-Examples (assuming `<request-context user-id="admin" />`):
-```bash
-# Get appointments
-telclaude provider-query --provider citizen-services --service health-api --action appointments --user-id admin
-
-# Get bank transactions with date range
-telclaude provider-query --provider citizen-services --service bank-api --action scrape --user-id admin --params '{"startDate": "2024-01-01"}'
-
-# Get lab results
-telclaude provider-query --provider citizen-services --service gov-api --action lab_results --user-id admin
-```
-
-### 3. Parse the response
-
-The command outputs JSON:
-```json
-{
-  "status": "ok" | "auth_required" | "challenge_pending" | "error",
-  "data": { ... },
-  "confidence": 0.0-1.0,
-  "lastUpdated": "ISO timestamp",
-  "attachments": [
-    {
-      "id": "att_123",
-      "filename": "document.pdf",
-      "mimeType": "application/pdf",
-      "size": 12345,
-      "ref": "att_abc123.1234567890.signature",
-      "textContent": "Extracted text from the PDF for analysis..."
-    }
-  ]
-}
-```
-
-**Note:** The relay proxy intercepts responses and:
-- Strips `inline` base64 content (you won't see it)
-- Stores the file in the outbox
-- Adds a `ref` token for delivery
-
-### 4. Handle status codes
-
-- `ok`: Present the data. Check for `noResults` field - if present, tell user "no records found"
-- `auth_required`: Inform user that service needs authentication setup
-- `challenge_pending`: Ask user to complete verification via `/otp <service> <code>`
-- `error`: Show error message to user
-
-## Handling Attachments
-
-Attachments include:
-- `ref`: Token to retrieve the stored file (use with `telclaude send-attachment`)
-- `textContent`: Extracted text content (for PDFs, documents) - use this to analyze/summarize
-
-**Important:** You will NOT see `inline` base64 content. The relay proxy strips it and stores the file automatically. Use `ref` to send files to users.
-
-### Reading document content
-
-Use `textContent` to answer questions about the document:
-```
-"Based on the document, [relevant information extracted from textContent]..."
-```
-
-### Sending files to the user
-
-There are two cases depending on file size:
-
-#### Case 1: Small files (≤256KB) - Has `ref`
-
-For small files, the proxy already stored the file. Use the `ref` field:
-
-```bash
-telclaude send-attachment --ref <attachment.ref>
-```
-
-#### Case 2: Large files (>256KB) - Empty `ref`
-
-For large files, `ref` will be empty. Use `fetch-attachment` to fetch from the provider:
-
-```bash
-telclaude fetch-attachment --provider <providerId> --id <attachment.id> --filename <attachment.filename> --mime <attachment.mimeType>
-```
-
-#### Output and delivery
-
-Both commands output:
-```
-Attachment ready: /media/outbox/documents/<filename>.pdf
-```
-or
-```
-Attachment saved to: /media/outbox/documents/<filename>.pdf
-```
-
-You MUST include the exact path in your response. The relay watches for this path to trigger Telegram delivery.
-
-#### Example workflow
-
-1. User asks for data or a document
-2. Call provider via `telclaude provider-query`
-3. Response includes `data` and optionally `attachments` with `ref` and `textContent`
-4. Present the data to the user
-5. If attachments exist, use `textContent` to summarize the document
-6. If user wants the file:
-   - If `ref` is present: `telclaude send-attachment --ref <ref>`
-   - If `ref` is empty: `telclaude fetch-attachment --provider <providerId> --id <id> ...`
-7. Include the exact path from output in your response
+5. **Handle attachments** (if present):
+   - The `id` is a signed token: `att_<hash>.<expiresTimestamp>.<signature>`
+   - Small files (≤256KB) include `inline` base64 content
+   - Large files omit `inline` - fetch via `/v1/attachment/{id}` endpoint using the full signed ID
+   - Attachments expire after ~15 minutes (check `expiresAt`)
+   - Mention available attachments to the user (filename, type, size)
 
 ## Important Rules
 
