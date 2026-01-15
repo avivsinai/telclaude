@@ -1,7 +1,7 @@
 ---
 name: external-provider
 description: Access configured sidecar providers (health, banking, government) via WebFetch.
-allowed-tools: WebFetch
+allowed-tools: Read, WebFetch
 ---
 
 # External Provider
@@ -18,13 +18,21 @@ If the schema includes `credentialFields`, use them to explain which fields an o
 
 ## How to Use
 
-1. **Fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
-   - Determine the base URL from `telclaude.json` (`providers[].baseUrl`)
-   - If multiple providers exist, choose the one mapped to the service
-   - Use `/v1/schema` or `references/provider-schema.md` to confirm service/action names
+**CRITICAL: You MUST read `references/provider-schema.md` BEFORE making any WebFetch calls.**
+Never guess or fabricate URLs. The schema file contains the exact base URL and available endpoints.
+
+1. **First, read the schema file** to get the provider's base URL and available endpoints:
+   ```
+   Read references/provider-schema.md
+   ```
+   This file shows the exact base URL (e.g., `http://israel-services:3001`) and all available service endpoints.
+
+2. **Then fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
+   - Use the EXACT base URL from the schema (do NOT use localhost, 127.0.0.1, or made-up hostnames)
+   - Use the EXACT endpoint paths from the schema (e.g., `/v1/clalit/visit_summaries`)
    ```
    WebFetch({
-     url: "<provider.baseUrl>/v1/{service}/{endpoint}",
+     url: "<exact-base-url-from-schema>/v1/{service}/{endpoint}",
      method: "POST",
      body: "{\"subjectUserId\":\"<target-user-id>\",\"params\":{...}}"
    })
@@ -33,7 +41,7 @@ If the schema includes `credentialFields`, use them to explain which fields an o
    - If the user is requesting their own data, omit `subjectUserId`.
    - Use `/v1/health` with GET only when checking provider status.
 
-2. **Parse the JSON response**. Expected shape (provider-defined fields may vary):
+3. **Parse the JSON response**. Expected shape (provider-defined fields may vary):
    ```json
    {
      "status": "ok" | "auth_required" | "challenge_pending" | "error" | "<provider-specific>",
@@ -69,14 +77,14 @@ If the schema includes `credentialFields`, use them to explain which fields an o
    }
    ```
 
-3. **Handle status codes**:
+4. **Handle status codes**:
    - `ok`: Present the data. **IMPORTANT**: Check for `noResults` field in data - if present, tell user "no records found" (this is NOT an error, just empty results)
    - `auth_required`: Inform user that service needs authentication setup (never ask for credentials)
    - `challenge_pending`: Ask user to complete verification via `/otp <service> <code>` (or include `challengeId` if provided)
    - `parse_error`/`extraction_error` (if returned): Some data couldn't be extracted; check `partial` for available data and `error` for details
    - `error`: Show error message to user
 
-4. **Handle attachments** (if present):
+5. **Handle attachments** (if present):
    - The `id` is a signed token: `att_<hash>.<expiresTimestamp>.<signature>`
    - Small files (≤256KB) include `inline` base64 content
    - Large files omit `inline` - fetch via `/v1/attachment/{id}` endpoint using the full signed ID
