@@ -12,7 +12,7 @@
 #
 # Networks:
 #   - telclaude-net: Internal relay ↔ totp communication
-#   - telclaude-agent-egress: Allows external services (citizen-services) to reach relay
+#   - telclaude-agent-egress: Allows external provider sidecars to reach relay
 #   - telclaude-relay-egress: Allows relay to reach external APIs
 # ═══════════════════════════════════════════════════════════════════════════════
 
