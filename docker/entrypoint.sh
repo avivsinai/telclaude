@@ -66,11 +66,24 @@ if [ "$(id -u)" = "0" ]; then
 
     # Skills are installed at user-level (~/.claude/skills/) above.
     # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
-    # Create symlink if /workspace/.claude/skills/ doesn't exist (preserves user's own skills if present).
+    # FORCE symlink to ensure SDK reads from the same location relay writes to.
+    # This prevents divergence when host workspace has its own .claude/skills/ directory.
     if [ -d "/workspace" ] && [ -w "/workspace" ]; then
-        if [ ! -e "/workspace/.claude/skills" ]; then
+        mkdir -p /workspace/.claude
+        if [ -L "/workspace/.claude/skills" ]; then
+            # Already a symlink - nothing to do
+            echo "[entrypoint] Skills symlink already exists"
+        elif [ -e "/workspace/.claude/skills" ]; then
+            # Exists but not a symlink - back it up and replace
+            echo "[entrypoint] WARNING: /workspace/.claude/skills exists but is not a symlink"
+            echo "[entrypoint] Backing up to /workspace/.claude/skills.bak and creating symlink"
+            rm -rf /workspace/.claude/skills.bak
+            mv /workspace/.claude/skills /workspace/.claude/skills.bak
+            ln -s /home/node/.claude/skills /workspace/.claude/skills
+            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude/skills 2>/dev/null || true
+        else
+            # Doesn't exist - create symlink
             echo "[entrypoint] Symlinking skills to workspace"
-            mkdir -p /workspace/.claude
             ln -s /home/node/.claude/skills /workspace/.claude/skills
             chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills 2>/dev/null || true
         fi
