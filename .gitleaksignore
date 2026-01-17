@@ -1,0 +1,28 @@
+# Gitleaks ignore file - remaining false positives after path/regex exclusions
+
+# Docker compose - env variable references
+9df5b273a1e68598dceb93523f54ac27a8fc12b5:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:29
+814a3b586405a8221eb3c4714b160f20eaaa12db:docker/docker-compose.yml:credentials-yaml-unquoted:62
+814a3b586405a8221eb3c4714b160f20eaaa12db:docker/docker-compose.yml:credentials-yaml-unquoted:180
+b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/compose.simple.yaml:credentials-yaml-unquoted:31
+b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/docker-compose.yml:credentials-yaml-unquoted:62
+b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/compose.simple.yaml:credentials-yaml-unquoted:121
+b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/docker-compose.yml:credentials-yaml-unquoted:180
+b828585dc0342295e4b23e7f2a4ae758e44bfcb6:docker/compose.yaml:credentials-yaml-unquoted:16
+5ad47b9862cd2f5f7baa4f73f8057387211b93a8:docker/docker-compose.yml:credentials-yaml-unquoted:41
+
+# OpenAI client - URL patterns
+0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/openai-client.ts:generic-auth-tuple:27
+0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/openai-client.ts:generic-auth-tuple:138
+
+# Git credentials - pattern matching code
+0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/git-credentials.ts:generic-auth-tuple:249
+0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/git-credentials.ts:generic-auth-tuple:362
+0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/git-credentials.ts:generic-auth-tuple:368
+
+# Sandbox/security code - env var names and patterns
+e20d117c101c3c1b9a6844ac8c3ca110c27a62e3:src/sandbox/config.ts:credentials-javascript:440
+e82ee12ace184aece9e37ee32666802d1e8efa43:src/security/streaming-redactor.ts:generic-api-key:7
+5ed752ae82c86f5e10f32b2c4eb5ec7248af65f0:src/security/output-filter.ts:credentials-javascript:582
+103c4bd94feec6d6d59b1e3b9c397b26dd456bd4:src/security/output-filter.ts:credentials-javascript:330
+cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-javascript:704
