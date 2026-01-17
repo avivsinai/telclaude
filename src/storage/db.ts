@@ -219,6 +219,26 @@ function initializeSchema(database: Database.Database): void {
 			banned_by TEXT NOT NULL,
 			reason TEXT
 		);
+
+		-- Bot outbound messages (for tracking reactions)
+		CREATE TABLE IF NOT EXISTS bot_messages (
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			sent_at INTEGER NOT NULL,
+			PRIMARY KEY (chat_id, message_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_bot_messages_chat ON bot_messages(chat_id, sent_at DESC);
+
+		-- Message reactions (emoji reactions on bot messages)
+		CREATE TABLE IF NOT EXISTS message_reactions (
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			user_id INTEGER NOT NULL,
+			emoji TEXT NOT NULL,
+			reacted_at INTEGER NOT NULL,
+			PRIMARY KEY (chat_id, message_id, user_id, emoji)
+		);
+		CREATE INDEX IF NOT EXISTS idx_message_reactions_chat ON message_reactions(chat_id, message_id);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -300,6 +320,8 @@ export function cleanupExpired(): {
 	totpSessions: number;
 	adminClaims: number;
 	pendingTotpMessages: number;
+	botMessages: number;
+	messageReactions: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -333,6 +355,22 @@ export function cleanupExpired(): {
 		.prepare("DELETE FROM pending_totp_messages WHERE expires_at < ?")
 		.run(now);
 
+	// Clean old bot messages (older than 24 hours)
+	const oneDayAgo = now - 24 * 3600 * 1000;
+	const botMessagesResult = database
+		.prepare("DELETE FROM bot_messages WHERE sent_at < ?")
+		.run(oneDayAgo);
+
+	// Clean reactions for deleted bot messages (cascade via subquery)
+	const reactionsResult = database
+		.prepare(
+			`DELETE FROM message_reactions
+			 WHERE (chat_id, message_id) NOT IN (
+				 SELECT chat_id, message_id FROM bot_messages
+			 )`,
+		)
+		.run();
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
@@ -340,6 +378,8 @@ export function cleanupExpired(): {
 		totpSessions: totpSessionsResult.changes,
 		adminClaims: adminClaimsResult.changes,
 		pendingTotpMessages: pendingTotpResult.changes,
+		botMessages: botMessagesResult.changes,
+		messageReactions: reactionsResult.changes,
 	};
 
 	logger.info(result, "expired entries cleaned up");
