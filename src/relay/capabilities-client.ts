@@ -25,8 +25,18 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
 	if (!response.ok) {
 		const text = await response.text();
+		let detail = text;
+		try {
+			const parsed = JSON.parse(text) as { error?: string };
+			if (parsed?.error) {
+				detail = parsed.error;
+			}
+		} catch {
+			// ignore JSON parse failures
+		}
 		logger.warn({ path, status: response.status, body: text }, "capability request failed");
-		throw new Error(`Capability request failed: ${response.status} ${response.statusText}`);
+		const suffix = detail ? ` - ${detail}` : "";
+		throw new Error(`Capability request failed: ${response.status} ${response.statusText}${suffix}`);
 	}
 
 	return (await response.json()) as T;
