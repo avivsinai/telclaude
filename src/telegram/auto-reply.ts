@@ -47,6 +47,7 @@ import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
+import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
 import { createTelegramBot } from "./client.js";
 import { monitorTelegramInbox } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
@@ -422,6 +423,17 @@ async function executeWithSession(
 			? 'IMPORTANT: The user sent a voice message. You MUST respond with a voice message using `telclaude tts "your response" --voice-message`. Output ONLY the resulting file path, no text. Exception: if user explicitly asks for text response.'
 			: undefined;
 
+		// Build reaction context for recent bot messages
+		const reactionSummaries = getRecentReactions(msg.chatId);
+		const reactionContext = formatReactionContext(reactionSummaries);
+		const reactionAppend = reactionContext
+			? `<reaction-summary>\n${reactionContext}\n</reaction-summary>`
+			: undefined;
+
+		// Combine system prompt appendages
+		const systemPromptAppend =
+			[voiceProtocolInstruction, reactionAppend].filter(Boolean).join("\n\n") || undefined;
+
 		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const queryStream = useRemoteAgent
 			? executeRemoteQuery(queryPrompt, {
@@ -433,7 +445,7 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
-					systemPromptAppend: voiceProtocolInstruction,
+					systemPromptAppend,
 				})
 			: executePooledQuery(queryPrompt, {
 					cwd: process.cwd(),
@@ -444,7 +456,7 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
-					systemPromptAppend: voiceProtocolInstruction,
+					systemPromptAppend,
 				});
 
 		// Determine if streaming is enabled
@@ -854,7 +866,14 @@ export async function monitorTelegramProvider(
 				},
 			});
 
-			const runner = run(bot);
+			// Configure runner with allowed_updates to include message_reaction
+			const runner = run(bot, {
+				runner: {
+					fetch: {
+						allowed_updates: ["message", "edited_message", "callback_query", "message_reaction"],
+					},
+				},
+			});
 
 			// Log runner errors
 			runner.task()?.catch((err) => {
