@@ -18,7 +18,7 @@ import { textToSpeech } from "../services/tts.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
 
-const DEFAULT_BODY_LIMIT = 262144;
+const DEFAULT_BODY_LIMIT = 524288;
 const DEFAULT_PROMPT_LIMIT = 8000;
 const DEFAULT_TTS_LIMIT = 4000;
 const DEFAULT_PATH_LIMIT = 4096;
