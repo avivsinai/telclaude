@@ -49,12 +49,50 @@ package-lock.json
 
 # Docker local config (contains secrets/chat IDs)
 docker/.env
+docker/.env.*
+docker/*.env
+docker/*.env.*
 docker/telclaude.json
 
-# Secrets (GitHub App keys, etc.)
+# Secrets and credentials (NEVER commit these)
 secrets/
 *.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*credentials*
+*secret*
+*.keystore
+.htpasswd
+
+# API keys and tokens
+.api_key
+.api_keys
+*_token
+*_TOKEN
+*.token
+
+# Environment files (all variations)
+.env
+.env.*
+*.env
+*.env.*
+**/.env
+**/.env.*
+env.local
+env.*.local
+
+# Backup files that may contain secrets
+*.backup
+*.bak
+*.old
+*~
+*.orig
+
+# Agent mail (may contain sensitive messages)
 .agent-mail/
+
+# Docker overrides
 docker/docker-compose.override.yml
-docker/.env.pi-backup
-docker/*.env.*backup*
