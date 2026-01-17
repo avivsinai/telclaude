@@ -480,8 +480,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 			if (req.url === "/v1/attachment/fetch") {
 				const typed = parsed as AttachmentFetchRequest;
-				const providerId =
-					typeof typed.providerId === "string" ? typed.providerId.trim() : "";
+				const providerId = typeof typed.providerId === "string" ? typed.providerId.trim() : "";
 				if (!providerId) {
 					writeJson(res, 400, { status: "error", error: "Provider not found" });
 					return;
@@ -557,10 +556,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				let fetchUrl: URL;
 				try {
 					const { url: base } = await validateProviderBaseUrl(provider.baseUrl);
-					fetchUrl = new URL(
-						`/v1/attachment/${encodeURIComponent(attachmentId)}`,
-						base,
-					);
+					fetchUrl = new URL(`/v1/attachment/${encodeURIComponent(attachmentId)}`, base);
 				} catch (err) {
 					logger.warn({ providerId, error: String(err) }, "invalid provider URL");
 					writeJson(res, 400, { status: "error", error: "Provider not found" });
