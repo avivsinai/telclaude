@@ -56,3 +56,5 @@ secrets/
 *.pem
 .agent-mail/
 docker/docker-compose.override.yml
+docker/.env.pi-backup
+docker/*.env.*backup*
