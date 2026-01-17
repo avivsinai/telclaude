@@ -224,7 +224,7 @@ function sanitizeFilename(input?: string): string {
 function buildAttachmentFilename(filename?: string, mimeType?: string): string {
 	const safe = sanitizeFilename(filename);
 	const extFromName = path.extname(safe);
-	const fallbackExt = mimeType ? MIME_EXTENSION_MAP[mimeType] ?? "" : "";
+	const fallbackExt = mimeType ? (MIME_EXTENSION_MAP[mimeType] ?? "") : "";
 	const ext = extFromName || fallbackExt;
 	const stem = (extFromName ? safe.slice(0, -extFromName.length) : safe) || "attachment";
 	const suffix = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
