@@ -90,6 +90,43 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
    - Attachments expire after ~15 minutes (check `expiresAt`)
    - Mention available attachments to the user (filename, type, size)
 
+## Delivering Attachments to Users
+
+When a provider response includes attachments and the user wants the file delivered:
+
+1. **Use the `telclaude fetch-attachment` CLI command**:
+   ```bash
+   # For attachments with inline base64 content (small files):
+   telclaude fetch-attachment --provider <provider-id> --id <attachment.id> \
+     --filename <attachment.filename> --mime <attachment.mimeType> \
+     --inline "<base64-content>"
+
+   # For attachments that need fetching (large files):
+   telclaude fetch-attachment --provider <provider-id> --id <attachment.id> \
+     --filename <attachment.filename> --mime <attachment.mimeType>
+   ```
+
+2. **The command outputs the saved file path**:
+   ```
+   Attachment saved to: /media/outbox/documents/visit_summary-1737099600-abc123.pdf
+   ```
+
+3. **Include the path in your response** - the relay automatically sends files from `/media/outbox/documents/` to Telegram:
+   ```
+   "I've downloaded your document: /media/outbox/documents/visit_summary-1737099600-abc123.pdf"
+   ```
+
+**Example**:
+```bash
+# User asked for their visit summary PDF
+telclaude fetch-attachment --provider israel-services \
+  --id "att_abc123.1737100000.sig" \
+  --filename "visit_summary.pdf" \
+  --mime "application/pdf"
+```
+
+**Note**: Only fetch attachments when the user explicitly requests the file. First tell them what's available, then offer to send it.
+
 ## Important Rules
 
 1. **ALWAYS extract user-id** - Look for `<request-context user-id="..." />` in your context and pass it via `--user-id`. Requests without this will fail with 401.
@@ -118,7 +155,13 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
 ### Attachment sent (use EXACT path from relay response):
 "Here's your document: /media/outbox/documents/<exact-path-from-response>.pdf"
 
-## CLI Command Reference
+### Attachment available:
+"I found your visit summary from January 10th. There's a PDF document available (visit_summary_2024-01-10.pdf, 245 KB). Would you like me to send it to you?"
+
+### Attachment delivered:
+"I've downloaded your visit summary: /media/outbox/documents/visit_summary_2024-01-10.pdf"
+
+## Endpoints Reference
 
 | Command | Description |
 |---------|-------------|
@@ -126,7 +169,16 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
 | `telclaude send-attachment --ref <ref>` | Send stored attachment to user |
 | `telclaude fetch-attachment --provider <id> --id <att-id> ...` | Fetch and send large attachment |
 
-**Note:** `--user-id` is REQUIRED for `provider-query`. Extract it from `<request-context user-id="..." />`.
+| Endpoint | Description |
+|----------|-------------|
+| `/v1/{service}/summary` | Overview/dashboard data |
+| `/v1/{service}/appointments` | Upcoming appointments |
+| `/v1/{service}/transactions` | Recent transactions |
+| `/v1/{service}/balance` | Current balance |
+| `/v1/health` | Provider health status |
+| `/v1/challenge/respond` | OTP submission (relay-only) |
+| `/v1/attachment/{id}` | Download attachment by signed ID |
+| `/v1/attachment/fetch` | Relay endpoint - fetch and save attachment for Telegram delivery |
 
 ## Provider Schemas (auto-generated)
 
