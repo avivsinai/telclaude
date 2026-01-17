@@ -59,3 +59,15 @@ export async function relayTranscribe(input: {
 }): Promise<{ text: string; language?: string; durationSeconds?: number }> {
 	return postJson("/v1/transcribe", input);
 }
+
+export async function relayFetchAttachment(input: {
+	providerId: string;
+	attachmentId: string;
+	filename?: string;
+	mimeType?: string;
+	size?: number;
+	inlineBase64?: string;
+	userId?: string;
+}): Promise<{ status: string; path: string; error?: string }> {
+	return postJson("/v1/attachment/fetch", input);
+}
