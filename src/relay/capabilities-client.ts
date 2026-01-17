@@ -36,7 +36,9 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 		}
 		logger.warn({ path, status: response.status, body: text }, "capability request failed");
 		const suffix = detail ? ` - ${detail}` : "";
-		throw new Error(`Capability request failed: ${response.status} ${response.statusText}${suffix}`);
+		throw new Error(
+			`Capability request failed: ${response.status} ${response.statusText}${suffix}`,
+		);
 	}
 
 	return (await response.json()) as T;
