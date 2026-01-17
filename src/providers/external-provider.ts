@@ -28,7 +28,11 @@ export function resolveProviderForService(serviceId: string): ProviderResolution
 	}
 
 	if (providers.length === 1) {
-		return { provider: providers[0] };
+		const provider = providers[0];
+		const hasExplicitServices = Array.isArray(provider.services) && provider.services.length > 0;
+		if (!hasExplicitServices) {
+			return { provider };
+		}
 	}
 
 	return {
