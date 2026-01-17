@@ -28,6 +28,7 @@ import { convert as convertToTelegramMarkdown } from "telegram-markdown-v2";
 import { getChildLogger } from "../logging.js";
 import type { SecretFilterConfig } from "../security/output-filter.js";
 import { filterOutput, filterOutputWithConfig } from "../security/output-filter.js";
+import { recordBotMessage } from "../storage/reactions.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
 const logger = getChildLogger({ module: "telegram-streaming" });
@@ -166,6 +167,9 @@ export class StreamingResponse {
 		const message = await this.api.sendMessage(this.chatId, this.config.initialMessage);
 		this.messageId = message.message_id;
 		this.lastUpdateTime = Date.now();
+
+		// Track for reaction context
+		recordBotMessage(this.chatId, message.message_id);
 
 		// Start typing indicator if enabled
 		if (this.config.showTypingIndicator) {
@@ -503,6 +507,8 @@ export class StreamingResponse {
 					parse_mode: this.useMarkdown ? "MarkdownV2" : undefined,
 					reply_markup: isLast ? keyboard : undefined,
 				});
+				// Track for reaction context
+				recordBotMessage(this.chatId, lastResult.message_id);
 			}
 
 			logger.info(
@@ -552,6 +558,8 @@ export class StreamingResponse {
 						lastResult = await this.api.sendMessage(this.chatId, chunks[i], {
 							reply_markup: isLast ? keyboard : undefined,
 						});
+						// Track for reaction context
+						recordBotMessage(this.chatId, lastResult.message_id);
 					}
 					return lastResult;
 				} catch (fallbackErr) {

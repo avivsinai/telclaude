@@ -14,6 +14,7 @@ import {
 	redactSecretsWithConfig,
 	type SecretFilterConfig,
 } from "../security/output-filter.js";
+import { recordBotMessage } from "../storage/reactions.js";
 import { stringToChatId } from "../utils.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
@@ -168,6 +169,7 @@ export async function sendMessageTelegram(
 	const mediaSource = options.mediaPath;
 	if (mediaSource) {
 		const payload = inferMediaPayload(mediaSource, formattedChunks[0]); // Use first chunk as caption
+		// Note: sendMediaToChat already calls recordBotMessage internally
 		const result = await sendMediaToChat(
 			bot.api,
 			chatId,
@@ -177,13 +179,14 @@ export async function sendMessageTelegram(
 		);
 		// Send remaining chunks as follow-up messages
 		for (let i = 1; i < formattedChunks.length; i++) {
-			await sendWithMarkdownFallback(
+			const followUp = await sendWithMarkdownFallback(
 				bot.api,
 				chatId,
 				formattedChunks[i],
 				rawChunks[i],
 				effectiveParseMode,
 			);
+			recordBotMessage(chatId, followUp.message_id);
 		}
 		logger.info({ chatId, messageId: result.message_id, hasMedia: true }, "sent message");
 		return { messageId: String(result.message_id), chatId };
@@ -200,6 +203,8 @@ export async function sendMessageTelegram(
 			effectiveParseMode,
 			i === 0 ? options.replyToMessageId : undefined,
 		);
+		// Track for reaction context
+		recordBotMessage(chatId, lastResult.message_id);
 	}
 
 	logger.info(
@@ -252,7 +257,7 @@ export async function convertAndSendMessage(
 	const shouldConvert = parseMode === "MarkdownV2";
 	const convertedText = shouldConvert ? convertToTelegramMarkdown(text) : text;
 
-	return sendWithMarkdownFallback(
+	const result = await sendWithMarkdownFallback(
 		api,
 		chatId,
 		convertedText,
@@ -260,6 +265,9 @@ export async function convertAndSendMessage(
 		parseMode,
 		options?.replyToMessageId,
 	);
+	// Track for reaction context
+	recordBotMessage(chatId, result.message_id);
+	return result;
 }
 
 /**
@@ -490,29 +498,47 @@ export async function sendMediaToChat(
 
 	const source = createInputFile(payload.source);
 
+	let result: Message;
 	switch (payload.type) {
 		case "photo":
-			return api.sendPhoto(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendPhoto(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			break;
 		case "document":
-			return api.sendDocument(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendDocument(chatId, source, {
+				caption: safeCaption,
+				parse_mode: parseMode,
+			});
+			break;
 		case "voice":
-			return api.sendVoice(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendVoice(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			break;
 		case "video":
-			return api.sendVideo(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendVideo(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			break;
 		case "audio":
-			return api.sendAudio(chatId, source, {
+			result = await api.sendAudio(chatId, source, {
 				caption: safeCaption,
 				parse_mode: parseMode,
 				title: payload.title,
 				performer: payload.performer,
 			});
+			break;
 		case "sticker":
-			return api.sendSticker(chatId, source);
+			result = await api.sendSticker(chatId, source);
+			break;
 		case "animation":
-			return api.sendAnimation(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendAnimation(chatId, source, {
+				caption: safeCaption,
+				parse_mode: parseMode,
+			});
+			break;
 		default:
 			throw new Error(`Unsupported media type: ${(payload as { type: string }).type}`);
 	}
+
+	// Track for reaction context
+	recordBotMessage(chatId, result.message_id);
+	return result;
 }
 
 /**

@@ -3,7 +3,9 @@ import type { Bot, Context } from "grammy";
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
+import { isChatBanned } from "../security/banned-chats.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
+import { isBotMessage, removeReaction, storeReaction } from "../storage/reactions.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
 import { registerKeyboardHandlers } from "./keyboard-handlers.js";
 import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
@@ -400,6 +402,56 @@ export async function monitorTelegramInbox(
 			await onMessage(msg);
 		} catch (err) {
 			logger.error({ error: String(err) }, "edited message handler failed");
+		}
+	});
+
+	// Handle message reactions (for context in subsequent conversations)
+	bot.on("message_reaction", async (ctx) => {
+		const chatId = ctx.chat?.id;
+		const userId = ctx.from?.id; // May be undefined in channels (actor_chat)
+		const messageId = ctx.messageReaction?.message_id;
+
+		// Guard: require all fields
+		if (!chatId || !messageId || !userId) {
+			logger.debug(
+				{ chatId, messageId, userId },
+				"skipping reaction: missing chatId, messageId, or userId",
+			);
+			return;
+		}
+
+		// Guard: only allowed chats
+		if (!isChatAllowed(chatId, ctx.chat.type)) {
+			return;
+		}
+
+		// Guard: reject banned chats (security: prevent banned users from influencing context)
+		if (isChatBanned(chatId)) {
+			logger.debug({ chatId }, "skipping reaction: chat is banned");
+			return;
+		}
+
+		// Guard: only reactions to bot messages
+		if (!isBotMessage(chatId, messageId)) {
+			logger.debug({ chatId, messageId }, "skipping reaction: not a bot message");
+			return;
+		}
+
+		// Process emoji reactions (ignore custom/paid)
+		try {
+			const { emojiAdded, emojiRemoved } = ctx.reactions();
+
+			for (const emoji of emojiAdded) {
+				storeReaction(chatId, messageId, userId, emoji);
+				logger.debug({ chatId, messageId, userId, emoji, action: "added" }, "reaction stored");
+			}
+
+			for (const emoji of emojiRemoved) {
+				removeReaction(chatId, messageId, userId, emoji);
+				logger.debug({ chatId, messageId, userId, emoji, action: "removed" }, "reaction removed");
+			}
+		} catch (err) {
+			logger.error({ error: String(err), chatId, messageId }, "reaction handler failed");
 		}
 	});
 
