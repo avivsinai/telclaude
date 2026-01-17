@@ -1,11 +1,15 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { loadConfig } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
+import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
@@ -20,6 +24,8 @@ const DEFAULT_TTS_LIMIT = 4000;
 const DEFAULT_PATH_LIMIT = 4096;
 const MAX_INFLIGHT = 4;
 const DEFAULT_TRANSCRIPTION_LIMITS = { maxPerHourPerUser: 20, maxPerDayPerUser: 50 };
+const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
+const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
 
 type CapabilityServerOptions = {
 	port?: number;
@@ -45,6 +51,16 @@ type TranscriptionRequest = {
 	path: string;
 	language?: string;
 	model?: string;
+	userId?: string;
+};
+
+type AttachmentFetchRequest = {
+	providerId: string;
+	attachmentId: string;
+	filename?: string;
+	mimeType?: string;
+	size?: number;
+	inlineBase64?: string;
 	userId?: string;
 };
 
@@ -185,6 +201,92 @@ function parseUserId(input: unknown): { userId?: string; error?: string } {
 	return { userId: trimmed };
 }
 
+const MIME_EXTENSION_MAP: Record<string, string> = {
+	"application/pdf": ".pdf",
+	"image/png": ".png",
+	"image/jpeg": ".jpg",
+	"image/jpg": ".jpg",
+	"image/webp": ".webp",
+};
+
+function sanitizeFilename(input?: string): string {
+	if (!input || typeof input !== "string") {
+		return "attachment";
+	}
+	const base = path.basename(input.trim());
+	const normalized = base.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+	if (!normalized || normalized === "." || normalized === "..") {
+		return "attachment";
+	}
+	return normalized;
+}
+
+function buildAttachmentFilename(filename?: string, mimeType?: string): string {
+	const safe = sanitizeFilename(filename);
+	const extFromName = path.extname(safe);
+	const fallbackExt = mimeType ? MIME_EXTENSION_MAP[mimeType] ?? "" : "";
+	const ext = extFromName || fallbackExt;
+	const stem = (extFromName ? safe.slice(0, -extFromName.length) : safe) || "attachment";
+	const suffix = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+	const truncatedStem = stem.slice(0, 80);
+	return `${truncatedStem}-${suffix}${ext}`;
+}
+
+async function ensureDocumentsDir(): Promise<string> {
+	const outboxRoot = getMediaOutboxDirSync();
+	const documentsDir = path.join(outboxRoot, "documents");
+	await fs.promises.mkdir(documentsDir, { recursive: true, mode: 0o700 });
+	return documentsDir;
+}
+
+async function writeAttachmentBuffer(buffer: Buffer, filepath: string): Promise<void> {
+	await fs.promises.writeFile(filepath, buffer, { mode: 0o600 });
+}
+
+async function streamAttachmentToFile(response: Response, filepath: string): Promise<number> {
+	const contentLength = response.headers.get("content-length");
+	if (contentLength) {
+		const size = Number.parseInt(contentLength, 10);
+		if (Number.isFinite(size) && size > MAX_ATTACHMENT_SIZE) {
+			throw new Error("File too large");
+		}
+	}
+
+	const body = response.body;
+	if (!body) {
+		throw new Error("Response has no body");
+	}
+
+	let totalBytes = 0;
+	const sizeChecker = new TransformStream<Uint8Array>({
+		transform(chunk, controller) {
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAX_ATTACHMENT_SIZE) {
+				controller.error(new Error("File too large"));
+				return;
+			}
+			controller.enqueue(chunk);
+		},
+	});
+
+	const webStream = body.pipeThrough(sizeChecker);
+	const nodeStream = Readable.fromWeb(webStream as import("stream/web").ReadableStream);
+	const writeStream = fs.createWriteStream(filepath, { mode: 0o600 });
+
+	try {
+		await pipeline(nodeStream, writeStream);
+	} catch (err) {
+		try {
+			await fs.promises.unlink(filepath);
+		} catch {
+			// Ignore cleanup failures
+		}
+		throw err;
+	}
+
+	return totalBytes;
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
@@ -236,7 +338,10 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
-			const parsed = JSON.parse(body) as ImageRequest & TTSRequest & TranscriptionRequest;
+			const parsed = JSON.parse(body) as ImageRequest &
+				TTSRequest &
+				TranscriptionRequest &
+				AttachmentFetchRequest;
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
 				writeJson(res, 400, { error: userIdResult.error });
@@ -370,6 +475,141 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					language: result.language,
 					durationSeconds: result.durationSeconds,
 				});
+				return;
+			}
+
+			if (req.url === "/v1/attachment/fetch") {
+				const typed = parsed as AttachmentFetchRequest;
+				const providerId =
+					typeof typed.providerId === "string" ? typed.providerId.trim() : "";
+				if (!providerId) {
+					writeJson(res, 400, { status: "error", error: "Provider not found" });
+					return;
+				}
+
+				const attachmentId =
+					typeof typed.attachmentId === "string" ? typed.attachmentId.trim() : "";
+				if (!attachmentId) {
+					writeJson(res, 400, { status: "error", error: "Missing attachment id" });
+					return;
+				}
+
+				const size = typed.size;
+				if (size !== undefined) {
+					if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
+						writeJson(res, 400, { status: "error", error: "Invalid size" });
+						return;
+					}
+					if (size > MAX_ATTACHMENT_SIZE) {
+						writeJson(res, 413, { status: "error", error: "File too large" });
+						return;
+					}
+				}
+
+				const config = loadConfig();
+				const provider = config.providers?.find((entry) => entry.id === providerId);
+				if (!provider) {
+					writeJson(res, 404, { status: "error", error: "Provider not found" });
+					return;
+				}
+
+				const safeFilename = buildAttachmentFilename(typed.filename, typed.mimeType);
+				const documentsDir = await ensureDocumentsDir();
+				const filepath = path.join(documentsDir, safeFilename);
+
+				if (typed.inlineBase64 !== undefined) {
+					if (typeof typed.inlineBase64 !== "string") {
+						writeJson(res, 400, { status: "error", error: "Invalid inlineBase64" });
+						return;
+					}
+					const inline = typed.inlineBase64.trim();
+					if (!inline) {
+						writeJson(res, 400, { status: "error", error: "Invalid inlineBase64" });
+						return;
+					}
+					if (!/^[A-Za-z0-9+/=]+$/.test(inline)) {
+						writeJson(res, 400, { status: "error", error: "Invalid inlineBase64" });
+						return;
+					}
+
+					const buffer = Buffer.from(inline, "base64");
+					if (buffer.length === 0) {
+						writeJson(res, 400, { status: "error", error: "Invalid inlineBase64" });
+						return;
+					}
+					if (buffer.length > MAX_ATTACHMENT_SIZE) {
+						writeJson(res, 413, { status: "error", error: "File too large" });
+						return;
+					}
+
+					try {
+						await writeAttachmentBuffer(buffer, filepath);
+					} catch (err) {
+						logger.error({ error: String(err) }, "failed to write inline attachment");
+						writeJson(res, 500, { status: "error", error: "Fetch failed" });
+						return;
+					}
+
+					writeJson(res, 200, { status: "ok", path: filepath });
+					return;
+				}
+
+				let fetchUrl: URL;
+				try {
+					const { url: base } = await validateProviderBaseUrl(provider.baseUrl);
+					fetchUrl = new URL(
+						`/v1/attachment/${encodeURIComponent(attachmentId)}`,
+						base,
+					);
+				} catch (err) {
+					logger.warn({ providerId, error: String(err) }, "invalid provider URL");
+					writeJson(res, 400, { status: "error", error: "Provider not found" });
+					return;
+				}
+
+				const controller = new AbortController();
+				const timeout = setTimeout(() => controller.abort(), DEFAULT_ATTACHMENT_TIMEOUT_MS);
+				let response: Response;
+				try {
+					response = await fetch(fetchUrl.toString(), {
+						method: "GET",
+						headers: {
+							accept: "*/*",
+						},
+						signal: controller.signal,
+					});
+				} catch (err) {
+					const reason = err instanceof Error ? err.message : String(err);
+					logger.warn({ providerId, error: reason }, "attachment fetch failed");
+					writeJson(res, 502, { status: "error", error: "Fetch failed" });
+					return;
+				} finally {
+					clearTimeout(timeout);
+				}
+
+				if (!response.ok) {
+					logger.warn(
+						{ providerId, status: response.status, statusText: response.statusText },
+						"attachment fetch response not ok",
+					);
+					writeJson(res, 502, { status: "error", error: "Fetch failed" });
+					return;
+				}
+
+				try {
+					await streamAttachmentToFile(response, filepath);
+				} catch (err) {
+					const reason = err instanceof Error ? err.message : String(err);
+					logger.warn({ providerId, error: reason }, "attachment stream failed");
+					if (String(reason).toLowerCase().includes("too large")) {
+						writeJson(res, 413, { status: "error", error: "File too large" });
+						return;
+					}
+					writeJson(res, 502, { status: "error", error: "Fetch failed" });
+					return;
+				}
+
+				writeJson(res, 200, { status: "ok", path: filepath });
 				return;
 			}
 
