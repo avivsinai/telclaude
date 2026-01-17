@@ -1,7 +1,7 @@
 ---
 name: external-provider
 description: Access configured sidecar providers (health, banking, government) via WebFetch.
-allowed-tools: Read, WebFetch
+allowed-tools: Read, WebFetch, Bash
 ---
 
 # External Provider
@@ -24,11 +24,11 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
    ```
    Read references/provider-schema.md
    ```
-   This file shows the exact base URL (e.g., `http://israel-services:3001`) and all available service endpoints.
+   This file shows the exact base URL (e.g., `http://provider-sidecar:3001`) and all available service endpoints.
 
 2. **Then fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
    - Use the EXACT base URL from the schema (do NOT use localhost, 127.0.0.1, or made-up hostnames)
-   - Use the EXACT endpoint paths from the schema (e.g., `/v1/clalit/visit_summaries`)
+   - Use the EXACT endpoint paths from the schema (e.g., `/v1/{service}/{action}`)
    ```
    WebFetch({
      url: "<exact-base-url-from-schema>/v1/{service}/{endpoint}",
@@ -85,8 +85,8 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
 
 5. **Handle attachments** (if present):
    - The `id` is a signed token: `att_<hash>.<expiresTimestamp>.<signature>`
-   - Small files (≤256KB) include `inline` base64 content
-   - Large files omit `inline` - fetch via `/v1/attachment/{id}` endpoint using the full signed ID
+   - Small files (≤256KB) may include `inline` base64 content
+   - Large files omit `inline` - the relay must fetch via `/v1/attachment/{id}` using the full signed ID
    - Attachments expire after ~15 minutes (check `expiresAt`)
    - Mention available attachments to the user (filename, type, size)
 
@@ -118,10 +118,10 @@ When a provider response includes attachments and the user wants the file delive
 
 **Example**:
 ```bash
-# User asked for their visit summary PDF
-telclaude fetch-attachment --provider israel-services \
+# User asked for an attachment
+telclaude fetch-attachment --provider <provider-id> \
   --id "att_abc123.1737100000.sig" \
-  --filename "visit_summary.pdf" \
+  --filename "attachment.pdf" \
   --mime "application/pdf"
 ```
 
