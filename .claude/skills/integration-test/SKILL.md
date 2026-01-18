@@ -123,7 +123,7 @@ This means Claude generated audio but didn't follow the skill instructions. Chec
 ## Running in Docker
 
 ```bash
-# On Docker host (e.g., raspi4)
+# On Docker host
 docker exec telclaude telclaude integration-test --all -v
 
 # Just voice test
