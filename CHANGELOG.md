@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-01-18
+
+### Added
+
+- **READ_ONLY attachment delivery** - WebFetch can call relay `/v1/attachment/fetch` with internal auth injection, enabling attachment delivery without Bash.
+
+### Fixed
+
+- **External provider attachments (READ_ONLY)** - Skill now uses WebFetch for attachment fetch instead of the Bash CLI.
+
+### Security
+
+- **Defense in depth** - Block writes to telclaude source directories in sensitive path checks.
+
 ## [0.5.2] - 2026-01-18
 
 ### Added
@@ -153,7 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/avivsinai/telclaude/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/avivsinai/telclaude/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/avivsinai/telclaude/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/avivsinai/telclaude/compare/v0.4.1...v0.5.0
