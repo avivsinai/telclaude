@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-01-18
+
+### Added
+
+- **Telegram reaction context** - Conversations now include context from message reactions
+- **Attachment fetch endpoint** - New relay endpoint and `fetch-attachment` CLI command for retrieving provider attachments
+
+### Fixed
+
+- **Docker skills symlink** - Force symlink to prevent path divergence between relay and agent
+- **Docker /data writability** - Entrypoint now checks writability before chmod
+- **Docker volume protection** - Critical volumes protected from accidental deletion
+- **User ID in Docker mode** - SDK now receives user ID correctly via request context
+- **External provider noResults** - Skill correctly handles empty results from providers
+
+### Security
+
+- **Gitleaks pre-commit hooks** - Added hooks to catch secrets before commit
+- **Strengthened .gitignore** - Additional patterns to prevent secret leaks
+
 ## [0.5.1] - 2026-01-11
 
 ### Added
@@ -133,7 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/avivsinai/telclaude/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/avivsinai/telclaude/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/avivsinai/telclaude/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/avivsinai/telclaude/compare/v0.4.0...v0.4.1
