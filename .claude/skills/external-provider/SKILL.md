@@ -91,25 +91,31 @@ Never guess or fabricate URLs. The schema file contains the exact base URL and a
    - Attachments expire after ~15 minutes (check `expiresAt`)
    - Mention available attachments to the user (filename, type, size)
 
-## Delivering Attachments to Users
+## Delivering Attachments to Users (READ_ONLY compatible)
 
 When a provider response includes attachments and the user wants the file delivered:
 
-1. **Use the `telclaude fetch-attachment` CLI command**:
-   ```bash
-   # For attachments with inline base64 content (small files):
-   telclaude fetch-attachment --provider <provider-id> --id <attachment.id> \
-     --filename <attachment.filename> --mime <attachment.mimeType> \
-     --inline "<base64-content>"
-
-   # For attachments that need fetching (large files):
-   telclaude fetch-attachment --provider <provider-id> --id <attachment.id> \
-     --filename <attachment.filename> --mime <attachment.mimeType>
+1. **Use WebFetch to the relay attachment endpoint** (no auth headers needed; telclaude injects them). Use the relay base URL (Docker default: `http://telclaude:8790`):
+   ```js
+   WebFetch({
+     url: "http://telclaude:8790/v1/attachment/fetch",
+     method: "POST",
+     body: JSON.stringify({
+       providerId: "<provider-id>",
+       attachmentId: "<attachment.id>",
+       filename: "<attachment.filename>",
+       mimeType: "<attachment.mimeType>",
+       size: <attachment.size>,
+       inlineBase64: "<attachment.inline>" // if present (small files)
+     })
+   })
    ```
+   - `inlineBase64` is only for small attachments that include `inline`.
+   - Omit `inlineBase64` for large files; the relay will fetch via `/v1/attachment/{id}`.
 
-2. **The command outputs the saved file path**:
-   ```
-   Attachment saved to: /media/outbox/documents/visit_summary-1737099600-abc123.pdf
+2. **The response contains the saved file path**:
+   ```json
+   { "status": "ok", "path": "/media/outbox/documents/visit_summary-1737099600-abc123.pdf" }
    ```
 
 3. **Include the path in your response** - the relay automatically sends files from `/media/outbox/documents/` to Telegram:
@@ -118,12 +124,17 @@ When a provider response includes attachments and the user wants the file delive
    ```
 
 **Example**:
-```bash
-# User asked for an attachment
-telclaude fetch-attachment --provider <provider-id> \
-  --id "att_abc123.1737100000.sig" \
-  --filename "attachment.pdf" \
-  --mime "application/pdf"
+```js
+WebFetch({
+  url: "http://telclaude:8790/v1/attachment/fetch",
+  method: "POST",
+  body: JSON.stringify({
+    providerId: "<provider-id>",
+    attachmentId: "att_abc123.1737100000.sig",
+    filename: "attachment.pdf",
+    mimeType: "application/pdf"
+  })
+})
 ```
 
 **Note**: Only fetch attachments when the user explicitly requests the file. First tell them what's available, then offer to send it.

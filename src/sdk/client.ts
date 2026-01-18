@@ -30,6 +30,7 @@ import {
 	type PermissionTier,
 	type PrivateEndpoint,
 } from "../config/config.js";
+import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
@@ -332,6 +333,85 @@ function injectProviderHeaders(
 	return updated;
 }
 
+function getUrlPort(url: URL): string {
+	return url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
+}
+
+function isRelayAttachmentEndpoint(url: URL): boolean {
+	const capabilitiesUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+	if (!capabilitiesUrl) return false;
+	try {
+		const relayUrl = new URL(capabilitiesUrl);
+		return (
+			url.protocol === relayUrl.protocol &&
+			url.hostname === relayUrl.hostname &&
+			getUrlPort(url) === getUrlPort(relayUrl)
+		);
+	} catch {
+		return false;
+	}
+}
+
+function normalizeRequestBody(body: unknown): { body?: string; error?: string } {
+	if (body === undefined || body === null) {
+		return { error: "Missing request body." };
+	}
+	if (typeof body === "string") {
+		return { body };
+	}
+	try {
+		return { body: JSON.stringify(body) };
+	} catch {
+		return { error: "Unable to serialize request body." };
+	}
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+	const target = name.toLowerCase();
+	return Object.keys(headers).some((key) => key.toLowerCase() === target);
+}
+
+function buildRelayAttachmentRequest(
+	toolInput: { method?: string; headers?: Record<string, string>; body?: unknown },
+	url: URL,
+): { updatedInput?: Record<string, unknown>; error?: string } {
+	if (url.pathname !== "/v1/attachment/fetch") {
+		return { error: "Only /v1/attachment/fetch allowed on relay." };
+	}
+
+	const method = toolInput.method?.toUpperCase();
+	if (method && method !== "POST") {
+		return { error: "Relay attachment fetch requires POST." };
+	}
+
+	const normalizedBody = normalizeRequestBody(toolInput.body);
+	if (normalizedBody.error || normalizedBody.body === undefined) {
+		return { error: normalizedBody.error ?? "Invalid request body." };
+	}
+
+	let headers = { ...(toolInput.headers ?? {}) };
+	if (!hasHeader(headers, "content-type")) {
+		headers["Content-Type"] = "application/json";
+	}
+
+	try {
+		const path = `${url.pathname}${url.search}`;
+		const authHeaders = buildInternalAuthHeaders("POST", path, normalizedBody.body);
+		headers = { ...headers, ...authHeaders };
+	} catch {
+		return { error: "Relay attachment fetch is not configured." };
+	}
+
+	return {
+		updatedInput: {
+			...toolInput,
+			method: "POST",
+			headers,
+			body: normalizedBody.body,
+		},
+	};
+}
+
 /**
  * Create a PreToolUse hook that blocks WebFetch to private networks and metadata endpoints.
  *
@@ -398,6 +478,20 @@ function createNetworkSecurityHook(
 					"[hook] blocked non-HTTP protocol",
 				);
 				return denyHookResponse("Only HTTP/HTTPS protocols are allowed.");
+			}
+
+			// Relay attachment fetch (internal capabilities broker)
+			if (isRelayAttachmentEndpoint(url)) {
+				const relayRequest = buildRelayAttachmentRequest(toolInput, url);
+				if (relayRequest.error) {
+					logger.warn(
+						{ url: url.pathname, error: relayRequest.error },
+						"[hook] blocked relay attachment fetch",
+					);
+					return denyHookResponse(relayRequest.error);
+				}
+				logger.info({ url: url.pathname }, "[hook] injected auth for relay attachment fetch");
+				return allowHookResponse(relayRequest.updatedInput ?? toolInput);
 			}
 
 			// Extract port (default: 443 for https, 80 for http)

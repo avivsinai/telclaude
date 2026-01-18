@@ -384,6 +384,11 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	// === Security-critical skills ===
 	// SECURITY: Prevents self-modification of the security-gate skill prompt.
 	/(?:^|[/\\])\.claude[/\\]skills[/\\]security-gate(?:[/\\]|$)/i,
+	// === Telclaude source code (defense in depth) ===
+	// SECURITY: Agent has no reason to write to telclaude's own source.
+	// Primary protection is Docker read-only filesystem; this is belt-and-suspenders.
+	/(?:^|[/\\])app[/\\]src(?:[/\\]|$)/i, // /app/src/ in Docker
+	/telclaude[/\\]src(?:[/\\]|$)/i, // telclaude/src/ anywhere
 
 	// === Environment files (secrets!) ===
 	// Match .env anywhere in path (but not .environment or similar)
