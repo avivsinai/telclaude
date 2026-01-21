@@ -15,6 +15,8 @@ import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
+import { validateAttachmentRef } from "../storage/attachment-refs.js";
+import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
 
@@ -25,6 +27,8 @@ const DEFAULT_PATH_LIMIT = 4096;
 const MAX_INFLIGHT = 4;
 const DEFAULT_TRANSCRIPTION_LIMITS = { maxPerHourPerUser: 20, maxPerDayPerUser: 50 };
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
+// Base64 encoding adds ~33% overhead, so 20MB file = ~27MB base64
+const ATTACHMENT_DELIVER_BODY_LIMIT = 30 * 1024 * 1024;
 const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
 
 type CapabilityServerOptions = {
@@ -61,6 +65,19 @@ type AttachmentFetchRequest = {
 	mimeType?: string;
 	size?: number;
 	inlineBase64?: string;
+	userId?: string;
+};
+
+type LocalFileDeliverRequest = {
+	sourcePath: string;
+	filename?: string;
+	userId?: string;
+};
+
+type AttachmentDeliverRequest = {
+	inline: string;
+	filename?: string;
+	mimeType?: string;
 	userId?: string;
 };
 
@@ -239,6 +256,112 @@ async function ensureDocumentsDir(): Promise<string> {
 	return documentsDir;
 }
 
+/**
+ * Get the configured workspace root for local file validation.
+ * Uses TELCLAUDE_WORKSPACE env var, falling back to /workspace.
+ * Does NOT use process.cwd() to avoid widening access if relay starts from /app or /.
+ */
+function getWorkspaceRoot(): string {
+	const configured = process.env.TELCLAUDE_WORKSPACE?.trim();
+	if (configured) {
+		try {
+			return fs.realpathSync(configured);
+		} catch {
+			return path.resolve(configured);
+		}
+	}
+	// Default to /workspace (standard mount point in Docker)
+	try {
+		return fs.realpathSync("/workspace");
+	} catch {
+		return "/workspace";
+	}
+}
+
+/**
+ * Validate that a source path is safe to copy from.
+ * Rejects paths outside allowed directories or sensitive locations.
+ *
+ * Security measures:
+ * - Rejects symlinks (prevents symlink-to-sensitive-file attacks)
+ * - Rejects hard links with nlink > 1 (prevents hardlink bypass)
+ * - Uses explicit workspace root, not process.cwd()
+ * - Returns fd for atomic copy (prevents TOCTOU race)
+ */
+function validateLocalFilePath(inputPath: string): {
+	valid: boolean;
+	realPath?: string;
+	fd?: number;
+	error?: string;
+} {
+	const workspaceRoot = getWorkspaceRoot();
+
+	// Resolve to absolute path relative to workspace
+	const absolutePath = path.isAbsolute(inputPath)
+		? inputPath
+		: path.resolve(workspaceRoot, inputPath);
+
+	// Check for symlinks, hardlinks, and resolve real path
+	let realPath: string;
+	let fd: number;
+	try {
+		const stat = fs.lstatSync(absolutePath);
+		if (stat.isSymbolicLink()) {
+			return { valid: false, error: "Symlinks are not allowed" };
+		}
+		if (!stat.isFile()) {
+			return { valid: false, error: "Path is not a file" };
+		}
+		// Reject hard links (nlink > 1) to prevent hardlink bypass attacks
+		// A hardlink to a sensitive file would pass path checks but expose sensitive data
+		if (stat.nlink > 1) {
+			logger.warn({ path: absolutePath, nlink: stat.nlink }, "rejected hardlinked file");
+			return { valid: false, error: "Hard-linked files are not allowed" };
+		}
+		realPath = fs.realpathSync(absolutePath);
+
+		// Open file now to prevent TOCTOU race (file swapped between validation and copy)
+		fd = fs.openSync(realPath, "r");
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.includes("ENOENT")) {
+			return { valid: false, error: "File not found" };
+		}
+		return { valid: false, error: "Cannot access file" };
+	}
+
+	// Block sensitive paths
+	const sensitivePatterns = [
+		/\/\.ssh\//i,
+		/\/\.aws\//i,
+		/\/\.gnupg\//i,
+		/\/\.config\//i,
+		/\/\.telclaude\//i,
+		/\/secrets?\//i,
+		/\/credentials?\//i,
+		/\/\.env$/i,
+		/\/\.env\./i,
+		/\/id_rsa/i,
+		/\/id_ed25519/i,
+		/\/\.git\/config$/i,
+	];
+
+	for (const pattern of sensitivePatterns) {
+		if (pattern.test(realPath)) {
+			fs.closeSync(fd);
+			return { valid: false, error: "Access to sensitive paths is not allowed" };
+		}
+	}
+
+	// Must be under workspace root only (not process.cwd())
+	if (realPath !== workspaceRoot && !realPath.startsWith(workspaceRoot + path.sep)) {
+		fs.closeSync(fd);
+		return { valid: false, error: "File must be under workspace directory" };
+	}
+
+	return { valid: true, realPath, fd };
+}
+
 async function writeAttachmentBuffer(buffer: Buffer, filepath: string): Promise<void> {
 	await fs.promises.writeFile(filepath, buffer, { mode: 0o600 });
 }
@@ -328,7 +451,10 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 		inFlight += 1;
 
 		try {
-			const body = await parseBody(req, bodyLimit);
+			// Use higher body limit for attachment delivery (base64 payloads)
+			const effectiveBodyLimit =
+				req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit;
+			const body = await parseBody(req, effectiveBodyLimit);
 			const authResult = verifyInternalAuth(req, body);
 			if (!authResult.ok) {
 				logger.warn(
@@ -341,7 +467,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			const parsed = JSON.parse(body) as ImageRequest &
 				TTSRequest &
 				TranscriptionRequest &
-				AttachmentFetchRequest;
+				AttachmentFetchRequest &
+				LocalFileDeliverRequest &
+				AttachmentDeliverRequest;
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
 				writeJson(res, 400, { error: userIdResult.error });
@@ -606,6 +734,189 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				}
 
 				writeJson(res, 200, { status: "ok", path: filepath });
+				return;
+			}
+
+			if (req.url === "/v1/provider/proxy") {
+				const typed = parsed as ProviderProxyRequest;
+				const providerId = typeof typed.providerId === "string" ? typed.providerId.trim() : "";
+				if (!providerId) {
+					writeJson(res, 400, { status: "error", error: "Missing provider ID" });
+					return;
+				}
+
+				const requestPath = typeof typed.path === "string" ? typed.path.trim() : "";
+				if (!requestPath) {
+					writeJson(res, 400, { status: "error", error: "Missing request path" });
+					return;
+				}
+
+				const result = await proxyProviderRequest({
+					providerId,
+					path: requestPath,
+					method: typeof typed.method === "string" ? typed.method : "POST",
+					body: typeof typed.body === "string" ? typed.body : undefined,
+					userId,
+				});
+
+				if (result.status === "error") {
+					writeJson(res, 502, result);
+					return;
+				}
+
+				writeJson(res, 200, result);
+				return;
+			}
+
+			if (req.url === "/v1/attachment/validate") {
+				const typed = parsed as { ref?: string; userId?: string };
+				const ref = typeof typed.ref === "string" ? typed.ref.trim() : "";
+				if (!ref) {
+					writeJson(res, 400, { status: "error", error: "Missing ref" });
+					return;
+				}
+
+				const result = validateAttachmentRef(ref, { actorUserId: userId });
+				if (!result.valid) {
+					writeJson(res, 404, { status: "error", error: result.reason });
+					return;
+				}
+
+				writeJson(res, 200, {
+					status: "ok",
+					attachment: {
+						ref: result.attachment.ref,
+						filepath: result.attachment.filepath,
+						filename: result.attachment.filename,
+						mimeType: result.attachment.mimeType,
+						size: result.attachment.size,
+					},
+				});
+				return;
+			}
+
+			if (req.url === "/v1/local-file/deliver") {
+				const typed = parsed as LocalFileDeliverRequest;
+				const sourcePath = typeof typed.sourcePath === "string" ? typed.sourcePath.trim() : "";
+				if (!sourcePath) {
+					writeJson(res, 400, { status: "error", error: "Missing sourcePath" });
+					return;
+				}
+
+				// Validate the source path is safe (returns fd for atomic copy)
+				const validation = validateLocalFilePath(sourcePath);
+				if (!validation.valid || !validation.realPath || validation.fd === undefined) {
+					writeJson(res, 400, { status: "error", error: validation.error ?? "Invalid path" });
+					return;
+				}
+
+				const sourceFd = validation.fd;
+				try {
+					// Check file size and nlink using the already-opened fd (prevents TOCTOU)
+					const stat = fs.fstatSync(sourceFd);
+
+					// Re-check nlink on the actual opened fd (covers lstat→open race)
+					if (stat.nlink > 1) {
+						logger.warn(
+							{ path: validation.realPath, nlink: stat.nlink },
+							"rejected hardlinked file (fstat)",
+						);
+						writeJson(res, 400, { status: "error", error: "Hard-linked files are not allowed" });
+						return;
+					}
+
+					const fileSize = stat.size;
+					if (fileSize > MAX_ATTACHMENT_SIZE) {
+						writeJson(res, 413, { status: "error", error: "File too large" });
+						return;
+					}
+
+					// Determine filename
+					const originalFilename = path.basename(validation.realPath);
+					const requestedFilename = typed.filename?.trim();
+					const finalFilename = buildAttachmentFilename(
+						requestedFilename || originalFilename,
+						undefined,
+					);
+
+					// Copy to documents directory using the fd (atomic, no TOCTOU)
+					const documentsDir = await ensureDocumentsDir();
+					const destPath = path.join(documentsDir, finalFilename);
+
+					// Read from fd and write to dest
+					const buffer = Buffer.alloc(fileSize);
+					fs.readSync(sourceFd, buffer, 0, fileSize, 0);
+					await fs.promises.writeFile(destPath, buffer, { mode: 0o600 });
+
+					logger.info(
+						{ sourcePath: validation.realPath, destPath, size: fileSize },
+						"delivered local file to outbox",
+					);
+
+					writeJson(res, 200, {
+						status: "ok",
+						path: destPath,
+						filename: finalFilename,
+						size: fileSize,
+					});
+				} catch (err) {
+					logger.error(
+						{ error: String(err), sourcePath: validation.realPath },
+						"failed to copy local file",
+					);
+					writeJson(res, 500, { status: "error", error: "Copy failed" });
+				} finally {
+					fs.closeSync(sourceFd);
+				}
+				return;
+			}
+
+			if (req.url === "/v1/attachment/deliver") {
+				const typed = parsed as AttachmentDeliverRequest;
+				const inline = typeof typed.inline === "string" ? typed.inline.trim() : "";
+				if (!inline) {
+					writeJson(res, 400, { status: "error", error: "Missing inline content" });
+					return;
+				}
+
+				// Validate base64 format
+				if (!/^[A-Za-z0-9+/=]+$/.test(inline)) {
+					writeJson(res, 400, { status: "error", error: "Invalid base64 content" });
+					return;
+				}
+
+				// Decode base64
+				const buffer = Buffer.from(inline, "base64");
+				if (buffer.length === 0) {
+					writeJson(res, 400, { status: "error", error: "Empty content" });
+					return;
+				}
+				if (buffer.length > MAX_ATTACHMENT_SIZE) {
+					writeJson(res, 413, { status: "error", error: "File too large" });
+					return;
+				}
+
+				// Build filename
+				const safeFilename = buildAttachmentFilename(typed.filename, typed.mimeType);
+				const documentsDir = await ensureDocumentsDir();
+				const destPath = path.join(documentsDir, safeFilename);
+
+				try {
+					await fs.promises.writeFile(destPath, buffer, { mode: 0o600 });
+					logger.info(
+						{ destPath, size: buffer.length, filename: safeFilename },
+						"delivered inline attachment to outbox",
+					);
+					writeJson(res, 200, {
+						status: "ok",
+						path: destPath,
+						filename: safeFilename,
+						size: buffer.length,
+					});
+				} catch (err) {
+					logger.error({ error: String(err) }, "failed to write inline attachment");
+					writeJson(res, 500, { status: "error", error: "Write failed" });
+				}
 				return;
 			}
 

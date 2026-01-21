@@ -1,7 +1,7 @@
 ---
 name: external-provider
 description: Access configured sidecar providers (health, banking, government) via WebFetch.
-allowed-tools: Read, WebFetch, Bash
+allowed-tools: Read, WebFetch
 ---
 
 # External Provider
@@ -10,143 +10,113 @@ Use this skill when the user asks about data from configured external providers 
 
 ## Available Services
 
-Check the provider configuration to see which services are available. The authoritative list is the provider's `/v1/schema` response (cached in `references/provider-schema.md` when available). Common examples:
+Check the provider schema to see which services are available. The authoritative list is the provider's `/v1/schema` response (cached in `references/provider-schema.md` when available). Common examples:
 - Health services (appointments, records)
 - Banking services (balance, transactions)
 - Government services (documents, status)
-If the schema includes `credentialFields`, use them to explain which fields an operator must configure (never ask users for credentials).
 
 ## How to Use
 
-**CRITICAL: You MUST read `references/provider-schema.md` BEFORE making any WebFetch calls.**
-Never guess or fabricate URLs. The schema file contains the exact base URL and available endpoints.
+**Use WebFetch to call providers directly.** The system automatically injects authentication headers.
 
-1. **First, read the schema file** to get the provider's base URL and available endpoints:
-   ```
-   Read references/provider-schema.md
-   ```
-   This file shows the exact base URL (e.g., `http://provider-sidecar:3001`) and all available service endpoints.
+### 1. Read the schema file
 
-2. **Then fetch data via WebFetch** to the provider's REST API (POST for service endpoints):
-   - Use the EXACT base URL from the schema (do NOT use localhost, 127.0.0.1, or made-up hostnames)
-   - Use the EXACT endpoint paths from the schema (e.g., `/v1/{service}/{action}`)
-   ```
-   WebFetch({
-     url: "<exact-base-url-from-schema>/v1/{service}/{endpoint}",
-     method: "POST",
-     body: "{\"subjectUserId\":\"<target-user-id>\",\"params\":{...}}"
-   })
-   ```
-   - Telclaude injects `x-actor-user-id` for provider calls automatically; do not fabricate headers
-   - If the user is requesting their own data, omit `subjectUserId`.
-   - Use `/v1/health` with GET only when checking provider status.
-
-3. **Parse the JSON response**. Expected shape (provider-defined fields may vary):
-   ```json
-   {
-     "status": "ok" | "auth_required" | "challenge_pending" | "error" | "<provider-specific>",
-     "data": {
-       "noResults": "Optional - if present, means no data found (valid response)",
-       "items": [],
-       ...
-     },
-     "confidence": 0.0-1.0,
-     "lastUpdated": "ISO timestamp",
-     "error": "message if status indicates failure",
-     "partial": { ... },
-     "challenge": {
-       "id": "challenge-id",
-       "type": "<provider-specific challenge type>",
-       "hint": "sent to ***1234",
-       "service": "service-name",
-       "prompt": "SMS verification code",
-       "captureMethod": "text" | "browser",
-       "interactUrl": "https://... (if browser-based)",
-       "instructions": "Optional instructions"
-     },
-     "attachments": [
-       {
-         "id": "att_abc123.<expires>.<sig>",
-         "filename": "document.pdf",
-         "mimeType": "application/pdf",
-         "size": 12345,
-         "expiresAt": "ISO timestamp",
-         "inline": "base64-content-if-small"
-       }
-     ]
-   }
-   ```
-
-4. **Handle status codes**:
-   - `ok`: Present the data. **IMPORTANT**: Check for `noResults` field in data - if present, tell user "no records found" (this is NOT an error, just empty results)
-   - `auth_required`: Inform user that service needs authentication setup (never ask for credentials)
-   - `challenge_pending`: Ask user to complete verification via `/otp <service> <code>` (or include `challengeId` if provided)
-   - `parse_error`/`extraction_error` (if returned): Some data couldn't be extracted; check `partial` for available data and `error` for details
-   - `error`: Show error message to user
-
-5. **Handle attachments** (if present):
-   - The `id` is a signed token: `att_<hash>.<expiresTimestamp>.<signature>`
-   - Small files (≤256KB) may include `inline` base64 content
-   - Large files omit `inline` - the relay must fetch via `/v1/attachment/{id}` using the full signed ID
-   - Attachments expire after ~15 minutes (check `expiresAt`)
-   - Mention available attachments to the user (filename, type, size)
-
-## Delivering Attachments to Users (READ_ONLY compatible)
-
-When a provider response includes attachments and the user wants the file delivered:
-
-1. **Use WebFetch to the relay attachment endpoint** (no auth headers needed; telclaude injects them). Use the relay base URL (Docker default: `http://telclaude:8790`):
-   ```js
-   WebFetch({
-     url: "http://telclaude:8790/v1/attachment/fetch",
-     method: "POST",
-     body: JSON.stringify({
-       providerId: "<provider-id>",
-       attachmentId: "<attachment.id>",
-       filename: "<attachment.filename>",
-       mimeType: "<attachment.mimeType>",
-       size: <attachment.size>,
-       inlineBase64: "<attachment.inline>" // if present (small files)
-     })
-   })
-   ```
-   - `inlineBase64` is only for small attachments that include `inline`.
-   - Omit `inlineBase64` for large files; the relay will fetch via `/v1/attachment/{id}`.
-
-2. **The response contains the saved file path**:
-   ```json
-   { "status": "ok", "path": "/media/outbox/documents/visit_summary-1737099600-abc123.pdf" }
-   ```
-
-3. **Include the path in your response** - the relay automatically sends files from `/media/outbox/documents/` to Telegram:
-   ```
-   "I've downloaded your document: /media/outbox/documents/visit_summary-1737099600-abc123.pdf"
-   ```
-
-**Example**:
-```js
-WebFetch({
-  url: "http://telclaude:8790/v1/attachment/fetch",
-  method: "POST",
-  body: JSON.stringify({
-    providerId: "<provider-id>",
-    attachmentId: "att_abc123.1737100000.sig",
-    filename: "attachment.pdf",
-    mimeType: "application/pdf"
-  })
-})
+```
+Read references/provider-schema.md
 ```
 
-**Note**: Only fetch attachments when the user explicitly requests the file. First tell them what's available, then offer to send it.
+This shows the provider ID, base URL, and available endpoints.
+
+### 2. Call the provider via WebFetch
+
+```
+WebFetch
+  url: http://<provider-host>:<port>/v1/<service>/<action>
+  method: POST
+  body: {"subjectUserId": "<user-id>", "params": {...}}
+```
+
+Example:
+```
+WebFetch
+  url: http://israel-services:3001/v1/clalit/appointments
+  method: POST
+  body: {"params": {}}
+```
+
+### 3. Parse the response
+
+Provider returns:
+```json
+{
+  "status": "ok" | "auth_required" | "challenge_pending" | "error",
+  "data": { ... },
+  "confidence": 0.0-1.0,
+  "lastUpdated": "ISO timestamp",
+  "attachments": [
+    {
+      "id": "att_123",
+      "filename": "document.pdf",
+      "mimeType": "application/pdf",
+      "size": 12345,
+      "inline": "base64...",
+      "textContent": "Preview text from the document..."
+    }
+  ]
+}
+```
+
+### 4. Handle status codes
+
+- `ok`: Present the data. Check for `noResults` field - if present, tell user "no records found"
+- `auth_required`: Inform user that service needs authentication setup
+- `challenge_pending`: Ask user to complete verification via `/otp <service> <code>`
+- `error`: Show error message to user
+
+## Handling Attachments
+
+Attachments include:
+- `inline`: Base64-encoded file content
+- `textContent`: Extracted text (for PDFs, documents)
+
+### Reading document content
+
+Use `textContent` to answer questions about the document:
+```
+"Based on the visit summary, your last appointment was on January 10th..."
+```
+
+### Sending files to the user
+
+When user wants the actual file, deliver it via the relay:
+
+```
+WebFetch
+  url: http://<relay-host>:8790/v1/attachment/deliver
+  method: POST
+  body: {
+    "inline": "<base64 from attachment>",
+    "filename": "<attachment filename>",
+    "mimeType": "<attachment mimeType>"
+  }
+```
+
+Example workflow:
+1. User asks for their visit summary
+2. Call provider: `WebFetch to http://israel-services:3001/v1/clalit/visitSummaries`
+3. Response includes `attachments` with `inline` and `textContent`
+4. Tell user: "I found your visit summary from January 10th. Would you like me to send it?"
+5. User says "yes"
+6. Deliver: `WebFetch to relay /v1/attachment/deliver` with the inline content
+7. Report: "I've sent your visit summary."
 
 ## Important Rules
 
-1. **Never ask for credentials** - The provider handles authentication separately
-2. **Never guess URLs** - Only call endpoints documented by the provider
+1. **Use WebFetch directly** - No CLI commands needed
+2. **Never ask for credentials** - The provider handles authentication separately
 3. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
 4. **Show freshness** - Always tell user when data was last updated
 5. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
-6. **Browser challenges** - If `captureMethod` is `browser` or `interactUrl` is present, give the user the link and instructions to complete it
 
 ## Example Responses
 
@@ -159,33 +129,22 @@ WebFetch({
 ### Auth required:
 "This service needs to be set up first. Please ask the operator to configure authentication for the banking service."
 
-### No results found (status ok, but noResults field present):
-"I checked your hospital summaries but there are no records available. This means there are no discharge summaries on file for the selected hospital."
-
-### Partial/parse error:
-"I couldn't fully retrieve your data - some information may be missing. Here's what I found: [partial data]. The service may need maintenance if this persists."
-
 ### Attachment available:
-"I found your visit summary from January 10th. There's a PDF document available (visit_summary_2024-01-10.pdf, 245 KB). Would you like me to send it to you?"
+"I found your visit summary from January 10th. The document shows you visited Dr. Smith for a follow-up. There's a PDF available (245 KB). Would you like me to send it to you?"
 
-### Attachment delivered:
-"I've downloaded your visit summary: /media/outbox/documents/visit_summary_2024-01-10.pdf"
+### Attachment sent:
+"I've sent your visit summary to you."
 
 ## Endpoints Reference
 
-Common provider endpoints (actual availability depends on configuration). For the
-authoritative list, see the Provider Schemas section below.
-
-| Endpoint | Description |
-|----------|-------------|
-| `/v1/{service}/summary` | Overview/dashboard data |
-| `/v1/{service}/appointments` | Upcoming appointments |
-| `/v1/{service}/transactions` | Recent transactions |
-| `/v1/{service}/balance` | Current balance |
-| `/v1/health` | Provider health status |
-| `/v1/challenge/respond` | OTP submission (relay-only) |
-| `/v1/attachment/{id}` | Download attachment by signed ID |
-| `/v1/attachment/fetch` | Relay endpoint - fetch and save attachment for Telegram delivery |
+| Path | Method | Description |
+|------|--------|-------------|
+| `/v1/{service}/summary` | POST | Overview/dashboard data |
+| `/v1/{service}/appointments` | POST | Upcoming appointments |
+| `/v1/{service}/transactions` | POST | Recent transactions |
+| `/v1/{service}/balance` | POST | Current balance |
+| `/v1/health` | GET | Provider health status |
+| `/v1/schema` | GET | Service schema/manifest |
 
 ## Provider Schemas (auto-generated)
 
