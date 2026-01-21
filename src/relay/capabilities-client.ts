@@ -83,3 +83,35 @@ export async function relayFetchAttachment(input: {
 }): Promise<{ status: string; path: string; error?: string }> {
 	return postJson("/v1/attachment/fetch", input);
 }
+
+export async function relayProviderProxy(input: {
+	providerId: string;
+	path: string;
+	method?: string;
+	body?: string;
+	userId?: string;
+}): Promise<{ status: string; data?: unknown; error?: string }> {
+	return postJson("/v1/provider/proxy", input);
+}
+
+export async function relayValidateAttachment(input: { ref: string; userId?: string }): Promise<{
+	status: string;
+	attachment?: {
+		ref: string;
+		filepath: string;
+		filename: string;
+		mimeType: string | null;
+		size: number | null;
+	};
+	error?: string;
+}> {
+	return postJson("/v1/attachment/validate", input);
+}
+
+export async function relayDeliverLocalFile(input: {
+	sourcePath: string;
+	filename?: string;
+	userId?: string;
+}): Promise<{ status: string; path: string; filename: string; size: number; error?: string }> {
+	return postJson("/v1/local-file/deliver", input);
+}
