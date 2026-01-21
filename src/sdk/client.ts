@@ -525,7 +525,8 @@ function createNetworkSecurityHook(
 					}
 					const method = toolInput.method?.toUpperCase() || "GET";
 					// Allow GET for read-only endpoints (health, schema)
-					const isReadOnlyPath = url.pathname === "/v1/health" || url.pathname === "/v1/schema";
+					const isReadOnlyPath =
+						url.pathname === "/v1/health" || url.pathname === "/v1/schema";
 					if (!isReadOnlyPath && method !== "POST") {
 						return denyHookResponse("Provider data endpoints require POST.");
 					}
