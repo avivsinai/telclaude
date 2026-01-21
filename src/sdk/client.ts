@@ -310,6 +310,10 @@ function matchProviderForUrl(
 	return null;
 }
 
+/**
+ * Inject authentication headers for provider requests.
+ * This allows Claude to call providers directly via WebFetch.
+ */
 function injectProviderHeaders(
 	toolInput: { method?: string; headers?: Record<string, string> },
 	url: URL,
@@ -323,6 +327,7 @@ function injectProviderHeaders(
 		headers,
 	};
 
+	// Default to POST for non-health endpoints
 	if (url.pathname !== "/v1/health") {
 		const method = toolInput.method?.toUpperCase();
 		if (!method) {
@@ -371,17 +376,19 @@ function hasHeader(headers: Record<string, string>, name: string): boolean {
 	return Object.keys(headers).some((key) => key.toLowerCase() === target);
 }
 
+const ALLOWED_RELAY_PATHS = new Set(["/v1/attachment/fetch", "/v1/attachment/deliver"]);
+
 function buildRelayAttachmentRequest(
 	toolInput: { method?: string; headers?: Record<string, string>; body?: unknown },
 	url: URL,
 ): { updatedInput?: Record<string, unknown>; error?: string } {
-	if (url.pathname !== "/v1/attachment/fetch") {
-		return { error: "Only /v1/attachment/fetch allowed on relay." };
+	if (!ALLOWED_RELAY_PATHS.has(url.pathname)) {
+		return { error: "Only attachment endpoints allowed on relay." };
 	}
 
 	const method = toolInput.method?.toUpperCase();
 	if (method && method !== "POST") {
-		return { error: "Relay attachment fetch requires POST." };
+		return { error: "Relay attachment endpoints require POST." };
 	}
 
 	const normalizedBody = normalizeRequestBody(toolInput.body);
@@ -511,16 +518,21 @@ function createNetworkSecurityHook(
 			// If it matched a private endpoint, allow it (port already checked)
 			if (privateCheck.matchedEndpoint) {
 				if (providerMatch) {
+					// Inject auth headers for provider requests
+					// Claude can call providers directly via WebFetch
 					if (!actorUserId) {
 						return denyHookResponse("Missing user context for provider request.");
 					}
-					const method = toolInput.method?.toUpperCase();
-					if (url.pathname !== "/v1/health" && method && method !== "POST") {
-						return denyHookResponse("Provider endpoints require POST (except /v1/health).");
+					const method = toolInput.method?.toUpperCase() || "GET";
+					// Allow GET for read-only endpoints (health, schema)
+					const isReadOnlyPath =
+						url.pathname === "/v1/health" || url.pathname === "/v1/schema";
+					if (!isReadOnlyPath && method !== "POST") {
+						return denyHookResponse("Provider data endpoints require POST.");
 					}
 					const updatedInput = injectProviderHeaders(toolInput, url, actorUserId);
 					logger.info(
-						{ provider: providerMatch.id, actorUserId, url: url.pathname },
+						{ provider: providerMatch.id, actorUserId, url: url.pathname, method },
 						"[hook] injected x-actor-user-id header for provider call",
 					);
 					return allowHookResponse(updatedInput);

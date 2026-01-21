@@ -239,6 +239,21 @@ function initializeSchema(database: Database.Database): void {
 			PRIMARY KEY (chat_id, message_id, user_id, emoji)
 		);
 		CREATE INDEX IF NOT EXISTS idx_message_reactions_chat ON message_reactions(chat_id, message_id);
+
+		-- Attachment refs (proxy-intercepted attachments for delivery)
+		CREATE TABLE IF NOT EXISTS attachment_refs (
+			ref TEXT PRIMARY KEY,
+			actor_user_id TEXT NOT NULL,
+			provider_id TEXT NOT NULL,
+			filepath TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			mime_type TEXT,
+			size INTEGER,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_attachment_refs_expires ON attachment_refs(expires_at);
+		CREATE INDEX IF NOT EXISTS idx_attachment_refs_actor ON attachment_refs(actor_user_id);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -322,6 +337,7 @@ export function cleanupExpired(): {
 	pendingTotpMessages: number;
 	botMessages: number;
 	messageReactions: number;
+	attachmentRefs: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -371,6 +387,11 @@ export function cleanupExpired(): {
 		)
 		.run();
 
+	// Clean expired attachment refs
+	const attachmentRefsResult = database
+		.prepare("DELETE FROM attachment_refs WHERE expires_at < ?")
+		.run(now);
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
@@ -380,6 +401,7 @@ export function cleanupExpired(): {
 		pendingTotpMessages: pendingTotpResult.changes,
 		botMessages: botMessagesResult.changes,
 		messageReactions: reactionsResult.changes,
+		attachmentRefs: attachmentRefsResult.changes,
 	};
 
 	logger.info(result, "expired entries cleaned up");
