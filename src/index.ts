@@ -14,6 +14,7 @@ import { registerIntegrationTestCommand } from "./commands/integration-test.js";
 import { registerLinkCommand } from "./commands/link.js";
 import { registerNetworkCommand } from "./commands/network.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
+import { registerProviderQueryCommand } from "./commands/provider-query.js";
 import { registerQuickstartCommand } from "./commands/quickstart.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
@@ -66,6 +67,7 @@ registerDiagnoseSandboxNetworkCommand(program);
 registerQuickstartCommand(program);
 registerNetworkCommand(program);
 registerProviderHealthCommand(program);
+registerProviderQueryCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens
