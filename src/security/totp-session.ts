@@ -5,7 +5,7 @@
  * Sessions are scoped per-user (localUserId), not per-chat.
  *
  * After a user verifies TOTP once, the session is remembered for
- * a configurable duration (default: 24 hours). During this time,
+ * a configurable duration (default: 1 week). During this time,
  * subsequent messages don't require TOTP re-verification.
  *
  * NOTE: TOTP is used as an identity verification gate, not for approvals.
@@ -18,8 +18,8 @@ import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "totp-session" });
 
-// Default TTL: 24 hours (in milliseconds)
-const DEFAULT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+// Default TTL: 1 week (in milliseconds)
+const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * A TOTP verification session.
