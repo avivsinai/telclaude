@@ -1,7 +1,7 @@
 ---
 name: external-provider
-description: Access configured sidecar providers (health, banking, government) via WebFetch.
-allowed-tools: Read, WebFetch
+description: Access configured sidecar providers (health, banking, government) via CLI commands.
+allowed-tools: Read, Bash
 ---
 
 # External Provider
@@ -17,7 +17,12 @@ Check the provider schema to see which services are available. The authoritative
 
 ## How to Use
 
-**Use WebFetch to call providers directly.** The system automatically injects authentication headers.
+**IMPORTANT: Use the `telclaude` CLI commands for all provider operations.**
+- Do NOT use WebFetch or curl to call provider endpoints directly
+- Use Bash only to run `telclaude` CLI commands (provider-query, send-attachment, etc.)
+- The CLI handles HMAC authentication through the relay
+- Direct HTTP calls will fail with "Missing internal auth headers"
+- The relay sanitizes responses (strips inline base64, stores attachments)
 
 ### 1. Read the schema file
 
@@ -25,28 +30,34 @@ Check the provider schema to see which services are available. The authoritative
 Read references/provider-schema.md
 ```
 
-This shows the provider ID, base URL, and available endpoints.
+This shows the provider ID and available services/actions.
 
-### 2. Call the provider via WebFetch
+### 2. Query the provider via CLI
 
-```
-WebFetch
-  url: http://<provider-host>:<port>/v1/<service>/<action>
-  method: POST
-  body: {"subjectUserId": "<user-id>", "params": {...}}
+```bash
+telclaude provider-query --provider <providerId> --service <service> --action <action>
 ```
 
-Example:
+With parameters:
+```bash
+telclaude provider-query --provider <providerId> --service <service> --action <action> --params '{"key": "value"}'
 ```
-WebFetch
-  url: http://israel-services:3001/v1/clalit/appointments
-  method: POST
-  body: {"params": {}}
+
+Examples:
+```bash
+# Get appointments
+telclaude provider-query --provider israel-services --service clalit --action appointments
+
+# Get bank transactions with date range
+telclaude provider-query --provider israel-services --service poalim --action scrape --params '{"startDate": "2024-01-01"}'
+
+# Get lab results
+telclaude provider-query --provider israel-services --service maccabi --action lab_results
 ```
 
 ### 3. Parse the response
 
-Provider returns:
+The command outputs JSON:
 ```json
 {
   "status": "ok" | "auth_required" | "challenge_pending" | "error",
@@ -59,12 +70,17 @@ Provider returns:
       "filename": "document.pdf",
       "mimeType": "application/pdf",
       "size": 12345,
-      "inline": "base64...",
-      "textContent": "Preview text from the document..."
+      "ref": "att_abc123.1234567890.signature",
+      "textContent": "Extracted text from the PDF for analysis..."
     }
   ]
 }
 ```
+
+**Note:** The relay proxy intercepts responses and:
+- Strips `inline` base64 content (you won't see it)
+- Stores the file in the outbox
+- Adds a `ref` token for delivery
 
 ### 4. Handle status codes
 
@@ -76,47 +92,72 @@ Provider returns:
 ## Handling Attachments
 
 Attachments include:
-- `inline`: Base64-encoded file content
-- `textContent`: Extracted text (for PDFs, documents)
+- `ref`: Token to retrieve the stored file (use with `telclaude send-attachment`)
+- `textContent`: Extracted text content (for PDFs, documents) - use this to analyze/summarize
+
+**Important:** You will NOT see `inline` base64 content. The relay proxy strips it and stores the file automatically. Use `ref` to send files to users.
 
 ### Reading document content
 
 Use `textContent` to answer questions about the document:
 ```
-"Based on the visit summary, your last appointment was on January 10th..."
+"Based on the document, [relevant information extracted from textContent]..."
 ```
 
 ### Sending files to the user
 
-When user wants the actual file, deliver it via the relay:
+There are two cases depending on file size:
 
-```
-WebFetch
-  url: http://<relay-host>:8790/v1/attachment/deliver
-  method: POST
-  body: {
-    "inline": "<base64 from attachment>",
-    "filename": "<attachment filename>",
-    "mimeType": "<attachment mimeType>"
-  }
+#### Case 1: Small files (≤256KB) - Has `ref`
+
+For small files, the proxy already stored the file. Use the `ref` field:
+
+```bash
+telclaude send-attachment --ref <attachment.ref>
 ```
 
-Example workflow:
-1. User asks for their visit summary
-2. Call provider: `WebFetch to http://israel-services:3001/v1/clalit/visitSummaries`
-3. Response includes `attachments` with `inline` and `textContent`
-4. Tell user: "I found your visit summary from January 10th. Would you like me to send it?"
-5. User says "yes"
-6. Deliver: `WebFetch to relay /v1/attachment/deliver` with the inline content
-7. Report: "I've sent your visit summary."
+#### Case 2: Large files (>256KB) - Empty `ref`
+
+For large files, `ref` will be empty. Use `fetch-attachment` to fetch from the provider:
+
+```bash
+telclaude fetch-attachment --provider <providerId> --id <attachment.id> --filename <attachment.filename> --mime <attachment.mimeType>
+```
+
+#### Output and delivery
+
+Both commands output:
+```
+Attachment ready: /media/outbox/documents/<filename>.pdf
+```
+or
+```
+Attachment saved to: /media/outbox/documents/<filename>.pdf
+```
+
+You MUST include the exact path in your response. The relay watches for this path to trigger Telegram delivery.
+
+#### Example workflow
+
+1. User asks for data or a document
+2. Call provider via `telclaude provider-query`
+3. Response includes `data` and optionally `attachments` with `ref` and `textContent`
+4. Present the data to the user
+5. If attachments exist, use `textContent` to summarize the document
+6. If user wants the file:
+   - If `ref` is present: `telclaude send-attachment --ref <ref>`
+   - If `ref` is empty: `telclaude fetch-attachment --provider <providerId> --id <id> ...`
+7. Include the exact path from output in your response
 
 ## Important Rules
 
-1. **Use WebFetch directly** - No CLI commands needed
-2. **Never ask for credentials** - The provider handles authentication separately
-3. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
-4. **Show freshness** - Always tell user when data was last updated
-5. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
+1. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude provider-query` to fetch fresh data from the provider.
+2. **Use CLI for provider queries** - Use `telclaude provider-query`, not WebFetch or curl
+3. **Never ask for credentials** - The provider handles authentication separately
+4. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
+5. **Show freshness** - Always tell user when data was last updated
+6. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
+7. **Never copy files directly to outbox** - Only use `telclaude send-attachment` or `telclaude fetch-attachment` to deliver files. Copying files directly to `/media/outbox/` will NOT trigger delivery.
 
 ## Example Responses
 
@@ -130,21 +171,18 @@ Example workflow:
 "This service needs to be set up first. Please ask the operator to configure authentication."
 
 ### Attachment available:
-"I found your visit summary from January 10th. The document shows you visited Dr. Smith for a follow-up. There's a PDF available (245 KB). Would you like me to send it to you?"
+"I found a document from [date]. There's a PDF available ([size]). Would you like me to send it to you?"
 
-### Attachment sent:
-"I've sent your visit summary to you."
+### Attachment sent (use EXACT path from relay response):
+"Here's your document: /media/outbox/documents/<exact-path-from-response>.pdf"
 
-## Endpoints Reference
+## CLI Command Reference
 
-| Path | Method | Description |
-|------|--------|-------------|
-| `/v1/{service}/summary` | POST | Overview/dashboard data |
-| `/v1/{service}/appointments` | POST | Upcoming appointments |
-| `/v1/{service}/transactions` | POST | Recent transactions |
-| `/v1/{service}/balance` | POST | Current balance |
-| `/v1/health` | GET | Provider health status |
-| `/v1/schema` | GET | Service schema/manifest |
+| Command | Description |
+|---------|-------------|
+| `telclaude provider-query --provider <id> --service <svc> --action <act>` | Query provider data |
+| `telclaude send-attachment --ref <ref>` | Send stored attachment to user |
+| `telclaude fetch-attachment --provider <id> --id <att-id> ...` | Fetch and send large attachment |
 
 ## Provider Schemas (auto-generated)
 
