@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-01-23
+
+### Added
+
+- **Provider Query CLI** - New `telclaude provider-query` command for querying external providers through the relay's `/v1/provider/proxy` endpoint. Supports `--provider`, `--service`, `--action`, `--params`, `--subject-user-id`, and `--idempotency-key` options.
+- **Telegram attachment instructions** - Updated telegram-reply skill with file sending guidance.
+
+### Fixed
+
+- **External provider skill** - Now uses CLI commands instead of WebFetch (which only supports GET). Added explicit rules to prevent agents from bypassing providers with local files.
+- **Agent server timeouts** - Extended request timeout for long-running provider queries.
+- **TOTP session TTL** - Extended from 24 hours to 1 week for better UX.
+
 ## [0.5.3] - 2026-01-18
 
 ### Added
