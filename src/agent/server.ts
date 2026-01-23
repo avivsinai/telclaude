@@ -209,8 +209,14 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 		});
 	});
 
+	// Override Node.js default request timeout (300000ms = 5 minutes in Node 18+)
+	// Set to MAX_TIMEOUT_MS to allow queries to run up to 10 minutes by default
+	server.requestTimeout = MAX_TIMEOUT_MS;
+	server.headersTimeout = 120000; // 2 minutes for headers
+	server.keepAliveTimeout = MAX_TIMEOUT_MS;
+
 	server.listen(port, host, () => {
-		logger.info({ host, port }, "agent server listening");
+		logger.info({ host, port, requestTimeout: server.requestTimeout }, "agent server listening");
 	});
 
 	return server;
