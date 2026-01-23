@@ -70,8 +70,6 @@ registerQuickstartCommand(program);
 registerNetworkCommand(program);
 registerProviderHealthCommand(program);
 registerProviderQueryCommand(program);
-registerVaultCommand(program);
-registerVaultDaemonCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens
