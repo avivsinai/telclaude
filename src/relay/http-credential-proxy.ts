@@ -35,6 +35,28 @@ import {
 const logger = getChildLogger({ module: "http-credential-proxy" });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Error Sanitization
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sanitize error messages to prevent credential leakage.
+ * Removes URLs with query parameters which may contain credentials.
+ */
+function sanitizeError(err: unknown): string {
+	const message = String(err);
+	// Replace URLs with query strings (may contain tokens)
+	// Keeps the host/path but removes query parameters
+	return message.replace(/https?:\/\/[^\s]+\?[^\s]*/g, (url) => {
+		try {
+			const parsed = new URL(url);
+			return `${parsed.protocol}//${parsed.host}${parsed.pathname}?[REDACTED]`;
+		} catch {
+			return "[URL REDACTED]";
+		}
+	});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -354,7 +376,8 @@ async function proxyRequest(
 			return;
 		}
 
-		logger.error({ error: String(err), host: parsed.host }, "http proxy upstream request failed");
+		// SECURITY: Sanitize error to prevent credential leakage in logs
+		logger.error({ error: sanitizeError(err), host: parsed.host }, "http proxy upstream request failed");
 		if (!res.headersSent) {
 			res.writeHead(502, { "Content-Type": "text/plain" });
 			res.end("Bad gateway: upstream request failed");

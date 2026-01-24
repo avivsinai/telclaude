@@ -19,6 +19,16 @@ import type { OAuth2Credential } from "./protocol.js";
 
 const logger = getChildLogger({ module: "vault-oauth" });
 
+/**
+ * Sanitize error messages to prevent credential leakage.
+ * Removes URLs which may appear in error messages.
+ */
+function sanitizeError(err: unknown): string {
+	const message = String(err);
+	// Replace URLs (may contain tokens in query string or reveal token endpoints)
+	return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]");
+}
+
 // Token endpoint request timeout (30 seconds)
 const TOKEN_REQUEST_TIMEOUT_MS = 30 * 1000;
 
@@ -162,7 +172,8 @@ async function doTokenRefresh(
 			newRefreshToken: newRefreshToken !== credential.refreshToken ? newRefreshToken : undefined,
 		};
 	} catch (err) {
-		logger.error({ target, error: String(err) }, "OAuth2 token refresh failed");
+		// SECURITY: Sanitize error to prevent URL leakage in logs
+		logger.error({ target, error: sanitizeError(err) }, "OAuth2 token refresh failed");
 		return {
 			ok: false,
 			error: `Token refresh failed: ${String(err)}`,

@@ -79,13 +79,19 @@ export type HttpCredential = z.infer<typeof HttpCredentialSchema>;
 
 /**
  * OAuth2 credentials - vault handles token refresh internally
+ * SECURITY: tokenEndpoint must be HTTPS to prevent credential transmission over plaintext
  */
 export const OAuth2CredentialSchema = z.object({
 	type: z.literal("oauth2"),
 	clientId: z.string().min(1),
 	clientSecret: z.string().min(1),
 	refreshToken: z.string().min(1),
-	tokenEndpoint: z.string().url(),
+	tokenEndpoint: z
+		.string()
+		.url()
+		.refine((url) => url.startsWith("https://"), {
+			message: "Token endpoint must use HTTPS to protect credentials in transit",
+		}),
 	scope: z.string().optional(),
 });
 

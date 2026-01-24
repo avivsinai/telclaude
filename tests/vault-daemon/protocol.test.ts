@@ -156,6 +156,17 @@ describe("Protocol schemas", () => {
 			});
 			expect(result.success).toBe(false);
 		});
+
+		it("should reject HTTP token endpoint (must be HTTPS)", () => {
+			const result = OAuth2CredentialSchema.safeParse({
+				type: "oauth2",
+				clientId: "client",
+				clientSecret: "secret",
+				refreshToken: "refresh",
+				tokenEndpoint: "http://oauth2.example.com/token",
+			});
+			expect(result.success).toBe(false);
+		});
 	});
 
 	describe("VaultRequestSchema", () => {
