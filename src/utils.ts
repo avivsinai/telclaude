@@ -106,3 +106,30 @@ export const VALIDATED_DATA_DIR = resolveDataDir();
 
 // Use TELCLAUDE_DATA_DIR if set and valid (Docker), otherwise ~/.telclaude (native)
 export const CONFIG_DIR = VALIDATED_DATA_DIR || `${os.homedir()}/.telclaude`;
+
+/**
+ * Sanitize error messages to prevent credential leakage.
+ * Redacts URLs which may contain tokens in query strings or reveal sensitive endpoints.
+ *
+ * @param err - The error to sanitize
+ * @param preservePath - If true, keeps host/path but redacts query strings.
+ *                       If false, redacts the entire URL.
+ */
+export function sanitizeError(err: unknown, preservePath = false): string {
+	const message = String(err);
+
+	if (preservePath) {
+		// Replace URLs but keep host/path, only redact query parameters
+		return message.replace(/https?:\/\/[^\s]+\?[^\s]*/g, (url) => {
+			try {
+				const parsed = new URL(url);
+				return `${parsed.protocol}//${parsed.host}${parsed.pathname}?[REDACTED]`;
+			} catch {
+				return "[URL REDACTED]";
+			}
+		});
+	}
+
+	// Replace entire URLs (may contain tokens or reveal sensitive endpoints)
+	return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]");
+}

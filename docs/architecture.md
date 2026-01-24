@@ -164,6 +164,91 @@ telclaude network remove ha
 telclaude network test http://192.168.1.100:8123/api
 ```
 
+## Credential Vault
+
+The vault daemon is a sidecar service that stores credentials and injects them into HTTP requests transparently. Agents never see raw credentials.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ VAULT SIDECAR (no network*, Unix socket only)                   │
+│                                                                 │
+│  Credential Store (AES-256-GCM encrypted file)                  │
+│  OAuth2 Token Refresh (caches access tokens in memory)          │
+│  Protocol: newline-delimited JSON over Unix socket              │
+└─────────────────────────────────────────────────────────────────┘
+              │ Unix socket (~/.telclaude/vault.sock)
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ HTTP CREDENTIAL PROXY (relay, port 8792)                        │
+│                                                                 │
+│  Pattern: http://relay:8792/{host}/{path}                       │
+│  Example: http://relay:8792/api.openai.com/v1/images/gen        │
+│                                                                 │
+│  1. Parse host from URL                                         │
+│  2. Look up credential from vault                               │
+│  3. Inject auth header (bearer/api-key/basic/oauth2)            │
+│  4. Forward to https://{host}/{path}                            │
+│  5. Stream response back                                        │
+└─────────────────────────────────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ AGENT CONTAINER                                                 │
+│                                                                 │
+│  fetch("http://relay:8792/api.openai.com/v1/images/gen", {...}) │
+│  Agent NEVER sees credentials                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+*Note: OAuth2 token refresh requires outbound HTTP to token endpoints.
+
+### Supported Credential Types
+
+| Type | Auth Injection |
+| --- | --- |
+| `bearer` | `Authorization: Bearer {token}` |
+| `api-key` | `{header}: {token}` (e.g., `X-API-Key`) |
+| `basic` | `Authorization: Basic {base64(user:pass)}` |
+| `query` | `?{param}={token}` |
+| `oauth2` | Bearer with automatic token refresh |
+
+### Security Properties
+
+- **Credential isolation**: Vault has no network (except OAuth refresh); credentials never reach agent
+- **Host allowlist**: Proxy only injects credentials for configured hosts
+- **Path restrictions**: Optional `allowedPaths` regex per host prevents SSRF to unexpected endpoints
+- **Rate limiting**: Per-host and per-credential limits prevent abuse
+- **Encryption at rest**: AES-256-GCM with scrypt key derivation
+- **Socket permissions**: 0600 (owner only); server verifies at startup, store enforces on each write
+- **Request size limit**: 1MB max to prevent memory exhaustion
+- **Upstream timeout**: 60s with AbortController to prevent hung connections
+
+### CLI Commands
+
+```bash
+# Start vault daemon (requires VAULT_ENCRYPTION_KEY)
+export VAULT_ENCRYPTION_KEY=$(openssl rand -base64 32)
+telclaude vault-daemon
+
+# Manage credentials
+telclaude vault list
+telclaude vault add http api.openai.com --type bearer --label "OpenAI"
+telclaude vault add http api.anthropic.com --type api-key --header x-api-key
+telclaude vault add http api.google.com --type oauth2 \
+  --client-id xxx --token-endpoint https://oauth2.googleapis.com/token
+telclaude vault remove http api.openai.com
+telclaude vault test http api.openai.com
+```
+
+### Deployment Security
+
+When allowing `localhost` or docker service names as targets:
+- Ensure only authorized processes can reach the HTTP proxy (port 8792)
+- Use network policies or firewall rules to restrict proxy access
+- Only store credentials for hosts the agent legitimately needs
+
 ## Application-Level Security
 
 The canUseTool callback and PreToolUse hooks provide defense-in-depth:

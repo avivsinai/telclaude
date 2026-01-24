@@ -17,6 +17,7 @@ import {
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
+import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -29,6 +30,7 @@ import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { CONFIG_DIR } from "../utils.js";
+import { isVaultAvailable } from "../vault-daemon/index.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
 
@@ -166,6 +168,19 @@ export function registerRelayCommand(program: Command): void {
 					if (process.env.TELCLAUDE_AGENT_URL) {
 						startGitProxyServer();
 						console.log("  Git proxy: enabled (transparent auth injection)");
+
+						// Start HTTP credential proxy if vault daemon is available
+						// This allows agents to call HTTP APIs without seeing credentials
+						const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
+						const vaultAvailable = await isVaultAvailable(
+							vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+						);
+						if (vaultAvailable) {
+							startHttpCredentialProxy({ vaultSocketPath });
+							console.log("  HTTP proxy: enabled (credential injection via vault)");
+						} else {
+							console.log("  HTTP proxy: disabled (vault daemon not running)");
+						}
 					}
 				} else {
 					console.log("  Capabilities: disabled");
