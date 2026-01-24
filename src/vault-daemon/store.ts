@@ -11,7 +11,15 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 import { getChildLogger } from "../logging.js";
@@ -282,7 +290,6 @@ export class VaultStore {
 			// Quarantine the corrupted file for manual recovery
 			const backupPath = `${this.filePath}.corrupted.${Date.now()}`;
 			try {
-				const { renameSync } = require("node:fs");
 				renameSync(this.filePath, backupPath);
 				logger.error(
 					{ filePath: this.filePath, backupPath, error: String(err) },
@@ -306,7 +313,6 @@ export class VaultStore {
 		writeFileSync(this.filePath, content, { mode: 0o600 });
 
 		// SECURITY: Ensure permissions are correct even if file existed with wrong perms
-		const { chmodSync, statSync } = require("node:fs");
 		try {
 			const stats = statSync(this.filePath);
 			const mode = stats.mode & 0o777;
