@@ -523,7 +523,10 @@ export function startHttpCredentialProxy(
 		// Session Token Validation
 		// SECURITY: All proxy requests require valid session token from relay
 		// ══════════════════════════════════════════════════════════════════════════
-		const sessionHeader = req.headers["x-telclaude-session"] as string | undefined;
+		const rawSessionHeader = req.headers["x-telclaude-session"];
+		// Normalize: header can be string or string[], take first and trim
+		const sessionHeader =
+			(Array.isArray(rawSessionHeader) ? rawSessionHeader[0] : rawSessionHeader)?.trim() || "";
 		if (!sessionHeader) {
 			logger.warn({ url }, "http proxy request missing session token");
 			res.writeHead(401, { "Content-Type": "text/plain" });

@@ -172,11 +172,12 @@ async function doTokenRefresh(
 			newRefreshToken: newRefreshToken !== credential.refreshToken ? newRefreshToken : undefined,
 		};
 	} catch (err) {
-		// SECURITY: Sanitize error to prevent URL leakage in logs
-		logger.error({ target, error: sanitizeError(err) }, "OAuth2 token refresh failed");
+		// SECURITY: Sanitize error to prevent URL leakage in logs AND returned errors
+		const sanitized = sanitizeError(err);
+		logger.error({ target, error: sanitized }, "OAuth2 token refresh failed");
 		return {
 			ok: false,
-			error: `Token refresh failed: ${String(err)}`,
+			error: `Token refresh failed: ${sanitized}`,
 		};
 	}
 }
