@@ -36,10 +36,17 @@ export const HttpBearerCredentialSchema = z.object({
 	token: z.string().min(1),
 });
 
+// RFC7230 token: only safe characters for HTTP header field names
+// Prevents header injection attacks
+const RFC7230_TOKEN_REGEX = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
 export const HttpApiKeyCredentialSchema = z.object({
 	type: z.literal("api-key"),
 	token: z.string().min(1),
-	header: z.string().min(1), // e.g., "X-API-Key", "x-api-key"
+	header: z
+		.string()
+		.min(1)
+		.regex(RFC7230_TOKEN_REGEX, "Header name must be a valid RFC7230 token"), // e.g., "X-API-Key", "x-api-key"
 });
 
 export const HttpBasicCredentialSchema = z.object({
@@ -48,10 +55,17 @@ export const HttpBasicCredentialSchema = z.object({
 	password: z.string(),
 });
 
+// Safe query parameter name: alphanumeric, underscore, hyphen only
+// Prevents query string injection attacks
+const SAFE_QUERY_PARAM_REGEX = /^[A-Za-z0-9_-]+$/;
+
 export const HttpQueryCredentialSchema = z.object({
 	type: z.literal("query"),
 	token: z.string().min(1),
-	param: z.string().min(1), // e.g., "api_key", "key"
+	param: z
+		.string()
+		.min(1)
+		.regex(SAFE_QUERY_PARAM_REGEX, "Query param must be alphanumeric with _ or - only"), // e.g., "api_key", "key"
 });
 
 export const HttpCredentialSchema = z.discriminatedUnion("type", [

@@ -34,6 +34,10 @@ interface CachedToken {
 // In-memory cache of access tokens (keyed by target)
 const tokenCache = new Map<string, CachedToken>();
 
+// In-flight refresh deduplication (prevents thundering herd)
+// Concurrent requests for the same target share a single refresh operation
+const inFlightRefresh = new Map<string, Promise<GetTokenResponse>>();
+
 // Buffer before expiry to refresh (5 minutes)
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
@@ -71,6 +75,9 @@ export type GetTokenResponse = GetTokenResult | GetTokenError;
  * Get a valid access token for an OAuth2 credential.
  * Handles automatic refresh if the cached token is expired or about to expire.
  *
+ * SECURITY: Uses in-flight deduplication to prevent thundering herd - concurrent
+ * requests for the same target share a single refresh operation.
+ *
  * NOTE: If the provider rotates refresh tokens, the caller MUST persist the
  * new refresh token from the response, otherwise future refreshes will fail.
  *
@@ -98,7 +105,33 @@ export async function getAccessToken(
 		};
 	}
 
-	// Need to refresh
+	// Check if there's already a refresh in progress for this target
+	const existingRefresh = inFlightRefresh.get(target);
+	if (existingRefresh) {
+		logger.debug({ target }, "waiting for in-flight refresh");
+		return existingRefresh;
+	}
+
+	// Start a new refresh and add it to the in-flight map
+	const refreshPromise = doTokenRefresh(target, credential);
+	inFlightRefresh.set(target, refreshPromise);
+
+	try {
+		return await refreshPromise;
+	} finally {
+		// Clean up the in-flight entry
+		inFlightRefresh.delete(target);
+	}
+}
+
+/**
+ * Internal: Actually perform the token refresh.
+ */
+async function doTokenRefresh(
+	target: string,
+	credential: OAuth2Credential,
+): Promise<GetTokenResponse> {
+	const now = Date.now();
 	logger.info({ target }, "refreshing OAuth2 token");
 
 	try {
@@ -181,6 +214,9 @@ async function refreshToken(credential: OAuth2Credential): Promise<TokenResponse
 			},
 			body: body.toString(),
 			signal: controller.signal,
+			// SECURITY: Disable redirects - a redirect from a token endpoint is an error.
+			// Following redirects could leak client_secret and refresh_token.
+			redirect: "error",
 		});
 
 		if (!response.ok) {

@@ -66,6 +66,60 @@ describe("Protocol schemas", () => {
 			});
 			expect(result.success).toBe(false);
 		});
+
+		it("should reject api-key with invalid header name (injection attempt)", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "api-key",
+				token: "test",
+				header: "X-API-Key\r\nX-Injected: evil",
+			});
+			expect(result.success).toBe(false);
+		});
+
+		it("should reject api-key with header containing spaces", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "api-key",
+				token: "test",
+				header: "X API Key",
+			});
+			expect(result.success).toBe(false);
+		});
+
+		it("should accept api-key with valid RFC7230 token header", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "api-key",
+				token: "test",
+				header: "X-Custom_Header.Name",
+			});
+			expect(result.success).toBe(true);
+		});
+
+		it("should reject query param with injection characters", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "query",
+				token: "test",
+				param: "key&injected=evil",
+			});
+			expect(result.success).toBe(false);
+		});
+
+		it("should reject query param with equals sign", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "query",
+				token: "test",
+				param: "key=value",
+			});
+			expect(result.success).toBe(false);
+		});
+
+		it("should accept query param with underscore and hyphen", () => {
+			const result = HttpCredentialSchema.safeParse({
+				type: "query",
+				token: "test",
+				param: "api_key-v2",
+			});
+			expect(result.success).toBe(true);
+		});
 	});
 
 	describe("OAuth2CredentialSchema", () => {

@@ -36,6 +36,48 @@ import {
 const logger = getChildLogger({ module: "vault-store" });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Mutex for Atomic Operations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Simple promise-based mutex for serializing store operations.
+ * Prevents race conditions when multiple requests try to modify the vault.
+ */
+class Mutex {
+	private locked = false;
+	private queue: Array<() => void> = [];
+
+	async acquire(): Promise<void> {
+		if (!this.locked) {
+			this.locked = true;
+			return;
+		}
+
+		return new Promise((resolve) => {
+			this.queue.push(resolve);
+		});
+	}
+
+	release(): void {
+		const next = this.queue.shift();
+		if (next) {
+			next();
+		} else {
+			this.locked = false;
+		}
+	}
+
+	async withLock<T>(fn: () => Promise<T> | T): Promise<T> {
+		await this.acquire();
+		try {
+			return await fn();
+		} finally {
+			this.release();
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Storage Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -65,6 +107,7 @@ export class VaultStore {
 	private rawKey: string;
 	private derivedKey: Buffer | null = null;
 	private cachedSalt: Buffer | null = null;
+	private mutex = new Mutex();
 
 	constructor(options: VaultStoreOptions = {}) {
 		const dataDir =
@@ -94,6 +137,7 @@ export class VaultStore {
 
 	/**
 	 * Store a credential entry.
+	 * Uses mutex to prevent concurrent modification race conditions.
 	 */
 	async store(
 		protocol: Protocol,
@@ -117,15 +161,18 @@ export class VaultStore {
 			expiresAt: options.expiresAt,
 		};
 
-		// Validate the entry
+		// Validate the entry before acquiring lock
 		CredentialEntrySchema.parse(entry);
 
-		const vault = this.readVault();
-		const key = makeStorageKey(protocol, target);
-		const encKey = this.getEncryptionKey(vault);
+		// Acquire lock for read-modify-write cycle
+		await this.mutex.withLock(() => {
+			const vault = this.readVault();
+			const key = makeStorageKey(protocol, target);
+			const encKey = this.getEncryptionKey(vault);
 
-		vault.entries[key] = this.encrypt(JSON.stringify(entry), encKey);
-		this.writeVault(vault);
+			vault.entries[key] = this.encrypt(JSON.stringify(entry), encKey);
+			this.writeVault(vault);
+		});
 
 		logger.info({ protocol, target, credentialType: credential.type }, "stored credential");
 	}
@@ -162,20 +209,27 @@ export class VaultStore {
 
 	/**
 	 * Delete a credential entry.
+	 * Uses mutex to prevent concurrent modification race conditions.
 	 */
 	async delete(protocol: Protocol, target: string): Promise<boolean> {
-		const vault = this.readVault();
-		const key = makeStorageKey(protocol, target);
+		// Acquire lock for read-modify-write cycle
+		const deleted = await this.mutex.withLock(() => {
+			const vault = this.readVault();
+			const key = makeStorageKey(protocol, target);
 
-		if (!vault.entries[key]) {
-			return false;
+			if (!vault.entries[key]) {
+				return false;
+			}
+
+			delete vault.entries[key];
+			this.writeVault(vault);
+			return true;
+		});
+
+		if (deleted) {
+			logger.info({ protocol, target }, "deleted credential");
 		}
-
-		delete vault.entries[key];
-		this.writeVault(vault);
-
-		logger.info({ protocol, target }, "deleted credential");
-		return true;
+		return deleted;
 	}
 
 	/**
@@ -310,9 +364,29 @@ export class VaultStore {
 
 	private writeVault(vault: EncryptedVault): void {
 		const content = JSON.stringify(vault, null, 2);
-		writeFileSync(this.filePath, content, { mode: 0o600 });
 
-		// SECURITY: Ensure permissions are correct even if file existed with wrong perms
+		// SECURITY: Atomic write pattern - write to temp file, then rename.
+		// This prevents partial writes if the process crashes mid-write.
+		const tempPath = `${this.filePath}.tmp`;
+
+		// Write to temp file with correct permissions
+		writeFileSync(tempPath, content, { mode: 0o600 });
+
+		// Ensure temp file has correct permissions
+		try {
+			const stats = statSync(tempPath);
+			const mode = stats.mode & 0o777;
+			if (mode !== 0o600) {
+				chmodSync(tempPath, 0o600);
+			}
+		} catch {
+			// Continue with rename - permissions issue is secondary
+		}
+
+		// Atomic rename (on POSIX systems)
+		renameSync(tempPath, this.filePath);
+
+		// Verify final file permissions
 		try {
 			const stats = statSync(this.filePath);
 			const mode = stats.mode & 0o777;

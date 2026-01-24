@@ -283,6 +283,9 @@ async function proxyRequest(
 			body: requestBody,
 			duplex: "half",
 			signal: controller.signal,
+			// SECURITY: Disable automatic redirects to prevent SSRF bypass.
+			// Redirects could send credentials to non-allowlisted hosts.
+			redirect: "manual",
 		});
 
 		// Log the operation (without sensitive details)
@@ -295,6 +298,20 @@ async function proxyRequest(
 			},
 			"http proxy request completed",
 		);
+
+		// SECURITY: Log redirects - we don't follow them to prevent SSRF
+		if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+			const location = upstreamResponse.headers.get("location");
+			logger.warn(
+				{
+					host: parsed.host,
+					status: upstreamResponse.status,
+					// Log location host only, not full URL (may contain sensitive path)
+					redirectHost: location ? new URL(location, upstreamUrl).hostname : undefined,
+				},
+				"http proxy returning redirect without following (SSRF protection)",
+			);
+		}
 
 		// Forward response headers, excluding hop-by-hop headers
 		const hopByHopHeaders = new Set([
