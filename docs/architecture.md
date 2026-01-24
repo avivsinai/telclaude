@@ -221,7 +221,7 @@ The vault daemon is a sidecar service that stores credentials and injects them i
 - **Path restrictions**: Optional `allowedPaths` regex per host prevents SSRF to unexpected endpoints
 - **Rate limiting**: Per-host and per-credential limits prevent abuse
 - **Encryption at rest**: AES-256-GCM with scrypt key derivation
-- **Socket permissions**: 0600 (owner only), verified after every operation
+- **Socket permissions**: 0600 (owner only); server verifies at startup, store enforces on each write
 - **Request size limit**: 1MB max to prevent memory exhaustion
 - **Upstream timeout**: 60s with AbortController to prevent hung connections
 

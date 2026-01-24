@@ -171,9 +171,12 @@ export function registerRelayCommand(program: Command): void {
 
 						// Start HTTP credential proxy if vault daemon is available
 						// This allows agents to call HTTP APIs without seeing credentials
-						const vaultAvailable = await isVaultAvailable();
+						const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
+						const vaultAvailable = await isVaultAvailable(
+							vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+						);
 						if (vaultAvailable) {
-							startHttpCredentialProxy();
+							startHttpCredentialProxy({ vaultSocketPath });
 							console.log("  HTTP proxy: enabled (credential injection via vault)");
 						} else {
 							console.log("  HTTP proxy: disabled (vault daemon not running)");
