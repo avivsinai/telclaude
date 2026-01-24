@@ -23,6 +23,15 @@ paths = [
   '''fixtures\/''',
   '''docs\/.*\.md$''',
 ]
+
+# Vault daemon - code patterns that look like secrets but aren't
+[[allowlists]]
+description = "Credential vault code patterns (builds auth headers, test encryption keys)"
+paths = [
+  '''src/relay/http-credential-proxy\.ts$''',
+  '''src/vault-daemon/.*\.ts$''',
+  '''tests/vault-daemon/.*\.ts$''',
+]
 regexes = [
   '''ghp_abc123def456ghi789jkl012mno345pqr678''',
   '''AKIAIOSFODNN7EXAMPLE''',
@@ -60,6 +69,11 @@ regex = '''(?i)Bearer(?:\s)+(\S{8,})'''
 secretGroup = 1
 entropy = 3.8
 tags = ["key", "HTTP", "bearer"]
+[[rules.allowlists]]
+description = "Credential proxy builds bearer headers from vault (not hardcoded secrets)"
+paths = [
+  '''src/relay/http-credential-proxy\.ts$''',
+]
 
 [[rules]]
 description = "Hardcoded credentials in Go files"
@@ -78,6 +92,12 @@ regex = '''(?i)(?:secret|key|password|pwd|pass|token)(?:\w|\s*?)(?:=){1}(?:\s{0,
 secretGroup = 1
 entropy = 3
 tags = ["credentials", "hardcoded", "js"]
+[[rules.allowlists]]
+description = "Vault test fixtures and credential proxy rate limit keys"
+paths = [
+  '''tests/vault-daemon/.*\.ts$''',
+  '''src/relay/http-credential-proxy\.ts$''',
+]
 
 [[rules]]
 description = "Hardcoded credentials in Python files"
