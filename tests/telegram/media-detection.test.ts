@@ -14,11 +14,13 @@ describe("media-detection", () => {
 	let audioPath: string;
 	let imagePath: string;
 	let voicePath: string;
+	let documentPath: string;
 	let mediaRoot: string;
 	// Real paths after symlink resolution (e.g., /var -> /private/var on macOS)
 	let realAudioPath: string;
 	let realImagePath: string;
 	let realVoicePath: string;
+	let realDocumentPath: string;
 
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-media-"));
@@ -34,19 +36,25 @@ describe("media-detection", () => {
 		const ttsDir = path.join(mediaRoot, "tts");
 		const genDir = path.join(mediaRoot, "generated");
 		const voiceDir = path.join(mediaRoot, "voice");
+		const documentsDir = path.join(mediaRoot, "documents");
 		fs.mkdirSync(ttsDir, { recursive: true });
 		fs.mkdirSync(genDir, { recursive: true });
 		fs.mkdirSync(voiceDir, { recursive: true });
+		fs.mkdirSync(documentsDir, { recursive: true });
 		audioPath = path.join(ttsDir, "sample.aac");
 		imagePath = path.join(genDir, "image.png");
 		voicePath = path.join(voiceDir, "sample.ogg");
+		// Document with timestamp-hash suffix (as relay generates)
+		documentPath = path.join(documentsDir, "visit_summary-1769063570514-28c3d9c9.pdf");
 		fs.writeFileSync(audioPath, "fake audio data");
 		fs.writeFileSync(imagePath, "fake image data");
 		fs.writeFileSync(voicePath, "fake voice data");
+		fs.writeFileSync(documentPath, "fake pdf data");
 		// Get the real paths (resolves symlinks like /var -> /private/var on macOS)
 		realAudioPath = fs.realpathSync(audioPath);
 		realImagePath = fs.realpathSync(imagePath);
 		realVoicePath = fs.realpathSync(voicePath);
+		realDocumentPath = fs.realpathSync(documentPath);
 	});
 
 	afterEach(() => {
@@ -145,6 +153,41 @@ describe("media-detection", () => {
 			const text = `Audio at ${fakePath}`;
 			const results = extractGeneratedMediaPaths(text);
 			expect(results).toEqual([]);
+		});
+
+		it("detects document paths with timestamp-hash suffix", () => {
+			// This is the exact format the relay generates for attachments
+			const text = `Here's your document: ${documentPath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toEqual([{ path: realDocumentPath, type: "document" }]);
+		});
+
+		it("detects document paths as plain text (no formatting)", () => {
+			// Path must be plain text - no backticks, quotes, or code formatting
+			const text = `Sending your visit summary: ${documentPath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toEqual([{ path: realDocumentPath, type: "document" }]);
+		});
+
+		it("rejects non-existent document paths (wrong filename)", () => {
+			// If Claude invents a simplified filename, it won't match
+			const wrongPath = path.join(mediaRoot, "documents", "visit_summary.pdf");
+			const text = `Here's your document: ${wrongPath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toEqual([]);
+		});
+	});
+
+	describe("inferMediaType for documents", () => {
+		it("infers document type for PDFs in documents directory", () => {
+			expect(inferMediaType(documentPath)).toBe("document");
+		});
+
+		it("documents directory takes priority over extension", () => {
+			// Even if it's a .png in documents dir, it should be a document
+			const pngInDocs = path.join(mediaRoot, "documents", "scan-123456.png");
+			fs.writeFileSync(pngInDocs, "fake png");
+			expect(inferMediaType(pngInDocs)).toBe("document");
 		});
 	});
 });
