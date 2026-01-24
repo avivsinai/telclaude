@@ -28,7 +28,13 @@ e82ee12ace184aece9e37ee32666802d1e8efa43:src/security/streaming-redactor.ts:gene
 cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-javascript:704
 
 # Credential vault - code patterns, not real secrets
+# Feature branch commits
 a4e487dd4aca3f3cf7ad6dd29f8fd9cdc157025d:src/relay/http-credential-proxy.ts:authorization-bearer-token:159
 a4e487dd4aca3f3cf7ad6dd29f8fd9cdc157025d:src/relay/http-credential-proxy.ts:credentials-javascript:482
 a4e487dd4aca3f3cf7ad6dd29f8fd9cdc157025d:tests/vault-daemon/store.test.ts:generic-api-key:201
 a4e487dd4aca3f3cf7ad6dd29f8fd9cdc157025d:tests/vault-daemon/store.test.ts:credentials-javascript:13
+# Squash merge to main
+e1eb5fb2369cc166a8458db410ee81d1ba5550df:src/relay/http-credential-proxy.ts:credentials-javascript:595
+e1eb5fb2369cc166a8458db410ee81d1ba5550df:src/relay/http-credential-proxy.ts:authorization-bearer-token:199
+e1eb5fb2369cc166a8458db410ee81d1ba5550df:tests/vault-daemon/store.test.ts:generic-api-key:201
+e1eb5fb2369cc166a8458db410ee81d1ba5550df:tests/vault-daemon/store.test.ts:credentials-javascript:13
