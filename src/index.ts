@@ -30,6 +30,8 @@ import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
 import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
 import { registerTOTPSetupCommand } from "./commands/totp-setup.js";
+import { registerVaultCommand } from "./commands/vault.js";
+import { registerVaultDaemonCommand } from "./commands/vault-daemon.js";
 import { setConfigPath } from "./config/path.js";
 import { setVerbose } from "./globals.js";
 import { closeLogger, getLogger } from "./logging.js";
@@ -68,6 +70,8 @@ registerQuickstartCommand(program);
 registerNetworkCommand(program);
 registerProviderHealthCommand(program);
 registerProviderQueryCommand(program);
+registerVaultCommand(program);
+registerVaultDaemonCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens
