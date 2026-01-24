@@ -20,7 +20,7 @@
  */
 
 import http from "node:http";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
@@ -31,6 +31,7 @@ import {
 	type HttpCredential,
 	type OAuth2Credential,
 } from "../vault-daemon/index.js";
+import { type SessionTokenPayload, validateSessionToken } from "./git-proxy-auth.js";
 
 const logger = getChildLogger({ module: "http-credential-proxy" });
 
@@ -54,6 +55,44 @@ function sanitizeError(err: unknown): string {
 			return "[URL REDACTED]";
 		}
 	});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Maximum request body size (10MB - reasonable for most API calls including images)
+const MAX_REQUEST_BODY_SIZE = 10 * 1024 * 1024;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Body Size Limiting
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Transform stream that enforces a maximum body size.
+ * Throws an error if the size limit is exceeded.
+ */
+class SizeLimitingTransform extends Transform {
+	private received = 0;
+	private readonly maxSize: number;
+
+	constructor(maxSize: number) {
+		super();
+		this.maxSize = maxSize;
+	}
+
+	_transform(
+		chunk: Buffer,
+		_encoding: BufferEncoding,
+		callback: (error?: Error | null, data?: Buffer) => void,
+	): void {
+		this.received += chunk.length;
+		if (this.received > this.maxSize) {
+			callback(new Error(`Request body too large (max ${this.maxSize} bytes)`));
+			return;
+		}
+		callback(null, chunk);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -241,12 +280,14 @@ const UPSTREAM_TIMEOUT_MS = 60 * 1000;
  * Forward a request to the upstream API with authentication.
  *
  * SECURITY: Uses streaming to avoid buffering large request/response bodies.
+ * Body size is limited to prevent DoS attacks.
  */
 async function proxyRequest(
 	req: http.IncomingMessage,
 	res: http.ServerResponse,
 	parsed: ParsedProxyUrl,
 	entry: CredentialEntry,
+	session: SessionTokenPayload,
 	accessToken?: string, // For OAuth2, the refreshed access token
 ): Promise<void> {
 	// Determine the credential to use for headers
@@ -290,9 +331,16 @@ async function proxyRequest(
 		}
 	}
 
-	// For POST/PUT/PATCH, stream the body directly to upstream
+	// For POST/PUT/PATCH, stream the body through size limiter to upstream
+	// SECURITY: Enforce body size limit to prevent DoS attacks
 	const hasBody = ["POST", "PUT", "PATCH"].includes(req.method ?? "");
-	const requestBody = hasBody ? Readable.toWeb(req) : undefined;
+	let requestBody: ReadableStream<Uint8Array> | undefined;
+	if (hasBody) {
+		const sizeLimiter = new SizeLimitingTransform(MAX_REQUEST_BODY_SIZE);
+		// Pipe request through size limiter, then convert to Web ReadableStream
+		const limitedStream = req.pipe(sizeLimiter);
+		requestBody = Readable.toWeb(limitedStream);
+	}
 
 	// Use AbortController for timeout
 	const controller = new AbortController();
@@ -313,6 +361,7 @@ async function proxyRequest(
 		// Log the operation (without sensitive details)
 		logger.info(
 			{
+				sessionId: session.sessionId,
 				host: parsed.host,
 				path: parsed.path,
 				method: req.method,
@@ -366,7 +415,7 @@ async function proxyRequest(
 	} catch (err) {
 		// Handle timeout specifically
 		if (err instanceof Error && err.name === "AbortError") {
-			logger.error({ host: parsed.host }, "http proxy upstream request timed out");
+			logger.error({ host: parsed.host, sessionId: session.sessionId }, "http proxy upstream request timed out");
 			if (!res.headersSent) {
 				res.writeHead(504, { "Content-Type": "text/plain" });
 				res.end("Gateway timeout: upstream request timed out");
@@ -376,8 +425,20 @@ async function proxyRequest(
 			return;
 		}
 
+		// Handle body size limit exceeded
+		if (err instanceof Error && err.message.includes("Request body too large")) {
+			logger.warn({ host: parsed.host, sessionId: session.sessionId }, "http proxy request body too large");
+			if (!res.headersSent) {
+				res.writeHead(413, { "Content-Type": "text/plain" });
+				res.end("Request entity too large");
+			} else {
+				res.end();
+			}
+			return;
+		}
+
 		// SECURITY: Sanitize error to prevent credential leakage in logs
-		logger.error({ error: sanitizeError(err), host: parsed.host }, "http proxy upstream request failed");
+		logger.error({ error: sanitizeError(err), host: parsed.host, sessionId: session.sessionId }, "http proxy upstream request failed");
 		if (!res.headersSent) {
 			res.writeHead(502, { "Content-Type": "text/plain" });
 			res.end("Bad gateway: upstream request failed");
@@ -458,6 +519,26 @@ export function startHttpCredentialProxy(
 			return;
 		}
 
+		// ══════════════════════════════════════════════════════════════════════════
+		// Session Token Validation
+		// SECURITY: All proxy requests require valid session token from relay
+		// ══════════════════════════════════════════════════════════════════════════
+		const sessionHeader = req.headers["x-telclaude-session"] as string | undefined;
+		if (!sessionHeader) {
+			logger.warn({ url }, "http proxy request missing session token");
+			res.writeHead(401, { "Content-Type": "text/plain" });
+			res.end("Unauthorized: missing session token");
+			return;
+		}
+
+		const session = validateSessionToken(sessionHeader);
+		if (!session) {
+			logger.warn({ url }, "http proxy request with invalid session token");
+			res.writeHead(401, { "Content-Type": "text/plain" });
+			res.end("Unauthorized: invalid session token");
+			return;
+		}
+
 		// Parse proxy URL
 		const parsed = parseProxyUrl(url);
 		if (!parsed) {
@@ -466,9 +547,9 @@ export function startHttpCredentialProxy(
 			return;
 		}
 
-		// Rate limiting (per host)
-		if (!checkRateLimit(parsed.host, finalConfig.rateLimitPerMinute)) {
-			logger.warn({ host: parsed.host }, "http proxy rate limit exceeded");
+		// Rate limiting (per session)
+		if (!checkRateLimit(session.sessionId, finalConfig.rateLimitPerMinute)) {
+			logger.warn({ sessionId: session.sessionId, host: parsed.host }, "http proxy rate limit exceeded");
 			res.writeHead(429, { "Content-Type": "text/plain" });
 			res.end("Too many requests");
 			return;
@@ -481,7 +562,7 @@ export function startHttpCredentialProxy(
 		try {
 			const getResponse = await vaultClient.get("http", parsed.host);
 			if (!getResponse.ok) {
-				logger.warn({ host: parsed.host }, "no credential configured for host");
+				logger.warn({ sessionId: session.sessionId, host: parsed.host }, "no credential configured for host");
 				res.writeHead(403, { "Content-Type": "text/plain" });
 				res.end(`Forbidden: no credential configured for ${parsed.host}`);
 				return;
@@ -493,7 +574,7 @@ export function startHttpCredentialProxy(
 				const tokenResponse = await vaultClient.getToken(parsed.host);
 				if (!tokenResponse.ok) {
 					logger.error(
-						{ host: parsed.host, error: tokenResponse.error },
+						{ sessionId: session.sessionId, host: parsed.host, error: tokenResponse.error },
 						"OAuth2 token refresh failed",
 					);
 					res.writeHead(503, { "Content-Type": "text/plain" });
@@ -503,7 +584,7 @@ export function startHttpCredentialProxy(
 				accessToken = tokenResponse.token;
 			}
 		} catch (err) {
-			logger.error({ host: parsed.host, error: String(err) }, "vault lookup failed");
+			logger.error({ sessionId: session.sessionId, host: parsed.host, error: String(err) }, "vault lookup failed");
 			res.writeHead(503, { "Content-Type": "text/plain" });
 			res.end("Service unavailable: credential store unavailable");
 			return;
@@ -511,7 +592,7 @@ export function startHttpCredentialProxy(
 
 		// Check path allowlist
 		if (!isPathAllowed(parsed.path, entry.allowedPaths)) {
-			logger.warn({ host: parsed.host, path: parsed.path }, "path not in allowlist");
+			logger.warn({ sessionId: session.sessionId, host: parsed.host, path: parsed.path }, "path not in allowlist");
 			res.writeHead(403, { "Content-Type": "text/plain" });
 			res.end(`Forbidden: path ${parsed.path} not allowed for this credential`);
 			return;
@@ -521,7 +602,7 @@ export function startHttpCredentialProxy(
 		if (entry.rateLimitPerMinute) {
 			const key = `cred:${parsed.host}`;
 			if (!checkRateLimit(key, entry.rateLimitPerMinute)) {
-				logger.warn({ host: parsed.host }, "credential rate limit exceeded");
+				logger.warn({ sessionId: session.sessionId, host: parsed.host }, "credential rate limit exceeded");
 				res.writeHead(429, { "Content-Type": "text/plain" });
 				res.end("Too many requests for this credential");
 				return;
@@ -529,7 +610,7 @@ export function startHttpCredentialProxy(
 		}
 
 		// Proxy the request
-		await proxyRequest(req, res, parsed, entry, accessToken);
+		await proxyRequest(req, res, parsed, entry, session, accessToken);
 	});
 
 	server.listen(finalConfig.port, finalConfig.host, () => {
