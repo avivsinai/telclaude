@@ -15,19 +15,10 @@
  */
 
 import { getChildLogger } from "../logging.js";
+import { sanitizeError } from "../utils.js";
 import type { OAuth2Credential } from "./protocol.js";
 
 const logger = getChildLogger({ module: "vault-oauth" });
-
-/**
- * Sanitize error messages to prevent credential leakage.
- * Removes URLs which may appear in error messages.
- */
-function sanitizeError(err: unknown): string {
-	const message = String(err);
-	// Replace URLs (may contain tokens in query string or reveal token endpoints)
-	return message.replace(/https?:\/\/[^\s]+/g, "[URL REDACTED]");
-}
 
 // Token endpoint request timeout (30 seconds)
 const TOKEN_REQUEST_TIMEOUT_MS = 30 * 1000;

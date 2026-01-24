@@ -214,6 +214,46 @@ async function processLine(line: string, clientId: string): Promise<VaultRespons
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Persist a rotated refresh token if the credential still matches.
+ * SECURITY: Re-reads entry to prevent race condition (stale write / resurrect deleted cred).
+ */
+async function persistRotatedRefreshToken(
+	protocol: "http",
+	target: string,
+	originalEntry: { credential: { type: "oauth2"; clientId: string; clientSecret: string } },
+	newRefreshToken: string,
+): Promise<void> {
+	const store = getVaultStore();
+	const currentEntry = await store.get(protocol, target);
+
+	// Only update if entry still exists and matches (CAS-style check)
+	if (
+		currentEntry &&
+		currentEntry.credential.type === "oauth2" &&
+		currentEntry.credential.clientId === originalEntry.credential.clientId &&
+		currentEntry.credential.clientSecret === originalEntry.credential.clientSecret
+	) {
+		logger.info({ target }, "persisting rotated refresh token");
+		await store.store(
+			protocol,
+			target,
+			{ ...currentEntry.credential, refreshToken: newRefreshToken },
+			{
+				label: currentEntry.label,
+				allowedPaths: currentEntry.allowedPaths,
+				rateLimitPerMinute: currentEntry.rateLimitPerMinute,
+				expiresAt: currentEntry.expiresAt,
+			},
+		);
+	} else {
+		logger.warn(
+			{ target },
+			"skipping refresh token rotation - entry changed or deleted during refresh",
+		);
+	}
+}
+
+/**
  * Handle a validated request.
  */
 async function handleRequest(request: VaultRequest, clientId: string): Promise<VaultResponse> {
@@ -234,13 +274,11 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 		}
 
 		case "get-token": {
-			// Get the credential first
 			const entry = await store.get(request.protocol, request.target);
 			if (!entry) {
 				return { type: "get-token", ok: false, error: "Credential not found" };
 			}
 
-			// Must be an OAuth2 credential
 			if (entry.credential.type !== "oauth2") {
 				return {
 					type: "get-token",
@@ -249,41 +287,19 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 				};
 			}
 
-			// Get access token (handles refresh)
 			const result = await getAccessToken(request.target, entry.credential);
 			if (!result.ok) {
 				return { type: "get-token", ok: false, error: result.error };
 			}
 
-			// Handle refresh token rotation - update stored credential with new refresh token
-			// SECURITY: Re-read entry to prevent race condition (stale write / resurrect deleted cred)
+			// Persist rotated refresh token if provider rotated it
 			if (result.newRefreshToken) {
-				const currentEntry = await store.get(request.protocol, request.target);
-
-				// Only update if entry still exists and matches (CAS-style check)
-				if (
-					currentEntry &&
-					currentEntry.credential.type === "oauth2" &&
-					currentEntry.credential.clientId === entry.credential.clientId &&
-					currentEntry.credential.clientSecret === entry.credential.clientSecret
-				) {
-					logger.info({ target: request.target }, "persisting rotated refresh token");
-					const updatedCredential = {
-						...currentEntry.credential,
-						refreshToken: result.newRefreshToken,
-					};
-					await store.store(request.protocol, request.target, updatedCredential, {
-						label: currentEntry.label,
-						allowedPaths: currentEntry.allowedPaths,
-						rateLimitPerMinute: currentEntry.rateLimitPerMinute,
-						expiresAt: currentEntry.expiresAt,
-					});
-				} else {
-					logger.warn(
-						{ target: request.target },
-						"skipping refresh token rotation - entry changed or deleted during refresh",
-					);
-				}
+				await persistRotatedRefreshToken(
+					request.protocol,
+					request.target,
+					entry as { credential: { type: "oauth2"; clientId: string; clientSecret: string } },
+					result.newRefreshToken,
+				);
 			}
 
 			return {

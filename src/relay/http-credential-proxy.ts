@@ -25,6 +25,7 @@ import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import { sanitizeError } from "../utils.js";
 import {
 	type CredentialEntry,
 	getVaultClient,
@@ -34,28 +35,6 @@ import {
 import { type SessionTokenPayload, validateSessionToken } from "./git-proxy-auth.js";
 
 const logger = getChildLogger({ module: "http-credential-proxy" });
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Error Sanitization
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Sanitize error messages to prevent credential leakage.
- * Removes URLs with query parameters which may contain credentials.
- */
-function sanitizeError(err: unknown): string {
-	const message = String(err);
-	// Replace URLs with query strings (may contain tokens)
-	// Keeps the host/path but removes query parameters
-	return message.replace(/https?:\/\/[^\s]+\?[^\s]*/g, (url) => {
-		try {
-			const parsed = new URL(url);
-			return `${parsed.protocol}//${parsed.host}${parsed.pathname}?[REDACTED]`;
-		} catch {
-			return "[URL REDACTED]";
-		}
-	});
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -255,18 +234,13 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 		return true;
 	}
 
-	for (const pattern of allowedPaths) {
+	return allowedPaths.some((pattern) => {
 		try {
-			const regex = new RegExp(pattern);
-			if (regex.test(path)) {
-				return true;
-			}
+			return new RegExp(pattern).test(path);
 		} catch {
-			// Invalid regex, skip
+			return false; // Invalid regex, skip
 		}
-	}
-
-	return false;
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -275,6 +249,31 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 
 // Upstream request timeout (60 seconds)
 const UPSTREAM_TIMEOUT_MS = 60 * 1000;
+
+// Headers that should not be forwarded between client and upstream
+const HOP_BY_HOP_HEADERS = new Set([
+	"transfer-encoding",
+	"connection",
+	"keep-alive",
+	"content-encoding",
+	"proxy-authenticate",
+	"proxy-authorization",
+	"te",
+	"trailer",
+	"upgrade",
+]);
+
+/**
+ * Send an error response if headers haven't been sent yet, otherwise just end.
+ */
+function sendErrorResponse(res: http.ServerResponse, status: number, message: string): void {
+	if (!res.headersSent) {
+		res.writeHead(status, { "Content-Type": "text/plain" });
+		res.end(message);
+	} else {
+		res.end();
+	}
+}
 
 /**
  * Forward a request to the upstream API with authentication.
@@ -385,20 +384,8 @@ async function proxyRequest(
 		}
 
 		// Forward response headers, excluding hop-by-hop headers
-		const hopByHopHeaders = new Set([
-			"transfer-encoding",
-			"connection",
-			"keep-alive",
-			"content-encoding",
-			"proxy-authenticate",
-			"proxy-authorization",
-			"te",
-			"trailer",
-			"upgrade",
-		]);
-
 		upstreamResponse.headers.forEach((value, key) => {
-			if (!hopByHopHeaders.has(key.toLowerCase())) {
+			if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
 				res.setHeader(key, value);
 			}
 		});
@@ -413,38 +400,28 @@ async function proxyRequest(
 			res.end();
 		}
 	} catch (err) {
-		// Handle timeout specifically
+		const logContext = { host: parsed.host, sessionId: session.sessionId };
+
+		// Handle timeout
 		if (err instanceof Error && err.name === "AbortError") {
-			logger.error({ host: parsed.host, sessionId: session.sessionId }, "http proxy upstream request timed out");
-			if (!res.headersSent) {
-				res.writeHead(504, { "Content-Type": "text/plain" });
-				res.end("Gateway timeout: upstream request timed out");
-			} else {
-				res.end();
-			}
+			logger.error(logContext, "http proxy upstream request timed out");
+			sendErrorResponse(res, 504, "Gateway timeout: upstream request timed out");
 			return;
 		}
 
 		// Handle body size limit exceeded
 		if (err instanceof Error && err.message.includes("Request body too large")) {
-			logger.warn({ host: parsed.host, sessionId: session.sessionId }, "http proxy request body too large");
-			if (!res.headersSent) {
-				res.writeHead(413, { "Content-Type": "text/plain" });
-				res.end("Request entity too large");
-			} else {
-				res.end();
-			}
+			logger.warn(logContext, "http proxy request body too large");
+			sendErrorResponse(res, 413, "Request entity too large");
 			return;
 		}
 
 		// SECURITY: Sanitize error to prevent credential leakage in logs
-		logger.error({ error: sanitizeError(err), host: parsed.host, sessionId: session.sessionId }, "http proxy upstream request failed");
-		if (!res.headersSent) {
-			res.writeHead(502, { "Content-Type": "text/plain" });
-			res.end("Bad gateway: upstream request failed");
-		} else {
-			res.end();
-		}
+		logger.error(
+			{ ...logContext, error: sanitizeError(err, true) },
+			"http proxy upstream request failed",
+		);
+		sendErrorResponse(res, 502, "Bad gateway: upstream request failed");
 	} finally {
 		clearTimeout(timeoutId);
 	}
@@ -552,7 +529,10 @@ export function startHttpCredentialProxy(
 
 		// Rate limiting (per session)
 		if (!checkRateLimit(session.sessionId, finalConfig.rateLimitPerMinute)) {
-			logger.warn({ sessionId: session.sessionId, host: parsed.host }, "http proxy rate limit exceeded");
+			logger.warn(
+				{ sessionId: session.sessionId, host: parsed.host },
+				"http proxy rate limit exceeded",
+			);
 			res.writeHead(429, { "Content-Type": "text/plain" });
 			res.end("Too many requests");
 			return;
@@ -565,7 +545,10 @@ export function startHttpCredentialProxy(
 		try {
 			const getResponse = await vaultClient.get("http", parsed.host);
 			if (!getResponse.ok) {
-				logger.warn({ sessionId: session.sessionId, host: parsed.host }, "no credential configured for host");
+				logger.warn(
+					{ sessionId: session.sessionId, host: parsed.host },
+					"no credential configured for host",
+				);
 				res.writeHead(403, { "Content-Type": "text/plain" });
 				res.end(`Forbidden: no credential configured for ${parsed.host}`);
 				return;
@@ -587,7 +570,10 @@ export function startHttpCredentialProxy(
 				accessToken = tokenResponse.token;
 			}
 		} catch (err) {
-			logger.error({ sessionId: session.sessionId, host: parsed.host, error: String(err) }, "vault lookup failed");
+			logger.error(
+				{ sessionId: session.sessionId, host: parsed.host, error: String(err) },
+				"vault lookup failed",
+			);
 			res.writeHead(503, { "Content-Type": "text/plain" });
 			res.end("Service unavailable: credential store unavailable");
 			return;
@@ -595,7 +581,10 @@ export function startHttpCredentialProxy(
 
 		// Check path allowlist
 		if (!isPathAllowed(parsed.path, entry.allowedPaths)) {
-			logger.warn({ sessionId: session.sessionId, host: parsed.host, path: parsed.path }, "path not in allowlist");
+			logger.warn(
+				{ sessionId: session.sessionId, host: parsed.host, path: parsed.path },
+				"path not in allowlist",
+			);
 			res.writeHead(403, { "Content-Type": "text/plain" });
 			res.end(`Forbidden: path ${parsed.path} not allowed for this credential`);
 			return;
@@ -605,7 +594,10 @@ export function startHttpCredentialProxy(
 		if (entry.rateLimitPerMinute) {
 			const key = `cred:${parsed.host}`;
 			if (!checkRateLimit(key, entry.rateLimitPerMinute)) {
-				logger.warn({ sessionId: session.sessionId, host: parsed.host }, "credential rate limit exceeded");
+				logger.warn(
+					{ sessionId: session.sessionId, host: parsed.host },
+					"credential rate limit exceeded",
+				);
 				res.writeHead(429, { "Content-Type": "text/plain" });
 				res.end("Too many requests for this credential");
 				return;

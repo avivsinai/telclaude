@@ -43,10 +43,7 @@ const RFC7230_TOKEN_REGEX = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 export const HttpApiKeyCredentialSchema = z.object({
 	type: z.literal("api-key"),
 	token: z.string().min(1),
-	header: z
-		.string()
-		.min(1)
-		.regex(RFC7230_TOKEN_REGEX, "Header name must be a valid RFC7230 token"), // e.g., "X-API-Key", "x-api-key"
+	header: z.string().min(1).regex(RFC7230_TOKEN_REGEX, "Header name must be a valid RFC7230 token"), // e.g., "X-API-Key", "x-api-key"
 });
 
 export const HttpBasicCredentialSchema = z.object({

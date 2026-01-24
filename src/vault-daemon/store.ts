@@ -323,6 +323,26 @@ export class VaultStore {
 	// File I/O
 	// ═══════════════════════════════════════════════════════════════════════════
 
+	/**
+	 * Ensure a file has the correct permissions (0600).
+	 * Returns true if permissions are correct or were corrected.
+	 */
+	private ensureFilePermissions(filePath: string, logOnCorrection = false): boolean {
+		try {
+			const stats = statSync(filePath);
+			const mode = stats.mode & 0o777;
+			if (mode !== 0o600) {
+				chmodSync(filePath, 0o600);
+				if (logOnCorrection) {
+					logger.info({ filePath }, "corrected vault file permissions to 0600");
+				}
+			}
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	private readVault(): EncryptedVault {
 		if (!existsSync(this.filePath)) {
 			const salt = randomBytes(16);
@@ -372,33 +392,15 @@ export class VaultStore {
 		// Write to temp file with correct permissions
 		writeFileSync(tempPath, content, { mode: 0o600 });
 
-		// Ensure temp file has correct permissions
-		try {
-			const stats = statSync(tempPath);
-			const mode = stats.mode & 0o777;
-			if (mode !== 0o600) {
-				chmodSync(tempPath, 0o600);
-			}
-		} catch {
-			// Continue with rename - permissions issue is secondary
-		}
+		// Ensure temp file has correct permissions before rename
+		this.ensureFilePermissions(tempPath);
 
 		// Atomic rename (on POSIX systems)
 		renameSync(tempPath, this.filePath);
 
 		// Verify final file permissions
-		try {
-			const stats = statSync(this.filePath);
-			const mode = stats.mode & 0o777;
-			if (mode !== 0o600) {
-				chmodSync(this.filePath, 0o600);
-				logger.info({ filePath: this.filePath }, "corrected vault file permissions to 0600");
-			}
-		} catch (err) {
-			logger.warn(
-				{ filePath: this.filePath, error: String(err) },
-				"failed to verify vault file permissions",
-			);
+		if (!this.ensureFilePermissions(this.filePath, true)) {
+			logger.warn({ filePath: this.filePath }, "failed to verify vault file permissions");
 		}
 	}
 }
