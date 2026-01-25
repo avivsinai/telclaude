@@ -11,20 +11,26 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Highlights
 - Mandatory isolation boundary: SDK sandbox (Seatbelt/bubblewrap) in native mode, relay+agent containers + firewall in Docker mode.
+- Credential vault: sidecar daemon stores API keys and injects them into requests — agents never see raw credentials.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
+- Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
 
 ## Documentation map
-- Overview & onboarding: this `README.md`
-- Configuration examples: `examples/` (minimal, personal, team)
-- Agent playbook: `CLAUDE.md` (auto-loaded by Claude Code)
-- Agents guide pointer: `AGENTS.md`
-- Architecture/security deep dive: `docs/architecture.md`
-- Container deploy: `docker/README.md`
-- Policies: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `GOVERNANCE.md`
+| Document | Purpose |
+|----------|---------|
+| This `README.md` | Overview, quick start, configuration |
+| `examples/` | Configuration examples (minimal, personal, team) |
+| `CLAUDE.md` | Agent playbook (auto-loaded by Claude Code) |
+| `AGENTS.md` | Agents guide pointer |
+| `docs/architecture.md` | Architecture deep dive, security model, vault details |
+| `docker/README.md` | Container deployment, firewall, volumes |
+| `CHANGELOG.md` | Version history |
+| `SECURITY.md` | Vulnerability reporting, threat model |
+| `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md` | Community policies |
 
 ## Support & cadence
 - Status: alpha — breaking changes possible until 1.0.
@@ -44,36 +50,38 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ```
                             Telegram
-                               |
-                               v
-+--------------------------------------------------------------+
-|                       Security Layer                          |
-|  +------------+   +------------+   +----------+   +--------+  |
-|  | Fast Path  |-->|  Observer  |-->| Rate     |-->|Approval|  |
-|  | (regex)    |   |  (Haiku)   |   | Limit    |   |(human) |  |
-|  +------------+   +------------+   +----------+   +--------+  |
-+--------------------------------------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|                      Permission Tiers                         |
-|    READ_ONLY          WRITE_LOCAL          FULL_ACCESS        |
-|    (5 tools)          (8 tools)            (all, +approval)   |
-+--------------------------------------------------------------+
-                               |
-                               v
-+--------------------------------------------------------------+
-|           Isolation Boundary (mode-dependent)                |
-|  Docker: relay+agent + firewall | Native: SDK sandbox         |
-|             (SDK sandbox off)   | (Seatbelt/bwrap)            |
-+--------------------------------------------------------------+
-                               |
-                               v
-                       Claude Agent SDK
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                        Security Layer                            │
+│  ┌────────────┐   ┌────────────┐   ┌──────────┐   ┌──────────┐  │
+│  │ Fast Path  │──▶│  Observer  │──▶│   Rate   │──▶│ Approval │  │
+│  │  (regex)   │   │  (Haiku)   │   │  Limit   │   │ (human)  │  │
+│  └────────────┘   └────────────┘   └──────────┘   └──────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       Permission Tiers                           │
+│     READ_ONLY           WRITE_LOCAL           FULL_ACCESS        │
+│     (5 tools)           (8 tools)            (all, +approval)    │
+└──────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│            Isolation Boundary (mode-dependent)                   │
+│   Docker: relay+agent + firewall  │  Native: SDK sandbox         │
+│          (SDK sandbox off)        │  (Seatbelt/bwrap)            │
+└──────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+                        Claude Agent SDK
 
-+------------------+
-|   TOTP Daemon    |<--- separate process, OS keychain
-+------------------+
+┌──────────────────┐     ┌──────────────────┐
+│   TOTP Daemon    │     │  Vault Daemon    │
+│  (OS keychain)   │     │ (credential      │
+└──────────────────┘     │  injection)      │
+                         └──────────────────┘
 ```
 
 ## Requirements
@@ -85,7 +93,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Optional but recommended: TOTP daemon uses the OS keychain (keytar)
 
 ## Third-party terms
-- This project depends on `@anthropic-ai/claude-agent-sdk`, which is distributed under Anthropic’s Claude Code legal agreements (see its `LICENSE.md` in `node_modules/` after install).
+- This project depends on `@anthropic-ai/claude-agent-sdk`, which is distributed under Anthropic's Claude Code legal agreements (see its `LICENSE.md` in `node_modules/` after install).
 
 ## Quick start (Docker, recommended for prod)
 ```bash
@@ -175,8 +183,72 @@ docker compose exec telclaude pnpm start relay --profile strict
   - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
+## Credential vault
+
+The vault daemon stores API credentials and injects them into HTTP requests transparently — agents never see raw credentials. This feature is primarily designed for Docker deployments with a remote agent.
+
+**How it works (Docker/remote agent mode):**
+1. Vault daemon runs as a sidecar (Unix socket, no network except OAuth refresh)
+2. HTTP proxy on relay (port 8792) intercepts requests like `http://relay:8792/api.openai.com/v1/...`
+3. Proxy looks up credentials by host, injects auth headers, forwards to upstream
+4. Agent receives response without ever seeing the API key
+
+**Note:** The HTTP credential proxy is only started when a remote agent is configured (`TELCLAUDE_AGENT_URL`). Native mode uses direct key exposure for FULL_ACCESS tier instead (see Configuration section).
+
+**Supported auth types:** `bearer`, `api-key`, `basic`, `query`, `oauth2` (with automatic token refresh)
+
+**Security properties:**
+- Credentials encrypted at rest (AES-256-GCM)
+- Host allowlist prevents injection to unexpected destinations
+- Optional path restrictions per host
+- Socket permissions 0600
+
+**Quick setup:**
+```bash
+# Generate encryption key
+export VAULT_ENCRYPTION_KEY=$(openssl rand -base64 32)
+
+# Start vault daemon
+telclaude vault-daemon
+
+# Add a credential
+telclaude vault add http api.openai.com --type bearer --label "OpenAI"
+# (prompts for token securely)
+
+# List credentials
+telclaude vault list
+```
+
+See `docs/architecture.md` for full vault architecture and CLI reference.
+
+## Private network allowlist
+
+For local services (Home Assistant, NAS, Plex, etc.), configure explicit private endpoints:
+
+```json
+{
+  "security": {
+    "network": {
+      "privateEndpoints": [
+        { "label": "home-assistant", "host": "192.168.1.100", "ports": [8123] },
+        { "label": "homelab", "cidr": "192.168.1.0/24", "ports": [80, 443] }
+      ]
+    }
+  }
+}
+```
+
+**CLI:**
+```bash
+telclaude network list
+telclaude network add ha --host 192.168.1.100 --ports 8123
+telclaude network test http://192.168.1.100:8123/api
+```
+
+Metadata endpoints (169.254.169.254) and link-local addresses remain blocked regardless of allowlist.
+
 ## External providers (sidecars)
-Telclaude can integrate with private REST APIs (“sidecars”) over WebFetch without assuming any specific vendor or schema.
+Telclaude can integrate with private REST APIs ("sidecars") over WebFetch without assuming any specific vendor or schema.
 
 **Configuration (generic):**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
@@ -193,21 +265,71 @@ Telclaude can integrate with private REST APIs (“sidecars”) over WebFetch wi
 - Telclaude tolerates provider-specific shapes and extracts services/actions if present.
 - Optional `credentialFields` metadata is supported to describe required fields for operators; it is never shown as a request for user credentials.
 
-## CLI
-- `telclaude relay [--profile simple|strict|test] [--dry-run]`
-- `telclaude doctor [--network] [--secrets]`
-- `telclaude status [--json]`
-- `telclaude link <user-id> | --list | --remove <chat-id>`
-- `telclaude send <chatId> [message] [--media <path>] [--caption <text>]`
-- `telclaude totp-daemon [--socket-path <path>]`
-- `telclaude totp-setup <user-id>`
-- `telclaude totp-disable <user-id>`
-- `telclaude reset-auth [--force]`
-- `telclaude ban <chat-id> [-r <reason>]` — block a chat from using the bot
-- `telclaude unban <chat-id>` — restore access for a banned chat
-- `telclaude force-reauth <chat-id>` — invalidate TOTP session, requiring re-verification
-- `telclaude list-bans` — show all banned chats
-- `telclaude reset-db [--force]` — delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`)
+## CLI reference
+
+### Core
+| Command | Description |
+|---------|-------------|
+| `telclaude relay [--profile simple\|strict\|test] [--dry-run]` | Start the relay |
+| `telclaude quickstart` | Interactive first-time setup |
+| `telclaude doctor [--network] [--secrets]` | Health check |
+| `telclaude status [--json]` | Show relay status |
+
+### Authentication & access control
+| Command | Description |
+|---------|-------------|
+| `telclaude link <user-id> \| --list \| --remove <chat-id>` | Manage identity links |
+| `telclaude totp-daemon [--socket-path <path>]` | Start TOTP daemon |
+| `telclaude totp-setup <user-id>` | Set up TOTP for a user |
+| `telclaude totp-disable <user-id>` | Disable TOTP for a user |
+| `telclaude reset-auth [--force]` | Reset auth state |
+| `telclaude ban <chat-id> [-r <reason>]` | Block a chat |
+| `telclaude unban <chat-id>` | Restore access |
+| `telclaude force-reauth <chat-id>` | Invalidate TOTP session |
+| `telclaude list-bans` | Show banned chats |
+
+### Credential vault
+| Command | Description |
+|---------|-------------|
+| `telclaude vault-daemon` | Start vault daemon |
+| `telclaude vault list` | List stored credentials |
+| `telclaude vault add http <host> --type <type> [--label <name>]` | Add credential |
+| `telclaude vault remove http <host>` | Remove credential |
+| `telclaude vault test http <host>` | Test credential injection |
+
+### API key setup (legacy, use vault for new setups)
+| Command | Description |
+|---------|-------------|
+| `telclaude setup-openai` | Configure OpenAI API key |
+| `telclaude setup-git` | Configure Git credentials |
+| `telclaude setup-github-app` | Configure GitHub App |
+
+### Network & providers
+| Command | Description |
+|---------|-------------|
+| `telclaude network list` | List private endpoints |
+| `telclaude network add <label> (--host <ip> \| --cidr <range>) [--ports <ports>]` | Add endpoint |
+| `telclaude network remove <label>` | Remove endpoint |
+| `telclaude network test <url>` | Test endpoint access |
+| `telclaude provider-query --provider <id> --service <svc> --action <act>` | Query external provider |
+| `telclaude provider-health [provider-id]` | Check provider health |
+
+### Media & messaging
+| Command | Description |
+|---------|-------------|
+| `telclaude send <chatId> [message] [--media <path>] [--caption <text>]` | Send message/media |
+| `telclaude send-local-file --path <path> [--filename <name>]` | Send workspace file to Telegram |
+| `telclaude send-attachment --ref <ref>` | Send provider attachment via ref token |
+| `telclaude fetch-attachment --provider <id> --id <attachment-id>` | Download provider attachment |
+| `telclaude generate-image <prompt> [-s <size>] [-q <quality>]` | Generate image (requires OpenAI) |
+| `telclaude text-to-speech <text> [-v <voice>] [-f <format>]` | Text-to-speech (requires OpenAI) |
+
+### Diagnostics
+| Command | Description |
+|---------|-------------|
+| `telclaude diagnose-sandbox-network` | Debug sandbox network issues |
+| `telclaude integration-test [--all]` | Run SDK integration tests |
+| `telclaude reset-db [--force]` | Delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`) |
 
 ## Usage example
 Run strict profile with approvals and TOTP:
@@ -246,18 +368,13 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see `CLAUDE.md#sandbox-unavailable-relay-wont-start`) |
 | TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` |
+| Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
 
 ## Community
 - Contributing guidelines: see `CONTRIBUTING.md`.
 - Code of Conduct: see `CODE_OF_CONDUCT.md`.
 - Issues & discussions: open GitHub issues; we triage weekly.
 - Changelog: see `CHANGELOG.md`.
-
-## Documentation & Support
-- `CLAUDE.md` — architecture and configuration details
-- `docker/README.md` — container deployment
-- `CONTRIBUTING.md` — how to get involved
-- `SECURITY.md` — vulnerability reporting and threat model
 
 ## Acknowledgments
 
