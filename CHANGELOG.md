@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-01-25
+
+### Added
+
+- **Credential Vault** - Sidecar daemon that stores credentials and injects them into HTTP requests transparently. Agents never see raw credentials. Supports bearer, api-key, basic, query, and OAuth2 auth types with automatic token refresh.
+- **HTTP Credential Proxy** - Relay endpoint at port 8792 that proxies requests through the vault, injecting credentials based on target host.
+- **Vault CLI** - New commands: `telclaude vault-daemon`, `telclaude vault list|add|remove|test` for credential management.
+
+### Security
+
+- **Credential isolation** - Vault runs with no network access (except OAuth refresh); credentials never reach the agent container.
+- **Host allowlist** - Proxy only injects credentials for explicitly configured hosts.
+- **Path restrictions** - Optional `allowedPaths` regex per host prevents SSRF to unexpected endpoints.
+- **Encryption at rest** - AES-256-GCM with scrypt key derivation for stored credentials.
+
 ## [0.5.4] - 2026-01-23
 
 ### Added
