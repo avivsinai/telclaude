@@ -96,7 +96,7 @@
     "shell-quote": "^1.8.3",
     "telegram-markdown-v2": "^0.0.4",
     "undici": "^7.16.0",
-    "zod": "^3.25.0"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.10",
