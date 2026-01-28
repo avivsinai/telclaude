@@ -34,14 +34,24 @@ const ReplyConfigSchema = z
 		/** Streaming response configuration */
 		streaming: StreamingConfigSchema.optional(),
 	})
-	.default({});
+	.default({
+		enabled: true,
+		timeoutSeconds: 600,
+		typingIntervalSeconds: 8,
+	});
 
 // Inbound (auto-reply) configuration schema
 const InboundConfigSchema = z
 	.object({
 		reply: ReplyConfigSchema,
 	})
-	.default({});
+	.default({
+		reply: {
+			enabled: true,
+			timeoutSeconds: 600,
+			typingIntervalSeconds: 8,
+		},
+	});
 
 // SDK configuration schema (for Claude Agent SDK options)
 const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
@@ -304,8 +314,8 @@ const LoggingConfigSchema = z.object({
 
 // Main config schema
 const TelclaudeConfigSchema = z.object({
-	security: SecurityConfigSchema.default({}),
-	telegram: TelegramConfigSchema.default({}),
+	security: SecurityConfigSchema.default({ profile: "simple" }),
+	telegram: TelegramConfigSchema.default({ heartbeatSeconds: 60 }),
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
 	sdk: SdkConfigSchema.default({}),
