@@ -96,3 +96,6 @@ env.*.local
 
 # Docker overrides
 docker/docker-compose.override.yml
+
+# Agent Message Queue
+.amqrc
