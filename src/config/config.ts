@@ -318,13 +318,37 @@ const TelclaudeConfigSchema = z.object({
 	telegram: TelegramConfigSchema.default({ heartbeatSeconds: 60 }),
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
-	sdk: SdkConfigSchema.default({}),
+	sdk: SdkConfigSchema.default({ betas: [] }),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
-	transcription: TranscriptionConfigSchema.default({}),
-	imageGeneration: ImageGenerationConfigSchema.default({}),
-	videoProcessing: VideoProcessingConfigSchema.default({}),
-	tts: TTSConfigSchema.default({}),
+	transcription: TranscriptionConfigSchema.default({
+		provider: "openai",
+		model: "whisper-1",
+		timeoutSeconds: 60,
+	}),
+	imageGeneration: ImageGenerationConfigSchema.default({
+		provider: "gpt-image",
+		model: "gpt-image-1.5",
+		size: "1024x1024",
+		quality: "medium",
+		maxPerHourPerUser: 10,
+		maxPerDayPerUser: 50,
+	}),
+	videoProcessing: VideoProcessingConfigSchema.default({
+		enabled: false,
+		frameInterval: 1,
+		maxFrames: 30,
+		maxDurationSeconds: 300,
+		extractAudio: true,
+	}),
+	tts: TTSConfigSchema.default({
+		provider: "openai",
+		voice: "alloy",
+		speed: 1.0,
+		autoReadResponses: false,
+		maxPerHourPerUser: 30,
+		maxPerDayPerUser: 100,
+	}),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
 });
