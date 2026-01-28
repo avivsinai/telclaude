@@ -380,6 +380,10 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 
 Inspired by [Clawdis](https://github.com/steipete/clawdis) by [@steipete](https://github.com/steipete).
 
+## Disclaimer
+
+Provided as-is for authorized use only. Use at your own risk.
+
 ## License
 
 MIT
