@@ -73,8 +73,8 @@ export function readEnv(runtime: RuntimeEnv = defaultRuntime): TelclaudeEnv {
 	const result = TelclaudeEnvSchema.safeParse(env);
 	if (!result.success) {
 		runtime.error("Invalid token configuration:");
-		for (const error of result.error.errors) {
-			runtime.error(`  ${error.path.join(".")}: ${error.message}`);
+		for (const issue of result.error.issues) {
+			runtime.error(`  ${issue.path.join(".")}: ${issue.message}`);
 		}
 		runtime.exit(1);
 	}
