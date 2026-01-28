@@ -50,7 +50,7 @@ const TTS_DEFAULTS = {
 
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
-const SDK_DEFAULTS = { betas: [] as ("context-1m-2025-08-07")[] };
+const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -116,10 +116,16 @@ const TranscriptionConfigSchema = z.object({
 const ImageGenerationConfigSchema = z.object({
 	provider: z.enum(["gpt-image", "disabled"]).default(IMAGE_GENERATION_DEFAULTS.provider),
 	model: z.string().default(IMAGE_GENERATION_DEFAULTS.model),
-	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default(IMAGE_GENERATION_DEFAULTS.size),
+	size: z
+		.enum(["auto", "1024x1024", "1536x1024", "1024x1536"])
+		.default(IMAGE_GENERATION_DEFAULTS.size),
 	quality: z.enum(["low", "medium", "high"]).default(IMAGE_GENERATION_DEFAULTS.quality),
 	// Rate limiting for cost control
-	maxPerHourPerUser: z.number().int().positive().default(IMAGE_GENERATION_DEFAULTS.maxPerHourPerUser),
+	maxPerHourPerUser: z
+		.number()
+		.int()
+		.positive()
+		.default(IMAGE_GENERATION_DEFAULTS.maxPerHourPerUser),
 	maxPerDayPerUser: z.number().int().positive().default(IMAGE_GENERATION_DEFAULTS.maxPerDayPerUser),
 });
 
@@ -130,7 +136,11 @@ const VideoProcessingConfigSchema = z.object({
 	enabled: z.boolean().default(VIDEO_PROCESSING_DEFAULTS.enabled),
 	frameInterval: z.number().positive().default(VIDEO_PROCESSING_DEFAULTS.frameInterval),
 	maxFrames: z.number().int().positive().default(VIDEO_PROCESSING_DEFAULTS.maxFrames),
-	maxDurationSeconds: z.number().int().positive().default(VIDEO_PROCESSING_DEFAULTS.maxDurationSeconds),
+	maxDurationSeconds: z
+		.number()
+		.int()
+		.positive()
+		.default(VIDEO_PROCESSING_DEFAULTS.maxDurationSeconds),
 	extractAudio: z.boolean().default(VIDEO_PROCESSING_DEFAULTS.extractAudio),
 });
 
