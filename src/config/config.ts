@@ -6,6 +6,52 @@ import { z } from "zod";
 import { CONFIG_DIR } from "../utils.js";
 import { resolveConfigPath } from "./path.js";
 
+// =============================================================================
+// Default value constants (single source of truth for Zod 4 compatibility)
+// =============================================================================
+
+const REPLY_DEFAULTS = {
+	enabled: true,
+	timeoutSeconds: 600,
+	typingIntervalSeconds: 8,
+} as const;
+
+const TRANSCRIPTION_DEFAULTS = {
+	provider: "openai",
+	model: "whisper-1",
+	timeoutSeconds: 60,
+} as const;
+
+const IMAGE_GENERATION_DEFAULTS = {
+	provider: "gpt-image",
+	model: "gpt-image-1.5",
+	size: "1024x1024",
+	quality: "medium",
+	maxPerHourPerUser: 10,
+	maxPerDayPerUser: 50,
+} as const;
+
+const VIDEO_PROCESSING_DEFAULTS = {
+	enabled: false,
+	frameInterval: 1,
+	maxFrames: 30,
+	maxDurationSeconds: 300,
+	extractAudio: true,
+} as const;
+
+const TTS_DEFAULTS = {
+	provider: "openai",
+	voice: "alloy",
+	speed: 1.0,
+	autoReadResponses: false,
+	maxPerHourPerUser: 30,
+	maxPerDayPerUser: 100,
+} as const;
+
+const SECURITY_DEFAULTS = { profile: "simple" } as const;
+const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
+const SDK_DEFAULTS = { betas: [] as ("context-1m-2025-08-07")[] };
+
 // Session configuration schema
 const SessionConfigSchema = z.object({
 	scope: z.enum(["per-sender", "global"]).default("per-sender"),
@@ -27,31 +73,21 @@ const StreamingConfigSchema = z.object({
 // Reply configuration schema (SDK-based)
 const ReplyConfigSchema = z
 	.object({
-		enabled: z.boolean().default(true),
-		timeoutSeconds: z.number().int().positive().default(600),
+		enabled: z.boolean().default(REPLY_DEFAULTS.enabled),
+		timeoutSeconds: z.number().int().positive().default(REPLY_DEFAULTS.timeoutSeconds),
 		session: SessionConfigSchema.optional(),
-		typingIntervalSeconds: z.number().positive().default(8),
+		typingIntervalSeconds: z.number().positive().default(REPLY_DEFAULTS.typingIntervalSeconds),
 		/** Streaming response configuration */
 		streaming: StreamingConfigSchema.optional(),
 	})
-	.default({
-		enabled: true,
-		timeoutSeconds: 600,
-		typingIntervalSeconds: 8,
-	});
+	.default(REPLY_DEFAULTS);
 
 // Inbound (auto-reply) configuration schema
 const InboundConfigSchema = z
 	.object({
 		reply: ReplyConfigSchema,
 	})
-	.default({
-		reply: {
-			enabled: true,
-			timeoutSeconds: 600,
-			typingIntervalSeconds: 8,
-		},
-	});
+	.default({ reply: REPLY_DEFAULTS });
 
 // SDK configuration schema (for Claude Agent SDK options)
 const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
@@ -68,46 +104,46 @@ const OpenAIConfigSchema = z.object({
 
 // Transcription configuration schema
 const TranscriptionConfigSchema = z.object({
-	provider: z.enum(["openai", "deepgram", "command"]).default("openai"),
-	model: z.string().default("whisper-1"), // Any valid OpenAI transcription model
+	provider: z.enum(["openai", "deepgram", "command"]).default(TRANSCRIPTION_DEFAULTS.provider),
+	model: z.string().default(TRANSCRIPTION_DEFAULTS.model),
 	language: z.string().optional(), // Auto-detect if not set
 	// For provider: "command" - CLI-based transcription (like clawdis)
 	command: z.array(z.string()).optional(),
-	timeoutSeconds: z.number().int().positive().default(60),
+	timeoutSeconds: z.number().int().positive().default(TRANSCRIPTION_DEFAULTS.timeoutSeconds),
 });
 
 // Image generation configuration schema (GPT Image 1.5)
 const ImageGenerationConfigSchema = z.object({
-	provider: z.enum(["gpt-image", "disabled"]).default("gpt-image"),
-	model: z.string().default("gpt-image-1.5"), // GPT image model (gpt-image-1.5, gpt-image-1, etc.)
-	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default("1024x1024"),
-	quality: z.enum(["low", "medium", "high"]).default("medium"),
+	provider: z.enum(["gpt-image", "disabled"]).default(IMAGE_GENERATION_DEFAULTS.provider),
+	model: z.string().default(IMAGE_GENERATION_DEFAULTS.model),
+	size: z.enum(["auto", "1024x1024", "1536x1024", "1024x1536"]).default(IMAGE_GENERATION_DEFAULTS.size),
+	quality: z.enum(["low", "medium", "high"]).default(IMAGE_GENERATION_DEFAULTS.quality),
 	// Rate limiting for cost control
-	maxPerHourPerUser: z.number().int().positive().default(10),
-	maxPerDayPerUser: z.number().int().positive().default(50),
+	maxPerHourPerUser: z.number().int().positive().default(IMAGE_GENERATION_DEFAULTS.maxPerHourPerUser),
+	maxPerDayPerUser: z.number().int().positive().default(IMAGE_GENERATION_DEFAULTS.maxPerDayPerUser),
 });
 
 // Video processing configuration schema
 // SECURITY: Disabled by default - FFmpeg runs unsandboxed and has historical parsing vulnerabilities.
 // Enable only if you trust all users in allowedChats and accept the risk of processing untrusted video.
 const VideoProcessingConfigSchema = z.object({
-	enabled: z.boolean().default(false),
-	frameInterval: z.number().positive().default(1), // Seconds between frames
-	maxFrames: z.number().int().positive().default(30),
-	maxDurationSeconds: z.number().int().positive().default(300), // 5 min max
-	extractAudio: z.boolean().default(true), // Transcribe audio track
+	enabled: z.boolean().default(VIDEO_PROCESSING_DEFAULTS.enabled),
+	frameInterval: z.number().positive().default(VIDEO_PROCESSING_DEFAULTS.frameInterval),
+	maxFrames: z.number().int().positive().default(VIDEO_PROCESSING_DEFAULTS.maxFrames),
+	maxDurationSeconds: z.number().int().positive().default(VIDEO_PROCESSING_DEFAULTS.maxDurationSeconds),
+	extractAudio: z.boolean().default(VIDEO_PROCESSING_DEFAULTS.extractAudio),
 });
 
 // Text-to-speech configuration schema
 const TTSConfigSchema = z.object({
-	provider: z.enum(["openai", "elevenlabs", "disabled"]).default("openai"),
-	voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).default("alloy"),
-	speed: z.number().min(0.25).max(4.0).default(1.0),
+	provider: z.enum(["openai", "elevenlabs", "disabled"]).default(TTS_DEFAULTS.provider),
+	voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).default(TTS_DEFAULTS.voice),
+	speed: z.number().min(0.25).max(4.0).default(TTS_DEFAULTS.speed),
 	// Enable auto-read for voice responses
-	autoReadResponses: z.boolean().default(false),
+	autoReadResponses: z.boolean().default(TTS_DEFAULTS.autoReadResponses),
 	// Rate limiting for cost control
-	maxPerHourPerUser: z.number().int().positive().default(30),
-	maxPerDayPerUser: z.number().int().positive().default(100),
+	maxPerHourPerUser: z.number().int().positive().default(TTS_DEFAULTS.maxPerHourPerUser),
+	maxPerDayPerUser: z.number().int().positive().default(TTS_DEFAULTS.maxPerDayPerUser),
 });
 
 // Security profile - determines which security layers are active
@@ -208,7 +244,7 @@ const SecurityConfigSchema = z.object({
 	// "simple" (default): Hard enforcement only (sandbox, secret filter, rate limits)
 	// "strict": Adds soft policy layers (observer, approvals)
 	// "test": No security (for testing only)
-	profile: SecurityProfileSchema.default("simple"),
+	profile: SecurityProfileSchema.default(SECURITY_DEFAULTS.profile),
 	observer: ObserverConfigSchema.optional(),
 	secretFilter: SecretFilterConfigSchema.optional(),
 	permissions: z
@@ -294,7 +330,7 @@ const TelegramConfigSchema = z.object({
 			secretToken: z.string().optional(),
 		})
 		.optional(),
-	heartbeatSeconds: z.number().int().positive().default(60),
+	heartbeatSeconds: z.number().int().positive().default(TELEGRAM_DEFAULTS.heartbeatSeconds),
 	reconnect: z
 		.object({
 			initialMs: z.number().int().positive().default(1000),
@@ -314,41 +350,17 @@ const LoggingConfigSchema = z.object({
 
 // Main config schema
 const TelclaudeConfigSchema = z.object({
-	security: SecurityConfigSchema.default({ profile: "simple" }),
-	telegram: TelegramConfigSchema.default({ heartbeatSeconds: 60 }),
+	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
+	telegram: TelegramConfigSchema.default(TELEGRAM_DEFAULTS),
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
-	sdk: SdkConfigSchema.default({ betas: [] }),
+	sdk: SdkConfigSchema.default(SDK_DEFAULTS),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
-	transcription: TranscriptionConfigSchema.default({
-		provider: "openai",
-		model: "whisper-1",
-		timeoutSeconds: 60,
-	}),
-	imageGeneration: ImageGenerationConfigSchema.default({
-		provider: "gpt-image",
-		model: "gpt-image-1.5",
-		size: "1024x1024",
-		quality: "medium",
-		maxPerHourPerUser: 10,
-		maxPerDayPerUser: 50,
-	}),
-	videoProcessing: VideoProcessingConfigSchema.default({
-		enabled: false,
-		frameInterval: 1,
-		maxFrames: 30,
-		maxDurationSeconds: 300,
-		extractAudio: true,
-	}),
-	tts: TTSConfigSchema.default({
-		provider: "openai",
-		voice: "alloy",
-		speed: 1.0,
-		autoReadResponses: false,
-		maxPerHourPerUser: 30,
-		maxPerDayPerUser: 100,
-	}),
+	transcription: TranscriptionConfigSchema.default(TRANSCRIPTION_DEFAULTS),
+	imageGeneration: ImageGenerationConfigSchema.default(IMAGE_GENERATION_DEFAULTS),
+	videoProcessing: VideoProcessingConfigSchema.default(VIDEO_PROCESSING_DEFAULTS),
+	tts: TTSConfigSchema.default(TTS_DEFAULTS),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
 });
