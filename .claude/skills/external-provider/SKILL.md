@@ -24,6 +24,17 @@ Check the provider schema to see which services are available. The authoritative
 - Direct HTTP calls will fail with "Missing internal auth headers"
 - The relay sanitizes responses (strips inline base64, stores attachments)
 
+### User ID (REQUIRED)
+
+**You MUST extract the user ID from `<request-context>` and pass it to ALL provider commands.**
+
+Look for this tag in your system context:
+```
+<request-context user-id="admin" />
+```
+
+Extract the `user-id` value and pass it via `--user-id` flag. Without this, requests will fail with 401.
+
 ### 1. Read the schema file
 
 ```
@@ -35,24 +46,24 @@ This shows the provider ID and available services/actions.
 ### 2. Query the provider via CLI
 
 ```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action>
+telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId>
 ```
 
 With parameters:
 ```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action> --params '{"key": "value"}'
+telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId> --params '{"key": "value"}'
 ```
 
-Examples:
+Examples (assuming `<request-context user-id="admin" />`):
 ```bash
 # Get appointments
-telclaude provider-query --provider israel-services --service clalit --action appointments
+telclaude provider-query --provider israel-services --service clalit --action appointments --user-id admin
 
 # Get bank transactions with date range
-telclaude provider-query --provider israel-services --service poalim --action scrape --params '{"startDate": "2024-01-01"}'
+telclaude provider-query --provider israel-services --service poalim --action scrape --user-id admin --params '{"startDate": "2024-01-01"}'
 
 # Get lab results
-telclaude provider-query --provider israel-services --service maccabi --action lab_results
+telclaude provider-query --provider israel-services --service maccabi --action lab_results --user-id admin
 ```
 
 ### 3. Parse the response
@@ -151,13 +162,14 @@ You MUST include the exact path in your response. The relay watches for this pat
 
 ## Important Rules
 
-1. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude provider-query` to fetch fresh data from the provider.
-2. **Use CLI for provider queries** - Use `telclaude provider-query`, not WebFetch or curl
-3. **Never ask for credentials** - The provider handles authentication separately
-4. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
-5. **Show freshness** - Always tell user when data was last updated
-6. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
-7. **Never copy files directly to outbox** - Only use `telclaude send-attachment` or `telclaude fetch-attachment` to deliver files. Copying files directly to `/media/outbox/` will NOT trigger delivery.
+1. **ALWAYS extract user-id** - Look for `<request-context user-id="..." />` in your context and pass it via `--user-id`. Requests without this will fail with 401.
+2. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude provider-query` to fetch fresh data from the provider.
+3. **Use CLI for provider queries** - Use `telclaude provider-query`, not WebFetch or curl
+4. **Never ask for credentials** - The provider handles authentication separately
+5. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
+6. **Show freshness** - Always tell user when data was last updated
+7. **Handle challenges gracefully** - If OTP needed, explain the `/otp <service> <code>` command
+8. **Never copy files directly to outbox** - Only use `telclaude send-attachment` or `telclaude fetch-attachment` to deliver files. Copying files directly to `/media/outbox/` will NOT trigger delivery.
 
 ## Example Responses
 
@@ -180,9 +192,11 @@ You MUST include the exact path in your response. The relay watches for this pat
 
 | Command | Description |
 |---------|-------------|
-| `telclaude provider-query --provider <id> --service <svc> --action <act>` | Query provider data |
+| `telclaude provider-query --provider <id> --service <svc> --action <act> --user-id <uid>` | Query provider data |
 | `telclaude send-attachment --ref <ref>` | Send stored attachment to user |
 | `telclaude fetch-attachment --provider <id> --id <att-id> ...` | Fetch and send large attachment |
+
+**Note:** `--user-id` is REQUIRED for `provider-query`. Extract it from `<request-context user-id="..." />`.
 
 ## Provider Schemas (auto-generated)
 
