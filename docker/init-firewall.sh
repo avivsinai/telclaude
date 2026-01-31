@@ -17,6 +17,13 @@ set -e
 INTERNAL_HOST_RETRY_COUNT=${TELCLAUDE_FIREWALL_RETRY_COUNT:-10}
 INTERNAL_HOST_RETRY_DELAY=${TELCLAUDE_FIREWALL_RETRY_DELAY:-2}
 IPV6_FAIL_CLOSED=${TELCLAUDE_IPV6_FAIL_CLOSED:-1}
+NETWORK_MODE="${TELCLAUDE_NETWORK_MODE:-restricted}"
+
+# Network mode determines egress policy:
+#   - restricted (default): domain allowlist + default-deny
+#   - permissive: allow all public egress (WebFetch can reach any URL)
+#   - open: alias for permissive
+# In all modes, metadata endpoints are ALWAYS blocked (SSRF protection)
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Whitelisted Domains
@@ -337,7 +344,20 @@ setup_firewall() {
     iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # ALLOW: Whitelisted domains
+    # Network Mode: permissive/open allows all public egress
+    # ═══════════════════════════════════════════════════════════════════════════
+    if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
+        # In permissive/open mode, allow all outbound traffic (except metadata/RFC1918)
+        # WebFetch can reach any public URL; protection is at application level
+        iptables -A OUTPUT -j ACCEPT
+        echo "[firewall] IPv4 firewall configured with PERMISSIVE policy"
+        echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
+        echo "[firewall] allowed: ALL public internet egress (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
+        return 0
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ALLOW: Whitelisted domains (restricted mode only)
     # ═══════════════════════════════════════════════════════════════════════════
     for domain in "${ALLOWED_DOMAINS[@]}"; do
         # Resolve domain to IPv4 addresses only (iptables doesn't handle IPv6)
@@ -436,10 +456,24 @@ setup_ipv6_firewall() {
         fi
     fi
 
-    echo "[firewall-ipv6] setting up IPv6 firewall (default-deny)..."
+    echo "[firewall-ipv6] setting up IPv6 firewall..."
 
     # Flush existing OUTPUT rules
     ip6tables -F OUTPUT 2>/dev/null || true
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BLOCK FIRST: IPv6 metadata and private networks (SSRF protection)
+    # These must be blocked BEFORE any allow rules, even in permissive mode
+    # ═══════════════════════════════════════════════════════════════════════════
+    # AWS IMDSv2 IPv6 endpoint
+    ip6tables -A OUTPUT -d fd00:ec2::254 -j DROP
+    echo "[firewall-ipv6] blocked: AWS IMDSv2 IPv6 metadata"
+    # ULA (Unique Local Addresses) - IPv6 equivalent of RFC1918
+    ip6tables -A OUTPUT -d fc00::/7 -j DROP
+    echo "[firewall-ipv6] blocked: fc00::/7 (ULA private networks)"
+    # Link-local - except ICMPv6 which is needed for NDP
+    ip6tables -A OUTPUT -d fe80::/10 ! -p icmpv6 -j DROP
+    echo "[firewall-ipv6] blocked: fe80::/10 (link-local, except ICMPv6)"
 
     # Allow loopback
     ip6tables -A OUTPUT -o lo -j ACCEPT
@@ -454,12 +488,18 @@ setup_ipv6_firewall() {
     # Allow ICMPv6 (needed for IPv6 to function properly)
     ip6tables -A OUTPUT -p icmpv6 -j ACCEPT
 
-    # DEFAULT DENY: Block all other IPv6 outbound
-    # This is intentionally restrictive - we don't allowlist IPv6 destinations
-    # because domain resolution for the allowlist only covers IPv4
-    ip6tables -A OUTPUT -j DROP
-
-    echo "[firewall-ipv6] IPv6 configured with default-deny policy"
+    # Network mode determines policy
+    if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
+        # In permissive/open mode, allow all IPv6 egress
+        ip6tables -A OUTPUT -j ACCEPT
+        echo "[firewall-ipv6] IPv6 configured with PERMISSIVE policy"
+    else
+        # DEFAULT DENY: Block all other IPv6 outbound
+        # This is intentionally restrictive - we don't allowlist IPv6 destinations
+        # because domain resolution for the allowlist only covers IPv4
+        ip6tables -A OUTPUT -j DROP
+        echo "[firewall-ipv6] IPv6 configured with default-deny policy"
+    fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -499,6 +539,12 @@ refresh_firewall() {
     if ! iptables -L -n &> /dev/null 2>&1; then
         echo "[firewall-refresh] ERROR: insufficient permissions for iptables"
         return 1
+    fi
+
+    # In permissive/open mode, there's no domain allowlist to refresh
+    if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
+        echo "[firewall-refresh] skipping refresh (permissive mode - no domain allowlist)"
+        return 0
     fi
 
     echo "[firewall-refresh] refreshing firewall rules..."
