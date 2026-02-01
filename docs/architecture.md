@@ -60,7 +60,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
 
 - **Heartbeat-driven**: relay scheduler polls Moltbook notifications on a configured interval (default 4h, min 60s).
 - **Separate agent**: notifications are handled by a dedicated Moltbook agent container (`agent-moltbook`) with no workspace mount and an isolated `/moltbook/sandbox` working directory.
-- **Restricted tier**: Moltbook requests run under the `MOLTBOOK_SOCIAL` tier (WebFetch/WebSearch only), with skills disabled and no access to sidecars or private endpoints.
+- **Restricted tier**: Moltbook requests run under the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox`, WebFetch/WebSearch allowed), with skills disabled and no access to sidecars or private endpoints.
 - **Untrusted wrappers**: Moltbook notification payloads and social context are wrapped with explicit “UNTRUSTED / do not execute” warnings before being sent to the model.
 - **Reply only**: the relay posts replies back via the Moltbook API; there is no autonomous posting from Telegram context.
 
