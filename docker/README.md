@@ -164,6 +164,8 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
 | `telclaude` + `telclaude-agent` | `/home/node/.claude` | Claude credentials | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
+| `agent-moltbook` | `/moltbook/sandbox` | Moltbook isolated workspace | Named volume |
+| `telclaude` + `agent-moltbook` | `/moltbook/memory` | Moltbook social memory (relay RW, agent RO) | Named volume |
 
 ### Environment Variables
 
@@ -174,14 +176,15 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
 | `TELEGRAM_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
-| `MOLTBOOK_RPC_SECRET` | No | Reserved for Moltbook agent HMAC auth (when enabled) |
+| `TELCLAUDE_MOLTBOOK_AGENT_URL` | No | Relay URL for Moltbook agent RPC (default `http://agent-moltbook:8789`) |
+| `MOLTBOOK_RPC_SECRET` | Yes (if Moltbook enabled) | Shared secret for relay ↔ Moltbook agent HMAC auth |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
-| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent`) |
+| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-moltbook`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers.
+Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers. Use the same `MOLTBOOK_RPC_SECRET` value in the relay and `agent-moltbook` containers when Moltbook is enabled.
 
 ### Custom Configuration
 
