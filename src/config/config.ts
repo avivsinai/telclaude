@@ -51,6 +51,7 @@ const TTS_DEFAULTS = {
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
+const MOLTBOOK_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -369,6 +370,15 @@ const LoggingConfigSchema = z.object({
 	file: z.string().optional(),
 });
 
+const MoltbookConfigSchema = z
+	.object({
+		enabled: z.boolean().default(MOLTBOOK_DEFAULTS.enabled),
+		apiKey: z.string().optional(),
+		heartbeatIntervalHours: z.number().positive().default(MOLTBOOK_DEFAULTS.heartbeatIntervalHours),
+		adminChatId: z.union([z.string(), z.number()]).optional(),
+	})
+	.default(MOLTBOOK_DEFAULTS);
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -376,6 +386,7 @@ const TelclaudeConfigSchema = z.object({
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
 	sdk: SdkConfigSchema.default(SDK_DEFAULTS),
+	moltbook: MoltbookConfigSchema.default(MOLTBOOK_DEFAULTS),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
 	transcription: TranscriptionConfigSchema.default(TRANSCRIPTION_DEFAULTS),
@@ -394,6 +405,7 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type MoltbookConfig = z.infer<typeof MoltbookConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
