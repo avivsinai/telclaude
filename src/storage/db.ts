@@ -254,6 +254,22 @@ function initializeSchema(database: Database.Database): void {
 		);
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_expires ON attachment_refs(expires_at);
 		CREATE INDEX IF NOT EXISTS idx_attachment_refs_actor ON attachment_refs(actor_user_id);
+
+		-- Memory entries (social memory with provenance tracking)
+		CREATE TABLE IF NOT EXISTS memory_entries (
+			id TEXT PRIMARY KEY,
+			category TEXT NOT NULL,
+			content TEXT NOT NULL,
+			source TEXT NOT NULL,
+			trust TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			promoted_at INTEGER,
+			promoted_by TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_category ON memory_entries(category);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_source ON memory_entries(source);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_trust ON memory_entries(trust);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_created ON memory_entries(created_at);
 	`);
 
 	ensureApprovalsColumns(database);
