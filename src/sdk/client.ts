@@ -15,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import {
 	type HookCallback,
 	type HookCallbackMatcher,
@@ -594,6 +595,49 @@ function createNetworkSecurityHook(
 
 function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
 	const moltbookContext = isMoltbookContext(actorUserId);
+	const sandboxRoot = process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR ?? "/moltbook/sandbox";
+
+	const resolveSandboxPath = (rawPath: string): string => {
+		const absolutePath = path.isAbsolute(rawPath)
+			? rawPath
+			: path.resolve(sandboxRoot, rawPath);
+		return resolveRealPath(absolutePath);
+	};
+
+	const isWithinSandbox = (candidatePath: string): boolean => {
+		const resolvedRoot = resolveRealPath(sandboxRoot);
+		const resolvedCandidate = resolveRealPath(candidatePath);
+		const rootWithSep = resolvedRoot.endsWith(path.sep)
+			? resolvedRoot
+			: `${resolvedRoot}${path.sep}`;
+		return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(rootWithSep);
+	};
+
+	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
+		if (!rawPath) {
+			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] missing moltbook path");
+			return denyHookResponse("Moltbook context: file path is required.");
+		}
+
+		const resolved = resolveSandboxPath(rawPath);
+		if (!isWithinSandbox(resolved)) {
+			logger.warn(
+				{
+					toolName,
+					actorUserId: actorUserId ?? null,
+					path: redactForLog(rawPath),
+					resolvedPath: redactForLog(resolved),
+				},
+				"[hook] blocked moltbook path outside sandbox",
+			);
+			return denyHookResponse(
+				"Moltbook context: file access must stay within /moltbook/sandbox.",
+			);
+		}
+
+		return allowHookResponse();
+	};
+
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
 			return allowHookResponse();
@@ -604,12 +648,46 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		}
 
 		const toolName = input.tool_name;
+		const toolInput = input.tool_input as Record<string, unknown>;
+
+		if (toolName === "Skill" || toolName === "Task" || toolName === "NotebookEdit") {
+			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked moltbook tool");
+			return denyHookResponse(`Moltbook context: ${toolName} is not permitted.`);
+		}
+
+		if (toolName === "Read" && isReadInput(toolInput)) {
+			return enforceSandboxPath(toolName, toolInput.file_path);
+		}
+
+		if (toolName === "Write" && isWriteInput(toolInput)) {
+			return enforceSandboxPath(toolName, toolInput.file_path);
+		}
+
+		if (toolName === "Edit" && isEditInput(toolInput)) {
+			return enforceSandboxPath(toolName, toolInput.file_path);
+		}
+
+		if (toolName === "Glob" && isGlobInput(toolInput)) {
+			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
+			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
+			return enforceSandboxPath(toolName, pathForCheck);
+		}
+
+		if (toolName === "Grep" && isGrepInput(toolInput)) {
+			const searchPath = toolInput.path ?? "";
+			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
+			return enforceSandboxPath(toolName, pathForCheck);
+		}
+
+		if (toolName === "Bash") {
+			return allowHookResponse();
+		}
+
 		if (toolName === "WebFetch" || toolName === "WebSearch") {
 			return allowHookResponse();
 		}
 
-		logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked moltbook tool");
-		return denyHookResponse(`Moltbook context: ${toolName} is not permitted.`);
+		return allowHookResponse();
 	};
 
 	return {

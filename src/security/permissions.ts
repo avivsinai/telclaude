@@ -33,7 +33,7 @@ export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 	WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
-	MOLTBOOK_SOCIAL: ["WebFetch", "WebSearch"],
+	MOLTBOOK_SOCIAL: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"],
 };
 
 /**
@@ -67,7 +67,8 @@ export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
 	WRITE_LOCAL:
 		"Can read and write files, but cannot delete or modify permissions. Note: prevents accidental damage, not malicious attacks.",
 	FULL_ACCESS: "Full system access with no restrictions.",
-	MOLTBOOK_SOCIAL: "Moltbook context: web research only (no filesystem or shell access).",
+	MOLTBOOK_SOCIAL:
+		"Moltbook context: file + shell access is allowed within the sandbox; no workspace mount or private endpoints.",
 };
 
 /**

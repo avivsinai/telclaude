@@ -115,32 +115,89 @@ afterEach(() => {
 });
 
 describe("moltbook tool restrictions", () => {
-	it("blocks file tools in moltbook context", async () => {
+	it("allows file tools within the moltbook sandbox", async () => {
+		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
+		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
+
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sandboxPath = "/moltbook/sandbox/notes.txt";
+
+		const readRes = await runPreToolUseHooks(sdkOpts, "Read", { file_path: sandboxPath });
+		expect(readRes.decision).toBe("allow");
+
+		const writeRes = await runPreToolUseHooks(sdkOpts, "Write", {
+			file_path: sandboxPath,
+			content: "hi",
+		});
+		expect(writeRes.decision).toBe("allow");
+
+		const editRes = await runPreToolUseHooks(sdkOpts, "Edit", {
+			file_path: sandboxPath,
+			old_string: "hi",
+			new_string: "hello",
+		});
+		expect(editRes.decision).toBe("allow");
+
+		const globRes = await runPreToolUseHooks(sdkOpts, "Glob", {
+			path: "/moltbook/sandbox",
+			pattern: "*.txt",
+		});
+		expect(globRes.decision).toBe("allow");
+
+		const grepRes = await runPreToolUseHooks(sdkOpts, "Grep", {
+			path: "/moltbook/sandbox",
+			pattern: "hello",
+		});
+		expect(grepRes.decision).toBe("allow");
+	});
+
+	it("blocks file tools outside the moltbook sandbox", async () => {
 		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
 		delete process.env.TELEGRAM_RPC_SECRET;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
 		const fileTools = ["Read", "Write", "Edit", "Glob", "Grep"];
+		const outsidePath = "/moltbook/other";
 
 		for (const toolName of fileTools) {
-			const res = await runPreToolUseHooks(sdkOpts, toolName, { file_path: "/tmp/file.txt" });
+			let input: Record<string, unknown>;
+			switch (toolName) {
+				case "Write":
+					input = { file_path: `${outsidePath}/file.txt`, content: "hi" };
+					break;
+				case "Edit":
+					input = { file_path: `${outsidePath}/file.txt`, old_string: "hi", new_string: "hello" };
+					break;
+				case "Glob":
+					input = { path: outsidePath, pattern: "*.txt" };
+					break;
+				case "Grep":
+					input = { path: outsidePath, pattern: "hello" };
+					break;
+				default:
+					input = { file_path: `${outsidePath}/file.txt` };
+			}
+			const res = await runPreToolUseHooks(sdkOpts, toolName, input);
 			expect(res.decision).toBe("deny");
 			expect(res.reason).toContain("Moltbook context");
 		}
 	});
 
-	it("blocks Bash, Skill, Task, and NotebookEdit in moltbook context", async () => {
+	it("allows Bash but blocks Skill, Task, and NotebookEdit in moltbook context", async () => {
 		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
 		delete process.env.TELEGRAM_RPC_SECRET;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
-		const blockedTools = ["Bash", "Skill", "Task", "NotebookEdit"];
 
+		const bashRes = await runPreToolUseHooks(sdkOpts, "Bash", { command: "echo ok" });
+		expect(bashRes.decision).toBe("allow");
+
+		const blockedTools = ["Skill", "Task", "NotebookEdit"];
 		for (const toolName of blockedTools) {
-			const input = toolName === "Bash" ? { command: "echo ok" } : {};
-			const res = await runPreToolUseHooks(sdkOpts, toolName, input);
+			const res = await runPreToolUseHooks(sdkOpts, toolName, {});
 			expect(res.decision).toBe("deny");
 			expect(res.reason).toContain("Moltbook context");
 		}
