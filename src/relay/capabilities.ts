@@ -479,6 +479,18 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
+			const requestPath = (req.url ?? "").split("?")[0];
+			if (authResult.scope === "moltbook") {
+				const allowedPaths = new Set([
+					"/v1/moltbook.heartbeat",
+					"/v1/memory.propose",
+					"/v1/memory.snapshot",
+				]);
+				if (!allowedPaths.has(requestPath)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+			}
 			logger.debug(
 				{ scope: authResult.scope, url: req.url, method: req.method },
 				"capability request authenticated",
@@ -510,7 +522,15 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
-				const snapshotResult = handleMemorySnapshot(snapshotRequest.value);
+				const effectiveSnapshot =
+					authResult.scope === "moltbook"
+						? {
+								...snapshotRequest.value,
+								sources: ["moltbook"],
+								trust: ["untrusted"],
+							}
+						: snapshotRequest.value;
+				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
 					return;
@@ -552,7 +572,15 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
-				const snapshotResult = handleMemorySnapshot(snapshotRequest.value);
+				const effectiveSnapshot =
+					authResult.scope === "moltbook"
+						? {
+								...snapshotRequest.value,
+								sources: ["moltbook"],
+								trust: ["untrusted"],
+							}
+						: snapshotRequest.value;
+				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
 					return;
