@@ -51,7 +51,7 @@ export async function* executeRemoteQuery(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				...buildInternalAuthHeaders("POST", path, payload),
+				...buildInternalAuthHeaders("POST", path, payload, { scope: "telegram" }),
 			},
 			body: payload,
 			signal: controller.signal,

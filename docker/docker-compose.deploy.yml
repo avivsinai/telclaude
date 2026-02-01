@@ -50,17 +50,26 @@ services:
       - telclaude-claude:/home/node/.claude:rw
       - totp-socket:/run/totp:rw
 
-    privileged: true
     user: "0:0"
 
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
     security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+      - no-new-privileges:true
 
     read_only: true
     tmpfs:
       - /tmp:size=512M,mode=1777
       - /home/node:size=256M,mode=0755
+      - /run/telclaude:size=1M,mode=0755
 
     deploy:
       resources:

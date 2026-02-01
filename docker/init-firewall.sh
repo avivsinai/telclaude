@@ -336,12 +336,15 @@ setup_firewall() {
     # Allow established connections
     iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-    # Allow DNS (UDP and TCP port 53)
-    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+    # Allow DNS only to Docker resolver
+    iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
+    iptables -A OUTPUT -p udp --dport 53 -j DROP
+    iptables -A OUTPUT -p tcp --dport 53 -j DROP
 
-    # Allow SSH (for git operations)
-    iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+    # Block DNS-over-TLS (DoT)
+    iptables -A OUTPUT -p tcp --dport 853 -j DROP
+    iptables -A OUTPUT -p udp --dport 853 -j DROP
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Network Mode: permissive/open allows all public egress
@@ -481,9 +484,13 @@ setup_ipv6_firewall() {
     # Allow established connections
     ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-    # Allow DNS over IPv6
-    ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+    # Block DNS over IPv6 (Docker resolver is IPv4-only)
+    ip6tables -A OUTPUT -p udp --dport 53 -j DROP
+    ip6tables -A OUTPUT -p tcp --dport 53 -j DROP
+
+    # Block DNS-over-TLS (DoT)
+    ip6tables -A OUTPUT -p tcp --dport 853 -j DROP
+    ip6tables -A OUTPUT -p udp --dport 853 -j DROP
 
     # Allow ICMPv6 (needed for IPv6 to function properly)
     ip6tables -A OUTPUT -p icmpv6 -j ACCEPT

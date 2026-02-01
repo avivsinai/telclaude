@@ -299,7 +299,7 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 export function isTTSAvailable(): boolean {
 	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		return Boolean(process.env.TELCLAUDE_INTERNAL_RPC_SECRET);
+		return Boolean(process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET);
 	}
 
 	const config = loadConfig();

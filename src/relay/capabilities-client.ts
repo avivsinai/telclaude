@@ -18,7 +18,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildInternalAuthHeaders("POST", path, payload),
+			...buildInternalAuthHeaders("POST", path, payload, { scope: "telegram" }),
 		},
 		body: payload,
 	});

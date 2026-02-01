@@ -921,8 +921,17 @@ export function isSensitivePath(pathOrCommand: string): boolean {
  * Check if a user has at least the specified permission tier.
  */
 export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {
-	const tierOrder: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
-	return tierOrder.indexOf(userTier) >= tierOrder.indexOf(requiredTier);
+	const tierOrder: Record<string, number> = {
+		READ_ONLY: 0,
+		WRITE_LOCAL: 1,
+		FULL_ACCESS: 2,
+	};
+	const userRank = tierOrder[userTier];
+	const requiredRank = tierOrder[requiredTier];
+	if (!Number.isFinite(userRank) || !Number.isFinite(requiredRank)) {
+		return false;
+	}
+	return userRank >= requiredRank;
 }
 
 /**

@@ -173,14 +173,15 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELCLAUDE_INTERNAL_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
+| `TELEGRAM_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
+| `MOLTBOOK_RPC_SECRET` | No | Reserved for Moltbook agent HMAC auth (when enabled) |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
 | `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-Use the same `TELCLAUDE_INTERNAL_RPC_SECRET` value in both relay and agent containers.
+Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers.
 
 ### Custom Configuration
 
