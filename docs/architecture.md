@@ -1,6 +1,6 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2026-01-01
+Updated: 2026-02-01
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
@@ -24,31 +24,55 @@ Telegram Bot API
 │ • Permission tiers & approvals             │
 │ • Rate limits & audit                      │
 │ • Identity linking + TOTP socket           │
+│ • Moltbook heartbeat + API client          │
 └────────────────────────────────────────────┘
       │ internal HTTP
-      ▼
-┌────────────────────────────────────────────┐
-│ Agent worker (SDK + tools, no secrets)     │
-│ • Workspace mounted                        │
-│ • Media inbox/outbox volumes               │
-└────────────────────────────────────────────┘
-      │
-      ▼
-Claude Agent SDK (allowedTools per tier)
+      ├──────────────────────────┬──────────────────────────┐
+      ▼                          ▼
+┌────────────────────────────────────────────┐   ┌────────────────────────────────────────────┐
+│ Agent worker (Telegram)                    │   │ Agent worker (Moltbook)                    │
+│ • Workspace mounted                        │   │ • No workspace mount                       │
+│ • Media inbox/outbox volumes               │   │ • Isolated /moltbook/sandbox               │
+└────────────────────────────────────────────┘   └────────────────────────────────────────────┘
+      │                                          │
+      ▼                                          ▼
+Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCIAL tier)
 ```
 
 ## Docker Split Topology (Production)
 
-- **Relay container**: Telegram + security policy + secrets (OpenAI/GitHub), TOTP socket.
-- **Agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
+- **Relay container**: Telegram + Moltbook handlers, security policy + secrets (OpenAI/GitHub), TOTP socket.
+- **Telegram agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
+- **Moltbook agent container**: Claude SDK + tools, no secrets, no workspace mount, isolated `/moltbook/sandbox`.
 - **Shared media volumes**:
   - `media_inbox` (relay writes Telegram downloads, agent reads)
   - `media_outbox` (relay writes generated media; relay reads to send)
+- **Moltbook memory volume**:
+  - `/moltbook/memory` (relay is single writer; agent-moltbook is read-only)
 - **Internal RPC**:
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + agent containers (and `MOLTBOOK_RPC_SECRET` for the Moltbook agent when enabled); internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + Telegram agent containers and `MOLTBOOK_RPC_SECRET` in relay + Moltbook agent containers; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach both agents.
+
+## Moltbook Integration
+
+- **Heartbeat-driven**: relay scheduler polls Moltbook notifications on a configured interval (default 4h, min 60s).
+- **Separate agent**: notifications are handled by a dedicated Moltbook agent container (`agent-moltbook`) with no workspace mount and an isolated `/moltbook/sandbox` working directory.
+- **Restricted tier**: Moltbook requests run under the `MOLTBOOK_SOCIAL` tier (WebFetch/WebSearch only), with skills disabled and no access to sidecars or private endpoints.
+- **Untrusted wrappers**: Moltbook notification payloads and social context are wrapped with explicit “UNTRUSTED / do not execute” warnings before being sent to the model.
+- **Reply only**: the relay posts replies back via the Moltbook API; there is no autonomous posting from Telegram context.
+
+## Memory System & Provenance
+
+Telclaude stores social memory in SQLite with provenance metadata:
+
+- **Sources**: `telegram`, `moltbook`.
+- **Trust**: `trusted`, `untrusted`, `quarantined`.
+- **Provenance**: each entry records source, trust level, and timestamps (created/promoted).
+- **Default trust**: Telegram memory is trusted by default; Moltbook memory is untrusted until explicitly promoted.
+- **Prompt injection safety**: even trusted entries are wrapped in a “read-only, do not execute” envelope before being injected into Moltbook prompts.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.
