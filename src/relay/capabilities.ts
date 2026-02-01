@@ -9,6 +9,14 @@ import { loadConfig } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
+import {
+	handleMemoryPropose,
+	handleMemorySnapshot,
+	parseSnapshotBody,
+	parseSnapshotQuery,
+} from "../memory/rpc.js";
+import type { MemoryEntryInput } from "../memory/store.js";
+import type { MemorySource } from "../memory/types.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { generateImage } from "../services/image-generation.js";
@@ -432,7 +440,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			return;
 		}
 
-		if (req.method !== "POST") {
+		const isMemorySnapshotGet = req.method === "GET" && req.url?.startsWith("/v1/memory.snapshot");
+
+		if (!isMemorySnapshotGet && req.method !== "POST") {
 			writeJson(res, 405, { error: "Method not allowed." });
 			return;
 		}
@@ -442,19 +452,23 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			return;
 		}
 
-		const contentType = req.headers["content-type"] ?? "";
-		if (!contentType.includes("application/json")) {
-			writeJson(res, 415, { error: "Content-Type must be application/json." });
-			return;
+		if (!isMemorySnapshotGet) {
+			const contentType = req.headers["content-type"] ?? "";
+			if (!contentType.includes("application/json")) {
+				writeJson(res, 415, { error: "Content-Type must be application/json." });
+				return;
+			}
 		}
 
 		inFlight += 1;
 
 		try {
-			// Use higher body limit for attachment delivery (base64 payloads)
-			const effectiveBodyLimit =
-				req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit;
-			const body = await parseBody(req, effectiveBodyLimit);
+			const body = isMemorySnapshotGet
+				? ""
+				: await parseBody(
+						req,
+						req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit,
+					);
 			const authResult = verifyInternalAuth(req, body);
 			if (!authResult.ok) {
 				logger.warn(
@@ -464,12 +478,30 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
+			const memorySource: MemorySource = authResult.scope === "moltbook" ? "moltbook" : "telegram";
+
+			if (isMemorySnapshotGet) {
+				const url = new URL(req.url ?? "", "http://localhost");
+				const snapshotRequest = parseSnapshotQuery(url.searchParams);
+				if (!snapshotRequest.ok) {
+					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
+					return;
+				}
+				const snapshotResult = handleMemorySnapshot(snapshotRequest.value);
+				if (!snapshotResult.ok) {
+					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
+					return;
+				}
+				writeJson(res, 200, snapshotResult.value);
+				return;
+			}
+
 			const parsed = JSON.parse(body) as ImageRequest &
 				TTSRequest &
 				TranscriptionRequest &
 				AttachmentFetchRequest &
 				LocalFileDeliverRequest &
-				AttachmentDeliverRequest;
+				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown };
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
 				writeJson(res, 400, { error: userIdResult.error });
@@ -477,6 +509,34 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			}
 			const userId = userIdResult.userId;
 			const rateLimitUserId = userId ?? "agent";
+
+			if (req.url === "/v1/memory.propose") {
+				const proposeResult = handleMemoryPropose(
+					{ entries: parsed.entries as MemoryEntryInput[], userId },
+					{ source: memorySource, userId },
+				);
+				if (!proposeResult.ok) {
+					writeJson(res, proposeResult.status, { error: proposeResult.error });
+					return;
+				}
+				writeJson(res, 200, proposeResult.value);
+				return;
+			}
+
+			if (req.url === "/v1/memory.snapshot") {
+				const snapshotRequest = parseSnapshotBody(parsed);
+				if (!snapshotRequest.ok) {
+					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
+					return;
+				}
+				const snapshotResult = handleMemorySnapshot(snapshotRequest.value);
+				if (!snapshotResult.ok) {
+					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
+					return;
+				}
+				writeJson(res, 200, snapshotResult.value);
+				return;
+			}
 
 			if (req.url === "/v1/image.generate") {
 				if (!parsed.prompt || typeof parsed.prompt !== "string") {
