@@ -1,4 +1,4 @@
-import { buildInternalAuthHeaders } from "../internal-auth.js";
+import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 
@@ -6,6 +6,7 @@ const logger = getChildLogger({ module: "agent-client" });
 
 type RemoteQueryOptions = PooledQueryOptions & {
 	agentUrl?: string;
+	scope?: InternalAuthScope;
 };
 
 export async function* executeRemoteQuery(
@@ -47,11 +48,12 @@ export async function* executeRemoteQuery(
 			systemPromptAppend: options.systemPromptAppend,
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
+		const scope = options.scope ?? "telegram";
 		const response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				...buildInternalAuthHeaders("POST", path, payload, { scope: "telegram" }),
+				...buildInternalAuthHeaders("POST", path, payload, { scope }),
 			},
 			body: payload,
 			signal: controller.signal,

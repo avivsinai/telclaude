@@ -443,6 +443,10 @@ function createNetworkSecurityHook(
 	providers: ExternalProviderConfig[],
 	actorUserId?: string,
 ): HookCallbackMatcher {
+	const isMoltbookContext = actorUserId?.startsWith("moltbook:") ?? false;
+	const effectivePrivateEndpoints = isMoltbookContext ? [] : privateEndpoints;
+	const effectiveProviders = isMoltbookContext ? [] : providers;
+
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
 			return allowHookResponse();
@@ -465,7 +469,7 @@ function createNetworkSecurityHook(
 
 		try {
 			const url = new URL(toolInput.url);
-			const providerMatch = matchProviderForUrl(url, providers);
+			const providerMatch = matchProviderForUrl(url, effectiveProviders);
 
 			// DEBUG: Log WebFetch interception
 			logger.debug(
@@ -474,7 +478,7 @@ function createNetworkSecurityHook(
 					hostname: url.hostname,
 					port: url.port,
 					providerMatch: providerMatch?.id ?? null,
-					providersCount: providers.length,
+					providersCount: effectiveProviders.length,
 					actorUserId: actorUserId ?? null,
 				},
 				"[hook] WebFetch intercepted",
@@ -507,7 +511,11 @@ function createNetworkSecurityHook(
 			const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
 
 			// Check private network access with allowlist and port enforcement
-			const privateCheck = await checkPrivateNetworkAccess(url.hostname, port, privateEndpoints);
+			const privateCheck = await checkPrivateNetworkAccess(
+				url.hostname,
+				port,
+				effectivePrivateEndpoints,
+			);
 
 			if (!privateCheck.allowed) {
 				logger.warn(
