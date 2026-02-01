@@ -80,6 +80,15 @@ function shouldExposeKeys(tier: PermissionTier): boolean {
 	return tier === "FULL_ACCESS";
 }
 
+function isMoltbookContext(actorUserId?: string): boolean {
+	if (actorUserId?.startsWith("moltbook:")) {
+		return true;
+	}
+	const hasMoltbookSecret = Boolean(process.env.MOLTBOOK_RPC_SECRET);
+	const hasTelegramSecret = Boolean(process.env.TELEGRAM_RPC_SECRET);
+	return hasMoltbookSecret && !hasTelegramSecret;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -443,9 +452,9 @@ function createNetworkSecurityHook(
 	providers: ExternalProviderConfig[],
 	actorUserId?: string,
 ): HookCallbackMatcher {
-	const isMoltbookContext = actorUserId?.startsWith("moltbook:") ?? false;
-	const effectivePrivateEndpoints = isMoltbookContext ? [] : privateEndpoints;
-	const effectiveProviders = isMoltbookContext ? [] : providers;
+	const moltbookContext = isMoltbookContext(actorUserId);
+	const effectivePrivateEndpoints = moltbookContext ? [] : privateEndpoints;
+	const effectiveProviders = moltbookContext ? [] : providers;
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -578,6 +587,32 @@ function createNetworkSecurityHook(
 
 	return {
 		matcher: "WebFetch",
+		hooks: [hookCallback],
+		timeout: HOOK_TIMEOUT_SECONDS,
+	};
+}
+
+function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
+	const moltbookContext = isMoltbookContext(actorUserId);
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+
+		if (!moltbookContext) {
+			return allowHookResponse();
+		}
+
+		const toolName = input.tool_name;
+		if (toolName === "WebFetch" || toolName === "WebSearch") {
+			return allowHookResponse();
+		}
+
+		logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked moltbook tool");
+		return denyHookResponse(`Moltbook context: ${toolName} is not permitted.`);
+	};
+
+	return {
 		hooks: [hookCallback],
 		timeout: HOOK_TIMEOUT_SECONDS,
 	};
@@ -892,6 +927,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 				config.providers ?? [],
 				opts.userId,
 			),
+			createMoltbookToolRestrictionHook(opts.userId),
 			createSensitivePathHook(opts.tier),
 		],
 	};
