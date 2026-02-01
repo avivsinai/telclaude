@@ -57,13 +57,13 @@ telclaude provider-query --provider <providerId> --service <service> --action <a
 Examples (assuming `<request-context user-id="admin" />`):
 ```bash
 # Get appointments
-telclaude provider-query --provider israel-services --service clalit --action appointments --user-id admin
+telclaude provider-query --provider citizen-services --service health-api --action appointments --user-id admin
 
 # Get bank transactions with date range
-telclaude provider-query --provider israel-services --service poalim --action scrape --user-id admin --params '{"startDate": "2024-01-01"}'
+telclaude provider-query --provider citizen-services --service bank-api --action scrape --user-id admin --params '{"startDate": "2024-01-01"}'
 
 # Get lab results
-telclaude provider-query --provider israel-services --service maccabi --action lab_results --user-id admin
+telclaude provider-query --provider citizen-services --service gov-api --action lab_results --user-id admin
 ```
 
 ### 3. Parse the response

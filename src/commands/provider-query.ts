@@ -7,8 +7,8 @@
  * and attachment storage.
  *
  * Usage:
- *   telclaude provider-query --provider israel-services --service clalit --action appointments
- *   telclaude provider-query --provider israel-services --service poalim --action scrape --params '{"startDate":"2024-01-01"}'
+ *   telclaude provider-query --provider citizen-services --service health-api --action appointments
+ *   telclaude provider-query --provider citizen-services --service bank-api --action scrape --params '{"startDate":"2024-01-01"}'
  */
 
 import type { Command } from "commander";
@@ -32,7 +32,7 @@ export function registerProviderQueryCommand(program: Command): void {
 		.command("provider-query")
 		.description("Query an external provider via the relay proxy")
 		.option("--provider <id>", "Provider ID (from telclaude.json)")
-		.option("--service <id>", "Service ID (e.g., clalit, poalim)")
+		.option("--service <id>", "Service ID (e.g., health-api, bank-api)")
 		.option("--action <name>", "Action name (e.g., appointments, scrape)")
 		.option("--params <json>", "Optional JSON parameters")
 		.option("--user-id <id>", "Actor user ID for the request (optional)")
