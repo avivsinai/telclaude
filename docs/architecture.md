@@ -48,7 +48,7 @@ Claude Agent SDK (allowedTools per tier)
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: set `TELCLAUDE_INTERNAL_RPC_SECRET` in both containers; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + agent containers (and `MOLTBOOK_RPC_SECRET` for the Moltbook agent when enabled); internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.

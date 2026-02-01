@@ -55,9 +55,9 @@ function getRefTtlMs(): number {
 }
 
 function getSigningSecret(): string {
-	const secret = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+	const secret = process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
 	if (!secret) {
-		throw new Error("TELCLAUDE_INTERNAL_RPC_SECRET not set");
+		throw new Error("TELEGRAM_RPC_SECRET not set (legacy: TELCLAUDE_INTERNAL_RPC_SECRET).");
 	}
 	return secret;
 }

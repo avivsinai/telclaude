@@ -64,11 +64,14 @@ export type TranscriptionAvailability = {
  */
 export async function getTranscriptionAvailability(): Promise<TranscriptionAvailability> {
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		if (!process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
+		const relaySecret =
+			process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+		if (!relaySecret) {
 			return {
 				available: false,
 				provider: "relay",
-				reason: "TELCLAUDE_INTERNAL_RPC_SECRET is required for relay transcription.",
+				reason:
+					"TELEGRAM_RPC_SECRET is required for relay transcription (legacy: TELCLAUDE_INTERNAL_RPC_SECRET).",
 			};
 		}
 		return { available: true, provider: "relay" };
