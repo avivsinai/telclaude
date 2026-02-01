@@ -33,7 +33,12 @@ type AgentServerOptions = {
 };
 
 function isPermissionTier(value: unknown): value is PermissionTier {
-	return value === "READ_ONLY" || value === "WRITE_LOCAL" || value === "FULL_ACCESS";
+	return (
+		value === "READ_ONLY" ||
+		value === "WRITE_LOCAL" ||
+		value === "FULL_ACCESS" ||
+		value === "MOLTBOOK_SOCIAL"
+	);
 }
 
 function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -157,9 +162,23 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					return;
 				}
 
-				// DEBUG: Log userId to verify it's being passed
+				const scope = authResult.scope;
+				let effectiveTier = parsed.tier;
+				let effectiveEnableSkills = parsed.enableSkills;
+
+				if (scope === "moltbook") {
+					if (parsed.tier !== "MOLTBOOK_SOCIAL") {
+						logger.warn(
+							{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey },
+							"moltbook scope forced to MOLTBOOK_SOCIAL tier",
+						);
+					}
+					effectiveTier = "MOLTBOOK_SOCIAL";
+					effectiveEnableSkills = false;
+				}
+
 				logger.info(
-					{ userId: parsed.userId, poolKey: parsed.poolKey },
+					{ userId: parsed.userId, poolKey: parsed.poolKey, scope, tier: effectiveTier },
 					"agent received query request",
 				);
 
@@ -174,6 +193,8 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				streamQuery(
 					{
 						...parsed,
+						tier: effectiveTier,
+						enableSkills: effectiveEnableSkills,
 						timeoutMs,
 					},
 					res,

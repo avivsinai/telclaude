@@ -17,6 +17,7 @@ import {
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource } from "../memory/types.js";
+import { handleMoltbookHeartbeat, type MoltbookHeartbeatPayload } from "../moltbook/handler.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { generateImage } from "../services/image-generation.js";
@@ -476,6 +477,28 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					"capability request failed internal auth",
 				);
 				writeJson(res, authResult.status, { error: authResult.error });
+				return;
+			}
+			logger.debug(
+				{ scope: authResult.scope, url: req.url, method: req.method },
+				"capability request authenticated",
+			);
+			if (req.url === "/v1/moltbook.heartbeat") {
+				if (authResult.scope !== "moltbook") {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				let payload: MoltbookHeartbeatPayload | undefined;
+				if (body.length > 0) {
+					try {
+						payload = JSON.parse(body) as MoltbookHeartbeatPayload;
+					} catch {
+						writeJson(res, 400, { error: "Invalid JSON." });
+						return;
+					}
+				}
+				const heartbeatResult = await handleMoltbookHeartbeat(payload);
+				writeJson(res, 200, heartbeatResult);
 				return;
 			}
 			const memorySource: MemorySource = authResult.scope === "moltbook" ? "moltbook" : "telegram";
