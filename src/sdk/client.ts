@@ -596,22 +596,36 @@ function createNetworkSecurityHook(
 function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
 	const moltbookContext = isMoltbookContext(actorUserId);
 	const sandboxRoot = process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR ?? "/moltbook/sandbox";
+	const resolvedRoot = resolveRealPath(sandboxRoot);
+	const traversalPattern = /(?:^|[\\/])\\.\\.(?:[\\/]|$)/;
+	const forbiddenBashPatterns = [
+		/\/proc(?:\/|$)/i,
+		/\.claude(?:\/|$)/i,
+		/\/moltbook\/memory(?:\/|$)/i,
+	];
 
 	const resolveSandboxPath = (rawPath: string): string => {
-		const absolutePath = path.isAbsolute(rawPath)
-			? rawPath
-			: path.resolve(sandboxRoot, rawPath);
-		return resolveRealPath(absolutePath);
+		return path.isAbsolute(rawPath)
+			? path.resolve(rawPath)
+			: path.resolve(resolvedRoot, rawPath);
 	};
 
 	const isWithinSandbox = (candidatePath: string): boolean => {
-		const resolvedRoot = resolveRealPath(sandboxRoot);
-		const resolvedCandidate = resolveRealPath(candidatePath);
 		const rootWithSep = resolvedRoot.endsWith(path.sep)
 			? resolvedRoot
 			: `${resolvedRoot}${path.sep}`;
-		return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(rootWithSep);
+		return candidatePath === resolvedRoot || candidatePath.startsWith(rootWithSep);
 	};
+
+	const containsTraversal = (value: string): boolean =>
+		traversalPattern.test(value) || value.includes("..");
+
+	const containsForbiddenBashPath = (command: string): boolean =>
+		forbiddenBashPatterns.some((pattern) => pattern.test(command));
+
+	const resolveParent = (candidatePath: string): string => resolveRealPath(path.dirname(candidatePath));
+
+	const resolveExisting = (candidatePath: string): string => resolveRealPath(candidatePath);
 
 	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
 		if (!rawPath) {
@@ -619,16 +633,50 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 			return denyHookResponse("Moltbook context: file path is required.");
 		}
 
-		const resolved = resolveSandboxPath(rawPath);
-		if (!isWithinSandbox(resolved)) {
+		const normalized = resolveSandboxPath(rawPath);
+		if (!isWithinSandbox(normalized)) {
 			logger.warn(
 				{
 					toolName,
 					actorUserId: actorUserId ?? null,
 					path: redactForLog(rawPath),
-					resolvedPath: redactForLog(resolved),
+					resolvedPath: redactForLog(normalized),
 				},
 				"[hook] blocked moltbook path outside sandbox",
+			);
+			return denyHookResponse(
+				"Moltbook context: file access must stay within /moltbook/sandbox.",
+			);
+		}
+
+		if (normalized !== resolvedRoot) {
+			const parentReal = resolveParent(normalized);
+			if (!isWithinSandbox(parentReal)) {
+				logger.warn(
+					{
+						toolName,
+						actorUserId: actorUserId ?? null,
+						path: redactForLog(rawPath),
+						parentPath: redactForLog(parentReal),
+					},
+					"[hook] blocked moltbook parent path outside sandbox",
+				);
+				return denyHookResponse(
+					"Moltbook context: file access must stay within /moltbook/sandbox.",
+				);
+			}
+		}
+
+		const resolvedExisting = resolveExisting(normalized);
+		if (!isWithinSandbox(resolvedExisting)) {
+			logger.warn(
+				{
+					toolName,
+					actorUserId: actorUserId ?? null,
+					path: redactForLog(rawPath),
+					resolvedPath: redactForLog(resolvedExisting),
+				},
+				"[hook] blocked moltbook realpath outside sandbox",
 			);
 			return denyHookResponse(
 				"Moltbook context: file access must stay within /moltbook/sandbox.",
@@ -668,18 +716,27 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		}
 
 		if (toolName === "Glob" && isGlobInput(toolInput)) {
+			if (containsTraversal(toolInput.pattern)) {
+				return denyHookResponse("Moltbook context: glob pattern contains traversal.");
+			}
 			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
 			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
 			return enforceSandboxPath(toolName, pathForCheck);
 		}
 
 		if (toolName === "Grep" && isGrepInput(toolInput)) {
+			if (containsTraversal(toolInput.pattern)) {
+				return denyHookResponse("Moltbook context: grep pattern contains traversal.");
+			}
 			const searchPath = toolInput.path ?? "";
 			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
 			return enforceSandboxPath(toolName, pathForCheck);
 		}
 
 		if (toolName === "Bash") {
+			if (containsForbiddenBashPath(String(toolInput.command ?? ""))) {
+				return denyHookResponse("Moltbook context: bash access outside sandbox is blocked.");
+			}
 			return allowHookResponse();
 		}
 

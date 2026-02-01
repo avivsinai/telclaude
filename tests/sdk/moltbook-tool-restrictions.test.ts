@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { checkPrivateNetworkAccess } = vi.hoisted(() => ({
@@ -37,6 +41,7 @@ const ORIGINAL_ENV = {
 	MOLTBOOK_RPC_SECRET: process.env.MOLTBOOK_RPC_SECRET,
 	TELEGRAM_RPC_SECRET: process.env.TELEGRAM_RPC_SECRET,
 	TELCLAUDE_NETWORK_MODE: process.env.TELCLAUDE_NETWORK_MODE,
+	TELCLAUDE_MOLTBOOK_AGENT_WORKDIR: process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR,
 };
 
 type HookDecision = { decision: "allow" | "deny"; reason?: string };
@@ -112,6 +117,13 @@ afterEach(() => {
 	} else {
 		process.env.TELCLAUDE_NETWORK_MODE = ORIGINAL_ENV.TELCLAUDE_NETWORK_MODE;
 	}
+
+	if (ORIGINAL_ENV.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR === undefined) {
+		delete process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR;
+	} else {
+		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR =
+			ORIGINAL_ENV.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR;
+	}
 });
 
 describe("moltbook tool restrictions", () => {
@@ -183,6 +195,67 @@ describe("moltbook tool restrictions", () => {
 			expect(res.decision).toBe("deny");
 			expect(res.reason).toContain("Moltbook context");
 		}
+	});
+
+	it("blocks path traversal outside the sandbox", async () => {
+		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
+		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
+
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const res = await runPreToolUseHooks(sdkOpts, "Write", {
+			file_path: "/moltbook/sandbox/../tmp/pwn.txt",
+			content: "oops",
+		});
+		expect(res.decision).toBe("deny");
+		expect(res.reason).toContain("Moltbook context");
+	});
+
+	it("blocks symlink parent escapes", async () => {
+		if (process.platform === "win32") {
+			expect(true).toBe(true);
+			return;
+		}
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moltbook-sandbox-"));
+		const sandboxRoot = path.join(tempRoot, "sandbox");
+		const outsideRoot = path.join(tempRoot, "outside");
+		fs.mkdirSync(sandboxRoot, { recursive: true });
+		fs.mkdirSync(outsideRoot, { recursive: true });
+		const linkPath = path.join(sandboxRoot, "link");
+		try {
+			fs.symlinkSync(outsideRoot, linkPath);
+		} catch (err) {
+			fs.rmSync(tempRoot, { recursive: true, force: true });
+			throw err;
+		}
+
+		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
+		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
+		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR = sandboxRoot;
+
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const res = await runPreToolUseHooks(sdkOpts, "Write", {
+			file_path: path.join(linkPath, "new.txt"),
+			content: "escape",
+		});
+		expect(res.decision).toBe("deny");
+		expect(res.reason).toContain("Moltbook context");
+
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	it("blocks glob traversal patterns", async () => {
+		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
+		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
+
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const res = await runPreToolUseHooks(sdkOpts, "Glob", {
+			pattern: "../**/*.txt",
+		});
+		expect(res.decision).toBe("deny");
+		expect(res.reason).toContain("traversal");
 	});
 
 	it("allows Bash but blocks Skill, Task, and NotebookEdit in moltbook context", async () => {

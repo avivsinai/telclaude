@@ -126,6 +126,48 @@ describe("memory rpc", () => {
 		expect(getRes.status).toBe(200);
 	});
 
+	it("scopes moltbook snapshot requests to moltbook entries only", async () => {
+		const telegramBody = JSON.stringify({
+			entries: [{ id: "entry-tg", category: "profile", content: "hello" }],
+		});
+		const telegramHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", telegramBody, {
+			scope: "telegram",
+		});
+		await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...telegramHeaders },
+			body: telegramBody,
+		});
+
+		const moltbookBody = JSON.stringify({
+			entries: [{ id: "entry-mb", category: "posts", content: "moltbook" }],
+		});
+		const moltbookHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", moltbookBody, {
+			scope: "moltbook",
+		});
+		await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...moltbookHeaders },
+			body: moltbookBody,
+		});
+
+		const snapshotBody = JSON.stringify({ sources: ["telegram"] });
+		const snapshotHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.snapshot",
+			snapshotBody,
+			{ scope: "moltbook" },
+		);
+		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...snapshotHeaders },
+			body: snapshotBody,
+		});
+		expect(snapshotRes.status).toBe(200);
+		const snapshot = (await snapshotRes.json()) as { entries: Array<{ id: string }> };
+		expect(snapshot.entries.map((entry) => entry.id)).toEqual(["entry-mb"]);
+	});
+
 	it("assigns untrusted trust for moltbook scope", async () => {
 		const proposeBody = JSON.stringify({
 			entries: [{ id: "entry-mb", category: "posts", content: "hello" }],
