@@ -35,6 +35,8 @@ services:
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-}
@@ -49,6 +51,7 @@ services:
       - ./telclaude.json:/data/telclaude.json:ro
       - telclaude-claude:/home/node/.claude:rw
       - totp-socket:/run/totp:rw
+      - moltbook-memory:/moltbook/memory:rw
 
     user: "0:0"
 
@@ -84,6 +87,7 @@ services:
       - telclaude-net
       - agent-egress
       - relay-egress
+      - moltbook-relay-net
 
     restart: unless-stopped
 
@@ -157,6 +161,71 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  agent-moltbook:
+    image: telclaude:latest
+    container_name: telclaude-agent-moltbook
+
+    environment:
+      - TELCLAUDE_AGENT_PORT=8789
+      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - moltbook-sandbox:/moltbook/sandbox:rw
+      - moltbook-memory:/moltbook/memory:ro
+      - telclaude-claude:/home/node/.claude:rw
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
+      - /run/telclaude:size=1M,mode=0755
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+    networks:
+      - moltbook-relay-net
+      - moltbook-egress
+
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Named Volumes
+#
+# CRITICAL: Run `docker/setup-volumes.sh` before first `docker compose up`.
+# NEVER run `docker compose down -v` - it will delete non-external volumes!
+# ═══════════════════════════════════════════════════════════════════════════════
 volumes:
   telclaude-data:
     name: telclaude-data
@@ -172,6 +241,14 @@ volumes:
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
 
+  # Moltbook isolated workspace (agent-moltbook RW)
+  moltbook-sandbox:
+    name: telclaude-moltbook-sandbox
+
+  # Moltbook shared memory (relay RW, agents RO)
+  moltbook-memory:
+    name: telclaude-moltbook-memory
+
 networks:
   telclaude-net:
     name: telclaude-net
@@ -182,4 +259,11 @@ networks:
     driver: bridge
   relay-egress:
     name: telclaude-relay-egress
+    driver: bridge
+  moltbook-relay-net:
+    name: telclaude-moltbook-relay
+    driver: bridge
+    internal: true
+  moltbook-egress:
+    name: telclaude-moltbook-egress
     driver: bridge

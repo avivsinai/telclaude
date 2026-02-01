@@ -60,6 +60,7 @@ services:
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_CAPABILITIES_ENABLED=1
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
       - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELEGRAM_RPC_SECRET}}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
@@ -90,6 +91,9 @@ services:
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
+
+      # Moltbook memory (relay is single writer)
+      - moltbook-memory:/moltbook/memory:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:rw
@@ -137,6 +141,7 @@ services:
       - agent-relay-net
       - relay-totp-net
       - relay-egress
+      - moltbook-relay-net
 
     restart: unless-stopped
 
@@ -213,6 +218,9 @@ services:
       # Configuration file (for provider allowlist + health checks)
       - ./telclaude.json:/data/telclaude.json:ro
 
+      # Moltbook memory (read-only in agent)
+      - moltbook-memory:/moltbook/memory:ro
+
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro
       - media-outbox:/media/outbox:ro
@@ -254,6 +262,71 @@ services:
     networks:
       - agent-relay-net
       - agent-egress
+
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Moltbook Agent Worker (isolated context)
+  # ─────────────────────────────────────────────────────────────────────────────
+  agent-moltbook:
+    image: telclaude:latest
+    container_name: telclaude-agent-moltbook
+
+    environment:
+      - TELCLAUDE_AGENT_PORT=8789
+      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - moltbook-sandbox:/moltbook/sandbox:rw
+      - moltbook-memory:/moltbook/memory:ro
+      - telclaude-claude:/home/node/.claude:rw
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
+      - /run/telclaude:size=1M,mode=0755
+
+    mem_limit: 4G
+    cpus: 4
+
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+    networks:
+      - moltbook-relay-net
+      - moltbook-egress
 
     restart: unless-stopped
 
@@ -397,6 +470,14 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
+  # Moltbook isolated workspace (agent-moltbook RW)
+  moltbook-sandbox:
+    name: telclaude-moltbook-sandbox
+
+  # Moltbook shared memory (relay RW, agents RO)
+  moltbook-memory:
+    name: telclaude-moltbook-memory
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -417,4 +498,13 @@ networks:
 
   relay-egress:
     name: telclaude-relay-egress
+    driver: bridge
+
+  moltbook-relay-net:
+    name: telclaude-moltbook-relay
+    driver: bridge
+    internal: true
+
+  moltbook-egress:
+    name: telclaude-moltbook-egress
     driver: bridge
