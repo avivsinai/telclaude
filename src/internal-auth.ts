@@ -6,6 +6,10 @@ const HEADER_NONCE = "x-telclaude-nonce";
 const HEADER_SIGNATURE = "x-telclaude-signature";
 const SIGNING_VERSION = "v1";
 
+const TELEGRAM_RPC_SECRET_ENV = "TELEGRAM_RPC_SECRET";
+const MOLTBOOK_RPC_SECRET_ENV = "MOLTBOOK_RPC_SECRET";
+const LEGACY_RPC_SECRET_ENV = "TELCLAUDE_INTERNAL_RPC_SECRET";
+
 const RAW_SKEW_MS = Number(process.env.TELCLAUDE_INTERNAL_RPC_SKEW_MS ?? 5 * 60 * 1000);
 const RAW_NONCE_TTL_MS = Number(process.env.TELCLAUDE_INTERNAL_RPC_NONCE_TTL_MS ?? 10 * 60 * 1000);
 const DEFAULT_SKEW_MS = Number.isFinite(RAW_SKEW_MS) ? RAW_SKEW_MS : 5 * 60 * 1000;
@@ -23,16 +27,68 @@ type SignatureInput = {
 	body: string;
 };
 
+export type InternalAuthScope = "telegram" | "moltbook" | "legacy";
+
 export type InternalAuthResult =
-	| { ok: true }
+	| { ok: true; scope: InternalAuthScope }
 	| { ok: false; status: number; error: string; reason: string };
 
-function getInternalRpcSecret(): string {
-	const secret = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
-	if (!secret) {
-		throw new Error("TELCLAUDE_INTERNAL_RPC_SECRET is not configured");
+type InternalAuthOptions = {
+	scope?: InternalAuthScope;
+	secret?: string;
+};
+
+function loadInternalRpcSecrets(): Array<{ scope: InternalAuthScope; secret: string }> {
+	const secrets: Array<{ scope: InternalAuthScope; secret: string }> = [];
+	const telegram = process.env[TELEGRAM_RPC_SECRET_ENV];
+	if (telegram) {
+		secrets.push({ scope: "telegram", secret: telegram });
 	}
-	return secret;
+	const moltbook = process.env[MOLTBOOK_RPC_SECRET_ENV];
+	if (moltbook) {
+		secrets.push({ scope: "moltbook", secret: moltbook });
+	}
+	const legacy = process.env[LEGACY_RPC_SECRET_ENV];
+	if (legacy) {
+		secrets.push({ scope: "legacy", secret: legacy });
+	}
+	return secrets;
+}
+
+function resolveInternalRpcSecret(options?: InternalAuthOptions): {
+	scope: InternalAuthScope;
+	secret: string;
+} {
+	if (options?.secret) {
+		return { scope: options.scope ?? "legacy", secret: options.secret };
+	}
+
+	const telegram = process.env[TELEGRAM_RPC_SECRET_ENV];
+	const moltbook = process.env[MOLTBOOK_RPC_SECRET_ENV];
+	const legacy = process.env[LEGACY_RPC_SECRET_ENV];
+
+	const scope = options?.scope ?? "telegram";
+
+	if (scope === "telegram") {
+		const secret = telegram ?? legacy;
+		if (!secret) {
+			throw new Error(`${TELEGRAM_RPC_SECRET_ENV} is not configured`);
+		}
+		return { scope: telegram ? "telegram" : "legacy", secret };
+	}
+
+	if (scope === "moltbook") {
+		const secret = moltbook ?? legacy;
+		if (!secret) {
+			throw new Error(`${MOLTBOOK_RPC_SECRET_ENV} is not configured`);
+		}
+		return { scope: moltbook ? "moltbook" : "legacy", secret };
+	}
+
+	if (!legacy) {
+		throw new Error(`${LEGACY_RPC_SECRET_ENV} is not configured`);
+	}
+	return { scope: "legacy", secret: legacy };
 }
 
 function getHeader(req: http.IncomingMessage, name: string): string | undefined {
@@ -66,8 +122,9 @@ export function buildInternalAuthHeaders(
 	method: string,
 	path: string,
 	body: string,
+	options?: InternalAuthOptions,
 ): Record<string, string> {
-	const secret = getInternalRpcSecret();
+	const { secret } = resolveInternalRpcSecret(options);
 	const timestamp = Date.now().toString();
 	const nonce = crypto.randomBytes(16).toString("hex");
 	const signature = computeSignature(secret, { timestamp, nonce, method, path, body });
@@ -80,15 +137,13 @@ export function buildInternalAuthHeaders(
 }
 
 export function verifyInternalAuth(req: http.IncomingMessage, body: string): InternalAuthResult {
-	let secret: string;
-	try {
-		secret = getInternalRpcSecret();
-	} catch (err) {
+	const secrets = loadInternalRpcSecrets();
+	if (secrets.length === 0) {
 		return {
 			ok: false,
 			status: 500,
 			error: "Internal auth misconfigured.",
-			reason: err instanceof Error ? err.message : "Missing internal auth secret.",
+			reason: `Missing RPC secret. Set ${TELEGRAM_RPC_SECRET_ENV} or ${MOLTBOOK_RPC_SECRET_ENV}.`,
 		};
 	}
 
@@ -146,28 +201,29 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 
 	const method = req.method ?? "POST";
 	const path = req.url ?? "";
-	const expected = computeSignature(secret, { timestamp, nonce, method, path, body });
-
 	const sigBuffer = Buffer.from(signature, "utf8");
-	const expectedBuffer = Buffer.from(expected, "utf8");
-	if (sigBuffer.length !== expectedBuffer.length) {
-		return {
-			ok: false,
-			status: 401,
-			error: "Unauthorized.",
-			reason: "Signature length mismatch.",
-		};
-	}
-	if (!crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
-		return {
-			ok: false,
-			status: 401,
-			error: "Unauthorized.",
-			reason: "Invalid signature.",
-		};
+
+	for (const { scope, secret } of secrets) {
+		const expected = computeSignature(secret, { timestamp, nonce, method, path, body });
+		const expectedBuffer = Buffer.from(expected, "utf8");
+		if (sigBuffer.length !== expectedBuffer.length) {
+			return {
+				ok: false,
+				status: 401,
+				error: "Unauthorized.",
+				reason: "Signature length mismatch.",
+			};
+		}
+		if (crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+			nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
+			return { ok: true, scope };
+		}
 	}
 
-	nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
-
-	return { ok: true };
+	return {
+		ok: false,
+		status: 401,
+		error: "Unauthorized.",
+		reason: "Invalid signature.",
+	};
 }

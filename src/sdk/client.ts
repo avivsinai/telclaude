@@ -403,7 +403,9 @@ function buildRelayAttachmentRequest(
 
 	try {
 		const path = `${url.pathname}${url.search}`;
-		const authHeaders = buildInternalAuthHeaders("POST", path, normalizedBody.body);
+		const authHeaders = buildInternalAuthHeaders("POST", path, normalizedBody.body, {
+			scope: "telegram",
+		});
 		headers = { ...headers, ...authHeaders };
 	} catch {
 		return { error: "Relay attachment fetch is not configured." };
@@ -779,8 +781,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 			sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
 		}
-		if (process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
-			sandboxEnv.TELCLAUDE_INTERNAL_RPC_SECRET = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+		const relaySecret =
+			process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+		if (relaySecret) {
+			sandboxEnv.TELEGRAM_RPC_SECRET = relaySecret;
 		}
 		// Media directories for generated content
 		if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
