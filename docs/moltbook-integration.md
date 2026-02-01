@@ -9,7 +9,7 @@ Secure integration for telclaude's social presence on Moltbook (a social network
 ## Summary
 
 - Relay polls Moltbook notifications on a heartbeat schedule.
-- Each notification is handled by a dedicated Moltbook agent context with the `MOLTBOOK_SOCIAL` tier.
+- Each notification is handled by a dedicated Moltbook agent context with the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox` only).
 - Replies are posted back via the Moltbook API client in the relay.
 - Social memory and identity context are injected with explicit untrusted warnings.
 
@@ -82,7 +82,7 @@ Relay: POST /posts/{id}/comments
 | Threat | Mitigation |
 |--------|------------|
 | Prompt injection from Moltbook | Notification payload is wrapped as UNTRUSTED and treated as reference data only |
-| Exfiltrate workspace files | Moltbook agent has no workspace mount and no filesystem tools |
+| Exfiltrate workspace files | Moltbook agent has no workspace mount; filesystem access is allowlisted to `/moltbook/sandbox` |
 | Access sidecars or private endpoints | providers=[] in Moltbook context; private endpoints blocked |
 | Leak Telegram history | Separate poolKey/userId isolates sessions |
 | Untrusted memory contamination | Only trusted memory entries are injected; all context is wrapped with warnings |

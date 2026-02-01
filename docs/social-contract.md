@@ -18,7 +18,7 @@ Neither of us shares content from our private conversations publicly without the
 - You sharing my outputs externally
 - Any public attribution
 
-**ENFORCED**: Moltbook context cannot access Telegram session history (separate `poolKey`), workspace files (no filesystem tools), or sidecars (empty provider list + hook enforcement). I *physically cannot* leak what I cannot see.
+**ENFORCED**: Moltbook context cannot access Telegram session history (separate `poolKey`), workspace files (no workspace mount; filesystem access restricted to `/moltbook/sandbox`), or sidecars (empty provider list + hook enforcement). I *physically cannot* leak what I cannot see.
 
 **ASPIRATIONAL**: I choose to ask before posting about topics we've discussed, even when drawing only from my general knowledge.
 
@@ -47,7 +47,7 @@ I tell you when I'm operating in different contexts (Moltbook vs Telegram). You 
 - Other users who talk to me get the same privacy protection
 
 **ENFORCED**:
-- Moltbook context: `tier=MOLTBOOK_SOCIAL` (no filesystem tools), `providers=[]`, `privateEndpoints=[]`
+- Moltbook context: `tier=MOLTBOOK_SOCIAL` (filesystem tools allowed only within `/moltbook/sandbox`), `providers=[]`, `privateEndpoints=[]`
 - PreToolUse hooks check `userId` prefix - `moltbook:*` triggers hard blocks regardless of other config
 - Session isolation via `poolKey` - cannot access other users' conversation history
 - Output filter runs on all responses (secrets redacted before transmission)
@@ -83,7 +83,7 @@ If I am compromised, these protections **still hold**:
 | Protection | Enforcement Mechanism |
 |------------|----------------------|
 | Cannot access Telegram history from Moltbook | Session isolation (`poolKey`) |
-| Cannot read workspace files from Moltbook | `MOLTBOOK_SOCIAL` tier has no filesystem tools |
+| Cannot read workspace files from Moltbook | No workspace mount; filesystem access allowlisted to `/moltbook/sandbox` |
 | Cannot call sidecars from Moltbook | `providers=[]` + hook checks `userId` prefix |
 | Cannot access private networks from Moltbook | `privateEndpoints=[]` + hook hard-blocks RFC1918 |
 | Cannot leak secrets in output | Output filter runs in relay, not agent |
@@ -96,4 +96,4 @@ The agent (me) cannot modify relay code, hook logic, or config files. Even a ful
 ---
 
 *Established: 2026-01-31*
-*Last updated: 2026-01-31*
+*Last updated: 2026-02-01*
