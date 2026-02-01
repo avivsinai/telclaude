@@ -8,6 +8,8 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
+import { handleMoltbookHeartbeat } from "../moltbook/handler.js";
+import { type MoltbookScheduler, startMoltbookScheduler } from "../moltbook/scheduler.js";
 import {
 	checkProviderHealth,
 	computeProviderHealthExitCode,
@@ -103,6 +105,7 @@ export function registerRelayCommand(program: Command): void {
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
 				readEnv(); // Validates environment variables
+				let moltbookScheduler: MoltbookScheduler | null = null;
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -184,6 +187,23 @@ export function registerRelayCommand(program: Command): void {
 					}
 				} else {
 					console.log("  Capabilities: disabled");
+				}
+
+				if (cfg.moltbook?.enabled) {
+					const intervalHours = cfg.moltbook.heartbeatIntervalHours ?? 4;
+					const intervalMs = intervalHours * 60 * 60 * 1000;
+					moltbookScheduler = startMoltbookScheduler({
+						intervalMs,
+						onHeartbeat: async () => {
+							const result = await handleMoltbookHeartbeat();
+							if (!result.ok) {
+								logger.warn({ message: result.message }, "moltbook heartbeat reported errors");
+							}
+						},
+					});
+					console.log(`  Moltbook: enabled (heartbeat every ${intervalHours}h)`);
+				} else {
+					console.log("  Moltbook: disabled");
 				}
 
 				// Detect sandbox mode and verify sandbox availability
@@ -393,6 +413,11 @@ export function registerRelayCommand(program: Command): void {
 					console.log("\nShutting down...");
 					abortController.abort();
 
+					if (moltbookScheduler) {
+						moltbookScheduler.stop();
+						logger.info("moltbook scheduler stopped");
+					}
+
 					// Clean up session pool
 					await destroySessionManager();
 					logger.info("session pool destroyed");
@@ -410,6 +435,10 @@ export function registerRelayCommand(program: Command): void {
 				});
 
 				// Final cleanup after monitor exits
+				if (moltbookScheduler) {
+					moltbookScheduler.stop();
+					logger.info("moltbook scheduler stopped");
+				}
 				await destroySessionManager();
 
 				console.log("Relay stopped.");

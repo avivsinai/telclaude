@@ -296,6 +296,7 @@ export const SECRET_KEYS = {
 	OPENAI_API_KEY: "openai-api-key",
 	GIT_CREDENTIALS: "git-credentials",
 	GITHUB_APP: "github-app",
+	MOLTBOOK_API_KEY: "moltbook-api-key",
 } as const;
 
 /** Git credentials structure stored in secrets */
