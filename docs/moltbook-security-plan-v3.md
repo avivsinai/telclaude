@@ -922,6 +922,14 @@ services:
 2. A dedicated init container that exits after setup, or
 3. Relay container only (not agent containers)
 
+### AppArmor Profile (OSS Threat Model)
+
+Regex-only Bash guards are bypassable by a knowledgeable attacker. For Moltbook, add a host-level
+AppArmor profile that denies access to `/home/node/.claude`, `/workspace`, and `/proc/*/environ`,
+and enforces read-only access to `/moltbook/memory`.
+
+See: `docs/apparmor-setup.md` for installation and verification steps.
+
 ### ⚠️ CRITICAL: Firewall Hardening (P0 Fix)
 
 **Current `init-firewall.sh` allows unrestricted SSH (port 22).** This is an exfiltration channel.
