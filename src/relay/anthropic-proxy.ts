@@ -2,7 +2,7 @@ import fs from "node:fs";
 import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
@@ -11,33 +11,9 @@ const logger = getChildLogger({ module: "anthropic-proxy" });
 
 const PROXY_PREFIX = "/v1/anthropic-proxy";
 const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
-const MAX_BODY_BYTES = Number(process.env.TELCLAUDE_ANTHROPIC_PROXY_BODY_LIMIT ?? 10 * 1024 * 1024);
 const RATE_LIMIT_PER_MINUTE = Number(process.env.TELCLAUDE_ANTHROPIC_PROXY_RPM ?? 120);
 
 type AuthHeader = { name: string; value: string; source: string };
-
-class SizeLimitingTransform extends Transform {
-	private received = 0;
-	private readonly maxSize: number;
-
-	constructor(maxSize: number) {
-		super();
-		this.maxSize = maxSize;
-	}
-
-	_transform(
-		chunk: Buffer,
-		_encoding: BufferEncoding,
-		callback: (error?: Error | null, data?: Buffer) => void,
-	): void {
-		this.received += chunk.length;
-		if (this.received > this.maxSize) {
-			callback(new Error(`Request body too large (max ${this.maxSize} bytes)`));
-			return;
-		}
-		callback(null, chunk);
-	}
-}
 
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
@@ -213,14 +189,10 @@ export async function handleAnthropicProxyRequest(
 	const method = req.method ?? "POST";
 	const headers = sanitizeRequestHeaders(req.headers, authHeader);
 
-	let body: Readable | undefined;
-	if (!["GET", "HEAD"].includes(method.toUpperCase())) {
-		const limiter = new SizeLimitingTransform(MAX_BODY_BYTES);
-		body = req.pipe(limiter);
-	}
+	const hasBody = !["GET", "HEAD"].includes(method.toUpperCase());
 
 	logger.info({ method, path: targetPath, authSource: authHeader.source }, "proxying to Anthropic");
-	const webBody = body ? Readable.toWeb(body) : undefined;
+	const webBody = hasBody ? Readable.toWeb(req) : undefined;
 	let upstream: Response;
 	try {
 		upstream = await fetch(targetUrl, {
@@ -228,7 +200,7 @@ export async function handleAnthropicProxyRequest(
 			headers,
 			body: webBody,
 			// Required for streaming request bodies in Node fetch.
-			...(webBody ? { duplex: "half" } : {}),
+			...(hasBody ? { duplex: "half" } : {}),
 		});
 	} catch (err) {
 		logger.warn({ error: String(err) }, "[anthropic-proxy] upstream fetch failed");
