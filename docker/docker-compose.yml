@@ -176,18 +176,15 @@ services:
 
 
     environment:
-      # Optional: Anthropic API key (if not using claude login)
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-
       # Agent server
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CONFIG=/data/telclaude.json
 
-      # Relay capability broker
+      # Relay capability broker + Anthropic API proxy
+      # Agent has NO credentials - all API calls go through relay
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
 
