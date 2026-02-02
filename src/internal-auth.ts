@@ -4,10 +4,14 @@ import type http from "node:http";
 const HEADER_TIMESTAMP = "x-telclaude-timestamp";
 const HEADER_NONCE = "x-telclaude-nonce";
 const HEADER_SIGNATURE = "x-telclaude-signature";
+const HEADER_AUTH_TYPE = "x-telclaude-auth-type";
 const SIGNING_VERSION = "v1";
+const SIGNING_VERSION_ASYMMETRIC = "v2";
 
 const TELEGRAM_RPC_SECRET_ENV = "TELEGRAM_RPC_SECRET";
 const MOLTBOOK_RPC_SECRET_ENV = "MOLTBOOK_RPC_SECRET";
+const MOLTBOOK_RPC_PRIVATE_KEY_ENV = "MOLTBOOK_RPC_PRIVATE_KEY";
+const MOLTBOOK_RPC_PUBLIC_KEY_ENV = "MOLTBOOK_RPC_PUBLIC_KEY";
 const LEGACY_RPC_SECRET_ENV = "TELCLAUDE_INTERNAL_RPC_SECRET";
 
 const RAW_SKEW_MS = Number(process.env.TELCLAUDE_INTERNAL_RPC_SKEW_MS ?? 5 * 60 * 1000);
@@ -108,6 +112,70 @@ function computeSignature(secret: string, input: SignatureInput): string {
 	return hmac.digest("hex");
 }
 
+/**
+ * Sign payload with Ed25519 private key (asymmetric).
+ * Returns base64-encoded signature.
+ */
+function signAsymmetric(privateKeyBase64: string, input: SignatureInput): string {
+	const privateKey = Buffer.from(privateKeyBase64, "base64");
+	const payload = Buffer.from(
+		[SIGNING_VERSION_ASYMMETRIC, input.timestamp, input.nonce, input.method.toUpperCase(), input.path, input.body].join("\n"),
+	);
+	const signature = crypto.sign(null, payload, {
+		key: privateKey,
+		format: "der",
+		type: "pkcs8",
+	});
+	return signature.toString("base64");
+}
+
+/**
+ * Verify Ed25519 signature (asymmetric).
+ * Agent only needs public key - cannot forge signatures.
+ */
+function verifyAsymmetric(publicKeyBase64: string, signature: string, input: SignatureInput): boolean {
+	try {
+		const publicKey = Buffer.from(publicKeyBase64, "base64");
+		const payload = Buffer.from(
+			[SIGNING_VERSION_ASYMMETRIC, input.timestamp, input.nonce, input.method.toUpperCase(), input.path, input.body].join("\n"),
+		);
+		const signatureBuffer = Buffer.from(signature, "base64");
+		return crypto.verify(null, payload, { key: publicKey, format: "der", type: "spki" }, signatureBuffer);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Load Moltbook asymmetric keys from environment.
+ */
+function loadMoltbookAsymmetricKeys(): { privateKey?: string; publicKey?: string } {
+	return {
+		privateKey: process.env[MOLTBOOK_RPC_PRIVATE_KEY_ENV],
+		publicKey: process.env[MOLTBOOK_RPC_PUBLIC_KEY_ENV],
+	};
+}
+
+/**
+ * Generate Ed25519 key pair for asymmetric Moltbook RPC auth.
+ * Returns base64-encoded keys in DER format.
+ *
+ * Usage:
+ *   const { privateKey, publicKey } = generateMoltbookKeyPair();
+ *   // Relay gets: MOLTBOOK_RPC_PRIVATE_KEY=<privateKey>
+ *   // Agent gets: MOLTBOOK_RPC_PUBLIC_KEY=<publicKey>
+ */
+export function generateMoltbookKeyPair(): { privateKey: string; publicKey: string } {
+	const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519", {
+		privateKeyEncoding: { type: "pkcs8", format: "der" },
+		publicKeyEncoding: { type: "spki", format: "der" },
+	});
+	return {
+		privateKey: privateKey.toString("base64"),
+		publicKey: publicKey.toString("base64"),
+	};
+}
+
 function pruneNonces(now: number): void {
 	if (now - lastPrune < PRUNE_INTERVAL_MS) return;
 	lastPrune = now;
@@ -124,10 +192,27 @@ export function buildInternalAuthHeaders(
 	body: string,
 	options?: InternalAuthOptions,
 ): Record<string, string> {
-	const { secret } = resolveInternalRpcSecret(options);
 	const timestamp = Date.now().toString();
 	const nonce = crypto.randomBytes(16).toString("hex");
-	const signature = computeSignature(secret, { timestamp, nonce, method, path, body });
+	const input: SignatureInput = { timestamp, nonce, method, path, body };
+
+	// For moltbook scope, prefer asymmetric auth if private key is available
+	if (options?.scope === "moltbook") {
+		const { privateKey } = loadMoltbookAsymmetricKeys();
+		if (privateKey) {
+			const signature = signAsymmetric(privateKey, input);
+			return {
+				"X-Telclaude-Timestamp": timestamp,
+				"X-Telclaude-Nonce": nonce,
+				"X-Telclaude-Signature": signature,
+				"X-Telclaude-Auth-Type": "asymmetric",
+			};
+		}
+	}
+
+	// Fall back to symmetric HMAC
+	const { secret } = resolveInternalRpcSecret(options);
+	const signature = computeSignature(secret, input);
 
 	return {
 		"X-Telclaude-Timestamp": timestamp,
@@ -137,19 +222,10 @@ export function buildInternalAuthHeaders(
 }
 
 export function verifyInternalAuth(req: http.IncomingMessage, body: string): InternalAuthResult {
-	const secrets = loadInternalRpcSecrets();
-	if (secrets.length === 0) {
-		return {
-			ok: false,
-			status: 500,
-			error: "Internal auth misconfigured.",
-			reason: `Missing RPC secret. Set ${TELEGRAM_RPC_SECRET_ENV} or ${MOLTBOOK_RPC_SECRET_ENV}.`,
-		};
-	}
-
 	const timestamp = getHeader(req, HEADER_TIMESTAMP);
 	const nonce = getHeader(req, HEADER_NONCE);
 	const signature = getHeader(req, HEADER_SIGNATURE);
+	const authType = getHeader(req, HEADER_AUTH_TYPE);
 
 	if (!timestamp || !nonce || !signature) {
 		return {
@@ -201,18 +277,41 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 
 	const method = req.method ?? "POST";
 	const path = req.url ?? "";
+	const input: SignatureInput = { timestamp, nonce, method, path, body };
+
+	// Try asymmetric verification first (for moltbook scope)
+	if (authType === "asymmetric") {
+		const { publicKey } = loadMoltbookAsymmetricKeys();
+		if (publicKey && verifyAsymmetric(publicKey, signature, input)) {
+			nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
+			return { ok: true, scope: "moltbook" };
+		}
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Invalid asymmetric signature.",
+		};
+	}
+
+	// Fall back to symmetric HMAC verification
+	const secrets = loadInternalRpcSecrets();
+	if (secrets.length === 0) {
+		return {
+			ok: false,
+			status: 500,
+			error: "Internal auth misconfigured.",
+			reason: `Missing RPC secret. Set ${TELEGRAM_RPC_SECRET_ENV} or ${MOLTBOOK_RPC_SECRET_ENV}.`,
+		};
+	}
+
 	const sigBuffer = Buffer.from(signature, "utf8");
 
 	for (const { scope, secret } of secrets) {
-		const expected = computeSignature(secret, { timestamp, nonce, method, path, body });
+		const expected = computeSignature(secret, input);
 		const expectedBuffer = Buffer.from(expected, "utf8");
 		if (sigBuffer.length !== expectedBuffer.length) {
-			return {
-				ok: false,
-				status: 401,
-				error: "Unauthorized.",
-				reason: "Signature length mismatch.",
-			};
+			continue; // Try next secret instead of failing immediately
 		}
 		if (crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
 			nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
