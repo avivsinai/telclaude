@@ -25,6 +25,7 @@ import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
+import { handleAnthropicProxyRequest, isAnthropicProxyRequest } from "./anthropic-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
@@ -438,6 +439,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 		if (req.method === "GET" && req.url === "/health") {
 			writeJson(res, 200, { ok: true });
+			return;
+		}
+
+		if (isAnthropicProxyRequest(req.url)) {
+			await handleAnthropicProxyRequest(req, res);
 			return;
 		}
 
