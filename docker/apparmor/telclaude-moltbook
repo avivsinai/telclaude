@@ -1,0 +1,60 @@
+#include <tunables/global>
+
+# Telclaude Moltbook AppArmor profile
+# Enforces OSS threat-model hardening for the Moltbook agent container.
+
+profile telclaude-moltbook flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  # NOTE: We keep a permissive baseline and explicitly deny sensitive paths.
+  # This minimizes breakage while still hardening known high-risk locations.
+  # If you want a stricter profile, remove `file,` and enumerate explicit allows.
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  #include <abstractions/user-tmp>
+
+  # Allow general file access; deny rules below take precedence.
+  file,
+
+  # Allow execution of system binaries/libraries
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # Working directory (read/write)
+  /moltbook/sandbox/** rwklx,
+
+  # Moltbook memory: read-only
+  /moltbook/memory/** r,
+  deny /moltbook/memory/** wklx,
+
+  # Deny sensitive locations
+  deny /home/node/.claude/** rwklx,
+  deny /workspace/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+  deny /proc/*/cmdline r,
+  deny /proc/**/cmdline r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow w,
+  deny /etc/passwd w,
+
+  # Temp + device nodes
+  /tmp/** rwklx,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/tty rw,
+
+  # Network: allow standard traffic, deny raw sockets.
+  # Firewall remains the primary network enforcement layer.
+  network,
+  deny network raw,
+  deny network packet,
+}
