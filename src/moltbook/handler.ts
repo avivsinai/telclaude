@@ -43,6 +43,13 @@ const DEFAULT_USER_ID = "moltbook:social";
 const DEFAULT_TIMEOUT_MS = Number(process.env.TELCLAUDE_MOLTBOOK_TIMEOUT_MS ?? 120_000);
 
 const IDENTITY_CATEGORIES: Array<MemoryEntry["category"]> = ["profile", "interests", "meta"];
+const SOCIAL_CONTEXT_CATEGORIES: Array<MemoryEntry["category"]> = [
+	"profile",
+	"interests",
+	"meta",
+	"threads",
+	"posts",
+];
 
 function getTrustedSocialEntries(categories?: Array<MemoryEntry["category"]>): MemoryEntry[] {
 	return getEntries({
@@ -55,7 +62,7 @@ function getTrustedSocialEntries(categories?: Array<MemoryEntry["category"]>): M
 }
 
 export function buildMoltbookPromptBundle(message: string): MoltbookPromptBundle {
-	const socialEntries = getTrustedSocialEntries();
+	const socialEntries = getTrustedSocialEntries(SOCIAL_CONTEXT_CATEGORIES);
 	const identityEntries = getTrustedSocialEntries(IDENTITY_CATEGORIES);
 
 	const systemPromptAppend = buildMoltbookIdentityPreamble(identityEntries);

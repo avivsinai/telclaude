@@ -82,12 +82,7 @@ function shouldExposeKeys(tier: PermissionTier): boolean {
 }
 
 function isMoltbookContext(actorUserId?: string): boolean {
-	if (actorUserId?.startsWith("moltbook:")) {
-		return true;
-	}
-	const hasMoltbookSecret = Boolean(process.env.MOLTBOOK_RPC_SECRET);
-	const hasTelegramSecret = Boolean(process.env.TELEGRAM_RPC_SECRET);
-	return hasMoltbookSecret && !hasTelegramSecret;
+	return actorUserId?.startsWith("moltbook:") ?? false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -391,7 +386,11 @@ const ALLOWED_RELAY_PATHS = new Set(["/v1/attachment/fetch", "/v1/attachment/del
 function buildRelayAttachmentRequest(
 	toolInput: { method?: string; headers?: Record<string, string>; body?: unknown },
 	url: URL,
+	actorUserId?: string,
 ): { updatedInput?: Record<string, unknown>; error?: string } {
+	if (actorUserId?.startsWith("moltbook:")) {
+		return { error: "Relay attachment endpoints are not available in Moltbook context." };
+	}
 	if (!ALLOWED_RELAY_PATHS.has(url.pathname)) {
 		return { error: "Only attachment endpoints allowed on relay." };
 	}
@@ -505,7 +504,7 @@ function createNetworkSecurityHook(
 
 			// Relay attachment fetch (internal capabilities broker)
 			if (isRelayAttachmentEndpoint(url)) {
-				const relayRequest = buildRelayAttachmentRequest(toolInput, url);
+				const relayRequest = buildRelayAttachmentRequest(toolInput, url, actorUserId);
 				if (relayRequest.error) {
 					logger.warn(
 						{ url: url.pathname, error: relayRequest.error },
@@ -603,18 +602,20 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		/\.claude(?:\/|$)/i,
 		/\/moltbook\/memory(?:\/|$)/i,
 	];
+	const networkExfilTools = /\b(curl|wget|ftp|nc|netcat|telnet)\b/i;
+	const pyHttp = /\bpython[23]?\s+-c\s+['"][\s\S]*requests\.(get|post|put|patch)/i;
+	const nodeHttp = /\bnode\s+-e\s+['"][\s\S]*(fetch|http[s]?\.)/i;
 
 	const resolveSandboxPath = (rawPath: string): string => {
-		return path.isAbsolute(rawPath)
-			? path.resolve(rawPath)
-			: path.resolve(resolvedRoot, rawPath);
+		return path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(resolvedRoot, rawPath);
 	};
 
 	const isWithinSandbox = (candidatePath: string): boolean => {
+		const candidateReal = resolveRealPath(candidatePath);
 		const rootWithSep = resolvedRoot.endsWith(path.sep)
 			? resolvedRoot
 			: `${resolvedRoot}${path.sep}`;
-		return candidatePath === resolvedRoot || candidatePath.startsWith(rootWithSep);
+		return candidateReal === resolvedRoot || candidateReal.startsWith(rootWithSep);
 	};
 
 	const containsTraversal = (value: string): boolean =>
@@ -623,9 +624,35 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 	const containsForbiddenBashPath = (command: string): boolean =>
 		forbiddenBashPatterns.some((pattern) => pattern.test(command));
 
-	const resolveParent = (candidatePath: string): string => resolveRealPath(path.dirname(candidatePath));
+	const allAncestorsWithinSandbox = (target: string): boolean => {
+		let current = path.resolve(target);
+		const rootWithSep = resolvedRoot.endsWith(path.sep)
+			? resolvedRoot
+			: `${resolvedRoot}${path.sep}`;
 
-	const resolveExisting = (candidatePath: string): string => resolveRealPath(candidatePath);
+		while (true) {
+			let real: string;
+			try {
+				real = fs.realpathSync(current);
+			} catch {
+				return false;
+			}
+
+			if (!(real === resolvedRoot || real.startsWith(rootWithSep))) {
+				return false;
+			}
+
+			if (real === resolvedRoot) {
+				return true;
+			}
+
+			const parent = path.dirname(current);
+			if (parent === current) {
+				return true;
+			}
+			current = parent;
+		}
+	};
 
 	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
 		if (!rawPath) {
@@ -634,53 +661,33 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		}
 
 		const normalized = resolveSandboxPath(rawPath);
-		if (!isWithinSandbox(normalized)) {
+		const candidateForCheck = fs.existsSync(normalized) ? normalized : path.dirname(normalized);
+		if (!isWithinSandbox(candidateForCheck)) {
 			logger.warn(
 				{
 					toolName,
 					actorUserId: actorUserId ?? null,
 					path: redactForLog(rawPath),
 					resolvedPath: redactForLog(normalized),
+					checkedPath: redactForLog(candidateForCheck),
 				},
 				"[hook] blocked moltbook path outside sandbox",
 			);
-			return denyHookResponse(
-				"Moltbook context: file access must stay within /moltbook/sandbox.",
-			);
+			return denyHookResponse("Moltbook context: file access must stay within /moltbook/sandbox.");
 		}
 
-		if (normalized !== resolvedRoot) {
-			const parentReal = resolveParent(normalized);
-			if (!isWithinSandbox(parentReal)) {
-				logger.warn(
-					{
-						toolName,
-						actorUserId: actorUserId ?? null,
-						path: redactForLog(rawPath),
-						parentPath: redactForLog(parentReal),
-					},
-					"[hook] blocked moltbook parent path outside sandbox",
-				);
-				return denyHookResponse(
-					"Moltbook context: file access must stay within /moltbook/sandbox.",
-				);
-			}
-		}
-
-		const resolvedExisting = resolveExisting(normalized);
-		if (!isWithinSandbox(resolvedExisting)) {
+		const ancestorTarget = candidateForCheck;
+		if (!allAncestorsWithinSandbox(ancestorTarget)) {
 			logger.warn(
 				{
 					toolName,
 					actorUserId: actorUserId ?? null,
 					path: redactForLog(rawPath),
-					resolvedPath: redactForLog(resolvedExisting),
+					ancestorPath: redactForLog(ancestorTarget),
 				},
-				"[hook] blocked moltbook realpath outside sandbox",
+				"[hook] blocked moltbook path via ancestor check",
 			);
-			return denyHookResponse(
-				"Moltbook context: file access must stay within /moltbook/sandbox.",
-			);
+			return denyHookResponse("Moltbook context: file access must stay within /moltbook/sandbox.");
 		}
 
 		return allowHookResponse();
@@ -734,7 +741,13 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		}
 
 		if (toolName === "Bash") {
-			if (containsForbiddenBashPath(String(toolInput.command ?? ""))) {
+			const command = String(toolInput.command ?? "");
+			if (networkExfilTools.test(command) || pyHttp.test(command) || nodeHttp.test(command)) {
+				return denyHookResponse(
+					"Moltbook: direct network egress via Bash is not permitted. Use WebFetch for HTTP requests.",
+				);
+			}
+			if (containsForbiddenBashPath(command)) {
 				return denyHookResponse("Moltbook context: bash access outside sandbox is blocked.");
 			}
 			return allowHookResponse();
@@ -1017,6 +1030,8 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
+	const moltbookContext = isMoltbookContext(opts.userId);
+	const effectivePermissive = moltbookContext ? false : isPermissiveMode;
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
@@ -1056,7 +1071,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	sdkOpts.hooks = {
 		PreToolUse: [
 			createNetworkSecurityHook(
-				isPermissiveMode,
+				effectivePermissive,
 				allowedDomains,
 				privateEndpoints,
 				config.providers ?? [],
