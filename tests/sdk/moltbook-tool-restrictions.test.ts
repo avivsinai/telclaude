@@ -43,6 +43,8 @@ const ORIGINAL_ENV = {
 	TELCLAUDE_NETWORK_MODE: process.env.TELCLAUDE_NETWORK_MODE,
 	TELCLAUDE_MOLTBOOK_AGENT_WORKDIR: process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR,
 };
+let tempRoot: string | null = null;
+let sandboxRoot: string | null = null;
 
 type HookDecision = { decision: "allow" | "deny"; reason?: string };
 
@@ -97,6 +99,10 @@ async function runPreToolUseHooks(
 beforeEach(() => {
 	checkPrivateNetworkAccess.mockReset();
 	checkPrivateNetworkAccess.mockResolvedValue({ allowed: true, matchedEndpoint: undefined });
+	tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moltbook-sandbox-"));
+	sandboxRoot = path.join(tempRoot, "sandbox");
+	fs.mkdirSync(sandboxRoot, { recursive: true });
+	process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR = sandboxRoot;
 });
 
 afterEach(() => {
@@ -124,6 +130,12 @@ afterEach(() => {
 		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR =
 			ORIGINAL_ENV.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR;
 	}
+
+	if (tempRoot) {
+		fs.rmSync(tempRoot, { recursive: true, force: true });
+	}
+	tempRoot = null;
+	sandboxRoot = null;
 });
 
 describe("moltbook tool restrictions", () => {
@@ -133,7 +145,7 @@ describe("moltbook tool restrictions", () => {
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
-		const sandboxPath = "/moltbook/sandbox/notes.txt";
+		const sandboxPath = path.join(sandboxRoot ?? "/moltbook/sandbox", "notes.txt");
 
 		const readRes = await runPreToolUseHooks(sdkOpts, "Read", { file_path: sandboxPath });
 		expect(readRes.decision).toBe("allow");
@@ -152,13 +164,13 @@ describe("moltbook tool restrictions", () => {
 		expect(editRes.decision).toBe("allow");
 
 		const globRes = await runPreToolUseHooks(sdkOpts, "Glob", {
-			path: "/moltbook/sandbox",
+			path: sandboxRoot ?? "/moltbook/sandbox",
 			pattern: "*.txt",
 		});
 		expect(globRes.decision).toBe("allow");
 
 		const grepRes = await runPreToolUseHooks(sdkOpts, "Grep", {
-			path: "/moltbook/sandbox",
+			path: sandboxRoot ?? "/moltbook/sandbox",
 			pattern: "hello",
 		});
 		expect(grepRes.decision).toBe("allow");
@@ -171,7 +183,7 @@ describe("moltbook tool restrictions", () => {
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
 		const fileTools = ["Read", "Write", "Edit", "Glob", "Grep"];
-		const outsidePath = "/moltbook/other";
+		const outsidePath = path.join(path.dirname(sandboxRoot ?? "/moltbook/sandbox"), "outside");
 
 		for (const toolName of fileTools) {
 			let input: Record<string, unknown>;
@@ -204,7 +216,7 @@ describe("moltbook tool restrictions", () => {
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
 		const res = await runPreToolUseHooks(sdkOpts, "Write", {
-			file_path: "/moltbook/sandbox/../tmp/pwn.txt",
+			file_path: path.join(sandboxRoot ?? "/moltbook/sandbox", "../tmp/pwn.txt"),
 			content: "oops",
 		});
 		expect(res.decision).toBe("deny");
@@ -258,6 +270,27 @@ describe("moltbook tool restrictions", () => {
 		expect(res.reason).toContain("traversal");
 	});
 
+	it("blocks bash network egress tools in moltbook context", async () => {
+		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
+		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
+
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const curlRes = await runPreToolUseHooks(sdkOpts, "Bash", { command: "curl https://example.com" });
+		expect(curlRes.decision).toBe("deny");
+		expect(curlRes.reason).toContain("direct network egress");
+
+		const pyRes = await runPreToolUseHooks(sdkOpts, "Bash", {
+			command: "python -c 'import requests; requests.get(\"https://example.com\")'",
+		});
+		expect(pyRes.decision).toBe("deny");
+
+		const nodeRes = await runPreToolUseHooks(sdkOpts, "Bash", {
+			command: "node -e 'fetch(\"https://example.com\")'",
+		});
+		expect(nodeRes.decision).toBe("deny");
+	});
+
 	it("allows Bash but blocks Skill, Task, and NotebookEdit in moltbook context", async () => {
 		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
 		delete process.env.TELEGRAM_RPC_SECRET;
@@ -284,7 +317,7 @@ describe("moltbook tool restrictions", () => {
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
 
 		const webFetch = await runPreToolUseHooks(sdkOpts, "WebFetch", {
-			url: "https://example.com",
+			url: "https://api.github.com/repos",
 		});
 		expect(webFetch.decision).toBe("allow");
 
