@@ -165,6 +165,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				const scope = authResult.scope;
 				let effectiveTier = parsed.tier;
 				let effectiveEnableSkills = parsed.enableSkills;
+				let effectiveUserId = parsed.userId;
 
 				if (scope === "moltbook") {
 					if (parsed.tier !== "MOLTBOOK_SOCIAL") {
@@ -175,10 +176,13 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					}
 					effectiveTier = "MOLTBOOK_SOCIAL";
 					effectiveEnableSkills = false;
+					if (!effectiveUserId?.startsWith("moltbook:")) {
+						effectiveUserId = `moltbook:${effectiveUserId ?? "agent"}`;
+					}
 				}
 
 				logger.info(
-					{ userId: parsed.userId, poolKey: parsed.poolKey, scope, tier: effectiveTier },
+					{ userId: effectiveUserId, poolKey: parsed.poolKey, scope, tier: effectiveTier },
 					"agent received query request",
 				);
 
@@ -195,6 +199,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						...parsed,
 						tier: effectiveTier,
 						enableSkills: effectiveEnableSkills,
+						userId: effectiveUserId,
 						timeoutMs,
 					},
 					res,
