@@ -15,9 +15,13 @@ function getCapabilitiesUrl(): string {
 
 function resolveScope(explicit?: InternalAuthScope): InternalAuthScope {
 	if (explicit) return explicit;
-	const hasMoltbook = Boolean(process.env.MOLTBOOK_RPC_SECRET);
+	// Check for asymmetric keys (new) or symmetric secret (legacy)
+	const hasMoltbookPrivate = Boolean(process.env.MOLTBOOK_RPC_PRIVATE_KEY);
+	const hasMoltbookPublic = Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
+	const hasMoltbookSecret = Boolean(process.env.MOLTBOOK_RPC_SECRET);
 	const hasTelegram = Boolean(process.env.TELEGRAM_RPC_SECRET);
-	if (hasMoltbook && !hasTelegram) {
+	// Moltbook scope if we have asymmetric keys or legacy secret (and no telegram)
+	if ((hasMoltbookPrivate || hasMoltbookPublic || hasMoltbookSecret) && !hasTelegram) {
 		return "moltbook";
 	}
 	return "telegram";
