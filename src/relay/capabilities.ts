@@ -16,7 +16,7 @@ import {
 	parseSnapshotQuery,
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
-import type { MemorySource } from "../memory/types.js";
+import type { MemorySource, TrustLevel } from "../memory/types.js";
 import { handleMoltbookHeartbeat, type MoltbookHeartbeatPayload } from "../moltbook/handler.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
@@ -526,8 +526,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					authResult.scope === "moltbook"
 						? {
 								...snapshotRequest.value,
-								sources: ["moltbook"],
-								trust: ["untrusted"],
+								sources: ["moltbook"] as MemorySource[],
+								trust: ["untrusted"] as TrustLevel[],
 							}
 						: snapshotRequest.value;
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
@@ -576,8 +576,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					authResult.scope === "moltbook"
 						? {
 								...snapshotRequest.value,
-								sources: ["moltbook"],
-								trust: ["untrusted"],
+								sources: ["moltbook"] as MemorySource[],
+								trust: ["untrusted"] as TrustLevel[],
 							}
 						: snapshotRequest.value;
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
