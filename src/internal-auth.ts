@@ -196,21 +196,25 @@ export function buildInternalAuthHeaders(
 	const nonce = crypto.randomBytes(16).toString("hex");
 	const input: SignatureInput = { timestamp, nonce, method, path, body };
 
-	// For moltbook scope, prefer asymmetric auth if private key is available
+	// For moltbook scope, require asymmetric auth (no symmetric fallback)
 	if (options?.scope === "moltbook") {
 		const { privateKey } = loadMoltbookAsymmetricKeys();
-		if (privateKey) {
-			const signature = signAsymmetric(privateKey, input);
-			return {
-				"X-Telclaude-Timestamp": timestamp,
-				"X-Telclaude-Nonce": nonce,
-				"X-Telclaude-Signature": signature,
-				"X-Telclaude-Auth-Type": "asymmetric",
-			};
+		if (!privateKey) {
+			throw new Error(
+				`${MOLTBOOK_RPC_PRIVATE_KEY_ENV} is required for moltbook scope. ` +
+					`Generate keys with: telclaude moltbook-keygen`,
+			);
 		}
+		const signature = signAsymmetric(privateKey, input);
+		return {
+			"X-Telclaude-Timestamp": timestamp,
+			"X-Telclaude-Nonce": nonce,
+			"X-Telclaude-Signature": signature,
+			"X-Telclaude-Auth-Type": "asymmetric",
+		};
 	}
 
-	// Fall back to symmetric HMAC
+	// Symmetric HMAC for non-moltbook scopes (telegram, legacy)
 	const { secret } = resolveInternalRpcSecret(options);
 	const signature = computeSignature(secret, input);
 
@@ -279,10 +283,19 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 	const path = req.url ?? "";
 	const input: SignatureInput = { timestamp, nonce, method, path, body };
 
-	// Try asymmetric verification first (for moltbook scope)
+	// Check for asymmetric auth (required for moltbook scope when public key is configured)
+	const { publicKey } = loadMoltbookAsymmetricKeys();
+
 	if (authType === "asymmetric") {
-		const { publicKey } = loadMoltbookAsymmetricKeys();
-		if (publicKey && verifyAsymmetric(publicKey, signature, input)) {
+		if (!publicKey) {
+			return {
+				ok: false,
+				status: 500,
+				error: "Internal auth misconfigured.",
+				reason: `Asymmetric auth requested but ${MOLTBOOK_RPC_PUBLIC_KEY_ENV} not configured.`,
+			};
+		}
+		if (verifyAsymmetric(publicKey, signature, input)) {
 			nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
 			return { ok: true, scope: "moltbook" };
 		}
@@ -294,7 +307,25 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 		};
 	}
 
-	// Fall back to symmetric HMAC verification
+	// If public key is configured, reject non-asymmetric requests that would be moltbook scope
+	// This prevents downgrade attacks where attacker uses symmetric auth
+	if (publicKey) {
+		const moltbookSecret = process.env[MOLTBOOK_RPC_SECRET_ENV];
+		if (moltbookSecret) {
+			// Check if this signature matches the moltbook symmetric secret
+			const moltbookSig = computeSignature(moltbookSecret, input);
+			if (signature === moltbookSig) {
+				return {
+					ok: false,
+					status: 401,
+					error: "Unauthorized.",
+					reason: "Symmetric auth disabled for moltbook scope. Use asymmetric auth.",
+				};
+			}
+		}
+	}
+
+	// Symmetric HMAC verification for non-moltbook scopes
 	const secrets = loadInternalRpcSecrets();
 	if (secrets.length === 0) {
 		return {
