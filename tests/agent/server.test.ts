@@ -19,16 +19,23 @@ vi.mock("../../src/logging.js", () => ({
 }));
 
 import { startAgentServer } from "../../src/agent/server.js";
-import { buildInternalAuthHeaders } from "../../src/internal-auth.js";
+import { buildInternalAuthHeaders, generateMoltbookKeyPair } from "../../src/internal-auth.js";
 
 const ORIGINAL_MOLTBOOK_SECRET = process.env.MOLTBOOK_RPC_SECRET;
+const ORIGINAL_MOLTBOOK_PRIVATE_KEY = process.env.MOLTBOOK_RPC_PRIVATE_KEY;
+const ORIGINAL_MOLTBOOK_PUBLIC_KEY = process.env.MOLTBOOK_RPC_PUBLIC_KEY;
 
 describe("agent server moltbook userId normalization", () => {
 	let server: ReturnType<typeof startAgentServer> | null = null;
 	let baseUrl = "";
 
 	beforeEach(async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "test-moltbook-secret";
+		// Generate Ed25519 key pair for moltbook asymmetric auth
+		const { privateKey, publicKey } = generateMoltbookKeyPair();
+		process.env.MOLTBOOK_RPC_PRIVATE_KEY = privateKey;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = publicKey;
+		delete process.env.MOLTBOOK_RPC_SECRET; // Ensure no symmetric fallback
+
 		server = startAgentServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
 		const address = server.address() as AddressInfo;
@@ -45,6 +52,16 @@ describe("agent server moltbook userId normalization", () => {
 			delete process.env.MOLTBOOK_RPC_SECRET;
 		} else {
 			process.env.MOLTBOOK_RPC_SECRET = ORIGINAL_MOLTBOOK_SECRET;
+		}
+		if (ORIGINAL_MOLTBOOK_PRIVATE_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_PRIVATE_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_PRIVATE_KEY = ORIGINAL_MOLTBOOK_PRIVATE_KEY;
+		}
+		if (ORIGINAL_MOLTBOOK_PUBLIC_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_PUBLIC_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_PUBLIC_KEY = ORIGINAL_MOLTBOOK_PUBLIC_KEY;
 		}
 	});
 
