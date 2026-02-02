@@ -170,6 +170,7 @@ services:
       - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
@@ -182,7 +183,6 @@ services:
     volumes:
       - moltbook-sandbox:/moltbook/sandbox:rw
       - moltbook-memory:/moltbook/memory:ro
-      - telclaude-claude:/home/node/.claude:rw
 
     user: "0:0"
 
@@ -198,6 +198,8 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      # AppArmor profile required for OSS threat model hardening.
+      - apparmor:telclaude-moltbook
 
     read_only: true
     tmpfs:
