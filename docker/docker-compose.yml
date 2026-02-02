@@ -44,6 +44,8 @@ services:
 
       # Optional: Anthropic API key (if not using claude login)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Optional: Claude Code OAuth token (for proxy-based auth)
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
 
       # Secrets storage encryption (reuses TOTP key for convenience)
       # Enables `telclaude setup-openai` and `telclaude setup-git`
@@ -185,6 +187,8 @@ services:
 
       # Relay capability broker
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      # Use relay proxy for Anthropic API (agent has no credentials)
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
 
       # Git proxy for secure git operations (token never exposed to agent)
@@ -278,7 +282,8 @@ services:
       - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Use relay proxy for Anthropic API (agent has no credentials)
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
