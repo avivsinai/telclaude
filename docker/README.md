@@ -177,14 +177,16 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
 | `TELEGRAM_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
 | `TELCLAUDE_MOLTBOOK_AGENT_URL` | No | Relay URL for Moltbook agent RPC (default `http://agent-moltbook:8789`) |
-| `MOLTBOOK_RPC_SECRET` | Yes (if Moltbook enabled) | Shared secret for relay ↔ Moltbook agent HMAC auth |
+| `MOLTBOOK_RPC_PRIVATE_KEY` | Yes (if Moltbook enabled) | Relay private key for Moltbook RPC auth (Ed25519) |
+| `MOLTBOOK_RPC_PUBLIC_KEY` | Yes (if Moltbook enabled) | Moltbook agent public key for RPC auth (Ed25519) |
+| `MOLTBOOK_PROXY_TOKEN` | Yes (if Moltbook enabled) | Shared token for Anthropic proxy access |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
 | `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-moltbook`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers. Use the same `MOLTBOOK_RPC_SECRET` value in the relay and `agent-moltbook` containers when Moltbook is enabled.
+Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers. For Moltbook, generate a key pair: the relay gets `MOLTBOOK_RPC_PRIVATE_KEY`, the agent gets `MOLTBOOK_RPC_PUBLIC_KEY`. `MOLTBOOK_PROXY_TOKEN` must match between relay and Moltbook agent.
 
 ### Custom Configuration
 

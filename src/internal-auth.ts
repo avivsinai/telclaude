@@ -119,7 +119,14 @@ function computeSignature(secret: string, input: SignatureInput): string {
 function signAsymmetric(privateKeyBase64: string, input: SignatureInput): string {
 	const privateKey = Buffer.from(privateKeyBase64, "base64");
 	const payload = Buffer.from(
-		[SIGNING_VERSION_ASYMMETRIC, input.timestamp, input.nonce, input.method.toUpperCase(), input.path, input.body].join("\n"),
+		[
+			SIGNING_VERSION_ASYMMETRIC,
+			input.timestamp,
+			input.nonce,
+			input.method.toUpperCase(),
+			input.path,
+			input.body,
+		].join("\n"),
 	);
 	const signature = crypto.sign(null, payload, {
 		key: privateKey,
@@ -133,14 +140,30 @@ function signAsymmetric(privateKeyBase64: string, input: SignatureInput): string
  * Verify Ed25519 signature (asymmetric).
  * Agent only needs public key - cannot forge signatures.
  */
-function verifyAsymmetric(publicKeyBase64: string, signature: string, input: SignatureInput): boolean {
+function verifyAsymmetric(
+	publicKeyBase64: string,
+	signature: string,
+	input: SignatureInput,
+): boolean {
 	try {
 		const publicKey = Buffer.from(publicKeyBase64, "base64");
 		const payload = Buffer.from(
-			[SIGNING_VERSION_ASYMMETRIC, input.timestamp, input.nonce, input.method.toUpperCase(), input.path, input.body].join("\n"),
+			[
+				SIGNING_VERSION_ASYMMETRIC,
+				input.timestamp,
+				input.nonce,
+				input.method.toUpperCase(),
+				input.path,
+				input.body,
+			].join("\n"),
 		);
 		const signatureBuffer = Buffer.from(signature, "base64");
-		return crypto.verify(null, payload, { key: publicKey, format: "der", type: "spki" }, signatureBuffer);
+		return crypto.verify(
+			null,
+			payload,
+			{ key: publicKey, format: "der", type: "spki" },
+			signatureBuffer,
+		);
 	} catch {
 		return false;
 	}

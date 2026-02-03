@@ -139,7 +139,7 @@ async function runMoltbookQuery(bundle: MoltbookPromptBundle, agentUrl: string):
 		tier: "MOLTBOOK_SOCIAL",
 		poolKey: DEFAULT_POOL_KEY,
 		userId: DEFAULT_USER_ID,
-		enableSkills: false,
+		enableSkills: true,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs: DEFAULT_TIMEOUT_MS,
 	});

@@ -556,7 +556,10 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, 400, { error: userIdResult.error });
 				return;
 			}
-			const userId = userIdResult.userId;
+			let userId = userIdResult.userId;
+			if (authResult.scope === "moltbook") {
+				userId = userId?.startsWith("moltbook:") ? userId : `moltbook:${userId ?? "agent"}`;
+			}
 			const rateLimitUserId = userId ?? "agent";
 
 			if (req.url === "/v1/memory.propose") {

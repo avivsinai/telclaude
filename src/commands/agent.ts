@@ -15,9 +15,16 @@ export function registerAgentCommand(program: Command): void {
 		.action(async (opts: { port?: string; host?: string }) => {
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
+			const isMoltbookAgent = Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
 
 			if (getSandboxMode() === "docker") {
 				if (process.env.TELCLAUDE_FIREWALL !== "1") {
+					if (isMoltbookAgent) {
+						console.error("\n❌ SECURITY ERROR: Moltbook agent requires firewall.\n");
+						console.error("Moltbook runs untrusted inputs and must be isolated.");
+						console.error("Set TELCLAUDE_FIREWALL=1 and ensure init-firewall.sh succeeds.\n");
+						process.exit(1);
+					}
 					if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
 						logger.warn("TELCLAUDE_FIREWALL not enabled - agent tools have NO network isolation");
 					} else {

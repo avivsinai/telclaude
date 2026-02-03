@@ -222,6 +222,9 @@ export function isBlockedIP(ip: string): boolean {
 
 		// 169.254.0.0/16 (link-local)
 		if (a === 169 && b === 254) return true;
+
+		// 100.64.0.0/10 (CGNAT / shared address space)
+		if (a === 100 && b >= 64 && b <= 127) return true;
 		return false;
 	}
 
