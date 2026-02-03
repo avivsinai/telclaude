@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import type http from "node:http";
 import os from "node:os";
@@ -49,6 +50,8 @@ function isPrivateIp(address: string | null): boolean {
 		const first = Number.parseInt(octets[0] ?? "", 10);
 		const second = Number.parseInt(octets[1] ?? "", 10);
 		if (first === 172 && second >= 16 && second <= 31) return true;
+		if (first === 100 && second >= 64 && second <= 127) return true; // 100.64.0.0/10 (CGNAT)
+		if (first === 169 && second === 254) return true; // link-local
 	}
 	if (address.startsWith("fc") || address.startsWith("fd")) return true; // IPv6 ULA
 	if (address.startsWith("fe80:")) return true; // IPv6 link-local
@@ -139,6 +142,24 @@ function sanitizeRequestHeaders(headers: http.IncomingHttpHeaders, authHeader: A
 	return filtered;
 }
 
+function extractProxyToken(headerValue: string | string[] | undefined): string | null {
+	if (!headerValue) return null;
+	const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+	if (!raw) return null;
+	const trimmed = raw.trim();
+	if (!trimmed) return null;
+	const match = trimmed.match(/^Bearer\s+(.+)$/i);
+	if (!match) return null;
+	return match[1]?.trim() ?? null;
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	const aBuf = Buffer.from(a, "utf8");
+	const bBuf = Buffer.from(b, "utf8");
+	return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 export function isAnthropicProxyRequest(url: string): boolean {
 	return url === PROXY_PREFIX || url.startsWith(`${PROXY_PREFIX}/`);
 }
@@ -163,6 +184,22 @@ export async function handleAnthropicProxyRequest(
 		}
 	}
 
+	const proxyToken = process.env.MOLTBOOK_PROXY_TOKEN;
+	if (!proxyToken) {
+		logger.warn("[anthropic-proxy] missing MOLTBOOK_PROXY_TOKEN");
+		res.writeHead(500, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Proxy token not configured." }));
+		return;
+	}
+
+	const incomingToken = extractProxyToken(req.headers.authorization);
+	if (!incomingToken || !constantTimeEqual(incomingToken, proxyToken)) {
+		logger.warn({ remoteAddress }, "[anthropic-proxy] invalid proxy token");
+		res.writeHead(401, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Unauthorized." }));
+		return;
+	}
+
 	const authHeader = buildAuthHeader();
 	if (!authHeader) {
 		logger.warn("[anthropic-proxy] missing Anthropic credentials");
@@ -174,24 +211,48 @@ export async function handleAnthropicProxyRequest(
 	const url = req.url ?? "";
 	const suffix = url.slice(PROXY_PREFIX.length);
 	const targetPath = suffix.length === 0 ? "/" : suffix;
-	if (targetPath.startsWith("http://") || targetPath.startsWith("https://")) {
+	if (
+		targetPath.startsWith("http://") ||
+		targetPath.startsWith("https://") ||
+		targetPath.startsWith("//")
+	) {
 		res.writeHead(400, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "Invalid proxy path." }));
 		return;
 	}
-	if (!targetPath.startsWith("/v1/")) {
+
+	let decodedPath = targetPath;
+	try {
+		decodedPath = decodeURIComponent(targetPath);
+	} catch {
+		res.writeHead(400, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Invalid proxy path." }));
+		return;
+	}
+	if (decodedPath.includes("..") || decodedPath.includes("\\")) {
 		res.writeHead(400, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "Invalid Anthropic API path." }));
 		return;
 	}
 
-	const targetUrl = `${ANTHROPIC_ORIGIN}${targetPath}`;
+	const normalized = new URL(targetPath, ANTHROPIC_ORIGIN);
+	if (normalized.origin !== ANTHROPIC_ORIGIN || !normalized.pathname.startsWith("/v1/")) {
+		res.writeHead(400, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Invalid Anthropic API path." }));
+		return;
+	}
+
+	const normalizedPath = `${normalized.pathname}${normalized.search}`;
+	const targetUrl = `${ANTHROPIC_ORIGIN}${normalizedPath}`;
 	const method = req.method ?? "POST";
 	const headers = sanitizeRequestHeaders(req.headers, authHeader);
 
 	const hasBody = !["GET", "HEAD"].includes(method.toUpperCase());
 
-	logger.info({ method, path: targetPath, authSource: authHeader.source }, "proxying to Anthropic");
+	logger.info(
+		{ method, path: normalizedPath, authSource: authHeader.source },
+		"proxying to Anthropic",
+	);
 	const webBody = hasBody ? Readable.toWeb(req) : undefined;
 	let upstream: Response;
 	try {

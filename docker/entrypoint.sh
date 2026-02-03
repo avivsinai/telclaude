@@ -23,6 +23,7 @@ set -e
 TELCLAUDE_USER="${TELCLAUDE_USER:-node}"
 TELCLAUDE_UID="${TELCLAUDE_UID:-1000}"
 TELCLAUDE_GID="${TELCLAUDE_GID:-1000}"
+TELCLAUDE_CLAUDE_HOME="${TELCLAUDE_CLAUDE_HOME:-/home/node/.claude}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Privileged Operations (run as root)
@@ -48,20 +49,20 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p /tmp/claude
     chmod 1777 /tmp/claude
 
-    # Install bundled skills to ~/.claude/skills (done at runtime so volumes don't obscure them)
+    # Install bundled skills to the configured Claude home (done at runtime so volumes don't obscure them)
     if [ -d "/app/.claude/skills" ]; then
         echo "[entrypoint] Installing bundled skills"
-        mkdir -p /home/node/.claude/skills
-        cp -a /app/.claude/skills/. /home/node/.claude/skills/
+        mkdir -p "${TELCLAUDE_CLAUDE_HOME}/skills"
+        cp -a /app/.claude/skills/. "${TELCLAUDE_CLAUDE_HOME}/skills/"
         # chown may fail on NFS with UID squashing - that's OK, files are still accessible
-        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude 2>/dev/null || true
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "${TELCLAUDE_CLAUDE_HOME}" 2>/dev/null || true
     fi
 
     # Install bundled CLAUDE.md (agent playbook) if present
     if [ -f "/app/.claude/CLAUDE.md" ]; then
         echo "[entrypoint] Installing bundled CLAUDE.md"
-        mkdir -p /home/node/.claude
-        cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
+        mkdir -p "${TELCLAUDE_CLAUDE_HOME}"
+        cp /app/.claude/CLAUDE.md "${TELCLAUDE_CLAUDE_HOME}/CLAUDE.md"
     fi
 
     # Skills are installed at user-level (~/.claude/skills/) above.
@@ -79,12 +80,12 @@ if [ "$(id -u)" = "0" ]; then
             echo "[entrypoint] Backing up to /workspace/.claude/skills.bak and creating symlink"
             rm -rf /workspace/.claude/skills.bak
             mv /workspace/.claude/skills /workspace/.claude/skills.bak
-            ln -s /home/node/.claude/skills /workspace/.claude/skills
+            ln -s "${TELCLAUDE_CLAUDE_HOME}/skills" /workspace/.claude/skills
             chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude/skills 2>/dev/null || true
         else
             # Doesn't exist - create symlink
             echo "[entrypoint] Symlinking skills to workspace"
-            ln -s /home/node/.claude/skills /workspace/.claude/skills
+            ln -s "${TELCLAUDE_CLAUDE_HOME}/skills" /workspace/.claude/skills
             chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills 2>/dev/null || true
         fi
     else
@@ -94,7 +95,7 @@ if [ "$(id -u)" = "0" ]; then
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
-    # NOTE: /home/node must be writable for Claude CLI to create .claude.json
+    # NOTE: TELCLAUDE_CLAUDE_HOME must be writable for Claude CLI to manage settings
     # NOTE: /media/outbox needs write access for generated content (relay container)
     # Create logs directory and file with correct ownership for pino logger
     # Must be done before dropping privileges since tmpfs dirs created as root
@@ -102,7 +103,7 @@ if [ "$(id -u)" = "0" ]; then
     touch /home/node/.telclaude/logs/telclaude.log
     chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude 2>/dev/null || true
 
-    for dir in /data /home/node /home/node/.claude /media/inbox /media/outbox; do
+    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then

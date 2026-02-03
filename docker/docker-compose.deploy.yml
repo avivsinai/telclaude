@@ -29,6 +29,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
@@ -37,9 +38,10 @@ services:
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
-      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
+      # Moltbook asymmetric auth: relay holds private key (can sign)
+      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:?MOLTBOOK_RPC_PRIVATE_KEY is required}
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
@@ -173,9 +175,15 @@ services:
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:?MOLTBOOK_RPC_SECRET is required}
+      # Internal token used to access the proxy (relay verifies + injects real creds)
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
+      # Ensure Claude Code state lives under /moltbook (no /home/node/.claude credentials)
+      - HOME=/moltbook
+      - TELCLAUDE_CLAUDE_HOME=/moltbook/.claude
+      # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
+      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:?MOLTBOOK_RPC_PUBLIC_KEY is required}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-0}
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - NODE_ENV=production
