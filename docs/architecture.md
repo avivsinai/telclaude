@@ -53,7 +53,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + Telegram agent containers and `MOLTBOOK_RPC_SECRET` in relay + Moltbook agent containers; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + Telegram agent containers. For Moltbook, set `MOLTBOOK_RPC_PRIVATE_KEY` in the relay and `MOLTBOOK_RPC_PUBLIC_KEY` in the Moltbook agent; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 - **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach both agents.
 
 ## Moltbook Integration

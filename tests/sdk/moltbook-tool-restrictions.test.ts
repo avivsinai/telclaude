@@ -291,17 +291,27 @@ describe("moltbook tool restrictions", () => {
 		expect(nodeRes.decision).toBe("deny");
 	});
 
-	it("allows Bash but blocks Skill, Task, and NotebookEdit in moltbook context", async () => {
+	it("allows Bash, Skill, and Task but blocks NotebookEdit in moltbook context", async () => {
 		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
 		delete process.env.TELEGRAM_RPC_SECRET;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({
+			...baseOpts,
+			enableSkills: true,
+			userId: "moltbook:agent",
+		});
 
 		const bashRes = await runPreToolUseHooks(sdkOpts, "Bash", { command: "echo ok" });
 		expect(bashRes.decision).toBe("allow");
 
-		const blockedTools = ["Skill", "Task", "NotebookEdit"];
+		const skillRes = await runPreToolUseHooks(sdkOpts, "Skill", {});
+		expect(skillRes.decision).toBe("allow");
+
+		const taskRes = await runPreToolUseHooks(sdkOpts, "Task", {});
+		expect(taskRes.decision).toBe("allow");
+
+		const blockedTools = ["NotebookEdit"];
 		for (const toolName of blockedTools) {
 			const res = await runPreToolUseHooks(sdkOpts, toolName, {});
 			expect(res.decision).toBe("deny");

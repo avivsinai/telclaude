@@ -100,7 +100,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 ```bash
 git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, TELEGRAM_RPC_SECRET, MOLTBOOK_RPC_SECRET
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, TELEGRAM_RPC_SECRET, MOLTBOOK_RPC_PRIVATE_KEY, MOLTBOOK_RPC_PUBLIC_KEY, MOLTBOOK_PROXY_TOKEN
 docker compose up -d --build
 docker compose exec telclaude-agent claude login  # required; API key is not forwarded into sandbox
 ```

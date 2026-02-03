@@ -164,7 +164,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 
 				const scope = authResult.scope;
 				let effectiveTier = parsed.tier;
-				let effectiveEnableSkills = parsed.enableSkills;
+				const effectiveEnableSkills = parsed.enableSkills;
 				let effectiveUserId = parsed.userId;
 
 				if (scope === "moltbook") {
@@ -175,7 +175,6 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						);
 					}
 					effectiveTier = "MOLTBOOK_SOCIAL";
-					effectiveEnableSkills = false;
 					if (!effectiveUserId?.startsWith("moltbook:")) {
 						effectiveUserId = `moltbook:${effectiveUserId ?? "agent"}`;
 					}

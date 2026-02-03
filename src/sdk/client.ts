@@ -705,7 +705,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		const toolName = input.tool_name;
 		const toolInput = input.tool_input as Record<string, unknown>;
 
-		if (toolName === "Skill" || toolName === "Task" || toolName === "NotebookEdit") {
+		if (toolName === "NotebookEdit") {
 			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked moltbook tool");
 			return denyHookResponse(`Moltbook context: ${toolName} is not permitted.`);
 		}

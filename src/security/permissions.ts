@@ -33,7 +33,17 @@ export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 	WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
-	MOLTBOOK_SOCIAL: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"],
+	MOLTBOOK_SOCIAL: [
+		"Read",
+		"Write",
+		"Edit",
+		"Glob",
+		"Grep",
+		"Bash",
+		"WebFetch",
+		"WebSearch",
+		"Task",
+	],
 };
 
 /**
