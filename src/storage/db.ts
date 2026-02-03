@@ -264,15 +264,19 @@ function initializeSchema(database: Database.Database): void {
 			trust TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
 			promoted_at INTEGER,
-			promoted_by TEXT
+			promoted_by TEXT,
+			posted_at INTEGER
 		);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_category ON memory_entries(category);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_source ON memory_entries(source);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_trust ON memory_entries(trust);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_created ON memory_entries(created_at);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_posted ON memory_entries(posted_at);
 	`);
 
 	ensureApprovalsColumns(database);
+	ensureMemoryEntriesColumns(database);
+	// posted_at index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
 }
@@ -423,4 +427,23 @@ export function cleanupExpired(): {
 	logger.info(result, "expired entries cleaned up");
 
 	return result;
+}
+
+/**
+ * Ensure memory_entries table has the posted_at column.
+ * Adds it if missing (for existing databases).
+ */
+function ensureMemoryEntriesColumns(database: Database.Database): void {
+	const rows = database.prepare("PRAGMA table_info(memory_entries)").all() as Array<{
+		name: string;
+	}>;
+	const columns = new Set(rows.map((r) => r.name));
+
+	if (!columns.has("posted_at")) {
+		logger.info("adding posted_at column to memory_entries table");
+		database.exec("ALTER TABLE memory_entries ADD COLUMN posted_at INTEGER");
+		database.exec(
+			"CREATE INDEX IF NOT EXISTS idx_memory_entries_posted ON memory_entries(posted_at)",
+		);
+	}
 }

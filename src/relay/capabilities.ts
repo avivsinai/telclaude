@@ -10,7 +10,9 @@ import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import {
+	handleMemoryPromote,
 	handleMemoryPropose,
+	handleMemoryQuarantine,
 	handleMemorySnapshot,
 	parseSnapshotBody,
 	parseSnapshotQuery,
@@ -595,6 +597,49 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					return;
 				}
 				writeJson(res, 200, snapshotResult.value);
+				return;
+			}
+
+			// SECURITY: Quarantine and promote are TELEGRAM-ONLY endpoints
+			// These enable the consent-based idea bridge for Moltbook posting
+			if (req.url === "/v1/memory.quarantine") {
+				// Hard reject Moltbook scope (defense-in-depth, also checked in handler)
+				if (authResult.scope === "moltbook") {
+					logger.warn("rejected /v1/memory.quarantine from moltbook scope");
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				const quarantineResult = handleMemoryQuarantine(
+					{
+						id: (parsed as { id?: string }).id ?? "",
+						content: (parsed as { content?: string }).content ?? "",
+					},
+					{ source: memorySource, userId },
+				);
+				if (!quarantineResult.ok) {
+					writeJson(res, quarantineResult.status, { error: quarantineResult.error });
+					return;
+				}
+				writeJson(res, 200, quarantineResult.value);
+				return;
+			}
+
+			if (req.url === "/v1/memory.promote") {
+				// Hard reject Moltbook scope (defense-in-depth, also checked in handler)
+				if (authResult.scope === "moltbook") {
+					logger.warn("rejected /v1/memory.promote from moltbook scope");
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				const promoteResult = handleMemoryPromote(
+					{ id: (parsed as { id?: string }).id ?? "" },
+					{ source: memorySource, userId },
+				);
+				if (!promoteResult.ok) {
+					writeJson(res, promoteResult.status, { error: promoteResult.error });
+					return;
+				}
+				writeJson(res, 200, promoteResult.value);
 				return;
 			}
 

@@ -5,7 +5,9 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let createEntries: typeof import("../../src/memory/store.js").createEntries;
+let createQuarantinedEntry: typeof import("../../src/memory/store.js").createQuarantinedEntry;
 let getEntries: typeof import("../../src/memory/store.js").getEntries;
+let markEntryPosted: typeof import("../../src/memory/store.js").markEntryPosted;
 let promoteEntryTrust: typeof import("../../src/memory/store.js").promoteEntryTrust;
 let resetDatabase: typeof import("../../src/storage/db.js").resetDatabase;
 
@@ -21,7 +23,8 @@ describe("memory store", () => {
 		vi.resetModules();
 		({ resetDatabase } = await import("../../src/storage/db.js"));
 		resetDatabase();
-		({ createEntries, getEntries, promoteEntryTrust } = await import("../../src/memory/store.js"));
+		({ createEntries, createQuarantinedEntry, getEntries, markEntryPosted, promoteEntryTrust } =
+			await import("../../src/memory/store.js"));
 	});
 
 	afterEach(() => {
@@ -81,18 +84,75 @@ describe("memory store", () => {
 		expect(telegramOnly).toHaveLength(2);
 	});
 
-	it("promotes untrusted entries to trusted", () => {
+	it("promotes quarantined telegram posts to trusted", () => {
+		const entry = createQuarantinedEntry({
+			id: "idea-1",
+			category: "posts",
+			content: "An idea for Moltbook",
+		});
+
+		expect(entry._provenance.trust).toBe("quarantined");
+		expect(entry._provenance.source).toBe("telegram");
+
+		const result = promoteEntryTrust("idea-1", "user");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.entry._provenance.trust).toBe("trusted");
+			expect(result.entry._provenance.promotedBy).toBe("user");
+			expect(result.entry._provenance.promotedAt).toBeTypeOf("number");
+		}
+
+		const updated = getEntries({ order: "asc" })[0];
+		expect(updated._provenance.trust).toBe("trusted");
+	});
+
+	it("rejects promotion of moltbook source entries", () => {
 		createEntries(
-			[{ id: "entry-1", category: "meta", content: "needs review" }],
+			[{ id: "moltbook-entry", category: "posts", content: "from moltbook" }],
 			"moltbook",
 			20,
 		);
 
-		expect(promoteEntryTrust("entry-1", "admin")).toBe(true);
-		const updated = getEntries({ order: "asc" })[0];
-		expect(updated._provenance.trust).toBe("trusted");
-		expect(updated._provenance.promotedBy).toBe("admin");
-		expect(updated._provenance.promotedAt).toBeTypeOf("number");
+		const result = promoteEntryTrust("moltbook-entry", "admin");
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toContain("telegram");
+		}
+	});
+
+	it("rejects promotion of non-posts category", () => {
+		// Create a telegram entry with non-posts category by using createEntries
+		// and manually making it untrusted (legacy path)
+		createEntries(
+			[{ id: "profile-entry", category: "profile", content: "profile info" }],
+			"telegram",
+			21,
+		);
+
+		const result = promoteEntryTrust("profile-entry", "admin");
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toContain("posts");
+		}
+	});
+
+	it("rejects promotion of already trusted entries", () => {
+		const entry = createQuarantinedEntry({
+			id: "idea-2",
+			category: "posts",
+			content: "Another idea",
+		});
+
+		// First promotion succeeds
+		const firstResult = promoteEntryTrust("idea-2", "user");
+		expect(firstResult.ok).toBe(true);
+
+		// Second promotion fails (entry is now trusted, not quarantined)
+		const secondResult = promoteEntryTrust("idea-2", "user");
+		expect(secondResult.ok).toBe(false);
+		if (!secondResult.ok) {
+			expect(secondResult.reason).toContain("Only quarantined");
+		}
 	});
 
 	it("rejects duplicate entry ids", () => {
@@ -109,5 +169,74 @@ describe("memory store", () => {
 				31,
 			),
 		).toThrow(/already exists/i);
+	});
+
+	it("creates quarantined entries for posts category only", () => {
+		const entry = createQuarantinedEntry({
+			id: "q-post",
+			category: "posts",
+			content: "A post idea",
+		});
+
+		expect(entry.category).toBe("posts");
+		expect(entry._provenance.trust).toBe("quarantined");
+		expect(entry._provenance.source).toBe("telegram");
+	});
+
+	it("rejects quarantined entries for non-posts category", () => {
+		expect(() =>
+			createQuarantinedEntry({
+				id: "q-profile",
+				category: "profile",
+				content: "A profile entry",
+			}),
+		).toThrow(/posts category/i);
+	});
+
+	it("marks entries as posted", () => {
+		const entry = createQuarantinedEntry({
+			id: "post-me",
+			category: "posts",
+			content: "To be posted",
+		});
+		promoteEntryTrust("post-me", "user");
+
+		expect(markEntryPosted("post-me")).toBe(true);
+
+		const updated = getEntries({ order: "asc" })[0];
+		expect(updated._provenance.postedAt).toBeTypeOf("number");
+
+		// Second mark fails (already posted)
+		expect(markEntryPosted("post-me")).toBe(false);
+	});
+
+	it("filters entries by promoted status", () => {
+		createQuarantinedEntry({ id: "promoted-1", category: "posts", content: "Will promote" });
+		createQuarantinedEntry({ id: "unpromoted-1", category: "posts", content: "Will stay" });
+		promoteEntryTrust("promoted-1", "user");
+
+		const promoted = getEntries({ promoted: true, order: "asc" });
+		expect(promoted).toHaveLength(1);
+		expect(promoted[0].id).toBe("promoted-1");
+
+		const unpromoted = getEntries({ promoted: false, order: "asc" });
+		expect(unpromoted).toHaveLength(1);
+		expect(unpromoted[0].id).toBe("unpromoted-1");
+	});
+
+	it("filters entries by posted status", () => {
+		createQuarantinedEntry({ id: "posted-1", category: "posts", content: "Will post" });
+		createQuarantinedEntry({ id: "unposted-1", category: "posts", content: "Will not post" });
+		promoteEntryTrust("posted-1", "user");
+		promoteEntryTrust("unposted-1", "user");
+		markEntryPosted("posted-1");
+
+		const posted = getEntries({ posted: true, order: "asc" });
+		expect(posted).toHaveLength(1);
+		expect(posted[0].id).toBe("posted-1");
+
+		const unposted = getEntries({ posted: false, order: "asc" });
+		expect(unposted).toHaveLength(1);
+		expect(unposted[0].id).toBe("unposted-1");
 	});
 });

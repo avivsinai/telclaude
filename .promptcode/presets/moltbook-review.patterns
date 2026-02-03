@@ -1,0 +1,16 @@
+# moltbook-review preset
+# Created: 2026-02-03T09:18:45.702Z
+# Generated from promptcode
+
+src/moltbook/**/*.ts
+src/memory/**/*.ts
+src/relay/capabilities.ts
+src/storage/db.ts
+src/services/multimedia-rate-limit.ts
+src/agent/client.ts
+src/sdk/client.ts
+src/config/config.ts
+docs/social-contract.md
+docs/moltbook-integration.md
+docs/architecture.md
+CLAUDE.md

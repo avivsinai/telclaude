@@ -4,6 +4,9 @@ const executeRemoteQueryMock = vi.hoisted(() => vi.fn());
 const createMoltbookApiClientMock = vi.hoisted(() => vi.fn());
 const loadConfigMock = vi.hoisted(() => vi.fn());
 const getEntriesMock = vi.hoisted(() => vi.fn());
+const markEntryPostedMock = vi.hoisted(() => vi.fn());
+const checkLimitMock = vi.hoisted(() => vi.fn());
+const consumeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../src/agent/client.js", () => ({
 	executeRemoteQuery: (...args: unknown[]) => executeRemoteQueryMock(...args),
@@ -19,6 +22,14 @@ vi.mock("../../src/config/config.js", () => ({
 
 vi.mock("../../src/memory/store.js", () => ({
 	getEntries: (...args: unknown[]) => getEntriesMock(...args),
+	markEntryPosted: (...args: unknown[]) => markEntryPostedMock(...args),
+}));
+
+vi.mock("../../src/services/multimedia-rate-limit.js", () => ({
+	getMultimediaRateLimiter: () => ({
+		checkLimit: (...args: unknown[]) => checkLimitMock(...args),
+		consume: (...args: unknown[]) => consumeMock(...args),
+	}),
 }));
 
 vi.mock("../../src/logging.js", () => ({
@@ -64,7 +75,12 @@ describe("moltbook handler", () => {
 		createMoltbookApiClientMock.mockReset();
 		loadConfigMock.mockReset();
 		getEntriesMock.mockReset();
+		markEntryPostedMock.mockReset();
+		checkLimitMock.mockReset();
+		consumeMock.mockReset();
 		getEntriesMock.mockReturnValue(sampleEntries);
+		// Default: rate limit allows proactive posting
+		checkLimitMock.mockReturnValue({ allowed: true, remaining: { hour: 1, day: 9 }, resetMs: { hour: 1000, day: 10000 } });
 		process.env.TELCLAUDE_MOLTBOOK_AGENT_URL = "http://agent-moltbook";
 	});
 
@@ -105,28 +121,35 @@ describe("moltbook handler", () => {
 		expect(client.postReply).toHaveBeenCalledTimes(1);
 	});
 
-	it("heartbeat handles fetch failures", async () => {
+	it("heartbeat continues to proactive posting even when fetch fails", async () => {
 		const client = {
 			fetchNotifications: vi.fn().mockRejectedValue(new Error("fail")),
+			createPost: vi.fn(),
 		};
 		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
 		createMoltbookApiClientMock.mockResolvedValue(client);
+		// No promoted ideas
+		getEntriesMock.mockReturnValue([]);
 
 		const res = await handler.handleMoltbookHeartbeat();
-		expect(res.ok).toBe(false);
-		expect(res.message).toContain("failed to fetch");
+		// Now returns ok=true because it continues to proactive posting
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("no activity");
 	});
 
-	it("heartbeat returns no notifications", async () => {
+	it("heartbeat returns no activity when no notifications and no ideas", async () => {
 		const client = {
 			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn(),
 		};
 		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
 		createMoltbookApiClientMock.mockResolvedValue(client);
+		// No promoted ideas
+		getEntriesMock.mockReturnValue([]);
 
 		const res = await handler.handleMoltbookHeartbeat();
 		expect(res.ok).toBe(true);
-		expect(res.message).toContain("no notifications");
+		expect(res.message).toContain("no activity");
 	});
 
 	it("handleMoltbookNotification posts reply with trimmed response", async () => {
@@ -219,5 +242,131 @@ describe("moltbook handler", () => {
 
 		expect(res.ok).toBe(false);
 		expect(res.message).toContain("rate limit");
+	});
+
+	it("heartbeat processes proactive posting after notifications", async () => {
+		const promotedIdea = {
+			id: "idea-1",
+			category: "posts",
+			content: "A great idea",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = {
+			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn().mockResolvedValue({ ok: true, status: 201, postId: "new-post-1" }),
+		};
+		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
+		createMoltbookApiClientMock.mockResolvedValue(client);
+
+		// Proactive posting calls getEntries twice:
+		// 1. getPromotedIdeas() - returns promoted ideas
+		// 2. buildProactivePostPrompt() - returns identity entries
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
+			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt() for identity
+
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("My new post content"));
+
+		const res = await handler.handleMoltbookHeartbeat();
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("proactive post created");
+		expect(client.createPost).toHaveBeenCalledWith("My new post content");
+		expect(markEntryPostedMock).toHaveBeenCalledWith("idea-1");
+		expect(consumeMock).toHaveBeenCalledWith("moltbook_post", "moltbook:proactive");
+	});
+
+	it("heartbeat skips proactive posting when rate limited", async () => {
+		const client = {
+			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn(),
+		};
+		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
+		createMoltbookApiClientMock.mockResolvedValue(client);
+		checkLimitMock.mockReturnValue({ allowed: false, remaining: { hour: 0, day: 0 }, reason: "Rate limited" });
+
+		const res = await handler.handleMoltbookHeartbeat();
+
+		expect(res.ok).toBe(true);
+		expect(res.message).not.toContain("proactive post");
+		expect(client.createPost).not.toHaveBeenCalled();
+	});
+
+	it("heartbeat skips proactive posting when no promoted ideas", async () => {
+		const client = {
+			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn(),
+		};
+		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
+		createMoltbookApiClientMock.mockResolvedValue(client);
+
+		// getPromotedIdeas() returns empty
+		getEntriesMock.mockReturnValueOnce([]);
+
+		const res = await handler.handleMoltbookHeartbeat();
+
+		expect(res.ok).toBe(true);
+		expect(res.message).not.toContain("proactive post");
+		expect(client.createPost).not.toHaveBeenCalled();
+	});
+
+	it("heartbeat skips proactive posting when agent returns [SKIP]", async () => {
+		const promotedIdea = {
+			id: "idea-skip",
+			category: "posts",
+			content: "An idea to skip",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = {
+			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn(),
+		};
+		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
+		createMoltbookApiClientMock.mockResolvedValue(client);
+
+		// Proactive posting: getPromotedIdeas() then buildProactivePostPrompt()
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
+			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
+
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("[SKIP]"));
+
+		const res = await handler.handleMoltbookHeartbeat();
+
+		expect(res.ok).toBe(true);
+		expect(res.message).not.toContain("proactive post created");
+		expect(client.createPost).not.toHaveBeenCalled();
+		expect(markEntryPostedMock).not.toHaveBeenCalled();
+	});
+
+	it("proactive posting uses minimal prompt without general memory", async () => {
+		const promotedIdea = {
+			id: "idea-minimal",
+			category: "posts",
+			content: "Only this idea should appear",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = {
+			fetchNotifications: vi.fn().mockResolvedValue([]),
+			createPost: vi.fn().mockResolvedValue({ ok: true, status: 201, postId: "new-post" }),
+		};
+		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
+		createMoltbookApiClientMock.mockResolvedValue(client);
+
+		// Proactive posting: getPromotedIdeas() then buildProactivePostPrompt()
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
+			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
+
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("Post content"));
+
+		await handler.handleMoltbookHeartbeat();
+
+		// Verify the prompt contains only the approved idea
+		expect(executeRemoteQueryMock).toHaveBeenCalled();
+		const [prompt] = executeRemoteQueryMock.mock.calls[0];
+		expect(String(prompt)).toContain("Only this idea should appear");
+		expect(String(prompt)).toContain("APPROVED IDEA");
+		expect(String(prompt)).toContain("PROACTIVE POST REQUEST");
 	});
 });
