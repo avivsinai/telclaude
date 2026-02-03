@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
@@ -82,12 +85,31 @@ const baseCtx = () => ({
 	auditLogger: { log: vi.fn(async () => {}) },
 });
 
+const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+
 describe("auto-reply executeAndReply", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-"));
+		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		vi.resetModules();
+		// Re-import to get fresh database
+		const { resetDatabase } = await import("../../src/storage/db.js");
+		resetDatabase();
+	});
+
 	afterEach(() => {
 		replies.length = 0;
 		sessionStore.length = 0;
 		redactors.length = 0;
 		executePooledQueryImpl.mockReset();
+		fs.rmSync(tempDir, { recursive: true, force: true });
+		if (ORIGINAL_DATA_DIR === undefined) {
+			delete process.env.TELCLAUDE_DATA_DIR;
+		} else {
+			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
 	});
 
 	it("streams text through redactor and replies with sanitized output", async () => {

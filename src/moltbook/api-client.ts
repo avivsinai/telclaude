@@ -40,6 +40,14 @@ export type MoltbookReplyResult = {
 	rateLimited?: boolean;
 };
 
+export type MoltbookPostResult = {
+	ok: boolean;
+	status: number;
+	postId?: string;
+	error?: string;
+	rateLimited?: boolean;
+};
+
 type MoltbookApiResult<T> =
 	| { ok: true; status: number; data: T }
 	| { ok: false; status: number; error: string };
@@ -159,6 +167,41 @@ export class MoltbookApiClient {
 		}
 
 		return { ok: true, status: result.status };
+	}
+
+	/**
+	 * Create a new post on Moltbook.
+	 *
+	 * @param content - The post content/body
+	 * @param options - Optional title and tags
+	 */
+	async createPost(
+		content: string,
+		options?: { title?: string; tags?: string[] },
+	): Promise<MoltbookPostResult> {
+		const payload: Record<string, unknown> = { content };
+		if (options?.title) {
+			payload.title = options.title;
+		}
+		if (options?.tags && options.tags.length > 0) {
+			payload.tags = options.tags;
+		}
+
+		const result = await this.request<{ id?: string; post_id?: string }>("/posts", {
+			method: "POST",
+			body: JSON.stringify(payload),
+		});
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("moltbook post rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		const postId = result.data?.id ?? result.data?.post_id;
+		return { ok: true, status: result.status, postId: postId ? String(postId) : undefined };
 	}
 }
 

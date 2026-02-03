@@ -239,4 +239,147 @@ describe("memory rpc", () => {
 		});
 		expect(proposeRes.status).toBe(400);
 	});
+
+	it("creates quarantined entry via /v1/memory.quarantine (telegram scope)", async () => {
+		const quarantineBody = JSON.stringify({ id: "idea-1", content: "An idea for Moltbook" });
+		const quarantineHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.quarantine",
+			quarantineBody,
+			{ scope: "telegram" },
+		);
+
+		const quarantineRes = await fetch(`${baseUrl}/v1/memory.quarantine`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...quarantineHeaders },
+			body: quarantineBody,
+		});
+
+		expect(quarantineRes.status).toBe(200);
+		const data = (await quarantineRes.json()) as {
+			entry: { id: string; category: string; _provenance: { trust: string; source: string } };
+		};
+		expect(data.entry.id).toBe("idea-1");
+		expect(data.entry.category).toBe("posts");
+		expect(data.entry._provenance.trust).toBe("quarantined");
+		expect(data.entry._provenance.source).toBe("telegram");
+	});
+
+	it("rejects /v1/memory.quarantine from moltbook scope", async () => {
+		const quarantineBody = JSON.stringify({ id: "idea-bad", content: "Malicious idea" });
+		const quarantineHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.quarantine",
+			quarantineBody,
+			{ scope: "moltbook" },
+		);
+
+		const quarantineRes = await fetch(`${baseUrl}/v1/memory.quarantine`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...quarantineHeaders },
+			body: quarantineBody,
+		});
+
+		expect(quarantineRes.status).toBe(403);
+	});
+
+	it("promotes quarantined entry via /v1/memory.promote (telegram scope)", async () => {
+		// First create a quarantined entry
+		const quarantineBody = JSON.stringify({ id: "idea-promote", content: "Will be promoted" });
+		const quarantineHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.quarantine",
+			quarantineBody,
+			{ scope: "telegram" },
+		);
+		await fetch(`${baseUrl}/v1/memory.quarantine`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...quarantineHeaders },
+			body: quarantineBody,
+		});
+
+		// Now promote it
+		const promoteBody = JSON.stringify({ id: "idea-promote" });
+		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
+			scope: "telegram",
+		});
+
+		const promoteRes = await fetch(`${baseUrl}/v1/memory.promote`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...promoteHeaders },
+			body: promoteBody,
+		});
+
+		expect(promoteRes.status).toBe(200);
+		const data = (await promoteRes.json()) as {
+			entry: { id: string; _provenance: { trust: string; promotedBy: string } };
+		};
+		expect(data.entry.id).toBe("idea-promote");
+		expect(data.entry._provenance.trust).toBe("trusted");
+		expect(data.entry._provenance.promotedBy).toBeDefined();
+	});
+
+	it("rejects /v1/memory.promote from moltbook scope", async () => {
+		// First create a quarantined entry (from telegram)
+		const quarantineBody = JSON.stringify({
+			id: "idea-no-promote",
+			content: "Cannot promote from moltbook",
+		});
+		const quarantineHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.quarantine",
+			quarantineBody,
+			{ scope: "telegram" },
+		);
+		await fetch(`${baseUrl}/v1/memory.quarantine`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...quarantineHeaders },
+			body: quarantineBody,
+		});
+
+		// Try to promote from moltbook scope
+		const promoteBody = JSON.stringify({ id: "idea-no-promote" });
+		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
+			scope: "moltbook",
+		});
+
+		const promoteRes = await fetch(`${baseUrl}/v1/memory.promote`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...promoteHeaders },
+			body: promoteBody,
+		});
+
+		expect(promoteRes.status).toBe(403);
+	});
+
+	it("rejects promotion of moltbook-source entries", async () => {
+		// Create a moltbook entry (untrusted by default)
+		const moltbookBody = JSON.stringify({
+			entries: [{ id: "mb-entry", category: "posts", content: "moltbook entry" }],
+		});
+		const moltbookHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", moltbookBody, {
+			scope: "moltbook",
+		});
+		await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...moltbookHeaders },
+			body: moltbookBody,
+		});
+
+		// Try to promote from telegram scope (should fail because source is moltbook)
+		const promoteBody = JSON.stringify({ id: "mb-entry" });
+		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
+			scope: "telegram",
+		});
+
+		const promoteRes = await fetch(`${baseUrl}/v1/memory.promote`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...promoteHeaders },
+			body: promoteBody,
+		});
+
+		expect(promoteRes.status).toBe(400);
+		const data = (await promoteRes.json()) as { error: string };
+		expect(data.error).toContain("telegram");
+	});
 });

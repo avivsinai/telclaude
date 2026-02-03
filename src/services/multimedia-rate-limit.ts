@@ -11,7 +11,12 @@ import { getDb } from "../storage/db.js";
 const logger = getChildLogger({ module: "multimedia-rate-limit" });
 
 /** Supported multimedia features for rate limiting */
-export type MultimediaFeature = "image_generation" | "tts" | "transcription" | "video_processing";
+export type MultimediaFeature =
+	| "image_generation"
+	| "tts"
+	| "transcription"
+	| "video_processing"
+	| "moltbook_post";
 
 /** Rate limit configuration for a feature */
 export type FeatureRateLimitConfig = {

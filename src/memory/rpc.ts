@@ -1,5 +1,11 @@
 import { getChildLogger } from "../logging.js";
-import { createEntries, getEntries, type MemoryEntryInput } from "./store.js";
+import {
+	createEntries,
+	createQuarantinedEntry,
+	getEntries,
+	type MemoryEntryInput,
+	promoteEntryTrust,
+} from "./store.js";
 import type { MemoryCategory, MemoryEntry, MemorySource, TrustLevel } from "./types.js";
 
 const logger = getChildLogger({ module: "memory-rpc" });
@@ -18,6 +24,17 @@ export type MemorySnapshotRequest = {
 
 export type MemorySnapshotResponse = {
 	entries: MemoryEntry[];
+};
+
+export type MemoryQuarantineRequest = {
+	id: string;
+	content: string;
+	userId?: string;
+};
+
+export type MemoryPromoteRequest = {
+	id: string;
+	userId?: string;
 };
 
 export type MemoryRpcResult<T> =
@@ -276,4 +293,104 @@ export function handleMemorySnapshot(
 	});
 
 	return ok({ entries });
+}
+
+/**
+ * Create a quarantined memory entry (for consent-based idea bridge).
+ *
+ * Security: TELEGRAM-ONLY. This endpoint must be gated by scope in the relay.
+ * Only creates entries with:
+ * - category = "posts"
+ * - trust = "quarantined"
+ * - source = "telegram"
+ */
+export function handleMemoryQuarantine(
+	request: MemoryQuarantineRequest,
+	context: { source: MemorySource; userId?: string },
+): MemoryRpcResult<{ entry: MemoryEntry }> {
+	// Security: Reject if source is not telegram (enforced here as defense-in-depth)
+	if (context.source !== "telegram") {
+		logger.warn({ source: context.source }, "rejected quarantine: telegram-only");
+		return fail(403, "Quarantine is only available for Telegram context");
+	}
+
+	if (!request || typeof request !== "object") {
+		return fail(400, "Invalid request body.");
+	}
+	if (typeof request.id !== "string" || request.id.trim().length === 0) {
+		return fail(400, "Entry id is required.");
+	}
+	const trimmedId = request.id.trim();
+	if (trimmedId.length > MAX_ID_LENGTH) {
+		return fail(400, "Entry id too long.");
+	}
+	if (typeof request.content !== "string" || request.content.trim().length === 0) {
+		return fail(400, "Entry content is required.");
+	}
+	if (request.content.length > MAX_STRING_LENGTH) {
+		return fail(400, "Entry content too long.");
+	}
+	const forbidden = checkForbiddenPatterns(request.content);
+	if (forbidden) {
+		return fail(400, forbidden);
+	}
+
+	const actor = context.userId?.trim() || "agent";
+	const rateResult = checkRateLimit("telegram", actor, 1);
+	if (!rateResult.ok) {
+		return rateResult;
+	}
+
+	try {
+		const entry = createQuarantinedEntry({
+			id: trimmedId,
+			category: "posts",
+			content: request.content,
+		});
+		return ok({ entry });
+	} catch (err) {
+		logger.warn({ error: String(err) }, "memory quarantine failed");
+		return fail(400, "Unable to create quarantined entry.");
+	}
+}
+
+/**
+ * Promote a quarantined memory entry to trusted.
+ *
+ * Security: TELEGRAM-ONLY. This endpoint must be gated by scope in the relay.
+ * Only promotes entries that are:
+ * - source = "telegram"
+ * - category = "posts"
+ * - trust = "quarantined" or "untrusted"
+ */
+export function handleMemoryPromote(
+	request: MemoryPromoteRequest,
+	context: { source: MemorySource; userId?: string },
+): MemoryRpcResult<{ entry: MemoryEntry }> {
+	// Security: Reject if source is not telegram (enforced here as defense-in-depth)
+	if (context.source !== "telegram") {
+		logger.warn({ source: context.source }, "rejected promote: telegram-only");
+		return fail(403, "Promote is only available for Telegram context");
+	}
+
+	if (!request || typeof request !== "object") {
+		return fail(400, "Invalid request body.");
+	}
+	if (typeof request.id !== "string" || request.id.trim().length === 0) {
+		return fail(400, "Entry id is required.");
+	}
+	const trimmedId = request.id.trim();
+	if (trimmedId.length > MAX_ID_LENGTH) {
+		return fail(400, "Entry id too long.");
+	}
+
+	const actor = context.userId?.trim() || "user";
+	const result = promoteEntryTrust(trimmedId, actor);
+
+	if (!result.ok) {
+		logger.warn({ id: request.id, reason: result.reason }, "memory promote failed");
+		return fail(400, result.reason);
+	}
+
+	return ok({ entry: result.entry });
 }
