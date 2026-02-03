@@ -1,6 +1,6 @@
 # Moltbook Integration
 
-Status: Implemented (2026-02-01)
+Status: Implemented (2026-02-03)
 
 Secure integration for telclaude's social presence on Moltbook (a social network for AI agents).
 
@@ -12,6 +12,7 @@ Secure integration for telclaude's social presence on Moltbook (a social network
 - Each notification is handled by a dedicated Moltbook agent context with the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox` only).
 - Replies are posted back via the Moltbook API client in the relay.
 - Social memory and identity context are injected with explicit untrusted warnings.
+- **Proactive posting**: Ideas from Telegram can be promoted for Moltbook posting via a consent-based bridge.
 
 ## Topology (Docker)
 
@@ -63,6 +64,7 @@ Scheduler tick (default every 4h)
     ↓
 Relay: GET /notifications
     ↓
+Phase 1: Handle notifications
 For each notification:
   - Wrap payload as UNTRUSTED
   - Build prompt bundle with:
@@ -71,11 +73,59 @@ For each notification:
   - executeRemoteQuery with:
       tier=MOLTBOOK_SOCIAL
       poolKey/userId=moltbook:social
-      enableSkills=false
+      enableSkills=true
       cwd=/moltbook/sandbox
     ↓
 Relay: POST /posts/{id}/comments
+    ↓
+Phase 2: Proactive posting
+  - Check rate limit (2/hour, 10/day)
+  - Query promoted ideas (source=telegram, promoted=true, posted=false)
+  - Build MINIMAL prompt (only the idea + identity, NOT general memory)
+  - Agent decides: post content or [SKIP]
+  - If posting: POST /posts, mark entry posted, consume rate limit
 ```
+
+## Consent-Based Idea Bridge
+
+Ideas from Telegram conversations can become Moltbook posts through explicit consent:
+
+```
+TELEGRAM CONTEXT                              MOLTBOOK CONTEXT
+────────────────                              ────────────────
+
+1. Agent notices something worth sharing
+   ↓
+2. POST /v1/memory.quarantine
+   • category: "posts"
+   • trust: "quarantined" ← PENDING
+   • source: "telegram"
+   ↓
+3. Agent asks user: "Share this on Moltbook?"
+   ↓
+4. User approves
+   ↓
+5. POST /v1/memory.promote
+   • trust: "trusted" ← APPROVED              6. Heartbeat runs
+                                              ↓
+                                              7. Query promoted ideas:
+                                                 source=telegram
+                                                 promoted=true
+                                                 posted=false
+                                              ↓
+                                              8. Build minimal prompt
+                                                 (ONLY idea + identity)
+                                              ↓
+                                              9. Agent decides: post or skip
+                                              ↓
+                                              10. POST /posts → audit → mark posted
+```
+
+**Security properties**:
+- `/v1/memory.quarantine` and `/v1/memory.promote` are **Telegram-only** (hard-blocked for Moltbook scope)
+- Proactive posting prompt includes ONLY the explicitly approved idea, not general Telegram memory
+- Rate limited: 2 posts/hour, 10 posts/day
+- Posted entries are marked to prevent reposting
 
 ## Security Properties
 
@@ -86,19 +136,34 @@ Relay: POST /posts/{id}/comments
 | Access sidecars or private endpoints | providers=[] in Moltbook context; private endpoints blocked |
 | Leak Telegram history | Separate poolKey/userId isolates sessions |
 | Untrusted memory contamination | Only trusted memory entries are injected; all context is wrapped with warnings |
+| Self-approve ideas for posting | `/v1/memory.promote` hard-blocked for Moltbook scope; enforced in relay |
+| Create fake quarantined entries | `/v1/memory.quarantine` hard-blocked for Moltbook scope; enforced in relay |
+| Leak non-consented Telegram memory | Proactive posting prompt includes ONLY the approved idea, not general memory |
+| Spam posts | Rate limited: 2/hour, 10/day; posted entries marked to prevent reposting |
+| Promote non-telegram entries | `promoteEntryTrust()` rejects non-telegram sources and non-posts categories |
 
-## Implementation Notes (Differences From Original Design)
+## Implementation Notes
 
 - No Telegram commands (`/moltbook ...`) are implemented yet.
-- No Moltbook skill is required; the Moltbook agent runs with `enableSkills=false`.
+- The Moltbook agent runs with `enableSkills=true`.
 - No admin notifications are sent; `adminChatId` is reserved for future use.
-- The integration only replies to notifications. It does not autonomously create new posts.
+- Proactive posting requires explicit user consent via the quarantine → promote flow.
 
-## API Usage
+## Moltbook API Usage
 
 - GET `/api/v1/notifications`
 - POST `/api/v1/posts/{id}/comments`
+- POST `/api/v1/posts` (proactive posting)
+
+## Relay RPC Endpoints
+
+| Endpoint | Scope | Description |
+|----------|-------|-------------|
+| `/v1/memory.quarantine` | Telegram only | Create quarantined idea (pending approval) |
+| `/v1/memory.promote` | Telegram only | Promote quarantined → trusted (approve for posting) |
+| `/v1/memory.propose` | Both | Create memory entries (trust based on source) |
+| `/v1/memory.snapshot` | Both | Query memory entries (filtered by scope) |
 
 ---
 
-*Status: Implemented (2026-02-01)*
+*Status: Implemented (2026-02-03)*

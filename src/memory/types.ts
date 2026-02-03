@@ -8,6 +8,7 @@ export type MemoryProvenance = {
 	createdAt: number;
 	promotedAt?: number;
 	promotedBy?: string;
+	postedAt?: number;
 };
 
 export type MemoryEntry = {
