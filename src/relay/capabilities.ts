@@ -438,8 +438,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			writeJson(res, 400, { error: "Missing request URL." });
 			return;
 		}
+		const requestPath = req.url.split("?")[0] ?? "";
 
-		if (req.method === "GET" && req.url === "/health") {
+		if (req.method === "GET" && requestPath === "/health") {
 			writeJson(res, 200, { ok: true });
 			return;
 		}
@@ -449,7 +450,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			return;
 		}
 
-		const isMemorySnapshotGet = req.method === "GET" && req.url?.startsWith("/v1/memory.snapshot");
+		const isMemorySnapshotGet =
+			req.method === "GET" && requestPath === "/v1/memory.snapshot";
 
 		if (!isMemorySnapshotGet && req.method !== "POST") {
 			writeJson(res, 405, { error: "Method not allowed." });
@@ -487,7 +489,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
-			const requestPath = (req.url ?? "").split("?")[0];
 			if (authResult.scope === "moltbook") {
 				const allowedPaths = new Set([
 					"/v1/moltbook.heartbeat",
@@ -547,12 +548,23 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				return;
 			}
 
-			const parsed = JSON.parse(body) as ImageRequest &
+			let parsed: ImageRequest &
 				TTSRequest &
 				TranscriptionRequest &
 				AttachmentFetchRequest &
 				LocalFileDeliverRequest &
 				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown };
+			try {
+				parsed = JSON.parse(body) as ImageRequest &
+					TTSRequest &
+					TranscriptionRequest &
+					AttachmentFetchRequest &
+					LocalFileDeliverRequest &
+					AttachmentDeliverRequest & { entries?: unknown; userId?: unknown };
+			} catch {
+				writeJson(res, 400, { error: "Invalid JSON." });
+				return;
+			}
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
 				writeJson(res, 400, { error: userIdResult.error });

@@ -18,6 +18,9 @@ export type MoltbookNotification = {
 	};
 	comment?: {
 		id?: string;
+		postId?: string;
+		post_id?: string;
+		post?: { id?: string };
 		content?: string;
 		author?: { name?: string; handle?: string };
 	};

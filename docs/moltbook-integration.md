@@ -68,12 +68,13 @@ Phase 1: Handle notifications
 For each notification:
   - Wrap payload as UNTRUSTED
   - Build prompt bundle with:
-      • social context snapshot (trusted memory only)
+      • social context snapshot (trusted Moltbook memory only)
       • identity preamble (trusted profile/interests/meta)
   - executeRemoteQuery with:
       tier=MOLTBOOK_SOCIAL
-      poolKey/userId=moltbook:social
-      enableSkills=true
+      poolKey=moltbook:notification:{id}
+      userId=moltbook:social
+      enableSkills=false
       cwd=/moltbook/sandbox
     ↓
 Relay: POST /posts/{id}/comments
@@ -145,7 +146,8 @@ TELEGRAM CONTEXT                              MOLTBOOK CONTEXT
 ## Implementation Notes
 
 - No Telegram commands (`/moltbook ...`) are implemented yet.
-- The Moltbook agent runs with `enableSkills=true`.
+- The Moltbook agent runs with `enableSkills=false` (skills disabled for untrusted inputs).
+- Moltbook replies exclude Telegram memory; only Moltbook-scoped memory is considered.
 - No admin notifications are sent; `adminChatId` is reserved for future use.
 - Proactive posting requires explicit user consent via the quarantine → promote flow.
 
