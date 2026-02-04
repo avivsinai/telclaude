@@ -49,11 +49,11 @@ const DEFAULT_QUERY_LIMIT = 200;
 const HOUR_MS = 60 * 60 * 1000;
 
 const FORBIDDEN_PATTERNS: RegExp[] = [
-	/SYSTEM/i,
-	/INSTRUCTION/i,
-	/OVERRIDE/i,
-	/IGNORE\s+PREVIOUS/i,
-	/\{\{.*\}\}/,
+	/^(system|assistant|developer|user)\s*:/i,
+	/\bignore\s+(all\s+)?previous\s+instructions?\b/i,
+	/\bdisregard\s+(all\s+)?previous\s+instructions?\b/i,
+	/\boverride\s+(the\s+)?(system|previous)\s+instructions?\b/i,
+	/\{\{[^}]{1,200}\}\}/,
 	/<script/i,
 	/javascript:/i,
 ];
@@ -361,7 +361,7 @@ export function handleMemoryQuarantine(
  * Only promotes entries that are:
  * - source = "telegram"
  * - category = "posts"
- * - trust = "quarantined" or "untrusted"
+ * - trust = "quarantined"
  */
 export function handleMemoryPromote(
 	request: MemoryPromoteRequest,
