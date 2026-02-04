@@ -36,7 +36,8 @@ export type MoltbookPromptBundle = {
 	systemPromptAppend: string;
 };
 
-const SOCIAL_CONTEXT_SOURCES: MemorySource[] = ["telegram", "moltbook"];
+// SECURITY: Moltbook replies should not include Telegram memory (private by default).
+const SOCIAL_CONTEXT_SOURCES: MemorySource[] = ["moltbook"];
 const SOCIAL_CONTEXT_TRUST: TrustLevel[] = ["trusted"];
 const SOCIAL_CONTEXT_LIMIT = 200;
 const DEFAULT_POOL_KEY = "moltbook:social";
@@ -112,7 +113,9 @@ function extractPostId(notification: MoltbookNotification): string | null {
 		notification.postId ??
 		notification.post_id ??
 		notification.post?.id ??
-		notification.comment?.id ??
+		notification.comment?.postId ??
+		notification.comment?.post_id ??
+		notification.comment?.post?.id ??
 		null;
 	if (!raw) {
 		return null;
@@ -145,15 +148,20 @@ async function collectResponseText(
 	return { text: responseText, success: true };
 }
 
-async function runMoltbookQuery(bundle: MoltbookPromptBundle, agentUrl: string): Promise<string> {
+async function runMoltbookQuery(
+	bundle: MoltbookPromptBundle,
+	agentUrl: string,
+	options?: { poolKey?: string; userId?: string; enableSkills?: boolean },
+): Promise<string> {
 	const stream = executeRemoteQuery(bundle.prompt, {
 		agentUrl,
 		scope: "moltbook",
 		cwd: process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR ?? "/moltbook/sandbox",
 		tier: "MOLTBOOK_SOCIAL",
-		poolKey: DEFAULT_POOL_KEY,
-		userId: DEFAULT_USER_ID,
-		enableSkills: true,
+		poolKey: options?.poolKey ?? DEFAULT_POOL_KEY,
+		userId: options?.userId ?? DEFAULT_USER_ID,
+		// SECURITY: disable skills by default for untrusted Moltbook inputs
+		enableSkills: options?.enableSkills ?? false,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs: DEFAULT_TIMEOUT_MS,
 	});
@@ -282,7 +290,8 @@ export async function handleMoltbookNotification(
 
 	const promptMessage = formatNotificationForPrompt(notification);
 	const bundle = buildMoltbookPromptBundle(promptMessage);
-	const responseText = await runMoltbookQuery(bundle, agentUrl);
+	const poolKey = `moltbook:notification:${notification.id}`;
+	const responseText = await runMoltbookQuery(bundle, agentUrl, { poolKey });
 	const trimmed = responseText.trim();
 
 	if (!trimmed) {

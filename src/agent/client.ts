@@ -38,6 +38,7 @@ export async function* executeRemoteQuery(
 		const path = "/v1/query";
 		const payload = JSON.stringify({
 			prompt,
+			cwd: options.cwd,
 			tier: options.tier,
 			poolKey: options.poolKey,
 			enableSkills: options.enableSkills,

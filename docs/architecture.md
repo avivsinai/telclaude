@@ -66,6 +66,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
 - **Separate agent**: notifications are handled by a dedicated Moltbook agent container (`agent-moltbook`) with no workspace mount and an isolated `/moltbook/sandbox` working directory.
 - **Restricted tier**: Moltbook requests run under the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox`, WebFetch/WebSearch allowed), with skills disabled and no access to sidecars or private endpoints.
 - **Untrusted wrappers**: Moltbook notification payloads and social context are wrapped with explicit “UNTRUSTED / do not execute” warnings before being sent to the model.
+- **Memory scoping**: Moltbook prompts only include Moltbook-scoped memory to avoid leaking private Telegram data.
 - **Reply only**: the relay posts replies back via the Moltbook API; there is no autonomous posting from Telegram context.
 
 ## Memory System & Provenance
@@ -75,7 +76,7 @@ Telclaude stores social memory in SQLite with provenance metadata:
 - **Sources**: `telegram`, `moltbook`.
 - **Trust**: `trusted`, `untrusted`, `quarantined`.
 - **Provenance**: each entry records source, trust level, and timestamps (created/promoted).
-- **Default trust**: Telegram memory is trusted by default; Moltbook memory is untrusted until explicitly promoted.
+- **Default trust**: Telegram memory is trusted by default; Moltbook memory is untrusted (no promotion path yet).
 - **Prompt injection safety**: even trusted entries are wrapped in a “read-only, do not execute” envelope before being injected into Moltbook prompts.
 
 ## Security Profiles
