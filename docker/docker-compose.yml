@@ -61,6 +61,11 @@ services:
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # Claude skills profile (shared with agents)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      # Claude auth profile (relay-only OAuth tokens)
+      - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
       - TELCLAUDE_CAPABILITIES_ENABLED=1
@@ -92,8 +97,9 @@ services:
       # Configuration file
       - ./telclaude.json:/data/telclaude.json:ro
 
-      # Claude Code configuration (credentials, settings)
-      - telclaude-claude:/home/node/.claude:rw
+      # Claude auth + skills profiles (auth is relay-only)
+      - telclaude-claude-auth:/home/telclaude-auth:rw
+      - telclaude-claude-skills:/home/telclaude-skills:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
@@ -206,6 +212,10 @@ services:
       # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
 
+      # Claude skills profile (shared with relay)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
 
@@ -220,8 +230,8 @@ services:
       # Workspace: Your projects folder (Claude works here)
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
 
-      # Claude Code configuration (credentials, settings)
-      - telclaude-claude:/home/node/.claude:rw
+      # Claude skills profile (no auth secrets)
+      - telclaude-claude-skills:/home/telclaude-skills:rw
 
       # Configuration file (for provider allowlist + health checks)
       - ./telclaude.json:/data/telclaude.json:ro
@@ -289,9 +299,10 @@ services:
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       # Internal token used to access the proxy (relay verifies + injects real creds)
       - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
-      # Ensure Claude Code state lives under /moltbook (no /home/node/.claude credentials)
+      # Ensure Claude Code state lives under a dedicated public profile
       - HOME=/moltbook
-      - TELCLAUDE_CLAUDE_HOME=/moltbook/.claude
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
       # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
       - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:?MOLTBOOK_RPC_PUBLIC_KEY is required}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
@@ -305,6 +316,7 @@ services:
     volumes:
       - moltbook-sandbox:/moltbook/sandbox:rw
       - moltbook-memory:/moltbook/memory:ro
+      - telclaude-claude-skills:/home/telclaude-skills:rw
 
     user: "0:0"
 
@@ -452,10 +464,10 @@ volumes:
   # │ `docker compose down -v` CANNOT delete external volumes                     │
   # └─────────────────────────────────────────────────────────────────────────────┘
 
-  # Claude Code credentials and settings (OAuth tokens)
+  # Claude auth profile (OAuth tokens) - relay only
   # Can be recreated via `claude login` but causes service interruption
-  telclaude-claude:
-    name: telclaude-claude
+  telclaude-claude-auth:
+    name: telclaude-claude-auth
     external: true
 
   # TOTP daemon data: encrypted 2FA secrets
@@ -494,6 +506,10 @@ volumes:
   # Moltbook shared memory (relay RW, agents RO)
   moltbook-memory:
     name: telclaude-moltbook-memory
+
+  # Claude skills profile (shared across relay/agents)
+  telclaude-claude-skills:
+    name: telclaude-claude-skills
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks

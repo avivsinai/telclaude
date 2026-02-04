@@ -21,7 +21,13 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
-import { chatIdToString, escapeRegex, VALIDATED_DATA_DIR } from "../utils.js";
+import {
+	VALIDATED_CLAUDE_AUTH_DIR,
+	VALIDATED_CLAUDE_CONFIG_DIR,
+	VALIDATED_DATA_DIR,
+	chatIdToString,
+	escapeRegex,
+} from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "permissions" });
@@ -389,14 +395,35 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	// This pattern catches /data/logs, /data/telclaude.db, etc.
 	// Uses validated/escaped value to prevent regex injection and trailing slash issues
 	...(VALIDATED_DATA_DIR ? [new RegExp(`^${escapeRegex(VALIDATED_DATA_DIR)}(\\/|$)`, "i")] : []),
+	// Auth volume (relay-only): block all tool access
+	...(VALIDATED_CLAUDE_AUTH_DIR
+		? [new RegExp(`^${escapeRegex(VALIDATED_CLAUDE_AUTH_DIR)}(\\/|$)`, "i")]
+		: []),
 
 	// === Claude Code settings (prevent hook bypass via disableAllHooks) ===
 	// SECURITY: Blocking writes to these prevents prompt injection from setting
 	// disableAllHooks: true, which would disable our PreToolUse security hook.
 	/(?:^|[/\\])\.claude[/\\]settings(?:\.local)?\.json$/i, // .claude/settings.json, .claude/settings.local.json
+	// Docker profiles may set CLAUDE_CONFIG_DIR to a non-.claude path (e.g., /home/telclaude-skills)
+	...(VALIDATED_CLAUDE_CONFIG_DIR
+		? [
+				new RegExp(
+					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])settings(?:\\.local)?\\.json$`,
+					"i",
+				),
+		  ]
+		: []),
 	// === Security-critical skills ===
 	// SECURITY: Prevents self-modification of the security-gate skill prompt.
 	/(?:^|[/\\])\.claude[/\\]skills[/\\]security-gate(?:[/\\]|$)/i,
+	...(VALIDATED_CLAUDE_CONFIG_DIR
+		? [
+				new RegExp(
+					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])skills(?:[/\\\\])security-gate(?:[/\\\\]|$)`,
+					"i",
+				),
+		  ]
+		: []),
 	// === Telclaude source code (defense in depth) ===
 	// SECURITY: Agent has no reason to write to telclaude's own source.
 	// Primary protection is Docker read-only filesystem; this is belt-and-suspenders.
@@ -659,6 +686,12 @@ function globCouldMatchClaudeSettings(pattern: string): boolean {
 		"../settings.local.json",
 		".claude/settings.json",
 		".claude/settings.local.json",
+		...(VALIDATED_CLAUDE_CONFIG_DIR
+			? [
+					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.json"),
+					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.local.json"),
+			  ]
+			: []),
 	];
 	return expandedPatterns.some((expanded) =>
 		candidates.some((candidate) => wildcardMatch(expanded, candidate)),
@@ -683,7 +716,12 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 	const settingsPattern = /^(?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
 	const settingsPwdPattern =
 		/^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
-	const claudePathPattern = /(?:^|[/\\])\.claude(?:[/\\]|$)/i;
+	const claudeDirPatterns = [
+		/(?:^|[/\\])\.claude(?:[/\\]|$)/i,
+		...(VALIDATED_CLAUDE_CONFIG_DIR
+			? [new RegExp(`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\]|$)`, "i")]
+			: []),
+	];
 	const commandSeparators = new Set([";", "&&", "||", "|", "|&", "\n"]);
 	const controlKeywords = new Set([
 		"if",
@@ -798,7 +836,10 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 			if (target) {
 				const resolvedTarget = resolveEnvVars(target, envValues);
 				const normalizedTarget = normalizePathToken(resolvedTarget);
-				if (claudePathPattern.test(normalizedTarget) || normalizedTarget === ".claude") {
+				const isClaudeDir =
+					normalizedTarget === ".claude" ||
+					claudeDirPatterns.some((pattern) => pattern.test(normalizedTarget));
+				if (isClaudeDir) {
 					inClaudeDir = true;
 				} else {
 					inClaudeDir = false;

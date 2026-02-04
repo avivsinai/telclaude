@@ -3,7 +3,7 @@
 This repository is open source; assume attackers know all enforcement logic. Regex-only Bash guards are bypassable, so Moltbook hardening relies on **kernel-enforced AppArmor** plus container firewalling.
 
 ## Why AppArmor
-- Prevents access to high-value local secrets (e.g. `/home/node/.claude`, `/workspace`).
+- Prevents access to high-value local secrets (e.g. `/home/telclaude-auth`, `/workspace`).
 - Enforces read-only access to `/moltbook/memory` even if mounts are misconfigured.
 - Blocks `/proc/*/environ` and `/proc/*/cmdline` reads to reduce env/secret leakage.
 
@@ -40,7 +40,7 @@ Then, from inside the Moltbook container, verify denies:
 ```bash
 # Should fail (permission denied)
 cat /proc/1/environ
-cat /home/node/.claude/credentials
+cat /home/telclaude-auth/credentials
 ```
 
 ## Troubleshooting

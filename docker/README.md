@@ -96,19 +96,45 @@ for containers that need initial root privileges.
 ./setup-volumes.sh
 ```
 
-This creates `telclaude-claude` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+This creates `telclaude-claude-auth` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+The skills volume (`telclaude-claude-skills`) is non-external and will be created automatically.
 
 **Note:** `docker compose up` will fail if these volumes don't exist. Always run `setup-volumes.sh` first.
 
 ### First-Time Authentication
 
-If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude:
+If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude (relay container):
 
 ```powershell
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
-This stores credentials in the shared `telclaude-claude` volume (usable by both containers).
+This stores credentials in the relay-only `telclaude-claude-auth` volume. Agents use the relay proxy, so you do **not** need to run `claude login` in the agent containers.
+
+### Migration: Old Claude Profile Volume
+
+If you previously used a single `telclaude-claude` or `telclaude-claude-private` volume, you have two options:
+
+**Option A: Re-login (simplest)**
+```bash
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
+```
+
+**Option B: Copy credentials from old volume**
+```bash
+docker volume create telclaude-claude-auth
+# Use your old volume name (e.g., telclaude-claude or telclaude-claude-private)
+docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-auth:/new \
+  alpine cp -a /old/.credentials.json /new/ 2>/dev/null || true
+```
+
+If you had custom skills in the old volume, copy them into the new shared skills volume:
+```bash
+docker volume create telclaude-claude-skills
+# Use your old volume name (e.g., telclaude-claude or telclaude-claude-private)
+docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-skills:/new \
+  alpine cp -a /old/skills /new/ 2>/dev/null || true
+```
 
 ## Volume Safety
 
@@ -118,10 +144,12 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 
 | Volume | Contains | If Deleted |
 |--------|----------|------------|
-| `telclaude-claude` | Claude OAuth tokens | Must re-run `claude login` |
+| `telclaude-claude-auth` | Claude OAuth tokens | Must re-run `claude login` |
 | `telclaude-totp-data` | Encrypted 2FA secrets | **UNRECOVERABLE** - must re-enroll all 2FA |
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
+
+**Skills volume warning:** `telclaude-claude-skills` is **not** external, so `docker compose down -v` **will delete it**. Reinstalling built-in skills is automatic, but back up custom skills if you added any.
 
 ### Safe Operations
 
@@ -150,7 +178,7 @@ docker run --rm -v telclaude-totp-data:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/totp-backup-$(date +%Y%m%d).tar.gz -C /data .
 
 # Backup Claude credentials
-docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
+docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/claude-backup-$(date +%Y%m%d).tar.gz -C /data .
 ```
 
@@ -162,7 +190,8 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 |----------|------|---------|-----------|
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
-| `telclaude` + `telclaude-agent` | `/home/node/.claude` | Claude credentials | Named volume |
+| `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | Named volume |
+| `telclaude` + `telclaude-agent` + `agent-moltbook` | `/home/telclaude-skills` | Claude skills profile (skills/plugins, no secrets) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `agent-moltbook` | `/moltbook/sandbox` | Moltbook isolated workspace | Named volume |
 | `telclaude` + `agent-moltbook` | `/moltbook/memory` | Moltbook social memory (relay RW, agent RO) | Named volume |
@@ -174,6 +203,7 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
+| `TELCLAUDE_AUTH_DIR` | No | Relay-only path for Claude OAuth tokens (default `/home/telclaude-auth`) |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
 | `TELEGRAM_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
 | `TELCLAUDE_MOLTBOOK_AGENT_URL` | No | Relay URL for Moltbook agent RPC (default `http://agent-moltbook:8789`) |
@@ -282,7 +312,7 @@ docker compose exec telclaude-agent bash
 docker compose exec telclaude telclaude doctor
 
 # Claude login (if not using API key)
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 
 # View volumes
 docker volume ls | grep telclaude
@@ -354,10 +384,10 @@ wsl ls /mnt/c/Users/YourName/Projects
 
 ```powershell
 # Check Claude version
-docker compose exec telclaude-agent claude --version
+docker compose exec telclaude claude --version
 
 # Re-authenticate
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
 ### Reset session data (keeps secrets)
@@ -370,7 +400,7 @@ docker compose down -v
 docker compose up -d --build
 ```
 
-**Note:** External volumes (`telclaude-claude`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
+**Note:** External volumes (`telclaude-claude-auth`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
 
 ## TOTP Daemon (2FA Support)
 
