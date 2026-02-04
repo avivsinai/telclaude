@@ -11,9 +11,9 @@
 #      - telclaude-media-outbox
 #   3. Proper permissions (containers run as UID 1000)
 #
-# NOTE: telclaude-claude is intentionally NOT included here.
-# It stays on local storage because NFS with UID squashing can cause
-# permission issues with .claude config files. The volume is small
+# NOTE: telclaude-claude-auth / telclaude-claude-skills are intentionally NOT included here.
+# They stay on local storage because NFS with UID squashing can cause
+# permission issues with Claude config files. The volumes are small
 # (config only) so local storage performance is fine.
 #
 # Usage:

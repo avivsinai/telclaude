@@ -41,6 +41,7 @@ import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
 import { getGitCredentials } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
+import { escapeRegex } from "../utils.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -597,11 +598,25 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 	const sandboxRoot = process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR ?? "/moltbook/sandbox";
 	const resolvedRoot = resolveRealPath(sandboxRoot);
 	const traversalPattern = /(?:^|[\\/])\\.\\.(?:[\\/]|$)/;
+	const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
+	const claudeAuthDir = process.env.TELCLAUDE_AUTH_DIR;
 	const forbiddenBashPatterns = [
 		/\/proc(?:\/|$)/i,
 		/\.claude(?:\/|$)/i,
 		/\/moltbook\/memory(?:\/|$)/i,
+		/\/home\/telclaude-auth(?:\/|$)/i,
+		/\/home\/telclaude-skills(?:\/|$)/i,
 	];
+	if (claudeConfigDir) {
+		forbiddenBashPatterns.push(
+			new RegExp(`^${escapeRegex(claudeConfigDir)}(?:[/\\\\]|$)`, "i"),
+		);
+	}
+	if (claudeAuthDir) {
+		forbiddenBashPatterns.push(
+			new RegExp(`^${escapeRegex(claudeAuthDir)}(?:[/\\\\]|$)`, "i"),
+		);
+	}
 	const networkExfilTools = /\b(curl|wget|ftp|nc|netcat|telnet)\b/i;
 	const pyHttp = /\bpython[23]?\s+-c\s+['"][\s\S]*requests\.(get|post|put|patch)/i;
 	const nodeHttp = /\bnode\s+-e\s+['"][\s\S]*(fetch|http[s]?\.)/i;

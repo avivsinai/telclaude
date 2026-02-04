@@ -1,4 +1,9 @@
-import { VALIDATED_DATA_DIR } from "../utils.js";
+import path from "node:path";
+import {
+	VALIDATED_CLAUDE_AUTH_DIR,
+	VALIDATED_CLAUDE_CONFIG_DIR,
+	VALIDATED_DATA_DIR,
+} from "../utils.js";
 
 /**
  * Sandbox configuration constants for telclaude.
@@ -22,6 +27,13 @@ export const SENSITIVE_READ_PATHS = [
 	"~/.telclaude",
 	// Dynamic: TELCLAUDE_DATA_DIR (Docker uses /data) - only if validated
 	...(VALIDATED_DATA_DIR ? [VALIDATED_DATA_DIR] : []),
+	// Claude config (non-.claude locations when CLAUDE_CONFIG_DIR is set)
+	...(VALIDATED_CLAUDE_CONFIG_DIR
+		? [
+				path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.json"),
+				path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.local.json"),
+		  ]
+		: []),
 
 	// === Environment files (secrets!) ===
 	"**/.env",
@@ -33,6 +45,17 @@ export const SENSITIVE_READ_PATHS = [
 
 	// === Claude desktop app data ===
 	"~/Library/Application Support/Claude",
+
+	// === Claude CLI credentials ===
+	"~/.claude/.credentials.json",
+	...(VALIDATED_CLAUDE_AUTH_DIR
+		? [
+				path.join(VALIDATED_CLAUDE_AUTH_DIR, ".credentials.json"),
+				path.join(VALIDATED_CLAUDE_AUTH_DIR, ".claude", ".credentials.json"),
+		  ]
+		: []),
+	// Block direct reads of auth volume (relay-only)
+	...(VALIDATED_CLAUDE_AUTH_DIR ? [VALIDATED_CLAUDE_AUTH_DIR] : []),
 
 	// === Shell configuration files ===
 	"~/.bashrc",
