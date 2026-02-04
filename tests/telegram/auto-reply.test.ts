@@ -166,3 +166,25 @@ describe("auto-reply executeAndReply", () => {
 		expect(redactors[1]?.processChunk).toHaveBeenCalledWith("secret fallback");
 	});
 });
+
+describe("auto-reply control commands", () => {
+	it("rejects /link in group chats", async () => {
+		const msg = {
+			chatId: 999,
+			chatType: "group" as const,
+			username: "group-user",
+			reply: vi.fn(async () => {}),
+		} as any;
+
+		const auditLogger = { log: vi.fn(async () => {}) } as any;
+
+		await autoReplyTest.handleLinkCommand(msg, "ABCD-1234", auditLogger);
+
+		expect(msg.reply).toHaveBeenCalledWith(
+			"For security, `/link` is only allowed in a private chat. Please DM the bot.",
+		);
+		expect(auditLogger.log).toHaveBeenCalledWith(
+			expect.objectContaining({ errorType: "identity_link_group_rejected" }),
+		);
+	});
+});

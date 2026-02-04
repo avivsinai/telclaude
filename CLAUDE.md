@@ -26,11 +26,11 @@
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.
 - **Settings isolation**: `settingSources: ["project"]` prevents disableAllHooks bypass.
 - **PreToolUse hooks**: PRIMARY enforcement; run unconditionally, even in acceptEdits mode.
-- **canUseTool**: FALLBACK only; does NOT fire in acceptEdits mode.
+- **canUseTool**: FALLBACK only; runs only when a permission prompt would appear (so not for auto-approved calls in acceptEdits mode).
 
 ## SDK References (authoritative)
 - **Permissions**: https://code.claude.com/docs/en/sdk/sdk-permissions
-  - canUseTool fires ONLY when permission prompt would appear (NOT in acceptEdits mode)
+  - canUseTool fires ONLY when a permission prompt would appear (so not for auto-approved calls in acceptEdits mode)
   - Use PreToolUse hooks for guaranteed enforcement
 - **Hooks**: https://docs.claude.com/en/docs/claude-code/hooks
   - Response format: `{ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: "..." } }`

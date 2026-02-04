@@ -78,7 +78,7 @@ export function generateLinkCode(localUserId: string): string {
 		   expires_at = excluded.expires_at`,
 	).run(formattedCode, localUserId, now, now + CODE_EXPIRY_MS);
 
-	logger.info({ code: formattedCode, localUserId }, "generated link code");
+	logger.debug({ localUserId }, "generated link code");
 
 	return formattedCode;
 }
@@ -108,7 +108,7 @@ export function consumeLinkCode(
 			| undefined;
 
 		if (!row) {
-			logger.warn({ code: formattedCode, chatId }, "invalid link code");
+			logger.warn({ chatId }, "invalid link code");
 			return {
 				success: false as const,
 				error: "Invalid link code. Please generate a new one with `telclaude link`.",
@@ -118,7 +118,7 @@ export function consumeLinkCode(
 		if (row.expires_at < now) {
 			// Delete expired code
 			db.prepare("DELETE FROM pending_link_codes WHERE code = ?").run(formattedCode);
-			logger.warn({ code: formattedCode, chatId }, "expired link code");
+			logger.warn({ chatId }, "expired link code");
 			return {
 				success: false as const,
 				error: "Link code has expired. Please generate a new one with `telclaude link`.",
@@ -148,7 +148,7 @@ export function consumeLinkCode(
 		if (deleteResult.changes !== 1) {
 			// This should never happen in normal operation, but if it does, fail safe
 			logger.error(
-				{ code: formattedCode, chatId, changes: deleteResult.changes },
+				{ chatId, changes: deleteResult.changes },
 				"SECURITY: Link code deletion anomaly - possible race condition",
 			);
 			throw new Error("Link code consumption failed - please try again");
@@ -172,7 +172,7 @@ export function consumeLinkCode(
 		);
 
 		logger.info(
-			{ code: formattedCode, chatId, localUserId: row.local_user_id, linkedBy },
+			{ chatId, localUserId: row.local_user_id, linkedBy },
 			"identity link created",
 		);
 

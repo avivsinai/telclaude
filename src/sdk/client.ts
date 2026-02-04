@@ -7,7 +7,8 @@
  * - Security enforcement via PreToolUse hooks (PRIMARY) and canUseTool (FALLBACK)
  *
  * IMPORTANT: Security enforcement uses PreToolUse hooks as PRIMARY enforcement.
- * The canUseTool callback is a FALLBACK only - it does NOT fire in acceptEdits mode.
+ * The canUseTool callback is a FALLBACK only - it only runs when the SDK would prompt.
+ * In acceptEdits/auto-approve modes, it won't run for auto-approved tool calls.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
  * Hook response format (per https://docs.claude.com/en/docs/claude-code/hooks):
@@ -435,7 +436,7 @@ function buildRelayAttachmentRequest(
  * Create a PreToolUse hook that blocks WebFetch to private networks and metadata endpoints.
  *
  * CRITICAL: PreToolUse hooks run UNCONDITIONALLY before every tool use.
- * Unlike canUseTool (which does NOT fire in acceptEdits mode), PreToolUse hooks
+ * Unlike canUseTool (which only runs when a permission prompt would appear), PreToolUse hooks
  * are guaranteed to run. This is the PRIMARY enforcement mechanism.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
@@ -785,7 +786,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
  * Create a PreToolUse hook for sensitive path protection on filesystem tools.
  *
  * CRITICAL: This is the PRIMARY enforcement for sensitive path blocking.
- * The canUseTool callback does NOT fire in acceptEdits mode, so PreToolUse
+ * The canUseTool callback only runs when a permission prompt would appear, so PreToolUse
  * hooks are required for guaranteed enforcement.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  */
@@ -1081,7 +1082,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	// CRITICAL: PreToolUse hooks are the PRIMARY enforcement mechanism.
 	// They run UNCONDITIONALLY before every tool use, even in acceptEdits mode.
-	// Unlike canUseTool (which does NOT fire in acceptEdits mode), these are guaranteed.
+	// Unlike canUseTool (which only runs when a permission prompt would appear), these are guaranteed.
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.hooks = {
 		PreToolUse: [
@@ -1113,7 +1114,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		sdkOpts.betas = opts.betas;
 	}
 
-	// FALLBACK: canUseTool does NOT fire in acceptEdits mode.
+	// FALLBACK: canUseTool only runs when a permission prompt would appear.
 	// PRIMARY enforcement is via PreToolUse hooks above.
 	// This is belt-and-suspenders for cases where hooks might not run.
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
