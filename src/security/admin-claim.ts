@@ -225,7 +225,7 @@ export function consumeAdminClaim(
 		// Check chat ID matches
 		if (row.chat_id !== chatId) {
 			logger.warn(
-				{ code: normalizedCode, expectedChatId: row.chat_id, actualChatId: chatId },
+				{ expectedChatId: row.chat_id, actualChatId: chatId },
 				"admin claim code used in wrong chat",
 			);
 			return {
@@ -519,7 +519,7 @@ export async function handleFirstMessageIfNoAdmin(
 			messagePreview: "(admin claim started)",
 			permissionTier: "READ_ONLY",
 			outcome: "success",
-			errorType: `admin_claim_started:${code}`,
+			errorType: "admin_claim_started",
 		});
 	}
 

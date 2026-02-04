@@ -167,7 +167,11 @@ When deploying telclaude:
 
 ### Admin Claim Security
 
-By default, the first person to DM the bot can claim admin. **This is a bootstrap race condition.**
+The bot **ignores all messages unless `allowedChats` is configured**. Admin claim is only available
+from **private chats** that are on the allowlist.
+
+If no admin exists and no secret is configured, the **first private DM in `allowedChats` can claim
+admin**. This is a bootstrap race condition.
 
 To prevent scanner bots from claiming admin:
 ```bash
@@ -175,6 +179,11 @@ export TELCLAUDE_ADMIN_SECRET="your-secure-random-secret"
 ```
 
 Then claim admin with: `/claim your-secure-random-secret`
+
+### Identity Linking Security
+
+Identity linking (`/link`) is **only permitted in private chats** to avoid group-level
+authentication ambiguity. Use a direct message with the bot to link a user.
 
 ### Additional Hardening
 
