@@ -116,6 +116,50 @@ function checkControlCommandRateLimit(userId: string): boolean {
 	}
 }
 
+// Additional throttle for /approve attempts (defense-in-depth)
+// 5 attempts per 10 minutes per chat
+const APPROVE_COMMAND_LIMIT = 5;
+const APPROVE_COMMAND_WINDOW_MS = 10 * 60_000;
+
+function checkApproveCommandRateLimit(chatId: number): boolean {
+	const db = getDb();
+	const now = Date.now();
+	const windowStart =
+		Math.floor(now / APPROVE_COMMAND_WINDOW_MS) * APPROVE_COMMAND_WINDOW_MS;
+
+	try {
+		const result = db.transaction(() => {
+			const row = db
+				.prepare(
+					"SELECT points FROM rate_limits WHERE limiter_type = ? AND key = ? AND window_start = ?",
+				)
+				.get("approve_command", String(chatId), windowStart) as { points: number } | undefined;
+
+			const currentCount = row?.points ?? 0;
+			if (currentCount >= APPROVE_COMMAND_LIMIT) {
+				return false;
+			}
+
+			db.prepare(
+				`INSERT INTO rate_limits (limiter_type, key, window_start, points)
+				 VALUES (?, ?, ?, 1)
+				 ON CONFLICT(limiter_type, key, window_start)
+				 DO UPDATE SET points = points + 1`,
+			).run("approve_command", String(chatId), windowStart);
+
+			return true;
+		})();
+
+		return result;
+	} catch (err) {
+		logger.error(
+			{ error: String(err), chatId },
+			"/approve rate limit check failed - blocking",
+		);
+		return false;
+	}
+}
+
 // Session locks to prevent race conditions on rapid messages
 // Track both the promise and metadata for better diagnostics
 type SessionLockEntry = {
@@ -682,7 +726,7 @@ async function executeWithSession(
 }
 
 // Test-only surface
-export const __test = { executeAndReply };
+export const __test = { executeAndReply, handleLinkCommand };
 
 export type MonitorOptions = {
 	verbose: boolean;
@@ -1454,6 +1498,24 @@ async function handleLinkCommand(
 	code: string | undefined,
 	auditLogger: AuditLogger,
 ): Promise<void> {
+	const chatType = msg.chatType ?? "private";
+	if (chatType !== "private") {
+		logger.warn({ chatId: msg.chatId, chatType }, "group chat attempted identity link");
+		await msg.reply("For security, `/link` is only allowed in a private chat. Please DM the bot.");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: `link_${Date.now()}`,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: "(identity link attempt from group)",
+			permissionTier: "READ_ONLY",
+			outcome: "blocked",
+			errorType: "identity_link_group_rejected",
+		});
+		return;
+	}
+
 	if (!code) {
 		await msg.reply(
 			"Usage: `/link <code>`\n\n" +
@@ -1496,6 +1558,11 @@ async function handleApproveCommand(
 ): Promise<void> {
 	if (!nonce) {
 		await msg.reply("Usage: `/approve <code>`");
+		return;
+	}
+
+	if (!checkApproveCommandRateLimit(msg.chatId)) {
+		await msg.reply("Too many approval attempts. Please wait a few minutes and try again.");
 		return;
 	}
 
