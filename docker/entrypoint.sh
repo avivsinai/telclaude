@@ -23,7 +23,8 @@ set -e
 TELCLAUDE_USER="${TELCLAUDE_USER:-node}"
 TELCLAUDE_UID="${TELCLAUDE_UID:-1000}"
 TELCLAUDE_GID="${TELCLAUDE_GID:-1000}"
-TELCLAUDE_CLAUDE_HOME="${TELCLAUDE_CLAUDE_HOME:-/home/node/.claude}"
+TELCLAUDE_CLAUDE_HOME="${TELCLAUDE_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-/home/telclaude-skills}}"
+TELCLAUDE_AUTH_DIR="${TELCLAUDE_AUTH_DIR:-/home/telclaude-auth}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Privileged Operations (run as root)
@@ -58,38 +59,11 @@ if [ "$(id -u)" = "0" ]; then
         chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "${TELCLAUDE_CLAUDE_HOME}" 2>/dev/null || true
     fi
 
-    # Install bundled CLAUDE.md (agent playbook) if present
+    # Install bundled CLAUDE.md (user-level playbook) if present
     if [ -f "/app/.claude/CLAUDE.md" ]; then
         echo "[entrypoint] Installing bundled CLAUDE.md"
         mkdir -p "${TELCLAUDE_CLAUDE_HOME}"
         cp /app/.claude/CLAUDE.md "${TELCLAUDE_CLAUDE_HOME}/CLAUDE.md"
-    fi
-
-    # Skills are installed at user-level (~/.claude/skills/) above.
-    # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
-    # FORCE symlink to ensure SDK reads from the same location relay writes to.
-    # This prevents divergence when host workspace has its own .claude/skills/ directory.
-    if [ -d "/workspace" ] && [ -w "/workspace" ]; then
-        mkdir -p /workspace/.claude
-        if [ -L "/workspace/.claude/skills" ]; then
-            # Already a symlink - nothing to do
-            echo "[entrypoint] Skills symlink already exists"
-        elif [ -e "/workspace/.claude/skills" ]; then
-            # Exists but not a symlink - back it up and replace
-            echo "[entrypoint] WARNING: /workspace/.claude/skills exists but is not a symlink"
-            echo "[entrypoint] Backing up to /workspace/.claude/skills.bak and creating symlink"
-            rm -rf /workspace/.claude/skills.bak
-            mv /workspace/.claude/skills /workspace/.claude/skills.bak
-            ln -s "${TELCLAUDE_CLAUDE_HOME}/skills" /workspace/.claude/skills
-            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude/skills 2>/dev/null || true
-        else
-            # Doesn't exist - create symlink
-            echo "[entrypoint] Symlinking skills to workspace"
-            ln -s "${TELCLAUDE_CLAUDE_HOME}/skills" /workspace/.claude/skills
-            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills 2>/dev/null || true
-        fi
-    else
-        echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
     fi
 
     # Ensure data directories have correct ownership
@@ -103,7 +77,7 @@ if [ "$(id -u)" = "0" ]; then
     touch /home/node/.telclaude/logs/telclaude.log
     chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude 2>/dev/null || true
 
-    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" /media/inbox /media/outbox; do
+    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" "${TELCLAUDE_AUTH_DIR}" /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then

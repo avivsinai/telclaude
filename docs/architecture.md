@@ -44,6 +44,9 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
 - **Relay container**: Telegram + Moltbook handlers, security policy + secrets (OpenAI/GitHub), TOTP socket.
 - **Telegram agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
 - **Moltbook agent container**: Claude SDK + tools, no secrets, no workspace mount, isolated `/moltbook/sandbox`.
+- **Claude profiles**:
+  - `/home/telclaude-skills` (shared skills + CLAUDE.md; no credentials)
+  - `/home/telclaude-auth` (relay-only OAuth tokens)
 - **Shared media volumes**:
   - `media_inbox` (relay writes Telegram downloads, agent reads)
   - `media_outbox` (relay writes generated media; relay reads to send)
@@ -52,6 +55,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
 - **Internal RPC**:
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
+- **Anthropic access**: agents use relay proxy (`ANTHROPIC_BASE_URL`) instead of direct credentials.
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
 - **RPC auth**: set `TELEGRAM_RPC_SECRET` in relay + Telegram agent containers. For Moltbook, set `MOLTBOOK_RPC_PRIVATE_KEY` in the relay and `MOLTBOOK_RPC_PUBLIC_KEY` in the Moltbook agent; internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 - **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach both agents.
@@ -137,8 +141,9 @@ Control commands (including `/otp`) are rate-limited to 5 attempts per minute pe
 
 - Skills are folders with `SKILL.md`, discoverable from `~/.claude/skills` (user), `.claude/skills` (project),
   or bundled inside plugins. Use `allowed-tools` in SKILL.md frontmatter to scope tool access.
-- Telclaude ships built-in skills in `.claude/skills`; the Docker entrypoint copies them to `/home/node/.claude/skills`
-  and symlinks `/workspace/.claude/skills` for the SDK.
+- Telclaude ships built-in skills in `.claude/skills`; the Docker entrypoint copies them to `/home/telclaude-skills/skills`.
+- The user-level `CLAUDE.md` is stored in `/home/telclaude-skills/CLAUDE.md`. Project-level overrides live in `/workspace/.claude/CLAUDE.md`.
+- Project-level skills are explicit: if a repo wants its own skills, add them under `/workspace/.claude/skills`.
 - Plugins are the idiomatic distribution mechanism: plugin root contains `.claude-plugin/plugin.json` and optional
   `skills/`, `agents/`, `commands/`, or `hooks/` folders.
 - To install plugins, add a marketplace (`/plugin marketplace add ./path`) and install with `/plugin install name@marketplace`.

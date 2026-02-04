@@ -69,20 +69,27 @@ function buildAuthHeader(): AuthHeader | null {
 		return { name: "x-api-key", value: apiKey, source: "env" };
 	}
 
-	const credentialsPath =
-		process.env.CLAUDE_CODE_CREDENTIALS_PATH ??
-		path.join(process.env.HOME ?? os.homedir(), ".claude", ".credentials.json");
-	try {
-		const raw = fs.readFileSync(credentialsPath, "utf8");
-		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		const token =
-			extractToken(parsed, ["access_token", "accessToken"]) ??
-			extractToken(parsed, ["oauth_token", "oauthToken", "token"]);
-		if (token) {
-			return { name: "Authorization", value: `Bearer ${token}`, source: "file" };
+	const authDir = process.env.TELCLAUDE_AUTH_DIR;
+	const credentialsCandidates = [
+		process.env.CLAUDE_CODE_CREDENTIALS_PATH,
+		authDir ? path.join(authDir, ".credentials.json") : null,
+		authDir ? path.join(authDir, ".claude", ".credentials.json") : null,
+		path.join(process.env.HOME ?? os.homedir(), ".claude", ".credentials.json"),
+	].filter((candidate): candidate is string => Boolean(candidate));
+
+	for (const credentialsPath of credentialsCandidates) {
+		try {
+			const raw = fs.readFileSync(credentialsPath, "utf8");
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			const token =
+				extractToken(parsed, ["access_token", "accessToken"]) ??
+				extractToken(parsed, ["oauth_token", "oauthToken", "token"]);
+			if (token) {
+				return { name: "Authorization", value: `Bearer ${token}`, source: "file" };
+			}
+		} catch {
+			// Ignore missing/invalid credentials file
 		}
-	} catch {
-		// Ignore missing/invalid credentials file
 	}
 
 	return null;

@@ -37,6 +37,11 @@ services:
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # Claude skills profile (shared with agents)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      # Claude auth profile (relay-only OAuth tokens)
+      - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
       # Moltbook asymmetric auth: relay holds private key (can sign)
       - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:?MOLTBOOK_RPC_PRIVATE_KEY is required}
@@ -52,7 +57,8 @@ services:
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - telclaude-data:/data:rw
       - ./telclaude.json:/data/telclaude.json:ro
-      - telclaude-claude:/home/node/.claude:rw
+      - telclaude-claude-auth:/home/telclaude-auth:rw
+      - telclaude-claude-skills:/home/telclaude-skills:rw
       - totp-socket:/run/totp:rw
       - moltbook-memory:/moltbook/memory:rw
 
@@ -177,9 +183,10 @@ services:
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       # Internal token used to access the proxy (relay verifies + injects real creds)
       - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
-      # Ensure Claude Code state lives under /moltbook (no /home/node/.claude credentials)
+      # Ensure Claude Code state lives under a dedicated public profile
       - HOME=/moltbook
-      - TELCLAUDE_CLAUDE_HOME=/moltbook/.claude
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
       # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
       - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:?MOLTBOOK_RPC_PUBLIC_KEY is required}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
@@ -193,6 +200,7 @@ services:
     volumes:
       - moltbook-sandbox:/moltbook/sandbox:rw
       - moltbook-memory:/moltbook/memory:ro
+      - telclaude-claude-skills:/home/telclaude-skills:rw
 
     user: "0:0"
 
@@ -241,8 +249,12 @@ services:
 volumes:
   telclaude-data:
     name: telclaude-data
-  telclaude-claude:
-    name: telclaude-claude
+
+  # CRITICAL SECRETS - External volumes (protected from accidental deletion)
+  telclaude-claude-auth:
+    name: telclaude-claude-auth
+    external: true  # Pre-create with: docker volume create telclaude-claude-auth
+
   totp-data:
     name: telclaude-totp-data
   totp-socket:
@@ -252,6 +264,10 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
+
+  # Claude skills profile (shared across relay/agents)
+  telclaude-claude-skills:
+    name: telclaude-claude-skills
 
   # Moltbook isolated workspace (agent-moltbook RW)
   moltbook-sandbox:

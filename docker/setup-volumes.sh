@@ -14,12 +14,12 @@ set -euo pipefail
 
 echo "Creating external volumes for Telclaude..."
 
-# Claude Code credentials (OAuth tokens, settings)
-if docker volume inspect telclaude-claude >/dev/null 2>&1; then
-    echo "✓ telclaude-claude already exists"
+# Claude Code auth profile (OAuth tokens)
+if docker volume inspect telclaude-claude-auth >/dev/null 2>&1; then
+    echo "✓ telclaude-claude-auth already exists"
 else
-    docker volume create telclaude-claude
-    echo "✓ Created telclaude-claude"
+    docker volume create telclaude-claude-auth
+    echo "✓ Created telclaude-claude-auth"
 fi
 
 # TOTP secrets (encrypted 2FA seeds) - CRITICAL
@@ -34,7 +34,7 @@ echo ""
 echo "Volume setup complete!"
 echo ""
 echo "⚠️  IMPORTANT: Back up these volumes regularly:"
-echo "   - telclaude-claude: Claude OAuth tokens"
+echo "   - telclaude-claude-auth: Claude OAuth tokens"
 echo "   - telclaude-totp-data: Encrypted 2FA secrets (CANNOT be recovered if lost)"
 echo ""
 echo "To back up a volume:"

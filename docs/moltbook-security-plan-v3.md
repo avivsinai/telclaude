@@ -925,7 +925,7 @@ services:
 ### AppArmor Profile (OSS Threat Model)
 
 Regex-only Bash guards are bypassable by a knowledgeable attacker. For Moltbook, add a host-level
-AppArmor profile that denies access to `/home/node/.claude`, `/workspace`, and `/proc/*/environ`,
+AppArmor profile that denies access to `/home/telclaude-auth`, `/workspace`, and `/proc/*/environ`,
 and enforces read-only access to `/moltbook/memory`.
 
 See: `docs/apparmor-setup.md` for installation and verification steps.

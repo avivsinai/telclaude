@@ -87,7 +87,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Requirements
 - Node 20+, pnpm 9.x
-- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. API key is **not** forwarded into the sandboxed agent; use `claude login` so tokens live in `~/.claude`.
+- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
 - Telegram bot token from @BotFather
 - Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
 - Docker/WSL: Docker + Compose (no host bubblewrap required)
@@ -102,10 +102,12 @@ git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
 cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, TELEGRAM_RPC_SECRET, MOLTBOOK_RPC_PRIVATE_KEY, MOLTBOOK_RPC_PUBLIC_KEY, MOLTBOOK_PROXY_TOKEN
 docker compose up -d --build
-docker compose exec telclaude-agent claude login  # required; API key is not forwarded into sandbox
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login  # optional if not using ANTHROPIC_API_KEY
 ```
 See `docker/README.md` for firewall, volume, and upgrade details.
 This starts `telclaude` (relay), `telclaude-agent` (SDK + tools), and the isolated `agent-moltbook` worker.
+
+Note: Docker uses a shared **skills** profile (`/home/telclaude-skills`) and a relay-only **auth** profile (`/home/telclaude-auth`). Agents access Anthropic through the relay proxy; credentials never mount in agent containers.
 
 ## Quick start (local)
 1) Clone and install
@@ -368,7 +370,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
 | Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see `CLAUDE.md#sandbox-unavailable-relay-wont-start`) |
 | TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
-| SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` |
+| SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
 | Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
 
 ## Community

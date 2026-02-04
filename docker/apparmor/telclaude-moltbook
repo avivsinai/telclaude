@@ -27,7 +27,8 @@ profile telclaude-moltbook flags=(attach_disconnected,mediate_deleted) {
 
   # Working directory (read/write)
   /moltbook/sandbox/** rwklx,
-  # Moltbook-local Claude config/skills (credentials file explicitly denied)
+  # Moltbook-local Claude config/skills (shared skills profile)
+  /home/telclaude-skills/** rwklx,
   /moltbook/.claude/** rwklx,
 
   # Moltbook memory: read-only
@@ -35,7 +36,7 @@ profile telclaude-moltbook flags=(attach_disconnected,mediate_deleted) {
   deny /moltbook/memory/** wklx,
 
   # Deny sensitive locations
-  deny /home/node/.claude/** rwklx,
+  deny /home/telclaude-auth/** rwklx,
   deny /workspace/** rwklx,
   deny /run/secrets/** rwklx,
   deny /var/run/secrets/** rwklx,
