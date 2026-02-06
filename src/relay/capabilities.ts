@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { loadConfig } from "../config/config.js";
-import { verifyInternalAuth } from "../internal-auth.js";
+import { isInternalAuthScope, verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import {
@@ -32,6 +32,7 @@ import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-prox
 import {
 	handleTokenExchange,
 	handleTokenRefresh,
+	isScopeAutoStrict,
 	isTokenManagerActive,
 	verifyTokenLocally,
 } from "./token-manager.js";
@@ -67,7 +68,7 @@ function trySessionTokenAuth(
 	}
 
 	const result = verifyTokenLocally(token);
-	if (!result.valid || !result.scope) {
+	if (!result.valid || !result.scope || !isInternalAuthScope(result.scope)) {
 		return {
 			ok: false,
 			status: 401,
@@ -78,7 +79,7 @@ function trySessionTokenAuth(
 
 	return {
 		ok: true,
-		scope: result.scope as import("../internal-auth.js").InternalAuthScope,
+		scope: result.scope,
 	};
 }
 
@@ -531,8 +532,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					);
 
 			// Try v3 session token auth first (no vault roundtrip)
+			let usedSessionToken = false;
 			let authResult = trySessionTokenAuth(req);
-			if (!authResult) {
+			if (authResult) {
+				usedSessionToken = true;
+			} else {
 				// Fall back to v1/v2 auth
 				authResult = verifyInternalAuth(req, body);
 			}
@@ -546,6 +550,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			}
 			if (authResult.scope === "moltbook") {
 				const allowedPaths = new Set([
+					"/v1/auth/token-exchange",
+					"/v1/auth/token-refresh",
 					"/v1/moltbook.heartbeat",
 					"/v1/memory.propose",
 					"/v1/memory.snapshot",
@@ -554,6 +560,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
 				}
+			}
+
+			// Auto-strict: once a scope exchanges a v3 token, block v1/v2 auth for that scope.
+			if (!usedSessionToken && isScopeAutoStrict(authResult.scope)) {
+				writeJson(res, 401, { error: "Unauthorized." });
+				return;
 			}
 			logger.debug(
 				{ scope: authResult.scope, url: req.url, method: req.method },
@@ -573,8 +585,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 400, { error: "Invalid JSON." });
 					return;
 				}
-				const scope = exchangeBody.scope ?? authResult.scope;
-				const result = await handleTokenExchange(scope);
+				if (exchangeBody.scope && exchangeBody.scope !== authResult.scope) {
+					writeJson(res, 403, { ok: false, error: "Forbidden." });
+					return;
+				}
+				const result = await handleTokenExchange(authResult.scope);
 				writeJson(res, result.ok ? 200 : 500, result);
 				return;
 			}

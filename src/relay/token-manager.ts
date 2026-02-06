@@ -14,6 +14,7 @@
 
 import crypto from "node:crypto";
 
+import { type InternalAuthScope, isInternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
@@ -26,7 +27,7 @@ const REFRESH_WINDOW_MS = 10 * 60 * 1000; // agent should refresh at T-10min
 type IssuedToken = {
 	token: string;
 	expiresAt: number;
-	scope: string;
+	scope: InternalAuthScope;
 	sessionId: string;
 };
 
@@ -41,7 +42,7 @@ type ScopeState = {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let publicKeyCache: string | null = null;
-const scopeTokens = new Map<string, ScopeState>();
+const scopeTokens = new Map<InternalAuthScope, ScopeState>();
 
 /**
  * Initialize the token manager. Fetches the Ed25519 public key from vault.
@@ -87,7 +88,7 @@ export function getPublicKey(): string | null {
  * Issue a new session token for a scope.
  */
 export async function issueToken(
-	scope: string,
+	scope: InternalAuthScope,
 	ttlMs = DEFAULT_TOKEN_TTL_MS,
 ): Promise<IssuedToken | null> {
 	if (!publicKeyCache) return null;
@@ -204,7 +205,7 @@ export function verifyTokenLocally(token: string): {
 /**
  * Check if v1/v2 auth should be blocked for a scope (auto-strict mode).
  */
-export function isScopeAutoStrict(scope: string): boolean {
+export function isScopeAutoStrict(scope: InternalAuthScope): boolean {
 	return scopeTokens.get(scope)?.autoStrict ?? false;
 }
 
@@ -217,7 +218,7 @@ export function isScopeAutoStrict(scope: string): boolean {
  * Agent authenticates with static secret (v1/v2) and receives a session token.
  * After successful exchange, auto-strict mode is enabled for the scope.
  */
-export async function handleTokenExchange(scope: string): Promise<{
+export async function handleTokenExchange(scope: InternalAuthScope): Promise<{
 	ok: boolean;
 	token?: string;
 	expiresAt?: number;
@@ -257,7 +258,7 @@ export async function handleTokenRefresh(currentToken: string): Promise<{
 	error?: string;
 }> {
 	const verified = verifyTokenLocally(currentToken);
-	if (!verified.valid || !verified.scope) {
+	if (!verified.valid || !verified.scope || !isInternalAuthScope(verified.scope)) {
 		return { ok: false, error: verified.error ?? "Invalid token" };
 	}
 
