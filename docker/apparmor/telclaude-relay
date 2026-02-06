@@ -1,0 +1,80 @@
+#include <tunables/global>
+
+# Telclaude Relay AppArmor profile
+# Restricts the relay container to its intended paths. The relay holds secrets
+# (bot token, API keys) and manages security policy, so it needs network access
+# but should not touch workspace or agent-specific paths.
+
+profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  #include <abstractions/user-tmp>
+
+  # Allow general file access; deny rules below take precedence.
+  file,
+
+  # Allow execution of system binaries/libraries
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # App runtime
+  /app/** r,
+  /app/bin/** ix,
+  /app/node_modules/** mr,
+  /app/dist/** mr,
+
+  # Data directory (SQLite, sessions, config)
+  /data/** rwklx,
+
+  # Auth profile (OAuth tokens, skills)
+  /home/telclaude-auth/** rwklx,
+  /home/telclaude-skills/** rwklx,
+
+  # Sidecar sockets (read-only for vault, read-write for TOTP)
+  /run/totp/** rw,
+  /run/vault/** r,
+  deny /run/vault/** w,
+
+  # Media volumes
+  /media/inbox/** rwklx,
+  /media/outbox/** rwklx,
+
+  # Moltbook memory (relay is single writer)
+  /moltbook/memory/** rwklx,
+
+  # Deny workspace (relay should never touch user projects)
+  deny /workspace/** rwklx,
+
+  # Deny moltbook sandbox (only moltbook agent uses it)
+  deny /moltbook/sandbox/** rwklx,
+
+  # Block sensitive system paths
+  deny /run/secrets/** rwklx,
+  deny /var/run/secrets/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow w,
+  deny /etc/passwd w,
+
+  # Temp + device nodes
+  /tmp/** rwklx,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/tty rw,
+
+  # Network: allow standard traffic (relay needs egress for Telegram API, etc.)
+  network,
+  deny network raw,
+  deny network packet,
+}

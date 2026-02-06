@@ -11,6 +11,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { verifySessionToken } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "git-proxy-auth" });
@@ -155,4 +156,38 @@ export function decodeToken(tokenString: string): SessionToken | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Validate a session token, supporting both legacy HMAC tokens and v3 Ed25519 tokens.
+ * Tries v3 first (if public key available), then falls back to legacy HMAC.
+ *
+ * @param tokenString - Token string (base64 HMAC or v3:scope:... format)
+ * @param publicKeyBase64 - Ed25519 public key for v3 verification (optional)
+ * @returns Token payload if valid, null if invalid or expired
+ */
+export function validateSessionTokenV3(
+	tokenString: string,
+	publicKeyBase64: string | null,
+): SessionTokenPayload | null {
+	// Try v3 session token (starts with "v3:")
+	if (tokenString.startsWith("v3:") && publicKeyBase64) {
+		const result = verifySessionToken(tokenString, publicKeyBase64);
+		if (result?.ok) {
+			// Map v3 fields to SessionTokenPayload
+			const parts = tokenString.split(":");
+			const createdAt = Number(parts[3]);
+			const expiresAt = Number(parts[4]);
+			return {
+				sessionId: parts[2] ?? "",
+				createdAt,
+				expiresAt,
+			};
+		}
+		// v3 token but invalid - don't fall through to HMAC
+		return null;
+	}
+
+	// Fall back to legacy HMAC validation
+	return validateSessionToken(tokenString);
 }

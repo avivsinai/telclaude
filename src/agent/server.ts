@@ -194,44 +194,44 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					writeJson(res, 400, { error: "Invalid permission tier." });
 					return;
 				}
-					if (parsed.userId !== undefined && typeof parsed.userId !== "string") {
-						writeJson(res, 400, { error: "Invalid userId." });
-						return;
-					}
-					if (parsed.cwd !== undefined && typeof parsed.cwd !== "string") {
-						writeJson(res, 400, { error: "Invalid cwd." });
-						return;
-					}
+				if (parsed.userId !== undefined && typeof parsed.userId !== "string") {
+					writeJson(res, 400, { error: "Invalid userId." });
+					return;
+				}
+				if (parsed.cwd !== undefined && typeof parsed.cwd !== "string") {
+					writeJson(res, 400, { error: "Invalid cwd." });
+					return;
+				}
 
-					const scope = authResult.scope;
-					let effectiveTier = parsed.tier;
-					const effectiveEnableSkills = parsed.enableSkills;
-					let effectiveUserId = parsed.userId;
-					let effectiveCwd = resolveCwd(parsed.cwd);
+				const scope = authResult.scope;
+				let effectiveTier = parsed.tier;
+				const effectiveEnableSkills = parsed.enableSkills;
+				let effectiveUserId = parsed.userId;
+				const effectiveCwd = resolveCwd(parsed.cwd);
 
-					if (scope === "moltbook") {
-						if (parsed.tier !== "MOLTBOOK_SOCIAL") {
-							logger.warn(
-								{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey },
+				if (scope === "moltbook") {
+					if (parsed.tier !== "MOLTBOOK_SOCIAL") {
+						logger.warn(
+							{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey },
 							"moltbook scope forced to MOLTBOOK_SOCIAL tier",
 						);
 					}
-						effectiveTier = "MOLTBOOK_SOCIAL";
-						if (!effectiveUserId?.startsWith("moltbook:")) {
-							effectiveUserId = `moltbook:${effectiveUserId ?? "agent"}`;
-						}
+					effectiveTier = "MOLTBOOK_SOCIAL";
+					if (!effectiveUserId?.startsWith("moltbook:")) {
+						effectiveUserId = `moltbook:${effectiveUserId ?? "agent"}`;
 					}
+				}
 
-					logger.info(
-						{
-							userId: effectiveUserId,
-							poolKey: parsed.poolKey,
-							scope,
-							tier: effectiveTier,
-							cwd: effectiveCwd,
-						},
-						"agent received query request",
-					);
+				logger.info(
+					{
+						userId: effectiveUserId,
+						poolKey: parsed.poolKey,
+						scope,
+						tier: effectiveTier,
+						cwd: effectiveCwd,
+					},
+					"agent received query request",
+				);
 
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
@@ -241,14 +241,14 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					abortController.abort();
 				});
 
-					streamQuery(
-						{
-							...parsed,
-							cwd: effectiveCwd,
-							tier: effectiveTier,
-							enableSkills: effectiveEnableSkills,
-							userId: effectiveUserId,
-							timeoutMs,
+				streamQuery(
+					{
+						...parsed,
+						cwd: effectiveCwd,
+						tier: effectiveTier,
+						enableSkills: effectiveEnableSkills,
+						userId: effectiveUserId,
+						timeoutMs,
 					},
 					res,
 					abortController,

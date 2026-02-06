@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { getChildLogger } from "../logging.js";
+import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "secrets-keychain" });
 
@@ -216,6 +217,74 @@ class EncryptedFileProvider implements SecretsStorageProvider {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Vault Provider (delegates to vault daemon when available)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class VaultProvider implements SecretsStorageProvider {
+	readonly name = "vault";
+	private fallback: SecretsStorageProvider;
+
+	constructor(fallback: SecretsStorageProvider) {
+		this.fallback = fallback;
+		logger.debug({ fallback: fallback.name }, "vault provider initialized with fallback");
+	}
+
+	async store(key: string, value: string): Promise<void> {
+		try {
+			const client = getVaultClient();
+			await client.store({
+				protocol: "secret",
+				target: key,
+				credential: { type: "opaque", value },
+				label: key,
+			});
+			logger.debug({ key, provider: this.name }, "stored secret in vault");
+			return;
+		} catch (err) {
+			logger.warn({ key, error: String(err) }, "vault store failed, using fallback");
+		}
+		await this.fallback.store(key, value);
+	}
+
+	async get(key: string): Promise<string | null> {
+		try {
+			const client = getVaultClient();
+			const response = await client.getSecret(key, { timeout: 5000 });
+			if (response.ok && response.type === "get-secret") {
+				return response.value;
+			}
+		} catch (err) {
+			logger.debug({ key, error: String(err) }, "vault get failed, trying fallback");
+		}
+		return this.fallback.get(key);
+	}
+
+	async delete(key: string): Promise<boolean> {
+		let vaultDeleted = false;
+		try {
+			const client = getVaultClient();
+			const response = await client.delete("secret", key);
+			vaultDeleted = response.deleted;
+		} catch (err) {
+			logger.debug({ key, error: String(err) }, "vault delete failed");
+		}
+		const fallbackDeleted = await this.fallback.delete(key);
+		return vaultDeleted || fallbackDeleted;
+	}
+
+	async has(key: string): Promise<boolean> {
+		try {
+			const client = getVaultClient();
+			const response = await client.getSecret(key, { timeout: 5000 });
+			if (response.ok) return true;
+		} catch {
+			// Fall through
+		}
+		return this.fallback.has(key);
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Provider Factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -281,6 +350,21 @@ async function getStorageProvider(): Promise<SecretsStorageProvider> {
 
 			cachedProvider = new EncryptedFileProvider(filePath, encryptionKey);
 		}
+	}
+
+	// Wrap with vault provider if vault is available
+	const baseProvider = cachedProvider;
+	try {
+		if (await isVaultAvailable()) {
+			cachedProvider = new VaultProvider(baseProvider);
+			logger.info(
+				{ provider: cachedProvider.name, fallback: baseProvider.name },
+				"secrets storage provider initialized with vault",
+			);
+			return cachedProvider;
+		}
+	} catch {
+		// Vault not available, use base provider
 	}
 
 	logger.info({ provider: cachedProvider.name }, "secrets storage provider initialized");

@@ -29,8 +29,58 @@ import { textToSpeech } from "../services/tts.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
 import { handleAnthropicProxyRequest, isAnthropicProxyRequest } from "./anthropic-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
+import {
+	handleTokenExchange,
+	handleTokenRefresh,
+	isTokenManagerActive,
+	verifyTokenLocally,
+} from "./token-manager.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
+
+/**
+ * Try to authenticate using a v3 session token header.
+ * Returns null if no session token header present (fall through to v1/v2).
+ */
+function trySessionTokenAuth(
+	req: http.IncomingMessage,
+): import("../internal-auth.js").InternalAuthResult | null {
+	const tokenHeader = req.headers["x-telclaude-session-token"];
+	const authType = req.headers["x-telclaude-auth-type"];
+
+	if (authType !== "session" && !tokenHeader) {
+		return null; // No session token, fall through
+	}
+
+	const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
+	if (!token) {
+		return null;
+	}
+
+	if (!isTokenManagerActive()) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Session token auth not available.",
+		};
+	}
+
+	const result = verifyTokenLocally(token);
+	if (!result.valid || !result.scope) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: result.error ?? "Invalid session token.",
+		};
+	}
+
+	return {
+		ok: true,
+		scope: result.scope as import("../internal-auth.js").InternalAuthScope,
+	};
+}
 
 const DEFAULT_BODY_LIMIT = 524288;
 const DEFAULT_PROMPT_LIMIT = 8000;
@@ -450,8 +500,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			return;
 		}
 
-		const isMemorySnapshotGet =
-			req.method === "GET" && requestPath === "/v1/memory.snapshot";
+		const isMemorySnapshotGet = req.method === "GET" && requestPath === "/v1/memory.snapshot";
 
 		if (!isMemorySnapshotGet && req.method !== "POST") {
 			writeJson(res, 405, { error: "Method not allowed." });
@@ -480,7 +529,13 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 						req,
 						req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit,
 					);
-			const authResult = verifyInternalAuth(req, body);
+
+			// Try v3 session token auth first (no vault roundtrip)
+			let authResult = trySessionTokenAuth(req);
+			if (!authResult) {
+				// Fall back to v1/v2 auth
+				authResult = verifyInternalAuth(req, body);
+			}
 			if (!authResult.ok) {
 				logger.warn(
 					{ reason: authResult.reason, url: req.url },
@@ -504,6 +559,55 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				{ scope: authResult.scope, url: req.url, method: req.method },
 				"capability request authenticated",
 			);
+
+			// ── Token Exchange & Refresh ──────────────────────────────────────
+			if (requestPath === "/v1/auth/token-exchange") {
+				if (!isTokenManagerActive()) {
+					writeJson(res, 503, { ok: false, error: "Token manager not available" });
+					return;
+				}
+				let exchangeBody: { scope?: string };
+				try {
+					exchangeBody = JSON.parse(body) as { scope?: string };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				const scope = exchangeBody.scope ?? authResult.scope;
+				const result = await handleTokenExchange(scope);
+				writeJson(res, result.ok ? 200 : 500, result);
+				return;
+			}
+
+			if (requestPath === "/v1/auth/token-refresh") {
+				if (!isTokenManagerActive()) {
+					writeJson(res, 503, { ok: false, error: "Token manager not available" });
+					return;
+				}
+				// Refresh can be authenticated with session token header
+				const sessionToken = req.headers["x-telclaude-session-token"];
+				const tokenStr = Array.isArray(sessionToken) ? sessionToken[0] : sessionToken;
+				if (!tokenStr) {
+					let refreshBody: { token?: string };
+					try {
+						refreshBody = JSON.parse(body) as { token?: string };
+					} catch {
+						writeJson(res, 400, { error: "Invalid JSON." });
+						return;
+					}
+					if (!refreshBody.token) {
+						writeJson(res, 400, { error: "Missing token." });
+						return;
+					}
+					const result = await handleTokenRefresh(refreshBody.token);
+					writeJson(res, result.ok ? 200 : 401, result);
+					return;
+				}
+				const result = await handleTokenRefresh(tokenStr);
+				writeJson(res, result.ok ? 200 : 401, result);
+				return;
+			}
+
 			if (req.url === "/v1/moltbook.heartbeat") {
 				if (authResult.scope !== "moltbook") {
 					writeJson(res, 403, { error: "Forbidden." });

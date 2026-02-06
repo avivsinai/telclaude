@@ -24,7 +24,7 @@ export function registerSendCommand(program: Command): void {
 			const verbose = program.opts().verbose || opts.verbose;
 
 			try {
-				const env = readEnv();
+				const env = await readEnv();
 				const cfg = loadConfig();
 				const token = env.telegramBotToken;
 

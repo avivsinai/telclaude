@@ -8,15 +8,19 @@
 import { createConnection } from "node:net";
 import {
 	type DeleteResponse,
+	type GetPublicKeyResponse,
 	type GetResponse,
+	type GetSecretResponse,
 	type GetTokenResponse,
 	getDefaultSocketPath,
 	type ListResponse,
 	type Protocol,
+	type SignTokenResponse,
 	type StoreRequest,
 	type VaultRequest,
 	type VaultResponse,
 	VaultResponseSchema,
+	type VerifyTokenResponse,
 } from "./protocol.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,10 +101,54 @@ export class VaultClient {
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
+	// Token Signing
+	// ═══════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Sign a session token. Auto-generates Ed25519 keypair on first use.
+	 */
+	async signToken(
+		scope: string,
+		sessionId: string,
+		ttlMs: number,
+		options?: { timeout?: number },
+	): Promise<SignTokenResponse> {
+		return (await this.send(
+			{ type: "sign-token", scope, sessionId, ttlMs },
+			options?.timeout,
+		)) as SignTokenResponse;
+	}
+
+	/**
+	 * Verify a session token signature and check expiry.
+	 */
+	async verifyToken(token: string, options?: { timeout?: number }): Promise<VerifyTokenResponse> {
+		return (await this.send(
+			{ type: "verify-token", token },
+			options?.timeout,
+		)) as VerifyTokenResponse;
+	}
+
+	/**
+	 * Get the Ed25519 public key for local token verification.
+	 */
+	async getPublicKey(options?: { timeout?: number }): Promise<GetPublicKeyResponse> {
+		return (await this.send({ type: "get-public-key" }, options?.timeout)) as GetPublicKeyResponse;
+	}
+
+	/**
+	 * Get an opaque secret value.
+	 */
+	async getSecret(target: string, options?: { timeout?: number }): Promise<GetSecretResponse> {
+		return (await this.send({ type: "get-secret", target }, options?.timeout)) as GetSecretResponse;
+	}
+
+	// ═══════════════════════════════════════════════════════════════════════════
 	// Socket Communication
 	// ═══════════════════════════════════════════════════════════════════════════
 
-	private async send(request: VaultRequest): Promise<VaultResponse> {
+	private async send(request: VaultRequest, timeoutOverride?: number): Promise<VaultResponse> {
+		const effectiveTimeout = timeoutOverride ?? this.timeout;
 		return new Promise((resolve, reject) => {
 			const socket = createConnection({ path: this.socketPath });
 			let buffer = "";
@@ -111,9 +159,9 @@ export class VaultClient {
 				if (!resolved) {
 					resolved = true;
 					socket.destroy();
-					reject(new Error(`Vault request timed out after ${this.timeout}ms`));
+					reject(new Error(`Vault request timed out after ${effectiveTimeout}ms`));
 				}
-			}, this.timeout);
+			}, effectiveTimeout);
 
 			socket.on("connect", () => {
 				socket.write(`${JSON.stringify(request)}\n`);

@@ -22,11 +22,11 @@ import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import {
+	chatIdToString,
+	escapeRegex,
 	VALIDATED_CLAUDE_AUTH_DIR,
 	VALIDATED_CLAUDE_CONFIG_DIR,
 	VALIDATED_DATA_DIR,
-	chatIdToString,
-	escapeRegex,
 } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
@@ -411,7 +411,7 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])settings(?:\\.local)?\\.json$`,
 					"i",
 				),
-		  ]
+			]
 		: []),
 	// === Security-critical skills ===
 	// SECURITY: Prevents self-modification of the security-gate skill prompt.
@@ -422,7 +422,7 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])skills(?:[/\\\\])security-gate(?:[/\\\\]|$)`,
 					"i",
 				),
-		  ]
+			]
 		: []),
 	// === Telclaude source code (defense in depth) ===
 	// SECURITY: Agent has no reason to write to telclaude's own source.
@@ -690,7 +690,7 @@ function globCouldMatchClaudeSettings(pattern: string): boolean {
 			? [
 					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.json"),
 					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.local.json"),
-			  ]
+				]
 			: []),
 	];
 	return expandedPatterns.some((expanded) =>

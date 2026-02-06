@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
+import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "anthropic-proxy" });
 
@@ -58,7 +59,28 @@ function isPrivateIp(address: string | null): boolean {
 	return false;
 }
 
-function buildAuthHeader(): AuthHeader | null {
+async function buildAuthHeader(): Promise<AuthHeader | null> {
+	// 1. Try vault first (5s timeout to avoid blocking startup)
+	try {
+		if (await isVaultAvailable({ timeout: 2000 })) {
+			const client = getVaultClient();
+			// Try API key from vault
+			const apiKeyResp = await client.get("http", "api.anthropic.com");
+			if (apiKeyResp.ok && apiKeyResp.type === "get" && apiKeyResp.entry) {
+				const cred = apiKeyResp.entry.credential;
+				if (cred.type === "api-key") {
+					return { name: cred.header, value: cred.token, source: "vault" };
+				}
+				if (cred.type === "bearer") {
+					return { name: "Authorization", value: `Bearer ${cred.token}`, source: "vault" };
+				}
+			}
+		}
+	} catch (err) {
+		logger.debug({ error: String(err) }, "vault auth lookup failed, trying env/file");
+	}
+
+	// 2. Environment variables
 	const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN;
 	if (oauthToken) {
 		return { name: "Authorization", value: `Bearer ${oauthToken}`, source: "env" };
@@ -69,6 +91,7 @@ function buildAuthHeader(): AuthHeader | null {
 		return { name: "x-api-key", value: apiKey, source: "env" };
 	}
 
+	// 3. Credentials file
 	const authDir = process.env.TELCLAUDE_AUTH_DIR;
 	const credentialsCandidates = [
 		process.env.CLAUDE_CODE_CREDENTIALS_PATH,
@@ -207,7 +230,7 @@ export async function handleAnthropicProxyRequest(
 		return;
 	}
 
-	const authHeader = buildAuthHeader();
+	const authHeader = await buildAuthHeader();
 	if (!authHeader) {
 		logger.warn("[anthropic-proxy] missing Anthropic credentials");
 		res.writeHead(500, { "Content-Type": "application/json" });
