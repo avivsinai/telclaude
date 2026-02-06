@@ -38,6 +38,10 @@ export type InternalAuthResult =
 	| { ok: true; scope: InternalAuthScope }
 	| { ok: false; status: number; error: string; reason: string };
 
+export function isInternalAuthScope(value: string): value is InternalAuthScope {
+	return value === "telegram" || value === "moltbook" || value === "legacy";
+}
+
 type InternalAuthOptions = {
 	scope?: InternalAuthScope;
 	secret?: string;
@@ -310,13 +314,16 @@ export function verifySessionToken(
 		};
 	}
 
-	// Map scope to InternalAuthScope
-	const validScopes: InternalAuthScope[] = ["telegram", "moltbook", "legacy"];
-	const authScope: InternalAuthScope = validScopes.includes(scope as InternalAuthScope)
-		? (scope as InternalAuthScope)
-		: "telegram";
+	if (!isInternalAuthScope(scope)) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Invalid session token scope.",
+		};
+	}
 
-	return { ok: true, scope: authScope };
+	return { ok: true, scope };
 }
 
 /**
