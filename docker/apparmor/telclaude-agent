@@ -1,0 +1,90 @@
+#include <tunables/global>
+
+# Telclaude Agent AppArmor profile
+# Restricts the Telegram agent container to workspace and media paths.
+# The agent runs Claude SDK tools and should only access the user's
+# workspace - never relay secrets, auth tokens, or other containers' data.
+
+profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  #include <abstractions/user-tmp>
+
+  # Allow general file access; deny rules below take precedence.
+  file,
+
+  # Allow execution of system binaries/libraries
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # App runtime
+  /app/** r,
+  /app/bin/** ix,
+  /app/node_modules/** mr,
+  /app/dist/** mr,
+
+  # Workspace (read/write - this is where Claude works)
+  /workspace/** rwklx,
+
+  # Claude skills profile (shared)
+  /home/telclaude-skills/** rwklx,
+
+  # Moltbook memory (read-only in agent)
+  /moltbook/memory/** r,
+  deny /moltbook/memory/** wklx,
+
+  # Media volumes (read-only in agent)
+  /media/inbox/** r,
+  deny /media/inbox/** wklx,
+  /media/outbox/** r,
+  deny /media/outbox/** wklx,
+
+  # Config file (read-only)
+  /data/telclaude.json r,
+
+  # Deny relay auth secrets
+  deny /home/telclaude-auth/** rwklx,
+
+  # Deny relay data (SQLite, sessions)
+  deny /data/*.db rwklx,
+  deny /data/*.db-journal rwklx,
+  deny /data/*.db-wal rwklx,
+
+  # Deny vault and TOTP sockets
+  deny /run/vault/** rwklx,
+  deny /run/totp/** rwklx,
+
+  # Deny moltbook sandbox (only moltbook agent uses it)
+  deny /moltbook/sandbox/** rwklx,
+
+  # Block sensitive system paths
+  deny /run/secrets/** rwklx,
+  deny /var/run/secrets/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow w,
+  deny /etc/passwd w,
+
+  # Temp + device nodes
+  /tmp/** rwklx,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/tty rw,
+
+  # Network: allow standard traffic, deny raw sockets.
+  # Firewall remains the primary network enforcement layer.
+  network,
+  deny network raw,
+  deny network packet,
+}

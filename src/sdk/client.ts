@@ -609,14 +609,10 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		/\/home\/telclaude-skills(?:\/|$)/i,
 	];
 	if (claudeConfigDir) {
-		forbiddenBashPatterns.push(
-			new RegExp(`^${escapeRegex(claudeConfigDir)}(?:[/\\\\]|$)`, "i"),
-		);
+		forbiddenBashPatterns.push(new RegExp(`^${escapeRegex(claudeConfigDir)}(?:[/\\\\]|$)`, "i"));
 	}
 	if (claudeAuthDir) {
-		forbiddenBashPatterns.push(
-			new RegExp(`^${escapeRegex(claudeAuthDir)}(?:[/\\\\]|$)`, "i"),
-		);
+		forbiddenBashPatterns.push(new RegExp(`^${escapeRegex(claudeAuthDir)}(?:[/\\\\]|$)`, "i"));
 	}
 	const networkExfilTools = /\b(curl|wget|ftp|nc|netcat|telnet)\b/i;
 	const pyHttp = /\bpython[23]?\s+-c\s+['"][\s\S]*requests\.(get|post|put|patch)/i;

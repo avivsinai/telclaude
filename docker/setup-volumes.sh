@@ -30,12 +30,21 @@ else
     echo "✓ Created telclaude-totp-data"
 fi
 
+# Vault credentials (encrypted API keys, OAuth tokens) - CRITICAL
+if docker volume inspect telclaude-vault-data >/dev/null 2>&1; then
+    echo "✓ telclaude-vault-data already exists"
+else
+    docker volume create telclaude-vault-data
+    echo "✓ Created telclaude-vault-data"
+fi
+
 echo ""
 echo "Volume setup complete!"
 echo ""
 echo "⚠️  IMPORTANT: Back up these volumes regularly:"
 echo "   - telclaude-claude-auth: Claude OAuth tokens"
 echo "   - telclaude-totp-data: Encrypted 2FA secrets (CANNOT be recovered if lost)"
+echo "   - telclaude-vault-data: Encrypted credentials (CANNOT be recovered if lost)"
 echo ""
 echo "To back up a volume:"
 echo "   docker run --rm -v telclaude-totp-data:/data -v \$(pwd):/backup alpine tar czf /backup/totp-backup.tar.gz -C /data ."

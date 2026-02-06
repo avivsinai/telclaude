@@ -20,6 +20,7 @@ import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
+import { initTokenManager } from "../relay/token-manager.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -104,7 +105,7 @@ export function registerRelayCommand(program: Command): void {
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
-				readEnv(); // Validates environment variables
+				await readEnv(); // Validates environment variables
 				let moltbookScheduler: MoltbookScheduler | null = null;
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
@@ -181,6 +182,14 @@ export function registerRelayCommand(program: Command): void {
 						if (vaultAvailable) {
 							startHttpCredentialProxy({ vaultSocketPath });
 							console.log("  HTTP proxy: enabled (credential injection via vault)");
+
+							// Initialize token manager for Ed25519 session tokens
+							const tokenInit = await initTokenManager();
+							if (tokenInit) {
+								console.log("  Session tokens: enabled (Ed25519 v3)");
+							} else {
+								console.log("  Session tokens: disabled (vault signing key unavailable)");
+							}
 						} else {
 							console.log("  HTTP proxy: disabled (vault daemon not running)");
 						}

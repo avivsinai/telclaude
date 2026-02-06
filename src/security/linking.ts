@@ -171,10 +171,7 @@ export function consumeLinkCode(
 			"invalidated TOTP session for newly linked user",
 		);
 
-		logger.info(
-			{ chatId, localUserId: row.local_user_id, linkedBy },
-			"identity link created",
-		);
+		logger.info({ chatId, localUserId: row.local_user_id, linkedBy }, "identity link created");
 
 		return { success: true as const, data: { localUserId: row.local_user_id } };
 	})();

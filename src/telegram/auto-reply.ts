@@ -124,8 +124,7 @@ const APPROVE_COMMAND_WINDOW_MS = 10 * 60_000;
 function checkApproveCommandRateLimit(chatId: number): boolean {
 	const db = getDb();
 	const now = Date.now();
-	const windowStart =
-		Math.floor(now / APPROVE_COMMAND_WINDOW_MS) * APPROVE_COMMAND_WINDOW_MS;
+	const windowStart = Math.floor(now / APPROVE_COMMAND_WINDOW_MS) * APPROVE_COMMAND_WINDOW_MS;
 
 	try {
 		const result = db.transaction(() => {
@@ -152,10 +151,7 @@ function checkApproveCommandRateLimit(chatId: number): boolean {
 
 		return result;
 	} catch (err) {
-		logger.error(
-			{ error: String(err), chatId },
-			"/approve rate limit check failed - blocking",
-		);
+		logger.error({ error: String(err), chatId }, "/approve rate limit check failed - blocking");
 		return false;
 	}
 }
@@ -879,7 +875,7 @@ export async function monitorTelegramProvider(
 		if (abortSignal?.aborted) break;
 
 		try {
-			const env = readEnv();
+			const env = await readEnv();
 			const token = env.telegramBotToken;
 
 			console.log("Connecting to Telegram...");
