@@ -1,0 +1,66 @@
+#include <tunables/global>
+
+# Telclaude Vault AppArmor profile
+# Most restrictive profile: no network, no mount, minimal filesystem access.
+# The vault daemon only needs to read/write encrypted credentials and the Unix socket.
+
+profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  #include <abstractions/base>
+
+  # Deny ALL network access (vault communicates only via Unix socket)
+  deny network,
+
+  # Deny mount operations
+  deny mount,
+  deny umount,
+  deny pivot_root,
+
+  # App runtime (read + execute)
+  /app/** r,
+  /app/bin/** ix,
+  /app/node_modules/** mr,
+  /app/dist/** mr,
+
+  # Node.js runtime
+  /usr/local/bin/node ix,
+  /usr/local/lib/node_modules/** mr,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # Data directory (encrypted credentials)
+  /data/** rwk,
+
+  # Unix socket for relay communication
+  /run/vault/** rwk,
+
+  # Home directory (logs)
+  /home/node/.telclaude/logs/** rw,
+
+  # Temp (required for Node.js)
+  /tmp/** rwklx,
+
+  # Device nodes
+  /dev/null rw,
+  /dev/urandom r,
+
+  # Block sensitive locations
+  deny /home/telclaude-auth/** rwklx,
+  deny /home/telclaude-skills/** rwklx,
+  deny /workspace/** rwklx,
+  deny /moltbook/** rwklx,
+  deny /run/secrets/** rwklx,
+  deny /var/run/secrets/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+  deny /proc/*/cmdline r,
+  deny /proc/**/cmdline r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow rw,
+  deny /etc/passwd w,
+}

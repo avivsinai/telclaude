@@ -26,26 +26,23 @@ services:
         condition: service_healthy
 
     environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
+      # Credentials: vault preferred, env vars as optional fallback
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
-      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GH_TOKEN=${GH_TOKEN:-}
+      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      # Claude skills profile (shared with agents)
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      # Claude auth profile (relay-only OAuth tokens)
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
-      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
-      # Moltbook asymmetric auth: relay holds private key (can sign)
-      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:?MOLTBOOK_RPC_PRIVATE_KEY is required}
+      # RPC: optional bootstrap fallback (v3 session tokens preferred)
+      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
+      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:-}
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+      # Vault socket (optional in single-relay mode)
+      - TELCLAUDE_VAULT_SOCKET=${TELCLAUDE_VAULT_SOCKET:-}
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
@@ -179,16 +176,12 @@ services:
       - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      # Internal token used to access the proxy (relay verifies + injects real creds)
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
-      # Ensure Claude Code state lives under a dedicated public profile
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
       - HOME=/moltbook
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
-      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:?MOLTBOOK_RPC_PUBLIC_KEY is required}
+      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_RUN_AS_ROOT=0

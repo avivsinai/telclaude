@@ -5,6 +5,7 @@ const HEADER_TIMESTAMP = "x-telclaude-timestamp";
 const HEADER_NONCE = "x-telclaude-nonce";
 const HEADER_SIGNATURE = "x-telclaude-signature";
 const HEADER_AUTH_TYPE = "x-telclaude-auth-type";
+const HEADER_SESSION_TOKEN = "x-telclaude-session-token";
 const SIGNING_VERSION = "v1";
 const SIGNING_VERSION_ASYMMETRIC = "v2";
 
@@ -246,6 +247,107 @@ export function buildInternalAuthHeaders(
 		"X-Telclaude-Nonce": nonce,
 		"X-Telclaude-Signature": signature,
 	};
+}
+
+/**
+ * Verify a v3 session token.
+ * Returns null if no session token header present (fall through to v1/v2).
+ * Requires a public key for Ed25519 verification.
+ */
+export function verifySessionToken(
+	token: string,
+	publicKeyBase64: string,
+): InternalAuthResult | null {
+	// Parse token: v3:{scope}:{sessionId}:{createdAt}:{expiresAt}:{signature}
+	const parts = token.split(":");
+	if (parts.length !== 6) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Invalid session token format.",
+		};
+	}
+
+	const [version, scope, sessionId, createdAtStr, expiresAtStr, signatureB64url] = parts;
+	if (version !== "v3") {
+		return { ok: false, status: 401, error: "Unauthorized.", reason: "Invalid token version." };
+	}
+	if (!scope || !sessionId || !signatureB64url) {
+		return { ok: false, status: 401, error: "Unauthorized.", reason: "Missing token fields." };
+	}
+
+	const expiresAt = Number(expiresAtStr);
+	if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+		return { ok: false, status: 401, error: "Unauthorized.", reason: "Token expired." };
+	}
+
+	// Verify Ed25519 signature
+	const payload = `v3:${scope}:${sessionId}:${createdAtStr}:${expiresAtStr}`;
+	try {
+		const publicKey = Buffer.from(publicKeyBase64, "base64");
+		const signature = Buffer.from(signatureB64url, "base64url");
+		const valid = crypto.verify(
+			null,
+			Buffer.from(payload),
+			{ key: publicKey, format: "der", type: "spki" },
+			signature,
+		);
+		if (!valid) {
+			return {
+				ok: false,
+				status: 401,
+				error: "Unauthorized.",
+				reason: "Invalid session token signature.",
+			};
+		}
+	} catch {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Session token verification failed.",
+		};
+	}
+
+	// Map scope to InternalAuthScope
+	const validScopes: InternalAuthScope[] = ["telegram", "moltbook", "legacy"];
+	const authScope: InternalAuthScope = validScopes.includes(scope as InternalAuthScope)
+		? (scope as InternalAuthScope)
+		: "telegram";
+
+	return { ok: true, scope: authScope };
+}
+
+/**
+ * Try v3 session token from request headers.
+ * Returns null if no session token, allowing fall-through to v1/v2.
+ */
+export function trySessionTokenFromRequest(
+	req: http.IncomingMessage,
+	publicKeyBase64: string | null,
+): InternalAuthResult | null {
+	const authType = getHeader(req, HEADER_AUTH_TYPE);
+	const sessionToken = getHeader(req, HEADER_SESSION_TOKEN);
+
+	if (authType !== "session" && !sessionToken) {
+		return null; // No v3 token, fall through
+	}
+
+	if (!sessionToken) {
+		return null;
+	}
+
+	if (!publicKeyBase64) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Session token auth not configured.",
+		};
+	}
+
+	return verifySessionToken(sessionToken, publicKeyBase64);
 }
 
 export function verifyInternalAuth(req: http.IncomingMessage, body: string): InternalAuthResult {

@@ -32,7 +32,7 @@ export const SENSITIVE_READ_PATHS = [
 		? [
 				path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.json"),
 				path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.local.json"),
-		  ]
+			]
 		: []),
 
 	// === Environment files (secrets!) ===
@@ -52,7 +52,7 @@ export const SENSITIVE_READ_PATHS = [
 		? [
 				path.join(VALIDATED_CLAUDE_AUTH_DIR, ".credentials.json"),
 				path.join(VALIDATED_CLAUDE_AUTH_DIR, ".claude", ".credentials.json"),
-		  ]
+			]
 		: []),
 	// Block direct reads of auth volume (relay-only)
 	...(VALIDATED_CLAUDE_AUTH_DIR ? [VALIDATED_CLAUDE_AUTH_DIR] : []),

@@ -15,6 +15,7 @@
 #   - Optional network firewall (requires root at startup, hence gosu pattern)
 #   - Named volumes for persistence
 #   - TOTP sidecar with encrypted file storage
+#   - Vault sidecar with encrypted credential storage
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -31,53 +32,52 @@ services:
     image: telclaude:latest
     container_name: telclaude
 
-    # Wait for TOTP daemon and agent to be ready
+    # Wait for sidecars and agent to be ready
     depends_on:
       totp:
+        condition: service_healthy
+      vault:
         condition: service_healthy
       telclaude-agent:
         condition: service_started
 
     environment:
-      # Required: Telegram bot token
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
-
-      # Optional: Anthropic API key (if not using claude login)
+      # ── Credentials now live in vault ──────────────────────────────────────
+      # Bot token, API keys, OAuth tokens, and RPC keys are stored in vault.
+      # Run `telclaude vault import-secrets` and `telclaude vault import-anthropic`
+      # to migrate existing credentials.
+      #
+      # Env var fallbacks (optional, for migration/bootstrap):
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Optional: Claude Code OAuth token (for proxy-based auth)
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      # Internal proxy token required by Moltbook agent for Anthropic proxy access
-      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
 
-      # Secrets storage encryption (reuses TOTP key for convenience)
-      # Enables `telclaude setup-openai` and `telclaude setup-git`
-      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-      # API keys (tier-based: auto-exposed for WRITE_LOCAL+, use setup-* commands or env vars)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GH_TOKEN=${GH_TOKEN:-}
+      # Moltbook proxy token — agents use this to authenticate with Anthropic proxy
+      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
 
       # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      # Claude skills profile (shared with agents)
-      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
-      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      # Claude auth profile (relay-only OAuth tokens)
+      # Claude config dir = auth volume (relay-only).
+      - CLAUDE_CONFIG_DIR=/home/telclaude-auth
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
       - TELCLAUDE_CAPABILITIES_ENABLED=1
-      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
-      # Moltbook asymmetric auth: relay holds private key (can sign)
-      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:?MOLTBOOK_RPC_PRIVATE_KEY is required}
-      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELEGRAM_RPC_SECRET}}
+      # RPC secret: optional bootstrap fallback (v3 session tokens preferred)
+      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
+      # Moltbook asymmetric auth: fetched from vault at startup (env fallback)
+      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:-}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
       # TOTP daemon socket (shared with sidecar)
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
+
+      # Vault daemon socket (shared with sidecar)
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
 
       # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
@@ -99,12 +99,14 @@ services:
       # Configuration file
       - ./telclaude.json:/data/telclaude.json:ro
 
-      # Claude auth + skills profiles (auth is relay-only)
+      # Claude config (auth + skills installed at runtime) — relay-only
       - telclaude-claude-auth:/home/telclaude-auth:rw
-      - telclaude-claude-skills:/home/telclaude-skills:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
+
+      # Shared socket for vault daemon communication (relay reads credentials)
+      - vault-socket:/run/vault:ro
 
       # Moltbook memory (relay is single writer)
       - moltbook-memory:/moltbook/memory:rw
@@ -154,6 +156,7 @@ services:
     networks:
       - agent-relay-net
       - relay-totp-net
+      - relay-vault-net
       - relay-egress
       - moltbook-relay-net
 
@@ -199,13 +202,12 @@ services:
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       # Internal token used to access the proxy (relay verifies + injects real creds)
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
-      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:?TELEGRAM_RPC_SECRET is required}
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      # RPC secret: optional bootstrap fallback (v3 session tokens preferred)
+      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
 
       # Git proxy for secure git operations (token never exposed to agent)
-      # The proxy intercepts git requests and adds authentication transparently
       - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
-      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELEGRAM_RPC_SECRET}}
 
       # Media paths (inbox/outbox split)
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
@@ -301,14 +303,15 @@ services:
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      # Internal token used to access the proxy (relay verifies + injects real creds)
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:?MOLTBOOK_PROXY_TOKEN is required}
+      # Internal token used to access the proxy
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
       # Ensure Claude Code state lives under a dedicated public profile
       - HOME=/moltbook
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
       # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
-      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:?MOLTBOOK_RPC_PUBLIC_KEY is required}
+      # Optional with vault — relay can issue v3 session tokens instead
+      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_RUN_AS_ROOT=0
@@ -457,6 +460,91 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Vault Daemon Sidecar
+  #
+  # Stores credentials encrypted at rest (AES-256-GCM) and exposes them via
+  # Unix socket. The relay's HTTP credential proxy reads from the socket and
+  # injects credentials into outbound requests transparently.
+  #
+  # SECURITY: No external network connectivity (relay-vault-net is internal).
+  # The vault container only talks to relay via the shared socket volume.
+  # No curl, git, or other utilities installed.
+  # ─────────────────────────────────────────────────────────────────────────────
+  vault:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vault
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude-vault:latest
+    container_name: telclaude-vault
+
+    environment:
+      # Encryption key for credential storage (REQUIRED)
+      # Generate with: openssl rand -base64 32
+      # IMPORTANT: Keep this safe! If lost, all stored credentials become unrecoverable.
+      - VAULT_ENCRYPTION_KEY=${VAULT_ENCRYPTION_KEY:?VAULT_ENCRYPTION_KEY is required}
+
+      # Socket path (shared with relay via volume)
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+
+      - NODE_ENV=production
+
+    volumes:
+      # Persistent vault data (encrypted credentials file)
+      - vault-data:/data:rw
+
+      # Shared socket for relay communication
+      - vault-socket:/run/vault:rw
+
+    security_opt:
+      - no-new-privileges:true
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
+
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 128M
+    cpus: 0.5
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
+
+    networks:
+      - relay-vault-net
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/vault/vault.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Named Volumes
 #
@@ -487,10 +575,26 @@ volumes:
     name: telclaude-totp-data
     external: true
 
+  # Vault daemon data: encrypted credentials
+  # ⚠️  CANNOT BE RECOVERED IF DELETED - user must re-add all credentials
+  vault-data:
+    name: telclaude-vault-data
+    external: true
+
   # Shared Unix socket for relay ↔ TOTP communication
   # Uses tmpfs for better performance and automatic cleanup
   totp-socket:
     name: telclaude-totp-socket
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
+
+  # Shared Unix socket for relay ↔ vault communication
+  # Uses tmpfs for better performance and automatic cleanup
+  vault-socket:
+    name: telclaude-vault-socket
     driver: local
     driver_opts:
       type: tmpfs
@@ -533,6 +637,11 @@ networks:
 
   relay-totp-net:
     name: telclaude-relay-totp
+    driver: bridge
+    internal: true
+
+  relay-vault-net:
+    name: telclaude-relay-vault
     driver: bridge
     internal: true
 
