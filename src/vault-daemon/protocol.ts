@@ -517,9 +517,14 @@ export type VaultResponse = z.infer<typeof VaultResponseSchema>;
 
 /**
  * Get the default socket path for the vault daemon.
- * Uses ~/.telclaude/vault.sock
+ *
+ * Resolution order:
+ * 1) TELCLAUDE_VAULT_SOCKET (recommended for Docker / sidecar setups)
+ * 2) ~/.telclaude/vault.sock
  */
 export function getDefaultSocketPath(): string {
+	const configured = process.env.TELCLAUDE_VAULT_SOCKET?.trim();
+	if (configured) return configured;
 	const home = process.env.HOME || "/tmp";
 	return `${home}/.telclaude/vault.sock`;
 }
