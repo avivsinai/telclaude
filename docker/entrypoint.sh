@@ -118,8 +118,20 @@ if [ "$(id -u)" = "0" ]; then
         # Relay container: Minimal git config (relay doesn't do git operations)
         # Just set safe defaults for any incidental git usage
         echo "[entrypoint] Relay mode: minimal git config"
-        git config --global init.defaultBranch main
-        git config --global core.autocrlf input
+
+        # Check if HOME is actually writable (not just permissions, but filesystem)
+        # On read-only filesystems, permission checks pass but writes fail
+        if touch "$HOME/.gitconfig-test" 2>/dev/null; then
+            rm -f "$HOME/.gitconfig-test"
+            git config --global init.defaultBranch main
+            git config --global core.autocrlf input
+        else
+            # HOME is read-only (e.g., moltbook agent), use tmpfs
+            echo "[entrypoint] HOME is read-only, using /tmp for git config"
+            export GIT_CONFIG_GLOBAL="/tmp/.gitconfig"
+            git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
+            git config --file "$GIT_CONFIG_GLOBAL" core.autocrlf input
+        fi
     fi
 
     # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)
