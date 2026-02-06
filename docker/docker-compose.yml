@@ -82,6 +82,8 @@ services:
       # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      # Internal hosts allowed through firewall (relay needs to reach agents)
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-moltbook}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -158,11 +160,11 @@ services:
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "telclaude", "provider-health", "--json"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8790/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
     logging:
       driver: json-file
@@ -218,6 +220,8 @@ services:
 
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      # Internal hosts allowed through firewall (agent needs relay + sidecars)
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,citizen-services}
 
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
@@ -352,6 +356,13 @@ services:
         reservations:
           cpus: "1"
           memory: 512M
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8789/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
     networks:
       - moltbook-relay-net
