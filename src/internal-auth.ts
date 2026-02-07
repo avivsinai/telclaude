@@ -224,22 +224,31 @@ export function buildInternalAuthHeaders(
 	const nonce = crypto.randomBytes(16).toString("hex");
 	const input: SignatureInput = { timestamp, nonce, method, path, body };
 
-	// For moltbook scope, require asymmetric auth (no symmetric fallback)
+	// For moltbook scope: prefer asymmetric auth, fall back to symmetric for agent→relay bootstrap
 	if (options?.scope === "moltbook") {
 		const { privateKey } = loadMoltbookAsymmetricKeys();
-		if (!privateKey) {
-			throw new Error(
-				`${MOLTBOOK_RPC_PRIVATE_KEY_ENV} is required for moltbook scope. ` +
-					`Generate keys with: telclaude moltbook-keygen`,
-			);
+		if (privateKey) {
+			const signature = signAsymmetric(privateKey, input);
+			return {
+				"X-Telclaude-Timestamp": timestamp,
+				"X-Telclaude-Nonce": nonce,
+				"X-Telclaude-Signature": signature,
+				"X-Telclaude-Auth-Type": "asymmetric",
+			};
 		}
-		const signature = signAsymmetric(privateKey, input);
-		return {
-			"X-Telclaude-Timestamp": timestamp,
-			"X-Telclaude-Nonce": nonce,
-			"X-Telclaude-Signature": signature,
-			"X-Telclaude-Auth-Type": "asymmetric",
-		};
+		// Agent-side: no private key, use symmetric secret for token-exchange bootstrap
+		const moltbookSecret = process.env[MOLTBOOK_RPC_SECRET_ENV];
+		if (moltbookSecret) {
+			const signature = computeSignature(moltbookSecret, input);
+			return {
+				"X-Telclaude-Timestamp": timestamp,
+				"X-Telclaude-Nonce": nonce,
+				"X-Telclaude-Signature": signature,
+			};
+		}
+		throw new Error(
+			`Moltbook auth requires ${MOLTBOOK_RPC_PRIVATE_KEY_ENV} (relay) or ${MOLTBOOK_RPC_SECRET_ENV} (agent bootstrap).`,
+		);
 	}
 
 	// Symmetric HMAC for non-moltbook scopes (telegram, legacy)

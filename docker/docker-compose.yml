@@ -68,8 +68,11 @@ services:
       - TELCLAUDE_CAPABILITIES_ENABLED=1
       # RPC secret: optional bootstrap fallback (v3 session tokens preferred)
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
-      # Moltbook asymmetric auth: fetched from vault at startup (env fallback)
+      # Moltbook auth: private key for relay→agent, symmetric secret for agent→relay bootstrap
       - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:-}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:-}
+      # Git proxy session token secret (shared with agent for HMAC validation)
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
@@ -133,6 +136,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      - apparmor:telclaude-relay
 
     read_only: true
     tmpfs:
@@ -208,6 +212,7 @@ services:
 
       # Git proxy for secure git operations (token never exposed to agent)
       - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
 
       # Media paths (inbox/outbox split)
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
@@ -263,6 +268,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      - apparmor:telclaude-agent
 
     read_only: true
     tmpfs:
@@ -309,9 +315,9 @@ services:
       - HOME=/moltbook
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      # Moltbook asymmetric auth: agent holds public key only (can verify, cannot forge)
-      # Optional with vault — relay can issue v3 session tokens instead
+      # Moltbook auth: public key for verifying relay→agent, symmetric secret for agent→relay bootstrap
       - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_RUN_AS_ROOT=0
@@ -503,6 +509,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      - apparmor:telclaude-vault
 
     user: "1000:1000"
 
