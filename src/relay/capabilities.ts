@@ -563,7 +563,10 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			}
 
 			// Auto-strict: once a scope exchanges a v3 token, block v1/v2 auth for that scope.
-			if (!usedSessionToken && isScopeAutoStrict(authResult.scope)) {
+			// IMPORTANT: token-exchange/refresh remain available for bootstrap/recovery.
+			const isTokenAuthEndpoint =
+				requestPath === "/v1/auth/token-exchange" || requestPath === "/v1/auth/token-refresh";
+			if (!isTokenAuthEndpoint && !usedSessionToken && isScopeAutoStrict(authResult.scope)) {
 				writeJson(res, 401, { error: "Unauthorized." });
 				return;
 			}

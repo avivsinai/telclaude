@@ -1,4 +1,5 @@
-import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
+import { buildRpcAuthHeaders } from "../agent/token-client.js";
+import type { InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import type { MemorySnapshotRequest, MemorySnapshotResponse } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
@@ -35,7 +36,7 @@ async function postJson<T>(path: string, body: unknown, scope?: InternalAuthScop
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildInternalAuthHeaders("POST", path, payload, { scope: effectiveScope }),
+			...buildRpcAuthHeaders("POST", path, payload, effectiveScope),
 		},
 		body: payload,
 	});

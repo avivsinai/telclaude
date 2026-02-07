@@ -1,6 +1,7 @@
 import fsSync from "node:fs";
 import type { Command } from "commander";
 import { startAgentServer } from "../agent/server.js";
+import { bootstrapSessionToken } from "../agent/token-client.js";
 import { getChildLogger } from "../logging.js";
 import { getSandboxMode } from "../sandbox/index.js";
 
@@ -66,6 +67,23 @@ export function registerAgentCommand(program: Command): void {
 			});
 
 			logger.info({ port, host }, "agent server started");
+
+			// Bootstrap session token (non-blocking, falls back to v1/v2 if unavailable)
+			const relayUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+			if (relayUrl) {
+				const scope = isMoltbookAgent ? "moltbook" : "telegram";
+				bootstrapSessionToken(relayUrl, scope)
+					.then((ok) => {
+						if (ok) {
+							logger.info({ scope }, "session token bootstrapped (Ed25519 v3)");
+						} else {
+							logger.info({ scope }, "session token unavailable, using static auth");
+						}
+					})
+					.catch((err) => {
+						logger.warn({ error: String(err) }, "session token bootstrap failed");
+					});
+			}
 
 			// Keep the process alive (server runs indefinitely)
 			await new Promise(() => {});

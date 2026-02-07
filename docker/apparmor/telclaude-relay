@@ -37,10 +37,11 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   /home/telclaude-auth/** rwklx,
   /home/telclaude-skills/** rwklx,
 
-  # Sidecar sockets (read-only for vault, read-write for TOTP)
+  # Sidecar sockets (TOTP + vault)
   /run/totp/** rw,
-  /run/vault/** r,
-  deny /run/vault/** w,
+  # Vault socket needs rw: connect() requires write on Unix sockets.
+  # Docker volume is mounted :ro so relay cannot create/delete files in /run/vault.
+  /run/vault/** rw,
 
   # Media volumes
   /media/inbox/** rwklx,

@@ -1,4 +1,4 @@
-import { buildInternalAuthHeaders } from "../internal-auth.js";
+import { buildRpcAuthHeaders } from "../agent/token-client.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "relay-capabilities-client" });
@@ -18,7 +18,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildInternalAuthHeaders("POST", path, payload, { scope: "telegram" }),
+			...buildRpcAuthHeaders("POST", path, payload, "telegram"),
 		},
 		body: payload,
 	});
