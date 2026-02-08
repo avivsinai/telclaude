@@ -68,7 +68,7 @@ RUN pnpm prune --prod --ignore-scripts \
 # ─────────────────────────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS claude-cli
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@latest
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 3: Runtime

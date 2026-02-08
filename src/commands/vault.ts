@@ -11,7 +11,7 @@
  * - telclaude vault test <protocol> <target> - Test if vault can retrieve credential
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -639,7 +639,14 @@ export function registerVaultCommand(program: Command): void {
 					join(process.env.HOME ?? os.homedir(), ".claude", ".credentials.json"),
 				].filter((p): p is string => typeof p === "string" && p.length > 1);
 
-				let token: string | undefined;
+				type OAuthCreds = {
+					accessToken: string;
+					refreshToken: string;
+					expiresAt: number;
+					scopes?: string[];
+				};
+
+				let oauthCreds: OAuthCreds | undefined;
 				let source: string | undefined;
 
 				for (const candidate of candidates) {
@@ -647,35 +654,25 @@ export function registerVaultCommand(program: Command): void {
 						const raw = readFileSync(candidate, "utf8");
 						const parsed = JSON.parse(raw) as Record<string, unknown>;
 
-						for (const key of [
-							"access_token",
-							"accessToken",
-							"oauth_token",
-							"oauthToken",
-							"token",
-						]) {
-							const value = parsed[key];
-							if (typeof value === "string" && value.length > 10) {
-								token = value;
-								source = candidate;
-								break;
-							}
+						// Standard claude login: { claudeAiOauth: { accessToken, refreshToken, expiresAt } }
+						const nested = parsed.claudeAiOauth as Record<string, unknown> | undefined;
+						const obj = nested ?? parsed;
+
+						if (
+							typeof obj.accessToken === "string" &&
+							typeof obj.refreshToken === "string" &&
+							typeof obj.expiresAt === "number"
+						) {
+							oauthCreds = obj as unknown as OAuthCreds;
+							source = candidate;
+							break;
 						}
-						if (token) break;
 					} catch {
 						// Try next candidate
 					}
 				}
 
-				if (!token) {
-					const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN;
-					if (envToken) {
-						token = envToken;
-						source = "environment variable";
-					}
-				}
-
-				if (!token) {
+				if (!oauthCreds) {
 					const apiKey = process.env.ANTHROPIC_API_KEY;
 					if (apiKey) {
 						const client = getVaultClient();
@@ -685,7 +682,7 @@ export function registerVaultCommand(program: Command): void {
 							credential: { type: "api-key", token: apiKey, header: "x-api-key" },
 							label: "Anthropic API key (from env)",
 						});
-						console.log("Imported ANTHROPIC_API_KEY → http:api.anthropic.com (api-key)");
+						console.log("  IMPORTED: Anthropic API key → http:api.anthropic.com");
 						return;
 					}
 
@@ -694,8 +691,6 @@ export function registerVaultCommand(program: Command): void {
 					for (const c of candidates) {
 						console.error(`  - ${c}`);
 					}
-					console.error("  - CLAUDE_CODE_OAUTH_TOKEN env var");
-					console.error("  - ANTHROPIC_AUTH_TOKEN env var");
 					console.error("  - ANTHROPIC_API_KEY env var");
 					console.error("\nRun 'claude login' first, or provide --path.");
 					process.exit(1);
@@ -703,12 +698,22 @@ export function registerVaultCommand(program: Command): void {
 
 				const client = getVaultClient();
 				await client.store({
-					protocol: "http",
-					target: "api.anthropic.com",
-					credential: { type: "bearer", token },
-					label: `Anthropic OAuth (from ${source})`,
+					protocol: "secret",
+					target: "anthropic-oauth",
+					credential: { type: "opaque", value: JSON.stringify(oauthCreds) },
+					label: "Anthropic OAuth (claude login)",
 				});
-				console.log(`Imported Anthropic credentials from ${source} → http:api.anthropic.com`);
+				console.log(`  IMPORTED: OAuth credentials from ${source} → secret:anthropic-oauth`);
+
+				// Delete the credentials file (secrets now live in vault)
+				if (source) {
+					try {
+						unlinkSync(source);
+						console.log(`  DELETED: ${source} (credentials moved to vault)`);
+					} catch {
+						console.warn(`  WARNING: Could not delete ${source}`);
+					}
+				}
 			} catch (err) {
 				logger.error({ error: String(err) }, "vault import-anthropic failed");
 				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

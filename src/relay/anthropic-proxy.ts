@@ -15,7 +15,19 @@ const PROXY_PREFIX = "/v1/anthropic-proxy";
 const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
 const RATE_LIMIT_PER_MINUTE = Number(process.env.TELCLAUDE_ANTHROPIC_PROXY_RPM ?? 120);
 
-type AuthHeader = { name: string; value: string; source: string };
+// OAuth constants (matches Claude Code CLI flow)
+const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OAUTH_SCOPES = "user:inference user:profile user:sessions:claude_code";
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+const OAUTH_BETA_HEADER = "oauth-2025-04-20"; // required for OAuth bearer auth on Anthropic API
+
+type AuthHeader = {
+	name: string;
+	value: string;
+	source: string;
+	extraHeaders?: Record<string, string>;
+};
 
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
@@ -59,12 +71,145 @@ function isPrivateIp(address: string | null): boolean {
 	return false;
 }
 
+type OAuthCredentials = {
+	accessToken: string;
+	refreshToken: string;
+	expiresAt: number;
+	scopes?: string[];
+};
+
+// In-memory cache of vault OAuth credentials (avoids vault roundtrip per request)
+let cachedOAuth: OAuthCredentials | null = null;
+
+function oauthAuthHeader(accessToken: string, source: string): AuthHeader {
+	return {
+		name: "Authorization",
+		value: `Bearer ${accessToken}`,
+		source,
+		extraHeaders: { "anthropic-beta": OAUTH_BETA_HEADER },
+	};
+}
+
+/**
+ * Read OAuth credentials from vault, refresh if expired, and return as Bearer header.
+ * The access token is sent directly as `Authorization: Bearer` (user:inference scope).
+ * Refreshed tokens are persisted back to the vault.
+ */
+async function tryVaultOAuth(): Promise<AuthHeader | null> {
+	try {
+		if (!(await isVaultAvailable({ timeout: 2000 }))) return null;
+
+		const client = getVaultClient();
+		const now = Date.now();
+
+		// Use in-memory cache if token is still valid
+		if (cachedOAuth && cachedOAuth.expiresAt > now + TOKEN_REFRESH_MARGIN_MS) {
+			return oauthAuthHeader(cachedOAuth.accessToken, "vault-oauth-cached");
+		}
+
+		// Read from vault
+		const resp = await client.getSecret("anthropic-oauth", { timeout: 5000 });
+		if (!resp.ok || resp.type !== "get-secret" || !resp.value) return null;
+
+		let creds: OAuthCredentials;
+		try {
+			creds = JSON.parse(resp.value) as OAuthCredentials;
+		} catch {
+			logger.warn("vault secret:anthropic-oauth has invalid JSON");
+			return null;
+		}
+
+		if (!creds.accessToken || !creds.refreshToken) {
+			logger.warn("vault secret:anthropic-oauth missing required fields");
+			return null;
+		}
+
+		// If token is still valid, cache and return
+		if (creds.expiresAt > now + TOKEN_REFRESH_MARGIN_MS) {
+			cachedOAuth = creds;
+			return oauthAuthHeader(creds.accessToken, "vault-oauth");
+		}
+
+		// Token expired — refresh via platform.claude.com
+		logger.info(
+			{ expiresAt: new Date(creds.expiresAt).toISOString() },
+			"OAuth token expired, refreshing",
+		);
+
+		const refreshResp = await fetch(TOKEN_URL, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				refresh_token: creds.refreshToken,
+				client_id: process.env.CLAUDE_CODE_OAUTH_CLIENT_ID ?? CLIENT_ID,
+				scope: creds.scopes?.join(" ") ?? OAUTH_SCOPES,
+			}),
+		});
+
+		if (!refreshResp.ok) {
+			const errText = await refreshResp.text();
+			logger.warn({ status: refreshResp.status, body: errText }, "OAuth token refresh failed");
+			// Still try the expired token — Anthropic may accept it briefly
+			cachedOAuth = creds;
+			return oauthAuthHeader(creds.accessToken, "vault-oauth-expired");
+		}
+
+		const data = (await refreshResp.json()) as {
+			access_token: string;
+			refresh_token?: string;
+			expires_in: number;
+		};
+
+		const refreshed: OAuthCredentials = {
+			accessToken: data.access_token,
+			refreshToken: data.refresh_token ?? creds.refreshToken,
+			expiresAt: now + data.expires_in * 1000,
+			scopes: creds.scopes,
+		};
+
+		// Persist refreshed tokens back to vault
+		try {
+			await client.store({
+				protocol: "secret",
+				target: "anthropic-oauth",
+				credential: { type: "opaque", value: JSON.stringify(refreshed) },
+				label: "Anthropic OAuth (auto-refreshed)",
+			});
+			logger.info(
+				{ expiresAt: new Date(refreshed.expiresAt).toISOString() },
+				"OAuth token refreshed and saved to vault",
+			);
+		} catch (storeErr) {
+			logger.warn({ error: String(storeErr) }, "failed to persist refreshed OAuth to vault");
+		}
+
+		cachedOAuth = refreshed;
+		return oauthAuthHeader(refreshed.accessToken, "vault-oauth-refreshed");
+	} catch (err) {
+		logger.debug({ error: String(err) }, "vault OAuth lookup failed");
+		return null;
+	}
+}
+
+function findOAuthCredentials(obj: Record<string, unknown>): OAuthCredentials | null {
+	// Look for claudeAiOauth nested structure (standard claude login format)
+	const oauth = obj.claudeAiOauth as Record<string, unknown> | undefined;
+	if (oauth?.accessToken && oauth?.refreshToken && typeof oauth.expiresAt === "number") {
+		return oauth as unknown as OAuthCredentials;
+	}
+	// Top-level format
+	if (obj.accessToken && obj.refreshToken && typeof obj.expiresAt === "number") {
+		return obj as unknown as OAuthCredentials;
+	}
+	return null;
+}
+
 async function buildAuthHeader(): Promise<AuthHeader | null> {
-	// 1. Try vault first (5s timeout to avoid blocking startup)
+	// 1. Try vault API key (http:api.anthropic.com — for users who store an API key)
 	try {
 		if (await isVaultAvailable({ timeout: 2000 })) {
 			const client = getVaultClient();
-			// Try API key from vault
 			const apiKeyResp = await client.get("http", "api.anthropic.com");
 			if (apiKeyResp.ok && apiKeyResp.type === "get" && apiKeyResp.entry) {
 				const cred = apiKeyResp.entry.credential;
@@ -77,10 +222,14 @@ async function buildAuthHeader(): Promise<AuthHeader | null> {
 			}
 		}
 	} catch (err) {
-		logger.debug({ error: String(err) }, "vault auth lookup failed, trying env/file");
+		logger.debug({ error: String(err) }, "vault API key lookup failed");
 	}
 
-	// 2. Environment variables
+	// 2. Try vault OAuth (secret:anthropic-oauth — from `vault import-anthropic`)
+	const vaultOAuth = await tryVaultOAuth();
+	if (vaultOAuth) return vaultOAuth;
+
+	// 3. Environment variables
 	const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN;
 	if (oauthToken) {
 		return { name: "Authorization", value: `Bearer ${oauthToken}`, source: "env" };
@@ -91,7 +240,7 @@ async function buildAuthHeader(): Promise<AuthHeader | null> {
 		return { name: "x-api-key", value: apiKey, source: "env" };
 	}
 
-	// 3. Credentials file
+	// 4. Credentials file fallback (dev/native mode, before vault import)
 	const authDir = process.env.TELCLAUDE_AUTH_DIR;
 	const credentialsCandidates = [
 		process.env.CLAUDE_CODE_CREDENTIALS_PATH,
@@ -104,6 +253,56 @@ async function buildAuthHeader(): Promise<AuthHeader | null> {
 		try {
 			const raw = fs.readFileSync(credentialsPath, "utf8");
 			const parsed = JSON.parse(raw) as Record<string, unknown>;
+
+			// Try OAuth credentials from file (direct Bearer, with refresh)
+			const creds = findOAuthCredentials(parsed);
+			if (creds) {
+				const now = Date.now();
+				if (creds.expiresAt > now + TOKEN_REFRESH_MARGIN_MS) {
+					return oauthAuthHeader(creds.accessToken, "file-oauth");
+				}
+				// Expired — attempt refresh
+				try {
+					const refreshResp = await fetch(TOKEN_URL, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							grant_type: "refresh_token",
+							refresh_token: creds.refreshToken,
+							client_id: process.env.CLAUDE_CODE_OAUTH_CLIENT_ID ?? CLIENT_ID,
+							scope: creds.scopes?.join(" ") ?? OAUTH_SCOPES,
+						}),
+					});
+					if (refreshResp.ok) {
+						const data = (await refreshResp.json()) as {
+							access_token: string;
+							refresh_token?: string;
+							expires_in: number;
+						};
+						// Update file
+						const updated = {
+							...creds,
+							accessToken: data.access_token,
+							refreshToken: data.refresh_token ?? creds.refreshToken,
+							expiresAt: now + data.expires_in * 1000,
+						};
+						const fileObj = parsed.claudeAiOauth
+							? { ...parsed, claudeAiOauth: updated }
+							: { ...parsed, ...updated };
+						fs.writeFileSync(credentialsPath, JSON.stringify(fileObj), {
+							encoding: "utf8",
+							mode: 0o600,
+						});
+						logger.info("OAuth token refreshed (file fallback)");
+						return oauthAuthHeader(data.access_token, "file-oauth-refreshed");
+					}
+				} catch {
+					// Refresh failed, try expired token anyway
+				}
+				return oauthAuthHeader(creds.accessToken, "file-oauth-expired");
+			}
+
+			// Non-OAuth: raw token
 			const token =
 				extractToken(parsed, ["access_token", "accessToken"]) ??
 				extractToken(parsed, ["oauth_token", "oauthToken", "token"]);
@@ -169,6 +368,16 @@ function sanitizeRequestHeaders(headers: http.IncomingHttpHeaders, authHeader: A
 	}
 
 	filtered[authHeader.name] = authHeader.value;
+	if (authHeader.extraHeaders) {
+		for (const [k, v] of Object.entries(authHeader.extraHeaders)) {
+			// Merge beta headers (agent may also send anthropic-beta)
+			if (k === "anthropic-beta" && filtered["anthropic-beta"]) {
+				filtered["anthropic-beta"] = `${filtered["anthropic-beta"]},${v}`;
+			} else {
+				filtered[k] = v;
+			}
+		}
+	}
 	return filtered;
 }
 
