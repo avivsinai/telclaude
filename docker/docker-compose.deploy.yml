@@ -1,22 +1,42 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# Telclaude Docker Compose - Single-Relay Deployment
+# Telclaude Docker Compose - 5-Container Deployment
 #
-# For deployment targets (Pi, VPS) with pre-built images.
-# Uses single-relay mode with TOTP sidecar.
+# For deployment targets (Pi4, VPS) with pre-built images.
+# Mirrors docker-compose.yml topology, adapted for resource-constrained hosts.
 #
 # Usage:
-#   1. Build images locally: docker build -t telclaude:latest -f docker/Dockerfile .
-#   2. Ship to target: docker save telclaude:latest | gzip | ssh target docker load
-#   3. Copy this file and .env to target
-#   4. docker compose -f docker-compose.deploy.yml up -d
+#   1. Build images locally:
+#        docker build -t telclaude:latest -f docker/Dockerfile .
+#        docker build -t telclaude-totp:latest -f docker/Dockerfile.totp .
+#        docker build -t telclaude-vault:latest -f docker/Dockerfile.vault .
+#   2. Ship to target:
+#        docker save telclaude:latest telclaude-totp:latest telclaude-vault:latest \
+#          | ssh target "docker load"
+#   3. Copy this file, .env, and telclaude.json to target
+#   4. Run setup: docker/setup-volumes.sh
+#   5. docker compose -f docker-compose.deploy.yml up -d
 #
-# Networks:
-#   - telclaude-net: Internal relay ↔ totp communication
-#   - telclaude-agent-egress: Allows external provider sidecars to reach relay
-#   - telclaude-relay-egress: Allows relay to reach external APIs
+# 5 containers:
+#   telclaude        — Relay (secrets, security, routing)
+#   telclaude-agent  — Telegram agent (SDK + tools, workspace)
+#   agent-moltbook   — Moltbook agent (isolated sandbox)
+#   totp             — TOTP sidecar (encrypted 2FA)
+#   vault            — Vault sidecar (encrypted credentials)
+#
+# 7 networks (segmented):
+#   agent-relay-net    (internal) — agent ↔ relay
+#   relay-totp-net     (internal) — relay ↔ totp
+#   relay-vault-net    (internal) — relay ↔ vault
+#   agent-egress       (bridge)   — agent → providers/internet
+#   relay-egress       (bridge)   — relay → Telegram/Anthropic
+#   moltbook-relay-net (internal) — moltbook ↔ relay
+#   moltbook-egress    (bridge)   — moltbook → internet
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Main Relay Service (secrets, routing — NO workspace, NO SDK)
+  # ─────────────────────────────────────────────────────────────────────────────
   telclaude:
     image: telclaude:latest
     container_name: telclaude
@@ -24,40 +44,68 @@ services:
     depends_on:
       totp:
         condition: service_healthy
+      vault:
+        condition: service_healthy
+      telclaude-agent:
+        condition: service_started
 
     environment:
-      # Credentials: vault preferred, env vars as optional fallback
+      # ── Credentials (vault preferred, env vars as fallback) ───────────────
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+
+      # Telclaude configuration
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
-      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+
+      # Claude config dir = auth volume (relay-only, no skills needed)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-auth
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
-      # RPC: optional bootstrap fallback (v3 session tokens preferred)
+
+      # Agent routing
+      - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
+      - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
+      - TELCLAUDE_CAPABILITIES_ENABLED=1
+
+      # RPC auth
       - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
       - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:-}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:-}
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
+
+      # Media paths
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
+
+      # Sidecar sockets
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
-      # Vault socket (optional in single-relay mode)
-      - TELCLAUDE_VAULT_SOCKET=${TELCLAUDE_VAULT_SOCKET:-}
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+
+      # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-moltbook}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
-      - TELCLAUDE_RUN_AS_ROOT=1
+
+      # Pi4 default: run as root (kernel quirk with gosu on some Pi kernels)
+      # Override to 0 in .env for non-Pi deployments to enable privilege drop
+      - TELCLAUDE_RUN_AS_ROOT=${TELCLAUDE_RUN_AS_ROOT:-1}
       - NODE_ENV=production
 
     volumes:
-      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - telclaude-data:/data:rw
       - ./telclaude.json:/data/telclaude.json:ro
       - telclaude-claude-auth:/home/telclaude-auth:rw
-      - telclaude-claude-skills:/home/telclaude-skills:rw
       - totp-socket:/run/totp:rw
+      - vault-socket:/run/vault:ro
       - moltbook-memory:/moltbook/memory:rw
+      - media-inbox:/media/inbox:rw
+      - media-outbox:/media/outbox:rw
+      # NOTE: No workspace mount — relay delegates to agent
 
     user: "0:0"
 
@@ -73,6 +121,8 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      # AppArmor commented out — profiles may not be installed on Pi
+      # - apparmor:telclaude-relay
 
     read_only: true
     tmpfs:
@@ -80,29 +130,34 @@ services:
       - /home/node:size=256M,mode=0755
       - /run/telclaude:size=1M,mode=0755
 
+    # Resource limits (non-Swarm Compose v2)
+    mem_limit: 2G
+    cpus: 4
+
     deploy:
       resources:
         limits:
           cpus: "4"
-          memory: 4G
+          memory: 2G
         reservations:
-          cpus: "1"
-          memory: 512M
+          cpus: "0.5"
+          memory: 256M
 
     networks:
-      - telclaude-net
-      - agent-egress
+      - agent-relay-net
+      - relay-totp-net
+      - relay-vault-net
       - relay-egress
       - moltbook-relay-net
 
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "node", "-e", "process.exit(0)"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8790/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
     logging:
       driver: json-file
@@ -110,6 +165,186 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Telegram Agent Worker (SDK + Tools, workspace, no secrets)
+  # ─────────────────────────────────────────────────────────────────────────────
+  telclaude-agent:
+    image: telclaude:latest
+    container_name: telclaude-agent
+
+    environment:
+      # Agent server
+      - TELCLAUDE_AGENT_PORT=8788
+      - TELCLAUDE_AGENT_WORKDIR=/workspace
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CONFIG=/data/telclaude.json
+
+      # Relay capability broker + Anthropic API proxy
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+
+      # RPC auth
+      - TELEGRAM_RPC_SECRET=${TELEGRAM_RPC_SECRET:-}
+
+      # Git proxy (token never exposed to agent)
+      - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
+
+      # Media paths
+      - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
+      - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
+
+      # Data dir (agent is stateless; uses tmpfs)
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
+
+      # Claude skills profile (shared)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+
+      # Network / firewall
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,citizen-services}
+
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+      - telclaude-claude-skills:/home/telclaude-skills:rw
+      - ./telclaude.json:/data/telclaude.json:ro
+      - moltbook-memory:/moltbook/memory:ro
+      - media-inbox:/media/inbox:ro
+      - media-outbox:/media/outbox:ro
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+      # AppArmor commented out — profiles may not be installed on Pi
+      # - apparmor:telclaude-agent
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
+      - /run/telclaude:size=1M,mode=0755
+
+    # Resource limits (non-Swarm Compose v2)
+    mem_limit: 2G
+    cpus: 4
+
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+    networks:
+      - agent-relay-net
+      - agent-egress
+
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Moltbook Agent Worker (isolated context, no workspace)
+  # ─────────────────────────────────────────────────────────────────────────────
+  agent-moltbook:
+    image: telclaude:latest
+    container_name: telclaude-agent-moltbook
+
+    environment:
+      - TELCLAUDE_AGENT_PORT=8789
+      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
+      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - HOME=/moltbook
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
+      - MOLTBOOK_RPC_SECRET=${MOLTBOOK_RPC_SECRET:-}
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - moltbook-sandbox:/moltbook/sandbox:rw
+      - moltbook-memory:/moltbook/memory:ro
+      - telclaude-claude-skills:/home/telclaude-skills:rw
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+      # AppArmor commented out — profiles may not be installed on Pi
+      # - apparmor:telclaude-moltbook
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
+      - /run/telclaude:size=1M,mode=0755
+
+    # Resource limits (non-Swarm Compose v2)
+    mem_limit: 1G
+    cpus: 2
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+    networks:
+      - moltbook-relay-net
+      - moltbook-egress
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8789/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # TOTP Daemon Sidecar (encrypted 2FA, no external network)
+  # ─────────────────────────────────────────────────────────────────────────────
   totp:
     image: telclaude-totp:latest
     container_name: telclaude-totp
@@ -140,6 +375,10 @@ services:
       - /tmp:size=64M,mode=1777
       - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
 
+    # Resource limits (non-Swarm Compose v2)
+    mem_limit: 128M
+    cpus: 0.5
+
     deploy:
       resources:
         limits:
@@ -150,7 +389,7 @@ services:
           memory: 32M
 
     networks:
-      - telclaude-net
+      - relay-totp-net
 
     restart: unless-stopped
 
@@ -167,71 +406,69 @@ services:
         max-size: "5m"
         max-file: "2"
 
-  agent-moltbook:
-    image: telclaude:latest
-    container_name: telclaude-agent-moltbook
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Vault Daemon Sidecar (encrypted credentials, no external network)
+  # ─────────────────────────────────────────────────────────────────────────────
+  vault:
+    image: telclaude-vault:latest
+    container_name: telclaude-vault
 
     environment:
-      - TELCLAUDE_AGENT_PORT=8789
-      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - VAULT_ENCRYPTION_KEY=${VAULT_ENCRYPTION_KEY:?VAULT_ENCRYPTION_KEY is required}
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+      - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
-      - HOME=/moltbook
-      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
-      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
-      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
-      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      - TELCLAUDE_RUN_AS_ROOT=0
-      - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - NODE_ENV=production
 
-    command: ["agent", "-v"]
-
     volumes:
-      - moltbook-sandbox:/moltbook/sandbox:rw
-      - moltbook-memory:/moltbook/memory:ro
-      - telclaude-claude-skills:/home/telclaude-skills:rw
-
-    user: "0:0"
-
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_ADMIN
-      - DAC_OVERRIDE
-      - CHOWN
-      - FOWNER
-      - SETUID
-      - SETGID
+      - vault-data:/data:rw
+      - vault-socket:/run/vault:rw
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor profile required for OSS threat model hardening.
-      - apparmor:telclaude-moltbook
+      # AppArmor commented out — profiles may not be installed on Pi
+      # - apparmor:telclaude-vault
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
 
     read_only: true
     tmpfs:
-      - /tmp:size=512M,mode=1777
-      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
-      - /run/telclaude:size=1M,mode=0755
+      - /tmp:size=64M,mode=1777
+      - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
+
+    # Resource limits (non-Swarm Compose v2)
+    mem_limit: 128M
+    cpus: 0.5
 
     deploy:
       resources:
         limits:
-          cpus: "2"
-          memory: 2G
-        reservations:
           cpus: "0.5"
-          memory: 256M
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 32M
 
     networks:
-      - moltbook-relay-net
-      - moltbook-egress
+      - relay-vault-net
 
     restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/vault/vault.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Named Volumes
@@ -240,16 +477,30 @@ services:
 # NEVER run `docker compose down -v` - it will delete non-external volumes!
 # ═══════════════════════════════════════════════════════════════════════════════
 volumes:
+  # Main relay data: SQLite DB, sessions, identity links, approvals
   telclaude-data:
     name: telclaude-data
 
-  # CRITICAL SECRETS - External volumes (protected from accidental deletion)
+  # ┌─────────────────────────────────────────────────────────────────────────────┐
+  # │ CRITICAL SECRETS - External volumes (protected from accidental deletion)   │
+  # └─────────────────────────────────────────────────────────────────────────────┘
+
+  # Claude auth profile (OAuth tokens) - relay only
   telclaude-claude-auth:
     name: telclaude-claude-auth
-    external: true  # Pre-create with: docker volume create telclaude-claude-auth
+    external: true
 
+  # TOTP daemon data: encrypted 2FA secrets
   totp-data:
     name: telclaude-totp-data
+    external: true
+
+  # Vault daemon data: encrypted credentials
+  vault-data:
+    name: telclaude-vault-data
+    external: true
+
+  # Shared Unix sockets (tmpfs)
   totp-socket:
     name: telclaude-totp-socket
     driver: local
@@ -257,6 +508,26 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: size=1M,uid=1000,gid=1000
+
+  vault-socket:
+    name: telclaude-vault-socket
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
+
+  # Shared media volumes
+  media-inbox:
+    name: telclaude-media-inbox
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=512M,uid=1000,gid=1000,mode=0700
+
+  media-outbox:
+    name: telclaude-media-outbox
 
   # Claude skills profile (shared across relay/agents)
   telclaude-claude-skills:
@@ -270,21 +541,38 @@ volumes:
   moltbook-memory:
     name: telclaude-moltbook-memory
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Networks (segmented — agents cannot reach each other directly)
+# ═══════════════════════════════════════════════════════════════════════════════
 networks:
-  telclaude-net:
-    name: telclaude-net
+  agent-relay-net:
+    name: telclaude-agent-relay
     driver: bridge
     internal: true
+
+  relay-totp-net:
+    name: telclaude-relay-totp
+    driver: bridge
+    internal: true
+
+  relay-vault-net:
+    name: telclaude-relay-vault
+    driver: bridge
+    internal: true
+
   agent-egress:
     name: telclaude-agent-egress
     driver: bridge
+
   relay-egress:
     name: telclaude-relay-egress
     driver: bridge
+
   moltbook-relay-net:
     name: telclaude-moltbook-relay
     driver: bridge
     internal: true
+
   moltbook-egress:
     name: telclaude-moltbook-egress
     driver: bridge

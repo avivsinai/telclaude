@@ -997,6 +997,14 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
 		}
 
+		// Anthropic proxy config — SDK process needs these to route API calls through relay
+		if (process.env.ANTHROPIC_BASE_URL) {
+			sandboxEnv.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
+		}
+		if (process.env.ANTHROPIC_AUTH_TOKEN) {
+			sandboxEnv.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
+		}
+
 		// Tier-based key exposure: FULL_ACCESS gets configured keys
 		if (shouldExposeKeys(opts.tier)) {
 			const exposedKeys: string[] = [];
