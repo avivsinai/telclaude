@@ -44,6 +44,18 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 	return (await response.json()) as T;
 }
 
+export async function relayGetProviders(): Promise<{
+	ok: boolean;
+	providers: Array<{
+		id: string;
+		baseUrl: string;
+		services: string[];
+		description?: string;
+	}>;
+}> {
+	return postJson("/v1/config.providers", {});
+}
+
 export async function relayGenerateImage(input: {
 	prompt: string;
 	size?: "auto" | "1024x1024" | "1536x1024" | "1024x1536";

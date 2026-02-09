@@ -575,6 +575,19 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				"capability request authenticated",
 			);
 
+			// ── Config Endpoints (sanitized, no secrets) ─────────────────────
+			if (requestPath === "/v1/config.providers") {
+				const config = loadConfig();
+				const providers = (config.providers ?? []).map((p) => ({
+					id: p.id,
+					baseUrl: p.baseUrl,
+					services: p.services,
+					description: p.description,
+				}));
+				writeJson(res, 200, { ok: true, providers });
+				return;
+			}
+
 			// ── Token Exchange & Refresh ──────────────────────────────────────
 			if (requestPath === "/v1/auth/token-exchange") {
 				if (!isTokenManagerActive()) {
