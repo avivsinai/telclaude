@@ -5,7 +5,10 @@
  * - Bootstrap: exchange static secret for session token at startup
  * - Proactive refresh: schedule refresh at T-10min before expiry
  * - Header injection: provide session token for RPC calls
- * - Fallback: use static secrets if exchange fails
+ *
+ * Static secret fallback is used ONLY for the initial bootstrap (before any
+ * session token has been acquired). Once a token has been successfully loaded,
+ * an expired token will throw instead of silently falling back to static auth.
  */
 
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
@@ -50,6 +53,7 @@ let currentToken: SessionToken | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshWindowMs = DEFAULT_REFRESH_WINDOW_MS;
 let _publicKey: string | null = null;
+let hadTokenOnce = false;
 
 /**
  * Bootstrap: exchange static credentials for a session token.
@@ -91,6 +95,7 @@ export async function bootstrapSessionToken(
 			publicKey: data.publicKey,
 		};
 		_publicKey = data.publicKey;
+		hadTokenOnce = true;
 
 		if (data.refreshWindowMs) {
 			refreshWindowMs = data.refreshWindowMs;
@@ -230,6 +235,39 @@ export function getPublicKey(): string | null {
 }
 
 /**
+ * Load a pre-minted session token from env (relay passes this to agent subprocess).
+ * This allows the agent to call relay capabilities without the private key.
+ */
+export function loadPreMintedToken(): boolean {
+	const envToken = process.env.TELCLAUDE_SESSION_TOKEN;
+	if (!envToken) return false;
+
+	// Parse token to extract metadata: v3:{scope}:{sessionId}:{createdAt}:{expiresAt}:{sig}
+	const parts = envToken.split(":");
+	if (parts.length !== 6 || parts[0] !== "v3") {
+		logger.warn("TELCLAUDE_SESSION_TOKEN has invalid format, ignoring");
+		return false;
+	}
+
+	const expiresAt = Number(parts[4]);
+	if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+		logger.warn("TELCLAUDE_SESSION_TOKEN is expired, ignoring");
+		return false;
+	}
+
+	currentToken = {
+		token: envToken,
+		expiresAt,
+		scope: parts[1] as string,
+		publicKey: "",
+	};
+	hadTokenOnce = true;
+
+	logger.info({ scope: parts[1], expiresAt }, "loaded pre-minted session token from env");
+	return true;
+}
+
+/**
  * Build auth headers for RPC calls.
  * Uses session token (v3) if available, falls back to static auth (v1/v2).
  */
@@ -239,6 +277,11 @@ export function buildRpcAuthHeaders(
 	body: string,
 	scope: InternalAuthScope,
 ): Record<string, string> {
+	// Try pre-minted token from env on first call
+	if (!currentToken && process.env.TELCLAUDE_SESSION_TOKEN) {
+		loadPreMintedToken();
+	}
+
 	const token = getSessionToken();
 	if (token) {
 		return {
@@ -247,7 +290,13 @@ export function buildRpcAuthHeaders(
 		};
 	}
 
-	// Fallback to static auth
+	// If we previously had a valid token but it expired, do NOT silently
+	// fall back to static auth — that would bypass the session token lifecycle.
+	if (hadTokenOnce) {
+		throw new Error(`Session token expired for scope ${scope}. Re-bootstrap required.`);
+	}
+
+	// First-time bootstrap fallback only
 	return buildInternalAuthHeaders(method, path, body, { scope });
 }
 
@@ -261,4 +310,5 @@ export function shutdownTokenClient(): void {
 	}
 	currentToken = null;
 	_publicKey = null;
+	hadTokenOnce = false;
 }

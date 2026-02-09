@@ -8,6 +8,7 @@ export type MemoryEntryInput = {
 	id: string;
 	category: MemoryCategory;
 	content: string;
+	chatId?: string;
 };
 
 export type MemoryQuery = {
@@ -20,10 +21,13 @@ export type MemoryQuery = {
 	promoted?: boolean;
 	/** Filter by posted status */
 	posted?: boolean;
+	/** Filter by chat ID (H3 multi-user scoping) */
+	chatId?: string;
 };
 
 const DEFAULT_QUERY_LIMIT = 200;
 const MAX_QUERY_LIMIT = 500;
+const MAX_ENTRIES_PER_SOURCE_CHAT = 500;
 
 function trustForSource(source: MemorySource): TrustLevel {
 	return source === "telegram" ? "trusted" : "untrusted";
@@ -39,6 +43,7 @@ type MemoryEntryRow = {
 	promoted_at: number | null;
 	promoted_by: string | null;
 	posted_at: number | null;
+	chat_id: string | null;
 };
 
 function rowToEntry(row: MemoryEntryRow): MemoryEntry {
@@ -53,6 +58,7 @@ function rowToEntry(row: MemoryEntryRow): MemoryEntry {
 			...(row.promoted_at ? { promotedAt: row.promoted_at } : {}),
 			...(row.promoted_by ? { promotedBy: row.promoted_by } : {}),
 			...(row.posted_at ? { postedAt: row.posted_at } : {}),
+			...(row.chat_id ? { chatId: row.chat_id } : {}),
 		},
 	};
 }
@@ -67,8 +73,8 @@ export function createEntries(
 
 	const insert = db.prepare(
 		`INSERT INTO memory_entries
-			(id, category, content, source, trust, created_at, promoted_at, promoted_by)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+			(id, category, content, source, trust, created_at, promoted_at, promoted_by, chat_id)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
 	);
 	const exists = db.prepare("SELECT 1 FROM memory_entries WHERE id = ?");
 
@@ -79,7 +85,15 @@ export function createEntries(
 			if (existing) {
 				throw new Error(`Memory entry already exists: ${entry.id}`);
 			}
-			insert.run(entry.id, entry.category, entry.content, source, trust, createdAt);
+			insert.run(
+				entry.id,
+				entry.category,
+				entry.content,
+				source,
+				trust,
+				createdAt,
+				entry.chatId ?? null,
+			);
 			created.push({
 				id: entry.id,
 				category: entry.category,
@@ -88,6 +102,7 @@ export function createEntries(
 					source,
 					trust,
 					createdAt,
+					...(entry.chatId ? { chatId: entry.chatId } : {}),
 				},
 			});
 		}
@@ -96,6 +111,30 @@ export function createEntries(
 	try {
 		txn();
 		logger.debug({ count: created.length, source }, "memory entries created");
+
+		// M5: Enforce per-source-chat quota to prevent unbounded DB growth
+		const chatId = entries[0]?.chatId;
+		if (chatId) {
+			const countRow = db
+				.prepare("SELECT COUNT(*) as cnt FROM memory_entries WHERE source = ? AND chat_id = ?")
+				.get(source, chatId) as { cnt: number };
+			if (countRow.cnt > MAX_ENTRIES_PER_SOURCE_CHAT) {
+				const excess = countRow.cnt - MAX_ENTRIES_PER_SOURCE_CHAT;
+				db.prepare(
+					`DELETE FROM memory_entries WHERE id IN (
+						SELECT id FROM memory_entries
+						WHERE source = ? AND chat_id = ?
+						ORDER BY created_at ASC
+						LIMIT ?
+					)`,
+				).run(source, chatId, excess);
+				logger.info(
+					{ source, chatId, deleted: excess },
+					"quota enforcement: deleted oldest entries",
+				);
+			}
+		}
+
 		return created;
 	} catch (err) {
 		logger.warn({ error: String(err) }, "failed to create memory entries");
@@ -130,11 +169,15 @@ export function getEntries(query: MemoryQuery = {}): MemoryEntry[] {
 	} else if (query.posted === false) {
 		where.push("posted_at IS NULL");
 	}
+	if (query.chatId) {
+		where.push("chat_id = ?");
+		params.push(query.chatId);
+	}
 
 	const order = query.order === "asc" ? "ASC" : "DESC";
 	const limit = Math.min(Math.max(query.limit ?? DEFAULT_QUERY_LIMIT, 1), MAX_QUERY_LIMIT);
 
-	const sql = `SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at
+	const sql = `SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id
 		FROM memory_entries
 		${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
 		ORDER BY created_at ${order}
@@ -163,7 +206,7 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 	const db = getDb();
 	const existing = db
 		.prepare(
-			"SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at FROM memory_entries WHERE id = ?",
+			"SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id FROM memory_entries WHERE id = ?",
 		)
 		.get(id) as
 		| {
@@ -176,6 +219,7 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 				promoted_at: number | null;
 				promoted_by: string | null;
 				posted_at: number | null;
+				chat_id: string | null;
 		  }
 		| undefined;
 
@@ -285,8 +329,8 @@ export function createQuarantinedEntry(
 
 	const insert = db.prepare(
 		`INSERT INTO memory_entries
-			(id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)`,
+			(id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
 	);
 	const exists = db.prepare("SELECT 1 FROM memory_entries WHERE id = ?");
 
@@ -295,9 +339,17 @@ export function createQuarantinedEntry(
 		throw new Error(`Memory entry already exists: ${entry.id}`);
 	}
 
-	insert.run(entry.id, "posts", entry.content, "telegram", "quarantined", createdAt);
+	insert.run(
+		entry.id,
+		"posts",
+		entry.content,
+		"telegram",
+		"quarantined",
+		createdAt,
+		entry.chatId ?? null,
+	);
 
-	logger.debug({ id: entry.id }, "quarantined memory entry created");
+	logger.debug({ id: entry.id, chatId: entry.chatId }, "quarantined memory entry created");
 
 	return {
 		id: entry.id,
@@ -307,6 +359,7 @@ export function createQuarantinedEntry(
 			source: "telegram",
 			trust: "quarantined",
 			createdAt,
+			...(entry.chatId ? { chatId: entry.chatId } : {}),
 		},
 	};
 }

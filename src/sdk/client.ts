@@ -546,8 +546,7 @@ function createNetworkSecurityHook(
 					}
 					const method = toolInput.method?.toUpperCase() || "GET";
 					// Allow GET for read-only endpoints (health, schema)
-					const isReadOnlyPath =
-						url.pathname === "/v1/health" || url.pathname === "/v1/schema";
+					const isReadOnlyPath = url.pathname === "/v1/health" || url.pathname === "/v1/schema";
 					if (!isReadOnlyPath && method !== "POST") {
 						return denyHookResponse("Provider data endpoints require POST.");
 					}
@@ -984,10 +983,14 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 			sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
 		}
-		const relaySecret =
-			process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
-		if (relaySecret) {
-			sandboxEnv.TELEGRAM_RPC_SECRET = relaySecret;
+		const telegramPublicKey = process.env.TELEGRAM_RPC_PUBLIC_KEY;
+		if (telegramPublicKey) {
+			sandboxEnv.TELEGRAM_RPC_PUBLIC_KEY = telegramPublicKey;
+		}
+		// Pass relay-minted session token to Claude subprocess (if agent server injected one).
+		// This allows telclaude CLI tools to authenticate to the relay without the private key.
+		if (process.env.TELCLAUDE_SESSION_TOKEN) {
+			sandboxEnv.TELCLAUDE_SESSION_TOKEN = process.env.TELCLAUDE_SESSION_TOKEN;
 		}
 		// Media directories for generated content
 		if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
@@ -1108,8 +1111,9 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		sdkOpts.allowDangerouslySkipPermissions = false;
 	} else {
 		const tierTools = TIER_TOOLS[opts.tier];
-		sdkOpts.tools = tierTools;
-		sdkOpts.allowedTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
+		const effectiveTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
+		sdkOpts.tools = effectiveTools;
+		sdkOpts.allowedTools = effectiveTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
 	}
 

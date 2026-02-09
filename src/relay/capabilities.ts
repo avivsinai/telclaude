@@ -10,7 +10,6 @@ import { isInternalAuthScope, verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import {
-	handleMemoryPromote,
 	handleMemoryPropose,
 	handleMemoryQuarantine,
 	handleMemorySnapshot,
@@ -615,6 +614,16 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 503, { ok: false, error: "Token manager not available" });
 					return;
 				}
+				// Rate limit token refresh requests
+				const rateLimiter = getMultimediaRateLimiter();
+				const refreshLimit = rateLimiter.checkLimit("token_refresh", authResult.scope, {
+					maxPerHourPerUser: 60,
+					maxPerDayPerUser: 500,
+				});
+				if (!refreshLimit.allowed) {
+					writeJson(res, 429, { ok: false, error: "Token refresh rate limited." });
+					return;
+				}
 				// Refresh can be authenticated with session token header
 				const sessionToken = req.headers["x-telclaude-session-token"];
 				const tokenStr = Array.isArray(sessionToken) ? sessionToken[0] : sessionToken;
@@ -631,10 +640,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 						return;
 					}
 					const result = await handleTokenRefresh(refreshBody.token);
+					rateLimiter.consume("token_refresh", authResult.scope);
 					writeJson(res, result.ok ? 200 : 401, result);
 					return;
 				}
 				const result = await handleTokenRefresh(tokenStr);
+				rateLimiter.consume("token_refresh", authResult.scope);
 				writeJson(res, result.ok ? 200 : 401, result);
 				return;
 			}
@@ -672,8 +683,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 								...snapshotRequest.value,
 								sources: ["moltbook"] as MemorySource[],
 								trust: ["untrusted"] as TrustLevel[],
+								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
 							}
-						: snapshotRequest.value;
+						: {
+								...snapshotRequest.value,
+								sources: ["telegram"] as MemorySource[],
+							};
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
@@ -713,7 +728,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 			if (req.url === "/v1/memory.propose") {
 				const proposeResult = handleMemoryPropose(
-					{ entries: parsed.entries as MemoryEntryInput[], userId },
+					{
+						entries: parsed.entries as MemoryEntryInput[],
+						userId,
+						chatId: (parsed as { chatId?: string }).chatId,
+					},
 					{ source: memorySource, userId },
 				);
 				if (!proposeResult.ok) {
@@ -736,8 +755,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 								...snapshotRequest.value,
 								sources: ["moltbook"] as MemorySource[],
 								trust: ["untrusted"] as TrustLevel[],
+								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
 							}
-						: snapshotRequest.value;
+						: {
+								...snapshotRequest.value,
+								sources: ["telegram"] as MemorySource[],
+							};
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
@@ -760,6 +783,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					{
 						id: (parsed as { id?: string }).id ?? "",
 						content: (parsed as { content?: string }).content ?? "",
+						chatId: (parsed as { chatId?: string }).chatId,
 					},
 					{ source: memorySource, userId },
 				);
@@ -768,25 +792,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					return;
 				}
 				writeJson(res, 200, quarantineResult.value);
-				return;
-			}
-
-			if (req.url === "/v1/memory.promote") {
-				// Hard reject Moltbook scope (defense-in-depth, also checked in handler)
-				if (authResult.scope === "moltbook") {
-					logger.warn("rejected /v1/memory.promote from moltbook scope");
-					writeJson(res, 403, { error: "Forbidden." });
-					return;
-				}
-				const promoteResult = handleMemoryPromote(
-					{ id: (parsed as { id?: string }).id ?? "" },
-					{ source: memorySource, userId },
-				);
-				if (!promoteResult.ok) {
-					writeJson(res, promoteResult.status, { error: promoteResult.error });
-					return;
-				}
-				writeJson(res, 200, promoteResult.value);
 				return;
 			}
 

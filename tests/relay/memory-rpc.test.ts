@@ -8,12 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let startCapabilityServer: typeof import("../../src/relay/capabilities.js").startCapabilityServer;
 let buildInternalAuthHeaders: typeof import("../../src/internal-auth.js").buildInternalAuthHeaders;
-let generateMoltbookKeyPair: typeof import("../../src/internal-auth.js").generateMoltbookKeyPair;
+let generateKeyPair: typeof import("../../src/internal-auth.js").generateKeyPair;
 let resetDatabase: typeof import("../../src/storage/db.js").resetDatabase;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
-const ORIGINAL_TELEGRAM_SECRET = process.env.TELEGRAM_RPC_SECRET;
-const ORIGINAL_MOLTBOOK_SECRET = process.env.MOLTBOOK_RPC_SECRET;
+const ORIGINAL_TELEGRAM_PRIVATE_KEY = process.env.TELEGRAM_RPC_PRIVATE_KEY;
+const ORIGINAL_TELEGRAM_PUBLIC_KEY = process.env.TELEGRAM_RPC_PUBLIC_KEY;
 const ORIGINAL_MOLTBOOK_PRIVATE_KEY = process.env.MOLTBOOK_RPC_PRIVATE_KEY;
 const ORIGINAL_MOLTBOOK_PUBLIC_KEY = process.env.MOLTBOOK_RPC_PUBLIC_KEY;
 
@@ -25,15 +25,15 @@ describe("memory rpc", () => {
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-memrpc-"));
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
-		process.env.TELEGRAM_RPC_SECRET = "test-telegram-secret";
-		// Generate Ed25519 key pair for moltbook asymmetric auth
+		// Generate Ed25519 key pairs for both scopes
 		vi.resetModules();
-		({ generateMoltbookKeyPair } = await import("../../src/internal-auth.js"));
-		const { privateKey, publicKey } = generateMoltbookKeyPair();
+		({ generateKeyPair } = await import("../../src/internal-auth.js"));
+		const telegramKeys = generateKeyPair();
+		process.env.TELEGRAM_RPC_PRIVATE_KEY = telegramKeys.privateKey;
+		process.env.TELEGRAM_RPC_PUBLIC_KEY = telegramKeys.publicKey;
+		const { privateKey, publicKey } = generateKeyPair();
 		process.env.MOLTBOOK_RPC_PRIVATE_KEY = privateKey;
 		process.env.MOLTBOOK_RPC_PUBLIC_KEY = publicKey;
-		delete process.env.MOLTBOOK_RPC_SECRET; // Ensure no symmetric fallback
-
 		vi.resetModules();
 		({ startCapabilityServer } = await import("../../src/relay/capabilities.js"));
 		({ buildInternalAuthHeaders } = await import("../../src/internal-auth.js"));
@@ -57,15 +57,15 @@ describe("memory rpc", () => {
 		} else {
 			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
 		}
-		if (ORIGINAL_TELEGRAM_SECRET === undefined) {
-			delete process.env.TELEGRAM_RPC_SECRET;
+		if (ORIGINAL_TELEGRAM_PRIVATE_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_PRIVATE_KEY;
 		} else {
-			process.env.TELEGRAM_RPC_SECRET = ORIGINAL_TELEGRAM_SECRET;
+			process.env.TELEGRAM_RPC_PRIVATE_KEY = ORIGINAL_TELEGRAM_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_SECRET === undefined) {
-			delete process.env.MOLTBOOK_RPC_SECRET;
+		if (ORIGINAL_TELEGRAM_PUBLIC_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_SECRET = ORIGINAL_MOLTBOOK_SECRET;
+			process.env.TELEGRAM_RPC_PUBLIC_KEY = ORIGINAL_TELEGRAM_PUBLIC_KEY;
 		}
 		if (ORIGINAL_MOLTBOOK_PRIVATE_KEY === undefined) {
 			delete process.env.MOLTBOOK_RPC_PRIVATE_KEY;
@@ -250,12 +250,13 @@ describe("memory rpc", () => {
 		});
 		expect(proposeRes.status).toBe(200);
 
+		// M2: Use moltbook scope to read moltbook entries (telegram scope forces sources=["telegram"])
 		const snapshotBody = JSON.stringify({ sources: ["moltbook"] });
 		const snapshotHeaders = buildInternalAuthHeaders(
 			"POST",
 			"/v1/memory.snapshot",
 			snapshotBody,
-			{ scope: "telegram" },
+			{ scope: "moltbook" },
 		);
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
@@ -329,22 +330,7 @@ describe("memory rpc", () => {
 		expect(quarantineRes.status).toBe(403);
 	});
 
-	it("promotes quarantined entry via /v1/memory.promote (telegram scope)", async () => {
-		// First create a quarantined entry
-		const quarantineBody = JSON.stringify({ id: "idea-promote", content: "Will be promoted" });
-		const quarantineHeaders = buildInternalAuthHeaders(
-			"POST",
-			"/v1/memory.quarantine",
-			quarantineBody,
-			{ scope: "telegram" },
-		);
-		await fetch(`${baseUrl}/v1/memory.quarantine`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...quarantineHeaders },
-			body: quarantineBody,
-		});
-
-		// Now promote it
+	it("returns 404 for /v1/memory.promote (H1: endpoint removed, control-plane only)", async () => {
 		const promoteBody = JSON.stringify({ id: "idea-promote" });
 		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
 			scope: "telegram",
@@ -356,76 +342,6 @@ describe("memory rpc", () => {
 			body: promoteBody,
 		});
 
-		expect(promoteRes.status).toBe(200);
-		const data = (await promoteRes.json()) as {
-			entry: { id: string; _provenance: { trust: string; promotedBy: string } };
-		};
-		expect(data.entry.id).toBe("idea-promote");
-		expect(data.entry._provenance.trust).toBe("trusted");
-		expect(data.entry._provenance.promotedBy).toBeDefined();
-	});
-
-	it("rejects /v1/memory.promote from moltbook scope", async () => {
-		// First create a quarantined entry (from telegram)
-		const quarantineBody = JSON.stringify({
-			id: "idea-no-promote",
-			content: "Cannot promote from moltbook",
-		});
-		const quarantineHeaders = buildInternalAuthHeaders(
-			"POST",
-			"/v1/memory.quarantine",
-			quarantineBody,
-			{ scope: "telegram" },
-		);
-		await fetch(`${baseUrl}/v1/memory.quarantine`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...quarantineHeaders },
-			body: quarantineBody,
-		});
-
-		// Try to promote from moltbook scope
-		const promoteBody = JSON.stringify({ id: "idea-no-promote" });
-		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
-			scope: "moltbook",
-		});
-
-		const promoteRes = await fetch(`${baseUrl}/v1/memory.promote`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...promoteHeaders },
-			body: promoteBody,
-		});
-
-		expect(promoteRes.status).toBe(403);
-	});
-
-	it("rejects promotion of moltbook-source entries", async () => {
-		// Create a moltbook entry (untrusted by default)
-		const moltbookBody = JSON.stringify({
-			entries: [{ id: "mb-entry", category: "posts", content: "moltbook entry" }],
-		});
-		const moltbookHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", moltbookBody, {
-			scope: "moltbook",
-		});
-		await fetch(`${baseUrl}/v1/memory.propose`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...moltbookHeaders },
-			body: moltbookBody,
-		});
-
-		// Try to promote from telegram scope (should fail because source is moltbook)
-		const promoteBody = JSON.stringify({ id: "mb-entry" });
-		const promoteHeaders = buildInternalAuthHeaders("POST", "/v1/memory.promote", promoteBody, {
-			scope: "telegram",
-		});
-
-		const promoteRes = await fetch(`${baseUrl}/v1/memory.promote`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...promoteHeaders },
-			body: promoteBody,
-		});
-
-		expect(promoteRes.status).toBe(400);
-		const data = (await promoteRes.json()) as { error: string };
-		expect(data.error).toContain("telegram");
+		expect(promoteRes.status).toBe(404);
 	});
 });

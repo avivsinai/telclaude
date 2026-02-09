@@ -11,8 +11,9 @@ import { registerGitCredentialCommand } from "./commands/git-credential.js";
 import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerIntegrationTestCommand } from "./commands/integration-test.js";
+import { registerKeygenCommand } from "./commands/keygen.js";
 import { registerLinkCommand } from "./commands/link.js";
-import { registerMoltbookKeygenCommand } from "./commands/moltbook-keygen.js";
+import { registerMemoryCommands } from "./commands/memory.js";
 import { registerNetworkCommand } from "./commands/network.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
@@ -73,7 +74,8 @@ registerProviderHealthCommand(program);
 registerProviderQueryCommand(program);
 registerVaultCommand(program);
 registerVaultDaemonCommand(program);
-registerMoltbookKeygenCommand(program);
+registerKeygenCommand(program);
+registerMemoryCommands(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

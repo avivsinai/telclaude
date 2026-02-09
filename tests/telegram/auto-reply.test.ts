@@ -43,6 +43,10 @@ vi.mock("../../src/security/fast-path.js", () => ({
 	checkInfrastructureSecrets: () => ({ blocked: false, patterns: [] as string[] }),
 }));
 
+vi.mock("../../src/memory/telegram-context.js", () => ({
+	buildTelegramMemoryContext: () => null,
+}));
+
 vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => ({
 		info: vi.fn(),

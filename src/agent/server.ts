@@ -30,6 +30,8 @@ type QueryRequest = {
 	betas?: SdkBeta[];
 	userId?: string;
 	systemPromptAppend?: string;
+	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
+	sessionToken?: string;
 };
 
 type AgentServerOptions = {
@@ -234,6 +236,13 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					"agent received query request",
 				);
 
+				// Inject relay-minted session token into process env for the Claude subprocess.
+				// This allows telclaude CLI tools (tts, generate-image, memory) to authenticate
+				// to the relay without the private key.
+				if (parsed.sessionToken && typeof parsed.sessionToken === "string") {
+					process.env.TELCLAUDE_SESSION_TOKEN = parsed.sessionToken;
+				}
+
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
 				const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
@@ -289,6 +298,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					})
 					.finally(() => {
 						clearTimeout(timeoutId);
+						// Clean up session token from process env after query completes
+						// to prevent leaked tokens persisting across requests
+						if (parsed.sessionToken) {
+							delete process.env.TELCLAUDE_SESSION_TOKEN;
+						}
 					});
 			} catch (err) {
 				logger.warn({ error: String(err) }, "failed to parse agent request");
