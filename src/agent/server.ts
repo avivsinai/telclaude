@@ -6,6 +6,7 @@ import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 
@@ -241,6 +242,18 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					abortController.abort();
 				});
 
+				// Inject cached provider summary into system prompt if available
+				let effectiveSystemPromptAppend = parsed.systemPromptAppend;
+				if (scope === "telegram") {
+					const providerSummary = getCachedProviderSummary();
+					if (providerSummary) {
+						const providerBlock = `<available-providers>\n${providerSummary}\n</available-providers>`;
+						effectiveSystemPromptAppend = effectiveSystemPromptAppend
+							? `${effectiveSystemPromptAppend}\n${providerBlock}`
+							: providerBlock;
+					}
+				}
+
 				streamQuery(
 					{
 						...parsed,
@@ -248,6 +261,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						tier: effectiveTier,
 						enableSkills: effectiveEnableSkills,
 						userId: effectiveUserId,
+						systemPromptAppend: effectiveSystemPromptAppend,
 						timeoutMs,
 					},
 					res,
