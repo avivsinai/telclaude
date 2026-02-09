@@ -203,7 +203,7 @@ services:
 
       # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,citizen-services}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
 
       - TELCLAUDE_RUN_AS_ROOT=0
       - NODE_ENV=production

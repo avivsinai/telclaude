@@ -7,8 +7,8 @@
  * and attachment storage.
  *
  * Usage:
- *   telclaude provider-query --provider citizen-services --service health-api --action appointments
- *   telclaude provider-query --provider citizen-services --service bank-api --action scrape --params '{"startDate":"2024-01-01"}'
+ *   telclaude provider-query --provider my-provider --service health-api --action appointments
+ *   telclaude provider-query --provider my-provider --service bank-api --action transactions --params '{"startDate":"2024-01-01"}'
  */
 
 import type { Command } from "commander";

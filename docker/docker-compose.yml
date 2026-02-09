@@ -227,7 +227,7 @@ services:
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       # Internal hosts allowed through firewall (agent needs relay + sidecars)
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,citizen-services}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
 
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
