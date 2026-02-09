@@ -3,6 +3,8 @@ import type { Command } from "commander";
 import { startAgentServer } from "../agent/server.js";
 import { bootstrapSessionToken } from "../agent/token-client.js";
 import { getChildLogger } from "../logging.js";
+import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
+import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
 
 const logger = getChildLogger({ module: "cmd-agent" });
@@ -83,6 +85,32 @@ export function registerAgentCommand(program: Command): void {
 					.catch((err) => {
 						logger.warn({ error: String(err) }, "session token bootstrap failed");
 					});
+
+				// Fetch provider config from relay (with retry — relay may start after agent)
+				if (!isMoltbookAgent) {
+					const fetchProviders = async (attempt: number): Promise<void> => {
+						try {
+							const result = await relayGetProviders();
+							if (result.ok && result.providers.length > 0) {
+								await refreshExternalProviderSkill(result.providers);
+								logger.info(
+									{ count: result.providers.length },
+									"provider config fetched from relay",
+								);
+							}
+						} catch (err) {
+							if (attempt < 3) {
+								const delay = attempt * 10_000; // 10s, 20s
+								logger.debug({ attempt, delay }, "relay not ready, retrying provider fetch");
+								setTimeout(() => fetchProviders(attempt + 1), delay);
+							} else {
+								logger.warn({ error: String(err) }, "failed to fetch provider config from relay");
+							}
+						}
+					};
+					// Delay first attempt to give relay time to start
+					setTimeout(() => fetchProviders(1), 15_000);
+				}
 			}
 
 			// Keep the process alive (server runs indefinitely)

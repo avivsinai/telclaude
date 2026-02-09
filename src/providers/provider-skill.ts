@@ -382,6 +382,12 @@ async function resolveSkillLocation(): Promise<SkillLocation | null> {
 		path.join("/app", ".claude", "skills", SKILL_DIR),
 	];
 
+	// In Docker, entrypoint installs skills to $TELCLAUDE_CLAUDE_HOME/skills/ (no .claude prefix)
+	const claudeHome = process.env.TELCLAUDE_CLAUDE_HOME ?? process.env.CLAUDE_CONFIG_DIR;
+	if (claudeHome) {
+		candidates.unshift(path.join(claudeHome, "skills", SKILL_DIR));
+	}
+
 	for (const rootDir of candidates) {
 		const skillPath = path.join(rootDir, SKILL_FILE);
 		try {

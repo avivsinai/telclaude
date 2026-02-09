@@ -177,7 +177,6 @@ services:
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      - TELCLAUDE_CONFIG=/data/telclaude.json
 
       # Relay capability broker + Anthropic API proxy
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
@@ -214,7 +213,6 @@ services:
     volumes:
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - telclaude-claude-skills:/home/telclaude-skills:rw
-      - ./telclaude.json:/data/telclaude.json:ro
       - moltbook-memory:/moltbook/memory:ro
       - media-inbox:/media/inbox:ro
       - media-outbox:/media/outbox:ro

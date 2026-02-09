@@ -198,7 +198,6 @@ services:
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      - TELCLAUDE_CONFIG=/data/telclaude.json
 
       # Relay capability broker + Anthropic API proxy
       # Agent has NO credentials - all API calls go through relay
@@ -243,9 +242,6 @@ services:
 
       # Claude skills profile (no auth secrets)
       - telclaude-claude-skills:/home/telclaude-skills:rw
-
-      # Configuration file (for provider allowlist + health checks)
-      - ./telclaude.json:/data/telclaude.json:ro
 
       # Moltbook memory (read-only in agent)
       - moltbook-memory:/moltbook/memory:ro
