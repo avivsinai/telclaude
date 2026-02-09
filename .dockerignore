@@ -36,6 +36,7 @@ coverage/
 !docker/README.md
 !.claude/**/*.md
 docs/
+!docs/social-contract.md
 
 # OS files
 .DS_Store
