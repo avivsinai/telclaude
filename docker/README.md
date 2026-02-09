@@ -78,12 +78,20 @@ for containers that need initial root privileges.
    ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-4. **Build and start**:
+4. **Create config files** (see [Config Split](#config-split) below):
+   ```bash
+   # Policy config (mounted to all containers)
+   echo '{}' > telclaude.json
+   # Private config (relay-only — optional, for allowedChats/permissions)
+   echo '{}' > telclaude-private.json
+   ```
+
+5. **Build and start**:
    ```powershell
    docker compose up -d --build
    ```
 
-5. **Check logs**:
+6. **Check logs**:
    ```powershell
    docker compose logs -f
    ```
@@ -223,37 +231,36 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 
 For both Telegram and Moltbook agents, generate key pairs with `telclaude keygen telegram` / `telclaude keygen moltbook`. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`. `MOLTBOOK_PROXY_TOKEN` must match between relay and Moltbook agent.
 
-### Custom Configuration
+### Config Split
 
-**Required:** Create `telclaude.json` before starting:
+Telclaude uses a two-file config split to keep secrets out of agent containers:
 
-```bash
-cp telclaude.json.example telclaude.json
-# Edit telclaude.json with your chat ID and settings
-```
+| File | Mounted to | Contents |
+|------|-----------|----------|
+| `telclaude.json` | All containers | Policy: providers, network rules, rate limits, SDK config |
+| `telclaude-private.json` | Relay only | Relay-only: allowedChats, permissions, deprecated secret fields |
 
-The config file is mounted into both containers:
+The relay deep-merges private on top of policy (`TELCLAUDE_PRIVATE_CONFIG` env var). Agents only read the policy file.
 
-```yaml
-volumes:
-  - ./telclaude.json:/data/telclaude.json:ro
-```
-
-Minimal `telclaude.json`:
+**Policy config** (`telclaude.json` — safe for all containers):
 ```json
 {
-  "telegram": {
-    "allowedChats": [123456789]
-  },
-  "security": {
-    "permissions": {
-      "defaultTier": "READ_ONLY"
-    }
-  }
+  "providers": [{"id": "svc", "baseUrl": "http://localhost:3001", "services": ["api"]}],
+  "security": {"profile": "strict"}
 }
 ```
 
-> **Important:** `allowedChats` is required. The container ignores all chats that are not explicitly listed, even for the first admin claim. Add your own chat ID (e.g., from `@userinfobot`) before running `docker compose up` or the bot will not respond.
+**Private config** (`telclaude-private.json` — relay only):
+```json
+{
+  "telegram": {"allowedChats": [123456789]},
+  "security": {"permissions": {"defaultTier": "READ_ONLY", "users": {"tg:123456789": {"tier": "FULL_ACCESS"}}}}
+}
+```
+
+> **Important:** `allowedChats` is required (in either file). The container ignores all chats not listed. Add your chat ID before running `docker compose up`.
+
+> **Single-file mode:** For simple setups, put everything in `telclaude.json` and create an empty `telclaude-private.json` (`{}`). The relay works fine without `TELCLAUDE_PRIVATE_CONFIG`.
 
 ### External Providers (Sidecars)
 

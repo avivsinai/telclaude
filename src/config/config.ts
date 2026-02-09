@@ -414,28 +414,93 @@ export type TTSConfig = z.infer<typeof TTSConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
+let privateMtime: number | null = null;
 let cachedConfigPath: string | null = null;
+
+/**
+ * Deep-merge two plain objects. Source values override target values.
+ * Arrays are replaced (not concatenated) — source is authoritative.
+ */
+function deepMerge(
+	target: Record<string, unknown>,
+	source: Record<string, unknown>,
+): Record<string, unknown> {
+	const result = { ...target };
+	for (const key of Object.keys(source)) {
+		const tVal = target[key];
+		const sVal = source[key];
+		if (isPlainObject(tVal) && isPlainObject(sVal)) {
+			result[key] = deepMerge(tVal as Record<string, unknown>, sVal as Record<string, unknown>);
+		} else {
+			result[key] = sVal;
+		}
+	}
+	return result;
+}
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+	return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function safeStat(filePath: string): fs.Stats | null {
+	try {
+		return fs.statSync(filePath);
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Load and parse the configuration file.
  * Uses resolveConfigPath() to determine the config file location.
+ *
+ * Supports a two-file split for Docker deployments:
+ *   - TELCLAUDE_CONFIG → policy config (safe for all containers: providers, network, etc.)
+ *   - TELCLAUDE_PRIVATE_CONFIG → relay-only overrides (allowedChats, permissions, secrets)
+ *
+ * The private config is deep-merged on top of the policy config. Arrays are replaced,
+ * not concatenated. If TELCLAUDE_PRIVATE_CONFIG is not set, single-file behavior is preserved.
  */
 export function loadConfig(): TelclaudeConfig {
 	const configPath = resolveConfigPath();
+	const privateConfigPath = process.env.TELCLAUDE_PRIVATE_CONFIG;
 
 	try {
 		const stat = fs.statSync(configPath);
-		// Invalidate cache if path changed or mtime changed
-		if (cachedConfig && cachedConfigPath === configPath && configMtime === stat.mtimeMs) {
+		const pStat = privateConfigPath ? safeStat(privateConfigPath) : null;
+
+		// Invalidate cache if any file changed
+		if (
+			cachedConfig &&
+			cachedConfigPath === configPath &&
+			configMtime === stat.mtimeMs &&
+			privateMtime === (pStat?.mtimeMs ?? null)
+		) {
 			return cachedConfig;
 		}
 
 		const raw = fs.readFileSync(configPath, "utf-8");
-		const parsed = JSON5.parse(raw);
+		let parsed = JSON5.parse(raw) as Record<string, unknown>;
+
+		// Deep-merge private config if available (relay-only overlay)
+		if (privateConfigPath && pStat) {
+			try {
+				const privateRaw = fs.readFileSync(privateConfigPath, "utf-8");
+				const privateParsed = JSON5.parse(privateRaw) as Record<string, unknown>;
+				parsed = deepMerge(parsed, privateParsed);
+			} catch {
+				// Private config is optional — log at debug level
+				if (process.env.TELCLAUDE_LOG_LEVEL === "debug") {
+					console.debug(`[config] failed to read private config: ${privateConfigPath}`);
+				}
+			}
+		}
+
 		const validated = TelclaudeConfigSchema.parse(parsed);
 
 		cachedConfig = validated;
 		configMtime = stat.mtimeMs;
+		privateMtime = pStat?.mtimeMs ?? null;
 		cachedConfigPath = configPath;
 
 		return validated;
@@ -472,6 +537,7 @@ export function getConfigPath(): string {
 export function resetConfigCache() {
 	cachedConfig = null;
 	configMtime = null;
+	privateMtime = null;
 	cachedConfigPath = null;
 }
 
