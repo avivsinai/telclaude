@@ -116,11 +116,20 @@ function buildLogger(settings: ResolvedSettings): { logger: Logger; destination:
 		// Other errors: let pino.destination handle it
 	}
 
-	const destination = pino.destination({
+	const fileDestination = pino.destination({
 		dest: settings.file,
 		mkdir: true,
 		sync: true, // deterministic for tests; log volume is modest.
 	});
+
+	// In Docker mode, also write to stdout so `docker logs` captures structured JSON.
+	// 12-factor app: apps emit logs to stdout, orchestration handles persistence.
+	// Inline check avoids circular dep with sandbox/mode.ts (which imports logging).
+	const inDocker = process.env.TELCLAUDE_DOCKER === "1" || fs.existsSync("/.dockerenv");
+	const destination = inDocker
+		? pino.multistream([{ stream: fileDestination }, { stream: process.stdout }])
+		: fileDestination;
+
 	const logger = pino(
 		{
 			level: settings.level,

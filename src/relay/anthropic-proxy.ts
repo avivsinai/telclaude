@@ -381,7 +381,7 @@ function sanitizeRequestHeaders(headers: http.IncomingHttpHeaders, authHeader: A
 	return filtered;
 }
 
-function extractProxyToken(headerValue: string | string[] | undefined): string | null {
+function extractBearerToken(headerValue: string | string[] | undefined): string | null {
 	if (!headerValue) return null;
 	const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
 	if (!raw) return null;
@@ -390,6 +390,21 @@ function extractProxyToken(headerValue: string | string[] | undefined): string |
 	const match = trimmed.match(/^Bearer\s+(.+)$/i);
 	if (!match) return null;
 	return match[1]?.trim() ?? null;
+}
+
+/**
+ * Extract proxy token from request headers.
+ *
+ * The Claude SDK may send credentials as either `Authorization: Bearer <token>`
+ * or `x-api-key: <token>` depending on the request type. Accept both so that
+ * all SDK-initiated requests authenticate successfully against the proxy.
+ */
+function extractProxyToken(req: http.IncomingMessage): string | null {
+	return (
+		extractBearerToken(req.headers.authorization) ??
+		(req.headers["x-api-key"] as string | undefined)?.trim() ??
+		null
+	);
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -431,9 +446,17 @@ export async function handleAnthropicProxyRequest(
 		return;
 	}
 
-	const incomingToken = extractProxyToken(req.headers.authorization);
+	const incomingToken = extractProxyToken(req);
 	if (!incomingToken || !constantTimeEqual(incomingToken, proxyToken)) {
-		logger.warn({ remoteAddress }, "[anthropic-proxy] invalid proxy token");
+		const authType = req.headers.authorization
+			? "bearer"
+			: req.headers["x-api-key"]
+				? "x-api-key"
+				: "none";
+		logger.warn(
+			{ remoteAddress, method: req.method, url: req.url, authType },
+			"[anthropic-proxy] invalid proxy token",
+		);
 		res.writeHead(401, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "Unauthorized." }));
 		return;
