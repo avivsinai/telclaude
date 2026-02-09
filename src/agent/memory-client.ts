@@ -31,9 +31,15 @@ function resolveScope(explicit?: InternalAuthScope): InternalAuthScope {
 	}
 
 	const hasMoltbook =
-		Boolean(process.env.MOLTBOOK_RPC_PRIVATE_KEY) || Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
+		Boolean(process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY) ||
+		Boolean(process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY) ||
+		Boolean(process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY) ||
+		Boolean(process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY);
 	const hasTelegram =
-		Boolean(process.env.TELEGRAM_RPC_PRIVATE_KEY) || Boolean(process.env.TELEGRAM_RPC_PUBLIC_KEY);
+		Boolean(process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY) ||
+		Boolean(process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY) ||
+		Boolean(process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY) ||
+		Boolean(process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY);
 
 	// M1: Fail closed if both scopes have credentials — ambiguous
 	if (hasMoltbook && hasTelegram) {

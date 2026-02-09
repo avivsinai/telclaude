@@ -4,37 +4,59 @@ import { generateKeyPair } from "../internal-auth.js";
 
 type KeygenScope = "telegram" | "moltbook";
 
-const ENV_VARS: Record<KeygenScope, { privateKey: string; publicKey: string }> = {
+const ENV_VARS: Record<
+	KeygenScope,
+	{
+		agentPrivateKey: string;
+		agentPublicKey: string;
+		relayPrivateKey: string;
+		relayPublicKey: string;
+	}
+> = {
 	telegram: {
-		privateKey: "TELEGRAM_RPC_PRIVATE_KEY",
-		publicKey: "TELEGRAM_RPC_PUBLIC_KEY",
+		agentPrivateKey: "TELEGRAM_RPC_AGENT_PRIVATE_KEY",
+		agentPublicKey: "TELEGRAM_RPC_AGENT_PUBLIC_KEY",
+		relayPrivateKey: "TELEGRAM_RPC_RELAY_PRIVATE_KEY",
+		relayPublicKey: "TELEGRAM_RPC_RELAY_PUBLIC_KEY",
 	},
 	moltbook: {
-		privateKey: "MOLTBOOK_RPC_PRIVATE_KEY",
-		publicKey: "MOLTBOOK_RPC_PUBLIC_KEY",
+		agentPrivateKey: "MOLTBOOK_RPC_AGENT_PRIVATE_KEY",
+		agentPublicKey: "MOLTBOOK_RPC_AGENT_PUBLIC_KEY",
+		relayPrivateKey: "MOLTBOOK_RPC_RELAY_PRIVATE_KEY",
+		relayPublicKey: "MOLTBOOK_RPC_RELAY_PUBLIC_KEY",
 	},
 };
 
 /**
- * Generate Ed25519 key pair for asymmetric RPC auth.
+ * Generate two Ed25519 key pairs for bidirectional asymmetric RPC auth.
  *
- * Outputs both keys for easy copy-paste into .env:
- * - Private key goes to relay (can sign)
- * - Public key goes to agent (can only verify)
+ * Outputs 4 keys for easy copy-paste into .env:
+ * - Agent keypair: agent signs → relay verifies
+ * - Relay keypair: relay signs → agent verifies
  */
 export function runKeygen(scope: KeygenScope): void {
-	const { privateKey, publicKey } = generateKeyPair();
+	const agentKeys = generateKeyPair();
+	const relayKeys = generateKeyPair();
 	const vars = ENV_VARS[scope];
 
-	console.log(`# ${scope} RPC Ed25519 Key Pair`);
-	console.log("# Generated for asymmetric authentication");
+	console.log(`# ${scope} RPC Ed25519 Key Pairs (bidirectional auth)`);
 	console.log("#");
-	console.log("# SECURITY: Agent only has public key - can verify but CANNOT forge signatures");
+	console.log("# Two keypairs: each side owns its own private key.");
+	console.log("# Agent compromise cannot forge relay→agent requests (and vice versa).");
 	console.log("#");
-	console.log("# Add to your docker/.env file:");
+	console.log("# Add ALL 4 lines to your docker/.env file:");
 	console.log("");
-	console.log(`${vars.privateKey}=${privateKey}`);
-	console.log(`${vars.publicKey}=${publicKey}`);
+	console.log("# ── Agent keypair (agent signs → relay verifies) ──");
+	console.log(`# Agent container gets the private key:`);
+	console.log(`${vars.agentPrivateKey}=${agentKeys.privateKey}`);
+	console.log(`# Relay container gets the public key:`);
+	console.log(`${vars.agentPublicKey}=${agentKeys.publicKey}`);
+	console.log("");
+	console.log("# ── Relay keypair (relay signs → agent verifies) ──");
+	console.log(`# Relay container gets the private key:`);
+	console.log(`${vars.relayPrivateKey}=${relayKeys.privateKey}`);
+	console.log(`# Agent container gets the public key:`);
+	console.log(`${vars.relayPublicKey}=${relayKeys.publicKey}`);
 }
 
 export function registerKeygenCommand(program: Command): void {

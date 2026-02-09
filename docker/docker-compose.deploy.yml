@@ -71,9 +71,11 @@ services:
       - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
       - TELCLAUDE_CAPABILITIES_ENABLED=1
 
-      # RPC auth
-      - TELEGRAM_RPC_PRIVATE_KEY=${TELEGRAM_RPC_PRIVATE_KEY:-}
-      - MOLTBOOK_RPC_PRIVATE_KEY=${MOLTBOOK_RPC_PRIVATE_KEY:-}
+      # RPC auth — relay holds agent PUBLIC keys (verifies agent→relay) + relay PRIVATE keys (signs relay→agent)
+      - TELEGRAM_RPC_AGENT_PUBLIC_KEY=${TELEGRAM_RPC_AGENT_PUBLIC_KEY:-}
+      - TELEGRAM_RPC_RELAY_PRIVATE_KEY=${TELEGRAM_RPC_RELAY_PRIVATE_KEY:-}
+      - MOLTBOOK_RPC_AGENT_PUBLIC_KEY=${MOLTBOOK_RPC_AGENT_PUBLIC_KEY:-}
+      - MOLTBOOK_RPC_RELAY_PRIVATE_KEY=${MOLTBOOK_RPC_RELAY_PRIVATE_KEY:-}
       - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
 
       # Media paths
@@ -182,8 +184,9 @@ services:
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
 
-      # RPC auth
-      - TELEGRAM_RPC_PUBLIC_KEY=${TELEGRAM_RPC_PUBLIC_KEY:-}
+      # RPC auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
+      - TELEGRAM_RPC_AGENT_PRIVATE_KEY=${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-}
+      - TELEGRAM_RPC_RELAY_PUBLIC_KEY=${TELEGRAM_RPC_RELAY_PUBLIC_KEY:-}
 
       # Git proxy (token never exposed to agent)
       - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
@@ -275,7 +278,8 @@ services:
       - HOME=/moltbook
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      - MOLTBOOK_RPC_PUBLIC_KEY=${MOLTBOOK_RPC_PUBLIC_KEY:-}
+      - MOLTBOOK_RPC_AGENT_PRIVATE_KEY=${MOLTBOOK_RPC_AGENT_PRIVATE_KEY:-}
+      - MOLTBOOK_RPC_RELAY_PUBLIC_KEY=${MOLTBOOK_RPC_RELAY_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_RUN_AS_ROOT=0
