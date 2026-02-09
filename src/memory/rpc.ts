@@ -1,4 +1,5 @@
 import { getChildLogger } from "../logging.js";
+import { filterOutput } from "../security/output-filter.js";
 import {
 	createEntries,
 	createQuarantinedEntry,
@@ -13,6 +14,7 @@ const logger = getChildLogger({ module: "memory-rpc" });
 export type MemoryProposeRequest = {
 	entries: MemoryEntryInput[];
 	userId?: string;
+	chatId?: string;
 };
 
 export type MemorySnapshotRequest = {
@@ -20,6 +22,7 @@ export type MemorySnapshotRequest = {
 	trust?: TrustLevel[];
 	sources?: MemorySource[];
 	limit?: number;
+	chatId?: string;
 };
 
 export type MemorySnapshotResponse = {
@@ -30,6 +33,7 @@ export type MemoryQuarantineRequest = {
 	id: string;
 	content: string;
 	userId?: string;
+	chatId?: string;
 };
 
 export type MemoryPromoteRequest = {
@@ -44,6 +48,7 @@ export type MemoryRpcResult<T> =
 const MAX_UPDATES_PER_REQUEST = 5;
 const MAX_STRING_LENGTH = 500;
 const MAX_ID_LENGTH = 128;
+const MAX_CHAT_ID_LENGTH = 64;
 const MAX_QUERY_LIMIT = 500;
 const DEFAULT_QUERY_LIMIT = 200;
 const HOUR_MS = 60 * 60 * 1000;
@@ -95,10 +100,15 @@ function normalizeLimit(limit?: number): number {
 }
 
 function checkForbiddenPatterns(value: string): string | null {
+	const trimmed = value.trim();
 	for (const pattern of FORBIDDEN_PATTERNS) {
-		if (pattern.test(value)) {
+		if (pattern.test(trimmed)) {
 			return `Forbidden pattern detected (${pattern.source}).`;
 		}
+	}
+	// Block XML-like injection attempts (defense-in-depth against tag breakout)
+	if (/<\/?[a-z][^>]*>/i.test(value)) {
+		return "HTML/XML tags not allowed in memory entries.";
 	}
 	return null;
 }
@@ -127,18 +137,40 @@ function validateEntry(entry: MemoryEntryInput): string | null {
 	if (forbidden) {
 		return forbidden;
 	}
+	// M4: Reject content that looks like secrets/tokens
+	const secretResult = filterOutput(entry.content);
+	if (secretResult.blocked) {
+		const names = secretResult.matches.map((m) => m.pattern).join(", ");
+		return `Content rejected: potential secret detected (${names}).`;
+	}
 	return null;
+}
+
+let lastRateBucketPrune = 0;
+
+function pruneRateBuckets(): void {
+	const now = Date.now();
+	if (now - lastRateBucketPrune < HOUR_MS) return;
+	lastRateBucketPrune = now;
+	const windowStart = Math.floor(now / HOUR_MS) * HOUR_MS;
+	for (const [key, bucket] of rateBuckets) {
+		if (bucket.windowStart < windowStart) {
+			rateBuckets.delete(key);
+		}
+	}
 }
 
 function checkRateLimit(
 	source: MemorySource,
-	userKey: string,
+	_userKey: string,
 	count: number,
 ): MemoryRpcResult<void> {
+	pruneRateBuckets();
 	const limit = source === "telegram" ? 100 : 10;
 	const now = Date.now();
 	const windowStart = Math.floor(now / HOUR_MS) * HOUR_MS;
-	const key = `${source}:${userKey}`;
+	// M3: Use scope-constant key to prevent userId spoofing
+	const key = `${source}:agent`;
 	const bucket = rateBuckets.get(key);
 
 	if (!bucket || bucket.windowStart !== windowStart) {
@@ -158,6 +190,14 @@ function checkRateLimit(
 	return ok(undefined);
 }
 
+function validateChatId(chatId: unknown): string | undefined {
+	if (chatId === undefined || chatId === null) return undefined;
+	if (typeof chatId !== "string") return undefined;
+	const trimmed = chatId.trim();
+	if (!trimmed || trimmed.length > MAX_CHAT_ID_LENGTH) return undefined;
+	return trimmed;
+}
+
 export function handleMemoryPropose(
 	request: MemoryProposeRequest,
 	context: { source: MemorySource; userId?: string },
@@ -171,6 +211,8 @@ export function handleMemoryPropose(
 	if (request.entries.length > MAX_UPDATES_PER_REQUEST) {
 		return fail(400, `Too many entries (max ${MAX_UPDATES_PER_REQUEST}).`);
 	}
+
+	const chatId = validateChatId(request.chatId);
 
 	for (const entry of request.entries) {
 		const error = validateEntry(entry);
@@ -186,7 +228,11 @@ export function handleMemoryPropose(
 	}
 
 	try {
-		const created = createEntries(request.entries, context.source);
+		// H3: Stamp chatId on each entry for multi-user scoping
+		const entriesWithChat = chatId
+			? request.entries.map((e) => ({ ...e, chatId }))
+			: request.entries;
+		const created = createEntries(entriesWithChat, context.source);
 		return ok({ accepted: created.length });
 	} catch (err) {
 		logger.warn({ error: String(err) }, "memory propose failed");
@@ -207,6 +253,7 @@ export function parseSnapshotBody(input: unknown): MemoryRpcResult<MemorySnapsho
 		trust?: unknown;
 		sources?: unknown;
 		limit?: unknown;
+		chatId?: unknown;
 	};
 
 	const categories = normalizeList(raw.categories as MemoryCategory[] | MemoryCategory | undefined);
@@ -231,7 +278,9 @@ export function parseSnapshotBody(input: unknown): MemoryRpcResult<MemorySnapsho
 		limit = normalizeLimit(parsed);
 	}
 
-	return ok({ categories, trust, sources, limit });
+	const chatId = validateChatId(raw.chatId);
+
+	return ok({ categories, trust, sources, limit, chatId });
 }
 
 export function parseSnapshotQuery(query: URLSearchParams): MemoryRpcResult<MemorySnapshotRequest> {
@@ -266,22 +315,27 @@ export function parseSnapshotQuery(query: URLSearchParams): MemoryRpcResult<Memo
 		limit = normalizeLimit(parsed);
 	}
 
+	const chatId = validateChatId(query.get("chatId"));
+
 	return ok({
 		categories: categories as MemoryCategory[] | undefined,
 		trust: trust as TrustLevel[] | undefined,
 		sources: sources as MemorySource[] | undefined,
 		limit,
+		chatId,
 	});
 }
 
 export function handleMemorySnapshot(
 	request: MemorySnapshotRequest,
 ): MemoryRpcResult<MemorySnapshotResponse> {
+	const chatId = validateChatId(request.chatId);
 	const query: MemorySnapshotRequest = {
 		categories: request.categories?.length ? request.categories : undefined,
 		trust: request.trust?.length ? request.trust : undefined,
 		sources: request.sources?.length ? request.sources : undefined,
 		limit: normalizeLimit(request.limit),
+		chatId,
 	};
 
 	const entries = getEntries({
@@ -289,6 +343,7 @@ export function handleMemorySnapshot(
 		trust: query.trust,
 		sources: query.sources,
 		limit: query.limit,
+		chatId: query.chatId,
 		order: "desc",
 	});
 
@@ -341,11 +396,14 @@ export function handleMemoryQuarantine(
 		return rateResult;
 	}
 
+	const chatId = validateChatId(request.chatId);
+
 	try {
 		const entry = createQuarantinedEntry({
 			id: trimmedId,
 			category: "posts",
 			content: request.content,
+			chatId,
 		});
 		return ok({ entry });
 	} catch (err) {

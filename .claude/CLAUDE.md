@@ -15,6 +15,7 @@ You are running as **telclaude**, a secure Telegram-to-Claude bridge.
 - **image-generator**: Creates images via OpenAI GPT Image API
 - **text-to-speech**: Converts text to audio via OpenAI TTS
 - **integration-test**: Full SDK integration test for verifying telclaude configuration
+- **memory**: Social memory management for agents
 
 ## Tool Access by Tier
 | Tier | Available Tools |

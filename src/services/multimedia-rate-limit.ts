@@ -16,7 +16,8 @@ export type MultimediaFeature =
 	| "tts"
 	| "transcription"
 	| "video_processing"
-	| "moltbook_post";
+	| "moltbook_post"
+	| "token_refresh";
 
 /** Rate limit configuration for a feature */
 export type FeatureRateLimitConfig = {

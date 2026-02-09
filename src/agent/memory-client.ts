@@ -3,6 +3,7 @@ import type { InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import type { MemorySnapshotRequest, MemorySnapshotResponse } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
+import type { MemoryEntry } from "../memory/types.js";
 
 const logger = getChildLogger({ module: "agent-memory-client" });
 
@@ -14,15 +15,34 @@ function getCapabilitiesUrl(): string {
 	return url.replace(/\/+$/, "");
 }
 
+/**
+ * Resolve the agent's auth scope from environment variables.
+ *
+ * M1 fix: Check TELCLAUDE_INTERNAL_AUTH_SCOPE first for explicit override.
+ * Fail closed if both secrets are present and no explicit scope is set.
+ */
 function resolveScope(explicit?: InternalAuthScope): InternalAuthScope {
 	if (explicit) return explicit;
-	// Check for asymmetric keys (new) or symmetric secret (legacy)
-	const hasMoltbookPrivate = Boolean(process.env.MOLTBOOK_RPC_PRIVATE_KEY);
-	const hasMoltbookPublic = Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
-	const hasMoltbookSecret = Boolean(process.env.MOLTBOOK_RPC_SECRET);
-	const hasTelegram = Boolean(process.env.TELEGRAM_RPC_SECRET);
-	// Moltbook scope if we have asymmetric keys or legacy secret (and no telegram)
-	if ((hasMoltbookPrivate || hasMoltbookPublic || hasMoltbookSecret) && !hasTelegram) {
+
+	// M1: Explicit scope env var takes precedence
+	const explicitScope = process.env.TELCLAUDE_INTERNAL_AUTH_SCOPE;
+	if (explicitScope === "telegram" || explicitScope === "moltbook") {
+		return explicitScope;
+	}
+
+	const hasMoltbook =
+		Boolean(process.env.MOLTBOOK_RPC_PRIVATE_KEY) || Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
+	const hasTelegram =
+		Boolean(process.env.TELEGRAM_RPC_PRIVATE_KEY) || Boolean(process.env.TELEGRAM_RPC_PUBLIC_KEY);
+
+	// M1: Fail closed if both scopes have credentials — ambiguous
+	if (hasMoltbook && hasTelegram) {
+		throw new Error(
+			"Ambiguous auth scope: both TELEGRAM_RPC_* and MOLTBOOK_RPC_* are set without TELCLAUDE_INTERNAL_AUTH_SCOPE. Set TELCLAUDE_INTERNAL_AUTH_SCOPE=telegram or TELCLAUDE_INTERNAL_AUTH_SCOPE=moltbook explicitly.",
+		);
+	}
+
+	if (hasMoltbook && !hasTelegram) {
 		return "moltbook";
 	}
 	return "telegram";
@@ -62,9 +82,13 @@ async function postJson<T>(path: string, body: unknown, scope?: InternalAuthScop
 
 export async function proposeMemory(
 	entries: MemoryEntryInput[],
-	options?: { userId?: string; scope?: InternalAuthScope },
+	options?: { userId?: string; chatId?: string; scope?: InternalAuthScope },
 ): Promise<{ accepted: number }> {
-	return postJson("/v1/memory.propose", { entries, userId: options?.userId }, options?.scope);
+	return postJson(
+		"/v1/memory.propose",
+		{ entries, userId: options?.userId, chatId: options?.chatId },
+		options?.scope,
+	);
 }
 
 export async function fetchMemorySnapshot(
@@ -72,4 +96,16 @@ export async function fetchMemorySnapshot(
 	options?: { scope?: InternalAuthScope },
 ): Promise<MemorySnapshotResponse> {
 	return postJson("/v1/memory.snapshot", request, options?.scope);
+}
+
+export async function quarantineMemory(
+	id: string,
+	content: string,
+	options?: { userId?: string; chatId?: string; scope?: InternalAuthScope },
+): Promise<{ entry: MemoryEntry }> {
+	return postJson(
+		"/v1/memory.quarantine",
+		{ id, content, userId: options?.userId, chatId: options?.chatId },
+		options?.scope,
+	);
 }

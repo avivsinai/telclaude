@@ -265,7 +265,8 @@ function initializeSchema(database: Database.Database): void {
 			created_at INTEGER NOT NULL,
 			promoted_at INTEGER,
 			promoted_by TEXT,
-			posted_at INTEGER
+			posted_at INTEGER,
+			chat_id TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_category ON memory_entries(category);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_source ON memory_entries(source);
@@ -276,7 +277,7 @@ function initializeSchema(database: Database.Database): void {
 
 	ensureApprovalsColumns(database);
 	ensureMemoryEntriesColumns(database);
-	// posted_at index is created in ensureMemoryEntriesColumns after the column is ensured to exist
+	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
 }
@@ -446,4 +447,12 @@ function ensureMemoryEntriesColumns(database: Database.Database): void {
 			"CREATE INDEX IF NOT EXISTS idx_memory_entries_posted ON memory_entries(posted_at)",
 		);
 	}
+
+	if (!columns.has("chat_id")) {
+		logger.info("adding chat_id column to memory_entries table");
+		database.exec("ALTER TABLE memory_entries ADD COLUMN chat_id TEXT");
+	}
+
+	// Always ensure index exists (handles both migration and fresh DB)
+	database.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_chat ON memory_entries(chat_id)");
 }

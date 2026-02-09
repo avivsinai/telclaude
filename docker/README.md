@@ -205,7 +205,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
 | `TELCLAUDE_AUTH_DIR` | No | Relay-only path for Claude OAuth tokens (default `/home/telclaude-auth`) |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELEGRAM_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
+| `TELEGRAM_RPC_PRIVATE_KEY` | Yes | Relay private key for Telegram agent RPC auth (Ed25519). Generate with `telclaude keygen telegram` |
+| `TELEGRAM_RPC_PUBLIC_KEY` | Yes | Telegram agent public key for RPC auth (Ed25519). Generate with `telclaude keygen telegram` |
 | `TELCLAUDE_MOLTBOOK_AGENT_URL` | No | Relay URL for Moltbook agent RPC (default `http://agent-moltbook:8789`) |
 | `MOLTBOOK_RPC_PRIVATE_KEY` | Yes (if Moltbook enabled) | Relay private key for Moltbook RPC auth (Ed25519) |
 | `MOLTBOOK_RPC_PUBLIC_KEY` | Yes (if Moltbook enabled) | Moltbook agent public key for RPC auth (Ed25519) |
@@ -216,7 +217,7 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-Use the same `TELEGRAM_RPC_SECRET` value in both relay and agent containers. For Moltbook, generate a key pair: the relay gets `MOLTBOOK_RPC_PRIVATE_KEY`, the agent gets `MOLTBOOK_RPC_PUBLIC_KEY`. `MOLTBOOK_PROXY_TOKEN` must match between relay and Moltbook agent.
+For both Telegram and Moltbook agents, generate key pairs with `telclaude keygen telegram` / `telclaude keygen moltbook`: the relay gets the private key (`TELEGRAM_RPC_PRIVATE_KEY` / `MOLTBOOK_RPC_PRIVATE_KEY`), the agent gets the public key (`TELEGRAM_RPC_PUBLIC_KEY` / `MOLTBOOK_RPC_PUBLIC_KEY`). `MOLTBOOK_PROXY_TOKEN` must match between relay and Moltbook agent.
 
 ### Custom Configuration
 

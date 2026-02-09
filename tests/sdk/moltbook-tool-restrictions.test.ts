@@ -38,8 +38,8 @@ const baseOpts = {
 } satisfies Parameters<typeof buildSdkOptions>[0];
 
 const ORIGINAL_ENV = {
-	MOLTBOOK_RPC_SECRET: process.env.MOLTBOOK_RPC_SECRET,
-	TELEGRAM_RPC_SECRET: process.env.TELEGRAM_RPC_SECRET,
+	MOLTBOOK_RPC_PUBLIC_KEY: process.env.MOLTBOOK_RPC_PUBLIC_KEY,
+	TELEGRAM_RPC_PUBLIC_KEY: process.env.TELEGRAM_RPC_PUBLIC_KEY,
 	TELCLAUDE_NETWORK_MODE: process.env.TELCLAUDE_NETWORK_MODE,
 	TELCLAUDE_MOLTBOOK_AGENT_WORKDIR: process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR,
 };
@@ -106,16 +106,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	if (ORIGINAL_ENV.MOLTBOOK_RPC_SECRET === undefined) {
-		delete process.env.MOLTBOOK_RPC_SECRET;
+	if (ORIGINAL_ENV.MOLTBOOK_RPC_PUBLIC_KEY === undefined) {
+		delete process.env.MOLTBOOK_RPC_PUBLIC_KEY;
 	} else {
-		process.env.MOLTBOOK_RPC_SECRET = ORIGINAL_ENV.MOLTBOOK_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = ORIGINAL_ENV.MOLTBOOK_RPC_PUBLIC_KEY;
 	}
 
-	if (ORIGINAL_ENV.TELEGRAM_RPC_SECRET === undefined) {
-		delete process.env.TELEGRAM_RPC_SECRET;
+	if (ORIGINAL_ENV.TELEGRAM_RPC_PUBLIC_KEY === undefined) {
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 	} else {
-		process.env.TELEGRAM_RPC_SECRET = ORIGINAL_ENV.TELEGRAM_RPC_SECRET;
+		process.env.TELEGRAM_RPC_PUBLIC_KEY = ORIGINAL_ENV.TELEGRAM_RPC_PUBLIC_KEY;
 	}
 
 	if (ORIGINAL_ENV.TELCLAUDE_NETWORK_MODE === undefined) {
@@ -140,8 +140,8 @@ afterEach(() => {
 
 describe("moltbook tool restrictions", () => {
 	it("allows file tools within the moltbook sandbox", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -177,8 +177,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("blocks file tools outside the moltbook sandbox", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -210,8 +210,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("blocks path traversal outside the sandbox", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -241,8 +241,8 @@ describe("moltbook tool restrictions", () => {
 			throw err;
 		}
 
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR = sandboxRoot;
 
@@ -258,8 +258,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("blocks glob traversal patterns", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -271,8 +271,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("blocks bash network egress tools in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -292,8 +292,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("allows Bash, Skill, and Task but blocks NotebookEdit in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({
@@ -320,8 +320,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("allows WebFetch and WebSearch in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_SECRET = "moltbook";
-		delete process.env.TELEGRAM_RPC_SECRET;
+		process.env.MOLTBOOK_RPC_PUBLIC_KEY = "moltbook";
+		delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
@@ -338,8 +338,8 @@ describe("moltbook tool restrictions", () => {
 	});
 
 	it("telegram context allows file tools and Bash", async () => {
-		process.env.TELEGRAM_RPC_SECRET = "telegram";
-		delete process.env.MOLTBOOK_RPC_SECRET;
+		process.env.TELEGRAM_RPC_PUBLIC_KEY = "telegram";
+		delete process.env.MOLTBOOK_RPC_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "telegram:agent" });

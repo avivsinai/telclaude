@@ -55,9 +55,13 @@ function getRefTtlMs(): number {
 }
 
 function getSigningSecret(): string {
-	const secret = process.env.TELEGRAM_RPC_SECRET ?? process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+	// Relay-side only: private key required for HMAC signing/verification.
+	// Never fall back to public key — it's public material and would weaken integrity.
+	const secret = process.env.TELEGRAM_RPC_PRIVATE_KEY;
 	if (!secret) {
-		throw new Error("TELEGRAM_RPC_SECRET not set (legacy: TELCLAUDE_INTERNAL_RPC_SECRET).");
+		throw new Error(
+			"TELEGRAM_RPC_PRIVATE_KEY not set. Attachment refs require the relay's private key.",
+		);
 	}
 	return secret;
 }

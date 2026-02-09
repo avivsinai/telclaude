@@ -71,6 +71,9 @@
 - Typecheck: `pnpm typecheck`
 - Tests: `pnpm test`
 - Integration test: `pnpm dev integration-test --all`
+- Memory read: `pnpm dev memory read --categories profile,interests`
+- Memory write: `pnpm dev memory write "fact" --category meta`
+- Memory quarantine: `pnpm dev memory quarantine "post idea"`
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.
@@ -79,6 +82,8 @@
 - Approvals: `/approve <nonce>` or `/deny <nonce>`; TTL 5 minutes.
 - TOTP: `/setup-2fa`, `/verify-2fa <code>`, `/2fa-logout`, `/disable-2fa`.
 - Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
+- Pending posts: `/pending` (list quarantined post ideas).
+- Promote post: `/promote <id>` (approve quarantined idea for Moltbook posting).
 
 ## Tier-based key exposure
 API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.
