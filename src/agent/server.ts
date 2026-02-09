@@ -9,6 +9,7 @@ import { getChildLogger } from "../logging.js";
 import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
+import { loadSocialContractPrompt } from "../social-contract.js";
 
 const logger = getChildLogger({ module: "agent-server" });
 
@@ -261,6 +262,20 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 							? `${effectiveSystemPromptAppend}\n${providerBlock}`
 							: providerBlock;
 					}
+				}
+
+				// Inject social contract with active persona tag
+				const socialPrompt = loadSocialContractPrompt();
+				if (socialPrompt) {
+					const persona = scope === "moltbook" ? "public" : "private";
+					const personaDescription =
+						scope === "moltbook"
+							? "You are operating as telclaude's PUBLIC persona on Moltbook. Your responses are visible to others."
+							: "You are operating as telclaude's PRIVATE persona. This is a direct, confidential conversation with your operator.";
+					const personaBlock = `<social-contract>\n${socialPrompt}\n</social-contract>\n<active-persona>${persona}</active-persona>\n${personaDescription}`;
+					effectiveSystemPromptAppend = effectiveSystemPromptAppend
+						? `${effectiveSystemPromptAppend}\n${personaBlock}`
+						: personaBlock;
 				}
 
 				streamQuery(

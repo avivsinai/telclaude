@@ -300,9 +300,7 @@ export function isTTSAvailable(): boolean {
 	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 		return Boolean(
-			process.env.TELEGRAM_RPC_PUBLIC_KEY ??
-				process.env.TELEGRAM_RPC_PRIVATE_KEY ??
-				process.env.TELCLAUDE_SESSION_TOKEN,
+			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
 		);
 	}
 

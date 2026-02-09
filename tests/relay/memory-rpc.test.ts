@@ -12,10 +12,14 @@ let generateKeyPair: typeof import("../../src/internal-auth.js").generateKeyPair
 let resetDatabase: typeof import("../../src/storage/db.js").resetDatabase;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
-const ORIGINAL_TELEGRAM_PRIVATE_KEY = process.env.TELEGRAM_RPC_PRIVATE_KEY;
-const ORIGINAL_TELEGRAM_PUBLIC_KEY = process.env.TELEGRAM_RPC_PUBLIC_KEY;
-const ORIGINAL_MOLTBOOK_PRIVATE_KEY = process.env.MOLTBOOK_RPC_PRIVATE_KEY;
-const ORIGINAL_MOLTBOOK_PUBLIC_KEY = process.env.MOLTBOOK_RPC_PUBLIC_KEY;
+const ORIGINAL_TELEGRAM_AGENT_PRIVATE_KEY = process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY;
+const ORIGINAL_TELEGRAM_AGENT_PUBLIC_KEY = process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY;
+const ORIGINAL_TELEGRAM_RELAY_PRIVATE_KEY = process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY;
+const ORIGINAL_TELEGRAM_RELAY_PUBLIC_KEY = process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
+const ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY = process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
+const ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY = process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
+const ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY = process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY;
+const ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY = process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
 
 describe("memory rpc", () => {
 	let tempDir: string;
@@ -25,15 +29,16 @@ describe("memory rpc", () => {
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-memrpc-"));
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
-		// Generate Ed25519 key pairs for both scopes
+		// Generate Ed25519 key pairs for both scopes (bidirectional)
+		// In tests, the same process signs (as agent) and verifies (as relay).
 		vi.resetModules();
 		({ generateKeyPair } = await import("../../src/internal-auth.js"));
 		const telegramKeys = generateKeyPair();
-		process.env.TELEGRAM_RPC_PRIVATE_KEY = telegramKeys.privateKey;
-		process.env.TELEGRAM_RPC_PUBLIC_KEY = telegramKeys.publicKey;
-		const { privateKey, publicKey } = generateKeyPair();
-		process.env.MOLTBOOK_RPC_PRIVATE_KEY = privateKey;
-		process.env.MOLTBOOK_RPC_PUBLIC_KEY = publicKey;
+		process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY = telegramKeys.privateKey;
+		process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY = telegramKeys.publicKey;
+		const moltbookKeys = generateKeyPair();
+		process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = moltbookKeys.privateKey;
+		process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = moltbookKeys.publicKey;
 		vi.resetModules();
 		({ startCapabilityServer } = await import("../../src/relay/capabilities.js"));
 		({ buildInternalAuthHeaders } = await import("../../src/internal-auth.js"));
@@ -57,25 +62,45 @@ describe("memory rpc", () => {
 		} else {
 			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
 		}
-		if (ORIGINAL_TELEGRAM_PRIVATE_KEY === undefined) {
-			delete process.env.TELEGRAM_RPC_PRIVATE_KEY;
+		if (ORIGINAL_TELEGRAM_AGENT_PRIVATE_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY;
 		} else {
-			process.env.TELEGRAM_RPC_PRIVATE_KEY = ORIGINAL_TELEGRAM_PRIVATE_KEY;
+			process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY = ORIGINAL_TELEGRAM_AGENT_PRIVATE_KEY;
 		}
-		if (ORIGINAL_TELEGRAM_PUBLIC_KEY === undefined) {
-			delete process.env.TELEGRAM_RPC_PUBLIC_KEY;
+		if (ORIGINAL_TELEGRAM_AGENT_PUBLIC_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY;
 		} else {
-			process.env.TELEGRAM_RPC_PUBLIC_KEY = ORIGINAL_TELEGRAM_PUBLIC_KEY;
+			process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY = ORIGINAL_TELEGRAM_AGENT_PUBLIC_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_PRIVATE_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_PRIVATE_KEY;
+		if (ORIGINAL_TELEGRAM_RELAY_PRIVATE_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_PRIVATE_KEY = ORIGINAL_MOLTBOOK_PRIVATE_KEY;
+			process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY = ORIGINAL_TELEGRAM_RELAY_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_PUBLIC_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_PUBLIC_KEY;
+		if (ORIGINAL_TELEGRAM_RELAY_PUBLIC_KEY === undefined) {
+			delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_PUBLIC_KEY = ORIGINAL_MOLTBOOK_PUBLIC_KEY;
+			process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY = ORIGINAL_TELEGRAM_RELAY_PUBLIC_KEY;
+		}
+		if (ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY;
+		}
+		if (ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY;
+		}
+		if (ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY = ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY;
+		}
+		if (ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+		} else {
+			process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY;
 		}
 	});
 

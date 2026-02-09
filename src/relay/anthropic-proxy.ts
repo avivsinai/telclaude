@@ -81,6 +81,10 @@ type OAuthCredentials = {
 // In-memory cache of vault OAuth credentials (avoids vault roundtrip per request)
 let cachedOAuth: OAuthCredentials | null = null;
 
+// Coalescing lock: when a refresh is in-flight, concurrent callers await the same promise
+// instead of racing to refresh (which consumes the single-use refresh token).
+let pendingRefresh: Promise<OAuthCredentials | null> | null = null;
+
 function oauthAuthHeader(accessToken: string, source: string): AuthHeader {
 	return {
 		name: "Authorization",
@@ -130,58 +134,90 @@ async function tryVaultOAuth(): Promise<AuthHeader | null> {
 			return oauthAuthHeader(creds.accessToken, "vault-oauth");
 		}
 
-		// Token expired — refresh via platform.claude.com
+		// Token expired — refresh via platform.claude.com.
+		// Use a coalescing lock: if another request is already refreshing,
+		// await that instead of racing (refresh tokens are single-use).
+		if (pendingRefresh) {
+			logger.debug("OAuth refresh already in-flight, awaiting");
+			try {
+				const coalesced = await pendingRefresh;
+				if (coalesced) {
+					return oauthAuthHeader(coalesced.accessToken, "vault-oauth-coalesced");
+				}
+			} catch (coalescedErr) {
+				logger.warn({ error: String(coalescedErr) }, "Coalesced OAuth refresh threw");
+			}
+			// Refresh failed or threw for the in-flight caller — fall back to expired token
+			return oauthAuthHeader(creds.accessToken, "vault-oauth-expired");
+		}
+
 		logger.info(
 			{ expiresAt: new Date(creds.expiresAt).toISOString() },
 			"OAuth token expired, refreshing",
 		);
 
-		const refreshResp = await fetch(TOKEN_URL, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				grant_type: "refresh_token",
-				refresh_token: creds.refreshToken,
-				client_id: process.env.CLAUDE_CODE_OAUTH_CLIENT_ID ?? CLIENT_ID,
-				scope: creds.scopes?.join(" ") ?? OAUTH_SCOPES,
-			}),
-		});
+		const doRefresh = async (): Promise<OAuthCredentials | null> => {
+			const refreshResp = await fetch(TOKEN_URL, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					grant_type: "refresh_token",
+					refresh_token: creds.refreshToken,
+					client_id: process.env.CLAUDE_CODE_OAUTH_CLIENT_ID ?? CLIENT_ID,
+					scope: creds.scopes?.join(" ") ?? OAUTH_SCOPES,
+				}),
+			});
 
-		if (!refreshResp.ok) {
-			const errText = await refreshResp.text();
-			logger.warn({ status: refreshResp.status, body: errText }, "OAuth token refresh failed");
-			// Still try the expired token — Anthropic may accept it briefly
-			cachedOAuth = creds;
-			return oauthAuthHeader(creds.accessToken, "vault-oauth-expired");
+			if (!refreshResp.ok) {
+				const errText = await refreshResp.text();
+				logger.warn({ status: refreshResp.status, body: errText }, "OAuth token refresh failed");
+				return null;
+			}
+
+			const data = (await refreshResp.json()) as {
+				access_token: string;
+				refresh_token?: string;
+				expires_in: number;
+			};
+
+			const refreshed: OAuthCredentials = {
+				accessToken: data.access_token,
+				refreshToken: data.refresh_token ?? creds.refreshToken,
+				expiresAt: Date.now() + data.expires_in * 1000,
+				scopes: creds.scopes,
+			};
+
+			// Persist refreshed tokens back to vault
+			try {
+				await client.store({
+					protocol: "secret",
+					target: "anthropic-oauth",
+					credential: { type: "opaque", value: JSON.stringify(refreshed) },
+					label: "Anthropic OAuth (auto-refreshed)",
+				});
+				logger.info(
+					{ expiresAt: new Date(refreshed.expiresAt).toISOString() },
+					"OAuth token refreshed and saved to vault",
+				);
+			} catch (storeErr) {
+				logger.warn({ error: String(storeErr) }, "failed to persist refreshed OAuth to vault");
+			}
+
+			return refreshed;
+		};
+
+		pendingRefresh = doRefresh();
+		let refreshed: OAuthCredentials | null;
+		try {
+			refreshed = await pendingRefresh;
+		} finally {
+			pendingRefresh = null;
 		}
 
-		const data = (await refreshResp.json()) as {
-			access_token: string;
-			refresh_token?: string;
-			expires_in: number;
-		};
-
-		const refreshed: OAuthCredentials = {
-			accessToken: data.access_token,
-			refreshToken: data.refresh_token ?? creds.refreshToken,
-			expiresAt: now + data.expires_in * 1000,
-			scopes: creds.scopes,
-		};
-
-		// Persist refreshed tokens back to vault
-		try {
-			await client.store({
-				protocol: "secret",
-				target: "anthropic-oauth",
-				credential: { type: "opaque", value: JSON.stringify(refreshed) },
-				label: "Anthropic OAuth (auto-refreshed)",
-			});
-			logger.info(
-				{ expiresAt: new Date(refreshed.expiresAt).toISOString() },
-				"OAuth token refreshed and saved to vault",
-			);
-		} catch (storeErr) {
-			logger.warn({ error: String(storeErr) }, "failed to persist refreshed OAuth to vault");
+		if (!refreshed) {
+			// Refresh failed — try expired token as last resort
+			cachedOAuth = creds;
+			return oauthAuthHeader(creds.accessToken, "vault-oauth-expired");
 		}
 
 		cachedOAuth = refreshed;

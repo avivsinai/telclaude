@@ -18,7 +18,9 @@ export function registerAgentCommand(program: Command): void {
 		.action(async (opts: { port?: string; host?: string }) => {
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
-			const isMoltbookAgent = Boolean(process.env.MOLTBOOK_RPC_PUBLIC_KEY);
+			const isMoltbookAgent = Boolean(
+				process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY || process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY,
+			);
 
 			if (getSandboxMode() === "docker") {
 				if (process.env.TELCLAUDE_FIREWALL !== "1") {

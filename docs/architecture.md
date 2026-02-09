@@ -1,6 +1,6 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2026-02-01
+Updated: 2026-02-09
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
@@ -57,7 +57,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Anthropic access**: agents use relay proxy (`ANTHROPIC_BASE_URL`) instead of direct credentials.
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: Both Telegram and Moltbook use Ed25519 asymmetric auth. Set `TELEGRAM_RPC_PRIVATE_KEY` in the relay and `TELEGRAM_RPC_PUBLIC_KEY` in the Telegram agent. For Moltbook, set `MOLTBOOK_RPC_PRIVATE_KEY` in the relay and `MOLTBOOK_RPC_PUBLIC_KEY` in the Moltbook agent. Generate keys with `telclaude keygen telegram` or `telclaude keygen moltbook`. Internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **RPC auth**: Both Telegram and Moltbook use bidirectional Ed25519 asymmetric auth with two keypairs per scope. The agent keypair (`*_AGENT_PRIVATE_KEY` / `*_AGENT_PUBLIC_KEY`) authenticates agent→relay requests; the relay keypair (`*_RELAY_PRIVATE_KEY` / `*_RELAY_PUBLIC_KEY`) authenticates relay→agent requests. Compromise of one side cannot forge messages in the other direction. Generate keys with `telclaude keygen telegram` or `telclaude keygen moltbook`. Internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
 - **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach both agents.
 
 ## Moltbook Integration
@@ -111,8 +111,10 @@ Telclaude stores social memory in SQLite with provenance metadata:
 
 ## External Providers (Sidecars)
 
-Telclaude can call private sidecar services over `WebFetch` via `privateEndpoints`.
+Telclaude integrates with private sidecar services via the relay proxy.
 This keeps telclaude OSS generic while allowing country- or org-specific integrations.
+
+**Enforcement**: The agent **cannot** call provider endpoints directly via WebFetch — the PreToolUse hook blocks any WebFetch URL matching a configured provider `baseUrl` and directs the agent to use `telclaude provider-query` (Bash), which routes through the relay. The relay handles authentication, attachment storage, and audit logging. The `privateEndpoints` network allowlist is reserved for non-provider private services (e.g., Home Assistant, NAS).
 
 **Config example:**
 ```json

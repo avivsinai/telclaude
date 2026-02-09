@@ -21,18 +21,18 @@ vi.mock("../../src/logging.js", () => ({
 import { startAgentServer } from "../../src/agent/server.js";
 import { buildInternalAuthHeaders, generateKeyPair } from "../../src/internal-auth.js";
 
-const ORIGINAL_MOLTBOOK_PRIVATE_KEY = process.env.MOLTBOOK_RPC_PRIVATE_KEY;
-const ORIGINAL_MOLTBOOK_PUBLIC_KEY = process.env.MOLTBOOK_RPC_PUBLIC_KEY;
+const ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY = process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
+const ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY = process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
 
 describe("agent server moltbook userId normalization", () => {
 	let server: ReturnType<typeof startAgentServer> | null = null;
 	let baseUrl = "";
 
 	beforeEach(async () => {
-		// Generate Ed25519 key pair for moltbook asymmetric auth
+		// Generate Ed25519 key pair for moltbook asymmetric auth (agent keypair for test)
 		const { privateKey, publicKey } = generateKeyPair();
-		process.env.MOLTBOOK_RPC_PRIVATE_KEY = privateKey;
-		process.env.MOLTBOOK_RPC_PUBLIC_KEY = publicKey;
+		process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = privateKey;
+		process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = publicKey;
 
 		server = startAgentServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
@@ -46,15 +46,15 @@ describe("agent server moltbook userId normalization", () => {
 			server = null;
 		}
 		executePooledQueryImpl.mockReset();
-		if (ORIGINAL_MOLTBOOK_PRIVATE_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_PRIVATE_KEY;
+		if (ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_PRIVATE_KEY = ORIGINAL_MOLTBOOK_PRIVATE_KEY;
+			process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_PUBLIC_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_PUBLIC_KEY;
+		if (ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY === undefined) {
+			delete process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_PUBLIC_KEY = ORIGINAL_MOLTBOOK_PUBLIC_KEY;
+			process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY;
 		}
 	});
 

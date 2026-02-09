@@ -317,34 +317,6 @@ function matchProviderForUrl(
 	return null;
 }
 
-/**
- * Inject authentication headers for provider requests.
- * This allows Claude to call providers directly via WebFetch.
- */
-function injectProviderHeaders(
-	toolInput: { method?: string; headers?: Record<string, string> },
-	url: URL,
-	actorUserId: string,
-): Record<string, unknown> {
-	const headers = { ...(toolInput.headers ?? {}) };
-	headers["x-actor-user-id"] = actorUserId;
-
-	const updated: Record<string, unknown> = {
-		...toolInput,
-		headers,
-	};
-
-	// Default to POST for non-health endpoints
-	if (url.pathname !== "/v1/health") {
-		const method = toolInput.method?.toUpperCase();
-		if (!method) {
-			updated.method = "POST";
-		}
-	}
-
-	return updated;
-}
-
 function getUrlPort(url: URL): string {
 	return url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
 }
@@ -518,6 +490,18 @@ function createNetworkSecurityHook(
 				return allowHookResponse(relayRequest.updatedInput ?? toolInput);
 			}
 
+			// Block direct WebFetch to configured provider endpoints (public or private).
+			// Providers must be queried via `telclaude provider-query` CLI which routes through the relay.
+			if (providerMatch) {
+				logger.warn(
+					{ provider: providerMatch.id, url: url.pathname },
+					"[hook] blocked direct WebFetch to provider endpoint",
+				);
+				return denyHookResponse(
+					`Provider endpoints must be queried via \`telclaude provider-query\` (Bash), not WebFetch. Use: telclaude provider-query --provider ${providerMatch.id} --service <svc> --action <act>. If Bash is unavailable in your tier, ask the operator to run the query.`,
+				);
+			}
+
 			// Extract port (default: 443 for https, 80 for http)
 			const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
 
@@ -538,25 +522,6 @@ function createNetworkSecurityHook(
 
 			// If it matched a private endpoint, allow it (port already checked)
 			if (privateCheck.matchedEndpoint) {
-				if (providerMatch) {
-					// Inject auth headers for provider requests
-					// Claude can call providers directly via WebFetch
-					if (!actorUserId) {
-						return denyHookResponse("Missing user context for provider request.");
-					}
-					const method = toolInput.method?.toUpperCase() || "GET";
-					// Allow GET for read-only endpoints (health, schema)
-					const isReadOnlyPath = url.pathname === "/v1/health" || url.pathname === "/v1/schema";
-					if (!isReadOnlyPath && method !== "POST") {
-						return denyHookResponse("Provider data endpoints require POST.");
-					}
-					const updatedInput = injectProviderHeaders(toolInput, url, actorUserId);
-					logger.info(
-						{ provider: providerMatch.id, actorUserId, url: url.pathname, method },
-						"[hook] injected x-actor-user-id header for provider call",
-					);
-					return allowHookResponse(updatedInput);
-				}
 				logger.debug(
 					{
 						host: url.hostname,
@@ -983,9 +948,11 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 			sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
 		}
-		const telegramPublicKey = process.env.TELEGRAM_RPC_PUBLIC_KEY;
-		if (telegramPublicKey) {
-			sandboxEnv.TELEGRAM_RPC_PUBLIC_KEY = telegramPublicKey;
+		// Subprocess gets relay public key (for verification) but NOT agent private key.
+		// Auth to relay is via TELCLAUDE_SESSION_TOKEN (passed below), not raw private key.
+		const relayPublicKey = process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
+		if (relayPublicKey) {
+			sandboxEnv.TELEGRAM_RPC_RELAY_PUBLIC_KEY = relayPublicKey;
 		}
 		// Pass relay-minted session token to Claude subprocess (if agent server injected one).
 		// This allows telclaude CLI tools to authenticate to the relay without the private key.
