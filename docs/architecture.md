@@ -41,8 +41,8 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCI
 
 ## Docker Split Topology (Production)
 
-- **Relay container**: Telegram + Moltbook handlers, security policy + secrets (OpenAI/GitHub), TOTP socket.
-- **Telegram agent container**: Claude SDK + tools, no secrets, workspace mounted (do not mount relay config with bot token).
+- **Relay container**: Telegram + Moltbook handlers, security policy + secrets (OpenAI/GitHub), TOTP socket. Reads both `telclaude.json` (policy) and `telclaude-private.json` (secrets/PII).
+- **Telegram agent container**: Claude SDK + tools, no secrets, workspace mounted. Reads only `telclaude.json` (policy config — providers, network rules, etc.).
 - **Moltbook agent container**: Claude SDK + tools, no secrets, no workspace mount, isolated `/moltbook/sandbox`.
 - **Claude profiles**:
   - `/home/telclaude-skills` (shared skills + CLAUDE.md; no credentials)
@@ -308,7 +308,13 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 
 ## Persistence
 - SQLite at `~/.telclaude/telclaude.db` stores approvals, rate limits, identity links, sessions, audit.
-- Config at `~/.telclaude/telclaude.json`.
+- Config split (Docker mode):
+  - `telclaude.json` — policy config (providers, network, rate limits). Mounted to all containers.
+  - `telclaude-private.json` — relay-only overrides (allowedChats, permissions, PII). Mounted to relay only.
+  - Relay deep-merges private on top of policy via `TELCLAUDE_PRIVATE_CONFIG` env var.
+  - Agents see only policy config, preventing secret/PII exposure.
+  - Single-file setups remain supported (backward compatible).
+- Native mode: single `~/.telclaude/telclaude.json` (no split needed).
 
 ## Message Flow (strict profile)
 1) Telegram message received.

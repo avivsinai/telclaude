@@ -53,6 +53,7 @@ docker/.env.*
 docker/*.env
 docker/*.env.*
 docker/telclaude.json
+docker/telclaude-private.json
 
 # Secrets and credentials (NEVER commit these)
 secrets/

@@ -55,8 +55,9 @@ services:
       # Moltbook proxy token — agents use this to authenticate with Anthropic proxy
       - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
 
-      # Telclaude configuration
+      # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       # Claude config dir = auth volume (relay-only).
@@ -99,8 +100,9 @@ services:
       # Persistent data (SQLite DB, sessions, config)
       - telclaude-data:/data:rw
 
-      # Configuration file
+      # Configuration files (policy = all containers, private = relay only)
       - ./telclaude.json:/data/telclaude.json:ro
+      - ./telclaude-private.json:/data/telclaude-private.json:ro
 
       # Claude config (auth + skills installed at runtime) — relay-only
       - telclaude-claude-auth:/home/telclaude-auth:rw
@@ -197,6 +199,7 @@ services:
       # Agent server
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
+      - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
 
       # Relay capability broker + Anthropic API proxy
@@ -240,6 +243,9 @@ services:
     volumes:
       # Workspace: Your projects folder (Claude works here)
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+
+      # Policy config (no secrets — providers, network rules, etc.)
+      - ./telclaude.json:/data/telclaude.json:ro
 
       # Claude skills profile (no auth secrets)
       - telclaude-claude-skills:/home/telclaude-skills:rw
@@ -302,6 +308,7 @@ services:
     environment:
       - TELCLAUDE_AGENT_PORT=8789
       - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       # Use relay proxy for Anthropic API (agent has no credentials)
@@ -325,6 +332,7 @@ services:
 
     volumes:
       - moltbook-sandbox:/moltbook/sandbox:rw
+      - ./telclaude.json:/data/telclaude.json:ro
       - moltbook-memory:/moltbook/memory:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
 

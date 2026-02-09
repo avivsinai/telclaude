@@ -12,7 +12,7 @@
 #   2. Ship to target:
 #        docker save telclaude:latest telclaude-totp:latest telclaude-vault:latest \
 #          | ssh target "docker load"
-#   3. Copy this file, .env, and telclaude.json to target
+#   3. Copy this file, .env, telclaude.json, and telclaude-private.json to target
 #   4. Run setup: docker/setup-volumes.sh
 #   5. docker compose -f docker-compose.deploy.yml up -d
 #
@@ -56,8 +56,9 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
 
-      # Telclaude configuration
+      # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
 
@@ -100,6 +101,7 @@ services:
     volumes:
       - telclaude-data:/data:rw
       - ./telclaude.json:/data/telclaude.json:ro
+      - ./telclaude-private.json:/data/telclaude-private.json:ro
       - telclaude-claude-auth:/home/telclaude-auth:rw
       - totp-socket:/run/totp:rw
       - vault-socket:/run/vault:ro
@@ -177,6 +179,7 @@ services:
       # Agent server
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
+      - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
 
       # Relay capability broker + Anthropic API proxy
@@ -214,6 +217,7 @@ services:
 
     volumes:
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
+      - ./telclaude.json:/data/telclaude.json:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
       - moltbook-memory:/moltbook/memory:ro
       - media-inbox:/media/inbox:ro
@@ -271,6 +275,7 @@ services:
     environment:
       - TELCLAUDE_AGENT_PORT=8789
       - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
@@ -290,6 +295,7 @@ services:
 
     volumes:
       - moltbook-sandbox:/moltbook/sandbox:rw
+      - ./telclaude.json:/data/telclaude.json:ro
       - moltbook-memory:/moltbook/memory:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
 
