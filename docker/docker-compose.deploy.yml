@@ -209,6 +209,7 @@ services:
       # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
 
       - TELCLAUDE_RUN_AS_ROOT=0
       - NODE_ENV=production
@@ -287,6 +288,7 @@ services:
       - MOLTBOOK_RPC_RELAY_PUBLIC_KEY=${MOLTBOOK_RPC_RELAY_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - NODE_ENV=production

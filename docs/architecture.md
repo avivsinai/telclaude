@@ -114,7 +114,17 @@ Telclaude stores social memory in SQLite with provenance metadata:
 Telclaude integrates with private sidecar services via the relay proxy.
 This keeps telclaude OSS generic while allowing country- or org-specific integrations.
 
-**Enforcement**: The agent **cannot** call provider endpoints directly via WebFetch — the PreToolUse hook blocks any WebFetch URL matching a configured provider `baseUrl` and directs the agent to use `telclaude provider-query` (Bash), which routes through the relay. The relay handles authentication, attachment storage, and audit logging. The `privateEndpoints` network allowlist is reserved for non-provider private services (e.g., Home Assistant, NAS).
+**Enforcement (two layers)**:
+- **Application layer**: The agent **cannot** call provider endpoints directly via WebFetch — the PreToolUse hook blocks any WebFetch URL matching a configured provider `baseUrl` and directs the agent to use `telclaude provider-query` (Bash), which routes through the relay.
+- **Firewall layer**: Agent containers set `TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1`, so provider hosts are not added to the agent's iptables allowlist. Even if the application hook is bypassed (e.g., via Bash `curl`), the firewall blocks direct access. Only the relay container gets provider host firewall rules.
+
+The relay handles authentication, attachment storage, and audit logging for all provider calls.
+
+**`providers` vs `privateEndpoints`**: These are separate config sections for different purposes:
+- **`providers`** defines relay-proxied sidecar services. Agents access these through the relay, never directly.
+- **`privateEndpoints`** allows direct WebFetch access to private network services (Home Assistant, NAS, Plex, etc.) that don't need relay proxying.
+
+Provider hosts do NOT need matching `privateEndpoints` entries — the relay firewall auto-extracts provider hosts from `providers[].baseUrl`.
 
 **Config example:**
 ```json
@@ -122,18 +132,11 @@ This keeps telclaude OSS generic while allowing country- or org-specific integra
   "providers": [
     {
       "id": "citizen-services",
-      "baseUrl": "http://127.0.0.1:3001",
+      "baseUrl": "http://sidecar-host:3001",
       "services": ["health-api", "bank-api", "gov-api"],
-      "description": "Local citizen services sidecar"
+      "description": "Local citizen services sidecar (relay-proxied)"
     }
-  ],
-  "security": {
-    "network": {
-      "privateEndpoints": [
-        { "label": "citizen-services", "host": "127.0.0.1", "ports": [3001] }
-      ]
-    }
-  }
+  ]
 }
 ```
 
