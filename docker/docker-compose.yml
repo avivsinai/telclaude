@@ -232,6 +232,8 @@ services:
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       # Internal hosts allowed through firewall (agent needs relay + sidecars)
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
+      # Skip provider hosts in firewall — agents must route through relay proxy
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
 
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
@@ -324,6 +326,7 @@ services:
       - MOLTBOOK_RPC_RELAY_PUBLIC_KEY=${MOLTBOOK_RPC_RELAY_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - NODE_ENV=production

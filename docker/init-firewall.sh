@@ -142,9 +142,13 @@ append_internal_host() {
 }
 
 # Auto-include provider hosts from telclaude.json (for sidecar services)
+# Set TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1 on agent containers to prevent direct
+# provider access — agents must route through the relay proxy.
 TELCLAUDE_CONFIG_PATH="${TELCLAUDE_CONFIG:-/data/telclaude.json}"
 PROVIDER_HOSTS_RAW=""
-if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+if [ "${TELCLAUDE_FIREWALL_SKIP_PROVIDERS:-0}" = "1" ]; then
+    echo "[firewall] skipping provider hosts (TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1)"
+elif [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
     PROVIDER_HOSTS_RAW="$(
         TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
 const fs = require("fs");
