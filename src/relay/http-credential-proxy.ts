@@ -498,25 +498,39 @@ export function startHttpCredentialProxy(
 
 		// ══════════════════════════════════════════════════════════════════════════
 		// Session Token Validation
-		// SECURITY: All proxy requests require valid session token from relay
+		// SECURITY: All proxy requests require valid session token from relay,
+		// EXCEPT relay-local requests (127.0.0.1 / ::1) which are trusted.
 		// ══════════════════════════════════════════════════════════════════════════
-		const rawSessionHeader = req.headers["x-telclaude-session"];
-		// Normalize: header can be string or string[], take first and trim
-		const sessionHeader =
-			(Array.isArray(rawSessionHeader) ? rawSessionHeader[0] : rawSessionHeader)?.trim() || "";
-		if (!sessionHeader) {
-			logger.warn({ url }, "http proxy request missing session token");
-			res.writeHead(401, { "Content-Type": "text/plain" });
-			res.end("Unauthorized: missing session token");
-			return;
-		}
+		const remoteAddr = req.socket.remoteAddress ?? "";
+		const isLocalhost =
+			remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
 
-		const session = validateSessionToken(sessionHeader);
-		if (!session) {
-			logger.warn({ url }, "http proxy request with invalid session token");
-			res.writeHead(401, { "Content-Type": "text/plain" });
-			res.end("Unauthorized: invalid session token");
-			return;
+		let session: SessionTokenPayload;
+
+		if (isLocalhost) {
+			// Relay calling its own proxy (e.g. social service API calls) — trusted
+			const now = Date.now();
+			session = { sessionId: "relay-local", createdAt: now, expiresAt: now + 3600_000 };
+		} else {
+			const rawSessionHeader = req.headers["x-telclaude-session"];
+			// Normalize: header can be string or string[], take first and trim
+			const sessionHeader =
+				(Array.isArray(rawSessionHeader) ? rawSessionHeader[0] : rawSessionHeader)?.trim() || "";
+			if (!sessionHeader) {
+				logger.warn({ url }, "http proxy request missing session token");
+				res.writeHead(401, { "Content-Type": "text/plain" });
+				res.end("Unauthorized: missing session token");
+				return;
+			}
+
+			const validated = validateSessionToken(sessionHeader);
+			if (!validated) {
+				logger.warn({ url }, "http proxy request with invalid session token");
+				res.writeHead(401, { "Content-Type": "text/plain" });
+				res.end("Unauthorized: invalid session token");
+				return;
+			}
+			session = validated;
 		}
 
 		// Parse proxy URL
