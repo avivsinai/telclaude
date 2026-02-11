@@ -546,6 +546,7 @@ services:
 
     networks:
       - relay-vault-net
+      - vault-egress  # Required for OAuth2 token refresh (outbound to token endpoints)
 
     restart: unless-stopped
 
@@ -677,4 +678,8 @@ networks:
 
   social-egress:
     name: telclaude-social-egress
+    driver: bridge
+
+  vault-egress:
+    name: telclaude-vault-egress
     driver: bridge

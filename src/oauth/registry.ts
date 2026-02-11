@@ -47,7 +47,7 @@ const SERVICES: OAuth2ServiceDefinition[] = [
 		authorizationUrl: "https://twitter.com/i/oauth2/authorize",
 		tokenEndpoint: "https://api.x.com/2/oauth2/token",
 		defaultScopes: ["tweet.read", "tweet.write", "users.read", "offline.access"],
-		confidentialClient: true,
+		confidentialClient: false,
 		vaultTarget: "api.x.com",
 		vaultLabel: "X/Twitter OAuth2",
 		vaultAllowedPaths: ["/2/.*"],

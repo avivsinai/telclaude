@@ -131,7 +131,7 @@ describe("OAuth2 Flow", () => {
 			expect(body.get("code")).toBe("auth-code");
 		});
 
-		it("should use Basic auth for confidential clients", async () => {
+		it("should send client_secret in body for confidential clients", async () => {
 			mockGetAuthCode.mockImplementation(async (opts) => {
 				if ("authorizationUrl" in opts && opts.authorizationUrl) {
 					const url = new URL(opts.authorizationUrl);
@@ -156,15 +156,15 @@ describe("OAuth2 Flow", () => {
 			});
 
 			const [, options] = fetchMock.mock.calls[0];
-			const authHeader = options.headers.Authorization;
-			expect(authHeader).toBe(`Basic ${Buffer.from("my-client:my-secret").toString("base64")}`);
+			// No Basic auth header — credentials go in the body
+			expect(options.headers.Authorization).toBeUndefined();
 
-			// client_id should NOT be in body for confidential clients
 			const body = new URLSearchParams(options.body);
-			expect(body.has("client_id")).toBe(false);
+			expect(body.get("client_id")).toBe("my-client");
+			expect(body.get("client_secret")).toBe("my-secret");
 		});
 
-		it("should put client_id in body for public clients", async () => {
+		it("should not include client_secret for public clients", async () => {
 			mockGetAuthCode.mockImplementation(async (opts) => {
 				if ("authorizationUrl" in opts && opts.authorizationUrl) {
 					const url = new URL(opts.authorizationUrl);
@@ -193,6 +193,7 @@ describe("OAuth2 Flow", () => {
 
 			const body = new URLSearchParams(options.body);
 			expect(body.get("client_id")).toBe("public-client");
+			expect(body.has("client_secret")).toBe(false);
 		});
 
 		it("should fail on state mismatch", async () => {
