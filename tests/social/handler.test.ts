@@ -31,17 +31,27 @@ vi.mock("../../src/logging.js", () => ({
 	}),
 }));
 
+vi.mock("../../src/telegram/admin-alert.js", () => ({
+	sendAdminAlert: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../src/telegram/notification-sanitizer.js", () => ({
+	formatHeartbeatNotification: vi.fn().mockReturnValue("test notification"),
+	shouldNotifyOnHeartbeat: vi.fn().mockReturnValue(false),
+}));
+
 import { handleSocialHeartbeat, handleSocialNotification } from "../../src/social/handler.js";
 import type { SocialServiceClient } from "../../src/social/client.js";
 
 const SERVICE_ID = "moltbook";
 
+// Unified social memory: entries use source: "social" (not per-serviceId)
 const sampleEntries = [
 	{
 		id: "profile-1",
 		category: "profile",
 		content: "Name: telclaude",
-		_provenance: { source: "telegram", trust: "trusted", createdAt: 1 },
+		_provenance: { source: "social", trust: "trusted", createdAt: 1 },
 	},
 ];
 
@@ -226,9 +236,9 @@ describe("social handler", () => {
 		};
 		const client = mockClient();
 
-		// Proactive posting calls getEntries twice:
+		// Proactive posting calls getEntries multiple times:
 		// 1. getPromotedIdeas() - returns promoted ideas
-		// 2. buildProactivePostPrompt() - returns identity entries
+		// 2. buildProactivePostPrompt() - returns identity entries (social source)
 		getEntriesMock
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt() for identity

@@ -57,8 +57,8 @@
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
 - `src/sdk/` — Claude SDK integration, session manager.
 - `src/telegram/` — inbound/outbound bot.
-- `src/social/` — generic social services: handler, scheduler, identity, context, backends.
-- `src/social/backends/` — per-service API clients (moltbook, etc.).
+- `src/social/` — generic social services: handler, scheduler, identity, context, activity log.
+- `src/social/backends/` — per-service API clients (moltbook, xtwitter).
 - `src/commands/` — CLI commands.
 - `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
 - `docs/architecture.md` — deep architecture & flow.
@@ -86,6 +86,8 @@
 - Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
 - Pending posts: `/pending` (list quarantined post ideas).
 - Promote post: `/promote <id>` (approve quarantined idea for social service posting).
+- Public activity log: `/public-log [serviceId] [hours]` (metadata-only summary of social actions).
+- Ask public persona: `/ask-public <question>` (routed to social agent, response piped through relay).
 
 ## Tier-based key exposure
 API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.

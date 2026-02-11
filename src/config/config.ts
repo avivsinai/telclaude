@@ -328,6 +328,14 @@ const TelegramGroupChatConfigSchema = z.object({
 	requireMention: z.boolean().default(false),
 });
 
+// Private heartbeat configuration (autonomous background tasks for telegram persona)
+const TelegramHeartbeatConfigSchema = z.object({
+	enabled: z.boolean().default(false),
+	intervalHours: z.number().positive().default(6),
+	/** Send Telegram notification when heartbeat takes action. Default: true */
+	notifyOnActivity: z.boolean().default(true),
+});
+
 const TelegramConfigSchema = z.object({
 	// Bot token - stored here (in ~/.telclaude/) rather than .env for security
 	// The ~/.telclaude/ directory is blocked from Claude's sandbox
@@ -357,6 +365,8 @@ const TelegramConfigSchema = z.object({
 			maxAttempts: z.number().int().min(0).default(0), // 0 = unlimited
 		})
 		.optional(),
+	/** Private heartbeat: autonomous background tasks for the telegram persona */
+	heartbeat: TelegramHeartbeatConfigSchema.optional(),
 });
 
 // Logging configuration schema
@@ -377,6 +387,12 @@ const SocialServiceConfigSchema = z.object({
 		.default(SOCIAL_SERVICE_DEFAULTS.heartbeatIntervalHours),
 	adminChatId: z.union([z.string(), z.number()]).optional(),
 	agentUrl: z.string().optional(),
+	/** Enable skills for autonomous heartbeat activity (Phase 3 only). Default: false */
+	enableSkills: z.boolean().default(false),
+	/** Future: filter which skills load for this service */
+	allowedSkills: z.array(z.string()).optional(),
+	/** When to send Telegram notifications on heartbeat. Default: "activity" */
+	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });
 
 // Main config schema

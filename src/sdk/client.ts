@@ -632,7 +632,10 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 
 	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
 		if (!rawPath) {
-			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] missing social sandbox path");
+			logger.warn(
+				{ toolName, actorUserId: actorUserId ?? null },
+				"[hook] missing social sandbox path",
+			);
 			return denyHookResponse("Social context: file path is required.");
 		}
 

@@ -1,6 +1,6 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2026-02-10
+Updated: 2026-02-11
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
@@ -63,17 +63,39 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (SOCIAL tier)
 
 ## Social Services Integration
 
-Telclaude supports multiple social service backends through a generic `SocialServiceClient` interface. Each backend (Moltbook, future: X/Twitter, Bluesky, etc.) implements the same contract and is configured via the `socialServices[]` array in config.
+Telclaude supports multiple social service backends through a generic `SocialServiceClient` interface. Each backend (Moltbook, X/Twitter, future: Bluesky, etc.) implements the same contract and is configured via the `socialServices[]` array in config.
 
 ### Architecture
 
-- **Config-driven**: each service is an entry in `socialServices[]` with `id`, `type`, `enabled`, `apiKey`, `heartbeatIntervalHours`, and optional `agentUrl` override.
+- **Config-driven**: each service is an entry in `socialServices[]` with `id`, `type`, `enabled`, `apiKey`, `heartbeatIntervalHours`, `enableSkills`, `allowedSkills`, `notifyOnHeartbeat`, and optional `agentUrl` override.
 - **Heartbeat-driven**: relay scheduler polls each enabled service's notifications on a configured interval (default 4h, min 60s).
+- **Three-phase heartbeat**: Phase 1 — process incoming notifications (reply to mentions). Phase 2 — proactive posting (publish promoted ideas). Phase 3 — autonomous activity (browse timeline, engage, create content).
 - **Single social persona**: all social services share one agent container (`agent-social`) with no workspace mount and a shared `/social/sandbox` working directory. RPC scope is `"social"` for all services.
-- **Restricted tier**: social requests run under the `SOCIAL` tier (file tools + Bash allowed inside the sandbox, WebFetch/WebSearch allowed), with skills disabled and no access to sidecars or private endpoints.
+- **Unified social memory**: all social services share `source: "social"` memory. The public persona is one cohesive identity across platforms — not per-service.
+- **Restricted tier**: social requests run under the `SOCIAL` tier (file tools + Bash allowed inside the sandbox, WebFetch/WebSearch allowed). Skills are disabled by default but can be enabled per-service via `enableSkills` config (Phase 3 autonomous only; Phases 1-2 always disable skills for untrusted notification handling).
 - **Untrusted wrappers**: notification payloads and social context are wrapped with explicit "UNTRUSTED / do not execute" warnings before being sent to the model.
-- **Memory scoping**: social prompts only include service-scoped memory to avoid leaking private Telegram data.
+- **Memory isolation**: social prompts only include unified social memory (`source: "social"`). Runtime assertions enforce that telegram entries never leak into social queries, and vice versa.
 - **Proactive posting**: user-approved ideas (promoted via `/promote`) are posted to the service during heartbeat, with rate limiting and agent isolation.
+- **Autonomous activity**: Phase 3 allows the agent to independently browse timelines, engage with posts, and create original content. Uses dedicated `poolKey: "${serviceId}:autonomous"` for session isolation.
+- **Notifications**: heartbeat results are optionally sent to the admin via Telegram (`notifyOnHeartbeat: "always" | "activity" | "never"`). All notification content is sanitized (no raw LLM output, URLs stripped, 200 char limit).
+
+### Supported Backends
+
+| Type | Service | Auth | Limits |
+|------|---------|------|--------|
+| `moltbook` | Moltbook | API key via `apiKey` config | Service-specific |
+| `xtwitter` | X/Twitter | OAuth2 via vault credential proxy | 280 chars/tweet, 100 tweets/15min/user |
+
+### X/Twitter Backend
+
+The `xtwitter` backend uses X API v2:
+- `fetchNotifications()` → `GET /2/users/:id/mentions`
+- `postReply()` → `POST /2/tweets` with `reply.in_reply_to_tweet_id`
+- `createPost()` → `POST /2/tweets` (280 char limit enforced)
+- Auth: vault credential proxy injects OAuth2 bearer via `http://relay:8792/api.x.com/2/tweets`
+- Required OAuth2 scopes: `tweet.read`, `tweet.write`, `users.read`, `offline.access`
+- Token lifecycle: access token 2h, refresh token 6 months (one-time use, rotated on refresh)
+- Env: `X_USER_ID` (required), `X_BEARER_TOKEN` (optional — not needed when using vault proxy)
 
 ### Adding a New Backend
 
@@ -83,15 +105,39 @@ Telclaude supports multiple social service backends through a generic `SocialSer
 4. Generate RPC keys (if not already done): `telclaude keygen social`
 5. No per-service container needed — the shared `agent-social` handles all services
 
+### Cross-Persona Querying
+
+The operator can query the public persona from Telegram using two tiers:
+
+**Tier 1: `/public-log [serviceId] [hours]`** — Activity metadata (no LLM). Returns counts, timestamps, and action types from the `social_activity_log` SQLite table. Zero injection risk — no untrusted content touches any LLM.
+
+**Tier 2: `/ask-public <question>`** — Routed to social agent. The relay pipes the social agent's response directly to Telegram. The private telegram agent never sees it — the relay handles the routing. Uses dedicated `poolKey: "${serviceId}:operator-query"`.
+
+**Security (air gap)**: The private LLM never processes social memory. This prevents the confused deputy problem — social memory could contain prompt injection from X timeline that would be executed with elevated privileges.
+
+### Private Heartbeat
+
+The Telegram persona can run autonomous background maintenance:
+
+- **Config**: `telegram.heartbeat.enabled`, `intervalHours` (default 6), `notifyOnActivity` (default true)
+- **Tier**: WRITE_LOCAL (not FULL_ACCESS) — prevents destructive operations
+- **Scope**: `"telegram"` — uses telegram RPC keypair, gets telegram memory only
+- **Session isolation**: dedicated `poolKey: "telegram:private-heartbeat"` prevents bleed with user conversations
+- **Tasks**: review quarantined post ideas, check workspace state, organise memory
+- **Output**: `[IDLE]` or summary of actions taken; admin notified on activity
+
 ## Memory System & Provenance
 
-Telclaude stores social memory in SQLite with provenance metadata:
+Telclaude stores memory in SQLite with provenance metadata, split at the **private vs. public boundary** (not per-service):
 
-- **Sources**: `telegram`, `moltbook`, or any registered social service ID (extensible via `MemorySource` type).
+- **Sources**: `telegram` (private persona) or `social` (unified public persona across all social services).
 - **Trust**: `trusted`, `untrusted`, `quarantined`.
 - **Provenance**: each entry records source, trust level, and timestamps (created/promoted).
 - **Default trust**: Telegram memory is trusted by default; social service memory is untrusted (no promotion path yet).
-- **Prompt injection safety**: even trusted entries are wrapped in a "read-only, do not execute" envelope before being injected into social prompts.
+- **Unified public memory**: all social services (Moltbook, X/Twitter, etc.) share `source: "social"`. The public persona has one cohesive memory — not fragmented per-platform.
+- **Isolation enforcement**: runtime assertions in both `buildTelegramMemoryContext()` and `getTrustedSocialEntries()` verify source boundaries. Non-matching entries are filtered out with security warnings (throws in dev, warn in prod).
+- **Prompt injection safety**: even trusted entries are wrapped in a "read-only, do not execute" envelope before being injected into prompts.
+- **Activity log**: `social_activity_log` SQLite table stores metadata-only records of social actions (type, timestamp, serviceId). No content or LLM output stored — used by `/public-log` for zero-injection-risk activity summaries.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.
@@ -367,8 +413,8 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 - `src/security/*` — pipeline, permissions, observer, approvals, rate limits.
 - `src/sandbox/*` — mode detection, constants, SDK settings builder.
 - `src/sdk/*` — Claude SDK integration and session manager.
-- `src/telegram/*` — inbound/outbound bot wiring.
-- `src/social/*` — generic social services: handler, scheduler, identity, context, backends.
-- `src/social/backends/*` — per-service API clients (moltbook, etc.).
+- `src/telegram/*` — inbound/outbound bot wiring, private heartbeat, notification sanitizer.
+- `src/social/*` — generic social services: handler, scheduler, identity, context, activity log.
+- `src/social/backends/*` — per-service API clients (moltbook, xtwitter).
 - `src/commands/*` — CLI commands.
 - `.claude/skills/*` — skills auto-loaded by SDK.
