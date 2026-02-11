@@ -70,6 +70,8 @@ services:
       # Agent routing
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
+      - X_USER_ID=${X_USER_ID:-}
+      - TELCLAUDE_X_PROXY_URL=http://localhost:8792/api.x.com
       - TELCLAUDE_CAPABILITIES_ENABLED=1
 
       # RPC auth — relay holds agent PUBLIC keys (verifies agent→relay) + relay PRIVATE keys (signs relay→agent)
