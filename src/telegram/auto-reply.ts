@@ -1147,7 +1147,10 @@ async function handleInboundMessage(
 		trimmedBody === "/otp" ||
 		trimmedBody.startsWith("/otp ") ||
 		trimmedBody.startsWith("/promote ") ||
-		trimmedBody === "/pending";
+		trimmedBody === "/pending" ||
+		trimmedBody === "/public-log" ||
+		trimmedBody.startsWith("/public-log ") ||
+		trimmedBody.startsWith("/ask-public ");
 
 	if (isControlCommand && !checkControlCommandRateLimit(userId)) {
 		logger.warn({ userId }, "control command rate limited");
@@ -1284,6 +1287,55 @@ async function handleInboundMessage(
 			return `\`${entry.id}\` "${preview}" — ${ageStr}\n  /promote ${entry.id}`;
 		});
 		await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
+		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// CROSS-PERSONA QUERIES — Safe bridge between private and public personas
+	// ══════════════════════════════════════════════════════════════════════════
+
+	if (trimmedBody === "/public-log" || trimmedBody.startsWith("/public-log ")) {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can view public activity.");
+			return;
+		}
+		const parts = trimmedBody.split(/\s+/);
+		const serviceIdArg = parts[1]?.trim() || undefined;
+		const hoursArg = parts[2] ? Number.parseInt(parts[2], 10) : 4;
+		const hours = Number.isNaN(hoursArg) ? 4 : hoursArg;
+		const { formatActivityLog, getActivitySummary } = await import("../social/activity-log.js");
+		const summary = getActivitySummary(serviceIdArg, hours);
+		await msg.reply(formatActivityLog(summary, hours));
+		return;
+	}
+
+	if (trimmedBody.startsWith("/ask-public ")) {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can query the public persona.");
+			return;
+		}
+		const question = trimmedBody.slice("/ask-public ".length).trim();
+		if (!question) {
+			await msg.reply("Usage: `/ask-public <question>`");
+			return;
+		}
+		// Route to social agent — private LLM never sees the response
+		const enabledServices = cfg.socialServices?.filter((s) => s.enabled) ?? [];
+		if (enabledServices.length === 0) {
+			await msg.reply("No social services are enabled.");
+			return;
+		}
+		// Use the first enabled service (or could allow specifying)
+		const svc = enabledServices[0];
+		try {
+			const { queryPublicPersona } = await import("../social/handler.js");
+			const response = await queryPublicPersona(question, svc.id, svc);
+			// Pipe social agent response directly to Telegram (relay handles routing)
+			await msg.reply(response || "No response from public persona.");
+		} catch (err) {
+			logger.warn({ error: String(err), serviceId: svc.id }, "/ask-public query failed");
+			await msg.reply("Failed to reach public persona. Check logs.");
+		}
 		return;
 	}
 

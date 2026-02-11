@@ -161,6 +161,7 @@ COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
 COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
+COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
 
 # Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh

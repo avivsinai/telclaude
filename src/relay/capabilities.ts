@@ -687,14 +687,13 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, 200, heartbeatResult);
 				return;
 			}
-			// Derive memory source: for scope="social", extract actual serviceId
-			// from query/body serviceId field, or fallback to scope.
+			// Derive memory source: unified "social" for all social scopes.
 			// SECURITY: never allow non-telegram scope to claim "telegram" source
 			// (would let social agents write trusted memory).
-			const deriveMemorySource = (serviceId?: string): MemorySource => {
+			const deriveMemorySource = (_serviceId?: string): MemorySource => {
 				if (authResult.scope === "telegram") return "telegram";
-				if (serviceId === "telegram") return authResult.scope as MemorySource;
-				return (serviceId ?? authResult.scope) as MemorySource;
+				// All social services use unified "social" source for cohesive public identity
+				return "social";
 			};
 			let memorySource: MemorySource = deriveMemorySource();
 

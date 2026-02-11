@@ -29,6 +29,7 @@ import {
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
+import { ensureActivityLogTable } from "../social/activity-log.js";
 import {
 	createSocialClient,
 	handleSocialHeartbeat,
@@ -36,6 +37,7 @@ import {
 	startSocialScheduler,
 } from "../social/index.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
+import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
 
@@ -202,6 +204,9 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Capabilities: disabled");
 				}
 
+				// Initialize activity log table for cross-persona queries
+				ensureActivityLogTable();
+
 				const enabledServices = cfg.socialServices.filter((s) => s.enabled);
 				if (enabledServices.length > 0) {
 					for (const svc of enabledServices) {
@@ -230,6 +235,27 @@ export function registerRelayCommand(program: Command): void {
 					}
 				} else {
 					console.log("  Social services: none enabled");
+				}
+
+				// Private heartbeat scheduler (autonomous tasks for telegram persona)
+				if (cfg.telegram?.heartbeat?.enabled) {
+					const privateIntervalHours = cfg.telegram.heartbeat.intervalHours ?? 6;
+					const privateIntervalMs = privateIntervalHours * 60 * 60 * 1000;
+					const privateScheduler = startSocialScheduler({
+						serviceId: "telegram-private",
+						intervalMs: privateIntervalMs,
+						onHeartbeat: async () => {
+							const result = await handlePrivateHeartbeat(cfg);
+							if (result.acted) {
+								logger.info(
+									{ summary: result.summary },
+									"private heartbeat completed with activity",
+								);
+							}
+						},
+					});
+					socialSchedulers.push(privateScheduler);
+					console.log(`  Private heartbeat: enabled (every ${privateIntervalHours}h)`);
 				}
 
 				// Detect sandbox mode and verify sandbox availability
