@@ -200,20 +200,18 @@ async function exchangeCode(params: {
 		code: params.code,
 		redirect_uri: params.redirectUri,
 		code_verifier: params.codeVerifier,
+		client_id: params.clientId,
 	});
+
+	// Confidential clients include client_secret in body
+	// (matches vault-daemon/oauth.ts token refresh approach)
+	if (params.confidentialClient) {
+		body.set("client_secret", params.clientSecret);
+	}
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/x-www-form-urlencoded",
 	};
-
-	if (params.confidentialClient) {
-		// RFC 6749 Section 2.3.1: HTTP Basic authentication with client credentials
-		const encoded = Buffer.from(`${params.clientId}:${params.clientSecret}`).toString("base64");
-		headers.Authorization = `Basic ${encoded}`;
-	} else {
-		// Public client: client_id in body
-		body.set("client_id", params.clientId);
-	}
 
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), TOKEN_EXCHANGE_TIMEOUT_MS);
