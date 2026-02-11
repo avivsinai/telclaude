@@ -16,10 +16,10 @@ const ORIGINAL_TELEGRAM_AGENT_PRIVATE_KEY = process.env.TELEGRAM_RPC_AGENT_PRIVA
 const ORIGINAL_TELEGRAM_AGENT_PUBLIC_KEY = process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY;
 const ORIGINAL_TELEGRAM_RELAY_PRIVATE_KEY = process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY;
 const ORIGINAL_TELEGRAM_RELAY_PUBLIC_KEY = process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
-const ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY = process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
-const ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY = process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
-const ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY = process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY;
-const ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY = process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+const ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY = process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY;
+const ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY = process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY;
+const ORIGINAL_SOCIAL_RELAY_PRIVATE_KEY = process.env.SOCIAL_RPC_RELAY_PRIVATE_KEY;
+const ORIGINAL_SOCIAL_RELAY_PUBLIC_KEY = process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY;
 
 describe("memory rpc", () => {
 	let tempDir: string;
@@ -36,9 +36,9 @@ describe("memory rpc", () => {
 		const telegramKeys = generateKeyPair();
 		process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY = telegramKeys.privateKey;
 		process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY = telegramKeys.publicKey;
-		const moltbookKeys = generateKeyPair();
-		process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = moltbookKeys.privateKey;
-		process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = moltbookKeys.publicKey;
+		const socialKeys = generateKeyPair();
+		process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = socialKeys.privateKey;
+		process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = socialKeys.publicKey;
 		vi.resetModules();
 		({ startCapabilityServer } = await import("../../src/relay/capabilities.js"));
 		({ buildInternalAuthHeaders } = await import("../../src/internal-auth.js"));
@@ -82,25 +82,25 @@ describe("memory rpc", () => {
 		} else {
 			process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY = ORIGINAL_TELEGRAM_RELAY_PUBLIC_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
+		if (ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY;
+			process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
+		if (ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY;
+			process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY;
+		if (ORIGINAL_SOCIAL_RELAY_PRIVATE_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_RELAY_PRIVATE_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY = ORIGINAL_MOLTBOOK_RELAY_PRIVATE_KEY;
+			process.env.SOCIAL_RPC_RELAY_PRIVATE_KEY = ORIGINAL_SOCIAL_RELAY_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+		if (ORIGINAL_SOCIAL_RELAY_PUBLIC_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = ORIGINAL_MOLTBOOK_RELAY_PUBLIC_KEY;
+			process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = ORIGINAL_SOCIAL_RELAY_PUBLIC_KEY;
 		}
 	});
 
@@ -216,7 +216,7 @@ describe("memory rpc", () => {
 		expect(getRes.status).toBe(200);
 	});
 
-	it("scopes moltbook snapshot requests to moltbook entries only", async () => {
+	it("scopes social snapshot requests to social entries only", async () => {
 		const telegramBody = JSON.stringify({
 			entries: [{ id: "entry-tg", category: "profile", content: "hello" }],
 		});
@@ -229,16 +229,16 @@ describe("memory rpc", () => {
 			body: telegramBody,
 		});
 
-		const moltbookBody = JSON.stringify({
-			entries: [{ id: "entry-mb", category: "posts", content: "moltbook" }],
+		const socialBody = JSON.stringify({
+			entries: [{ id: "entry-mb", category: "posts", content: "social" }],
 		});
-		const moltbookHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", moltbookBody, {
-			scope: "moltbook",
+		const socialHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", socialBody, {
+			scope: "social",
 		});
 		await fetch(`${baseUrl}/v1/memory.propose`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", ...moltbookHeaders },
-			body: moltbookBody,
+			headers: { "Content-Type": "application/json", ...socialHeaders },
+			body: socialBody,
 		});
 
 		const snapshotBody = JSON.stringify({ sources: ["telegram"] });
@@ -246,7 +246,7 @@ describe("memory rpc", () => {
 			"POST",
 			"/v1/memory.snapshot",
 			snapshotBody,
-			{ scope: "moltbook" },
+			{ scope: "social" },
 		);
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
@@ -258,12 +258,12 @@ describe("memory rpc", () => {
 		expect(snapshot.entries.map((entry) => entry.id)).toEqual(["entry-mb"]);
 	});
 
-	it("assigns untrusted trust for moltbook scope", async () => {
+	it("assigns untrusted trust for social scope", async () => {
 		const proposeBody = JSON.stringify({
 			entries: [{ id: "entry-mb", category: "posts", content: "hello" }],
 		});
 		const proposeHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", proposeBody, {
-			scope: "moltbook",
+			scope: "social",
 		});
 		const proposeRes = await fetch(`${baseUrl}/v1/memory.propose`, {
 			method: "POST",
@@ -275,13 +275,13 @@ describe("memory rpc", () => {
 		});
 		expect(proposeRes.status).toBe(200);
 
-		// M2: Use moltbook scope to read moltbook entries (telegram scope forces sources=["telegram"])
-		const snapshotBody = JSON.stringify({ sources: ["moltbook"] });
+		// M2: Use social scope to read social entries (telegram scope forces sources=["telegram"])
+		const snapshotBody = JSON.stringify({ sources: ["social"] });
 		const snapshotHeaders = buildInternalAuthHeaders(
 			"POST",
 			"/v1/memory.snapshot",
 			snapshotBody,
-			{ scope: "moltbook" },
+			{ scope: "social" },
 		);
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
@@ -337,13 +337,13 @@ describe("memory rpc", () => {
 		expect(data.entry._provenance.source).toBe("telegram");
 	});
 
-	it("rejects /v1/memory.quarantine from moltbook scope", async () => {
+	it("rejects /v1/memory.quarantine from social scope", async () => {
 		const quarantineBody = JSON.stringify({ id: "idea-bad", content: "Malicious idea" });
 		const quarantineHeaders = buildInternalAuthHeaders(
 			"POST",
 			"/v1/memory.quarantine",
 			quarantineBody,
-			{ scope: "moltbook" },
+			{ scope: "social" },
 		);
 
 		const quarantineRes = await fetch(`${baseUrl}/v1/memory.quarantine`, {

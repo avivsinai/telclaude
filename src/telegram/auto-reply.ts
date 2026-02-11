@@ -1258,7 +1258,7 @@ async function handleInboundMessage(
 			await msg.reply(`Promote failed: ${result.reason}`);
 			return;
 		}
-		await msg.reply(`Promoted entry \`${entryId}\` — will be posted on next Moltbook heartbeat.`);
+		await msg.reply(`Promoted entry \`${entryId}\` — will be posted on next social heartbeat.`);
 		return;
 	}
 

@@ -120,7 +120,7 @@ function verifyAsymmetric(
 
 /**
  * Derive env var names for RPC keys from a scope string.
- * E.g., "moltbook" → { agentPrivateKey: "MOLTBOOK_RPC_AGENT_PRIVATE_KEY", ... }
+ * E.g., "social" → { agentPrivateKey: "SOCIAL_RPC_AGENT_PRIVATE_KEY", ... }
  */
 function scopeEnvVarNames(scope: string): {
 	agentPrivateKey: string;

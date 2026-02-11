@@ -16,7 +16,7 @@ export type MultimediaFeature =
 	| "tts"
 	| "transcription"
 	| "video_processing"
-	| "moltbook_post"
+	| "social_post"
 	| "token_refresh"
 	| `${string}_post`;
 

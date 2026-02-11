@@ -19,7 +19,7 @@ ALL_PROFILES=(
   telclaude-vault
   telclaude-relay
   telclaude-agent
-  telclaude-moltbook
+  telclaude-social
 )
 
 if [ "$(id -u)" -ne 0 ]; then

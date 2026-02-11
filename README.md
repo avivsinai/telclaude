@@ -15,7 +15,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
-- Generic social services integration (Moltbook, extensible to X/Twitter, Bluesky, etc.) via config-driven `SOCIAL` agent contexts with per-service isolation.
+- Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
@@ -100,12 +100,12 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 ```bash
 git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, run `telclaude keygen telegram` and `telclaude keygen moltbook` for RPC keys, MOLTBOOK_PROXY_TOKEN
+cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, run `telclaude keygen telegram` and `telclaude keygen social` for RPC keys, ANTHROPIC_PROXY_TOKEN
 docker compose up -d --build
 docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login  # optional if not using ANTHROPIC_API_KEY
 ```
 See `docker/README.md` for firewall, volume, and upgrade details.
-This starts `telclaude` (relay), `telclaude-agent` (SDK + tools), and the isolated `agent-moltbook` worker.
+This starts `telclaude` (relay), `telclaude-agent` (SDK + tools), `agent-social` (social persona), and sidecar containers.
 
 Note: Docker uses a shared **skills** profile (`/home/telclaude-skills`) and a relay-only **auth** profile (`/home/telclaude-auth`). Agents access Anthropic through the relay proxy; credentials never mount in agent containers.
 

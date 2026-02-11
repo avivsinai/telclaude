@@ -77,12 +77,11 @@ describe("memory isolation", () => {
 			"telegram",
 		);
 		createEntries(
-			[{ id: "mb-3", category: "interests", content: "moltbook interest" }],
-			"moltbook",
-		);
-		createEntries(
-			[{ id: "xt-3", category: "interests", content: "twitter interest" }],
-			"xtwitter",
+			[
+				{ id: "soc-3a", category: "interests", content: "social interest A" },
+				{ id: "soc-3b", category: "interests", content: "social interest B" },
+			],
+			"social",
 		);
 
 		const telegramEntries = getEntries({
@@ -99,18 +98,13 @@ describe("memory isolation", () => {
 		expect(telegramEntries[0].id).toBe("tg-3");
 	});
 
-	it("social entries with different sources are isolated from telegram", () => {
-		// Create entries from various social services
+	it("social entries are isolated from telegram", () => {
+		// Unified social source — all social services write as "social"
 		createEntries(
-			[{ id: "mb-4", category: "profile", content: "moltbook data" }],
-			"moltbook",
-		);
-		createEntries(
-			[{ id: "xt-4", category: "profile", content: "xtwitter data" }],
-			"xtwitter",
-		);
-		createEntries(
-			[{ id: "soc-4", category: "profile", content: "unified social data" }],
+			[
+				{ id: "soc-4a", category: "profile", content: "social profile data" },
+				{ id: "soc-4b", category: "interests", content: "social interests" },
+			],
 			"social",
 		);
 		createEntries(
@@ -118,16 +112,15 @@ describe("memory isolation", () => {
 			"telegram",
 		);
 
-		// None of the social entries should appear in telegram queries
+		// Social entries should not appear in telegram queries
 		const telegramEntries = getEntries({
 			sources: ["telegram"],
 			trust: ["trusted"],
 		});
 		const telegramIds = telegramEntries.map((e) => e.id);
 		expect(telegramIds).toContain("tg-4");
-		expect(telegramIds).not.toContain("mb-4");
-		expect(telegramIds).not.toContain("xt-4");
-		expect(telegramIds).not.toContain("soc-4");
+		expect(telegramIds).not.toContain("soc-4a");
+		expect(telegramIds).not.toContain("soc-4b");
 	});
 
 	it("quarantine and promote are telegram-only operations", async () => {

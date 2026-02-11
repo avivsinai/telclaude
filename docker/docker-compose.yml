@@ -52,8 +52,8 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
 
-      # Moltbook proxy token — agents use this to authenticate with Anthropic proxy
-      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      # Anthropic proxy token — agents use this to authenticate with the relay's Anthropic proxy
+      - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
       # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
@@ -113,7 +113,7 @@ services:
       # Shared socket for vault daemon communication (relay reads credentials)
       - vault-socket:/run/vault:ro
 
-      # Moltbook memory (relay is single writer)
+      # Social memory (relay is single writer)
       - social-memory:/social/memory:rw
 
       # Shared media volumes (inbox/outbox split)
@@ -208,7 +208,7 @@ services:
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       # Internal token used to access the proxy (relay verifies + injects real creds)
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
       # RPC auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
       - TELEGRAM_RPC_AGENT_PRIVATE_KEY=${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-}
       - TELEGRAM_RPC_RELAY_PUBLIC_KEY=${TELEGRAM_RPC_RELAY_PUBLIC_KEY:-}
@@ -253,7 +253,7 @@ services:
       # Claude skills profile (no auth secrets)
       - telclaude-claude-skills:/home/telclaude-skills:rw
 
-      # Moltbook memory (read-only in agent)
+      # Social memory (read-only in agent)
       - social-memory:/social/memory:ro
 
       # Shared media volumes (inbox/outbox split)
@@ -318,7 +318,7 @@ services:
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       # Internal token used to access the proxy
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
       # Ensure Claude Code state lives under a dedicated public profile
       - HOME=/social
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills

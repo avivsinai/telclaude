@@ -1,11 +1,11 @@
 #include <tunables/global>
 
-# Telclaude Agent AppArmor profile
-# Restricts the Telegram agent container to workspace and media paths.
-# The agent runs Claude SDK tools and should only access the user's
-# workspace - never relay secrets, auth tokens, or other containers' data.
+# Telclaude Social Agent AppArmor profile
+# Restricts the social agent container to its sandbox and memory paths.
+# The social agent handles all social services (X/Twitter, Moltbook, etc.)
+# and should never access the workspace, relay secrets, or auth tokens.
 
-profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
+profile telclaude-social flags=(attach_disconnected,mediate_deleted) {
   # Basic allowances
   #include <abstractions/base>
   #include <abstractions/nameservice>
@@ -30,24 +30,21 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   /app/node_modules/** mr,
   /app/dist/** mr,
 
-  # Workspace (read/write - this is where Claude works)
-  /workspace/** rwklx,
+  # Social sandbox (read/write - this is where the social agent works)
+  /social/sandbox/** rwklx,
+
+  # Social memory (read-only in social agent; relay is single writer)
+  /social/memory/** r,
+  deny /social/memory/** wklx,
 
   # Claude skills profile (shared)
   /home/telclaude-skills/** rwklx,
 
-  # Social memory (read-only in agent)
-  /social/memory/** r,
-  deny /social/memory/** wklx,
-
-  # Media volumes (read-only in agent)
-  /media/inbox/** r,
-  deny /media/inbox/** wklx,
-  /media/outbox/** r,
-  deny /media/outbox/** wklx,
-
   # Config file (read-only)
   /data/telclaude.json r,
+
+  # Deny workspace (social agent should never touch user projects)
+  deny /workspace/** rwklx,
 
   # Deny relay auth secrets
   deny /home/telclaude-auth/** rwklx,
@@ -61,8 +58,8 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   deny /run/vault/** rwklx,
   deny /run/totp/** rwklx,
 
-  # Deny social sandbox (only social agent uses it)
-  deny /social/sandbox/** rwklx,
+  # Deny media volumes (social agent doesn't use media)
+  deny /media/** rwklx,
 
   # Block sensitive system paths
   deny /run/secrets/** rwklx,

@@ -199,10 +199,10 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | Named volume |
-| `telclaude` + `telclaude-agent` + `agent-moltbook` | `/home/telclaude-skills` | Claude skills profile (skills/plugins, no secrets) | Named volume |
+| `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skills` | Claude skills profile (skills/plugins, no secrets) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
-| `agent-moltbook` | `/moltbook/sandbox` | Moltbook isolated workspace | Named volume |
-| `telclaude` + `agent-moltbook` | `/moltbook/memory` | Moltbook social memory (relay RW, agent RO) | Named volume |
+| `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
+| `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
 
 ### Environment Variables
 
@@ -217,19 +217,18 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
 | `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
 | `TELEGRAM_RPC_RELAY_PUBLIC_KEY` | Yes | Relay public key — agent verifies relay→agent requests |
-| `TELCLAUDE_MOLTBOOK_AGENT_URL` | No | Relay URL for Moltbook agent RPC (default `http://agent-moltbook:8789`) |
-| `MOLTBOOK_RPC_AGENT_PRIVATE_KEY` | Yes (if Moltbook enabled) | Agent private key for Moltbook bidirectional auth |
-| `MOLTBOOK_RPC_AGENT_PUBLIC_KEY` | Yes (if Moltbook enabled) | Agent public key — relay verifies Moltbook agent requests |
-| `MOLTBOOK_RPC_RELAY_PRIVATE_KEY` | Yes (if Moltbook enabled) | Relay private key for Moltbook agent requests |
-| `MOLTBOOK_RPC_RELAY_PUBLIC_KEY` | Yes (if Moltbook enabled) | Relay public key — Moltbook agent verifies relay requests |
-| `MOLTBOOK_PROXY_TOKEN` | Yes (if Moltbook enabled) | Shared token for Anthropic proxy access |
+| `SOCIAL_RPC_AGENT_PRIVATE_KEY` | Yes (if social enabled) | Agent private key for social agent bidirectional auth |
+| `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Agent public key — relay verifies social agent requests |
+| `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social agent requests |
+| `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key — social agent verifies relay requests |
+| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents) |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
-| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-moltbook`) |
+| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-social`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-For both Telegram and Moltbook agents, generate key pairs with `telclaude keygen telegram` / `telclaude keygen moltbook`. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`. `MOLTBOOK_PROXY_TOKEN` must match between relay and Moltbook agent.
+For each agent scope, generate key pairs with `telclaude keygen telegram` / `telclaude keygen social`. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`. `ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
 
 ### Config Split
 

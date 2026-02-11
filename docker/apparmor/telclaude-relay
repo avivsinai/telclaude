@@ -47,14 +47,14 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   /media/inbox/** rwklx,
   /media/outbox/** rwklx,
 
-  # Moltbook memory (relay is single writer)
-  /moltbook/memory/** rwklx,
+  # Social memory (relay is single writer)
+  /social/memory/** rwklx,
 
   # Deny workspace (relay should never touch user projects)
   deny /workspace/** rwklx,
 
-  # Deny moltbook sandbox (only moltbook agent uses it)
-  deny /moltbook/sandbox/** rwklx,
+  # Deny social sandbox (only social agent uses it)
+  deny /social/sandbox/** rwklx,
 
   # Block sensitive system paths
   deny /run/secrets/** rwklx,

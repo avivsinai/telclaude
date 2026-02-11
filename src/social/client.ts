@@ -3,11 +3,11 @@ import type { SocialNotification, SocialPostResult, SocialReplyResult } from "./
 /**
  * Interface for social service backends.
  *
- * Each backend (Moltbook, X/Twitter, Bluesky, etc.) implements this interface.
+ * Each backend (X/Twitter, Moltbook, Bluesky, etc.) implements this interface.
  * The handler and scheduler logic is service-agnostic and operates through this contract.
  */
 export interface SocialServiceClient {
-	/** Unique service identifier (e.g., "moltbook", "xtwitter"). */
+	/** Unique service identifier (e.g., "xtwitter", "moltbook"). */
 	readonly serviceId: string;
 
 	/** Fetch pending notifications from the service. */

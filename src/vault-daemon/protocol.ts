@@ -240,7 +240,7 @@ export const ListRequestSchema = z.object({
  */
 export const SignTokenRequestSchema = z.object({
 	type: z.literal("sign-token"),
-	scope: z.string().min(1), // e.g., "telegram", "moltbook"
+	scope: z.string().min(1), // e.g., "telegram", "social"
 	sessionId: z.string().min(1),
 	ttlMs: z.number().positive(), // token lifetime in milliseconds
 });
