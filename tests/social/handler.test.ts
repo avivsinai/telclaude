@@ -81,7 +81,7 @@ function mockClient(overrides: Partial<SocialServiceClient> = {}): SocialService
 }
 
 describe("social handler", () => {
-	const originalAgentUrl = process.env.TELCLAUDE_MOLTBOOK_AGENT_URL;
+	const originalAgentUrl = process.env.TELCLAUDE_SOCIAL_AGENT_URL;
 
 	beforeEach(() => {
 		executeRemoteQueryMock.mockReset();
@@ -92,14 +92,14 @@ describe("social handler", () => {
 		getEntriesMock.mockReturnValue(sampleEntries);
 		// Default: rate limit allows proactive posting
 		checkLimitMock.mockReturnValue({ allowed: true, remaining: { hour: 1, day: 9 }, resetMs: { hour: 1000, day: 10000 } });
-		process.env.TELCLAUDE_MOLTBOOK_AGENT_URL = "http://agent-moltbook";
+		process.env.TELCLAUDE_SOCIAL_AGENT_URL = "http://agent-social:8789";
 	});
 
 	afterEach(() => {
 		if (originalAgentUrl === undefined) {
-			delete process.env.TELCLAUDE_MOLTBOOK_AGENT_URL;
+			delete process.env.TELCLAUDE_SOCIAL_AGENT_URL;
 		} else {
-			process.env.TELCLAUDE_MOLTBOOK_AGENT_URL = originalAgentUrl;
+			process.env.TELCLAUDE_SOCIAL_AGENT_URL = originalAgentUrl;
 		}
 	});
 

@@ -474,9 +474,9 @@ export async function handleAnthropicProxyRequest(
 		}
 	}
 
-	const proxyToken = process.env.MOLTBOOK_PROXY_TOKEN;
+	const proxyToken = process.env.ANTHROPIC_PROXY_TOKEN;
 	if (!proxyToken) {
-		logger.warn("[anthropic-proxy] missing MOLTBOOK_PROXY_TOKEN");
+		logger.warn("[anthropic-proxy] missing ANTHROPIC_PROXY_TOKEN");
 		res.writeHead(500, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "Proxy token not configured." }));
 		return;

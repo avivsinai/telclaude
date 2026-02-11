@@ -50,7 +50,7 @@ profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
   deny /home/telclaude-auth/** rwklx,
   deny /home/telclaude-skills/** rwklx,
   deny /workspace/** rwklx,
-  deny /moltbook/** rwklx,
+  deny /social/** rwklx,
   deny /run/secrets/** rwklx,
   deny /var/run/secrets/** rwklx,
 

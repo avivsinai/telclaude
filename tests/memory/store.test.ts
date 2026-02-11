@@ -45,17 +45,17 @@ describe("memory store", () => {
 			1,
 		);
 		createEntries(
-			[{ id: "entry-moltbook", category: "profile", content: "from moltbook" }],
-			"moltbook",
+			[{ id: "entry-social", category: "profile", content: "from social" }],
+			"social",
 			2,
 		);
 
 		const entries = getEntries({ order: "asc" });
 		const telegramEntry = entries.find((entry) => entry.id === "entry-telegram");
-		const moltbookEntry = entries.find((entry) => entry.id === "entry-moltbook");
+		const socialEntry = entries.find((entry) => entry.id === "entry-social");
 
 		expect(telegramEntry?._provenance.trust).toBe("trusted");
-		expect(moltbookEntry?._provenance.trust).toBe("untrusted");
+		expect(socialEntry?._provenance.trust).toBe("untrusted");
 	});
 
 	it("filters entries by category/source/trust", () => {
@@ -69,7 +69,7 @@ describe("memory store", () => {
 		);
 		createEntries(
 			[{ id: "profile-2", category: "profile", content: "untrusted" }],
-			"moltbook",
+			"social",
 			11,
 		);
 
@@ -106,14 +106,14 @@ describe("memory store", () => {
 		expect(updated._provenance.trust).toBe("trusted");
 	});
 
-	it("rejects promotion of moltbook source entries", () => {
+	it("rejects promotion of social source entries", () => {
 		createEntries(
-			[{ id: "moltbook-entry", category: "posts", content: "from moltbook" }],
-			"moltbook",
+			[{ id: "social-entry", category: "posts", content: "from social" }],
+			"social",
 			20,
 		);
 
-		const result = promoteEntryTrust("moltbook-entry", "admin");
+		const result = promoteEntryTrust("social-entry", "admin");
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.reason).toContain("telegram");

@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Social memory management for Telegram and Moltbook agents
+description: Social memory management for Telegram and social agents
 allowed-tools: ["Bash"]
 ---
 
@@ -14,7 +14,7 @@ You have access to a persistent memory system for storing facts about the user a
 - Biographical facts: name, location, profession, preferences
 - Interests and hobbies mentioned across conversations
 - Recurring topics or projects the user works on
-- Post ideas the user wants to share on Moltbook
+- Post ideas the user wants to share on social services
 
 ## When NOT to Remember
 
@@ -31,7 +31,7 @@ You have access to a persistent memory system for storing facts about the user a
 | `interests` | Hobbies, topics | "loves distributed systems", "plays guitar" |
 | `meta` | General facts | Preferences, working style, timezone |
 | `threads` | Conversation topics | Ongoing projects, recurring discussions |
-| `posts` | Moltbook post ideas | Ideas quarantined for user approval |
+| `posts` | Social post ideas | Ideas quarantined for user approval |
 
 ## CLI Commands
 
@@ -45,7 +45,7 @@ telclaude memory write "<content>" --category <category> --chat-id <CHAT_ID>
 telclaude memory read --categories profile,interests --chat-id <CHAT_ID>
 ```
 
-### Quarantine a post idea (Telegram only)
+### Quarantine a post idea for social posting (Telegram only)
 ```bash
 telclaude memory quarantine "<post idea>" --chat-id <CHAT_ID>
 ```
@@ -61,17 +61,17 @@ Only use `memory read` when:
 - You need to check thread history for a specific topic
 - You want to verify before overwriting an entry
 
-## Elevation Flow (Telegram → Moltbook)
+## Elevation Flow (Telegram → Social)
 
-When the user wants to share an idea on Moltbook:
+When the user wants to share an idea on a social service:
 
 1. Quarantine the idea:
    ```bash
    telclaude memory quarantine "Thought about distributed systems being like..." --chat-id <CHAT_ID>
    ```
-2. Tell the user: "I've saved that as a post idea. To publish it on Moltbook, run `/promote <entry-id>`"
+2. Tell the user: "I've saved that as a post idea. To publish it, run `/promote <entry-id>`"
 3. The user runs `/promote <id>` in Telegram to approve
-4. On the next Moltbook heartbeat, the idea is posted
+4. On the next social heartbeat, the idea is posted
 
 You CANNOT promote entries yourself — only the user can approve via `/promote`.
 
@@ -80,12 +80,12 @@ You CANNOT promote entries yourself — only the user can approve via `/promote`
 ### Telegram Agent
 - Creates **trusted** entries by default
 - Can read all Telegram memory for this chat
-- Cannot read Moltbook memory
-- Can quarantine post ideas for Moltbook
+- Cannot read social memory
+- Can quarantine post ideas for social posting
 
-### Moltbook Agent
+### Social Agent
 - Creates **untrusted** entries by default
-- Can only read moltbook/untrusted entries
+- Can only read social/untrusted entries
 - Cannot read Telegram memory
 - Cannot promote or quarantine entries
 - Use `memory write` for public profile, interests, and post drafts

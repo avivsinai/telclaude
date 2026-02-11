@@ -126,7 +126,7 @@ if [ "$(id -u)" = "0" ]; then
             git config --global init.defaultBranch main
             git config --global core.autocrlf input
         else
-            # HOME is read-only (e.g., moltbook agent), use tmpfs
+            # HOME is read-only (e.g., social agent), use tmpfs
             echo "[entrypoint] HOME is read-only, using /tmp for git config"
             export GIT_CONFIG_GLOBAL="/tmp/.gitconfig"
             git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main

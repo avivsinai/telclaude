@@ -18,7 +18,7 @@ import { startCapabilityServer } from "../../src/relay/capabilities.js";
 const ORIGINAL_ENV = {
 	CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
 	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-	MOLTBOOK_PROXY_TOKEN: process.env.MOLTBOOK_PROXY_TOKEN,
+	ANTHROPIC_PROXY_TOKEN: process.env.ANTHROPIC_PROXY_TOKEN,
 };
 
 type RequestResult = { status: number; body: string };
@@ -69,7 +69,7 @@ describe("anthropic proxy", () => {
 	beforeEach(async () => {
 		process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-token";
 		delete process.env.ANTHROPIC_API_KEY;
-		process.env.MOLTBOOK_PROXY_TOKEN = "proxy-token";
+		process.env.ANTHROPIC_PROXY_TOKEN = "proxy-token";
 
 		server = startCapabilityServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
@@ -92,10 +92,10 @@ describe("anthropic proxy", () => {
 		} else {
 			process.env.ANTHROPIC_API_KEY = ORIGINAL_ENV.ANTHROPIC_API_KEY;
 		}
-		if (ORIGINAL_ENV.MOLTBOOK_PROXY_TOKEN === undefined) {
-			delete process.env.MOLTBOOK_PROXY_TOKEN;
+		if (ORIGINAL_ENV.ANTHROPIC_PROXY_TOKEN === undefined) {
+			delete process.env.ANTHROPIC_PROXY_TOKEN;
 		} else {
-			process.env.MOLTBOOK_PROXY_TOKEN = ORIGINAL_ENV.MOLTBOOK_PROXY_TOKEN;
+			process.env.ANTHROPIC_PROXY_TOKEN = ORIGINAL_ENV.ANTHROPIC_PROXY_TOKEN;
 		}
 		vi.unstubAllGlobals();
 	});

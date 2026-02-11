@@ -1,10 +1,10 @@
-# AppArmor setup for Moltbook agent
+# AppArmor setup for telclaude containers
 
-This repository is open source; assume attackers know all enforcement logic. Regex-only Bash guards are bypassable, so Moltbook hardening relies on **kernel-enforced AppArmor** plus container firewalling.
+This repository is open source; assume attackers know all enforcement logic. Regex-only Bash guards are bypassable, so container hardening relies on **kernel-enforced AppArmor** plus container firewalling.
 
 ## Why AppArmor
 - Prevents access to high-value local secrets (e.g. `/home/telclaude-auth`, `/workspace`).
-- Enforces read-only access to `/moltbook/memory` even if mounts are misconfigured.
+- Enforces read-only access to `/social/memory` even if mounts are misconfigured.
 - Blocks `/proc/*/environ` and `/proc/*/cmdline` reads to reduce env/secret leakage.
 
 ## Install (host)
@@ -13,29 +13,29 @@ This repository is open source; assume attackers know all enforcement logic. Reg
 sudo bash docker/apparmor/install.sh
 ```
 
-This copies `docker/apparmor/telclaude-moltbook` to `/etc/apparmor.d/` and loads it.
+This copies all profiles (`telclaude-vault`, `telclaude-relay`, `telclaude-agent`, `telclaude-social`) to `/etc/apparmor.d/` and loads them.
 
 ## Enable in Docker Compose
 
-`docker-compose.yml` and `docker-compose.deploy.yml` already include:
+`docker-compose.yml` and `docker-compose.deploy.yml` already include per-container profiles:
 
 ```yaml
 security_opt:
   - no-new-privileges:true
-  - apparmor:telclaude-moltbook
+  - apparmor:telclaude-agent   # or telclaude-relay, telclaude-social, telclaude-vault
 ```
 
-If you maintain a custom compose file, add the same `security_opt` line to the `agent-moltbook` service.
+If you maintain a custom compose file, add the matching `security_opt` line to each service.
 
 ## Verify
 
-Check the profile is loaded:
+Check profiles are loaded:
 
 ```bash
-sudo aa-status | rg telclaude-moltbook
+sudo aa-status | rg telclaude
 ```
 
-Then, from inside the Moltbook container, verify denies:
+Then, from inside a container, verify denies:
 
 ```bash
 # Should fail (permission denied)

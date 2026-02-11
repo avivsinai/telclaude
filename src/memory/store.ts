@@ -199,7 +199,7 @@ export type PromoteEntryResult = { ok: true; entry: MemoryEntry } | { ok: false;
  * - Only allows source === "telegram"
  * - Only allows category === "posts"
  *
- * This prevents Moltbook entries from being promoted into trusted context
+ * This prevents social entries from being promoted into trusted context
  * and enforces that ideas must go through the quarantine workflow.
  */
 export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryResult {
@@ -289,7 +289,7 @@ export function deleteEntry(id: string): boolean {
 }
 
 /**
- * Mark a memory entry as posted (used for proactive Moltbook posting).
+ * Mark a memory entry as posted (used for proactive social posting).
  * This prevents the same idea from being posted multiple times.
  */
 export function markEntryPosted(id: string): boolean {

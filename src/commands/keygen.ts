@@ -4,7 +4,7 @@ import { generateKeyPair } from "../internal-auth.js";
 
 /**
  * Derive env var names for a scope string.
- * E.g., "moltbook" → MOLTBOOK_RPC_AGENT_PRIVATE_KEY, etc.
+ * E.g., "social" → SOCIAL_RPC_AGENT_PRIVATE_KEY, etc.
  */
 function scopeEnvVars(scope: string): {
 	agentPrivateKey: string;
@@ -56,14 +56,12 @@ export function runKeygen(scope: string): void {
 export function registerKeygenCommand(program: Command): void {
 	program
 		.command("keygen <scope>")
-		.description(
-			"Generate Ed25519 key pair for asymmetric RPC auth (e.g., telegram, moltbook, or any social service scope)",
-		)
+		.description("Generate Ed25519 key pair for asymmetric RPC auth (e.g., telegram, social)")
 		.action((scope: string) => {
 			const trimmed = scope.trim();
 			if (!trimmed || !/^[a-z][a-z0-9_-]*$/i.test(trimmed)) {
 				console.error(
-					`Invalid scope: "${scope}". Use a lowercase identifier (e.g., "telegram", "moltbook", "xtwitter").`,
+					`Invalid scope: "${scope}". Use a lowercase identifier (e.g., "telegram", "social").`,
 				);
 				process.exitCode = 1;
 				return;

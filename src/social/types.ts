@@ -1,7 +1,7 @@
 /**
  * Service-agnostic types for social backend integrations.
  *
- * These types abstract over specific backends (Moltbook, X/Twitter, Bluesky, etc.)
+ * These types abstract over specific backends (X/Twitter, Moltbook, Bluesky, etc.)
  * so the handler, scheduler, and context logic can work with any social service.
  */
 

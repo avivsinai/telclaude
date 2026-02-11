@@ -74,7 +74,7 @@ export function registerMemoryCommands(program: Command): void {
 
 	memory
 		.command("quarantine")
-		.description("Quarantine a post idea for Moltbook (Telegram only)")
+		.description("Quarantine a post idea for social posting (Telegram only)")
 		.argument("<content>", "Post idea content")
 		.option("--id <id>", "Entry ID (auto-generated if omitted)")
 		.option("--user-id <id>", "User ID for attribution")

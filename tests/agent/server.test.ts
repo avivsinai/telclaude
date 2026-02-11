@@ -21,18 +21,18 @@ vi.mock("../../src/logging.js", () => ({
 import { startAgentServer } from "../../src/agent/server.js";
 import { buildInternalAuthHeaders, generateKeyPair } from "../../src/internal-auth.js";
 
-const ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY = process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
-const ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY = process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
+const ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY = process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY;
+const ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY = process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY;
 
-describe("agent server moltbook userId normalization", () => {
+describe("agent server social userId normalization", () => {
 	let server: ReturnType<typeof startAgentServer> | null = null;
 	let baseUrl = "";
 
 	beforeEach(async () => {
-		// Generate Ed25519 key pair for moltbook asymmetric auth (agent keypair for test)
+		// Generate Ed25519 key pair for social asymmetric auth (agent keypair for test)
 		const { privateKey, publicKey } = generateKeyPair();
-		process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = privateKey;
-		process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = publicKey;
+		process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = privateKey;
+		process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = publicKey;
 
 		server = startAgentServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
@@ -46,19 +46,19 @@ describe("agent server moltbook userId normalization", () => {
 			server = null;
 		}
 		executePooledQueryImpl.mockReset();
-		if (ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY;
+		if (ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY = ORIGINAL_MOLTBOOK_AGENT_PRIVATE_KEY;
+			process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY;
 		}
-		if (ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY === undefined) {
-			delete process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY;
+		if (ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY === undefined) {
+			delete process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY;
 		} else {
-			process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY = ORIGINAL_MOLTBOOK_AGENT_PUBLIC_KEY;
+			process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY;
 		}
 	});
 
-	it("forces moltbook prefix for moltbook scope userId", async () => {
+	it("forces social prefix for social scope userId", async () => {
 		executePooledQueryImpl.mockReturnValueOnce(
 			(async function* () {
 				yield {
@@ -81,7 +81,7 @@ describe("agent server moltbook userId normalization", () => {
 			poolKey: "pool-1",
 			userId: "user-1",
 		});
-		const headers = buildInternalAuthHeaders("POST", "/v1/query", body, { scope: "moltbook" });
+		const headers = buildInternalAuthHeaders("POST", "/v1/query", body, { scope: "social" });
 
 		const res = await fetch(`${baseUrl}/v1/query`, {
 			method: "POST",
@@ -92,6 +92,6 @@ describe("agent server moltbook userId normalization", () => {
 
 		expect(executePooledQueryImpl).toHaveBeenCalledTimes(1);
 		const [, options] = executePooledQueryImpl.mock.calls[0] as [string, { userId?: string }];
-		expect(options.userId).toBe("moltbook:user-1");
+		expect(options.userId).toBe("social:user-1");
 	});
 });

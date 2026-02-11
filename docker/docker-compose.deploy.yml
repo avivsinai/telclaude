@@ -54,7 +54,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      - MOLTBOOK_PROXY_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
       # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
@@ -185,7 +185,7 @@ services:
       # Relay capability broker + Anthropic API proxy
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
       # RPC auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
       - TELEGRAM_RPC_AGENT_PRIVATE_KEY=${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-}
@@ -282,7 +282,7 @@ services:
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
       - HOME=/social
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills

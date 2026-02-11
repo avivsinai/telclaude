@@ -47,12 +47,5 @@ e82ee12ace184aece9e37ee32666802d1e8efa43:src/security/streaming-redactor.ts:gene
 cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-javascript:704
 
 # JavaScript - header name constants, pool key strings (not actual credentials)
-024dba298e00f8dbb7d009c8d20a7f7fbe14ecd2:src/moltbook/handler.ts:credentials-javascript:48
-7d7634c121cea666c6f8e74d025f6e10663ef8d1:src/moltbook/handler.ts:credentials-javascript:41
-efd5623cfcda02c6b7974883dce2cbc1359ab8d6:src/moltbook/handler.ts:credentials-javascript:293
 c47d4389e7f568398b5dbc704350851bd4b34cc2:src/internal-auth.ts:credentials-javascript:8
 79fd13154a83733e6eb1ff0454a158bc902a3903:src/memory/rpc.ts:credentials-javascript:124
-5d94fbaf376d4f7282607464e669272f2e00b4fe:scripts/pentest-moltbook.ts:credentials-javascript:778
-
-# Bearer token - code building auth headers from variables (not actual tokens)
-7d7634c121cea666c6f8e74d025f6e10663ef8d1:src/moltbook/api-client.ts:authorization-bearer-token:95

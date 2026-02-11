@@ -47,7 +47,7 @@ function serializeEntries(entries: MemoryEntry[]): string {
  *
  * Runs in the relay (has direct DB access). Filters for trusted
  * Telegram entries only. Returns JSON-serialized payload matching
- * the safer pattern from Moltbook's social-context.ts.
+ * the safer pattern from social-context.ts.
  *
  * Returns null if no entries found.
  */
