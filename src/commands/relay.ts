@@ -8,8 +8,6 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
-import { handleMoltbookHeartbeat } from "../moltbook/handler.js";
-import { type MoltbookScheduler, startMoltbookScheduler } from "../moltbook/scheduler.js";
 import {
 	checkProviderHealth,
 	computeProviderHealthExitCode,
@@ -31,6 +29,12 @@ import {
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
+import {
+	createSocialClient,
+	handleSocialHeartbeat,
+	type SocialScheduler,
+	startSocialScheduler,
+} from "../social/index.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
@@ -106,7 +110,7 @@ export function registerRelayCommand(program: Command): void {
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
 				await readEnv(); // Validates environment variables
-				let moltbookScheduler: MoltbookScheduler | null = null;
+				const socialSchedulers: SocialScheduler[] = [];
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -198,21 +202,34 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Capabilities: disabled");
 				}
 
-				if (cfg.moltbook?.enabled) {
-					const intervalHours = cfg.moltbook.heartbeatIntervalHours ?? 4;
-					const intervalMs = intervalHours * 60 * 60 * 1000;
-					moltbookScheduler = startMoltbookScheduler({
-						intervalMs,
-						onHeartbeat: async () => {
-							const result = await handleMoltbookHeartbeat();
-							if (!result.ok) {
-								logger.warn({ message: result.message }, "moltbook heartbeat reported errors");
-							}
-						},
-					});
-					console.log(`  Moltbook: enabled (heartbeat every ${intervalHours}h)`);
+				const enabledServices = cfg.socialServices.filter((s) => s.enabled);
+				if (enabledServices.length > 0) {
+					for (const svc of enabledServices) {
+						const intervalHours = svc.heartbeatIntervalHours ?? 4;
+						const intervalMs = intervalHours * 60 * 60 * 1000;
+						const scheduler = startSocialScheduler({
+							serviceId: svc.id,
+							intervalMs,
+							onHeartbeat: async () => {
+								const client = await createSocialClient(svc);
+								if (!client) {
+									logger.warn({ serviceId: svc.id }, "social client not configured");
+									return;
+								}
+								const result = await handleSocialHeartbeat(svc.id, client, svc);
+								if (!result.ok) {
+									logger.warn(
+										{ message: result.message, serviceId: svc.id },
+										"social heartbeat reported errors",
+									);
+								}
+							},
+						});
+						socialSchedulers.push(scheduler);
+						console.log(`  Social service ${svc.id}: enabled (heartbeat every ${intervalHours}h)`);
+					}
 				} else {
-					console.log("  Moltbook: disabled");
+					console.log("  Social services: none enabled");
 				}
 
 				// Detect sandbox mode and verify sandbox availability
@@ -422,9 +439,11 @@ export function registerRelayCommand(program: Command): void {
 					console.log("\nShutting down...");
 					abortController.abort();
 
-					if (moltbookScheduler) {
-						moltbookScheduler.stop();
-						logger.info("moltbook scheduler stopped");
+					for (const scheduler of socialSchedulers) {
+						scheduler.stop();
+					}
+					if (socialSchedulers.length > 0) {
+						logger.info({ count: socialSchedulers.length }, "social schedulers stopped");
 					}
 
 					// Clean up session pool
@@ -444,9 +463,8 @@ export function registerRelayCommand(program: Command): void {
 				});
 
 				// Final cleanup after monitor exits
-				if (moltbookScheduler) {
-					moltbookScheduler.stop();
-					logger.info("moltbook scheduler stopped");
+				for (const scheduler of socialSchedulers) {
+					scheduler.stop();
 				}
 				await destroySessionManager();
 

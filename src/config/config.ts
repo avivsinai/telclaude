@@ -51,7 +51,7 @@ const TTS_DEFAULTS = {
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
-const MOLTBOOK_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
+const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -173,12 +173,7 @@ const ObserverConfigSchema = z.object({
 // NOTE: WRITE_LOCAL provides accident prevention, NOT security isolation.
 // It blocks common destructive commands (rm, chmod) but can be bypassed via
 // interpreters (python -c, node -e). For actual isolation, use containers.
-export const PermissionTierSchema = z.enum([
-	"READ_ONLY",
-	"WRITE_LOCAL",
-	"FULL_ACCESS",
-	"MOLTBOOK_SOCIAL",
-]);
+export const PermissionTierSchema = z.enum(["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS", "SOCIAL"]);
 export type PermissionTier = z.infer<typeof PermissionTierSchema>;
 
 // User permission configuration
@@ -303,7 +298,7 @@ const SecurityConfigSchema = z.object({
 							perHour: z.number().int().positive().default(30),
 						})
 						.optional(),
-					MOLTBOOK_SOCIAL: z
+					SOCIAL: z
 						.object({
 							perMinute: z.number().int().positive().default(10),
 							perHour: z.number().int().positive().default(100),
@@ -370,14 +365,19 @@ const LoggingConfigSchema = z.object({
 	file: z.string().optional(),
 });
 
-const MoltbookConfigSchema = z
-	.object({
-		enabled: z.boolean().default(MOLTBOOK_DEFAULTS.enabled),
-		apiKey: z.string().optional(),
-		heartbeatIntervalHours: z.number().positive().default(MOLTBOOK_DEFAULTS.heartbeatIntervalHours),
-		adminChatId: z.union([z.string(), z.number()]).optional(),
-	})
-	.default(MOLTBOOK_DEFAULTS);
+// Generic social service configuration
+const SocialServiceConfigSchema = z.object({
+	id: z.string().min(1),
+	type: z.string().min(1),
+	enabled: z.boolean().default(SOCIAL_SERVICE_DEFAULTS.enabled),
+	apiKey: z.string().optional(),
+	heartbeatIntervalHours: z
+		.number()
+		.positive()
+		.default(SOCIAL_SERVICE_DEFAULTS.heartbeatIntervalHours),
+	adminChatId: z.union([z.string(), z.number()]).optional(),
+	agentUrl: z.string().optional(),
+});
 
 // Main config schema
 const TelclaudeConfigSchema = z.object({
@@ -386,7 +386,6 @@ const TelclaudeConfigSchema = z.object({
 	inbound: InboundConfigSchema,
 	logging: LoggingConfigSchema.default({}),
 	sdk: SdkConfigSchema.default(SDK_DEFAULTS),
-	moltbook: MoltbookConfigSchema.default(MOLTBOOK_DEFAULTS),
 	// Multimedia capabilities
 	openai: OpenAIConfigSchema.default({}),
 	transcription: TranscriptionConfigSchema.default(TRANSCRIPTION_DEFAULTS),
@@ -395,6 +394,8 @@ const TelclaudeConfigSchema = z.object({
 	tts: TTSConfigSchema.default(TTS_DEFAULTS),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
+	// Generic social services (replaces per-service top-level keys)
+	socialServices: z.array(SocialServiceConfigSchema).default([]),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -405,7 +406,7 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
-export type MoltbookConfig = z.infer<typeof MoltbookConfigSchema>;
+export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;

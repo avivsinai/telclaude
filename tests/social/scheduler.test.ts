@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { startMoltbookScheduler } from "../../src/moltbook/scheduler.js";
+import { startSocialScheduler } from "../../src/social/scheduler.js";
 
-describe("moltbook scheduler", () => {
+describe("social scheduler", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 	});
@@ -11,7 +11,7 @@ describe("moltbook scheduler", () => {
 		vi.useFakeTimers();
 		const onHeartbeat = vi.fn().mockResolvedValue(undefined);
 
-		startMoltbookScheduler({ intervalMs: 60000, onHeartbeat });
+		startSocialScheduler({ intervalMs: 60000, onHeartbeat });
 
 		await vi.runAllTicks();
 		expect(onHeartbeat).toHaveBeenCalledTimes(1);
@@ -30,7 +30,7 @@ describe("moltbook scheduler", () => {
 				}),
 		);
 
-		startMoltbookScheduler({ intervalMs: 60000, onHeartbeat });
+		startSocialScheduler({ intervalMs: 60000, onHeartbeat });
 		await vi.runAllTicks();
 		expect(onHeartbeat).toHaveBeenCalledTimes(1);
 
@@ -48,7 +48,7 @@ describe("moltbook scheduler", () => {
 		vi.useFakeTimers();
 		const onHeartbeat = vi.fn().mockResolvedValue(undefined);
 
-		const scheduler = startMoltbookScheduler({ intervalMs: 60000, onHeartbeat });
+		const scheduler = startSocialScheduler({ intervalMs: 60000, onHeartbeat });
 		await vi.runAllTicks();
 		expect(onHeartbeat).toHaveBeenCalledTimes(1);
 

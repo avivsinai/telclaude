@@ -3,9 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
 	buildSocialContextPayload,
 	formatSocialContextForPrompt,
-	SOCIAL_CONTEXT_SOURCE,
 	SOCIAL_CONTEXT_WARNING,
-} from "../../src/moltbook/social-context.js";
+} from "../../src/social/context.js";
 
 describe("social context formatting", () => {
 	const snapshot = {
@@ -24,17 +23,17 @@ describe("social context formatting", () => {
 	};
 
 	it("wraps social context with warning metadata", () => {
-		const payload = buildSocialContextPayload(snapshot);
+		const payload = buildSocialContextPayload(snapshot, "moltbook");
 		expect(payload._warning).toBe(SOCIAL_CONTEXT_WARNING);
-		expect(payload._source).toBe(SOCIAL_CONTEXT_SOURCE);
+		expect(payload._source).toBe("moltbook_social_memory");
 		expect(payload.data.entries).toHaveLength(1);
 	});
 
 	it("includes UNTRUSTED warning in prompt section", () => {
-		const formatted = formatSocialContextForPrompt(snapshot);
+		const formatted = formatSocialContextForPrompt(snapshot, "moltbook");
 		expect(formatted).toContain("SOCIAL CONTEXT");
 		expect(formatted).toContain(SOCIAL_CONTEXT_WARNING);
-		expect(formatted).toContain(SOCIAL_CONTEXT_SOURCE);
+		expect(formatted).toContain("moltbook_social_memory");
 		expect(formatted).toContain("Name: telclaude");
 	});
 });

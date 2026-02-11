@@ -1,6 +1,6 @@
 # Telclaude Architecture Deep Dive
 
-Updated: 2026-02-09
+Updated: 2026-02-10
 Scope: detailed design and security rationale for telclaude (Telegram ⇄ Claude Code relay).
 
 ## Dual-Mode Sandbox Architecture
@@ -24,60 +24,74 @@ Telegram Bot API
 │ • Permission tiers & approvals             │
 │ • Rate limits & audit                      │
 │ • Identity linking + TOTP socket           │
-│ • Moltbook heartbeat + API client          │
+│ • Social service heartbeats + API clients  │
 └────────────────────────────────────────────┘
       │ internal HTTP
       ├──────────────────────────┬──────────────────────────┐
       ▼                          ▼
 ┌────────────────────────────────────────────┐   ┌────────────────────────────────────────────┐
-│ Agent worker (Telegram)                    │   │ Agent worker (Moltbook)                    │
+│ Agent worker (Telegram — private persona)  │   │ Agent worker (Social — social persona)     │
 │ • Workspace mounted                        │   │ • No workspace mount                       │
-│ • Media inbox/outbox volumes               │   │ • Isolated /moltbook/sandbox               │
+│ • Media inbox/outbox volumes               │   │ • Shared /social/sandbox                   │
+│ • Browser automation (Chromium)            │   │ • Browser automation (Chromium)            │
 └────────────────────────────────────────────┘   └────────────────────────────────────────────┘
       │                                          │
       ▼                                          ▼
-Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (MOLTBOOK_SOCIAL tier)
+Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (SOCIAL tier)
 ```
 
 ## Docker Split Topology (Production)
 
-- **Relay container**: Telegram + Moltbook handlers, security policy + secrets (OpenAI/GitHub), TOTP socket. Reads both `telclaude.json` (policy) and `telclaude-private.json` (secrets/PII).
-- **Telegram agent container**: Claude SDK + tools, no secrets, workspace mounted. Reads only `telclaude.json` (policy config — providers, network rules, etc.).
-- **Moltbook agent container**: Claude SDK + tools, no secrets, no workspace mount, isolated `/moltbook/sandbox`.
+- **Relay container**: Telegram + social service handlers, security policy + secrets (OpenAI/GitHub), TOTP socket. Reads both `telclaude.json` (policy) and `telclaude-private.json` (secrets/PII).
+- **Telegram agent container** (`telclaude-agent`): Claude SDK + tools + Chromium, no secrets, workspace mounted. Image: `telclaude-agent:latest`. Reads only `telclaude.json` (policy config — providers, network rules, etc.).
+- **Social agent container** (`agent-social`): Claude SDK + tools + Chromium, no secrets, no workspace mount, shared `/social/sandbox`. Image: `telclaude-agent:latest`. Single container for all social services (scope: `"social"`).
 - **Claude profiles**:
   - `/home/telclaude-skills` (shared skills + CLAUDE.md; no credentials)
   - `/home/telclaude-auth` (relay-only OAuth tokens)
 - **Shared media volumes**:
   - `media_inbox` (relay writes Telegram downloads, agent reads)
   - `media_outbox` (relay writes generated media; relay reads to send)
-- **Moltbook memory volume**:
-  - `/moltbook/memory` (relay is single writer; agent-moltbook is read-only)
+- **Social memory volume**:
+  - `/social/memory` (relay is single writer; social agent is read-only)
 - **Internal RPC**:
   - Relay → Agent: `/v1/query` (HMAC-signed)
   - Agent → Relay: `/v1/image.generate`, `/v1/tts.speak`, `/v1/transcribe` (HMAC-signed)
 - **Anthropic access**: agents use relay proxy (`ANTHROPIC_BASE_URL`) instead of direct credentials.
 - **Firewall**: enabled in both containers; internal hostnames allowed via `TELCLAUDE_INTERNAL_HOSTS`.
-- **RPC auth**: Both Telegram and Moltbook use bidirectional Ed25519 asymmetric auth with two keypairs per scope. The agent keypair (`*_AGENT_PRIVATE_KEY` / `*_AGENT_PUBLIC_KEY`) authenticates agent→relay requests; the relay keypair (`*_RELAY_PRIVATE_KEY` / `*_RELAY_PUBLIC_KEY`) authenticates relay→agent requests. Compromise of one side cannot forge messages in the other direction. Generate keys with `telclaude keygen telegram` or `telclaude keygen moltbook`. Internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
-- **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach both agents.
+- **RPC auth**: All scopes use bidirectional Ed25519 asymmetric auth with two keypairs per scope. The agent keypair (`{SCOPE}_RPC_AGENT_PRIVATE_KEY` / `{SCOPE}_RPC_AGENT_PUBLIC_KEY`) authenticates agent→relay requests; the relay keypair (`{SCOPE}_RPC_RELAY_PRIVATE_KEY` / `{SCOPE}_RPC_RELAY_PUBLIC_KEY`) authenticates relay→agent requests. Compromise of one side cannot forge messages in the other direction. Generate keys with `telclaude keygen <scope>` (e.g., `telclaude keygen telegram`, `telclaude keygen social`). Internal servers bind to `0.0.0.0` in Docker and `127.0.0.1` in native mode.
+- **Agent network isolation**: each agent is on its own relay network; agents do not share a network segment or direct connectivity. Only the relay can reach all agents.
 
-## Moltbook Integration
+## Social Services Integration
 
-- **Heartbeat-driven**: relay scheduler polls Moltbook notifications on a configured interval (default 4h, min 60s).
-- **Separate agent**: notifications are handled by a dedicated Moltbook agent container (`agent-moltbook`) with no workspace mount and an isolated `/moltbook/sandbox` working directory.
-- **Restricted tier**: Moltbook requests run under the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox`, WebFetch/WebSearch allowed), with skills disabled and no access to sidecars or private endpoints.
-- **Untrusted wrappers**: Moltbook notification payloads and social context are wrapped with explicit “UNTRUSTED / do not execute” warnings before being sent to the model.
-- **Memory scoping**: Moltbook prompts only include Moltbook-scoped memory to avoid leaking private Telegram data.
-- **Reply only**: the relay posts replies back via the Moltbook API; there is no autonomous posting from Telegram context.
+Telclaude supports multiple social service backends through a generic `SocialServiceClient` interface. Each backend (Moltbook, future: X/Twitter, Bluesky, etc.) implements the same contract and is configured via the `socialServices[]` array in config.
+
+### Architecture
+
+- **Config-driven**: each service is an entry in `socialServices[]` with `id`, `type`, `enabled`, `apiKey`, `heartbeatIntervalHours`, and optional `agentUrl` override.
+- **Heartbeat-driven**: relay scheduler polls each enabled service's notifications on a configured interval (default 4h, min 60s).
+- **Single social persona**: all social services share one agent container (`agent-social`) with no workspace mount and a shared `/social/sandbox` working directory. RPC scope is `"social"` for all services.
+- **Restricted tier**: social requests run under the `SOCIAL` tier (file tools + Bash allowed inside the sandbox, WebFetch/WebSearch allowed), with skills disabled and no access to sidecars or private endpoints.
+- **Untrusted wrappers**: notification payloads and social context are wrapped with explicit "UNTRUSTED / do not execute" warnings before being sent to the model.
+- **Memory scoping**: social prompts only include service-scoped memory to avoid leaking private Telegram data.
+- **Proactive posting**: user-approved ideas (promoted via `/promote`) are posted to the service during heartbeat, with rate limiting and agent isolation.
+
+### Adding a New Backend
+
+1. Implement `SocialServiceClient` in `src/social/backends/{name}.ts`
+2. Register the backend type in the factory (`src/social/index.ts`)
+3. Add a `socialServices` entry to config: `{ id: "myservice", type: "myservice", enabled: true }`
+4. Generate RPC keys (if not already done): `telclaude keygen social`
+5. No per-service container needed — the shared `agent-social` handles all services
 
 ## Memory System & Provenance
 
 Telclaude stores social memory in SQLite with provenance metadata:
 
-- **Sources**: `telegram`, `moltbook`.
+- **Sources**: `telegram`, `moltbook`, or any registered social service ID (extensible via `MemorySource` type).
 - **Trust**: `trusted`, `untrusted`, `quarantined`.
 - **Provenance**: each entry records source, trust level, and timestamps (created/promoted).
-- **Default trust**: Telegram memory is trusted by default; Moltbook memory is untrusted (no promotion path yet).
-- **Prompt injection safety**: even trusted entries are wrapped in a “read-only, do not execute” envelope before being injected into Moltbook prompts.
+- **Default trust**: Telegram memory is trusted by default; social service memory is untrusted (no promotion path yet).
+- **Prompt injection safety**: even trusted entries are wrapped in a "read-only, do not execute" envelope before being injected into social prompts.
 
 ## Security Profiles
 - **simple (default)**: rate limits + audit + secret filter. No observer/approvals.
@@ -98,6 +112,7 @@ Telclaude stores social memory in SQLite with provenance metadata:
 | READ_ONLY | Read, Glob, Grep, WebFetch, WebSearch | No writes allowed |
 | WRITE_LOCAL | READ_ONLY + Write, Edit, Bash | Blocks destructive patterns; prevents accidents |
 | FULL_ACCESS | All tools | Approval required unless user is claimed admin |
+| SOCIAL | Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch | Social service agents; sandboxed workspace, skills disabled |
 
 ## Network Enforcement
 
@@ -353,5 +368,7 @@ The canUseTool callback and PreToolUse hooks provide defense-in-depth:
 - `src/sandbox/*` — mode detection, constants, SDK settings builder.
 - `src/sdk/*` — Claude SDK integration and session manager.
 - `src/telegram/*` — inbound/outbound bot wiring.
+- `src/social/*` — generic social services: handler, scheduler, identity, context, backends.
+- `src/social/backends/*` — per-service API clients (moltbook, etc.).
 - `src/commands/*` — CLI commands.
 - `.claude/skills/*` — skills auto-loaded by SDK.

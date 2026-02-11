@@ -26,30 +26,30 @@ function resolveScope(explicit?: InternalAuthScope): InternalAuthScope {
 
 	// M1: Explicit scope env var takes precedence
 	const explicitScope = process.env.TELCLAUDE_INTERNAL_AUTH_SCOPE;
-	if (explicitScope === "telegram" || explicitScope === "moltbook") {
+	if (explicitScope === "telegram" || explicitScope === "social") {
 		return explicitScope;
 	}
 
-	const hasMoltbook =
-		Boolean(process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY) ||
-		Boolean(process.env.MOLTBOOK_RPC_RELAY_PRIVATE_KEY) ||
-		Boolean(process.env.MOLTBOOK_RPC_AGENT_PUBLIC_KEY) ||
-		Boolean(process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY);
+	const hasSocial =
+		Boolean(process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY) ||
+		Boolean(process.env.SOCIAL_RPC_RELAY_PRIVATE_KEY) ||
+		Boolean(process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY) ||
+		Boolean(process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY);
 	const hasTelegram =
 		Boolean(process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY) ||
 		Boolean(process.env.TELEGRAM_RPC_RELAY_PRIVATE_KEY) ||
 		Boolean(process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY) ||
 		Boolean(process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY);
 
-	// M1: Fail closed if both scopes have credentials — ambiguous
-	if (hasMoltbook && hasTelegram) {
+	// Fail closed if both scopes have credentials — ambiguous
+	if (hasSocial && hasTelegram) {
 		throw new Error(
-			"Ambiguous auth scope: both TELEGRAM_RPC_* and MOLTBOOK_RPC_* are set without TELCLAUDE_INTERNAL_AUTH_SCOPE. Set TELCLAUDE_INTERNAL_AUTH_SCOPE=telegram or TELCLAUDE_INTERNAL_AUTH_SCOPE=moltbook explicitly.",
+			"Ambiguous auth scope: both TELEGRAM_RPC_* and SOCIAL_RPC_* are set without TELCLAUDE_INTERNAL_AUTH_SCOPE. Set TELCLAUDE_INTERNAL_AUTH_SCOPE=telegram or TELCLAUDE_INTERNAL_AUTH_SCOPE=social explicitly.",
 		);
 	}
 
-	if (hasMoltbook && !hasTelegram) {
-		return "moltbook";
+	if (hasSocial && !hasTelegram) {
+		return "social";
 	}
 	return "telegram";
 }

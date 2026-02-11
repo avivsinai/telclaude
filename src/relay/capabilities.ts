@@ -18,13 +18,17 @@ import {
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
-import { handleMoltbookHeartbeat, type MoltbookHeartbeatPayload } from "../moltbook/handler.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
+import {
+	createSocialClient,
+	handleSocialHeartbeat,
+	type SocialHeartbeatPayload,
+} from "../social/index.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
 import { handleAnthropicProxyRequest, isAnthropicProxyRequest } from "./anthropic-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
@@ -547,11 +551,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
-			if (authResult.scope === "moltbook") {
+			// Social service scopes (anything not "telegram") have restricted endpoint access
+			if (authResult.scope !== "telegram") {
 				const allowedPaths = new Set([
 					"/v1/auth/token-exchange",
 					"/v1/auth/token-refresh",
-					"/v1/moltbook.heartbeat",
+					"/v1/social.heartbeat",
 					"/v1/memory.propose",
 					"/v1/memory.snapshot",
 				]);
@@ -650,38 +655,63 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				return;
 			}
 
-			if (req.url === "/v1/moltbook.heartbeat") {
-				if (authResult.scope !== "moltbook") {
+			if (requestPath === "/v1/social.heartbeat") {
+				if (authResult.scope === "telegram") {
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
 				}
-				let payload: MoltbookHeartbeatPayload | undefined;
+				let payload: SocialHeartbeatPayload | undefined;
 				if (body.length > 0) {
 					try {
-						payload = JSON.parse(body) as MoltbookHeartbeatPayload;
+						payload = JSON.parse(body) as SocialHeartbeatPayload;
 					} catch {
 						writeJson(res, 400, { error: "Invalid JSON." });
 						return;
 					}
 				}
-				const heartbeatResult = await handleMoltbookHeartbeat(payload);
+
+				const serviceId = payload?.serviceId ?? authResult.scope;
+				const config = loadConfig();
+				const serviceConfig = config.socialServices.find((s) => s.id === serviceId);
+				const client = serviceConfig ? await createSocialClient(serviceConfig) : null;
+				if (!client) {
+					writeJson(res, 200, { ok: false, message: `${serviceId} client not configured` });
+					return;
+				}
+				const heartbeatResult = await handleSocialHeartbeat(
+					serviceId,
+					client,
+					serviceConfig,
+					payload,
+				);
 				writeJson(res, 200, heartbeatResult);
 				return;
 			}
-			const memorySource: MemorySource = authResult.scope === "moltbook" ? "moltbook" : "telegram";
+			// Derive memory source: for scope="social", extract actual serviceId
+			// from query/body serviceId field, or fallback to scope.
+			// SECURITY: never allow non-telegram scope to claim "telegram" source
+			// (would let social agents write trusted memory).
+			const deriveMemorySource = (serviceId?: string): MemorySource => {
+				if (authResult.scope === "telegram") return "telegram";
+				if (serviceId === "telegram") return authResult.scope as MemorySource;
+				return (serviceId ?? authResult.scope) as MemorySource;
+			};
+			let memorySource: MemorySource = deriveMemorySource();
 
 			if (isMemorySnapshotGet) {
 				const url = new URL(req.url ?? "", "http://localhost");
+				const queryServiceId = url.searchParams.get("serviceId") ?? undefined;
+				const getMemorySource = deriveMemorySource(queryServiceId);
 				const snapshotRequest = parseSnapshotQuery(url.searchParams);
 				if (!snapshotRequest.ok) {
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
 				const effectiveSnapshot =
-					authResult.scope === "moltbook"
+					authResult.scope !== "telegram"
 						? {
 								...snapshotRequest.value,
-								sources: ["moltbook"] as MemorySource[],
+								sources: [getMemorySource] as MemorySource[],
 								trust: ["untrusted"] as TrustLevel[],
 								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
 							}
@@ -703,17 +733,21 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				TranscriptionRequest &
 				AttachmentFetchRequest &
 				LocalFileDeliverRequest &
-				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown };
+				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
 			try {
 				parsed = JSON.parse(body) as ImageRequest &
 					TTSRequest &
 					TranscriptionRequest &
 					AttachmentFetchRequest &
 					LocalFileDeliverRequest &
-					AttachmentDeliverRequest & { entries?: unknown; userId?: unknown };
+					AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
 			} catch {
 				writeJson(res, 400, { error: "Invalid JSON." });
 				return;
+			}
+			// Re-derive memory source from body serviceId when scope is "social"
+			if (parsed.serviceId) {
+				memorySource = deriveMemorySource(parsed.serviceId);
 			}
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
@@ -721,8 +755,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				return;
 			}
 			let userId = userIdResult.userId;
-			if (authResult.scope === "moltbook") {
-				userId = userId?.startsWith("moltbook:") ? userId : `moltbook:${userId ?? "agent"}`;
+			if (authResult.scope !== "telegram") {
+				const prefix = `${authResult.scope}:`;
+				userId = userId?.startsWith(prefix) ? userId : `${prefix}${userId ?? "agent"}`;
 			}
 			const rateLimitUserId = userId ?? "agent";
 
@@ -750,10 +785,10 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					return;
 				}
 				const effectiveSnapshot =
-					authResult.scope === "moltbook"
+					authResult.scope !== "telegram"
 						? {
 								...snapshotRequest.value,
-								sources: ["moltbook"] as MemorySource[],
+								sources: [memorySource] as MemorySource[],
 								trust: ["untrusted"] as TrustLevel[],
 								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
 							}
@@ -771,11 +806,14 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			}
 
 			// SECURITY: Quarantine and promote are TELEGRAM-ONLY endpoints
-			// These enable the consent-based idea bridge for Moltbook posting
+			// These enable the consent-based idea bridge for social posting
 			if (req.url === "/v1/memory.quarantine") {
-				// Hard reject Moltbook scope (defense-in-depth, also checked in handler)
-				if (authResult.scope === "moltbook") {
-					logger.warn("rejected /v1/memory.quarantine from moltbook scope");
+				// Hard reject non-telegram scopes (defense-in-depth, also checked in handler)
+				if (authResult.scope !== "telegram") {
+					logger.warn(
+						{ scope: authResult.scope },
+						"rejected /v1/memory.quarantine from social scope",
+					);
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
 				}

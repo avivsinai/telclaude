@@ -16,7 +16,7 @@ vi.mock("../../src/secrets/index.js", () => ({
 	SECRET_KEYS: { MOLTBOOK_API_KEY: "moltbook-api-key" },
 }));
 
-import { createMoltbookApiClient, MoltbookApiClient } from "../../src/moltbook/api-client.js";
+import { createMoltbookClient, MoltbookClient } from "../../src/social/backends/moltbook.js";
 
 const baseUrl = "https://moltbook.test/api/v1";
 
@@ -33,23 +33,23 @@ describe("moltbook api client", () => {
 		delete process.env.MOLTBOOK_API_BASE;
 	});
 
-	it("createMoltbookApiClient returns null without api key", async () => {
+	it("createMoltbookClient returns null without api key", async () => {
 		getSecretMock.mockResolvedValueOnce(null);
-		const client = await createMoltbookApiClient({
+		const client = await createMoltbookClient({
 			enabled: true,
 			heartbeatIntervalHours: 4,
 		} as any);
 		expect(client).toBeNull();
 	});
 
-	it("createMoltbookApiClient uses secrets store", async () => {
+	it("createMoltbookClient uses secrets store", async () => {
 		getSecretMock.mockResolvedValueOnce("secret-key");
 		process.env.MOLTBOOK_API_BASE = baseUrl;
-		const client = await createMoltbookApiClient({
+		const client = await createMoltbookClient({
 			enabled: true,
 			heartbeatIntervalHours: 4,
 		} as any);
-		expect(client).toBeInstanceOf(MoltbookApiClient);
+		expect(client).toBeInstanceOf(MoltbookClient);
 	});
 
 	it("fetchNotifications supports array payload", async () => {
@@ -59,35 +59,35 @@ describe("moltbook api client", () => {
 			expect(headers.get("Authorization")).toBe("Bearer test-key");
 			return jsonResponse([{ id: "n1" }]);
 		});
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.fetchNotifications();
 		expect(result).toEqual([{ id: "n1" }]);
 	});
 
 	it("fetchNotifications supports notifications envelope", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ notifications: [{ id: "n2" }] }));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.fetchNotifications();
 		expect(result).toEqual([{ id: "n2" }]);
 	});
 
 	it("fetchNotifications supports data envelope", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ data: [{ id: "n3" }] }));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.fetchNotifications();
 		expect(result).toEqual([{ id: "n3" }]);
 	});
 
 	it("fetchNotifications returns empty array on rate limit", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ error: "rate limit" }, 429));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.fetchNotifications();
 		expect(result).toEqual([]);
 	});
 
 	it("fetchNotifications throws on server error", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		await expect(client.fetchNotifications()).rejects.toThrow("Moltbook notifications failed");
 	});
 
@@ -98,7 +98,7 @@ describe("moltbook api client", () => {
 			expect(body.body).toBe("hello");
 			return jsonResponse({ ok: true }, 200);
 		});
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.postReply("post-1", "hello");
 		expect(result.ok).toBe(true);
 		expect(result.status).toBe(200);
@@ -106,7 +106,7 @@ describe("moltbook api client", () => {
 
 	it("postReply flags rate limit on 429", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ error: "rate limit" }, 429));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.postReply("post-1", "hello");
 		expect(result.ok).toBe(false);
 		expect(result.rateLimited).toBe(true);
@@ -115,7 +115,7 @@ describe("moltbook api client", () => {
 
 	it("postReply returns error for non-429 failures", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ error: "bad request" }, 400));
-		const client = new MoltbookApiClient({ apiKey: "test-key", baseUrl, fetchImpl });
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
 		const result = await client.postReply("post-1", "hello");
 		expect(result.ok).toBe(false);
 		expect(result.status).toBe(400);

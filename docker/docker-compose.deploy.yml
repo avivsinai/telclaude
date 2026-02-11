@@ -18,8 +18,8 @@
 #
 # 5 containers:
 #   telclaude        — Relay (secrets, security, routing)
-#   telclaude-agent  — Telegram agent (SDK + tools, workspace)
-#   agent-moltbook   — Moltbook agent (isolated sandbox)
+#   telclaude-agent  — Telegram agent (SDK + tools, workspace, browser)
+#   agent-social     — Social agent (shared persona, browser)
 #   totp             — TOTP sidecar (encrypted 2FA)
 #   vault            — Vault sidecar (encrypted credentials)
 #
@@ -29,8 +29,8 @@
 #   relay-vault-net    (internal) — relay ↔ vault
 #   agent-egress       (bridge)   — agent → providers/internet
 #   relay-egress       (bridge)   — relay → Telegram/Anthropic
-#   moltbook-relay-net (internal) — moltbook ↔ relay
-#   moltbook-egress    (bridge)   — moltbook → internet
+#   social-relay-net   (internal) — social ↔ relay
+#   social-egress      (bridge)   — social → internet
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -69,14 +69,14 @@ services:
 
       # Agent routing
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
-      - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
+      - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
       - TELCLAUDE_CAPABILITIES_ENABLED=1
 
       # RPC auth — relay holds agent PUBLIC keys (verifies agent→relay) + relay PRIVATE keys (signs relay→agent)
       - TELEGRAM_RPC_AGENT_PUBLIC_KEY=${TELEGRAM_RPC_AGENT_PUBLIC_KEY:-}
       - TELEGRAM_RPC_RELAY_PRIVATE_KEY=${TELEGRAM_RPC_RELAY_PRIVATE_KEY:-}
-      - MOLTBOOK_RPC_AGENT_PUBLIC_KEY=${MOLTBOOK_RPC_AGENT_PUBLIC_KEY:-}
-      - MOLTBOOK_RPC_RELAY_PRIVATE_KEY=${MOLTBOOK_RPC_RELAY_PRIVATE_KEY:-}
+      - SOCIAL_RPC_AGENT_PUBLIC_KEY=${SOCIAL_RPC_AGENT_PUBLIC_KEY:-}
+      - SOCIAL_RPC_RELAY_PRIVATE_KEY=${SOCIAL_RPC_RELAY_PRIVATE_KEY:-}
       - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
 
       # Media paths
@@ -89,7 +89,7 @@ services:
 
       # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-moltbook}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
 
@@ -105,7 +105,7 @@ services:
       - telclaude-claude-auth:/home/telclaude-auth:rw
       - totp-socket:/run/totp:rw
       - vault-socket:/run/vault:ro
-      - moltbook-memory:/moltbook/memory:rw
+      - social-memory:/social/memory:rw
       - media-inbox:/media/inbox:rw
       - media-outbox:/media/outbox:rw
       # NOTE: No workspace mount — relay delegates to agent
@@ -151,7 +151,7 @@ services:
       - relay-totp-net
       - relay-vault-net
       - relay-egress
-      - moltbook-relay-net
+      - social-relay-net
 
     restart: unless-stopped
 
@@ -172,7 +172,7 @@ services:
   # Telegram Agent Worker (SDK + Tools, workspace, no secrets)
   # ─────────────────────────────────────────────────────────────────────────────
   telclaude-agent:
-    image: telclaude:latest
+    image: telclaude-agent:latest
     container_name: telclaude-agent
 
     environment:
@@ -212,6 +212,7 @@ services:
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
 
       - TELCLAUDE_RUN_AS_ROOT=0
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
     command: ["agent", "-v"]
@@ -220,7 +221,7 @@ services:
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - ./telclaude.json:/data/telclaude.json:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
-      - moltbook-memory:/moltbook/memory:ro
+      - social-memory:/social/memory:ro
       - media-inbox:/media/inbox:ro
       - media-outbox:/media/outbox:ro
 
@@ -267,38 +268,40 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Moltbook Agent Worker (isolated context, no workspace)
+  # Social Agent Worker (shared persona for all social services)
+  # Part of the generic social services architecture (src/social/).
   # ─────────────────────────────────────────────────────────────────────────────
-  agent-moltbook:
-    image: telclaude:latest
-    container_name: telclaude-agent-moltbook
+  agent-social:
+    image: telclaude-agent:latest
+    container_name: telclaude-agent-social
 
     environment:
       - TELCLAUDE_AGENT_PORT=8789
-      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_AGENT_WORKDIR=/social/sandbox
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
       - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
-      - HOME=/moltbook
+      - HOME=/social
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      - MOLTBOOK_RPC_AGENT_PRIVATE_KEY=${MOLTBOOK_RPC_AGENT_PRIVATE_KEY:-}
-      - MOLTBOOK_RPC_RELAY_PUBLIC_KEY=${MOLTBOOK_RPC_RELAY_PUBLIC_KEY:-}
+      - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
+      - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
     command: ["agent", "-v"]
 
     volumes:
-      - moltbook-sandbox:/moltbook/sandbox:rw
+      - social-sandbox:/social/sandbox:rw
       - ./telclaude.json:/data/telclaude.json:ro
-      - moltbook-memory:/moltbook/memory:ro
+      - social-memory:/social/memory:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
 
     user: "0:0"
@@ -316,7 +319,7 @@ services:
     security_opt:
       - no-new-privileges:true
       # AppArmor commented out — profiles may not be installed on Pi
-      # - apparmor:telclaude-moltbook
+      # - apparmor:telclaude-social
 
     read_only: true
     tmpfs:
@@ -338,8 +341,8 @@ services:
           memory: 128M
 
     networks:
-      - moltbook-relay-net
-      - moltbook-egress
+      - social-relay-net
+      - social-egress
 
     restart: unless-stopped
 
@@ -541,13 +544,13 @@ volumes:
   telclaude-claude-skills:
     name: telclaude-claude-skills
 
-  # Moltbook isolated workspace (agent-moltbook RW)
-  moltbook-sandbox:
-    name: telclaude-moltbook-sandbox
+  # Social isolated workspace (agent-social RW)
+  social-sandbox:
+    name: telclaude-social-sandbox
 
-  # Moltbook shared memory (relay RW, agents RO)
-  moltbook-memory:
-    name: telclaude-moltbook-memory
+  # Social shared memory (relay RW, agents RO)
+  social-memory:
+    name: telclaude-social-memory
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks (segmented — agents cannot reach each other directly)
@@ -576,11 +579,11 @@ networks:
     name: telclaude-relay-egress
     driver: bridge
 
-  moltbook-relay-net:
-    name: telclaude-moltbook-relay
+  social-relay-net:
+    name: telclaude-social-relay
     driver: bridge
     internal: true
 
-  moltbook-egress:
-    name: telclaude-moltbook-egress
+  social-egress:
+    name: telclaude-social-egress
     driver: bridge

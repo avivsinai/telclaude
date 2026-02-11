@@ -83,8 +83,8 @@ function shouldExposeKeys(tier: PermissionTier): boolean {
 	return tier === "FULL_ACCESS";
 }
 
-function isMoltbookContext(actorUserId?: string): boolean {
-	return actorUserId?.startsWith("moltbook:") ?? false;
+function isSocialContext(actorUserId?: string): boolean {
+	return actorUserId?.startsWith("social:") ?? false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -362,8 +362,8 @@ function buildRelayAttachmentRequest(
 	url: URL,
 	actorUserId?: string,
 ): { updatedInput?: Record<string, unknown>; error?: string } {
-	if (actorUserId?.startsWith("moltbook:")) {
-		return { error: "Relay attachment endpoints are not available in Moltbook context." };
+	if (actorUserId?.startsWith("social:")) {
+		return { error: "Relay attachment endpoints are not available in Social context." };
 	}
 	if (!ALLOWED_RELAY_PATHS.has(url.pathname)) {
 		return { error: "Only attachment endpoints allowed on relay." };
@@ -426,9 +426,9 @@ function createNetworkSecurityHook(
 	providers: ExternalProviderConfig[],
 	actorUserId?: string,
 ): HookCallbackMatcher {
-	const moltbookContext = isMoltbookContext(actorUserId);
-	const effectivePrivateEndpoints = moltbookContext ? [] : privateEndpoints;
-	const effectiveProviders = moltbookContext ? [] : providers;
+	const socialContext = isSocialContext(actorUserId);
+	const effectivePrivateEndpoints = socialContext ? [] : privateEndpoints;
+	const effectiveProviders = socialContext ? [] : providers;
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -558,9 +558,9 @@ function createNetworkSecurityHook(
 	};
 }
 
-function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
-	const moltbookContext = isMoltbookContext(actorUserId);
-	const sandboxRoot = process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR ?? "/moltbook/sandbox";
+function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
+	const socialContext = isSocialContext(actorUserId);
+	const sandboxRoot = process.env.TELCLAUDE_AGENT_WORKDIR ?? "/social/sandbox";
 	const resolvedRoot = resolveRealPath(sandboxRoot);
 	const traversalPattern = /(?:^|[\\/])\\.\\.(?:[\\/]|$)/;
 	const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
@@ -568,7 +568,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 	const forbiddenBashPatterns = [
 		/\/proc(?:\/|$)/i,
 		/\.claude(?:\/|$)/i,
-		/\/moltbook\/memory(?:\/|$)/i,
+		/\/social\/memory(?:\/|$)/i,
 		/\/home\/telclaude-auth(?:\/|$)/i,
 		/\/home\/telclaude-skills(?:\/|$)/i,
 	];
@@ -632,8 +632,8 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 
 	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
 		if (!rawPath) {
-			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] missing moltbook path");
-			return denyHookResponse("Moltbook context: file path is required.");
+			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] missing social sandbox path");
+			return denyHookResponse("Social context: file path is required.");
 		}
 
 		const normalized = resolveSandboxPath(rawPath);
@@ -647,9 +647,9 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 					resolvedPath: redactForLog(normalized),
 					checkedPath: redactForLog(candidateForCheck),
 				},
-				"[hook] blocked moltbook path outside sandbox",
+				"[hook] blocked social path outside sandbox",
 			);
-			return denyHookResponse("Moltbook context: file access must stay within /moltbook/sandbox.");
+			return denyHookResponse("Social context: file access must stay within sandbox.");
 		}
 
 		const ancestorTarget = candidateForCheck;
@@ -661,9 +661,9 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 					path: redactForLog(rawPath),
 					ancestorPath: redactForLog(ancestorTarget),
 				},
-				"[hook] blocked moltbook path via ancestor check",
+				"[hook] blocked social path via ancestor check",
 			);
-			return denyHookResponse("Moltbook context: file access must stay within /moltbook/sandbox.");
+			return denyHookResponse("Social context: file access must stay within sandbox.");
 		}
 
 		return allowHookResponse();
@@ -674,7 +674,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 			return allowHookResponse();
 		}
 
-		if (!moltbookContext) {
+		if (!socialContext) {
 			return allowHookResponse();
 		}
 
@@ -682,8 +682,8 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 		const toolInput = input.tool_input as Record<string, unknown>;
 
 		if (toolName === "NotebookEdit") {
-			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked moltbook tool");
-			return denyHookResponse(`Moltbook context: ${toolName} is not permitted.`);
+			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked social tool");
+			return denyHookResponse(`Social context: ${toolName} is not permitted.`);
 		}
 
 		if (toolName === "Read" && isReadInput(toolInput)) {
@@ -700,7 +700,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 
 		if (toolName === "Glob" && isGlobInput(toolInput)) {
 			if (containsTraversal(toolInput.pattern)) {
-				return denyHookResponse("Moltbook context: glob pattern contains traversal.");
+				return denyHookResponse("Social context: glob pattern contains traversal.");
 			}
 			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
 			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
@@ -709,7 +709,7 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 
 		if (toolName === "Grep" && isGrepInput(toolInput)) {
 			if (containsTraversal(toolInput.pattern)) {
-				return denyHookResponse("Moltbook context: grep pattern contains traversal.");
+				return denyHookResponse("Social context: grep pattern contains traversal.");
 			}
 			const searchPath = toolInput.path ?? "";
 			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
@@ -720,11 +720,11 @@ function createMoltbookToolRestrictionHook(actorUserId?: string): HookCallbackMa
 			const command = String(toolInput.command ?? "");
 			if (networkExfilTools.test(command) || pyHttp.test(command) || nodeHttp.test(command)) {
 				return denyHookResponse(
-					"Moltbook: direct network egress via Bash is not permitted. Use WebFetch for HTTP requests.",
+					"Social context: direct network egress via Bash is not permitted. Use WebFetch for HTTP requests.",
 				);
 			}
 			if (containsForbiddenBashPath(command)) {
-				return denyHookResponse("Moltbook context: bash access outside sandbox is blocked.");
+				return denyHookResponse("Social context: bash access outside sandbox is blocked.");
 			}
 			return allowHookResponse();
 		}
@@ -1020,8 +1020,8 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
-	const moltbookContext = isMoltbookContext(opts.userId);
-	const effectivePermissive = moltbookContext ? false : isPermissiveMode;
+	const socialContext = isSocialContext(opts.userId);
+	const effectivePermissive = socialContext ? false : isPermissiveMode;
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
@@ -1067,7 +1067,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 				config.providers ?? [],
 				opts.userId,
 			),
-			createMoltbookToolRestrictionHook(opts.userId),
+			createSocialToolRestrictionHook(opts.userId),
 			createSensitivePathHook(opts.tier),
 		],
 	};

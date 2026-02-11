@@ -18,7 +18,7 @@ const VALID_PERMISSION_TIERS: PermissionTier[] = [
 	"READ_ONLY",
 	"WRITE_LOCAL",
 	"FULL_ACCESS",
-	"MOLTBOOK_SOCIAL",
+	"SOCIAL",
 ];
 
 /** Valid outcomes for validation */

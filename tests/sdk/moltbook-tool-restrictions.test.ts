@@ -38,10 +38,10 @@ const baseOpts = {
 } satisfies Parameters<typeof buildSdkOptions>[0];
 
 const ORIGINAL_ENV = {
-	MOLTBOOK_RPC_RELAY_PUBLIC_KEY: process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY,
+	SOCIAL_RPC_RELAY_PUBLIC_KEY: process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY,
 	TELEGRAM_RPC_RELAY_PUBLIC_KEY: process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY,
 	TELCLAUDE_NETWORK_MODE: process.env.TELCLAUDE_NETWORK_MODE,
-	TELCLAUDE_MOLTBOOK_AGENT_WORKDIR: process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR,
+	TELCLAUDE_AGENT_WORKDIR: process.env.TELCLAUDE_AGENT_WORKDIR,
 };
 let tempRoot: string | null = null;
 let sandboxRoot: string | null = null;
@@ -99,17 +99,17 @@ async function runPreToolUseHooks(
 beforeEach(() => {
 	checkPrivateNetworkAccess.mockReset();
 	checkPrivateNetworkAccess.mockResolvedValue({ allowed: true, matchedEndpoint: undefined });
-	tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moltbook-sandbox-"));
+	tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "social-sandbox-"));
 	sandboxRoot = path.join(tempRoot, "sandbox");
 	fs.mkdirSync(sandboxRoot, { recursive: true });
-	process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR = sandboxRoot;
+	process.env.TELCLAUDE_AGENT_WORKDIR = sandboxRoot;
 });
 
 afterEach(() => {
-	if (ORIGINAL_ENV.MOLTBOOK_RPC_RELAY_PUBLIC_KEY === undefined) {
-		delete process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+	if (ORIGINAL_ENV.SOCIAL_RPC_RELAY_PUBLIC_KEY === undefined) {
+		delete process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY;
 	} else {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = ORIGINAL_ENV.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = ORIGINAL_ENV.SOCIAL_RPC_RELAY_PUBLIC_KEY;
 	}
 
 	if (ORIGINAL_ENV.TELEGRAM_RPC_RELAY_PUBLIC_KEY === undefined) {
@@ -124,11 +124,11 @@ afterEach(() => {
 		process.env.TELCLAUDE_NETWORK_MODE = ORIGINAL_ENV.TELCLAUDE_NETWORK_MODE;
 	}
 
-	if (ORIGINAL_ENV.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR === undefined) {
-		delete process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR;
+	if (ORIGINAL_ENV.TELCLAUDE_AGENT_WORKDIR === undefined) {
+		delete process.env.TELCLAUDE_AGENT_WORKDIR;
 	} else {
-		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR =
-			ORIGINAL_ENV.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR;
+		process.env.TELCLAUDE_AGENT_WORKDIR =
+			ORIGINAL_ENV.TELCLAUDE_AGENT_WORKDIR;
 	}
 
 	if (tempRoot) {
@@ -138,13 +138,13 @@ afterEach(() => {
 	sandboxRoot = null;
 });
 
-describe("moltbook tool restrictions", () => {
-	it("allows file tools within the moltbook sandbox", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+describe("social tool restrictions", () => {
+	it("allows file tools within the social sandbox", async () => {
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const sandboxPath = path.join(sandboxRoot ?? "/moltbook/sandbox", "notes.txt");
 
 		const readRes = await runPreToolUseHooks(sdkOpts, "Read", { file_path: sandboxPath });
@@ -176,12 +176,12 @@ describe("moltbook tool restrictions", () => {
 		expect(grepRes.decision).toBe("allow");
 	});
 
-	it("blocks file tools outside the moltbook sandbox", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+	it("blocks file tools outside the social sandbox", async () => {
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const fileTools = ["Read", "Write", "Edit", "Glob", "Grep"];
 		const outsidePath = path.join(path.dirname(sandboxRoot ?? "/moltbook/sandbox"), "outside");
 
@@ -205,22 +205,22 @@ describe("moltbook tool restrictions", () => {
 			}
 			const res = await runPreToolUseHooks(sdkOpts, toolName, input);
 			expect(res.decision).toBe("deny");
-			expect(res.reason).toContain("Moltbook context");
+			expect(res.reason).toContain("Social context");
 		}
 	});
 
 	it("blocks path traversal outside the sandbox", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const res = await runPreToolUseHooks(sdkOpts, "Write", {
 			file_path: path.join(sandboxRoot ?? "/moltbook/sandbox", "../tmp/pwn.txt"),
 			content: "oops",
 		});
 		expect(res.decision).toBe("deny");
-		expect(res.reason).toContain("Moltbook context");
+		expect(res.reason).toContain("Social context");
 	});
 
 	it("blocks symlink parent escapes", async () => {
@@ -228,7 +228,7 @@ describe("moltbook tool restrictions", () => {
 			expect(true).toBe(true);
 			return;
 		}
-		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "moltbook-sandbox-"));
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "social-sandbox-"));
 		const sandboxRoot = path.join(tempRoot, "sandbox");
 		const outsideRoot = path.join(tempRoot, "outside");
 		fs.mkdirSync(sandboxRoot, { recursive: true });
@@ -241,28 +241,28 @@ describe("moltbook tool restrictions", () => {
 			throw err;
 		}
 
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
-		process.env.TELCLAUDE_MOLTBOOK_AGENT_WORKDIR = sandboxRoot;
+		process.env.TELCLAUDE_AGENT_WORKDIR = sandboxRoot;
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const res = await runPreToolUseHooks(sdkOpts, "Write", {
 			file_path: path.join(linkPath, "new.txt"),
 			content: "escape",
 		});
 		expect(res.decision).toBe("deny");
-		expect(res.reason).toContain("Moltbook context");
+		expect(res.reason).toContain("Social context");
 
 		fs.rmSync(tempRoot, { recursive: true, force: true });
 	});
 
 	it("blocks glob traversal patterns", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const res = await runPreToolUseHooks(sdkOpts, "Glob", {
 			pattern: "../**/*.txt",
 		});
@@ -270,12 +270,12 @@ describe("moltbook tool restrictions", () => {
 		expect(res.reason).toContain("traversal");
 	});
 
-	it("blocks bash network egress tools in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+	it("blocks bash network egress tools in social context", async () => {
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 		const curlRes = await runPreToolUseHooks(sdkOpts, "Bash", { command: "curl https://example.com" });
 		expect(curlRes.decision).toBe("deny");
 		expect(curlRes.reason).toContain("direct network egress");
@@ -291,15 +291,15 @@ describe("moltbook tool restrictions", () => {
 		expect(nodeRes.decision).toBe("deny");
 	});
 
-	it("allows Bash, Skill, and Task but blocks NotebookEdit in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+	it("allows Bash, Skill, and Task but blocks NotebookEdit in social context", async () => {
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({
 			...baseOpts,
 			enableSkills: true,
-			userId: "moltbook:agent",
+			userId: "social:moltbook",
 		});
 
 		const bashRes = await runPreToolUseHooks(sdkOpts, "Bash", { command: "echo ok" });
@@ -315,16 +315,16 @@ describe("moltbook tool restrictions", () => {
 		for (const toolName of blockedTools) {
 			const res = await runPreToolUseHooks(sdkOpts, toolName, {});
 			expect(res.decision).toBe("deny");
-			expect(res.reason).toContain("Moltbook context");
+			expect(res.reason).toContain("Social context");
 		}
 	});
 
-	it("allows WebFetch and WebSearch in moltbook context", async () => {
-		process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY = "moltbook";
+	it("allows WebFetch and WebSearch in social context", async () => {
+		process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = "moltbook";
 		delete process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
-		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "moltbook:agent" });
+		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "social:moltbook" });
 
 		const webFetch = await runPreToolUseHooks(sdkOpts, "WebFetch", {
 			url: "https://api.github.com/repos",
@@ -339,7 +339,7 @@ describe("moltbook tool restrictions", () => {
 
 	it("telegram context allows file tools and Bash", async () => {
 		process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY = "telegram";
-		delete process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY;
+		delete process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY;
 		process.env.TELCLAUDE_NETWORK_MODE = "permissive";
 
 		const sdkOpts = await buildSdkOptions({ ...baseOpts, userId: "telegram:agent" });

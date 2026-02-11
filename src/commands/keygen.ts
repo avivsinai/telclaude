@@ -2,30 +2,24 @@ import type { Command } from "commander";
 
 import { generateKeyPair } from "../internal-auth.js";
 
-type KeygenScope = "telegram" | "moltbook";
-
-const ENV_VARS: Record<
-	KeygenScope,
-	{
-		agentPrivateKey: string;
-		agentPublicKey: string;
-		relayPrivateKey: string;
-		relayPublicKey: string;
-	}
-> = {
-	telegram: {
-		agentPrivateKey: "TELEGRAM_RPC_AGENT_PRIVATE_KEY",
-		agentPublicKey: "TELEGRAM_RPC_AGENT_PUBLIC_KEY",
-		relayPrivateKey: "TELEGRAM_RPC_RELAY_PRIVATE_KEY",
-		relayPublicKey: "TELEGRAM_RPC_RELAY_PUBLIC_KEY",
-	},
-	moltbook: {
-		agentPrivateKey: "MOLTBOOK_RPC_AGENT_PRIVATE_KEY",
-		agentPublicKey: "MOLTBOOK_RPC_AGENT_PUBLIC_KEY",
-		relayPrivateKey: "MOLTBOOK_RPC_RELAY_PRIVATE_KEY",
-		relayPublicKey: "MOLTBOOK_RPC_RELAY_PUBLIC_KEY",
-	},
-};
+/**
+ * Derive env var names for a scope string.
+ * E.g., "moltbook" → MOLTBOOK_RPC_AGENT_PRIVATE_KEY, etc.
+ */
+function scopeEnvVars(scope: string): {
+	agentPrivateKey: string;
+	agentPublicKey: string;
+	relayPrivateKey: string;
+	relayPublicKey: string;
+} {
+	const prefix = scope.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+	return {
+		agentPrivateKey: `${prefix}_RPC_AGENT_PRIVATE_KEY`,
+		agentPublicKey: `${prefix}_RPC_AGENT_PUBLIC_KEY`,
+		relayPrivateKey: `${prefix}_RPC_RELAY_PRIVATE_KEY`,
+		relayPublicKey: `${prefix}_RPC_RELAY_PUBLIC_KEY`,
+	};
+}
 
 /**
  * Generate two Ed25519 key pairs for bidirectional asymmetric RPC auth.
@@ -34,10 +28,10 @@ const ENV_VARS: Record<
  * - Agent keypair: agent signs → relay verifies
  * - Relay keypair: relay signs → agent verifies
  */
-export function runKeygen(scope: KeygenScope): void {
+export function runKeygen(scope: string): void {
 	const agentKeys = generateKeyPair();
 	const relayKeys = generateKeyPair();
-	const vars = ENV_VARS[scope];
+	const vars = scopeEnvVars(scope);
 
 	console.log(`# ${scope} RPC Ed25519 Key Pairs (bidirectional auth)`);
 	console.log("#");
@@ -62,13 +56,18 @@ export function runKeygen(scope: KeygenScope): void {
 export function registerKeygenCommand(program: Command): void {
 	program
 		.command("keygen <scope>")
-		.description("Generate Ed25519 key pair for asymmetric RPC auth (scope: telegram or moltbook)")
+		.description(
+			"Generate Ed25519 key pair for asymmetric RPC auth (e.g., telegram, moltbook, or any social service scope)",
+		)
 		.action((scope: string) => {
-			if (scope !== "telegram" && scope !== "moltbook") {
-				console.error(`Invalid scope: ${scope}. Use "telegram" or "moltbook".`);
+			const trimmed = scope.trim();
+			if (!trimmed || !/^[a-z][a-z0-9_-]*$/i.test(trimmed)) {
+				console.error(
+					`Invalid scope: "${scope}". Use a lowercase identifier (e.g., "telegram", "moltbook", "xtwitter").`,
+				);
 				process.exitCode = 1;
 				return;
 			}
-			runKeygen(scope);
+			runKeygen(trimmed);
 		});
 }

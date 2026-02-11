@@ -18,15 +18,15 @@ export function registerAgentCommand(program: Command): void {
 		.action(async (opts: { port?: string; host?: string }) => {
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
-			const isMoltbookAgent = Boolean(
-				process.env.MOLTBOOK_RPC_RELAY_PUBLIC_KEY || process.env.MOLTBOOK_RPC_AGENT_PRIVATE_KEY,
+			const isSocialAgent = Boolean(
+				process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY || process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY,
 			);
 
 			if (getSandboxMode() === "docker") {
 				if (process.env.TELCLAUDE_FIREWALL !== "1") {
-					if (isMoltbookAgent) {
-						console.error("\n❌ SECURITY ERROR: Moltbook agent requires firewall.\n");
-						console.error("Moltbook runs untrusted inputs and must be isolated.");
+					if (isSocialAgent) {
+						console.error("\n❌ SECURITY ERROR: Social agent requires firewall.\n");
+						console.error("Social agents run untrusted inputs and must be isolated.");
 						console.error("Set TELCLAUDE_FIREWALL=1 and ensure init-firewall.sh succeeds.\n");
 						process.exit(1);
 					}
@@ -75,7 +75,7 @@ export function registerAgentCommand(program: Command): void {
 			// Bootstrap session token (non-blocking, falls back to v1/v2 if unavailable)
 			const relayUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
 			if (relayUrl) {
-				const scope = isMoltbookAgent ? "moltbook" : "telegram";
+				const scope = isSocialAgent ? "social" : "telegram";
 				bootstrapSessionToken(relayUrl, scope)
 					.then((ok) => {
 						if (ok) {
@@ -89,7 +89,7 @@ export function registerAgentCommand(program: Command): void {
 					});
 
 				// Fetch provider config from relay (with retry — relay may start after agent)
-				if (!isMoltbookAgent) {
+				if (!isSocialAgent) {
 					const fetchProviders = async (attempt: number): Promise<void> => {
 						try {
 							const result = await relayGetProviders();

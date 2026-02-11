@@ -11,14 +11,8 @@ const SIGNING_VERSION_ASYMMETRIC = "v2";
 // Two-keypair bidirectional auth: each side owns its own keypair.
 // Agent keypair: agent signs → relay verifies
 // Relay keypair: relay signs → agent verifies
-const TELEGRAM_RPC_AGENT_PRIVATE_KEY_ENV = "TELEGRAM_RPC_AGENT_PRIVATE_KEY";
-const TELEGRAM_RPC_AGENT_PUBLIC_KEY_ENV = "TELEGRAM_RPC_AGENT_PUBLIC_KEY";
-const TELEGRAM_RPC_RELAY_PRIVATE_KEY_ENV = "TELEGRAM_RPC_RELAY_PRIVATE_KEY";
-const TELEGRAM_RPC_RELAY_PUBLIC_KEY_ENV = "TELEGRAM_RPC_RELAY_PUBLIC_KEY";
-const MOLTBOOK_RPC_AGENT_PRIVATE_KEY_ENV = "MOLTBOOK_RPC_AGENT_PRIVATE_KEY";
-const MOLTBOOK_RPC_AGENT_PUBLIC_KEY_ENV = "MOLTBOOK_RPC_AGENT_PUBLIC_KEY";
-const MOLTBOOK_RPC_RELAY_PRIVATE_KEY_ENV = "MOLTBOOK_RPC_RELAY_PRIVATE_KEY";
-const MOLTBOOK_RPC_RELAY_PUBLIC_KEY_ENV = "MOLTBOOK_RPC_RELAY_PUBLIC_KEY";
+// Env var convention: {SCOPE_UPPER}_RPC_AGENT_PRIVATE_KEY, etc.
+// Derived dynamically by scopeEnvVarNames() for any scope string.
 
 const RAW_SKEW_MS = Number(process.env.TELCLAUDE_INTERNAL_RPC_SKEW_MS ?? 5 * 60 * 1000);
 const RAW_NONCE_TTL_MS = Number(process.env.TELCLAUDE_INTERNAL_RPC_NONCE_TTL_MS ?? 10 * 60 * 1000);
@@ -37,14 +31,19 @@ type SignatureInput = {
 	body: string;
 };
 
-export type InternalAuthScope = "telegram" | "moltbook";
+/**
+ * Auth scope for internal RPC. "telegram" is the primary scope;
+ * "social" covers all social services. Any other non-empty string
+ * is treated as a custom scope.
+ */
+export type InternalAuthScope = "telegram" | (string & {});
 
 export type InternalAuthResult =
 	| { ok: true; scope: InternalAuthScope }
 	| { ok: false; status: number; error: string; reason: string };
 
 export function isInternalAuthScope(value: string): value is InternalAuthScope {
-	return value === "telegram" || value === "moltbook";
+	return typeof value === "string" && value.length > 0;
 }
 
 type InternalAuthOptions = {
@@ -120,6 +119,25 @@ function verifyAsymmetric(
 }
 
 /**
+ * Derive env var names for RPC keys from a scope string.
+ * E.g., "moltbook" → { agentPrivateKey: "MOLTBOOK_RPC_AGENT_PRIVATE_KEY", ... }
+ */
+function scopeEnvVarNames(scope: string): {
+	agentPrivateKey: string;
+	agentPublicKey: string;
+	relayPrivateKey: string;
+	relayPublicKey: string;
+} {
+	const prefix = scope.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+	return {
+		agentPrivateKey: `${prefix}_RPC_AGENT_PRIVATE_KEY`,
+		agentPublicKey: `${prefix}_RPC_AGENT_PUBLIC_KEY`,
+		relayPrivateKey: `${prefix}_RPC_RELAY_PRIVATE_KEY`,
+		relayPublicKey: `${prefix}_RPC_RELAY_PUBLIC_KEY`,
+	};
+}
+
+/**
  * Load asymmetric keys from environment for the given scope.
  *
  * Two-keypair model: each container only has the keys it needs.
@@ -128,28 +146,17 @@ function verifyAsymmetric(
  *
  * This function picks up whichever private/public key is available, so the
  * rest of the signing/verification code stays unchanged.
+ *
+ * Accepts any scope string; env var names are derived as {SCOPE_UPPER}_RPC_*.
  */
-function loadAsymmetricKeys(scope: "telegram" | "moltbook"): {
+function loadAsymmetricKeys(scope: string): {
 	privateKey?: string;
 	publicKey?: string;
 } {
-	if (scope === "telegram") {
-		return {
-			privateKey:
-				process.env[TELEGRAM_RPC_AGENT_PRIVATE_KEY_ENV] ??
-				process.env[TELEGRAM_RPC_RELAY_PRIVATE_KEY_ENV],
-			publicKey:
-				process.env[TELEGRAM_RPC_AGENT_PUBLIC_KEY_ENV] ??
-				process.env[TELEGRAM_RPC_RELAY_PUBLIC_KEY_ENV],
-		};
-	}
+	const vars = scopeEnvVarNames(scope);
 	return {
-		privateKey:
-			process.env[MOLTBOOK_RPC_AGENT_PRIVATE_KEY_ENV] ??
-			process.env[MOLTBOOK_RPC_RELAY_PRIVATE_KEY_ENV],
-		publicKey:
-			process.env[MOLTBOOK_RPC_AGENT_PUBLIC_KEY_ENV] ??
-			process.env[MOLTBOOK_RPC_RELAY_PUBLIC_KEY_ENV],
+		privateKey: process.env[vars.agentPrivateKey] ?? process.env[vars.relayPrivateKey],
+		publicKey: process.env[vars.agentPublicKey] ?? process.env[vars.relayPublicKey],
 	};
 }
 
@@ -209,12 +216,9 @@ export function buildInternalAuthHeaders(
 		};
 	}
 
-	const agentEnv =
-		scope === "telegram" ? TELEGRAM_RPC_AGENT_PRIVATE_KEY_ENV : MOLTBOOK_RPC_AGENT_PRIVATE_KEY_ENV;
-	const relayEnv =
-		scope === "telegram" ? TELEGRAM_RPC_RELAY_PRIVATE_KEY_ENV : MOLTBOOK_RPC_RELAY_PRIVATE_KEY_ENV;
+	const vars = scopeEnvVarNames(scope);
 	throw new Error(
-		`Missing RPC credentials for ${scope}. Set ${agentEnv} (agent) or ${relayEnv} (relay). Run \`telclaude keygen ${scope}\` to generate keys.`,
+		`Missing RPC credentials for ${scope}. Set ${vars.agentPrivateKey} (agent) or ${vars.relayPrivateKey} (relay). Run \`telclaude keygen ${scope}\` to generate keys.`,
 	);
 }
 
@@ -322,6 +326,23 @@ export function trySessionTokenFromRequest(
 	return verifySessionToken(sessionToken, publicKeyBase64);
 }
 
+/**
+ * Discover all configured auth scopes from environment variables.
+ * Scans for *_RPC_AGENT_PUBLIC_KEY and *_RPC_RELAY_PUBLIC_KEY patterns.
+ * Always includes "telegram" and "social" as well-known scopes.
+ */
+function discoverAuthScopes(): string[] {
+	const scopes = new Set(["telegram", "social"]);
+	const pattern = /^([A-Z0-9_]+)_RPC_(?:AGENT|RELAY)_(?:PUBLIC|PRIVATE)_KEY$/;
+	for (const key of Object.keys(process.env)) {
+		const match = pattern.exec(key);
+		if (match?.[1]) {
+			scopes.add(match[1].toLowerCase().replace(/_/g, "-"));
+		}
+	}
+	return Array.from(scopes);
+}
+
 export function verifyInternalAuth(req: http.IncomingMessage, body: string): InternalAuthResult {
 	const timestamp = getHeader(req, HEADER_TIMESTAMP);
 	const nonce = getHeader(req, HEADER_NONCE);
@@ -380,10 +401,6 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 	const path = req.url ?? "";
 	const input: SignatureInput = { timestamp, nonce, method, path, body };
 
-	// Load asymmetric keys for both scopes
-	const telegramKeys = loadAsymmetricKeys("telegram");
-	const moltbookKeys = loadAsymmetricKeys("moltbook");
-
 	if (authType !== "asymmetric") {
 		return {
 			ok: false,
@@ -393,31 +410,29 @@ export function verifyInternalAuth(req: http.IncomingMessage, body: string): Int
 		};
 	}
 
-	// Try telegram public key
-	if (
-		telegramKeys.publicKey &&
-		verifyAsymmetric(telegramKeys.publicKey, signature, input, "telegram")
-	) {
-		nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
-		return { ok: true, scope: "telegram" };
+	// Discover all configured scopes from environment variables.
+	// Convention: {SCOPE}_RPC_AGENT_PUBLIC_KEY or {SCOPE}_RPC_RELAY_PUBLIC_KEY
+	const discoveredScopes = discoverAuthScopes();
+	let anyKeyConfigured = false;
+
+	for (const scope of discoveredScopes) {
+		const keys = loadAsymmetricKeys(scope);
+		if (keys.publicKey) {
+			anyKeyConfigured = true;
+			if (verifyAsymmetric(keys.publicKey, signature, input, scope)) {
+				nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
+				return { ok: true, scope };
+			}
+		}
 	}
 
-	// Try moltbook public key
-	if (
-		moltbookKeys.publicKey &&
-		verifyAsymmetric(moltbookKeys.publicKey, signature, input, "moltbook")
-	) {
-		nonceCache.set(nonce, now + DEFAULT_NONCE_TTL_MS);
-		return { ok: true, scope: "moltbook" };
-	}
-
-	// No matching key configured
-	if (!telegramKeys.publicKey && !moltbookKeys.publicKey) {
+	if (!anyKeyConfigured) {
 		return {
 			ok: false,
 			status: 500,
 			error: "Internal auth misconfigured.",
-			reason: `Missing RPC credentials. Set ${TELEGRAM_RPC_AGENT_PUBLIC_KEY_ENV}/${TELEGRAM_RPC_RELAY_PUBLIC_KEY_ENV} or ${MOLTBOOK_RPC_AGENT_PUBLIC_KEY_ENV}/${MOLTBOOK_RPC_RELAY_PUBLIC_KEY_ENV}.`,
+			reason:
+				"No RPC public keys found in environment. Run `telclaude keygen <scope>` and set the env vars.",
 		};
 	}
 

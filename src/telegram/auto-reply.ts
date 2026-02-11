@@ -1718,7 +1718,7 @@ async function handleDenyCommand(
  * Used to enforce "least privilege" at execution time.
  */
 const TIER_ORDER: Record<PermissionTier, number> = {
-	MOLTBOOK_SOCIAL: 0,
+	SOCIAL: 0,
 	READ_ONLY: 1,
 	WRITE_LOCAL: 2,
 	FULL_ACCESS: 3,
