@@ -59,6 +59,7 @@
 - `src/telegram/` — inbound/outbound bot.
 - `src/social/` — generic social services: handler, scheduler, identity, context, activity log.
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
+- `src/oauth/` — OAuth2 PKCE flow, service registry, authorization orchestrator.
 - `src/commands/` — CLI commands.
 - `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
 - `docs/architecture.md` — deep architecture & flow.
@@ -76,6 +77,9 @@
 - Memory read: `pnpm dev memory read --categories profile,interests`
 - Memory write: `pnpm dev memory write "fact" --category meta`
 - Memory quarantine: `pnpm dev memory quarantine "post idea"`
+- OAuth authorize: `pnpm dev oauth authorize xtwitter`
+- OAuth list: `pnpm dev oauth list`
+- OAuth revoke: `pnpm dev oauth revoke xtwitter`
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.

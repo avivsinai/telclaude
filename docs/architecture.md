@@ -336,6 +336,12 @@ telclaude vault add http api.google.com --type oauth2 \
   --client-id xxx --token-endpoint https://oauth2.googleapis.com/token
 telclaude vault remove http api.openai.com
 telclaude vault test http api.openai.com
+
+# OAuth2 authorization flow (browser-based, stores tokens in vault)
+telclaude oauth authorize xtwitter          # Full PKCE flow for X/Twitter
+telclaude oauth authorize xtwitter --no-browser  # Print URL instead of opening browser
+telclaude oauth list                        # Show known services + vault status
+telclaude oauth revoke xtwitter             # Remove credentials from vault
 ```
 
 ### Deployment Security
