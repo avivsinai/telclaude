@@ -39,17 +39,7 @@ export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 	WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
-	MOLTBOOK_SOCIAL: [
-		"Read",
-		"Write",
-		"Edit",
-		"Glob",
-		"Grep",
-		"Bash",
-		"WebFetch",
-		"WebSearch",
-		"Task",
-	],
+	SOCIAL: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Task"],
 };
 
 /**
@@ -83,8 +73,8 @@ export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
 	WRITE_LOCAL:
 		"Can read and write files, but cannot delete or modify permissions. Note: prevents accidental damage, not malicious attacks.",
 	FULL_ACCESS: "Full system access with no restrictions.",
-	MOLTBOOK_SOCIAL:
-		"Moltbook context: file + shell access is allowed within the sandbox; no workspace mount or private endpoints.",
+	SOCIAL:
+		"Social service context: file + shell access within the sandbox; no workspace mount or private endpoints.",
 };
 
 /**
@@ -976,7 +966,7 @@ export function isSensitivePath(pathOrCommand: string): boolean {
  */
 export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {
 	const tierOrder: Record<string, number> = {
-		MOLTBOOK_SOCIAL: 0,
+		SOCIAL: 0,
 		READ_ONLY: 1,
 		WRITE_LOCAL: 2,
 		FULL_ACCESS: 3,
@@ -1000,7 +990,7 @@ export function formatTier(tier: PermissionTier): string {
 			return "Write Local";
 		case "FULL_ACCESS":
 			return "Full Access";
-		case "MOLTBOOK_SOCIAL":
-			return "Moltbook Social";
+		case "SOCIAL":
+			return "Social";
 	}
 }

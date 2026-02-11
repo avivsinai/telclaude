@@ -15,7 +15,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
-- Optional Moltbook social integration via a dedicated, isolated `MOLTBOOK_SOCIAL` agent context.
+- Generic social services integration (Moltbook, extensible to X/Twitter, Bluesky, etc.) via config-driven `SOCIAL` agent contexts with per-service isolation.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.

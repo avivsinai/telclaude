@@ -1,15 +1,17 @@
 # Moltbook Integration
 
-Status: Implemented (2026-02-03)
+Status: Implemented (2026-02-03), generalized (2026-02-10)
 
 Secure integration for telclaude's social presence on Moltbook (a social network for AI agents).
 
-**Guiding principle**: One agent, contextual permissions. The assistant remains the same identity, but tool access is constrained by the Moltbook context.
+> **Note**: Moltbook is now one backend of the generic social services architecture (`src/social/`). The `SocialServiceClient` interface, handler, scheduler, and context logic are service-agnostic. This document describes the Moltbook-specific configuration and behavior. See `docs/architecture.md` § Social Services Integration for the generic architecture.
+
+**Guiding principle**: One agent, contextual permissions. The assistant remains the same identity, but tool access is constrained by the social context.
 
 ## Summary
 
 - Relay polls Moltbook notifications on a heartbeat schedule.
-- Each notification is handled by a dedicated Moltbook agent context with the `MOLTBOOK_SOCIAL` tier (file tools + Bash allowed inside `/moltbook/sandbox` only).
+- Each notification is handled by a dedicated Moltbook agent context with the `SOCIAL` tier (file tools + Bash allowed inside `/social/sandbox`).
 - Replies are posted back via the Moltbook API client in the relay.
 - Social memory and identity context are injected with explicit untrusted warnings.
 - **Proactive posting**: Ideas from Telegram can be promoted for Moltbook posting via a consent-based bridge.
@@ -22,9 +24,9 @@ Secure integration for telclaude's social presence on Moltbook (a social network
 │                                                                         │
 │  Telegram Handler                       Moltbook Handler                │
 │  ─────────────────                      ────────────────                │
-│  userId: "tg:<chat_id>"                 userId: "moltbook:social"       │
-│  poolKey: "tg:<chat_id>"                poolKey: "moltbook:social"      │
-│  tier: per-user config                  tier: MOLTBOOK_SOCIAL (fixed)   │
+│  userId: "tg:<chat_id>"                 userId: "social:moltbook"       │
+│  poolKey: "tg:<chat_id>"                poolKey: "social:moltbook"      │
+│  tier: per-user config                  tier: SOCIAL (fixed)            │
 │  providers: [sidecar configs]           providers: [] (none)            │
 │  privateEndpoints: [user's LAN]         privateEndpoints: [] (none)     │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -34,25 +36,30 @@ Secure integration for telclaude's social presence on Moltbook (a social network
 ┌────────────────────────────────────┐  ┌────────────────────────────────────┐
 │ AGENT: TELEGRAM                    │  │ AGENT: MOLTBOOK                    │
 │ - Workspace mounted                │  │ - No workspace mount               │
-│ - Media inbox/outbox               │  │ - /moltbook/sandbox only           │
+│ - Media inbox/outbox               │  │ - /social/sandbox only           │
 └────────────────────────────────────┘  └────────────────────────────────────┘
 ```
 
 ## Configuration (telclaude.json)
 
+**Preferred** (generic `socialServices[]` array):
 ```json
 {
-  "moltbook": {
-    "enabled": true,
-    "apiKey": "mbp_xxx",               // optional if stored in secrets
-    "heartbeatIntervalHours": 4,        // default 4
-    "adminChatId": 123456789            // reserved for future alerts
-  }
+  "socialServices": [
+    {
+      "id": "moltbook",
+      "type": "moltbook",
+      "enabled": true,
+      "apiKey": "mbp_xxx",
+      "heartbeatIntervalHours": 4,
+      "adminChatId": 123456789
+    }
+  ]
 }
 ```
 
 Notes:
-- The Moltbook API key is resolved from the secrets store first (`moltbook-api-key`), then from `moltbook.apiKey`.
+- The Moltbook API key is resolved from the secrets store first (`moltbook-api-key`), then from config.
 - `heartbeatIntervalHours` is clamped to a minimum of 60 seconds at runtime.
 - `adminChatId` is currently unused (planned for future notifications).
 - Optional override: `MOLTBOOK_API_BASE` (default `https://moltbook.com/api/v1`).
@@ -71,11 +78,11 @@ For each notification:
       • social context snapshot (trusted Moltbook memory only)
       • identity preamble (trusted profile/interests/meta)
   - executeRemoteQuery with:
-      tier=MOLTBOOK_SOCIAL
+      tier=SOCIAL
       poolKey=moltbook:notification:{id}
-      userId=moltbook:social
+      userId=social:moltbook
       enableSkills=false
-      cwd=/moltbook/sandbox
+      cwd=/social/sandbox
     ↓
 Relay: POST /posts/{id}/comments
     ↓
@@ -133,7 +140,7 @@ TELEGRAM CONTEXT                              MOLTBOOK CONTEXT
 | Threat | Mitigation |
 |--------|------------|
 | Prompt injection from Moltbook | Notification payload is wrapped as UNTRUSTED and treated as reference data only |
-| Exfiltrate workspace files | Moltbook agent has no workspace mount; filesystem access is allowlisted to `/moltbook/sandbox` |
+| Exfiltrate workspace files | Moltbook agent has no workspace mount; filesystem access is allowlisted to `/social/sandbox` |
 | Access sidecars or private endpoints | providers=[] in Moltbook context; private endpoints blocked |
 | Leak Telegram history | Separate poolKey/userId isolates sessions |
 | Untrusted memory contamination | Only trusted memory entries are injected; all context is wrapped with warnings |
@@ -150,6 +157,7 @@ TELEGRAM CONTEXT                              MOLTBOOK CONTEXT
 - Moltbook replies exclude Telegram memory; only Moltbook-scoped memory is considered.
 - No admin notifications are sent; `adminChatId` is reserved for future use.
 - Proactive posting requires explicit user consent via the quarantine → promote flow.
+- Source code lives in `src/social/` (generic) and `src/social/backends/moltbook.ts` (Moltbook-specific).
 
 ## Moltbook API Usage
 

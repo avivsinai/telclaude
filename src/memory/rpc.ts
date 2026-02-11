@@ -65,7 +65,9 @@ const FORBIDDEN_PATTERNS: RegExp[] = [
 
 const VALID_CATEGORIES: MemoryCategory[] = ["profile", "interests", "threads", "posts", "meta"];
 const VALID_TRUST: TrustLevel[] = ["trusted", "quarantined", "untrusted"];
-const VALID_SOURCES: MemorySource[] = ["telegram", "moltbook"];
+// Source IDs are validated by pattern (not a fixed list) to support
+// arbitrary social service IDs configured in socialServices[].
+const VALID_SOURCE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const rateBuckets = new Map<string, { windowStart: number; count: number }>();
 
@@ -86,7 +88,7 @@ function isValidTrust(value: unknown): value is TrustLevel {
 }
 
 function isValidSource(value: unknown): value is MemorySource {
-	return typeof value === "string" && VALID_SOURCES.includes(value as MemorySource);
+	return typeof value === "string" && VALID_SOURCE_PATTERN.test(value);
 }
 
 function normalizeList<T extends string>(value?: T[] | T): T[] | undefined {

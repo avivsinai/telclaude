@@ -1,28 +1,29 @@
 import { getChildLogger } from "../logging.js";
 
-const logger = getChildLogger({ module: "moltbook-scheduler" });
+const logger = getChildLogger({ module: "social-scheduler" });
 
-export type MoltbookScheduler = {
+export type SocialScheduler = {
 	stop: () => void;
 };
 
-export function startMoltbookScheduler(options: {
+export function startSocialScheduler(options: {
+	serviceId: string;
 	intervalMs: number;
 	onHeartbeat: () => Promise<void>;
-}): MoltbookScheduler {
+}): SocialScheduler {
 	const intervalMs = Math.max(options.intervalMs, 60_000);
 	let running = false;
 
 	const runHeartbeat = async () => {
 		if (running) {
-			logger.warn("moltbook heartbeat already running; skipping");
+			logger.warn({ serviceId: options.serviceId }, "social heartbeat already running; skipping");
 			return;
 		}
 		running = true;
 		try {
 			await options.onHeartbeat();
 		} catch (err) {
-			logger.error({ error: String(err) }, "moltbook heartbeat failed");
+			logger.error({ error: String(err), serviceId: options.serviceId }, "social heartbeat failed");
 		} finally {
 			running = false;
 		}

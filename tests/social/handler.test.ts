@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeRemoteQueryMock = vi.hoisted(() => vi.fn());
-const createMoltbookApiClientMock = vi.hoisted(() => vi.fn());
-const loadConfigMock = vi.hoisted(() => vi.fn());
 const getEntriesMock = vi.hoisted(() => vi.fn());
 const markEntryPostedMock = vi.hoisted(() => vi.fn());
 const checkLimitMock = vi.hoisted(() => vi.fn());
@@ -10,14 +8,6 @@ const consumeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../src/agent/client.js", () => ({
 	executeRemoteQuery: (...args: unknown[]) => executeRemoteQueryMock(...args),
-}));
-
-vi.mock("../../src/moltbook/api-client.js", () => ({
-	createMoltbookApiClient: (...args: unknown[]) => createMoltbookApiClientMock(...args),
-}));
-
-vi.mock("../../src/config/config.js", () => ({
-	loadConfig: () => loadConfigMock(),
 }));
 
 vi.mock("../../src/memory/store.js", () => ({
@@ -41,7 +31,10 @@ vi.mock("../../src/logging.js", () => ({
 	}),
 }));
 
-import * as handler from "../../src/moltbook/handler.js";
+import { handleSocialHeartbeat, handleSocialNotification } from "../../src/social/handler.js";
+import type { SocialServiceClient } from "../../src/social/client.js";
+
+const SERVICE_ID = "moltbook";
 
 const sampleEntries = [
 	{
@@ -67,13 +60,21 @@ async function* mockStream(text: string, success = true, error?: string) {
 	} as const;
 }
 
-describe("moltbook handler", () => {
+function mockClient(overrides: Partial<SocialServiceClient> = {}): SocialServiceClient {
+	return {
+		serviceId: SERVICE_ID,
+		fetchNotifications: vi.fn().mockResolvedValue([]),
+		postReply: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
+		createPost: vi.fn().mockResolvedValue({ ok: true, status: 201, postId: "new-post" }),
+		...overrides,
+	};
+}
+
+describe("social handler", () => {
 	const originalAgentUrl = process.env.TELCLAUDE_MOLTBOOK_AGENT_URL;
 
 	beforeEach(() => {
 		executeRemoteQueryMock.mockReset();
-		createMoltbookApiClientMock.mockReset();
-		loadConfigMock.mockReset();
 		getEntriesMock.mockReset();
 		markEntryPostedMock.mockReset();
 		checkLimitMock.mockReset();
@@ -92,76 +93,54 @@ describe("moltbook handler", () => {
 		}
 	});
 
-	it("heartbeat returns early when moltbook disabled", async () => {
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: false } });
-		const res = await handler.handleMoltbookHeartbeat();
-		expect(res.ok).toBe(true);
-		expect(res.message).toContain("disabled");
-		expect(createMoltbookApiClientMock).not.toHaveBeenCalled();
-	});
-
 	it("heartbeat processes notifications and continues on errors", async () => {
-		const client = {
+		const client = mockClient({
 			fetchNotifications: vi.fn().mockResolvedValue([
 				{ id: "n1", postId: "post-1" },
 				{ id: "n2", postId: "post-2" },
 			]),
-			postReply: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		});
 		executeRemoteQueryMock
 			.mockImplementationOnce(() => {
 				throw new Error("boom");
 			})
 			.mockImplementationOnce(() => mockStream("reply"));
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
 		expect(client.postReply).toHaveBeenCalledTimes(1);
 	});
 
 	it("heartbeat continues to proactive posting even when fetch fails", async () => {
-		const client = {
+		const client = mockClient({
 			fetchNotifications: vi.fn().mockRejectedValue(new Error("fail")),
-			createPost: vi.fn(),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		});
 		// No promoted ideas
 		getEntriesMock.mockReturnValue([]);
 
-		const res = await handler.handleMoltbookHeartbeat();
-		// Now returns ok=true because it continues to proactive posting
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("no activity");
 	});
 
 	it("heartbeat returns no activity when no notifications and no ideas", async () => {
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn(),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 		// No promoted ideas
 		getEntriesMock.mockReturnValue([]);
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("no activity");
 	});
 
-	it("handleMoltbookNotification posts reply with trimmed response", async () => {
-		const client = {
-			postReply: vi.fn().mockResolvedValue({ ok: true, status: 200 }),
-		};
+	it("handleSocialNotification posts reply with trimmed response", async () => {
+		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream(" hello "));
 
-		const res = await handler.handleMoltbookNotification(
+		const res = await handleSocialNotification(
 			{ id: "n1", postId: "post-1" },
-			client as any,
-			{ enabled: true } as any,
+			SERVICE_ID,
+			client,
 			"http://agent",
 		);
 
@@ -170,20 +149,18 @@ describe("moltbook handler", () => {
 		expect(executeRemoteQueryMock).toHaveBeenCalled();
 		const [prompt, options] = executeRemoteQueryMock.mock.calls[0];
 		expect(String(prompt)).toContain("MOLTBOOK NOTIFICATION");
-		expect(options.tier).toBe("MOLTBOOK_SOCIAL");
-		expect(options.scope).toBe("moltbook");
+		expect(options.tier).toBe("SOCIAL");
+		expect(options.scope).toBe("social");
 	});
 
-	it("handleMoltbookNotification skips empty replies", async () => {
-		const client = {
-			postReply: vi.fn(),
-		};
+	it("handleSocialNotification skips empty replies", async () => {
+		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("   "));
 
-		const res = await handler.handleMoltbookNotification(
+		const res = await handleSocialNotification(
 			{ id: "n1", postId: "post-1" },
-			client as any,
-			{ enabled: true } as any,
+			SERVICE_ID,
+			client,
 			"http://agent",
 		);
 
@@ -192,51 +169,47 @@ describe("moltbook handler", () => {
 		expect(client.postReply).not.toHaveBeenCalled();
 	});
 
-	it("handleMoltbookNotification reports missing post id", async () => {
-		const client = {
-			postReply: vi.fn(),
-		};
-		const res = await handler.handleMoltbookNotification(
+	it("handleSocialNotification reports missing post id", async () => {
+		const client = mockClient();
+		const res = await handleSocialNotification(
 			{ id: "n1" },
-			client as any,
-			{ enabled: true } as any,
+			SERVICE_ID,
+			client,
 			"http://agent",
 		);
 		expect(res.ok).toBe(false);
 		expect(res.message).toContain("missing post id");
 	});
 
-	it("handleMoltbookNotification surfaces agent failures", async () => {
-		const client = {
-			postReply: vi.fn(),
-		};
+	it("handleSocialNotification surfaces agent failures", async () => {
+		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("oops", false, "agent failed"));
 
 		await expect(
-			handler.handleMoltbookNotification(
+			handleSocialNotification(
 				{ id: "n1", postId: "post-1" },
-				client as any,
-				{ enabled: true } as any,
+				SERVICE_ID,
+				client,
 				"http://agent",
 			),
 		).rejects.toThrow("agent failed");
 	});
 
-	it("handleMoltbookNotification returns error when postReply fails", async () => {
-		const client = {
+	it("handleSocialNotification returns error when postReply fails", async () => {
+		const client = mockClient({
 			postReply: vi.fn().mockResolvedValue({
 				ok: false,
 				status: 429,
 				error: "rate limit",
 				rateLimited: true,
 			}),
-		};
+		});
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("reply"));
 
-		const res = await handler.handleMoltbookNotification(
+		const res = await handleSocialNotification(
 			{ id: "n1", postId: "post-1" },
-			client as any,
-			{ enabled: true } as any,
+			SERVICE_ID,
+			client,
 			"http://agent",
 		);
 
@@ -251,12 +224,7 @@ describe("moltbook handler", () => {
 			content: "A great idea",
 			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
 		};
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn().mockResolvedValue({ ok: true, status: 201, postId: "new-post-1" }),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 
 		// Proactive posting calls getEntries twice:
 		// 1. getPromotedIdeas() - returns promoted ideas
@@ -267,25 +235,20 @@ describe("moltbook handler", () => {
 
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("My new post content"));
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).toContain("proactive post created");
 		expect(client.createPost).toHaveBeenCalledWith("My new post content");
 		expect(markEntryPostedMock).toHaveBeenCalledWith("idea-1");
-		expect(consumeMock).toHaveBeenCalledWith("moltbook_post", "moltbook:proactive");
+		expect(consumeMock).toHaveBeenCalledWith("moltbook_post", "social:moltbook:proactive");
 	});
 
 	it("heartbeat skips proactive posting when rate limited", async () => {
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn(),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 		checkLimitMock.mockReturnValue({ allowed: false, remaining: { hour: 0, day: 0 }, reason: "Rate limited" });
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).not.toContain("proactive post");
@@ -293,17 +256,12 @@ describe("moltbook handler", () => {
 	});
 
 	it("heartbeat skips proactive posting when no promoted ideas", async () => {
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn(),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 
 		// getPromotedIdeas() returns empty
 		getEntriesMock.mockReturnValueOnce([]);
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).not.toContain("proactive post");
@@ -317,12 +275,7 @@ describe("moltbook handler", () => {
 			content: "An idea to skip",
 			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
 		};
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn(),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 
 		// Proactive posting: getPromotedIdeas() then buildProactivePostPrompt()
 		getEntriesMock
@@ -331,7 +284,7 @@ describe("moltbook handler", () => {
 
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("[SKIP]"));
 
-		const res = await handler.handleMoltbookHeartbeat();
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
 		expect(res.ok).toBe(true);
 		expect(res.message).not.toContain("proactive post created");
@@ -346,12 +299,7 @@ describe("moltbook handler", () => {
 			content: "Only this idea should appear",
 			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
 		};
-		const client = {
-			fetchNotifications: vi.fn().mockResolvedValue([]),
-			createPost: vi.fn().mockResolvedValue({ ok: true, status: 201, postId: "new-post" }),
-		};
-		loadConfigMock.mockReturnValueOnce({ moltbook: { enabled: true } });
-		createMoltbookApiClientMock.mockResolvedValue(client);
+		const client = mockClient();
 
 		// Proactive posting: getPromotedIdeas() then buildProactivePostPrompt()
 		getEntriesMock
@@ -360,7 +308,7 @@ describe("moltbook handler", () => {
 
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("Post content"));
 
-		await handler.handleMoltbookHeartbeat();
+		await handleSocialHeartbeat(SERVICE_ID, client);
 
 		// Verify the prompt contains only the approved idea
 		expect(executeRemoteQueryMock).toHaveBeenCalled();

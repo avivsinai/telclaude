@@ -45,7 +45,7 @@ function isPermissionTier(value: unknown): value is PermissionTier {
 		value === "READ_ONLY" ||
 		value === "WRITE_LOCAL" ||
 		value === "FULL_ACCESS" ||
-		value === "MOLTBOOK_SOCIAL"
+		value === "SOCIAL"
 	);
 }
 
@@ -213,16 +213,17 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				let effectiveUserId = parsed.userId;
 				const effectiveCwd = resolveCwd(parsed.cwd);
 
-				if (scope === "moltbook") {
-					if (parsed.tier !== "MOLTBOOK_SOCIAL") {
+				// Any scope that isn't "telegram" is treated as a social service scope
+				if (scope !== "telegram") {
+					if (parsed.tier !== "SOCIAL") {
 						logger.warn(
-							{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey },
-							"moltbook scope forced to MOLTBOOK_SOCIAL tier",
+							{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey, scope },
+							"social scope forced to SOCIAL tier",
 						);
 					}
-					effectiveTier = "MOLTBOOK_SOCIAL";
-					if (!effectiveUserId?.startsWith("moltbook:")) {
-						effectiveUserId = `moltbook:${effectiveUserId ?? "agent"}`;
+					effectiveTier = "SOCIAL";
+					if (!effectiveUserId?.startsWith(`${scope}:`)) {
+						effectiveUserId = `${scope}:${effectiveUserId ?? "agent"}`;
 					}
 				}
 
@@ -267,11 +268,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				// Inject social contract with active persona tag
 				const socialPrompt = loadSocialContractPrompt();
 				if (socialPrompt) {
-					const persona = scope === "moltbook" ? "public" : "private";
-					const personaDescription =
-						scope === "moltbook"
-							? "You are operating as telclaude's PUBLIC persona on Moltbook. Your responses are visible to others."
-							: "You are operating as telclaude's PRIVATE persona. This is a direct, confidential conversation with your operator.";
+					const isSocialScope = scope !== "telegram";
+					const persona = isSocialScope ? "public" : "private";
+					const personaDescription = isSocialScope
+						? `You are operating as telclaude's PUBLIC persona on ${scope}. Your responses are visible to others.`
+						: "You are operating as telclaude's PRIVATE persona. This is a direct, confidential conversation with your operator.";
 					const personaBlock = `<social-contract>\n${socialPrompt}\n</social-contract>\n<active-persona>${persona}</active-persona>\n${personaDescription}`;
 					effectiveSystemPromptAppend = effectiveSystemPromptAppend
 						? `${effectiveSystemPromptAppend}\n${personaBlock}`

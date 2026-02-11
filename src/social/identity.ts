@@ -15,7 +15,11 @@ function getTrustedEntries(entries: MemoryEntry[], category: MemoryEntry["catego
 		.filter(Boolean);
 }
 
-export function buildMoltbookIdentityPreamble(entries: MemoryEntry[]): string {
+/**
+ * Build identity preamble for social service prompts.
+ * Uses trusted profile, interests, and meta entries.
+ */
+export function buildSocialIdentityPreamble(entries: MemoryEntry[]): string {
 	const profile = getTrustedEntries(entries, "profile");
 	const interests = getTrustedEntries(entries, "interests");
 	const values = getTrustedEntries(entries, "meta");

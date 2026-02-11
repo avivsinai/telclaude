@@ -1,12 +1,17 @@
-import { loadConfig, type MoltbookConfig } from "../config/config.js";
-import { getChildLogger } from "../logging.js";
-import { getSecret, SECRET_KEYS } from "../secrets/index.js";
+import type { SocialServiceConfig } from "../../config/config.js";
+import { getChildLogger } from "../../logging.js";
+import { getSecret, SECRET_KEYS } from "../../secrets/index.js";
+import type { SocialServiceClient } from "../client.js";
+import type { SocialNotification, SocialPostResult, SocialReplyResult } from "../types.js";
 
-const logger = getChildLogger({ module: "moltbook-api-client" });
+const logger = getChildLogger({ module: "moltbook-backend" });
 
 const DEFAULT_API_BASE = "https://moltbook.com/api/v1";
 
-export type MoltbookNotification = {
+/**
+ * Moltbook-specific notification shape (handles both camelCase and snake_case).
+ */
+type MoltbookNotification = {
 	id: string;
 	type?: string;
 	postId?: string;
@@ -36,21 +41,6 @@ type MoltbookNotificationEnvelope =
 	| { notifications?: MoltbookNotification[] }
 	| { data?: MoltbookNotification[] };
 
-export type MoltbookReplyResult = {
-	ok: boolean;
-	status: number;
-	error?: string;
-	rateLimited?: boolean;
-};
-
-export type MoltbookPostResult = {
-	ok: boolean;
-	status: number;
-	postId?: string;
-	error?: string;
-	rateLimited?: boolean;
-};
-
 type MoltbookApiResult<T> =
 	| { ok: true; status: number; data: T }
 	| { ok: false; status: number; error: string };
@@ -60,7 +50,7 @@ function getApiBase(): string {
 	return base.replace(/\/+$/, "");
 }
 
-async function resolveApiKey(config: MoltbookConfig): Promise<string | null> {
+async function resolveApiKey(config: Pick<SocialServiceConfig, "apiKey">): Promise<string | null> {
 	try {
 		const stored = await getSecret(SECRET_KEYS.MOLTBOOK_API_KEY);
 		if (stored) {
@@ -79,17 +69,44 @@ async function resolveApiKey(config: MoltbookConfig): Promise<string | null> {
 	return null;
 }
 
-export async function createMoltbookApiClient(
-	config: MoltbookConfig,
-): Promise<MoltbookApiClient | null> {
-	const apiKey = await resolveApiKey(config);
-	if (!apiKey) {
+function safeJsonParse(input: string): unknown {
+	try {
+		return JSON.parse(input);
+	} catch {
 		return null;
 	}
-	return new MoltbookApiClient({ apiKey, baseUrl: getApiBase() });
 }
 
-export class MoltbookApiClient {
+/**
+ * Normalize Moltbook notification to generic SocialNotification.
+ * Resolves snake_case / camelCase field aliases.
+ */
+function normalizeMoltbookNotification(n: MoltbookNotification): SocialNotification {
+	return {
+		id: n.id,
+		type: n.type,
+		postId: n.postId ?? n.post_id,
+		post: n.post,
+		comment: n.comment
+			? {
+					id: n.comment.id,
+					postId: n.comment.postId ?? n.comment.post_id ?? n.comment.post?.id,
+					content: n.comment.content,
+					author: n.comment.author,
+				}
+			: undefined,
+		actor: n.actor,
+		message: n.message,
+		content: n.content,
+		createdAt: n.createdAt ?? n.created_at,
+	};
+}
+
+/**
+ * Moltbook API client implementing the generic SocialServiceClient interface.
+ */
+export class MoltbookClient implements SocialServiceClient {
+	readonly serviceId = "moltbook";
 	private readonly apiKey: string;
 	private readonly baseUrl: string;
 	private readonly fetchImpl: typeof fetch;
@@ -124,7 +141,7 @@ export class MoltbookApiClient {
 		return { ok: true, status, data: payload as T };
 	}
 
-	async fetchNotifications(): Promise<MoltbookNotification[]> {
+	async fetchNotifications(): Promise<SocialNotification[]> {
 		const result = await this.request<MoltbookNotificationEnvelope>("/notifications", {
 			method: "GET",
 		});
@@ -138,21 +155,22 @@ export class MoltbookApiClient {
 		}
 
 		const payload = result.data;
+		let raw: MoltbookNotification[];
 		if (Array.isArray(payload)) {
-			return payload;
-		}
-		if (payload && "notifications" in payload && Array.isArray(payload.notifications)) {
-			return payload.notifications;
-		}
-		if (payload && "data" in payload && Array.isArray(payload.data)) {
-			return payload.data;
+			raw = payload;
+		} else if (payload && "notifications" in payload && Array.isArray(payload.notifications)) {
+			raw = payload.notifications;
+		} else if (payload && "data" in payload && Array.isArray(payload.data)) {
+			raw = payload.data;
+		} else {
+			logger.warn("moltbook notifications response format not recognized");
+			return [];
 		}
 
-		logger.warn("moltbook notifications response format not recognized");
-		return [];
+		return raw.map(normalizeMoltbookNotification);
 	}
 
-	async postReply(postId: string, body: string): Promise<MoltbookReplyResult> {
+	async postReply(postId: string, body: string): Promise<SocialReplyResult> {
 		const result = await this.request<Record<string, unknown>>(
 			`/posts/${encodeURIComponent(postId)}/comments`,
 			{
@@ -172,16 +190,10 @@ export class MoltbookApiClient {
 		return { ok: true, status: result.status };
 	}
 
-	/**
-	 * Create a new post on Moltbook.
-	 *
-	 * @param content - The post content/body
-	 * @param options - Optional title and tags
-	 */
 	async createPost(
 		content: string,
 		options?: { title?: string; tags?: string[] },
-	): Promise<MoltbookPostResult> {
+	): Promise<SocialPostResult> {
 		const payload: Record<string, unknown> = { content };
 		if (options?.title) {
 			payload.title = options.title;
@@ -203,20 +215,21 @@ export class MoltbookApiClient {
 			return { ok: false, status: result.status, error: result.error };
 		}
 
-		const postId = result.data?.id ?? result.data?.post_id;
-		return { ok: true, status: result.status, postId: postId ? String(postId) : undefined };
+		const id = result.data?.id ?? result.data?.post_id;
+		return { ok: true, status: result.status, postId: id ? String(id) : undefined };
 	}
 }
 
-export async function getMoltbookConfig(): Promise<MoltbookConfig> {
-	const config = loadConfig();
-	return config.moltbook;
-}
-
-function safeJsonParse(input: string): unknown {
-	try {
-		return JSON.parse(input);
-	} catch {
+/**
+ * Create a Moltbook client from a social service config entry.
+ * Returns null if the API key is not configured.
+ */
+export async function createMoltbookClient(
+	config: Pick<SocialServiceConfig, "apiKey">,
+): Promise<SocialServiceClient | null> {
+	const apiKey = await resolveApiKey(config);
+	if (!apiKey) {
 		return null;
 	}
+	return new MoltbookClient({ apiKey, baseUrl: getApiBase() });
 }

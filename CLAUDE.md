@@ -57,6 +57,8 @@
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
 - `src/sdk/` — Claude SDK integration, session manager.
 - `src/telegram/` — inbound/outbound bot.
+- `src/social/` — generic social services: handler, scheduler, identity, context, backends.
+- `src/social/backends/` — per-service API clients (moltbook, etc.).
 - `src/commands/` — CLI commands.
 - `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
 - `docs/architecture.md` — deep architecture & flow.
@@ -83,7 +85,7 @@
 - TOTP: `/setup-2fa`, `/verify-2fa <code>`, `/2fa-logout`, `/disable-2fa`.
 - Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
 - Pending posts: `/pending` (list quarantined post ideas).
-- Promote post: `/promote <id>` (approve quarantined idea for Moltbook posting).
+- Promote post: `/promote <id>` (approve quarantined idea for social service posting).
 
 ## Tier-based key exposure
 API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.
@@ -95,12 +97,15 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 
 ## Docker notes
 - **Node version**: Docker images use `node:22-bookworm-slim`.
+- **4 images**: `telclaude:latest` (relay), `telclaude-agent:latest` (agents + Chromium), `telclaude-totp:latest`, `telclaude-vault:latest`.
+- **5 containers**: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `totp`, `vault`.
 - **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
 - **Claude profiles**: Docker uses a shared skills profile (`/home/telclaude-skills`) and a relay-only auth profile (`/home/telclaude-auth`). Anthropic access goes through the relay proxy; credentials never mount in agent containers.
 - **Weak local servers**: Build locally and transfer images instead of building on device:
   ```bash
   cd docker && docker compose build
-  docker save telclaude:latest telclaude-totp:latest | ssh <server> "docker load"
+  docker save telclaude:latest telclaude-agent:latest telclaude-totp:latest telclaude-vault:latest \
+    | ssh <server> "docker load"
   ssh <server> "cd telclaude/docker && docker compose up -d"
   ```

@@ -65,13 +65,13 @@ services:
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
-      - TELCLAUDE_MOLTBOOK_AGENT_URL=http://agent-moltbook:8789
+      - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
       - TELCLAUDE_CAPABILITIES_ENABLED=1
       # RPC auth — relay holds agent PUBLIC keys (verifies agent→relay) + relay PRIVATE keys (signs relay→agent)
       - TELEGRAM_RPC_AGENT_PUBLIC_KEY=${TELEGRAM_RPC_AGENT_PUBLIC_KEY:-}
       - TELEGRAM_RPC_RELAY_PRIVATE_KEY=${TELEGRAM_RPC_RELAY_PRIVATE_KEY:-}
-      - MOLTBOOK_RPC_AGENT_PUBLIC_KEY=${MOLTBOOK_RPC_AGENT_PUBLIC_KEY:-}
-      - MOLTBOOK_RPC_RELAY_PRIVATE_KEY=${MOLTBOOK_RPC_RELAY_PRIVATE_KEY:-}
+      - SOCIAL_RPC_AGENT_PUBLIC_KEY=${SOCIAL_RPC_AGENT_PUBLIC_KEY:-}
+      - SOCIAL_RPC_RELAY_PRIVATE_KEY=${SOCIAL_RPC_RELAY_PRIVATE_KEY:-}
       # Git proxy session token secret (shared with agent for HMAC validation)
       - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
@@ -87,7 +87,7 @@ services:
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       # Internal hosts allowed through firewall (relay needs to reach agents)
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-moltbook}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -114,7 +114,7 @@ services:
       - vault-socket:/run/vault:ro
 
       # Moltbook memory (relay is single writer)
-      - moltbook-memory:/moltbook/memory:rw
+      - social-memory:/social/memory:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:rw
@@ -164,7 +164,7 @@ services:
       - relay-totp-net
       - relay-vault-net
       - relay-egress
-      - moltbook-relay-net
+      - social-relay-net
 
     restart: unless-stopped
 
@@ -187,11 +187,11 @@ services:
   telclaude-agent:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.agent
       args:
         USER_UID: 1000
         USER_GID: 1000
-    image: telclaude:latest
+    image: telclaude-agent:latest
     container_name: telclaude-agent
 
 
@@ -238,6 +238,7 @@ services:
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
 
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
     command: ["agent", "-v"]
@@ -253,7 +254,7 @@ services:
       - telclaude-claude-skills:/home/telclaude-skills:rw
 
       # Moltbook memory (read-only in agent)
-      - moltbook-memory:/moltbook/memory:ro
+      - social-memory:/social/memory:ro
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro
@@ -301,15 +302,16 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Moltbook Agent Worker (isolated context)
+  # Social Agent Worker (shared persona for all social services)
+  # Part of the generic social services architecture (src/social/).
   # ─────────────────────────────────────────────────────────────────────────────
-  agent-moltbook:
-    image: telclaude:latest
-    container_name: telclaude-agent-moltbook
+  agent-social:
+    image: telclaude-agent:latest
+    container_name: telclaude-agent-social
 
     environment:
       - TELCLAUDE_AGENT_PORT=8789
-      - TELCLAUDE_AGENT_WORKDIR=/moltbook/sandbox
+      - TELCLAUDE_AGENT_WORKDIR=/social/sandbox
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
@@ -318,25 +320,26 @@ services:
       # Internal token used to access the proxy
       - ANTHROPIC_AUTH_TOKEN=${MOLTBOOK_PROXY_TOKEN:-}
       # Ensure Claude Code state lives under a dedicated public profile
-      - HOME=/moltbook
+      - HOME=/social
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
-      # Moltbook auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
-      - MOLTBOOK_RPC_AGENT_PRIVATE_KEY=${MOLTBOOK_RPC_AGENT_PRIVATE_KEY:-}
-      - MOLTBOOK_RPC_RELAY_PUBLIC_KEY=${MOLTBOOK_RPC_RELAY_PUBLIC_KEY:-}
+      # Social auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
+      - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
+      - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
     command: ["agent", "-v"]
 
     volumes:
-      - moltbook-sandbox:/moltbook/sandbox:rw
+      - social-sandbox:/social/sandbox:rw
       - ./telclaude.json:/data/telclaude.json:ro
-      - moltbook-memory:/moltbook/memory:ro
+      - social-memory:/social/memory:ro
       - telclaude-claude-skills:/home/telclaude-skills:rw
 
     user: "0:0"
@@ -353,8 +356,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor profile required for OSS threat model hardening.
-      - apparmor:telclaude-moltbook
+      - apparmor:telclaude-social
 
     read_only: true
     tmpfs:
@@ -382,8 +384,8 @@ services:
       start_period: 15s
 
     networks:
-      - moltbook-relay-net
-      - moltbook-egress
+      - social-relay-net
+      - social-egress
 
     restart: unless-stopped
 
@@ -629,13 +631,13 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
-  # Moltbook isolated workspace (agent-moltbook RW)
-  moltbook-sandbox:
-    name: telclaude-moltbook-sandbox
+  # Social isolated workspace (agent-social RW)
+  social-sandbox:
+    name: telclaude-social-sandbox
 
-  # Moltbook shared memory (relay RW, agents RO)
-  moltbook-memory:
-    name: telclaude-moltbook-memory
+  # Social shared memory (relay RW, agents RO)
+  social-memory:
+    name: telclaude-social-memory
 
   # Claude skills profile (shared across relay/agents)
   telclaude-claude-skills:
@@ -668,11 +670,11 @@ networks:
     name: telclaude-relay-egress
     driver: bridge
 
-  moltbook-relay-net:
-    name: telclaude-moltbook-relay
+  social-relay-net:
+    name: telclaude-social-relay
     driver: bridge
     internal: true
 
-  moltbook-egress:
-    name: telclaude-moltbook-egress
+  social-egress:
+    name: telclaude-social-egress
     driver: bridge
