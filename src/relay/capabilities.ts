@@ -645,11 +645,27 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 						return;
 					}
 					const result = await handleTokenRefresh(refreshBody.token);
+					// Verify refreshed token scope matches caller's authenticated scope
+					if (result.ok && result.token) {
+						const refreshedPayload = verifyTokenLocally(result.token);
+						if (!refreshedPayload.valid || refreshedPayload.scope !== authResult.scope) {
+							writeJson(res, 403, { error: "Scope mismatch on token refresh." });
+							return;
+						}
+					}
 					rateLimiter.consume("token_refresh", authResult.scope);
 					writeJson(res, result.ok ? 200 : 401, result);
 					return;
 				}
 				const result = await handleTokenRefresh(tokenStr);
+				// Verify refreshed token scope matches caller's authenticated scope
+				if (result.ok && result.token) {
+					const refreshedPayload = verifyTokenLocally(result.token);
+					if (!refreshedPayload.valid || refreshedPayload.scope !== authResult.scope) {
+						writeJson(res, 403, { error: "Scope mismatch on token refresh." });
+						return;
+					}
+				}
 				rateLimiter.consume("token_refresh", authResult.scope);
 				writeJson(res, result.ok ? 200 : 401, result);
 				return;

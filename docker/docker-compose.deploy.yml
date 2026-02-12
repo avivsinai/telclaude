@@ -126,8 +126,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor commented out — profiles may not be installed on Pi
-      # - apparmor:telclaude-relay
+      - apparmor:telclaude-relay
 
     read_only: true
     tmpfs:
@@ -222,8 +221,7 @@ services:
     volumes:
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
       - ./telclaude.json:/data/telclaude.json:ro
-      - telclaude-claude-skills:/home/telclaude-skills:rw
-      - social-memory:/social/memory:ro
+      - telclaude-skills-telegram:/home/telclaude-skills:rw
       - media-inbox:/media/inbox:ro
       - media-outbox:/media/outbox:ro
 
@@ -241,8 +239,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor commented out — profiles may not be installed on Pi
-      # - apparmor:telclaude-agent
+      - apparmor:telclaude-agent
 
     read_only: true
     tmpfs:
@@ -304,7 +301,7 @@ services:
       - social-sandbox:/social/sandbox:rw
       - ./telclaude.json:/data/telclaude.json:ro
       - social-memory:/social/memory:ro
-      - telclaude-claude-skills:/home/telclaude-skills:rw
+      - telclaude-skills-social:/home/telclaude-skills:rw
 
     user: "0:0"
 
@@ -320,8 +317,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor commented out — profiles may not be installed on Pi
-      # - apparmor:telclaude-social
+      - apparmor:telclaude-social
 
     read_only: true
     tmpfs:
@@ -439,8 +435,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
-      # AppArmor commented out — profiles may not be installed on Pi
-      # - apparmor:telclaude-vault
+      - apparmor:telclaude-vault
 
     user: "1000:1000"
 
@@ -542,9 +537,12 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
-  # Claude skills profile (shared across relay/agents)
-  telclaude-claude-skills:
-    name: telclaude-claude-skills
+  # Claude skills profiles (per-agent isolation — no shared state between personas)
+  telclaude-skills-telegram:
+    name: telclaude-skills-telegram
+
+  telclaude-skills-social:
+    name: telclaude-skills-social
 
   # Social isolated workspace (agent-social RW)
   social-sandbox:

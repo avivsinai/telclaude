@@ -33,12 +33,11 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   # Workspace (read/write - this is where Claude works)
   /workspace/** rwklx,
 
-  # Claude skills profile (shared)
+  # Claude skills profile (per-agent isolated volume)
   /home/telclaude-skills/** rwklx,
 
-  # Social memory (read-only in agent)
-  /social/memory/** r,
-  deny /social/memory/** wklx,
+  # Deny social memory (telegram agent has no access — air-gap isolation)
+  deny /social/memory/** rwklx,
 
   # Media volumes (read-only in agent)
   /media/inbox/** r,

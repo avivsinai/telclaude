@@ -253,11 +253,8 @@ services:
       # Policy config (no secrets — providers, network rules, etc.)
       - ./telclaude.json:/data/telclaude.json:ro
 
-      # Claude skills profile (no auth secrets)
-      - telclaude-claude-skills:/home/telclaude-skills:rw
-
-      # Social memory (read-only in agent)
-      - social-memory:/social/memory:ro
+      # Claude skills profile (per-agent isolation — no shared state with social agent)
+      - telclaude-skills-telegram:/home/telclaude-skills:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro
@@ -343,7 +340,7 @@ services:
       - social-sandbox:/social/sandbox:rw
       - ./telclaude.json:/data/telclaude.json:ro
       - social-memory:/social/memory:ro
-      - telclaude-claude-skills:/home/telclaude-skills:rw
+      - telclaude-skills-social:/home/telclaude-skills:rw
 
     user: "0:0"
 
@@ -643,9 +640,12 @@ volumes:
   social-memory:
     name: telclaude-social-memory
 
-  # Claude skills profile (shared across relay/agents)
-  telclaude-claude-skills:
-    name: telclaude-claude-skills
+  # Claude skills profiles (per-agent isolation — no shared state between personas)
+  telclaude-skills-telegram:
+    name: telclaude-skills-telegram
+
+  telclaude-skills-social:
+    name: telclaude-skills-social
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks
