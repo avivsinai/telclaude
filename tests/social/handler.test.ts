@@ -40,7 +40,7 @@ vi.mock("../../src/telegram/notification-sanitizer.js", () => ({
 	shouldNotifyOnHeartbeat: vi.fn().mockReturnValue(false),
 }));
 
-import { handleSocialHeartbeat, handleSocialNotification } from "../../src/social/handler.js";
+import { handleSocialHeartbeat, handleSocialNotification, queryPublicPersona } from "../../src/social/handler.js";
 import type { SocialServiceClient } from "../../src/social/client.js";
 
 const SERVICE_ID = "moltbook";
@@ -300,6 +300,17 @@ describe("social handler", () => {
 		expect(res.message).not.toContain("proactive post created");
 		expect(client.createPost).not.toHaveBeenCalled();
 		expect(markEntryPostedMock).not.toHaveBeenCalled();
+	});
+
+	it("queryPublicPersona enables skills for trusted operator queries", async () => {
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("timeline looks good"));
+
+		await queryPublicPersona("what's on your X timeline?", SERVICE_ID);
+
+		expect(executeRemoteQueryMock).toHaveBeenCalledTimes(1);
+		const [, options] = executeRemoteQueryMock.mock.calls[0];
+		expect(options.enableSkills).toBe(true);
+		expect(options.poolKey).toBe(`${SERVICE_ID}:operator-query`);
 	});
 
 	it("proactive posting uses minimal prompt without general memory", async () => {

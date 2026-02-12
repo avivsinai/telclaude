@@ -402,6 +402,7 @@ export async function queryPublicPersona(
 	return runSocialQuery(bundle, serviceId, agentUrl, {
 		poolKey: `${serviceId}:operator-query`,
 		userId: `social:${serviceId}:operator`,
+		enableSkills: true,
 	});
 }
 
