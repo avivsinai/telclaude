@@ -12,12 +12,22 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/ssl_certs>
   #include <abstractions/user-tmp>
 
+  # Capabilities required for entrypoint (firewall, privilege drop, chown)
+  capability net_admin,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+  capability setuid,
+  capability setgid,
+
   # Allow general file access; deny rules below take precedence.
   file,
 
   # Allow execution of system binaries/libraries
   /bin/** ix,
+  /sbin/** ix,
   /usr/bin/** ix,
+  /usr/sbin/** ix,
   /usr/local/bin/** ix,
   /lib/** mr,
   /lib64/** mr,
@@ -25,17 +35,19 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   /usr/lib64/** mr,
 
   # App runtime
+  /etc/alternatives/** ix,
+
   /app/** r,
   /app/bin/** ix,
   /app/node_modules/** mr,
   /app/dist/** mr,
 
   # Data directory (SQLite, sessions, config)
-  /data/** rwklx,
+  /data/** rwklix,
 
   # Auth profile (OAuth tokens, skills)
-  /home/telclaude-auth/** rwklx,
-  /home/telclaude-skills/** rwklx,
+  /home/telclaude-auth/** rwklix,
+  /home/telclaude-skills/** rwklix,
 
   # Sidecar sockets (TOTP + vault)
   /run/totp/** rw,
@@ -44,11 +56,11 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   /run/vault/** rw,
 
   # Media volumes
-  /media/inbox/** rwklx,
-  /media/outbox/** rwklx,
+  /media/inbox/** rwklix,
+  /media/outbox/** rwklix,
 
   # Social memory (relay is single writer)
-  /social/memory/** rwklx,
+  /social/memory/** rwklix,
 
   # Deny workspace (relay should never touch user projects)
   deny /workspace/** rwklx,
@@ -69,13 +81,13 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   deny /etc/passwd w,
 
   # Temp + device nodes
-  /tmp/** rwklx,
+  /tmp/** rwklix,
   /dev/null rw,
   /dev/urandom r,
   /dev/tty rw,
 
   # Network: allow standard traffic (relay needs egress for Telegram API, etc.)
+  # Note: iptables-nft requires netlink which AppArmor may classify under raw/packet.
+  # Firewall enforcement is the primary network boundary; AppArmor restricts filesystem.
   network,
-  deny network raw,
-  deny network packet,
 }

@@ -7,9 +7,18 @@
 profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
   # Basic allowances
   #include <abstractions/base>
+  #include <abstractions/nameservice>
 
-  # Deny ALL network access (vault communicates only via Unix socket)
-  deny network,
+  # Node.js reads /proc/1/cgroup for container detection
+  /proc/1/cgroup r,
+
+  # Allow Unix domain sockets (vault communicates via /run/vault/vault.sock)
+  network unix,
+  # Deny IP networking (vault has no reason for TCP/UDP/raw)
+  deny network inet,
+  deny network inet6,
+  deny network raw,
+  deny network packet,
 
   # Deny mount operations
   deny mount,
@@ -40,7 +49,7 @@ profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
   /home/node/.telclaude/logs/** rw,
 
   # Temp (required for Node.js)
-  /tmp/** rwklx,
+  /tmp/** rwklix,
 
   # Device nodes
   /dev/null rw,

@@ -54,7 +54,8 @@ if [ "$(id -u)" = "0" ]; then
     if [ -d "/app/.claude/skills" ]; then
         echo "[entrypoint] Installing bundled skills"
         mkdir -p "${TELCLAUDE_CLAUDE_HOME}/skills"
-        cp -a /app/.claude/skills/. "${TELCLAUDE_CLAUDE_HOME}/skills/"
+        # -r instead of -a: AppArmor may block timestamp preservation (utimensat)
+        cp -r /app/.claude/skills/. "${TELCLAUDE_CLAUDE_HOME}/skills/"
         # chown may fail on NFS with UID squashing - that's OK, files are still accessible
         chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "${TELCLAUDE_CLAUDE_HOME}" 2>/dev/null || true
     fi
