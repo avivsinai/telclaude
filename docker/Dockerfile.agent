@@ -22,9 +22,8 @@ RUN npx playwright install --with-deps chromium \
     && chown -R node:node /ms-playwright
 
 # Install agent-browser CLI globally for headless browser automation.
-RUN npm install -g @anthropic-ai/agent-browser@latest 2>/dev/null \
-    || npm install -g @anthropic-ai/agent-browser 2>/dev/null \
-    || echo "WARN: agent-browser not yet published; browser skill will degrade gracefully"
+# Package: https://github.com/vercel-labs/agent-browser
+RUN npm install -g agent-browser@latest
 
 # Return to non-root user
 USER node

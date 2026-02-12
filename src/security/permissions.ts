@@ -598,6 +598,33 @@ function parseEnvAssignment(token: string): { name: string; value: string } | nu
 	return { name, value };
 }
 
+const SENSITIVE_ENV_VAR_NAMES = new Set([
+	"CLAUDE_CONFIG_DIR",
+	"TELCLAUDE_CLAUDE_HOME",
+	"TELCLAUDE_AUTH_DIR",
+	"TELCLAUDE_DATA_DIR",
+	"HOME",
+]);
+
+function getSensitiveEnvDefaults(): Map<string, string> {
+	const env = new Map<string, string>();
+	const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
+	if (claudeConfigDir) {
+		env.set("CLAUDE_CONFIG_DIR", claudeConfigDir);
+		env.set("TELCLAUDE_CLAUDE_HOME", claudeConfigDir);
+	}
+	if (process.env.TELCLAUDE_AUTH_DIR) {
+		env.set("TELCLAUDE_AUTH_DIR", process.env.TELCLAUDE_AUTH_DIR);
+	}
+	if (process.env.TELCLAUDE_DATA_DIR) {
+		env.set("TELCLAUDE_DATA_DIR", process.env.TELCLAUDE_DATA_DIR);
+	}
+	if (process.env.HOME) {
+		env.set("HOME", process.env.HOME);
+	}
+	return env;
+}
+
 function resolveEnvVars(token: string, env: Map<string, string>): string {
 	return token.replace(/\$(\w+)|\$\{([^}]+)\}/g, (match, var1, var2) => {
 		const name = (var1 ?? var2) as string | undefined;
@@ -731,7 +758,7 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 		"{",
 		"}",
 	]);
-	const envValues = new Map<string, string>();
+	const envValues = getSensitiveEnvDefaults();
 
 	const isSeparator = (token: string | { op: string }): boolean => {
 		if (typeof token !== "string") {
@@ -885,6 +912,8 @@ function commandContainsSensitivePath(command: string): boolean {
 		return true;
 	}
 
+	const envValues = getSensitiveEnvDefaults();
+
 	for (const token of tokens) {
 		const tokenValue =
 			typeof token === "string"
@@ -894,6 +923,12 @@ function commandContainsSensitivePath(command: string): boolean {
 					: "";
 		if (!tokenValue) continue;
 
+		const assignment = parseEnvAssignment(tokenValue);
+		if (assignment && SENSITIVE_ENV_VAR_NAMES.has(assignment.name)) {
+			envValues.set(assignment.name, assignment.value);
+			continue;
+		}
+
 		// Check basename patterns for bare filenames (e.g., ".env", "secrets.json").
 		if (isSensitiveBasename(tokenValue)) {
 			return true;
@@ -902,13 +937,22 @@ function commandContainsSensitivePath(command: string): boolean {
 		// For path-like tokens, do additional checks
 		if (!looksLikePath(tokenValue)) continue;
 
+		const resolvedToken = resolveEnvVars(tokenValue, envValues);
 		const expanded = expandHomeLike(tokenValue);
+		const expandedResolved = expandHomeLike(resolvedToken);
 		const normalized = normalizePathToken(tokenValue);
+		const normalizedResolved = normalizePathToken(resolvedToken);
 
 		// Check telclaude-specific sensitive patterns on both raw and expanded
 		if (
 			SENSITIVE_PATH_PATTERNS.some(
-				(pattern) => pattern.test(tokenValue) || pattern.test(expanded) || pattern.test(normalized),
+				(pattern) =>
+					pattern.test(tokenValue) ||
+					pattern.test(expanded) ||
+					pattern.test(normalized) ||
+					pattern.test(resolvedToken) ||
+					pattern.test(expandedResolved) ||
+					pattern.test(normalizedResolved),
 			)
 		) {
 			return true;
@@ -918,9 +962,15 @@ function commandContainsSensitivePath(command: string): boolean {
 		if (!looksLikeUrl(expanded) && matchesSensitiveCredentialPath(expanded)) {
 			return true;
 		}
+		if (!looksLikeUrl(expandedResolved) && matchesSensitiveCredentialPath(expandedResolved)) {
+			return true;
+		}
 
 		// Basename-only detection for path-like tokens (e.g., "./settings.json")
 		if (isSensitiveBasename(path.basename(normalized))) {
+			return true;
+		}
+		if (isSensitiveBasename(path.basename(normalizedResolved))) {
 			return true;
 		}
 	}

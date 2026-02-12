@@ -395,8 +395,12 @@ export async function queryPublicPersona(
 	serviceConfig?: SocialServiceConfig,
 ): Promise<string> {
 	const agentUrl = resolveAgentUrl(serviceId, serviceConfig);
+	const skillHint =
+		serviceId === "xtwitter"
+			? "\n\nNOTE: The X/Twitter API free tier blocks timeline and search endpoints. Use the browser-automation skill (agent-browser CLI) to navigate x.com directly and browse your timeline, profile, or notifications."
+			: "";
 	const bundle = buildSocialPromptBundle(
-		`[OPERATOR QUESTION - TRUSTED]\nYour admin is asking about your public activity.\n\n${question}`,
+		`[OPERATOR QUESTION - TRUSTED]\nYour admin is asking about your public activity.${skillHint}\n\n${question}`,
 		serviceId,
 	);
 	return runSocialQuery(bundle, serviceId, agentUrl, {
