@@ -12,12 +12,22 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/ssl_certs>
   #include <abstractions/user-tmp>
 
+  # Capabilities required for entrypoint (firewall, privilege drop, chown)
+  capability net_admin,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+  capability setuid,
+  capability setgid,
+
   # Allow general file access; deny rules below take precedence.
   file,
 
   # Allow execution of system binaries/libraries
   /bin/** ix,
+  /sbin/** ix,
   /usr/bin/** ix,
+  /usr/sbin/** ix,
   /usr/local/bin/** ix,
   /lib/** mr,
   /lib64/** mr,
@@ -25,16 +35,18 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   /usr/lib64/** mr,
 
   # App runtime
+  /etc/alternatives/** ix,
+
   /app/** r,
   /app/bin/** ix,
   /app/node_modules/** mr,
   /app/dist/** mr,
 
   # Workspace (read/write - this is where Claude works)
-  /workspace/** rwklx,
+  /workspace/** rwklix,
 
   # Claude skills profile (per-agent isolated volume)
-  /home/telclaude-skills/** rwklx,
+  /home/telclaude-skills/** rwklix,
 
   # Deny social memory (telegram agent has no access — air-gap isolation)
   deny /social/memory/** rwklx,
@@ -76,14 +88,13 @@ profile telclaude-agent flags=(attach_disconnected,mediate_deleted) {
   deny /etc/passwd w,
 
   # Temp + device nodes
-  /tmp/** rwklx,
+  /tmp/** rwklix,
   /dev/null rw,
   /dev/urandom r,
   /dev/tty rw,
 
-  # Network: allow standard traffic, deny raw sockets.
-  # Firewall remains the primary network enforcement layer.
+  # Network: allow standard traffic.
+  # Note: iptables-nft requires netlink which AppArmor may classify under raw/packet.
+  # Firewall enforcement is the primary network boundary; AppArmor restricts filesystem.
   network,
-  deny network raw,
-  deny network packet,
 }
