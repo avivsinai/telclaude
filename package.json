@@ -63,6 +63,10 @@
     "url": "https://github.com/avivsinai/telclaude/issues"
   },
   "homepage": "https://github.com/avivsinai/telclaude#readme",
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/avivsinai"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
