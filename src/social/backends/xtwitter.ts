@@ -137,7 +137,10 @@ export class XTwitterClient implements SocialServiceClient {
 			}
 			// Free tier: mentions endpoint returns 402 (credits) or 403 (not authorized)
 			if (result.status === 402 || result.status === 403) {
-				logger.info({ status: result.status }, "X mentions not available on current tier; skipping");
+				logger.info(
+					{ status: result.status },
+					"X mentions not available on current tier; skipping",
+				);
 				return [];
 			}
 			throw new Error(`X mentions failed (${result.status}): ${result.error}`);
