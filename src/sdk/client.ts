@@ -121,6 +121,15 @@ function resolveRealPath(inputPath: string): string {
 	}
 }
 
+function isWritableDir(dirPath: string): boolean {
+	try {
+		fs.accessSync(dirPath, fs.constants.W_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Fields that contain paths and should be scanned for sensitive paths.
  * Excludes content fields like Write.content, Edit.old_string/new_string,
@@ -933,8 +942,13 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// OPENAI_API_KEY and GITHUB_TOKEN should already be in process.env.
 	} else {
 		// Docker mode: Pass explicit env since container provides isolation
+		// Use cwd as HOME when actual HOME is read-only (e.g., social agent's HOME=/social)
+		// This ensures tools like agent-browser can create temp files
+		const effectiveHome = isWritableDir(process.env.HOME ?? "")
+			? (process.env.HOME ?? "")
+			: opts.cwd;
 		sandboxEnv = {
-			HOME: process.env.HOME ?? "",
+			HOME: effectiveHome,
 			USER: process.env.USER ?? "",
 			PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 			SHELL: process.env.SHELL ?? "/bin/sh",
@@ -968,6 +982,15 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		}
 		if (process.env.TELCLAUDE_MEDIA_OUTBOX_DIR) {
 			sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+		}
+
+		// Claude SDK needs CLAUDE_CONFIG_DIR to discover user-level skills and CLAUDE.md
+		if (process.env.CLAUDE_CONFIG_DIR) {
+			sandboxEnv.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+		}
+		// Playwright browsers path for agent-browser headless automation
+		if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+			sandboxEnv.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH;
 		}
 
 		// Anthropic proxy config — SDK process needs these to route API calls through relay
@@ -1086,7 +1109,6 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		sdkOpts.allowedTools = effectiveTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
 	}
-
 	// Opt-in beta headers
 	if (opts.betas?.length) {
 		sdkOpts.betas = opts.betas;
@@ -1317,16 +1339,18 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// SECURITY: Always load only "project" settings (not "user") to prevent settings bypass.
-	// This blocks attacks where:
-	// - User has disableAllHooks: true in ~/.claude/settings.json (bypasses PreToolUse hook)
-	// - User has permissive WebFetch rules that allow SSRF to private networks
-	// Project settings are controlled by the deployment and can be trusted.
-	// Combined with blocking writes to .claude/settings*.json (via isSensitivePath),
-	// this prevents prompt injection from writing disableAllHooks to project settings.
-	// NOTE: This means user-level model overrides, plugins, etc. won't load in telclaude.
-	// This is intentional - security takes precedence over customization.
-	sdkOpts.settingSources = ["project"];
+	// SECURITY: settingSources controls where the SDK loads settings (CLAUDE.md, skills, settings.json).
+	// "project" = cwd/.claude/, "user" = $CLAUDE_CONFIG_DIR/ (or ~/.claude/).
+	//
+	// Default to "project" only — this prevents loading user-level settings.json which could
+	// contain disableAllHooks: true (bypassing our PreToolUse security hooks).
+	//
+	// When enableSkills is true, we ALSO load "user" settings so the SDK discovers skills at
+	// $CLAUDE_CONFIG_DIR/skills/ (in Docker: /home/telclaude-skills/skills/).
+	// This is safe because writes to $CLAUDE_CONFIG_DIR/settings*.json are blocked by
+	// isSensitivePath (both PreToolUse hook and canUseTool), preventing the agent from
+	// creating a malicious disableAllHooks setting.
+	sdkOpts.settingSources = opts.enableSkills ? ["user", "project"] : ["project"];
 
 	// System prompt configuration
 	// Include user ID in system prompt for skills that need to make authenticated API calls

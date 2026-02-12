@@ -361,6 +361,18 @@ setup_firewall() {
     iptables -A OUTPUT -p udp --dport 853 -j DROP
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # TELCLAUDE_ALLOW: Internal hosts (needed by ALL modes including permissive)
+    # Must be populated BEFORE the permissive ACCEPT or default DENY,
+    # because RFC1918 DROPs above catch Docker bridge IPs.
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # Add internal hosts (Docker bridge IPs — must be allowed before RFC1918 drop)
+    if [ ${#INTERNAL_HOSTS[@]} -gt 0 ]; then
+        resolve_internal_hosts_with_retry
+        add_internal_host_rules
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # Network Mode: permissive/open allows all public egress
     # ═══════════════════════════════════════════════════════════════════════════
     if [ "$NETWORK_MODE" = "permissive" ] || [ "$NETWORK_MODE" = "open" ]; then
@@ -369,22 +381,12 @@ setup_firewall() {
         iptables -A OUTPUT -j ACCEPT
         echo "[firewall] IPv4 firewall configured with PERMISSIVE policy"
         echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
-        echo "[firewall] allowed: ALL public internet egress (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
+        echo "[firewall] allowed: ALL public internet egress + ${#INTERNAL_HOSTS[@]} internal hosts (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
         return 0
     fi
 
     # DEFAULT DENY (must be last in OUTPUT)
     iptables -A OUTPUT -j DROP
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TELCLAUDE_ALLOW: Populate dynamic rules
-    # ═══════════════════════════════════════════════════════════════════════════
-
-    # Add internal hosts (Docker bridge IPs — must be allowed before RFC1918 drop)
-    if [ ${#INTERNAL_HOSTS[@]} -gt 0 ]; then
-        resolve_internal_hosts_with_retry
-        add_internal_host_rules
-    fi
 
     # Add whitelisted domains (restricted mode only)
     for domain in "${ALLOWED_DOMAINS[@]}"; do

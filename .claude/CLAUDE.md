@@ -23,6 +23,7 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **telegram-reply**: Formats replies for Telegram
 - **image-generator**: Creates images via OpenAI GPT Image API
 - **text-to-speech**: Converts text to audio via OpenAI TTS
+- **browser-automation**: Headless Chromium browser via `agent-browser` CLI
 - **integration-test**: Full SDK integration test for verifying telclaude configuration
 - **memory**: Social memory management for agents
 
