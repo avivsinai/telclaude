@@ -264,6 +264,9 @@ async function runProactiveQuery(
 	return result.text;
 }
 
+/** Per-service lock to prevent overlapping heartbeats (scheduled + manual). */
+const heartbeatInFlight = new Set<string>();
+
 /**
  * Handle a heartbeat for a social service.
  * Three phases: notification handling, proactive posting, autonomous activity.
@@ -273,6 +276,23 @@ export async function handleSocialHeartbeat(
 	client: SocialServiceClient,
 	serviceConfig?: SocialServiceConfig,
 	_payload?: SocialHeartbeatPayload,
+): Promise<SocialHandlerResult> {
+	if (heartbeatInFlight.has(serviceId)) {
+		logger.warn({ serviceId }, "heartbeat already in flight; skipping");
+		return { ok: false, message: "heartbeat already running" };
+	}
+	heartbeatInFlight.add(serviceId);
+	try {
+		return await runHeartbeatPhases(serviceId, client, serviceConfig);
+	} finally {
+		heartbeatInFlight.delete(serviceId);
+	}
+}
+
+async function runHeartbeatPhases(
+	serviceId: string,
+	client: SocialServiceClient,
+	serviceConfig?: SocialServiceConfig,
 ): Promise<SocialHandlerResult> {
 	logger.info({ serviceId }, "social heartbeat received");
 

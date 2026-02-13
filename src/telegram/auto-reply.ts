@@ -1148,6 +1148,8 @@ async function handleInboundMessage(
 		trimmedBody.startsWith("/otp ") ||
 		trimmedBody.startsWith("/promote ") ||
 		trimmedBody === "/pending" ||
+		trimmedBody === "/heartbeat" ||
+		trimmedBody.startsWith("/heartbeat ") ||
 		trimmedBody === "/public-log" ||
 		trimmedBody.startsWith("/public-log ") ||
 		trimmedBody.startsWith("/ask-public ");
@@ -1258,7 +1260,9 @@ async function handleInboundMessage(
 			await msg.reply(`Promote failed: ${result.reason}`);
 			return;
 		}
-		await msg.reply(`Promoted entry \`${entryId}\` — will be posted on next social heartbeat.`);
+		await msg.reply(
+			`Promoted \`${entryId}\`. Send /heartbeat to publish now, or wait for the next scheduled one.`,
+		);
 		return;
 	}
 
@@ -1287,6 +1291,49 @@ async function handleInboundMessage(
 			return `\`${entry.id}\` "${preview}" — ${ageStr}\n  /promote ${entry.id}`;
 		});
 		await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
+		return;
+	}
+
+	if (trimmedBody === "/heartbeat" || trimmedBody.startsWith("/heartbeat ")) {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can trigger heartbeats.");
+			return;
+		}
+		const parts = trimmedBody.split(/\s+/);
+		const serviceIdArg = parts[1]?.trim() || undefined;
+		const enabledServices = cfg.socialServices?.filter((s) => s.enabled) ?? [];
+		if (enabledServices.length === 0) {
+			await msg.reply("No social services are enabled.");
+			return;
+		}
+		// Specific service or all enabled services (parallel)
+		const targets = serviceIdArg
+			? enabledServices.filter((s) => s.id === serviceIdArg)
+			: enabledServices;
+		if (targets.length === 0) {
+			const ids = enabledServices.map((s) => s.id).join(", ");
+			await msg.reply(`Unknown service. Available: ${ids}`);
+			return;
+		}
+		const { createSocialClient, handleSocialHeartbeat } = await import("../social/index.js");
+		const label = targets.map((s) => s.id).join(", ");
+		await msg.reply(`Running heartbeat: ${label}...`);
+		await msg.sendComposing();
+		const results = await Promise.allSettled(
+			targets.map(async (svc) => {
+				const client = await createSocialClient(svc);
+				if (!client) return { serviceId: svc.id, ok: false, message: "client not configured" };
+				const result = await handleSocialHeartbeat(svc.id, client, svc);
+				return { serviceId: svc.id, ...result };
+			}),
+		);
+		const lines = results.map((r, i) => {
+			const svcId = targets[i].id;
+			if (r.status === "rejected") return `${svcId}: failed — ${String(r.reason).slice(0, 80)}`;
+			const { ok, message } = r.value;
+			return `${svcId}: ${ok ? message || "done" : `failed — ${message}`}`;
+		});
+		await msg.reply(lines.join("\n"));
 		return;
 	}
 
