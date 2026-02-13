@@ -21,6 +21,7 @@
   - `READ_ONLY`: tools Read/Glob/Grep/WebFetch/WebSearch; no writes.
   - `WRITE_LOCAL`: +Write/Edit/Bash; blocks destructive patterns; accident guard only.
   - `FULL_ACCESS`: all tools; human approval required unless user is claimed admin.
+  - `SOCIAL`: file tools + Bash + WebFetch/WebSearch; Bash trust-gated (operator/autonomous only); WebFetch permissive (public internet, RFC1918/metadata blocked); Write/Edit blocked to skills/auth/memory paths.
 - Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_LOCAL; TTL 5 minutes.
 - Infrastructure secrets are non-overridable blocks.
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.

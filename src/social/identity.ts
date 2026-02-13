@@ -1,3 +1,4 @@
+import { loadConfig } from "../config/config.js";
 import type { MemoryEntry } from "../memory/types.js";
 
 /**
@@ -27,9 +28,27 @@ function getTrustedEntries(entries: MemoryEntry[], category: MemoryEntry["catego
 		.filter(Boolean);
 }
 
+/** Build "Your accounts" lines from socialServices config. */
+function buildAccountLines(): string | null {
+	try {
+		const config = loadConfig();
+		const services = config.socialServices.filter((s) => s.enabled && s.handle);
+		if (services.length === 0) return null;
+
+		const lines = services.map((s) => {
+			const name = s.displayName ? `@${s.handle} ("${s.displayName}")` : `@${s.handle}`;
+			return `- ${s.type}: ${name}`;
+		});
+		return `Your accounts (you own these — you post from them)\n${lines.join("\n")}`;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Build identity preamble for social service prompts.
  * Uses trusted profile, interests, and meta entries.
+ * Includes account handles from config so the agent knows its own accounts.
  */
 export function buildSocialIdentityPreamble(entries: MemoryEntry[]): string {
 	const profile = getTrustedEntries(entries, "profile");
@@ -44,6 +63,7 @@ export function buildSocialIdentityPreamble(entries: MemoryEntry[]): string {
 
 	const sections = [
 		"You are telclaude.",
+		buildAccountLines(),
 		avatarSection,
 		formatSection("Trusted profile", profile),
 		formatSection("Trusted personality traits & interests", interests),
