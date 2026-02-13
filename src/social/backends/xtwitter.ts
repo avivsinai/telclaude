@@ -1,7 +1,12 @@
 import type { SocialServiceConfig } from "../../config/config.js";
 import { getChildLogger } from "../../logging.js";
 import type { SocialServiceClient } from "../client.js";
-import type { SocialNotification, SocialPostResult, SocialReplyResult } from "../types.js";
+import type {
+	SocialNotification,
+	SocialPostResult,
+	SocialReplyResult,
+	SocialTimelinePost,
+} from "../types.js";
 
 const logger = getChildLogger({ module: "xtwitter-backend" });
 
@@ -27,6 +32,24 @@ type XMentionsResponse = {
 type XTweetResponse = {
 	data?: { id: string; text: string };
 	errors?: Array<{ message: string; type: string }>;
+};
+
+type XTimelineTweet = {
+	id: string;
+	text: string;
+	author_id?: string;
+	created_at?: string;
+	public_metrics?: {
+		like_count?: number;
+		retweet_count?: number;
+		reply_count?: number;
+	};
+};
+
+type XTimelineResponse = {
+	data?: XTimelineTweet[];
+	includes?: { users?: Array<{ id: string; name: string; username: string }> };
+	meta?: { newest_id?: string; oldest_id?: string; result_count?: number };
 };
 
 type XApiResult<T> =
@@ -195,6 +218,58 @@ export class XTwitterClient implements SocialServiceClient {
 
 		const tweetId = result.data?.data?.id;
 		return { ok: true, status: result.status, postId: tweetId };
+	}
+
+	async fetchTimeline(options?: { maxResults?: number }): Promise<SocialTimelinePost[]> {
+		const maxResults = Math.min(Math.max(options?.maxResults ?? 10, 1), 100);
+		const params = new URLSearchParams({
+			max_results: String(maxResults),
+			"tweet.fields": "created_at,public_metrics",
+			expansions: "author_id",
+			"user.fields": "name,username",
+		});
+
+		const result = await this.request<XTimelineResponse>(
+			`/2/users/${encodeURIComponent(this.userId)}/timelines/reverse_chronological?${params}`,
+			{ method: "GET" },
+		);
+
+		if (!result.ok) {
+			if (result.status === 429 || result.status === 402 || result.status === 403) {
+				logger.info({ status: result.status }, "X timeline not available; returning empty");
+				return [];
+			}
+			throw new Error(`X timeline failed (${result.status}): ${result.error}`);
+		}
+
+		const tweets = result.data?.data;
+		if (!tweets || !Array.isArray(tweets)) {
+			return [];
+		}
+
+		// Build author lookup from includes.users expansion
+		const userMap = new Map<string, { name: string; username: string }>();
+		for (const user of result.data?.includes?.users ?? []) {
+			userMap.set(user.id, { name: user.name, username: user.username });
+		}
+
+		return tweets.map((tweet): SocialTimelinePost => {
+			const author = tweet.author_id ? userMap.get(tweet.author_id) : undefined;
+			return {
+				id: tweet.id,
+				text: tweet.text,
+				authorName: author?.name,
+				authorHandle: author?.username,
+				createdAt: tweet.created_at,
+				metrics: tweet.public_metrics
+					? {
+							likes: tweet.public_metrics.like_count,
+							retweets: tweet.public_metrics.retweet_count,
+							replies: tweet.public_metrics.reply_count,
+						}
+					: undefined,
+			};
+		});
 	}
 }
 

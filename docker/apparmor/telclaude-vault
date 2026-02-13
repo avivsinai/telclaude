@@ -1,8 +1,10 @@
 #include <tunables/global>
 
 # Telclaude Vault AppArmor profile
-# Most restrictive profile: no network, no mount, minimal filesystem access.
-# The vault daemon only needs to read/write encrypted credentials and the Unix socket.
+# Highly restrictive: minimal filesystem, no raw sockets, no mount.
+# Network limited to TCP/UDP (stream/dgram) for OAuth2 token refresh.
+# The vault daemon reads/writes encrypted credentials, serves the Unix socket,
+# and makes outbound HTTPS calls to OAuth2 token endpoints.
 
 profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
   # Basic allowances
@@ -14,9 +16,12 @@ profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
 
   # Allow Unix domain sockets (vault communicates via /run/vault/vault.sock)
   network unix,
-  # Deny IP networking (vault has no reason for TCP/UDP/raw)
-  deny network inet,
-  deny network inet6,
+  # Allow TCP/UDP for OAuth2 token refresh (outbound HTTPS + DNS)
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  # Deny raw/packet sockets (no sniffing or crafted packets)
   deny network raw,
   deny network packet,
 

@@ -1,4 +1,9 @@
-import type { SocialNotification, SocialPostResult, SocialReplyResult } from "./types.js";
+import type {
+	SocialNotification,
+	SocialPostResult,
+	SocialReplyResult,
+	SocialTimelinePost,
+} from "./types.js";
 
 /**
  * Interface for social service backends.
@@ -21,4 +26,7 @@ export interface SocialServiceClient {
 		content: string,
 		options?: { title?: string; tags?: string[] },
 	): Promise<SocialPostResult>;
+
+	/** Fetch recent timeline posts (optional — not all backends support this). */
+	fetchTimeline?(options?: { maxResults?: number }): Promise<SocialTimelinePost[]>;
 }
