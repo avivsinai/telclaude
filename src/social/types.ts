@@ -41,6 +41,15 @@ export type SocialPostResult = {
 	rateLimited?: boolean;
 };
 
+export type SocialTimelinePost = {
+	id: string;
+	text: string;
+	authorName?: string;
+	authorHandle?: string;
+	createdAt?: string;
+	metrics?: { likes?: number; retweets?: number; replies?: number };
+};
+
 export type SocialHeartbeatPayload = {
 	serviceId?: string;
 	timestamp?: number;
