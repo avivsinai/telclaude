@@ -1327,6 +1327,11 @@ async function handleInboundMessage(
 		}
 		// Use the first enabled service (or could allow specifying)
 		const svc = enabledServices[0];
+		// Show typing indicator — query can take minutes on Pi4 with browser automation
+		await msg.sendComposing();
+		const typingTimer = setInterval(() => {
+			msg.sendComposing().catch(() => {});
+		}, 4000);
 		try {
 			const { queryPublicPersona } = await import("../social/handler.js");
 			const response = await queryPublicPersona(question, svc.id, svc);
@@ -1335,6 +1340,8 @@ async function handleInboundMessage(
 		} catch (err) {
 			logger.warn({ error: String(err), serviceId: svc.id }, "/ask-public query failed");
 			await msg.reply("Failed to reach public persona. Check logs.");
+		} finally {
+			clearInterval(typingTimer);
 		}
 		return;
 	}

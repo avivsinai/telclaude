@@ -16,7 +16,6 @@
  */
 
 import fs from "node:fs";
-import path from "node:path";
 import {
 	type HookCallback,
 	type HookCallbackMatcher,
@@ -42,7 +41,6 @@ import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
 import { getGitCredentials } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
-import { escapeRegex } from "../utils.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -569,117 +567,31 @@ function createNetworkSecurityHook(
 
 function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
 	const socialContext = isSocialContext(actorUserId);
-	const sandboxRoot = process.env.TELCLAUDE_AGENT_WORKDIR ?? "/social/sandbox";
-	const resolvedRoot = resolveRealPath(sandboxRoot);
-	const traversalPattern = /(?:^|[\\/])\\.\\.(?:[\\/]|$)/;
-	const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
-	const claudeAuthDir = process.env.TELCLAUDE_AUTH_DIR;
-	const forbiddenBashPatterns = [
-		/\/proc(?:\/|$)/i,
-		/\.claude(?:\/|$)/i,
-		/\/social\/memory(?:\/|$)/i,
-		/\/home\/telclaude-auth(?:\/|$)/i,
-		/\/home\/telclaude-skills(?:\/|$)/i,
+	// DESIGN: The container IS the sandbox (read-only rootfs, AppArmor, no secrets mounted).
+	// This hook provides defense-in-depth for two specific threats:
+	// 1. Skill poisoning (untrusted input writes to skills, later executed in trusted context)
+	// 2. Bash in untrusted flows (regex-based command inspection is unwinnable against
+	//    shell obfuscation — so we disable Bash entirely for untrusted actors instead)
+	// File reads are NOT restricted — the container controls what paths exist.
+	// See: docs/architecture.md "Docker Split Topology"
+
+	// Trusted social actors that get full tool access (including Bash).
+	// Untrusted actors (notifications, proactive posting) get no Bash at all.
+	// This eliminates the entire class of skill-poisoning-via-Bash attacks without
+	// playing regex whack-a-mole against shell obfuscation.
+	const trustedActorSuffixes = [":operator", ":autonomous"];
+	const isTrustedActor =
+		actorUserId != null && trustedActorSuffixes.some((suffix) => actorUserId.endsWith(suffix));
+
+	// Paths where writes are blocked via Write/Edit tools (all actors, trusted or not)
+	const writeProtectedPaths = [
+		/\/home\/telclaude-skills(?:\/|$)/i, // skill poisoning: write skill → trusted loads it
+		/\/home\/telclaude-auth(?:\/|$)/i, // auth tokens (not mounted, but explicit)
+		/\/social\/memory(?:\/|$)/i, // memory integrity (container has :ro, belt-and-suspenders)
 	];
-	if (claudeConfigDir) {
-		forbiddenBashPatterns.push(new RegExp(`^${escapeRegex(claudeConfigDir)}(?:[/\\\\]|$)`, "i"));
-	}
-	if (claudeAuthDir) {
-		forbiddenBashPatterns.push(new RegExp(`^${escapeRegex(claudeAuthDir)}(?:[/\\\\]|$)`, "i"));
-	}
-	const networkExfilTools = /\b(curl|wget|ftp|nc|netcat|telnet)\b/i;
-	const pyHttp = /\bpython[23]?\s+-c\s+['"][\s\S]*requests\.(get|post|put|patch)/i;
-	const nodeHttp = /\bnode\s+-e\s+['"][\s\S]*(fetch|http[s]?\.)/i;
 
-	const resolveSandboxPath = (rawPath: string): string => {
-		return path.isAbsolute(rawPath) ? path.resolve(rawPath) : path.resolve(resolvedRoot, rawPath);
-	};
-
-	const isWithinSandbox = (candidatePath: string): boolean => {
-		const candidateReal = resolveRealPath(candidatePath);
-		const rootWithSep = resolvedRoot.endsWith(path.sep)
-			? resolvedRoot
-			: `${resolvedRoot}${path.sep}`;
-		return candidateReal === resolvedRoot || candidateReal.startsWith(rootWithSep);
-	};
-
-	const containsTraversal = (value: string): boolean =>
-		traversalPattern.test(value) || value.includes("..");
-
-	const containsForbiddenBashPath = (command: string): boolean =>
-		forbiddenBashPatterns.some((pattern) => pattern.test(command));
-
-	const allAncestorsWithinSandbox = (target: string): boolean => {
-		let current = path.resolve(target);
-		const rootWithSep = resolvedRoot.endsWith(path.sep)
-			? resolvedRoot
-			: `${resolvedRoot}${path.sep}`;
-
-		while (true) {
-			let real: string;
-			try {
-				real = fs.realpathSync(current);
-			} catch {
-				return false;
-			}
-
-			if (!(real === resolvedRoot || real.startsWith(rootWithSep))) {
-				return false;
-			}
-
-			if (real === resolvedRoot) {
-				return true;
-			}
-
-			const parent = path.dirname(current);
-			if (parent === current) {
-				return true;
-			}
-			current = parent;
-		}
-	};
-
-	const enforceSandboxPath = (toolName: string, rawPath?: string | null) => {
-		if (!rawPath) {
-			logger.warn(
-				{ toolName, actorUserId: actorUserId ?? null },
-				"[hook] missing social sandbox path",
-			);
-			return denyHookResponse("Social context: file path is required.");
-		}
-
-		const normalized = resolveSandboxPath(rawPath);
-		const candidateForCheck = fs.existsSync(normalized) ? normalized : path.dirname(normalized);
-		if (!isWithinSandbox(candidateForCheck)) {
-			logger.warn(
-				{
-					toolName,
-					actorUserId: actorUserId ?? null,
-					path: redactForLog(rawPath),
-					resolvedPath: redactForLog(normalized),
-					checkedPath: redactForLog(candidateForCheck),
-				},
-				"[hook] blocked social path outside sandbox",
-			);
-			return denyHookResponse("Social context: file access must stay within sandbox.");
-		}
-
-		const ancestorTarget = candidateForCheck;
-		if (!allAncestorsWithinSandbox(ancestorTarget)) {
-			logger.warn(
-				{
-					toolName,
-					actorUserId: actorUserId ?? null,
-					path: redactForLog(rawPath),
-					ancestorPath: redactForLog(ancestorTarget),
-				},
-				"[hook] blocked social path via ancestor check",
-			);
-			return denyHookResponse("Social context: file access must stay within sandbox.");
-		}
-
-		return allowHookResponse();
-	};
+	const isWriteProtected = (filePath: string): boolean =>
+		writeProtectedPaths.some((pattern) => pattern.test(filePath));
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -693,58 +605,42 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 		const toolName = input.tool_name;
 		const toolInput = input.tool_input as Record<string, unknown>;
 
+		// Block tools that have no legitimate social use
 		if (toolName === "NotebookEdit") {
 			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked social tool");
 			return denyHookResponse(`Social context: ${toolName} is not permitted.`);
 		}
 
-		if (toolName === "Read" && isReadInput(toolInput)) {
-			return enforceSandboxPath(toolName, toolInput.file_path);
+		// Bash: only allowed for trusted actors (operator, autonomous).
+		// Untrusted actors (notifications, proactive) don't need Bash, and
+		// regex-based command inspection can't stop shell obfuscation.
+		if (toolName === "Bash" && !isTrustedActor) {
+			logger.warn(
+				{ actorUserId: actorUserId ?? null },
+				"[hook] blocked Bash for untrusted social actor",
+			);
+			return denyHookResponse(
+				"Social context: Bash is not available for this operation. Use file tools or WebFetch instead.",
+			);
 		}
 
-		if (toolName === "Write" && isWriteInput(toolInput)) {
-			return enforceSandboxPath(toolName, toolInput.file_path);
+		// Write/Edit: block writes to protected paths (all actors, even trusted)
+		if (toolName === "Write" && isWriteInput(toolInput) && isWriteProtected(toolInput.file_path)) {
+			logger.warn(
+				{ path: redactForLog(toolInput.file_path), actorUserId: actorUserId ?? null },
+				"[hook] blocked social write to protected path",
+			);
+			return denyHookResponse("Social context: writing to this location is not permitted.");
+		}
+		if (toolName === "Edit" && isEditInput(toolInput) && isWriteProtected(toolInput.file_path)) {
+			logger.warn(
+				{ path: redactForLog(toolInput.file_path), actorUserId: actorUserId ?? null },
+				"[hook] blocked social edit of protected path",
+			);
+			return denyHookResponse("Social context: editing this file is not permitted.");
 		}
 
-		if (toolName === "Edit" && isEditInput(toolInput)) {
-			return enforceSandboxPath(toolName, toolInput.file_path);
-		}
-
-		if (toolName === "Glob" && isGlobInput(toolInput)) {
-			if (containsTraversal(toolInput.pattern)) {
-				return denyHookResponse("Social context: glob pattern contains traversal.");
-			}
-			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
-			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
-			return enforceSandboxPath(toolName, pathForCheck);
-		}
-
-		if (toolName === "Grep" && isGrepInput(toolInput)) {
-			if (containsTraversal(toolInput.pattern)) {
-				return denyHookResponse("Social context: grep pattern contains traversal.");
-			}
-			const searchPath = toolInput.path ?? "";
-			const pathForCheck = searchPath && searchPath.length > 0 ? searchPath : sandboxRoot;
-			return enforceSandboxPath(toolName, pathForCheck);
-		}
-
-		if (toolName === "Bash") {
-			const command = String(toolInput.command ?? "");
-			if (networkExfilTools.test(command) || pyHttp.test(command) || nodeHttp.test(command)) {
-				return denyHookResponse(
-					"Social context: direct network egress via Bash is not permitted. Use WebFetch for HTTP requests.",
-				);
-			}
-			if (containsForbiddenBashPath(command)) {
-				return denyHookResponse("Social context: bash access outside sandbox is blocked.");
-			}
-			return allowHookResponse();
-		}
-
-		if (toolName === "WebFetch" || toolName === "WebSearch") {
-			return allowHookResponse();
-		}
-
+		// All other tools: allow (container isolation is the boundary)
 		return allowHookResponse();
 	};
 

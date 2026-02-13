@@ -31,8 +31,8 @@ agent-browser navigate --url "https://example.com"
 # Take a snapshot (accessibility tree — lightweight alternative to screenshot)
 agent-browser snapshot
 
-# Take a screenshot (saves PNG)
-agent-browser screenshot --path /tmp/screenshot.png
+# Take a screenshot (saves PNG — use cwd or /tmp)
+agent-browser screenshot --path ./screenshot.png
 
 # Click an element (by CSS selector or text)
 agent-browser click --selector "button.submit"

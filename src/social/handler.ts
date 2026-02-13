@@ -172,18 +172,19 @@ async function collectResponseText(
 		};
 	}
 
-	return { text: responseText, success: true };
+	// No done chunk = stream interrupted (agent crash, network failure, timeout)
+	return { text: responseText, success: false, error: "stream ended without completion" };
 }
 
 async function runSocialQuery(
 	bundle: SocialPromptBundle,
 	serviceId: string,
 	agentUrl: string,
-	options?: { poolKey?: string; userId?: string; enableSkills?: boolean },
+	options?: { poolKey?: string; userId?: string; enableSkills?: boolean; timeoutMs?: number },
 ): Promise<string> {
 	const defaultPoolKey = `${serviceId}:social`;
 	const defaultUserId = `social:${serviceId}`;
-	const timeoutMs = getDefaultTimeoutMs(serviceId);
+	const timeoutMs = options?.timeoutMs ?? getDefaultTimeoutMs(serviceId);
 
 	const stream = executeRemoteQuery(bundle.prompt, {
 		agentUrl,
@@ -407,6 +408,8 @@ export async function queryPublicPersona(
 		poolKey: `${serviceId}:operator-query`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
+		// Operator queries may use browser-automation (slow on Pi4); allow 5 min
+		timeoutMs: 300_000,
 	});
 }
 
