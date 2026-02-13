@@ -109,9 +109,14 @@ ALLOWED_DOMAINS=(
     "unpkg.com"
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # Social service APIs (credential proxy outbound)
+    # Social services (API + browser automation)
     # ═══════════════════════════════════════════════════════════════════════════
     "api.x.com"
+    "x.com"
+    "twitter.com"
+    "abs.twimg.com"
+    "pbs.twimg.com"
+    "t.co"
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Docker Hub (for container pulls)

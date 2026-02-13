@@ -381,6 +381,10 @@ const SocialServiceConfigSchema = z.object({
 	type: z.string().min(1),
 	enabled: z.boolean().default(SOCIAL_SERVICE_DEFAULTS.enabled),
 	apiKey: z.string().optional(),
+	/** Public handle on the service (e.g. "telclaude" for @telclaude on X/Twitter) */
+	handle: z.string().optional(),
+	/** Display name on the service (e.g. "Claude Ici") */
+	displayName: z.string().optional(),
 	heartbeatIntervalHours: z
 		.number()
 		.positive()

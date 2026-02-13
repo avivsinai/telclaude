@@ -943,7 +943,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
 	const socialContext = isSocialContext(opts.userId);
-	const effectivePermissive = socialContext ? false : isPermissiveMode;
+	// Social agents get permissive WebFetch — their job is browsing the public internet.
+	// Container hardening (no secrets, AppArmor, separate network) is the boundary.
+	// RFC1918/metadata blocks still apply unconditionally in the network hook.
+	const effectivePermissive = socialContext ? true : isPermissiveMode;
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];

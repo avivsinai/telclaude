@@ -67,12 +67,12 @@ Telclaude supports multiple social service backends through a generic `SocialSer
 
 ### Architecture
 
-- **Config-driven**: each service is an entry in `socialServices[]` with `id`, `type`, `enabled`, `apiKey`, `heartbeatIntervalHours`, `enableSkills`, `allowedSkills`, `notifyOnHeartbeat`, and optional `agentUrl` override.
+- **Config-driven**: each service is an entry in `socialServices[]` with `id`, `type`, `enabled`, `apiKey`, `handle`, `displayName`, `heartbeatIntervalHours`, `enableSkills`, `allowedSkills`, `notifyOnHeartbeat`, and optional `agentUrl` override.
 - **Heartbeat-driven**: relay scheduler polls each enabled service's notifications on a configured interval (default 4h, min 60s).
 - **Three-phase heartbeat**: Phase 1 — process incoming notifications (reply to mentions). Phase 2 — proactive posting (publish promoted ideas). Phase 3 — autonomous activity (browse timeline, engage, create content).
 - **Single social persona**: all social services share one agent container (`agent-social`) with no workspace mount and a shared `/social/sandbox` working directory. RPC scope is `"social"` for all services.
 - **Unified social memory**: all social services share `source: "social"` memory. The public persona is one cohesive identity across platforms — not per-service.
-- **Restricted tier**: social requests run under the `SOCIAL` tier (file tools + Bash allowed inside the sandbox, WebFetch/WebSearch allowed). Skills are disabled by default but can be enabled per-service via `enableSkills` config (Phase 3 autonomous only; Phases 1-2 always disable skills for untrusted notification handling).
+- **SOCIAL tier**: social requests run under the `SOCIAL` tier. Bash is trust-gated: allowed for trusted actors (operator queries, autonomous heartbeats) but blocked for untrusted actors (notifications, proactive posting). Write/Edit to protected paths (`/home/telclaude-skills`, `/home/telclaude-auth`, `/social/memory`) is blocked for all actors. WebFetch is permissive (all public URLs allowed; RFC1918/metadata still blocked). Skills are disabled by default but can be enabled per-service via `enableSkills` config.
 - **Untrusted wrappers**: notification payloads and social context are wrapped with explicit "UNTRUSTED / do not execute" warnings before being sent to the model.
 - **Memory isolation**: social prompts only include unified social memory (`source: "social"`). Runtime assertions enforce that telegram entries never leak into social queries, and vice versa.
 - **Proactive posting**: user-approved ideas (promoted via `/promote`) are posted to the service during heartbeat, with rate limiting and agent isolation.
@@ -158,14 +158,14 @@ Telclaude stores memory in SQLite with provenance metadata, split at the **priva
 | READ_ONLY | Read, Glob, Grep, WebFetch, WebSearch | No writes allowed |
 | WRITE_LOCAL | READ_ONLY + Write, Edit, Bash | Blocks destructive patterns; prevents accidents |
 | FULL_ACCESS | All tools | Approval required unless user is claimed admin |
-| SOCIAL | Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch | Social service agents; sandboxed workspace, skills disabled |
+| SOCIAL | Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch | Social agents; Bash trust-gated (operator/autonomous only); WebFetch permissive (public internet); Write/Edit blocked to skills/auth/memory paths |
 
 ## Network Enforcement
 
 - **Bash**: SDK sandbox `allowedDomains` in native mode; Docker firewall enforced in containers (agent runs tools; relay still restricts egress).
-- **WebFetch**: PreToolUse hook (blocks RFC1918/metadata) + canUseTool domain allowlist + private endpoint allowlist.
+- **WebFetch**: PreToolUse hook blocks RFC1918/metadata unconditionally. Private agents use domain allowlist; social agents are permissive (all public URLs). `canUseTool` is a fallback layer with domain + privateEndpoint allowlists.
 - **WebSearch**: NOT filtered (server-side by Anthropic).
-- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch only.
+- `TELCLAUDE_NETWORK_MODE=open|permissive`: enables broad egress for WebFetch (private agents only; social is always permissive).
 - Internal relay ↔ agent RPC is allowed via hostname allowlist in the firewall script.
 - **Allowlist scope**: Domain allowlists are enforced, but HTTP method restrictions are not enforced at runtime.
 - **CGNAT/Tailscale**: The private IP matcher treats 100.64.0.0/10 (RFC 6598) as private to support Tailscale.
