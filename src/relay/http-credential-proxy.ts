@@ -250,12 +250,14 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 // Upstream request timeout (60 seconds)
 const UPSTREAM_TIMEOUT_MS = 60 * 1000;
 
-// Headers that should not be forwarded between client and upstream
-const HOP_BY_HOP_HEADERS = new Set([
+// Headers that should not be forwarded between client and upstream.
+// Includes true hop-by-hop headers plus content-encoding (stripped because
+// fetch() auto-decompresses, so the body we stream is already decoded).
+const EXCLUDED_RESPONSE_HEADERS = new Set([
 	"transfer-encoding",
 	"connection",
 	"keep-alive",
-	"content-encoding",
+	"content-encoding", // Not hop-by-hop, but body is auto-decoded by fetch()
 	"proxy-authenticate",
 	"proxy-authorization",
 	"te",
@@ -383,11 +385,15 @@ async function proxyRequest(
 			);
 		}
 
-		// Forward response headers, excluding hop-by-hop headers
+		// Forward response headers, excluding hop-by-hop + decoded headers.
+		// If upstream used content-encoding, also strip content-length since
+		// fetch() auto-decompresses and the original compressed length is wrong.
+		const hadContentEncoding = upstreamResponse.headers.has("content-encoding");
 		upstreamResponse.headers.forEach((value, key) => {
-			if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
-				res.setHeader(key, value);
-			}
+			const lower = key.toLowerCase();
+			if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
+			if (hadContentEncoding && lower === "content-length") return;
+			res.setHeader(key, value);
 		});
 
 		res.writeHead(upstreamResponse.status);
