@@ -15,7 +15,7 @@ import {
 	logProviderHealthResults,
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
-import { startCapabilityServer } from "../relay/capabilities.js";
+import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { initTokenManager } from "../relay/token-manager.js";
@@ -36,6 +36,7 @@ import {
 	type SocialScheduler,
 	startSocialScheduler,
 } from "../social/index.js";
+import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
@@ -486,6 +487,14 @@ export function registerRelayCommand(program: Command): void {
 					abortSignal: abortController.signal,
 					securityProfile: effectiveProfile,
 					dryRun: opts.dryRun ?? false,
+					onReady: () => {
+						bufferStartupReady({
+							label: "relay",
+							version: getServiceVersion(),
+							revision: getServiceRevision(),
+						});
+						logger.info("relay ready — buffered startup notification");
+					},
 				});
 
 				// Final cleanup after monitor exits

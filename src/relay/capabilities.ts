@@ -30,6 +30,9 @@ import {
 	type SocialHeartbeatPayload,
 } from "../social/index.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
+import type { RuntimeSnapshot } from "../system-metadata.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
+import { sendAdminAlert } from "../telegram/admin-alert.js";
 import { handleAnthropicProxyRequest, isAnthropicProxyRequest } from "./anthropic-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 import {
@@ -41,6 +44,43 @@ import {
 } from "./token-manager.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
+
+// ── Startup Notification Buffer ──────────────────────────────────────────
+// Collects relay + agent readiness signals, then sends one consolidated
+// Telegram message after a short debounce window.
+
+type StartupEntry = { label: string; version: string; revision: string };
+const startupBuffer: StartupEntry[] = [];
+let startupFlushTimer: ReturnType<typeof setTimeout> | null = null;
+const STARTUP_DEBOUNCE_MS = 8_000;
+
+export function bufferStartupReady(entry: StartupEntry): void {
+	startupBuffer.push(entry);
+	// Reset debounce on each new entry
+	if (startupFlushTimer) clearTimeout(startupFlushTimer);
+	startupFlushTimer = setTimeout(flushStartupNotification, STARTUP_DEBOUNCE_MS);
+}
+
+function flushStartupNotification(): void {
+	startupFlushTimer = null;
+	if (startupBuffer.length === 0) return;
+	const entries = startupBuffer.splice(0);
+	const lines = entries.map((e) => {
+		const rev = e.revision && e.revision !== "unknown" ? ` (${e.revision})` : "";
+		return `${e.label}: v${e.version}${rev}`;
+	});
+	const config = loadConfig();
+	sendAdminAlert(
+		{
+			level: "info",
+			title: "telclaude online",
+			message: lines.join("\n"),
+		},
+		{ fallbackChats: config.telegram?.allowedChats },
+	).catch((err) => {
+		logger.warn({ error: String(err) }, "failed to send startup notification");
+	});
+}
 
 /**
  * Try to authenticate using a v3 session token header.
@@ -93,6 +133,7 @@ const DEFAULT_PATH_LIMIT = 4096;
 const MAX_INFLIGHT = 4;
 const DEFAULT_TRANSCRIPTION_LIMITS = { maxPerHourPerUser: 20, maxPerDayPerUser: 50 };
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
+const CAPABILITIES_STARTED_AT = Date.now();
 // Base64 encoding adds ~33% overhead, so 20MB file = ~27MB base64
 const ATTACHMENT_DELIVER_BODY_LIMIT = 30 * 1024 * 1024;
 const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
@@ -495,7 +536,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 		const requestPath = req.url.split("?")[0] ?? "";
 
 		if (req.method === "GET" && requestPath === "/health") {
-			writeJson(res, 200, { ok: true });
+			writeJson(res, 200, {
+				ok: true,
+				service: "relay",
+				runtime: buildRuntimeSnapshot(CAPABILITIES_STARTED_AT),
+			});
 			return;
 		}
 
@@ -554,6 +599,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			// Social service scopes (anything not "telegram") have restricted endpoint access
 			if (authResult.scope !== "telegram") {
 				const allowedPaths = new Set([
+					"/v1/agent.ready",
 					"/v1/auth/token-exchange",
 					"/v1/auth/token-refresh",
 					"/v1/social.heartbeat",
@@ -578,6 +624,25 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				{ scope: authResult.scope, url: req.url, method: req.method },
 				"capability request authenticated",
 			);
+
+			// ── Agent Ready Notification ─────────────────────────────────────
+			if (requestPath === "/v1/agent.ready") {
+				let readyBody: { scope?: string; runtime?: RuntimeSnapshot };
+				try {
+					readyBody = JSON.parse(body) as { scope?: string; runtime?: RuntimeSnapshot };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				const agentScope = readyBody.scope ?? authResult.scope;
+				const agentVersion = readyBody.runtime?.version ?? "unknown";
+				const agentRevision = readyBody.runtime?.revision ?? "unknown";
+				const label = agentScope === "telegram" ? "agent (private)" : `agent (${agentScope})`;
+				logger.info({ scope: agentScope, version: agentVersion }, "agent announced readiness");
+				bufferStartupReady({ label, version: agentVersion, revision: agentRevision });
+				writeJson(res, 200, { ok: true });
+				return;
+			}
 
 			// ── Config Endpoints (sanitized, no secrets) ─────────────────────
 			if (requestPath === "/v1/config.providers") {

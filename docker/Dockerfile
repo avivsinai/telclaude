@@ -160,7 +160,9 @@ COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
+COPY --from=builder --chown=node:node /build/src ./src
 COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
+COPY --chown=node:node docs/architecture.md ./docs/architecture.md
 COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
 
 # Copy firewall initialization scripts and entrypoint wrapper
@@ -173,8 +175,10 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh 
 RUN ln -s /app/bin/telclaude.js /usr/local/bin/telclaude
 
 # Environment variables
+ARG GIT_COMMIT=unknown
 ENV NODE_ENV=production
 ENV TELCLAUDE_DATA_DIR=/data
+ENV TELCLAUDE_REVISION=${GIT_COMMIT}
 ENV HOME=/home/node
 
 # NOTE: We do NOT use USER directive here.

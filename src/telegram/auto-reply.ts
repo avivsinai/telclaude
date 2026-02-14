@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
+import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
 	DEFAULT_IDLE_MINUTES,
@@ -745,6 +746,11 @@ export type MonitorOptions = {
 	securityProfile?: "simple" | "strict" | "test";
 	/** If true, do not send any outbound Telegram messages/media. */
 	dryRun?: boolean;
+	/**
+	 * Called once after the first successful Telegram connection.
+	 * Useful for startup notification hooks.
+	 */
+	onReady?: () => Promise<void> | void;
 };
 
 /**
@@ -760,6 +766,7 @@ export async function monitorTelegramProvider(
 		abortSignal,
 		securityProfile = "simple",
 		dryRun = false,
+		onReady,
 	} = options;
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
@@ -881,6 +888,7 @@ export async function monitorTelegramProvider(
 	}, MEDIA_CLEANUP_INTERVAL_MS);
 
 	const recentlySent = new Set<string>();
+	let startupNotificationSent = false;
 
 	let reconnectAttempts = 0;
 
@@ -927,6 +935,15 @@ export async function monitorTelegramProvider(
 					},
 				},
 			});
+
+			if (onReady && !startupNotificationSent) {
+				startupNotificationSent = true;
+				try {
+					await onReady();
+				} catch (err) {
+					logger.warn({ error: String(err) }, "monitor onReady callback failed");
+				}
+			}
 
 			// Log runner errors
 			runner.task()?.catch((err) => {
@@ -1150,6 +1167,8 @@ async function handleInboundMessage(
 		trimmedBody === "/pending" ||
 		trimmedBody === "/heartbeat" ||
 		trimmedBody.startsWith("/heartbeat ") ||
+		trimmedBody === "/status" ||
+		trimmedBody.startsWith("/status ") ||
 		trimmedBody === "/public-log" ||
 		trimmedBody.startsWith("/public-log ") ||
 		trimmedBody.startsWith("/ask-public ");
@@ -1294,6 +1313,22 @@ async function handleInboundMessage(
 		return;
 	}
 
+	if (trimmedBody === "/status" || trimmedBody.startsWith("/status ")) {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can query status.");
+			return;
+		}
+		await msg.sendComposing();
+		try {
+			const status = await collectTelclaudeStatus();
+			await msg.reply(formatTelclaudeStatus(status, true));
+		} catch (err) {
+			logger.warn({ error: String(err), chatId: msg.chatId }, "status command failed");
+			await msg.reply("Failed to collect status. Check logs.");
+		}
+		return;
+	}
+
 	if (trimmedBody === "/heartbeat" || trimmedBody.startsWith("/heartbeat ")) {
 		if (!isAdmin(msg.chatId)) {
 			await msg.reply("Only admin can trigger heartbeats.");
@@ -1361,9 +1396,9 @@ async function handleInboundMessage(
 			await msg.reply("Only admin can query the public persona.");
 			return;
 		}
-		const question = trimmedBody.slice("/ask-public ".length).trim();
-		if (!question) {
-			await msg.reply("Usage: `/ask-public <question>`");
+		const payload = trimmedBody.slice("/ask-public ".length).trim();
+		if (!payload) {
+			await msg.reply("Usage: `/ask-public [serviceId] <question>`");
 			return;
 		}
 		// Route to social agent — private LLM never sees the response
@@ -1372,8 +1407,17 @@ async function handleInboundMessage(
 			await msg.reply("No social services are enabled.");
 			return;
 		}
-		// Use the first enabled service (or could allow specifying)
-		const svc = enabledServices[0];
+		const parts = payload.split(/\s+/);
+		const maybeService = enabledServices.find((s) => s.id === parts[0]);
+		const svc = maybeService ?? enabledServices[0];
+		const question = maybeService ? payload.slice(parts[0].length + 1).trim() : payload;
+		if (!question) {
+			const serviceIds = enabledServices.map((s) => s.id).join(", ");
+			await msg.reply(
+				`Usage: \`/ask-public [serviceId] <question>\`\nAvailable services: ${serviceIds}`,
+			);
+			return;
+		}
 		// Show typing indicator — query can take minutes on Pi4 with browser automation
 		await msg.sendComposing();
 		const typingTimer = setInterval(() => {

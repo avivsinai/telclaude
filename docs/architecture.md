@@ -111,7 +111,7 @@ The operator can query the public persona from Telegram using two tiers:
 
 **Tier 1: `/public-log [serviceId] [hours]`** — Activity metadata (no LLM). Returns counts, timestamps, and action types from the `social_activity_log` SQLite table. Zero injection risk — no untrusted content touches any LLM.
 
-**Tier 2: `/ask-public <question>`** — Routed to social agent. The relay pipes the social agent's response directly to Telegram. The private telegram agent never sees it — the relay handles the routing. Uses dedicated `poolKey: "${serviceId}:operator-query"`.
+**Tier 2: `/ask-public [serviceId] <question>`** — Routed to social agent. The relay pipes the social agent's response directly to Telegram. The private telegram agent never sees it — the relay handles the routing. Uses dedicated `poolKey: "${serviceId}:operator-query"` (with explicit or inferred service fallback to the first enabled service).
 
 **Security (air gap)**: The private LLM never processes social memory. This prevents the confused deputy problem — social memory could contain prompt injection from X timeline that would be executed with elevated privileges.
 

@@ -37,6 +37,7 @@ coverage/
 !.claude/**/*.md
 docs/
 !docs/social-contract.md
+!docs/architecture.md
 
 # OS files
 .DS_Store

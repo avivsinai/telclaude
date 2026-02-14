@@ -7,6 +7,7 @@
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import { normalizeTelegramId, stringToChatId } from "../utils.js";
 
 const logger = getChildLogger({ module: "admin-alert" });
 
@@ -15,6 +16,11 @@ export interface AdminAlert {
 	title: string;
 	message: string;
 }
+
+type AdminAlertOptions = {
+	/** Optional fallback recipients when no explicit admin links are configured. */
+	fallbackChats?: Array<number | string>;
+};
 
 /**
  * Get all chat IDs that are linked to the "admin" identity.
@@ -27,22 +33,59 @@ function getAdminChatIds(): number[] {
 	return rows.map((r) => r.chat_id);
 }
 
+function normalizeChatIds(values?: Array<number | string>): number[] {
+	const normalized = new Set<number>();
+	if (!Array.isArray(values)) {
+		return [];
+	}
+
+	for (const value of values) {
+		const parsed = normalizeTelegramId(value);
+		if (!parsed) {
+			continue;
+		}
+		const chatId = stringToChatId(parsed);
+		if (!Number.isNaN(chatId)) {
+			normalized.add(chatId);
+		}
+	}
+
+	return Array.from(normalized);
+}
+
+function resolveRecipientChatIds(
+	cfg: { telegram?: { allowedChats?: Array<number | string> } } = {},
+): number[] {
+	const adminChatIds = getAdminChatIds();
+	if (adminChatIds.length > 0) {
+		return Array.from(new Set(adminChatIds));
+	}
+
+	const fallback = normalizeChatIds(cfg.telegram?.allowedChats);
+	return Array.from(new Set(fallback));
+}
+
 /**
  * Send an alert to all admin chats.
  *
  * Requires the bot to be configured and running (or at least have a valid token).
  * If called from CLI without a running bot, creates a new bot instance temporarily.
  */
-export async function sendAdminAlert(alert: AdminAlert): Promise<void> {
+export async function sendAdminAlert(
+	alert: AdminAlert,
+	options?: AdminAlertOptions,
+): Promise<void> {
 	const cfg = loadConfig();
-	const botToken = cfg.telegram?.botToken;
+	const botToken = cfg.telegram?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
 
 	if (!botToken) {
 		logger.warn("No bot token configured, cannot send admin alert");
 		throw new Error("No bot token configured");
 	}
 
-	const adminChatIds = getAdminChatIds();
+	const adminChatIds = options
+		? resolveRecipientChatIds({ telegram: { allowedChats: options.fallbackChats } })
+		: getAdminChatIds();
 	if (adminChatIds.length === 0) {
 		logger.warn("No admin chats found, cannot send alert");
 		throw new Error("No admin chats configured");
