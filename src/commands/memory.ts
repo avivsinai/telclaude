@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { Command } from "commander";
-import { fetchMemorySnapshot, proposeMemory, quarantineMemory } from "../agent/memory-client.js";
 import type { MemoryCategory, TrustLevel } from "../memory/types.js";
+import { quarantineIdea, readMemory, writeMemory } from "../services/memory.js";
 
 export function registerMemoryCommands(program: Command): void {
 	const memory = program.command("memory").description("Memory management commands");
@@ -19,7 +19,7 @@ export function registerMemoryCommands(program: Command): void {
 		.action(
 			async (opts: { categories?: string; trust?: string; limit?: string; chatId?: string }) => {
 				try {
-					const result = await fetchMemorySnapshot({
+					const result = await readMemory({
 						categories: opts.categories
 							?.split(",")
 							.map((s) => s.trim())
@@ -54,7 +54,7 @@ export function registerMemoryCommands(program: Command): void {
 			) => {
 				try {
 					const entryId = opts.id ?? `mem-${crypto.randomUUID().slice(0, 12)}`;
-					const result = await proposeMemory(
+					const result = await writeMemory(
 						[
 							{
 								id: entryId,
@@ -82,7 +82,7 @@ export function registerMemoryCommands(program: Command): void {
 		.action(async (content: string, opts: { id?: string; userId?: string; chatId?: string }) => {
 			try {
 				const entryId = opts.id ?? `mem-${crypto.randomUUID().slice(0, 12)}`;
-				const result = await quarantineMemory(entryId, content, {
+				const result = await quarantineIdea(entryId, content, {
 					userId: opts.userId,
 					chatId: opts.chatId,
 				});
@@ -99,7 +99,7 @@ export function registerMemoryCommands(program: Command): void {
 		.option("--dry-run", "Show what would be deleted without deleting")
 		.action(async (opts: { dryRun?: boolean }) => {
 			try {
-				const result = await fetchMemorySnapshot({ limit: 500 });
+				const result = await readMemory({ limit: 500 });
 				const count = result.entries.length;
 				console.log(`Total entries: ${count}`);
 				if (opts.dryRun) {

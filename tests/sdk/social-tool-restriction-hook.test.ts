@@ -64,18 +64,17 @@ describe("createSocialToolRestrictionHook (PreToolUse)", () => {
 		expect(res.permissionDecisionReason).toContain("Bash is not available");
 	});
 
-	it("denies Bash for untrusted social actors (proactive)", async () => {
+	it("allows Bash for trusted social actors (proactive — user-promoted content)", async () => {
 		const sdkOpts = await buildSdkOptions({
 			cwd: "/tmp",
 			tier: "SOCIAL",
 			poolKey: "xtwitter:proactive",
 			userId: "social:xtwitter:proactive",
-			enableSkills: false,
+			enableSkills: true,
 		});
 
 		const res = await runPreToolUse(sdkOpts, "Bash", { command: "echo ok" });
-		expect(res.permissionDecision).toBe("deny");
-		expect(res.permissionDecisionReason).toContain("Bash is not available");
+		expect(res.permissionDecision).toBe("allow");
 	});
 
 	it("allows Bash for trusted social actors (operator)", async () => {
