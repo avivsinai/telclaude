@@ -29,6 +29,7 @@ import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerStatusCommand } from "./commands/status.js";
+import { registerSummarizeCommand } from "./commands/summarize.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
 import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
@@ -78,6 +79,7 @@ registerVaultCommand(program);
 registerVaultDaemonCommand(program);
 registerKeygenCommand(program);
 registerMemoryCommands(program);
+registerSummarizeCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

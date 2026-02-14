@@ -20,8 +20,10 @@ import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import { cachedDNSLookup, isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
+import { summarizeUrl } from "../services/summarize.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
 import {
@@ -162,6 +164,14 @@ type TranscriptionRequest = {
 	path: string;
 	language?: string;
 	model?: string;
+	userId?: string;
+};
+
+type SummarizeRequest = {
+	url: string;
+	maxCharacters?: number;
+	timeoutMs?: number;
+	format?: "text" | "markdown";
 	userId?: string;
 };
 
@@ -605,6 +615,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					"/v1/social.heartbeat",
 					"/v1/memory.propose",
 					"/v1/memory.snapshot",
+					"/v1/summarize",
 				]);
 				if (!allowedPaths.has(requestPath)) {
 					writeJson(res, 403, { error: "Forbidden." });
@@ -811,6 +822,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			let parsed: ImageRequest &
 				TTSRequest &
 				TranscriptionRequest &
+				SummarizeRequest &
 				AttachmentFetchRequest &
 				LocalFileDeliverRequest &
 				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
@@ -818,6 +830,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				parsed = JSON.parse(body) as ImageRequest &
 					TTSRequest &
 					TranscriptionRequest &
+					SummarizeRequest &
 					AttachmentFetchRequest &
 					LocalFileDeliverRequest &
 					AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
@@ -1038,6 +1051,79 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					language: result.language,
 					durationSeconds: result.durationSeconds,
 				});
+				return;
+			}
+
+			if (req.url === "/v1/summarize") {
+				const typed = parsed as SummarizeRequest;
+				if (!typed.url || typeof typed.url !== "string") {
+					writeJson(res, 400, { error: "Missing url." });
+					return;
+				}
+				if (typed.url.length > 2048) {
+					writeJson(res, 413, { error: "URL too long." });
+					return;
+				}
+
+				// Validate URL format
+				let parsedUrl: URL;
+				try {
+					parsedUrl = new URL(typed.url);
+				} catch {
+					writeJson(res, 400, { error: "Invalid URL." });
+					return;
+				}
+				if (!parsedUrl.protocol.startsWith("http")) {
+					writeJson(res, 400, { error: "Only HTTP(S) URLs are supported." });
+					return;
+				}
+
+				// Block private/metadata IPs via DNS resolution (SSRF protection)
+				const hostname = parsedUrl.hostname;
+				const resolvedIPs = await cachedDNSLookup(hostname);
+				if (resolvedIPs) {
+					for (const ip of resolvedIPs) {
+						if (isNonOverridableBlock(ip) || isPrivateIP(ip)) {
+							writeJson(res, 403, { error: "Private/internal URLs are not allowed." });
+							return;
+						}
+					}
+				}
+
+				// Rate limit
+				const rateLimiter = getMultimediaRateLimiter();
+				const config = loadConfig();
+				const rateConfig = {
+					maxPerHourPerUser: config.summarize?.maxPerHourPerUser ?? 30,
+					maxPerDayPerUser: config.summarize?.maxPerDayPerUser ?? 100,
+				};
+				const limitResult = rateLimiter.checkLimit("summarize", rateLimitUserId, rateConfig);
+				if (!limitResult.allowed) {
+					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
+					return;
+				}
+
+				// Clamp user-controlled values against config caps
+				const configMaxChars = config.summarize?.maxCharacters ?? 8000;
+				const configTimeoutMs = config.summarize?.timeoutMs ?? 30_000;
+				const maxCharacters = typed.maxCharacters
+					? Math.min(Math.max(1, typed.maxCharacters), configMaxChars * 4)
+					: configMaxChars;
+				const timeoutMs = typed.timeoutMs
+					? Math.min(Math.max(1000, typed.timeoutMs), configTimeoutMs * 4)
+					: configTimeoutMs;
+
+				const result = await summarizeUrl(typed.url, {
+					maxCharacters,
+					timeoutMs,
+					format: typed.format,
+					userId,
+					skipRateLimit: true,
+				});
+
+				rateLimiter.consume("summarize", rateLimitUserId);
+
+				writeJson(res, 200, result);
 				return;
 			}
 
