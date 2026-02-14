@@ -10,6 +10,7 @@ import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 import { loadSocialContractPrompt } from "../social-contract.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
 
 const logger = getChildLogger({ module: "agent-server" });
 
@@ -19,6 +20,7 @@ const MAX_TIMEOUT_MS = Number(process.env.TELCLAUDE_AGENT_MAX_TIMEOUT_MS ?? 600_
 const DEFAULT_TIMEOUT_MS = Number(process.env.TELCLAUDE_AGENT_DEFAULT_TIMEOUT_MS ?? 600_000);
 const AGENT_WORKDIR = process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
 const RESOLVED_AGENT_WORKDIR = path.resolve(AGENT_WORKDIR);
+export const AGENT_STARTED_AT = Date.now();
 
 type QueryRequest = {
 	prompt: string;
@@ -140,7 +142,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 		}
 
 		if (req.method === "GET" && req.url === "/health") {
-			writeJson(res, 200, { ok: true });
+			writeJson(res, 200, {
+				ok: true,
+				service: "agent",
+				runtime: buildRuntimeSnapshot(AGENT_STARTED_AT),
+			});
 			return;
 		}
 

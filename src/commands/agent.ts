@@ -1,11 +1,13 @@
 import fsSync from "node:fs";
 import type { Command } from "commander";
-import { startAgentServer } from "../agent/server.js";
+import { AGENT_STARTED_AT, startAgentServer } from "../agent/server.js";
 import { bootstrapSessionToken } from "../agent/token-client.js";
+import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
 
 const logger = getChildLogger({ module: "cmd-agent" });
 
@@ -115,7 +117,49 @@ export function registerAgentCommand(program: Command): void {
 				}
 			}
 
+			// Announce readiness to relay (non-blocking, retries if relay not up yet)
+			if (relayUrl) {
+				const scope = isSocialAgent ? "social" : "telegram";
+				notifyRelayReady(relayUrl, scope as InternalAuthScope, 1);
+			}
+
 			// Keep the process alive (server runs indefinitely)
 			await new Promise(() => {});
+		});
+}
+
+/**
+ * POST to relay /v1/agent.ready so it can send admin notification.
+ * Retries up to 3 times with backoff — relay may not be up yet.
+ */
+function notifyRelayReady(relayUrl: string, scope: InternalAuthScope, attempt: number): void {
+	const runtime = buildRuntimeSnapshot(AGENT_STARTED_AT);
+	const body = JSON.stringify({ scope, runtime });
+	const path = "/v1/agent.ready";
+
+	fetch(`${relayUrl}${path}`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...buildInternalAuthHeaders("POST", path, body, { scope }),
+		},
+		body,
+		signal: AbortSignal.timeout(10_000),
+	})
+		.then((res) => {
+			if (res.ok) {
+				logger.info({ scope }, "announced readiness to relay");
+			} else {
+				logger.warn({ scope, status: res.status }, "relay rejected ready announcement");
+			}
+		})
+		.catch((err) => {
+			if (attempt < 3) {
+				const delay = attempt * 10_000;
+				logger.debug({ scope, attempt, delay }, "relay not reachable, retrying ready announcement");
+				setTimeout(() => notifyRelayReady(relayUrl, scope, attempt + 1), delay);
+			} else {
+				logger.warn({ scope, error: String(err) }, "failed to announce readiness to relay");
+			}
 		});
 }

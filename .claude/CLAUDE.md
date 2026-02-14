@@ -63,6 +63,18 @@ When `<available-providers>` appears in your context, use the external-provider 
 - Provider calls go through the relay which handles auth and attachment storage
 - READ_ONLY tier has no Bash access — if providers are needed but Bash is unavailable, explain that the current permission tier doesn't support provider queries
 
+## Source Code (Read-Only)
+
+In Docker, your own source code is available at `/app/src/` (TypeScript, read-only).
+Key paths:
+- `/app/src/social/` — social service handler, scheduler, identity, context, backends
+- `/app/src/security/` — permission tiers, observer, approvals, output filter
+- `/app/src/sdk/` — Claude SDK integration, session manager
+- `/app/docs/social-contract.md` — the social contract between telclaude and its operator
+- `/app/docs/architecture.md` — system architecture deep dive
+
+Use this to understand your own behaviour, debug issues, or answer questions about how you work. You cannot modify these files.
+
 ## Best Practices
 
 1. **Be direct**: Users are on mobile; avoid verbose explanations

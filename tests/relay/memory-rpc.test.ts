@@ -104,6 +104,23 @@ describe("memory rpc", () => {
 		}
 	});
 
+	it("returns health metadata", async () => {
+		const res = await fetch(`${baseUrl}/health`, { method: "GET" });
+		expect(res.status).toBe(200);
+		const payload = (await res.json()) as {
+			ok?: boolean;
+			service?: string;
+			runtime?: { version: string; revision: string; startedAt: string; uptimeSeconds: number };
+		};
+		expect(payload.ok).toBe(true);
+		expect(payload.service).toBe("relay");
+		expect(payload.runtime).toBeTypeOf("object");
+		expect(typeof payload.runtime?.version).toBe("string");
+		expect(typeof payload.runtime?.revision).toBe("string");
+		expect(typeof payload.runtime?.startedAt).toBe("string");
+		expect(typeof payload.runtime?.uptimeSeconds).toBe("number");
+	});
+
 	it("accepts propose and returns snapshot (POST)", async () => {
 		const proposeBody = JSON.stringify({
 			entries: [{ id: "entry-1", category: "profile", content: "hello" }],

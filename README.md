@@ -331,7 +331,7 @@ Telclaude can integrate with private REST APIs ("sidecars") over WebFetch withou
 | Command | Description |
 |---------|-------------|
 | `telclaude diagnose-sandbox-network` | Debug sandbox network issues |
-| `telclaude integration-test [--all]` | Run SDK integration tests |
+| `telclaude integration-test [--all] [--agents]` | Run SDK integration tests (optional direct agent transport check with `--agents`) |
 | `telclaude reset-db [--force]` | Delete SQLite database (requires `TELCLAUDE_ENABLE_RESET_DB=1`) |
 
 ## Usage example

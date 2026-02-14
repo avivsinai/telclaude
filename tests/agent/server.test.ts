@@ -58,6 +58,23 @@ describe("agent server social userId normalization", () => {
 		}
 	});
 
+	it("returns health metadata", async () => {
+		const res = await fetch(`${baseUrl}/health`, { method: "GET" });
+		expect(res.status).toBe(200);
+		const payload = (await res.json()) as {
+			ok?: boolean;
+			service?: string;
+			runtime?: { version: string; revision: string; startedAt: string; uptimeSeconds: number };
+		};
+		expect(payload.ok).toBe(true);
+		expect(payload.service).toBe("agent");
+		expect(payload.runtime).toBeTypeOf("object");
+		expect(typeof payload.runtime?.version).toBe("string");
+		expect(typeof payload.runtime?.revision).toBe("string");
+		expect(typeof payload.runtime?.startedAt).toBe("string");
+		expect(typeof payload.runtime?.uptimeSeconds).toBe("number");
+	});
+
 	it("forces social prefix for social scope userId", async () => {
 		executePooledQueryImpl.mockReturnValueOnce(
 			(async function* () {
