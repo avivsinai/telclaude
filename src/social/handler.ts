@@ -461,10 +461,14 @@ export async function queryPublicPersona(
 		`[OPERATOR QUESTION - TRUSTED]\nYour admin is asking about your public activity.${apiHint}${postingHint}${timelineBlock}\n\n${question}`,
 		serviceId,
 	);
+	// Operator queries are interactive (user waiting) and may use skills/browser.
+	// Use a longer timeout than the default heartbeat timeout.
+	const operatorTimeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 300_000);
 	return runSocialQuery(bundle, serviceId, agentUrl, {
 		poolKey: `${serviceId}:operator-query`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
+		timeoutMs: operatorTimeoutMs,
 	});
 }
 
