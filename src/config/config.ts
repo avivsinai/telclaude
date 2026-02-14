@@ -48,6 +48,13 @@ const TTS_DEFAULTS = {
 	maxPerDayPerUser: 100,
 } as const;
 
+const SUMMARIZE_DEFAULTS = {
+	maxPerHourPerUser: 30,
+	maxPerDayPerUser: 100,
+	maxCharacters: 8000,
+	timeoutMs: 30_000,
+} as const;
+
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
@@ -155,6 +162,14 @@ const TTSConfigSchema = z.object({
 	// Rate limiting for cost control
 	maxPerHourPerUser: z.number().int().positive().default(TTS_DEFAULTS.maxPerHourPerUser),
 	maxPerDayPerUser: z.number().int().positive().default(TTS_DEFAULTS.maxPerDayPerUser),
+});
+
+// Summarize (URL content extraction) configuration schema
+const SummarizeConfigSchema = z.object({
+	maxPerHourPerUser: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxPerHourPerUser),
+	maxPerDayPerUser: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxPerDayPerUser),
+	maxCharacters: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxCharacters),
+	timeoutMs: z.number().int().positive().default(SUMMARIZE_DEFAULTS.timeoutMs),
 });
 
 // Security profile - determines which security layers are active
@@ -412,6 +427,8 @@ const TelclaudeConfigSchema = z.object({
 	imageGeneration: ImageGenerationConfigSchema.default(IMAGE_GENERATION_DEFAULTS),
 	videoProcessing: VideoProcessingConfigSchema.default(VIDEO_PROCESSING_DEFAULTS),
 	tts: TTSConfigSchema.default(TTS_DEFAULTS),
+	// URL content extraction / summarization
+	summarize: SummarizeConfigSchema.default(SUMMARIZE_DEFAULTS),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
 	// Generic social services (replaces per-service top-level keys)
@@ -432,6 +449,7 @@ export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
 export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
 export type TTSConfig = z.infer<typeof TTSConfigSchema>;
+export type SummarizeConfig = z.infer<typeof SummarizeConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;

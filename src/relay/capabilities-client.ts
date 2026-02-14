@@ -120,6 +120,24 @@ export async function relayValidateAttachment(input: { ref: string; userId?: str
 	return postJson("/v1/attachment/validate", input);
 }
 
+export async function relaySummarize(input: {
+	url: string;
+	maxCharacters?: number;
+	timeoutMs?: number;
+	format?: "text" | "markdown";
+	userId?: string;
+}): Promise<{
+	url: string;
+	title: string | null;
+	siteName: string | null;
+	content: string;
+	wordCount: number;
+	truncated: boolean;
+	transcriptSource: string | null;
+}> {
+	return postJson("/v1/summarize", input);
+}
+
 export async function relayDeliverLocalFile(input: {
 	sourcePath: string;
 	filename?: string;

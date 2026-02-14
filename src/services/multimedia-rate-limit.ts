@@ -17,6 +17,7 @@ export type MultimediaFeature =
 	| "transcription"
 	| "video_processing"
 	| "social_post"
+	| "summarize"
 	| "token_refresh"
 	| `${string}_post`;
 
