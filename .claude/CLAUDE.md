@@ -26,6 +26,7 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **browser-automation**: Headless Chromium browser via `agent-browser` CLI
 - **integration-test**: Full SDK integration test for verifying telclaude configuration
 - **memory**: Social memory management for agents
+- **summarize**: Extracts and summarizes web content from URLs (articles, YouTube, podcasts)
 
 ## Tool Access by Tier
 | Tier | Available Tools |
