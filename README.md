@@ -27,7 +27,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 | `examples/` | Configuration examples (minimal, personal, team) |
 | `CLAUDE.md` | Agent playbook (auto-loaded by Claude Code) |
 | `AGENTS.md` | Agents guide pointer |
-| `docs/architecture.md` | Architecture deep dive, security model, vault details |
+| `docs/architecture.md` | Architecture design rationale, security model, invariants |
 | `docker/README.md` | Container deployment, firewall, volumes |
 | `CHANGELOG.md` | Version history |
 | `SECURITY.md` | Vulnerability reporting, threat model |
@@ -222,7 +222,7 @@ telclaude vault add http api.openai.com --type bearer --label "OpenAI"
 telclaude vault list
 ```
 
-See `docs/architecture.md` for full vault architecture and CLI reference.
+See `docs/architecture.md` for vault design rationale. CLI reference: `telclaude vault --help`.
 
 ## Private network allowlist
 

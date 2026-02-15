@@ -11,23 +11,20 @@
 - Use `@anthropic-ai/claude-agent-sdk` (no CLI spawning).
 - Skills live under `.claude/skills/` and auto-load from repo root.
 
-## Dual-Mode Architecture
-- **Docker mode**: SDK sandbox disabled. Relay + agent containers provide isolation; firewall enforced in Docker.
-- **Native mode**: SDK sandbox enabled. bubblewrap (Linux) or Seatbelt (macOS).
-- Mode auto-detected via `/.dockerenv` or `TELCLAUDE_DOCKER=1` env var.
-
 ## Security essentials
 - Permission tiers
   - `READ_ONLY`: tools Read/Glob/Grep/WebFetch/WebSearch; no writes.
   - `WRITE_LOCAL`: +Write/Edit/Bash; blocks destructive patterns; accident guard only.
   - `FULL_ACCESS`: all tools; human approval required unless user is claimed admin.
-  - `SOCIAL`: file tools + Bash + WebFetch/WebSearch; Bash trust-gated (operator/autonomous only); WebFetch permissive (public internet, RFC1918/metadata blocked); Write/Edit blocked to skills/auth/memory paths.
+  - `SOCIAL`: file tools + Bash + WebFetch/WebSearch; Bash trust-gated (operator/autonomous/proactive only); WebFetch permissive (public internet, RFC1918/metadata blocked); Write/Edit blocked to skills/auth/memory paths.
 - Approvals: required for FULL_ACCESS (non-admin), BLOCK classifications, WARN+WRITE_LOCAL; TTL 5 minutes.
 - Infrastructure secrets are non-overridable blocks.
 - Secret filter: CORE patterns + entropy; output is redacted streamingly.
 - **Settings isolation**: `settingSources: ["project"]` prevents disableAllHooks bypass.
 - **PreToolUse hooks**: PRIMARY enforcement; run unconditionally, even in acceptEdits mode.
 - **canUseTool**: FALLBACK only; runs only when a permission prompt would appear (so not for auto-approved calls in acceptEdits mode).
+- Network: PreToolUse hook blocks RFC1918/metadata (including CGNAT 100.64.0.0/10 for Tailscale); Bash uses SDK sandbox (native) or Docker firewall; WebSearch not filtered (server-side). `TELCLAUDE_NETWORK_MODE=open|permissive` broadens WebFetch egress.
+- Profiles: simple (default, rate limits + audit), strict (+observer + approvals + tier enforcement), test (all disabled, requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`).
 
 ## SDK References (authoritative)
 - **Permissions**: https://code.claude.com/docs/en/sdk/sdk-permissions
@@ -40,12 +37,6 @@
   - "Effective sandboxing requires both filesystem and network isolation"
   - ONE isolation boundary recommended (Docker container OR SDK sandbox, not both)
 
-## Network enforcement
-- **Bash**: SDK sandbox `allowedDomains` (native mode); Docker network (container mode).
-- **WebFetch**: PreToolUse hook blocks RFC1918/metadata unconditionally.
-- **WebSearch**: NOT filtered (server-side by Anthropic).
-- `TELCLAUDE_NETWORK_MODE=open|permissive`: broad egress for WebFetch only.
-
 ## Workflow
 1) Plan → propose files to touch.
 2) Use `apply_patch` for small diffs; keep edits minimal.
@@ -57,13 +48,14 @@
 - `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter.
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
 - `src/sdk/` — Claude SDK integration, session manager.
+- `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials).
 - `src/telegram/` — inbound/outbound bot.
 - `src/social/` — generic social services: handler, scheduler, identity, context, activity log.
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
 - `src/oauth/` — OAuth2 PKCE flow, service registry, authorization orchestrator.
 - `src/commands/` — CLI commands.
 - `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
-- `docs/architecture.md` — deep architecture & flow.
+- `docs/architecture.md` — design rationale & security invariants.
 - `docker/` — container stack.
 
 ## Common commands
@@ -81,6 +73,7 @@
 - OAuth authorize: `pnpm dev oauth authorize xtwitter`
 - OAuth list: `pnpm dev oauth list`
 - OAuth revoke: `pnpm dev oauth revoke xtwitter`
+- RPC keygen: `pnpm dev keygen <scope>` (generates Ed25519 keypair; env vars: `{SCOPE}_RPC_AGENT_*` / `{SCOPE}_RPC_RELAY_*`)
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.
@@ -93,6 +86,7 @@
 - Promote post: `/promote <id>` (approve quarantined idea for social service posting).
 - Public activity log: `/public-log [serviceId] [hours]` (metadata-only summary of social actions).
 - Ask public persona: `/ask-public <question>` (routed to social agent, response piped through relay).
+- Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).
 
 ## Tier-based key exposure
 API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.
