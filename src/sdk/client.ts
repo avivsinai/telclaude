@@ -573,10 +573,10 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 	// 2. Bash in untrusted flows (regex-based command inspection is unwinnable against
 	//    shell obfuscation — so we disable Bash entirely for untrusted actors instead)
 	// File reads are NOT restricted — the container controls what paths exist.
-	// See: docs/architecture.md "Docker Split Topology"
+	// See: docs/architecture.md "Trust Boundaries"
 
 	// Trusted social actors that get full tool access (including Bash).
-	// Untrusted actors (notifications, proactive posting) get no Bash at all.
+	// Untrusted actors (notifications) get no Bash at all.
 	// This eliminates the entire class of skill-poisoning-via-Bash attacks without
 	// playing regex whack-a-mole against shell obfuscation.
 	const trustedActorSuffixes = [":operator", ":autonomous", ":proactive"];
@@ -611,9 +611,9 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 			return denyHookResponse(`Social context: ${toolName} is not permitted.`);
 		}
 
-		// Bash: only allowed for trusted actors (operator, autonomous).
-		// Untrusted actors (notifications, proactive) don't need Bash, and
-		// regex-based command inspection can't stop shell obfuscation.
+		// Bash: only allowed for trusted actors (operator, autonomous, proactive).
+		// Untrusted actors (notifications) don't get Bash — notification content
+		// could inject shell commands, and regex inspection can't stop obfuscation.
 		if (toolName === "Bash" && !isTrustedActor) {
 			logger.warn(
 				{ actorUserId: actorUserId ?? null },
