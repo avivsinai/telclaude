@@ -115,6 +115,7 @@ if [ "$(id -u)" = "0" ]; then
         else
             echo "[entrypoint] git-proxy-init daemon started (PID $GIT_PROXY_PID)"
         fi
+
     else
         # Relay container: Minimal git config (relay doesn't do git operations)
         # Just set safe defaults for any incidental git usage
