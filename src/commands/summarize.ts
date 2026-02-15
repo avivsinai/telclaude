@@ -33,21 +33,25 @@ export function registerSummarizeCommand(program: Command): void {
 				const format = opts.format === "markdown" ? "markdown" : "text";
 				const userId = opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID;
 
-				if (maxCharacters !== undefined && (!Number.isFinite(maxCharacters) || maxCharacters < 1)) {
-					console.error("Error: --max-chars must be a positive integer");
-					process.exit(1);
+				if (maxCharacters !== undefined) {
+					if (!Number.isFinite(maxCharacters) || maxCharacters < 1) {
+						console.error("Error: --max-chars must be a positive integer");
+						process.exit(1);
+					}
+					if (maxCharacters > 100_000) {
+						console.error("Error: --max-chars cannot exceed 100000");
+						process.exit(1);
+					}
 				}
-				if (maxCharacters !== undefined && maxCharacters > 100_000) {
-					console.error("Error: --max-chars cannot exceed 100000");
-					process.exit(1);
-				}
-				if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) {
-					console.error("Error: --timeout must be a positive integer");
-					process.exit(1);
-				}
-				if (timeoutMs !== undefined && timeoutMs > 120_000) {
-					console.error("Error: --timeout cannot exceed 120000 (2 minutes)");
-					process.exit(1);
+				if (timeoutMs !== undefined) {
+					if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+						console.error("Error: --timeout must be a positive integer");
+						process.exit(1);
+					}
+					if (timeoutMs > 120_000) {
+						console.error("Error: --timeout cannot exceed 120000 (2 minutes)");
+						process.exit(1);
+					}
 				}
 
 				const result = await summarizeUrl(url, {
