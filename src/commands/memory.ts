@@ -3,6 +3,19 @@ import type { Command } from "commander";
 import type { MemoryCategory, TrustLevel } from "../memory/types.js";
 import { quarantineIdea, readMemory, writeMemory } from "../services/memory.js";
 
+function handleCommandError(err: unknown): void {
+	console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+	process.exitCode = 1;
+}
+
+function parseCsvOption(value: string | undefined): string[] | undefined {
+	if (!value) return undefined;
+	return value
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
 export function registerMemoryCommands(program: Command): void {
 	const memory = program.command("memory").description("Memory management commands");
 
@@ -20,21 +33,14 @@ export function registerMemoryCommands(program: Command): void {
 			async (opts: { categories?: string; trust?: string; limit?: string; chatId?: string }) => {
 				try {
 					const result = await readMemory({
-						categories: opts.categories
-							?.split(",")
-							.map((s) => s.trim())
-							.filter(Boolean) as MemoryCategory[],
-						trust: opts.trust
-							?.split(",")
-							.map((s) => s.trim())
-							.filter(Boolean) as TrustLevel[],
+						categories: parseCsvOption(opts.categories) as MemoryCategory[] | undefined,
+						trust: parseCsvOption(opts.trust) as TrustLevel[] | undefined,
 						limit: opts.limit ? Number.parseInt(opts.limit, 10) : undefined,
 						chatId: opts.chatId,
 					});
 					console.log(JSON.stringify(result, null, 2));
 				} catch (err) {
-					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-					process.exitCode = 1;
+					handleCommandError(err);
 				}
 			},
 		);
@@ -66,8 +72,7 @@ export function registerMemoryCommands(program: Command): void {
 					);
 					console.log(JSON.stringify({ ok: true, id: entryId, ...result }, null, 2));
 				} catch (err) {
-					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-					process.exitCode = 1;
+					handleCommandError(err);
 				}
 			},
 		);
@@ -88,8 +93,7 @@ export function registerMemoryCommands(program: Command): void {
 				});
 				console.log(JSON.stringify({ ok: true, ...result }, null, 2));
 			} catch (err) {
-				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-				process.exitCode = 1;
+				handleCommandError(err);
 			}
 		});
 
@@ -108,8 +112,7 @@ export function registerMemoryCommands(program: Command): void {
 					console.log("Use --dry-run to preview. Manual cleanup not yet implemented.");
 				}
 			} catch (err) {
-				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-				process.exitCode = 1;
+				handleCommandError(err);
 			}
 		});
 }

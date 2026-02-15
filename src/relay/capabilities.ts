@@ -230,24 +230,34 @@ function parseBody(req: http.IncomingMessage, maxBytes: number): Promise<string>
 	});
 }
 
-function resolveImagePolicy(request: ImageRequest) {
+function resolveImagePolicy(request: ImageRequest): {
+	size: ImageRequest["size"];
+	quality: ImageRequest["quality"];
+} {
 	const config = loadConfig();
 	const imageConfig = config.imageGeneration;
 	const allowedSizes: ImageRequest["size"][] = ["auto", "1024x1024", "1536x1024", "1024x1536"];
 	const allowedQualities: ImageRequest["quality"][] = ["low", "medium", "high"];
 
-	const size =
-		imageConfig?.size && imageConfig.size !== "auto"
-			? imageConfig.size
-			: allowedSizes.includes(request.size ?? "auto")
-				? (request.size ?? imageConfig?.size ?? "1024x1024")
-				: (imageConfig?.size ?? "1024x1024");
+	// Config override takes priority (unless "auto")
+	let size: ImageRequest["size"];
+	if (imageConfig?.size && imageConfig.size !== "auto") {
+		size = imageConfig.size;
+	} else if (allowedSizes.includes(request.size ?? "auto")) {
+		size = request.size ?? imageConfig?.size ?? "1024x1024";
+	} else {
+		size = imageConfig?.size ?? "1024x1024";
+	}
 
-	const quality = imageConfig?.quality
-		? imageConfig.quality
-		: allowedQualities.includes(request.quality ?? "medium")
-			? (request.quality ?? "medium")
-			: "medium";
+	// Config override takes priority for quality
+	let quality: ImageRequest["quality"];
+	if (imageConfig?.quality) {
+		quality = imageConfig.quality;
+	} else if (allowedQualities.includes(request.quality ?? "medium")) {
+		quality = request.quality ?? "medium";
+	} else {
+		quality = "medium";
+	}
 
 	return { size, quality };
 }
@@ -527,6 +537,30 @@ async function streamAttachmentToFile(response: Response, filepath: string): Pro
 	return totalBytes;
 }
 
+/**
+ * Build a scope-restricted memory snapshot request.
+ * Social scopes see only "social" source with untrusted trust and a capped limit.
+ * Telegram scope sees only "telegram" source with no restrictions.
+ */
+function buildScopedSnapshot(
+	baseSnapshot: import("../memory/rpc.js").MemorySnapshotRequest,
+	scope: string,
+	source: MemorySource,
+): import("../memory/rpc.js").MemorySnapshotRequest {
+	if (scope !== "telegram") {
+		return {
+			...baseSnapshot,
+			sources: [source] as MemorySource[],
+			trust: ["untrusted"] as TrustLevel[],
+			limit: Math.min(baseSnapshot.limit ?? 50, 50),
+		};
+	}
+	return {
+		...baseSnapshot,
+		sources: ["telegram"] as MemorySource[],
+	};
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
@@ -705,9 +739,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 429, { ok: false, error: "Token refresh rate limited." });
 					return;
 				}
-				// Refresh can be authenticated with session token header
+				// Resolve the token to refresh: prefer header, fall back to body
 				const sessionToken = req.headers["x-telclaude-session-token"];
-				const tokenStr = Array.isArray(sessionToken) ? sessionToken[0] : sessionToken;
+				let tokenStr = Array.isArray(sessionToken) ? sessionToken[0] : sessionToken;
 				if (!tokenStr) {
 					let refreshBody: { token?: string };
 					try {
@@ -720,18 +754,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 						writeJson(res, 400, { error: "Missing token." });
 						return;
 					}
-					const result = await handleTokenRefresh(refreshBody.token);
-					// Verify refreshed token scope matches caller's authenticated scope
-					if (result.ok && result.token) {
-						const refreshedPayload = verifyTokenLocally(result.token);
-						if (!refreshedPayload.valid || refreshedPayload.scope !== authResult.scope) {
-							writeJson(res, 403, { error: "Scope mismatch on token refresh." });
-							return;
-						}
-					}
-					rateLimiter.consume("token_refresh", authResult.scope);
-					writeJson(res, result.ok ? 200 : 401, result);
-					return;
+					tokenStr = refreshBody.token;
 				}
 				const result = await handleTokenRefresh(tokenStr);
 				// Verify refreshed token scope matches caller's authenticated scope
@@ -782,34 +805,20 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			// Derive memory source: unified "social" for all social scopes.
 			// SECURITY: never allow non-telegram scope to claim "telegram" source
 			// (would let social agents write trusted memory).
-			const deriveMemorySource = (_serviceId?: string): MemorySource => {
-				if (authResult.scope === "telegram") return "telegram";
-				// All social services use unified "social" source for cohesive public identity
-				return "social";
-			};
-			let memorySource: MemorySource = deriveMemorySource();
+			const memorySource: MemorySource = authResult.scope === "telegram" ? "telegram" : "social";
 
 			if (isMemorySnapshotGet) {
 				const url = new URL(req.url ?? "", "http://localhost");
-				const queryServiceId = url.searchParams.get("serviceId") ?? undefined;
-				const getMemorySource = deriveMemorySource(queryServiceId);
 				const snapshotRequest = parseSnapshotQuery(url.searchParams);
 				if (!snapshotRequest.ok) {
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
-				const effectiveSnapshot =
-					authResult.scope !== "telegram"
-						? {
-								...snapshotRequest.value,
-								sources: [getMemorySource] as MemorySource[],
-								trust: ["untrusted"] as TrustLevel[],
-								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
-							}
-						: {
-								...snapshotRequest.value,
-								sources: ["telegram"] as MemorySource[],
-							};
+				const effectiveSnapshot = buildScopedSnapshot(
+					snapshotRequest.value,
+					authResult.scope,
+					memorySource,
+				);
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
@@ -837,10 +846,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			} catch {
 				writeJson(res, 400, { error: "Invalid JSON." });
 				return;
-			}
-			// Re-derive memory source from body serviceId when scope is "social"
-			if (parsed.serviceId) {
-				memorySource = deriveMemorySource(parsed.serviceId);
 			}
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
@@ -877,18 +882,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
-				const effectiveSnapshot =
-					authResult.scope !== "telegram"
-						? {
-								...snapshotRequest.value,
-								sources: [memorySource] as MemorySource[],
-								trust: ["untrusted"] as TrustLevel[],
-								limit: Math.min(snapshotRequest.value.limit ?? 50, 50),
-							}
-						: {
-								...snapshotRequest.value,
-								sources: ["telegram"] as MemorySource[],
-							};
+				const effectiveSnapshot = buildScopedSnapshot(
+					snapshotRequest.value,
+					authResult.scope,
+					memorySource,
+				);
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
 					writeJson(res, snapshotResult.status, { error: snapshotResult.error });

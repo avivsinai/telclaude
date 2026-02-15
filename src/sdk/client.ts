@@ -22,6 +22,7 @@ import {
 	type HookInput,
 	type PermissionMode,
 	query,
+	type SDKMessage,
 	type Options as SDKOptions,
 	type SdkBeta,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -1277,31 +1278,27 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 // We pass allowedDomains to SDK via sdkOpts.sandbox.network.allowedDomains in buildSdkOptions()
 
 /**
- * Execute a query with streaming, yielding chunks as they arrive.
+ * Shared stream processing for SDK query iterables.
+ *
+ * Both executeQueryStream and executePooledQuery use the same message
+ * processing logic. This helper extracts it to avoid duplication.
  */
-export async function* executeQueryStream(
-	prompt: string,
-	inputOpts: TelclaudeQueryOptions,
+async function* processMessageStream(
+	iterable: AsyncIterable<SDKMessage>,
+	options: {
+		startTime: number;
+		label: string;
+		/** When true, also extract tool_use blocks from assistant messages (pooled mode). */
+		extractToolUseFromAssistant?: boolean;
+		/** Called on non-success result messages for extra logging. */
+		onFailure?: (
+			error: string | undefined,
+			costUsd: number,
+			numTurns: number,
+			durationMs: number,
+		) => void;
+	},
 ): AsyncGenerator<StreamChunk, void, unknown> {
-	const startTime = Date.now();
-
-	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
-	const sdkOpts = await buildSdkOptions({
-		...inputOpts,
-		includePartialMessages: true,
-	});
-
-	logger.debug(
-		{
-			tier: inputOpts.tier,
-			cwd: inputOpts.cwd,
-			allowedTools: sdkOpts.allowedTools,
-		},
-		"executing streaming SDK query",
-	);
-
-	const q = query({ prompt, options: sdkOpts });
-
 	let response = "";
 	let assistantMessageFallback = "";
 	let costUsd = 0;
@@ -1311,7 +1308,7 @@ export async function* executeQueryStream(
 	let lastToolUseName: string | null = null;
 
 	try {
-		for await (const msg of q) {
+		for await (const msg of iterable) {
 			if (isStreamEvent(msg)) {
 				const event = msg.event;
 				if (isTextDeltaEvent(event)) {
@@ -1342,7 +1339,10 @@ export async function* executeQueryStream(
 				}
 			} else if (isAssistantMessage(msg)) {
 				for (const block of msg.message.content) {
-					if (block.type === "text") {
+					if (options.extractToolUseFromAssistant && block.type === "tool_use") {
+						lastToolUseName = block.name;
+						yield { type: "tool_use", toolName: block.name, input: block.input };
+					} else if (block.type === "text") {
 						assistantMessageFallback += block.text;
 					}
 				}
@@ -1360,6 +1360,10 @@ export async function* executeQueryStream(
 
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
+
+				if (!success && options.onFailure) {
+					options.onFailure(error, costUsd, numTurns, durationMs);
+				}
 
 				const finalResponse = response || assistantMessageFallback;
 				if (!response && assistantMessageFallback) {
@@ -1380,9 +1384,9 @@ export async function* executeQueryStream(
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
 		if (isAborted) {
-			logger.warn({ durationMs: Date.now() - startTime }, "SDK query aborted");
+			logger.warn({ durationMs: Date.now() - options.startTime }, `${options.label} aborted`);
 		} else {
-			logger.error({ error: String(err) }, "SDK streaming query error");
+			logger.error({ error: String(err) }, `${options.label} error`);
 		}
 
 		const finalResponse = response || assistantMessageFallback;
@@ -1395,10 +1399,39 @@ export async function* executeQueryStream(
 				error: isAborted ? "Request was aborted" : String(err),
 				costUsd,
 				numTurns,
-				durationMs: Date.now() - startTime,
+				durationMs: Date.now() - options.startTime,
 			},
 		};
 	}
+}
+
+/**
+ * Execute a query with streaming, yielding chunks as they arrive.
+ */
+export async function* executeQueryStream(
+	prompt: string,
+	inputOpts: TelclaudeQueryOptions,
+): AsyncGenerator<StreamChunk, void, unknown> {
+	const startTime = Date.now();
+
+	const sdkOpts = await buildSdkOptions({
+		...inputOpts,
+		includePartialMessages: true,
+	});
+
+	logger.debug(
+		{
+			tier: inputOpts.tier,
+			cwd: inputOpts.cwd,
+			allowedTools: sdkOpts.allowedTools,
+		},
+		"executing streaming SDK query",
+	);
+
+	yield* processMessageStream(query({ prompt, options: sdkOpts }), {
+		startTime,
+		label: "SDK streaming query",
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1421,135 +1454,38 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	const opts = inputOpts;
-
-	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
 	const sdkOpts = await buildSdkOptions({
-		...opts,
+		...inputOpts,
 		includePartialMessages: true,
 	});
 
 	logger.debug(
 		{
-			tier: opts.tier,
-			poolKey: opts.poolKey,
-			cwd: opts.cwd,
+			tier: inputOpts.tier,
+			poolKey: inputOpts.poolKey,
+			cwd: inputOpts.cwd,
 		},
 		"executing pooled SDK query",
 	);
 
 	const sessionManager = getSessionManager();
-	let response = "";
-	let assistantMessageFallback = "";
-	let costUsd = 0;
-	let numTurns = 0;
-	let durationMs = 0;
-	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
-	let lastToolUseName: string | null = null;
+	const iterable = executeWithSession(sessionManager, inputOpts.poolKey, prompt, sdkOpts);
 
-	try {
-		for await (const msg of executeWithSession(sessionManager, opts.poolKey, prompt, sdkOpts)) {
-			if (isStreamEvent(msg)) {
-				const event = msg.event;
-				if (isTextDeltaEvent(event)) {
-					yield { type: "text", content: event.delta.text };
-					response += event.delta.text;
-				} else if (isToolUseStartEvent(event)) {
-					const cb = (event as unknown as { content_block: { name: string; input?: unknown } })
-						.content_block;
-					currentToolUse = {
-						name: cb.name,
-						input: cb.input ?? {},
-						inputJson: "",
-					};
-				} else if (isInputJsonDeltaEvent(event) && currentToolUse) {
-					currentToolUse.inputJson += event.delta.partial_json;
-				} else if (isContentBlockStopEvent(event) && currentToolUse) {
-					let input = currentToolUse.input;
-					if (currentToolUse.inputJson) {
-						try {
-							input = JSON.parse(currentToolUse.inputJson);
-						} catch {
-							input = currentToolUse.inputJson;
-						}
-					}
-					lastToolUseName = currentToolUse.name;
-					yield { type: "tool_use", toolName: currentToolUse.name, input };
-					currentToolUse = null;
-				}
-			} else if (isAssistantMessage(msg)) {
-				for (const block of msg.message.content) {
-					if (block.type === "tool_use") {
-						lastToolUseName = block.name;
-						yield { type: "tool_use", toolName: block.name, input: block.input };
-					} else if (block.type === "text") {
-						assistantMessageFallback += block.text;
-					}
-				}
-			} else if (isToolResultMessage(msg)) {
-				yield {
-					type: "tool_result",
-					toolName: lastToolUseName ?? "unknown",
-					output: msg.tool_use_result,
-				};
-				lastToolUseName = null;
-			} else if (isResultMessage(msg)) {
-				costUsd = msg.total_cost_usd;
-				numTurns = msg.num_turns;
-				durationMs = msg.duration_ms;
-
-				const success = msg.subtype === "success";
-				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
-
-				if (!success) {
-					logger.error(
-						{
-							requestError: error,
-							costUsd,
-							numTurns,
-							durationMs,
-							poolKey: opts.poolKey,
-						},
-						"SDK result message reported failure",
-					);
-				}
-
-				const finalResponse = response || assistantMessageFallback;
-				if (!response && assistantMessageFallback) {
-					logger.debug(
-						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
-						"using assistant message fallback",
-					);
-					yield { type: "text", content: assistantMessageFallback };
-				}
-
-				yield {
-					type: "done",
-					result: { response: finalResponse, success, error, costUsd, numTurns, durationMs },
-				};
-			}
-		}
-	} catch (err) {
-		const isAborted = err instanceof Error && err.name === "AbortError";
-
-		if (isAborted) {
-			logger.warn({ durationMs: Date.now() - startTime }, "pooled query aborted");
-		} else {
-			logger.error({ error: String(err) }, "pooled query error");
-		}
-
-		const finalResponse = response || assistantMessageFallback;
-
-		yield {
-			type: "done",
-			result: {
-				response: finalResponse,
-				success: false,
-				error: isAborted ? "Request was aborted" : String(err),
-				costUsd,
-				numTurns,
-				durationMs: Date.now() - startTime,
-			},
-		};
-	}
+	yield* processMessageStream(iterable, {
+		startTime,
+		label: "pooled query",
+		extractToolUseFromAssistant: true,
+		onFailure: (error, costUsd, numTurns, durationMs) => {
+			logger.error(
+				{
+					requestError: error,
+					costUsd,
+					numTurns,
+					durationMs,
+					poolKey: inputOpts.poolKey,
+				},
+				"SDK result message reported failure",
+			);
+		},
+	});
 }
