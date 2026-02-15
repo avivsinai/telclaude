@@ -18,6 +18,12 @@ describe("isBlockedIP", () => {
 		expect(isBlockedIP("::ffff:10.0.0.1")).toBe(true);
 	});
 
+	it("blocks CGNAT range (100.64.0.0/10)", () => {
+		expect(isBlockedIP("100.64.0.1")).toBe(true);
+		expect(isBlockedIP("100.127.255.254")).toBe(true);
+		expect(isBlockedIP("100.128.0.1")).toBe(false);
+	});
+
 	it("allows public IPv6/IPv4 addresses", () => {
 		expect(isBlockedIP("2001:4860:4860::8888")).toBe(false);
 		expect(isBlockedIP("::ffff:8.8.8.8")).toBe(false);

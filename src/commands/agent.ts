@@ -1,8 +1,13 @@
 import fsSync from "node:fs";
 import type { Command } from "commander";
-import { startAgentServer } from "../agent/server.js";
+import { AGENT_STARTED_AT, startAgentServer } from "../agent/server.js";
+import { bootstrapSessionToken } from "../agent/token-client.js";
+import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
+import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
 
 const logger = getChildLogger({ module: "cmd-agent" });
 
@@ -15,9 +20,18 @@ export function registerAgentCommand(program: Command): void {
 		.action(async (opts: { port?: string; host?: string }) => {
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
+			const isSocialAgent = Boolean(
+				process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY || process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY,
+			);
 
 			if (getSandboxMode() === "docker") {
 				if (process.env.TELCLAUDE_FIREWALL !== "1") {
+					if (isSocialAgent) {
+						console.error("\n❌ SECURITY ERROR: Social agent requires firewall.\n");
+						console.error("Social agents run untrusted inputs and must be isolated.");
+						console.error("Set TELCLAUDE_FIREWALL=1 and ensure init-firewall.sh succeeds.\n");
+						process.exit(1);
+					}
 					if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
 						logger.warn("TELCLAUDE_FIREWALL not enabled - agent tools have NO network isolation");
 					} else {
@@ -60,7 +74,92 @@ export function registerAgentCommand(program: Command): void {
 
 			logger.info({ port, host }, "agent server started");
 
+			// Bootstrap session token (non-blocking, falls back to v1/v2 if unavailable)
+			const relayUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+			if (relayUrl) {
+				const scope = isSocialAgent ? "social" : "telegram";
+				bootstrapSessionToken(relayUrl, scope)
+					.then((ok) => {
+						if (ok) {
+							logger.info({ scope }, "session token bootstrapped (Ed25519 v3)");
+						} else {
+							logger.info({ scope }, "session token unavailable, using static auth");
+						}
+					})
+					.catch((err) => {
+						logger.warn({ error: String(err) }, "session token bootstrap failed");
+					});
+
+				// Fetch provider config from relay (with retry — relay may start after agent)
+				if (!isSocialAgent) {
+					const fetchProviders = async (attempt: number): Promise<void> => {
+						try {
+							const result = await relayGetProviders();
+							if (result.ok && result.providers.length > 0) {
+								await refreshExternalProviderSkill(result.providers);
+								logger.info(
+									{ count: result.providers.length },
+									"provider config fetched from relay",
+								);
+							}
+						} catch (err) {
+							if (attempt < 3) {
+								const delay = attempt * 10_000; // 10s, 20s
+								logger.debug({ attempt, delay }, "relay not ready, retrying provider fetch");
+								setTimeout(() => fetchProviders(attempt + 1), delay);
+							} else {
+								logger.warn({ error: String(err) }, "failed to fetch provider config from relay");
+							}
+						}
+					};
+					// Delay first attempt to give relay time to start
+					setTimeout(() => fetchProviders(1), 15_000);
+				}
+			}
+
+			// Announce readiness to relay (non-blocking, retries if relay not up yet)
+			if (relayUrl) {
+				const scope = isSocialAgent ? "social" : "telegram";
+				notifyRelayReady(relayUrl, scope as InternalAuthScope, 1);
+			}
+
 			// Keep the process alive (server runs indefinitely)
 			await new Promise(() => {});
+		});
+}
+
+/**
+ * POST to relay /v1/agent.ready so it can send admin notification.
+ * Retries up to 3 times with backoff — relay may not be up yet.
+ */
+function notifyRelayReady(relayUrl: string, scope: InternalAuthScope, attempt: number): void {
+	const runtime = buildRuntimeSnapshot(AGENT_STARTED_AT);
+	const body = JSON.stringify({ scope, runtime });
+	const path = "/v1/agent.ready";
+
+	fetch(`${relayUrl}${path}`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...buildInternalAuthHeaders("POST", path, body, { scope }),
+		},
+		body,
+		signal: AbortSignal.timeout(10_000),
+	})
+		.then((res) => {
+			if (res.ok) {
+				logger.info({ scope }, "announced readiness to relay");
+			} else {
+				logger.warn({ scope, status: res.status }, "relay rejected ready announcement");
+			}
+		})
+		.catch((err) => {
+			if (attempt < 3) {
+				const delay = attempt * 10_000;
+				logger.debug({ scope, attempt, delay }, "relay not reachable, retrying ready announcement");
+				setTimeout(() => notifyRelayReady(relayUrl, scope, attempt + 1), delay);
+			} else {
+				logger.warn({ scope, error: String(err) }, "failed to announce readiness to relay");
+			}
 		});
 }

@@ -21,7 +21,13 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { SENSITIVE_READ_PATHS } from "../sandbox/config.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
-import { chatIdToString, escapeRegex, VALIDATED_DATA_DIR } from "../utils.js";
+import {
+	chatIdToString,
+	escapeRegex,
+	VALIDATED_CLAUDE_AUTH_DIR,
+	VALIDATED_CLAUDE_CONFIG_DIR,
+	VALIDATED_DATA_DIR,
+} from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 
 const logger = getChildLogger({ module: "permissions" });
@@ -33,6 +39,7 @@ export const TIER_TOOLS: Record<PermissionTier, string[]> = {
 	READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 	WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
 	FULL_ACCESS: [], // Empty = all tools allowed (still sandboxed + canUseTool guards)
+	SOCIAL: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Task"],
 };
 
 /**
@@ -66,6 +73,8 @@ export const TIER_DESCRIPTIONS: Record<PermissionTier, string> = {
 	WRITE_LOCAL:
 		"Can read and write files, but cannot delete or modify permissions. Note: prevents accidental damage, not malicious attacks.",
 	FULL_ACCESS: "Full system access with no restrictions.",
+	SOCIAL:
+		"Social service context: file + shell access within the sandbox; no workspace mount or private endpoints.",
 };
 
 /**
@@ -376,14 +385,35 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 	// This pattern catches /data/logs, /data/telclaude.db, etc.
 	// Uses validated/escaped value to prevent regex injection and trailing slash issues
 	...(VALIDATED_DATA_DIR ? [new RegExp(`^${escapeRegex(VALIDATED_DATA_DIR)}(\\/|$)`, "i")] : []),
+	// Auth volume (relay-only): block all tool access
+	...(VALIDATED_CLAUDE_AUTH_DIR
+		? [new RegExp(`^${escapeRegex(VALIDATED_CLAUDE_AUTH_DIR)}(\\/|$)`, "i")]
+		: []),
 
 	// === Claude Code settings (prevent hook bypass via disableAllHooks) ===
 	// SECURITY: Blocking writes to these prevents prompt injection from setting
 	// disableAllHooks: true, which would disable our PreToolUse security hook.
 	/(?:^|[/\\])\.claude[/\\]settings(?:\.local)?\.json$/i, // .claude/settings.json, .claude/settings.local.json
+	// Docker profiles may set CLAUDE_CONFIG_DIR to a non-.claude path (e.g., /home/telclaude-skills)
+	...(VALIDATED_CLAUDE_CONFIG_DIR
+		? [
+				new RegExp(
+					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])settings(?:\\.local)?\\.json$`,
+					"i",
+				),
+			]
+		: []),
 	// === Security-critical skills ===
 	// SECURITY: Prevents self-modification of the security-gate skill prompt.
 	/(?:^|[/\\])\.claude[/\\]skills[/\\]security-gate(?:[/\\]|$)/i,
+	...(VALIDATED_CLAUDE_CONFIG_DIR
+		? [
+				new RegExp(
+					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])skills(?:[/\\\\])security-gate(?:[/\\\\]|$)`,
+					"i",
+				),
+			]
+		: []),
 	// === Telclaude source code (defense in depth) ===
 	// SECURITY: Agent has no reason to write to telclaude's own source.
 	// Primary protection is Docker read-only filesystem; this is belt-and-suspenders.
@@ -568,6 +598,33 @@ function parseEnvAssignment(token: string): { name: string; value: string } | nu
 	return { name, value };
 }
 
+const SENSITIVE_ENV_VAR_NAMES = new Set([
+	"CLAUDE_CONFIG_DIR",
+	"TELCLAUDE_CLAUDE_HOME",
+	"TELCLAUDE_AUTH_DIR",
+	"TELCLAUDE_DATA_DIR",
+	"HOME",
+]);
+
+function getSensitiveEnvDefaults(): Map<string, string> {
+	const env = new Map<string, string>();
+	const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
+	if (claudeConfigDir) {
+		env.set("CLAUDE_CONFIG_DIR", claudeConfigDir);
+		env.set("TELCLAUDE_CLAUDE_HOME", claudeConfigDir);
+	}
+	if (process.env.TELCLAUDE_AUTH_DIR) {
+		env.set("TELCLAUDE_AUTH_DIR", process.env.TELCLAUDE_AUTH_DIR);
+	}
+	if (process.env.TELCLAUDE_DATA_DIR) {
+		env.set("TELCLAUDE_DATA_DIR", process.env.TELCLAUDE_DATA_DIR);
+	}
+	if (process.env.HOME) {
+		env.set("HOME", process.env.HOME);
+	}
+	return env;
+}
+
 function resolveEnvVars(token: string, env: Map<string, string>): string {
 	return token.replace(/\$(\w+)|\$\{([^}]+)\}/g, (match, var1, var2) => {
 		const name = (var1 ?? var2) as string | undefined;
@@ -646,6 +703,12 @@ function globCouldMatchClaudeSettings(pattern: string): boolean {
 		"../settings.local.json",
 		".claude/settings.json",
 		".claude/settings.local.json",
+		...(VALIDATED_CLAUDE_CONFIG_DIR
+			? [
+					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.json"),
+					path.join(VALIDATED_CLAUDE_CONFIG_DIR, "settings.local.json"),
+				]
+			: []),
 	];
 	return expandedPatterns.some((expanded) =>
 		candidates.some((candidate) => wildcardMatch(expanded, candidate)),
@@ -670,7 +733,12 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 	const settingsPattern = /^(?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
 	const settingsPwdPattern =
 		/^(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)[/\\](?:\.\.?[/\\])?settings(?:\.local)?\.json$/i;
-	const claudePathPattern = /(?:^|[/\\])\.claude(?:[/\\]|$)/i;
+	const claudeDirPatterns = [
+		/(?:^|[/\\])\.claude(?:[/\\]|$)/i,
+		...(VALIDATED_CLAUDE_CONFIG_DIR
+			? [new RegExp(`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\]|$)`, "i")]
+			: []),
+	];
 	const commandSeparators = new Set([";", "&&", "||", "|", "|&", "\n"]);
 	const controlKeywords = new Set([
 		"if",
@@ -690,7 +758,7 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 		"{",
 		"}",
 	]);
-	const envValues = new Map<string, string>();
+	const envValues = getSensitiveEnvDefaults();
 
 	const isSeparator = (token: string | { op: string }): boolean => {
 		if (typeof token !== "string") {
@@ -785,7 +853,10 @@ function detectClaudeSettingsBypass(tokens: Array<string | { op: string }>): boo
 			if (target) {
 				const resolvedTarget = resolveEnvVars(target, envValues);
 				const normalizedTarget = normalizePathToken(resolvedTarget);
-				if (claudePathPattern.test(normalizedTarget) || normalizedTarget === ".claude") {
+				const isClaudeDir =
+					normalizedTarget === ".claude" ||
+					claudeDirPatterns.some((pattern) => pattern.test(normalizedTarget));
+				if (isClaudeDir) {
 					inClaudeDir = true;
 				} else {
 					inClaudeDir = false;
@@ -841,6 +912,8 @@ function commandContainsSensitivePath(command: string): boolean {
 		return true;
 	}
 
+	const envValues = getSensitiveEnvDefaults();
+
 	for (const token of tokens) {
 		const tokenValue =
 			typeof token === "string"
@@ -850,6 +923,12 @@ function commandContainsSensitivePath(command: string): boolean {
 					: "";
 		if (!tokenValue) continue;
 
+		const assignment = parseEnvAssignment(tokenValue);
+		if (assignment && SENSITIVE_ENV_VAR_NAMES.has(assignment.name)) {
+			envValues.set(assignment.name, assignment.value);
+			continue;
+		}
+
 		// Check basename patterns for bare filenames (e.g., ".env", "secrets.json").
 		if (isSensitiveBasename(tokenValue)) {
 			return true;
@@ -858,13 +937,22 @@ function commandContainsSensitivePath(command: string): boolean {
 		// For path-like tokens, do additional checks
 		if (!looksLikePath(tokenValue)) continue;
 
+		const resolvedToken = resolveEnvVars(tokenValue, envValues);
 		const expanded = expandHomeLike(tokenValue);
+		const expandedResolved = expandHomeLike(resolvedToken);
 		const normalized = normalizePathToken(tokenValue);
+		const normalizedResolved = normalizePathToken(resolvedToken);
 
 		// Check telclaude-specific sensitive patterns on both raw and expanded
 		if (
 			SENSITIVE_PATH_PATTERNS.some(
-				(pattern) => pattern.test(tokenValue) || pattern.test(expanded) || pattern.test(normalized),
+				(pattern) =>
+					pattern.test(tokenValue) ||
+					pattern.test(expanded) ||
+					pattern.test(normalized) ||
+					pattern.test(resolvedToken) ||
+					pattern.test(expandedResolved) ||
+					pattern.test(normalizedResolved),
 			)
 		) {
 			return true;
@@ -874,9 +962,15 @@ function commandContainsSensitivePath(command: string): boolean {
 		if (!looksLikeUrl(expanded) && matchesSensitiveCredentialPath(expanded)) {
 			return true;
 		}
+		if (!looksLikeUrl(expandedResolved) && matchesSensitiveCredentialPath(expandedResolved)) {
+			return true;
+		}
 
 		// Basename-only detection for path-like tokens (e.g., "./settings.json")
 		if (isSensitiveBasename(path.basename(normalized))) {
+			return true;
+		}
+		if (isSensitiveBasename(path.basename(normalizedResolved))) {
 			return true;
 		}
 	}
@@ -921,8 +1015,18 @@ export function isSensitivePath(pathOrCommand: string): boolean {
  * Check if a user has at least the specified permission tier.
  */
 export function hasMinimumTier(userTier: PermissionTier, requiredTier: PermissionTier): boolean {
-	const tierOrder: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
-	return tierOrder.indexOf(userTier) >= tierOrder.indexOf(requiredTier);
+	const tierOrder: Record<string, number> = {
+		SOCIAL: 0,
+		READ_ONLY: 1,
+		WRITE_LOCAL: 2,
+		FULL_ACCESS: 3,
+	};
+	const userRank = tierOrder[userTier];
+	const requiredRank = tierOrder[requiredTier];
+	if (!Number.isFinite(userRank) || !Number.isFinite(requiredRank)) {
+		return false;
+	}
+	return userRank >= requiredRank;
 }
 
 /**
@@ -936,5 +1040,7 @@ export function formatTier(tier: PermissionTier): string {
 			return "Write Local";
 		case "FULL_ACCESS":
 			return "Full Access";
+		case "SOCIAL":
+			return "Social";
 	}
 }

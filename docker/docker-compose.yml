@@ -15,6 +15,7 @@
 #   - Optional network firewall (requires root at startup, hence gosu pattern)
 #   - Named volumes for persistence
 #   - TOTP sidecar with encrypted file storage
+#   - Vault sidecar with encrypted credential storage
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -31,45 +32,65 @@ services:
     image: telclaude:latest
     container_name: telclaude
 
-    # Wait for TOTP daemon and agent to be ready
+    # Wait for sidecars and agent to be ready
     depends_on:
       totp:
+        condition: service_healthy
+      vault:
         condition: service_healthy
       telclaude-agent:
         condition: service_started
 
     environment:
-      # Required: Telegram bot token
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:?TELEGRAM_BOT_TOKEN is required}
-
-      # Optional: Anthropic API key (if not using claude login)
+      # ── Credentials now live in vault ──────────────────────────────────────
+      # Bot token, API keys, OAuth tokens, and RPC keys are stored in vault.
+      # Run `telclaude vault import-secrets` and `telclaude vault import-anthropic`
+      # to migrate existing credentials.
+      #
+      # Env var fallbacks (optional, for migration/bootstrap):
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
 
-      # Secrets storage encryption (reuses TOTP key for convenience)
-      # Enables `telclaude setup-openai` and `telclaude setup-git`
-      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
-      # API keys (tier-based: auto-exposed for WRITE_LOCAL+, use setup-* commands or env vars)
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
-      - GH_TOKEN=${GH_TOKEN:-}
+      # Anthropic proxy token — agents use this to authenticate with the relay's Anthropic proxy
+      - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
-      # Telclaude configuration
+      # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # Claude config dir = auth volume (relay-only).
+      - CLAUDE_CONFIG_DIR=/home/telclaude-auth
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
+      - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
+      - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
+      # X/Twitter — relay routes through its own credential proxy
+      - X_USER_ID=${X_USER_ID:-}
+      - TELCLAUDE_X_PROXY_URL=http://localhost:8792/api.x.com
       - TELCLAUDE_CAPABILITIES_ENABLED=1
-      - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
-      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELCLAUDE_INTERNAL_RPC_SECRET}}
+      # RPC auth — relay holds agent PUBLIC keys (verifies agent→relay) + relay PRIVATE keys (signs relay→agent)
+      - TELEGRAM_RPC_AGENT_PUBLIC_KEY=${TELEGRAM_RPC_AGENT_PUBLIC_KEY:-}
+      - TELEGRAM_RPC_RELAY_PRIVATE_KEY=${TELEGRAM_RPC_RELAY_PRIVATE_KEY:-}
+      - SOCIAL_RPC_AGENT_PUBLIC_KEY=${SOCIAL_RPC_AGENT_PUBLIC_KEY:-}
+      - SOCIAL_RPC_RELAY_PRIVATE_KEY=${SOCIAL_RPC_RELAY_PRIVATE_KEY:-}
+      # Git proxy session token secret (shared with agent for HMAC validation)
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
 
       # TOTP daemon socket (shared with sidecar)
       - TELCLAUDE_TOTP_SOCKET=/run/totp/totp.sock
 
+      # Vault daemon socket (shared with sidecar)
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+
       # SECURITY: Network firewall REQUIRED (Bash has no isolation without it)
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      # Internal hosts allowed through firewall (relay needs to reach agents)
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -82,14 +103,21 @@ services:
       # Persistent data (SQLite DB, sessions, config)
       - telclaude-data:/data:rw
 
-      # Configuration file
+      # Configuration files (policy = all containers, private = relay only)
       - ./telclaude.json:/data/telclaude.json:ro
+      - ./telclaude-private.json:/data/telclaude-private.json:ro
 
-      # Claude Code configuration (credentials, settings)
-      - telclaude-claude:/home/node/.claude:rw
+      # Claude config (auth + skills installed at runtime) — relay-only
+      - telclaude-claude-auth:/home/telclaude-auth:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
+
+      # Shared socket for vault daemon communication (relay reads credentials)
+      - vault-socket:/run/vault:ro
+
+      # Social memory (relay is single writer)
+      - social-memory:/social/memory:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:rw
@@ -113,6 +141,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      - apparmor:telclaude-relay
 
     read_only: true
     tmpfs:
@@ -136,16 +165,18 @@ services:
     networks:
       - agent-relay-net
       - relay-totp-net
+      - relay-vault-net
       - relay-egress
+      - social-relay-net
 
     restart: unless-stopped
 
     healthcheck:
-      test: ["CMD", "telclaude", "provider-health", "--json"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8790/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
     logging:
       driver: json-file
@@ -159,32 +190,35 @@ services:
   telclaude-agent:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.agent
       args:
         USER_UID: 1000
         USER_GID: 1000
-    image: telclaude:latest
+    image: telclaude-agent:latest
     container_name: telclaude-agent
 
 
     environment:
-      # Optional: Anthropic API key (if not using claude login)
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-
       # Agent server
       - TELCLAUDE_AGENT_PORT=8788
       - TELCLAUDE_AGENT_WORKDIR=/workspace
-      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
       - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
 
-      # Relay capability broker
+      # Relay capability broker + Anthropic API proxy
+      # Agent has NO credentials - all API calls go through relay
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
-      - TELCLAUDE_INTERNAL_RPC_SECRET=${TELCLAUDE_INTERNAL_RPC_SECRET:?TELCLAUDE_INTERNAL_RPC_SECRET is required}
+      # Use relay proxy for Anthropic API (agent has no credentials)
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
+      # Internal token used to access the proxy (relay verifies + injects real creds)
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
+      # RPC auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
+      - TELEGRAM_RPC_AGENT_PRIVATE_KEY=${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-}
+      - TELEGRAM_RPC_RELAY_PUBLIC_KEY=${TELEGRAM_RPC_RELAY_PUBLIC_KEY:-}
 
       # Git proxy for secure git operations (token never exposed to agent)
-      # The proxy intercepts git requests and adds authentication transparently
       - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
-      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-${TELCLAUDE_INTERNAL_RPC_SECRET}}
+      - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
 
       # Media paths (inbox/outbox split)
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
@@ -193,12 +227,21 @@ services:
       # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
 
+      # Claude skills profile (shared with relay)
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      # Internal hosts allowed through firewall (agent needs relay + sidecars)
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
+      # Skip provider hosts in firewall — agents must route through relay proxy
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
 
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
 
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
     command: ["agent", "-v"]
@@ -207,11 +250,11 @@ services:
       # Workspace: Your projects folder (Claude works here)
       - ${WORKSPACE_PATH:?WORKSPACE_PATH is required}:/workspace:rw
 
-      # Claude Code configuration (credentials, settings)
-      - telclaude-claude:/home/node/.claude:rw
-
-      # Configuration file (for provider allowlist + health checks)
+      # Policy config (no secrets — providers, network rules, etc.)
       - ./telclaude.json:/data/telclaude.json:ro
+
+      # Claude skills profile (per-agent isolation — no shared state with social agent)
+      - telclaude-skills-telegram:/home/telclaude-skills:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro
@@ -231,6 +274,7 @@ services:
 
     security_opt:
       - no-new-privileges:true
+      - apparmor:telclaude-agent
 
     read_only: true
     tmpfs:
@@ -254,6 +298,94 @@ services:
     networks:
       - agent-relay-net
       - agent-egress
+
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Social Agent Worker (shared persona for all social services)
+  # Part of the generic social services architecture (src/social/).
+  # ─────────────────────────────────────────────────────────────────────────────
+  agent-social:
+    image: telclaude-agent:latest
+    container_name: telclaude-agent-social
+
+    environment:
+      - TELCLAUDE_AGENT_PORT=8789
+      - TELCLAUDE_AGENT_WORKDIR=/social/sandbox
+      - TELCLAUDE_CONFIG=/data/telclaude.json
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
+      # Use relay proxy for Anthropic API (agent has no credentials)
+      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
+      # Internal token used to access the proxy
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
+      # Ensure Claude Code state lives under a dedicated public profile
+      - HOME=/social
+      - CLAUDE_CONFIG_DIR=/home/telclaude-skills
+      - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      # Social auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
+      - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
+      - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
+      - TELCLAUDE_DATA_DIR=/home/node/.telclaude
+      - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
+      - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
+      - TELCLAUDE_RUN_AS_ROOT=0
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - NODE_ENV=production
+
+    command: ["agent", "-v"]
+
+    volumes:
+      - social-sandbox:/social/sandbox:rw
+      - ./telclaude.json:/data/telclaude.json:ro
+      - social-memory:/social/memory:ro
+      - telclaude-skills-social:/home/telclaude-skills:rw
+
+    user: "0:0"
+
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+      - DAC_OVERRIDE
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:telclaude-social
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,mode=0755,uid=1000,gid=1000
+      - /run/telclaude:size=1M,mode=0755
+
+    mem_limit: 4G
+    cpus: 4
+
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8789/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - social-relay-net
+      - social-egress
 
     restart: unless-stopped
 
@@ -344,6 +476,93 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Vault Daemon Sidecar
+  #
+  # Stores credentials encrypted at rest (AES-256-GCM) and exposes them via
+  # Unix socket. The relay's HTTP credential proxy reads from the socket and
+  # injects credentials into outbound requests transparently.
+  #
+  # SECURITY: No external network connectivity (relay-vault-net is internal).
+  # The vault container only talks to relay via the shared socket volume.
+  # No curl, git, or other utilities installed.
+  # ─────────────────────────────────────────────────────────────────────────────
+  vault:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.vault
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude-vault:latest
+    container_name: telclaude-vault
+
+    environment:
+      # Encryption key for credential storage (REQUIRED)
+      # Generate with: openssl rand -base64 32
+      # IMPORTANT: Keep this safe! If lost, all stored credentials become unrecoverable.
+      - VAULT_ENCRYPTION_KEY=${VAULT_ENCRYPTION_KEY:?VAULT_ENCRYPTION_KEY is required}
+
+      # Socket path (shared with relay via volume)
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+      - TELCLAUDE_DATA_DIR=/data
+      - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+
+      - NODE_ENV=production
+
+    volumes:
+      # Persistent vault data (encrypted credentials file)
+      - vault-data:/data:rw
+
+      # Shared socket for relay communication
+      - vault-socket:/run/vault:rw
+
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:telclaude-vault
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /home/node/.telclaude/logs:size=16M,mode=0755,uid=1000,gid=1000
+
+    # Resource limits for non-Swarm Docker Compose (deploy.resources is Swarm-only)
+    mem_limit: 128M
+    cpus: 0.5
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 32M
+
+    networks:
+      - relay-vault-net
+      - vault-egress  # Required for OAuth2 token refresh (outbound to token endpoints)
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/vault/vault.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Named Volumes
 #
@@ -362,10 +581,10 @@ volumes:
   # │ `docker compose down -v` CANNOT delete external volumes                     │
   # └─────────────────────────────────────────────────────────────────────────────┘
 
-  # Claude Code credentials and settings (OAuth tokens)
+  # Claude auth profile (OAuth tokens) - relay only
   # Can be recreated via `claude login` but causes service interruption
-  telclaude-claude:
-    name: telclaude-claude
+  telclaude-claude-auth:
+    name: telclaude-claude-auth
     external: true
 
   # TOTP daemon data: encrypted 2FA secrets
@@ -374,10 +593,26 @@ volumes:
     name: telclaude-totp-data
     external: true
 
+  # Vault daemon data: encrypted credentials
+  # ⚠️  CANNOT BE RECOVERED IF DELETED - user must re-add all credentials
+  vault-data:
+    name: telclaude-vault-data
+    external: true
+
   # Shared Unix socket for relay ↔ TOTP communication
   # Uses tmpfs for better performance and automatic cleanup
   totp-socket:
     name: telclaude-totp-socket
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1M,uid=1000,gid=1000
+
+  # Shared Unix socket for relay ↔ vault communication
+  # Uses tmpfs for better performance and automatic cleanup
+  vault-socket:
+    name: telclaude-vault-socket
     driver: local
     driver_opts:
       type: tmpfs
@@ -397,6 +632,21 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
+  # Social isolated workspace (agent-social RW)
+  social-sandbox:
+    name: telclaude-social-sandbox
+
+  # Social shared memory (relay RW, agents RO)
+  social-memory:
+    name: telclaude-social-memory
+
+  # Claude skills profiles (per-agent isolation — no shared state between personas)
+  telclaude-skills-telegram:
+    name: telclaude-skills-telegram
+
+  telclaude-skills-social:
+    name: telclaude-skills-social
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -411,10 +661,28 @@ networks:
     driver: bridge
     internal: true
 
+  relay-vault-net:
+    name: telclaude-relay-vault
+    driver: bridge
+    internal: true
+
   agent-egress:
     name: telclaude-agent-egress
     driver: bridge
 
   relay-egress:
     name: telclaude-relay-egress
+    driver: bridge
+
+  social-relay-net:
+    name: telclaude-social-relay
+    driver: bridge
+    internal: true
+
+  social-egress:
+    name: telclaude-social-egress
+    driver: bridge
+
+  vault-egress:
+    name: telclaude-vault-egress
     driver: bridge

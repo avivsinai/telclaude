@@ -418,15 +418,20 @@ describe("buildSdkOptions PreToolUse hook", () => {
 	});
 
 	describe("settingSources prevents user bypass", () => {
-		it("always loads only project settings to prevent disableAllHooks bypass", async () => {
-			// SECURITY: settingSources must always be ["project"] to prevent:
+		it("loads only project settings by default to prevent disableAllHooks bypass", async () => {
+			// SECURITY: Without enableSkills, settingSources must be ["project"] to prevent:
 			// - User settings with disableAllHooks: true
 			// - User settings with permissive WebFetch rules
-			const sdkOptsWithSkills = await buildSdkOptions({ ...baseOpts, enableSkills: true });
-			expect(sdkOptsWithSkills.settingSources).toEqual(["project"]);
-
 			const sdkOptsWithoutSkills = await buildSdkOptions({ ...baseOpts, enableSkills: false });
 			expect(sdkOptsWithoutSkills.settingSources).toEqual(["project"]);
+		});
+
+		it("includes user settings when skills are enabled for skill discovery", async () => {
+			// When enableSkills is true, we need "user" in settingSources so the SDK
+			// discovers skills at $CLAUDE_CONFIG_DIR/skills/.
+			// Safe because isSensitivePath blocks writes to $CLAUDE_CONFIG_DIR/settings*.json.
+			const sdkOptsWithSkills = await buildSdkOptions({ ...baseOpts, enableSkills: true });
+			expect(sdkOptsWithSkills.settingSources).toEqual(["user", "project"]);
 		});
 	});
 });

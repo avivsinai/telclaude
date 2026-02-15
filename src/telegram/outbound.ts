@@ -308,7 +308,7 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 
 /**
  * Maximum file size to scan for secrets (10 MB).
- * Files larger than this are not scanned to avoid memory issues.
+ * Files larger than this are blocked to avoid unscanned exfiltration.
  */
 const MAX_FILE_SCAN_SIZE = 10 * 1024 * 1024;
 
@@ -366,7 +366,12 @@ async function scanFileForSecrets(
 			// Scan buffer content
 			if (source.length > MAX_FILE_SCAN_SIZE) {
 				logger.warn({ size: source.length }, "file too large to scan for secrets");
-				return { safe: true }; // Allow but log warning
+				return {
+					safe: false,
+					reason: `File is too large to scan for secrets (max ${Math.round(
+						MAX_FILE_SCAN_SIZE / (1024 * 1024),
+					)}MB).`,
+				};
 			}
 			// Check binary before converting to string (more efficient)
 			if (!isProbablyText(source)) {
@@ -386,7 +391,12 @@ async function scanFileForSecrets(
 			const stats = await fs.promises.stat(absolutePath);
 			if (stats.size > MAX_FILE_SCAN_SIZE) {
 				logger.warn({ path: absolutePath, size: stats.size }, "file too large to scan for secrets");
-				return { safe: true }; // Allow but log warning
+				return {
+					safe: false,
+					reason: `File is too large to scan for secrets (max ${Math.round(
+						MAX_FILE_SCAN_SIZE / (1024 * 1024),
+					)}MB).`,
+				};
 			}
 			const buf = await fs.promises.readFile(absolutePath);
 			// Check binary before converting to string (more efficient)
@@ -462,14 +472,15 @@ export async function sendMediaToChat(
 	if (!fileScan.safe) {
 		logger.error(
 			{ chatId, reason: fileScan.reason },
-			"BLOCKED: File contains secrets, not sending",
+			"BLOCKED: File failed security scan, not sending",
 		);
 		// Send a blocked notification instead of the file
 		return api.sendMessage(
 			chatId,
 			"⚠️ File blocked by security filter.\n\n" +
-				"The file appears to contain sensitive credentials (API keys, tokens, or private keys). " +
-				"This is a security measure to prevent accidental exposure of secrets.",
+				(fileScan.reason ??
+					"The file appears to contain sensitive credentials (API keys, tokens, or private keys). " +
+						"This is a security measure to prevent accidental exposure of secrets."),
 		);
 	}
 
@@ -729,6 +740,11 @@ export async function safeReply(
 	}
 	return lastResult;
 }
+
+export const __test = {
+	scanFileForSecrets,
+	MAX_FILE_SCAN_SIZE,
+};
 
 /**
  * Re-export filter utilities for use in other modules.

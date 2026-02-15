@@ -68,7 +68,7 @@ RUN pnpm prune --prod --ignore-scripts \
 # ─────────────────────────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS claude-cli
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code@latest
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Stage 3: Runtime
@@ -133,13 +133,14 @@ RUN groupmod -g ${USER_GID} node \
     # Create necessary directories
     && mkdir -p /home/node/.telclaude/logs \
     && mkdir -p /home/node/.telclaude/sandbox-tmp \
-    && mkdir -p /home/node/.claude \
+    && mkdir -p /home/telclaude-auth \
+    && mkdir -p /home/telclaude-skills \
     && mkdir -p /workspace \
     && mkdir -p /data \
     # Remove shell rc files to prevent noisy "Permission denied" errors
     # when bash tries to source them inside the sandbox (which blocks reads)
     && rm -f /home/node/.bashrc /home/node/.profile \
-    && chown -R node:node /home/node /workspace /data
+    && chown -R node:node /home/node /home/telclaude-auth /home/telclaude-skills /workspace /data
 
 # Copy Claude CLI from builder stage
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai
@@ -159,6 +160,10 @@ COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
+COPY --from=builder --chown=node:node /build/src ./src
+COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
+COPY --chown=node:node docs/architecture.md ./docs/architecture.md
+COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
 
 # Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
@@ -170,8 +175,10 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh 
 RUN ln -s /app/bin/telclaude.js /usr/local/bin/telclaude
 
 # Environment variables
+ARG GIT_COMMIT=unknown
 ENV NODE_ENV=production
 ENV TELCLAUDE_DATA_DIR=/data
+ENV TELCLAUDE_REVISION=${GIT_COMMIT}
 ENV HOME=/home/node
 
 # NOTE: We do NOT use USER directive here.
@@ -181,8 +188,8 @@ ENV HOME=/home/node
 
 # Healthcheck - verify node process is running
 # Uses simple process check without procps (saves ~10MB)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD ["telclaude", "provider-health", "--json"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["curl", "-sf", "http://localhost:8788/health"]
 
 # Default working directory for Claude operations
 WORKDIR /workspace

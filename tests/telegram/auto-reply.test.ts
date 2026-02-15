@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
@@ -38,6 +41,10 @@ vi.mock("../../src/security/streaming-redactor.js", () => ({
 
 vi.mock("../../src/security/fast-path.js", () => ({
 	checkInfrastructureSecrets: () => ({ blocked: false, patterns: [] as string[] }),
+}));
+
+vi.mock("../../src/memory/telegram-context.js", () => ({
+	buildTelegramMemoryContext: () => null,
 }));
 
 vi.mock("../../src/logging.js", () => ({
@@ -82,12 +89,31 @@ const baseCtx = () => ({
 	auditLogger: { log: vi.fn(async () => {}) },
 });
 
+const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+
 describe("auto-reply executeAndReply", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-"));
+		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		vi.resetModules();
+		// Re-import to get fresh database
+		const { resetDatabase } = await import("../../src/storage/db.js");
+		resetDatabase();
+	});
+
 	afterEach(() => {
 		replies.length = 0;
 		sessionStore.length = 0;
 		redactors.length = 0;
 		executePooledQueryImpl.mockReset();
+		fs.rmSync(tempDir, { recursive: true, force: true });
+		if (ORIGINAL_DATA_DIR === undefined) {
+			delete process.env.TELCLAUDE_DATA_DIR;
+		} else {
+			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
 	});
 
 	it("streams text through redactor and replies with sanitized output", async () => {
@@ -142,5 +168,27 @@ describe("auto-reply executeAndReply", () => {
 		expect(replies).toEqual(["[REDACTED] fallback"]);
 		// Second redactor (fallback) should have processed the response
 		expect(redactors[1]?.processChunk).toHaveBeenCalledWith("secret fallback");
+	});
+});
+
+describe("auto-reply control commands", () => {
+	it("rejects /link in group chats", async () => {
+		const msg = {
+			chatId: 999,
+			chatType: "group" as const,
+			username: "group-user",
+			reply: vi.fn(async () => {}),
+		} as any;
+
+		const auditLogger = { log: vi.fn(async () => {}) } as any;
+
+		await autoReplyTest.handleLinkCommand(msg, "ABCD-1234", auditLogger);
+
+		expect(msg.reply).toHaveBeenCalledWith(
+			"For security, `/link` is only allowed in a private chat. Please DM the bot.",
+		);
+		expect(auditLogger.log).toHaveBeenCalledWith(
+			expect.objectContaining({ errorType: "identity_link_group_rejected" }),
+		);
 	});
 });

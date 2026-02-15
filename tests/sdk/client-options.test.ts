@@ -20,7 +20,7 @@ describe("buildSdkOptions", () => {
 	it("READ_ONLY allowlists built-in tools and adds Skill when enabled", async () => {
 		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", enableSkills: true });
 
-		expect(opts.tools).toEqual(TIER_TOOLS.READ_ONLY);
+		expect(opts.tools).toEqual([...TIER_TOOLS.READ_ONLY, "Skill"]);
 		expect(opts.allowedTools).toEqual([...TIER_TOOLS.READ_ONLY, "Skill"]);
 		expect(opts.permissionMode).toBe("acceptEdits");
 		expect(opts.betas).toBeUndefined();

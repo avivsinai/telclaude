@@ -392,9 +392,9 @@ describe("Blocked Command Fuzzing", () => {
 
 		it("blocks interpreter-based bypasses", () => {
 			const bypasses = [
-				'python -c "import os; os.remove(\'file\')"',
-				'python3 -c "import subprocess; subprocess.run([\'rm\'])"',
-				'node -e "require(\'child_process\').execSync(\'rm\')"',
+				"python -c \"import os; os.remove('file')\"",
+				"python3 -c \"import subprocess; subprocess.run(['rm'])\"",
+				"node -e \"require('child_process').execSync('rm')\"",
 				"ruby -e 'File.delete(\"file\")'",
 			];
 
@@ -558,10 +558,24 @@ describe("Sensitive Path Fuzzing", () => {
 				"CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
 				"CLAUDE_DIR=.claude cd $CLAUDE_DIR && cat settings.json",
 				"export CLAUDE_DIR=.claude; cd $CLAUDE_DIR && cat settings.json",
+				"CLAUDE_CONFIG_DIR=.claude; cd $CLAUDE_CONFIG_DIR && cat settings.json",
+				"TELCLAUDE_CLAUDE_HOME=.claude; cd $TELCLAUDE_CLAUDE_HOME && cat settings.local.json",
 				"FILE=settings.json; cd .claude && cat $FILE",
 				"FILE=settings.local.json; cd .claude && cat ${FILE}",
 				// Variants with ../ prefix (escaping from subdir)
 				"cd .claude && cat ../settings.json", // Note: this is ../ which we block
+			];
+
+			for (const cmd of commands) {
+				expect(isSensitivePath(cmd)).toBe(true);
+			}
+		});
+
+		it("detects Claude settings via config-dir env vars without cd", () => {
+			const commands = [
+				"CLAUDE_CONFIG_DIR=.claude; cat $CLAUDE_CONFIG_DIR/settings.json",
+				"CLAUDE_CONFIG_DIR=.claude; echo foo > ${CLAUDE_CONFIG_DIR}/settings.local.json",
+				"TELCLAUDE_CLAUDE_HOME=.claude; cat $TELCLAUDE_CLAUDE_HOME/settings.json",
 			];
 
 			for (const cmd of commands) {
@@ -584,6 +598,7 @@ describe("Sensitive Path Fuzzing", () => {
 				"cat ./settings.json",
 				"cd src && cat ./settings.json",
 				"cd -P config && vim ./settings.local.json",
+				"CONFIG_DIR=src && cat $CONFIG_DIR/settings.json",
 			];
 
 			for (const cmd of commands) {

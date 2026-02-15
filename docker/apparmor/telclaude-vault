@@ -1,0 +1,80 @@
+#include <tunables/global>
+
+# Telclaude Vault AppArmor profile
+# Highly restrictive: minimal filesystem, no raw sockets, no mount.
+# Network limited to TCP/UDP (stream/dgram) for OAuth2 token refresh.
+# The vault daemon reads/writes encrypted credentials, serves the Unix socket,
+# and makes outbound HTTPS calls to OAuth2 token endpoints.
+
+profile telclaude-vault flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # Node.js reads /proc/1/cgroup for container detection
+  /proc/1/cgroup r,
+
+  # Allow Unix domain sockets (vault communicates via /run/vault/vault.sock)
+  network unix,
+  # Allow TCP/UDP for OAuth2 token refresh (outbound HTTPS + DNS)
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  # Deny raw/packet sockets (no sniffing or crafted packets)
+  deny network raw,
+  deny network packet,
+
+  # Deny mount operations
+  deny mount,
+  deny umount,
+  deny pivot_root,
+
+  # App runtime (read + execute)
+  /app/** r,
+  /app/bin/** ix,
+  /app/node_modules/** mr,
+  /app/dist/** mr,
+
+  # Node.js runtime
+  /usr/local/bin/node ix,
+  /usr/local/lib/node_modules/** mr,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # Data directory (encrypted credentials)
+  /data/** rwk,
+
+  # Unix socket for relay communication
+  /run/vault/** rwk,
+
+  # Home directory (logs)
+  /home/node/.telclaude/logs/** rw,
+
+  # Temp (required for Node.js)
+  /tmp/** rwklix,
+
+  # Device nodes
+  /dev/null rw,
+  /dev/urandom r,
+
+  # Block sensitive locations
+  deny /home/telclaude-auth/** rwklx,
+  deny /home/telclaude-skills/** rwklx,
+  deny /workspace/** rwklx,
+  deny /social/** rwklx,
+  deny /run/secrets/** rwklx,
+  deny /var/run/secrets/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+  deny /proc/*/cmdline r,
+  deny /proc/**/cmdline r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow rw,
+  deny /etc/passwd w,
+}

@@ -48,9 +48,17 @@ const TTS_DEFAULTS = {
 	maxPerDayPerUser: 100,
 } as const;
 
+const SUMMARIZE_DEFAULTS = {
+	maxPerHourPerUser: 30,
+	maxPerDayPerUser: 100,
+	maxCharacters: 8000,
+	timeoutMs: 30_000,
+} as const;
+
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
+const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -156,6 +164,14 @@ const TTSConfigSchema = z.object({
 	maxPerDayPerUser: z.number().int().positive().default(TTS_DEFAULTS.maxPerDayPerUser),
 });
 
+// Summarize (URL content extraction) configuration schema
+const SummarizeConfigSchema = z.object({
+	maxPerHourPerUser: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxPerHourPerUser),
+	maxPerDayPerUser: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxPerDayPerUser),
+	maxCharacters: z.number().int().positive().default(SUMMARIZE_DEFAULTS.maxCharacters),
+	timeoutMs: z.number().int().positive().default(SUMMARIZE_DEFAULTS.timeoutMs),
+});
+
 // Security profile - determines which security layers are active
 export const SecurityProfileSchema = z.enum(["simple", "strict", "test"]);
 export type SecurityProfile = z.infer<typeof SecurityProfileSchema>;
@@ -172,7 +188,7 @@ const ObserverConfigSchema = z.object({
 // NOTE: WRITE_LOCAL provides accident prevention, NOT security isolation.
 // It blocks common destructive commands (rm, chmod) but can be bypassed via
 // interpreters (python -c, node -e). For actual isolation, use containers.
-export const PermissionTierSchema = z.enum(["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"]);
+export const PermissionTierSchema = z.enum(["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS", "SOCIAL"]);
 export type PermissionTier = z.infer<typeof PermissionTierSchema>;
 
 // User permission configuration
@@ -297,6 +313,12 @@ const SecurityConfigSchema = z.object({
 							perHour: z.number().int().positive().default(30),
 						})
 						.optional(),
+					SOCIAL: z
+						.object({
+							perMinute: z.number().int().positive().default(10),
+							perHour: z.number().int().positive().default(100),
+						})
+						.optional(),
 				})
 				.optional(),
 		})
@@ -319,6 +341,14 @@ const SecurityConfigSchema = z.object({
 const TelegramGroupChatConfigSchema = z.object({
 	// When enabled, group/supergroup messages must mention the bot (or reply to the bot)
 	requireMention: z.boolean().default(false),
+});
+
+// Private heartbeat configuration (autonomous background tasks for telegram persona)
+const TelegramHeartbeatConfigSchema = z.object({
+	enabled: z.boolean().default(false),
+	intervalHours: z.number().positive().default(6),
+	/** Send Telegram notification when heartbeat takes action. Default: true */
+	notifyOnActivity: z.boolean().default(true),
 });
 
 const TelegramConfigSchema = z.object({
@@ -350,12 +380,38 @@ const TelegramConfigSchema = z.object({
 			maxAttempts: z.number().int().min(0).default(0), // 0 = unlimited
 		})
 		.optional(),
+	/** Private heartbeat: autonomous background tasks for the telegram persona */
+	heartbeat: TelegramHeartbeatConfigSchema.optional(),
 });
 
 // Logging configuration schema
 const LoggingConfigSchema = z.object({
 	level: z.enum(["silent", "fatal", "error", "warn", "info", "debug", "trace"]).optional(),
 	file: z.string().optional(),
+});
+
+// Generic social service configuration
+const SocialServiceConfigSchema = z.object({
+	id: z.string().min(1),
+	type: z.string().min(1),
+	enabled: z.boolean().default(SOCIAL_SERVICE_DEFAULTS.enabled),
+	apiKey: z.string().optional(),
+	/** Public handle on the service (e.g. "telclaude" for @telclaude on X/Twitter) */
+	handle: z.string().optional(),
+	/** Display name on the service (e.g. "Claude Ici") */
+	displayName: z.string().optional(),
+	heartbeatIntervalHours: z
+		.number()
+		.positive()
+		.default(SOCIAL_SERVICE_DEFAULTS.heartbeatIntervalHours),
+	adminChatId: z.union([z.string(), z.number()]).optional(),
+	agentUrl: z.string().optional(),
+	/** Enable skills for autonomous heartbeat activity (Phase 3 only). Default: false */
+	enableSkills: z.boolean().default(false),
+	/** Future: filter which skills load for this service */
+	allowedSkills: z.array(z.string()).optional(),
+	/** When to send Telegram notifications on heartbeat. Default: "activity" */
+	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });
 
 // Main config schema
@@ -371,8 +427,12 @@ const TelclaudeConfigSchema = z.object({
 	imageGeneration: ImageGenerationConfigSchema.default(IMAGE_GENERATION_DEFAULTS),
 	videoProcessing: VideoProcessingConfigSchema.default(VIDEO_PROCESSING_DEFAULTS),
 	tts: TTSConfigSchema.default(TTS_DEFAULTS),
+	// URL content extraction / summarization
+	summarize: SummarizeConfigSchema.default(SUMMARIZE_DEFAULTS),
 	// External providers (sidecars) - optional
 	providers: z.array(ExternalProviderSchema).default([]),
+	// Generic social services (replaces per-service top-level keys)
+	socialServices: z.array(SocialServiceConfigSchema).default([]),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -383,36 +443,103 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
 export type VideoProcessingConfig = z.infer<typeof VideoProcessingConfigSchema>;
 export type TTSConfig = z.infer<typeof TTSConfigSchema>;
+export type SummarizeConfig = z.infer<typeof SummarizeConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
+let privateMtime: number | null = null;
 let cachedConfigPath: string | null = null;
+
+/**
+ * Deep-merge two plain objects. Source values override target values.
+ * Arrays are replaced (not concatenated) — source is authoritative.
+ */
+function deepMerge(
+	target: Record<string, unknown>,
+	source: Record<string, unknown>,
+): Record<string, unknown> {
+	const result = { ...target };
+	for (const key of Object.keys(source)) {
+		const tVal = target[key];
+		const sVal = source[key];
+		if (isPlainObject(tVal) && isPlainObject(sVal)) {
+			result[key] = deepMerge(tVal as Record<string, unknown>, sVal as Record<string, unknown>);
+		} else {
+			result[key] = sVal;
+		}
+	}
+	return result;
+}
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+	return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function safeStat(filePath: string): fs.Stats | null {
+	try {
+		return fs.statSync(filePath);
+	} catch {
+		return null;
+	}
+}
 
 /**
  * Load and parse the configuration file.
  * Uses resolveConfigPath() to determine the config file location.
+ *
+ * Supports a two-file split for Docker deployments:
+ *   - TELCLAUDE_CONFIG → policy config (safe for all containers: providers, network, etc.)
+ *   - TELCLAUDE_PRIVATE_CONFIG → relay-only overrides (allowedChats, permissions, secrets)
+ *
+ * The private config is deep-merged on top of the policy config. Arrays are replaced,
+ * not concatenated. If TELCLAUDE_PRIVATE_CONFIG is not set, single-file behavior is preserved.
  */
 export function loadConfig(): TelclaudeConfig {
 	const configPath = resolveConfigPath();
+	const privateConfigPath = process.env.TELCLAUDE_PRIVATE_CONFIG;
 
 	try {
 		const stat = fs.statSync(configPath);
-		// Invalidate cache if path changed or mtime changed
-		if (cachedConfig && cachedConfigPath === configPath && configMtime === stat.mtimeMs) {
+		const pStat = privateConfigPath ? safeStat(privateConfigPath) : null;
+
+		// Invalidate cache if any file changed
+		if (
+			cachedConfig &&
+			cachedConfigPath === configPath &&
+			configMtime === stat.mtimeMs &&
+			privateMtime === (pStat?.mtimeMs ?? null)
+		) {
 			return cachedConfig;
 		}
 
 		const raw = fs.readFileSync(configPath, "utf-8");
-		const parsed = JSON5.parse(raw);
+		let parsed = JSON5.parse(raw) as Record<string, unknown>;
+
+		// Deep-merge private config if available (relay-only overlay)
+		if (privateConfigPath && pStat) {
+			try {
+				const privateRaw = fs.readFileSync(privateConfigPath, "utf-8");
+				const privateParsed = JSON5.parse(privateRaw) as Record<string, unknown>;
+				parsed = deepMerge(parsed, privateParsed);
+			} catch {
+				// Private config is optional — log at debug level
+				if (process.env.TELCLAUDE_LOG_LEVEL === "debug") {
+					console.debug(`[config] failed to read private config: ${privateConfigPath}`);
+				}
+			}
+		}
+
 		const validated = TelclaudeConfigSchema.parse(parsed);
 
 		cachedConfig = validated;
 		configMtime = stat.mtimeMs;
+		privateMtime = pStat?.mtimeMs ?? null;
 		cachedConfigPath = configPath;
 
 		return validated;
@@ -449,6 +576,7 @@ export function getConfigPath(): string {
 export function resetConfigCache() {
 	cachedConfig = null;
 	configMtime = null;
+	privateMtime = null;
 	cachedConfigPath = null;
 }
 

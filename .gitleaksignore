@@ -1,6 +1,8 @@
 # Gitleaks ignore file - remaining false positives after path/regex exclusions
+# Updated after git filter-branch history rewrite (2026-02-08)
 
-# Docker compose - env variable references
+# Docker compose - env variable references (${VAR:?required} patterns)
+# Pre-rewrite commits (unchanged by filter-branch)
 9df5b273a1e68598dceb93523f54ac27a8fc12b5:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:29
 814a3b586405a8221eb3c4714b160f20eaaa12db:docker/docker-compose.yml:credentials-yaml-unquoted:62
 814a3b586405a8221eb3c4714b160f20eaaa12db:docker/docker-compose.yml:credentials-yaml-unquoted:180
@@ -10,6 +12,23 @@ b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/compose.simple.yaml:credentials-
 b94886a6eb8328e3dd14cbb9f3c4dd5041e68f8a:docker/docker-compose.yml:credentials-yaml-unquoted:180
 b828585dc0342295e4b23e7f2a4ae758e44bfcb6:docker/compose.yaml:credentials-yaml-unquoted:16
 5ad47b9862cd2f5f7baa4f73f8057387211b93a8:docker/docker-compose.yml:credentials-yaml-unquoted:41
+# Post-rewrite commits (new hashes from filter-branch)
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:32
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:42
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:179
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:184
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.yml:credentials-yaml-unquoted:50
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.yml:credentials-yaml-unquoted:194
+2b5e0b24966337f8e24c9c178b464d523687b44c:docker/docker-compose.yml:credentials-yaml-unquoted:291
+2b9757187aff50e6e58d5344920c7583146475ce:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:417
+677fce333a2f894eda3e22d05257debab5e1958b:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:39
+677fce333a2f894eda3e22d05257debab5e1958b:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:173
+677fce333a2f894eda3e22d05257debab5e1958b:docker/docker-compose.yml:credentials-yaml-unquoted:63
+677fce333a2f894eda3e22d05257debab5e1958b:docker/docker-compose.yml:credentials-yaml-unquoted:280
+6e01cd76bc36c62d1f18b0e42a850720335a67fb:docker/docker-compose.deploy.yml:credentials-yaml-unquoted:29
+9acd097177dd671c5e5e14ac6aead58f317f3f0d:docker/docker-compose.yml:credentials-yaml-unquoted:67
+9acd097177dd671c5e5e14ac6aead58f317f3f0d:docker/docker-compose.yml:credentials-yaml-unquoted:286
+c47d4389e7f568398b5dbc704350851bd4b34cc2:docker/docker-compose.yml:credentials-yaml-unquoted:488
 
 # OpenAI client - URL patterns
 0283fce9d0f66ee05b9eb78f32337dc440e77665:src/services/openai-client.ts:generic-auth-tuple:27
@@ -27,4 +46,6 @@ e82ee12ace184aece9e37ee32666802d1e8efa43:src/security/streaming-redactor.ts:gene
 103c4bd94feec6d6d59b1e3b9c397b26dd456bd4:src/security/output-filter.ts:credentials-javascript:330
 cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-javascript:704
 
-# Credential vault - now handled by path-based rules in .gitleaks.toml
+# JavaScript - header name constants, pool key strings (not actual credentials)
+c47d4389e7f568398b5dbc704350851bd4b34cc2:src/internal-auth.ts:credentials-javascript:8
+79fd13154a83733e6eb1ff0454a158bc902a3903:src/memory/rpc.ts:credentials-javascript:124

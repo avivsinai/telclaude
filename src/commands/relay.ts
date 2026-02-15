@@ -15,9 +15,10 @@ import {
 	logProviderHealthResults,
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
-import { startCapabilityServer } from "../relay/capabilities.js";
+import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
+import { initTokenManager } from "../relay/token-manager.js";
 import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
@@ -28,7 +29,16 @@ import {
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
+import { ensureActivityLogTable } from "../social/activity-log.js";
+import {
+	createSocialClient,
+	handleSocialHeartbeat,
+	type SocialScheduler,
+	startSocialScheduler,
+} from "../social/index.js";
+import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
+import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
 
@@ -102,7 +112,8 @@ export function registerRelayCommand(program: Command): void {
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
-				readEnv(); // Validates environment variables
+				await readEnv(); // Validates environment variables
+				const socialSchedulers: SocialScheduler[] = [];
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -178,12 +189,74 @@ export function registerRelayCommand(program: Command): void {
 						if (vaultAvailable) {
 							startHttpCredentialProxy({ vaultSocketPath });
 							console.log("  HTTP proxy: enabled (credential injection via vault)");
+
+							// Initialize token manager for Ed25519 session tokens
+							const tokenInit = await initTokenManager();
+							if (tokenInit) {
+								console.log("  Session tokens: enabled (Ed25519 v3)");
+							} else {
+								console.log("  Session tokens: disabled (vault signing key unavailable)");
+							}
 						} else {
 							console.log("  HTTP proxy: disabled (vault daemon not running)");
 						}
 					}
 				} else {
 					console.log("  Capabilities: disabled");
+				}
+
+				// Initialize activity log table for cross-persona queries
+				ensureActivityLogTable();
+
+				const enabledServices = cfg.socialServices.filter((s) => s.enabled);
+				if (enabledServices.length > 0) {
+					for (const svc of enabledServices) {
+						const intervalHours = svc.heartbeatIntervalHours ?? 4;
+						const intervalMs = intervalHours * 60 * 60 * 1000;
+						const scheduler = startSocialScheduler({
+							serviceId: svc.id,
+							intervalMs,
+							onHeartbeat: async () => {
+								const client = await createSocialClient(svc);
+								if (!client) {
+									logger.warn({ serviceId: svc.id }, "social client not configured");
+									return;
+								}
+								const result = await handleSocialHeartbeat(svc.id, client, svc);
+								if (!result.ok) {
+									logger.warn(
+										{ message: result.message, serviceId: svc.id },
+										"social heartbeat reported errors",
+									);
+								}
+							},
+						});
+						socialSchedulers.push(scheduler);
+						console.log(`  Social service ${svc.id}: enabled (heartbeat every ${intervalHours}h)`);
+					}
+				} else {
+					console.log("  Social services: none enabled");
+				}
+
+				// Private heartbeat scheduler (autonomous tasks for telegram persona)
+				if (cfg.telegram?.heartbeat?.enabled) {
+					const privateIntervalHours = cfg.telegram.heartbeat.intervalHours ?? 6;
+					const privateIntervalMs = privateIntervalHours * 60 * 60 * 1000;
+					const privateScheduler = startSocialScheduler({
+						serviceId: "telegram-private",
+						intervalMs: privateIntervalMs,
+						onHeartbeat: async () => {
+							const result = await handlePrivateHeartbeat(cfg);
+							if (result.acted) {
+								logger.info(
+									{ summary: result.summary },
+									"private heartbeat completed with activity",
+								);
+							}
+						},
+					});
+					socialSchedulers.push(privateScheduler);
+					console.log(`  Private heartbeat: enabled (every ${privateIntervalHours}h)`);
 				}
 
 				// Detect sandbox mode and verify sandbox availability
@@ -393,6 +466,13 @@ export function registerRelayCommand(program: Command): void {
 					console.log("\nShutting down...");
 					abortController.abort();
 
+					for (const scheduler of socialSchedulers) {
+						scheduler.stop();
+					}
+					if (socialSchedulers.length > 0) {
+						logger.info({ count: socialSchedulers.length }, "social schedulers stopped");
+					}
+
 					// Clean up session pool
 					await destroySessionManager();
 					logger.info("session pool destroyed");
@@ -407,9 +487,20 @@ export function registerRelayCommand(program: Command): void {
 					abortSignal: abortController.signal,
 					securityProfile: effectiveProfile,
 					dryRun: opts.dryRun ?? false,
+					onReady: () => {
+						bufferStartupReady({
+							label: "relay",
+							version: getServiceVersion(),
+							revision: getServiceRevision(),
+						});
+						logger.info("relay ready — buffered startup notification");
+					},
 				});
 
 				// Final cleanup after monitor exits
+				for (const scheduler of socialSchedulers) {
+					scheduler.stop();
+				}
 				await destroySessionManager();
 
 				console.log("Relay stopped.");

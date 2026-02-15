@@ -1,4 +1,4 @@
-import { buildInternalAuthHeaders } from "../internal-auth.js";
+import { buildRpcAuthHeaders } from "../agent/token-client.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "relay-capabilities-client" });
@@ -18,7 +18,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildInternalAuthHeaders("POST", path, payload),
+			...buildRpcAuthHeaders("POST", path, payload, "telegram"),
 		},
 		body: payload,
 	});
@@ -42,6 +42,18 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 	}
 
 	return (await response.json()) as T;
+}
+
+export async function relayGetProviders(): Promise<{
+	ok: boolean;
+	providers: Array<{
+		id: string;
+		baseUrl: string;
+		services: string[];
+		description?: string;
+	}>;
+}> {
+	return postJson("/v1/config.providers", {});
 }
 
 export async function relayGenerateImage(input: {
@@ -106,6 +118,24 @@ export async function relayValidateAttachment(input: { ref: string; userId?: str
 	error?: string;
 }> {
 	return postJson("/v1/attachment/validate", input);
+}
+
+export async function relaySummarize(input: {
+	url: string;
+	maxCharacters?: number;
+	timeoutMs?: number;
+	format?: "text" | "markdown";
+	userId?: string;
+}): Promise<{
+	url: string;
+	title: string | null;
+	siteName: string | null;
+	content: string;
+	wordCount: number;
+	truncated: boolean;
+	transcriptSource: string | null;
+}> {
+	return postJson("/v1/summarize", input);
 }
 
 export async function relayDeliverLocalFile(input: {

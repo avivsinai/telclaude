@@ -24,7 +24,8 @@ import { pipeline } from "node:stream/promises";
 import { getChildLogger } from "../logging.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { getGitHubAppIdentity, getInstallationToken } from "../services/github-app.js";
-import { type SessionTokenPayload, validateSessionToken } from "./git-proxy-auth.js";
+import { type SessionTokenPayload, validateSessionTokenV3 } from "./git-proxy-auth.js";
+import { getPublicKey } from "./token-manager.js";
 
 const logger = getChildLogger({ module: "git-proxy" });
 
@@ -315,7 +316,7 @@ export function startGitProxyServer(config: Partial<GitProxyConfig> = {}): http.
 			return;
 		}
 
-		const session = validateSessionToken(sessionHeader);
+		const session = validateSessionTokenV3(sessionHeader, getPublicKey());
 		if (!session) {
 			logger.warn({ url }, "git proxy request with invalid session token");
 			res.writeHead(401, { "Content-Type": "text/plain" });

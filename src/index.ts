@@ -11,8 +11,11 @@ import { registerGitCredentialCommand } from "./commands/git-credential.js";
 import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
 import { registerGitTestCommand } from "./commands/git-test.js";
 import { registerIntegrationTestCommand } from "./commands/integration-test.js";
+import { registerKeygenCommand } from "./commands/keygen.js";
 import { registerLinkCommand } from "./commands/link.js";
+import { registerMemoryCommands } from "./commands/memory.js";
 import { registerNetworkCommand } from "./commands/network.js";
+import { registerOAuthCommand } from "./commands/oauth.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
 import { registerQuickstartCommand } from "./commands/quickstart.js";
@@ -26,6 +29,7 @@ import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerStatusCommand } from "./commands/status.js";
+import { registerSummarizeCommand } from "./commands/summarize.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
 import { registerTOTPDaemonCommand } from "./commands/totp-daemon.js";
 import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
@@ -68,10 +72,14 @@ registerIntegrationTestCommand(program);
 registerDiagnoseSandboxNetworkCommand(program);
 registerQuickstartCommand(program);
 registerNetworkCommand(program);
+registerOAuthCommand(program);
 registerProviderHealthCommand(program);
 registerProviderQueryCommand(program);
 registerVaultCommand(program);
 registerVaultDaemonCommand(program);
+registerKeygenCommand(program);
+registerMemoryCommands(program);
+registerSummarizeCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens

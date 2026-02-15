@@ -1,11 +1,13 @@
-import { buildInternalAuthHeaders } from "../internal-auth.js";
+import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
 import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 
 const logger = getChildLogger({ module: "agent-client" });
 
 type RemoteQueryOptions = PooledQueryOptions & {
 	agentUrl?: string;
+	scope?: InternalAuthScope;
 };
 
 export async function* executeRemoteQuery(
@@ -35,8 +37,23 @@ export async function* executeRemoteQuery(
 
 	try {
 		const path = "/v1/query";
+		// Mint a session token for the agent subprocess (if vault is active in this process).
+		// The agent server passes this to the Claude subprocess env so it can call
+		// relay capabilities (TTS, image gen, transcription, memory) without the private key.
+		let sessionToken: string | undefined;
+		if (isTokenManagerActive()) {
+			try {
+				const issued = await issueToken(options.scope ?? "telegram");
+				if (issued) {
+					sessionToken = issued.token;
+				}
+			} catch {
+				// Best-effort; agent falls back to static auth if available
+			}
+		}
 		const payload = JSON.stringify({
 			prompt,
+			cwd: options.cwd,
 			tier: options.tier,
 			poolKey: options.poolKey,
 			enableSkills: options.enableSkills,
@@ -45,13 +62,15 @@ export async function* executeRemoteQuery(
 			betas: options.betas,
 			userId: options.userId,
 			systemPromptAppend: options.systemPromptAppend,
+			sessionToken,
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
+		const scope = options.scope ?? "telegram";
 		const response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				...buildInternalAuthHeaders("POST", path, payload),
+				...buildInternalAuthHeaders("POST", path, payload, { scope }),
 			},
 			body: payload,
 			signal: controller.signal,

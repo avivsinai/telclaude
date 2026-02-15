@@ -7,7 +7,8 @@
  * - Security enforcement via PreToolUse hooks (PRIMARY) and canUseTool (FALLBACK)
  *
  * IMPORTANT: Security enforcement uses PreToolUse hooks as PRIMARY enforcement.
- * The canUseTool callback is a FALLBACK only - it does NOT fire in acceptEdits mode.
+ * The canUseTool callback is a FALLBACK only - it only runs when the SDK would prompt.
+ * In acceptEdits/auto-approve modes, it won't run for auto-approved tool calls.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
  * Hook response format (per https://docs.claude.com/en/docs/claude-code/hooks):
@@ -21,6 +22,7 @@ import {
 	type HookInput,
 	type PermissionMode,
 	query,
+	type SDKMessage,
 	type Options as SDKOptions,
 	type SdkBeta,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -80,6 +82,10 @@ function shouldExposeKeys(tier: PermissionTier): boolean {
 	return tier === "FULL_ACCESS";
 }
 
+function isSocialContext(actorUserId?: string): boolean {
+	return actorUserId?.startsWith("social:") ?? false;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Security Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -111,6 +117,15 @@ function resolveRealPath(inputPath: string): string {
 	} catch {
 		// File doesn't exist yet or other error - return original
 		return inputPath;
+	}
+}
+
+function isWritableDir(dirPath: string): boolean {
+	try {
+		fs.accessSync(dirPath, fs.constants.W_OK);
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -310,34 +325,6 @@ function matchProviderForUrl(
 	return null;
 }
 
-/**
- * Inject authentication headers for provider requests.
- * This allows Claude to call providers directly via WebFetch.
- */
-function injectProviderHeaders(
-	toolInput: { method?: string; headers?: Record<string, string> },
-	url: URL,
-	actorUserId: string,
-): Record<string, unknown> {
-	const headers = { ...(toolInput.headers ?? {}) };
-	headers["x-actor-user-id"] = actorUserId;
-
-	const updated: Record<string, unknown> = {
-		...toolInput,
-		headers,
-	};
-
-	// Default to POST for non-health endpoints
-	if (url.pathname !== "/v1/health") {
-		const method = toolInput.method?.toUpperCase();
-		if (!method) {
-			updated.method = "POST";
-		}
-	}
-
-	return updated;
-}
-
 function getUrlPort(url: URL): string {
 	return url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
 }
@@ -381,7 +368,11 @@ const ALLOWED_RELAY_PATHS = new Set(["/v1/attachment/fetch", "/v1/attachment/del
 function buildRelayAttachmentRequest(
 	toolInput: { method?: string; headers?: Record<string, string>; body?: unknown },
 	url: URL,
+	actorUserId?: string,
 ): { updatedInput?: Record<string, unknown>; error?: string } {
+	if (actorUserId?.startsWith("social:")) {
+		return { error: "Relay attachment endpoints are not available in Social context." };
+	}
 	if (!ALLOWED_RELAY_PATHS.has(url.pathname)) {
 		return { error: "Only attachment endpoints allowed on relay." };
 	}
@@ -403,7 +394,9 @@ function buildRelayAttachmentRequest(
 
 	try {
 		const path = `${url.pathname}${url.search}`;
-		const authHeaders = buildInternalAuthHeaders("POST", path, normalizedBody.body);
+		const authHeaders = buildInternalAuthHeaders("POST", path, normalizedBody.body, {
+			scope: "telegram",
+		});
 		headers = { ...headers, ...authHeaders };
 	} catch {
 		return { error: "Relay attachment fetch is not configured." };
@@ -423,7 +416,7 @@ function buildRelayAttachmentRequest(
  * Create a PreToolUse hook that blocks WebFetch to private networks and metadata endpoints.
  *
  * CRITICAL: PreToolUse hooks run UNCONDITIONALLY before every tool use.
- * Unlike canUseTool (which does NOT fire in acceptEdits mode), PreToolUse hooks
+ * Unlike canUseTool (which only runs when a permission prompt would appear), PreToolUse hooks
  * are guaranteed to run. This is the PRIMARY enforcement mechanism.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  *
@@ -441,6 +434,10 @@ function createNetworkSecurityHook(
 	providers: ExternalProviderConfig[],
 	actorUserId?: string,
 ): HookCallbackMatcher {
+	const socialContext = isSocialContext(actorUserId);
+	const effectivePrivateEndpoints = socialContext ? [] : privateEndpoints;
+	const effectiveProviders = socialContext ? [] : providers;
+
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
 			return allowHookResponse();
@@ -463,7 +460,7 @@ function createNetworkSecurityHook(
 
 		try {
 			const url = new URL(toolInput.url);
-			const providerMatch = matchProviderForUrl(url, providers);
+			const providerMatch = matchProviderForUrl(url, effectiveProviders);
 
 			// DEBUG: Log WebFetch interception
 			logger.debug(
@@ -472,7 +469,7 @@ function createNetworkSecurityHook(
 					hostname: url.hostname,
 					port: url.port,
 					providerMatch: providerMatch?.id ?? null,
-					providersCount: providers.length,
+					providersCount: effectiveProviders.length,
 					actorUserId: actorUserId ?? null,
 				},
 				"[hook] WebFetch intercepted",
@@ -489,7 +486,7 @@ function createNetworkSecurityHook(
 
 			// Relay attachment fetch (internal capabilities broker)
 			if (isRelayAttachmentEndpoint(url)) {
-				const relayRequest = buildRelayAttachmentRequest(toolInput, url);
+				const relayRequest = buildRelayAttachmentRequest(toolInput, url, actorUserId);
 				if (relayRequest.error) {
 					logger.warn(
 						{ url: url.pathname, error: relayRequest.error },
@@ -501,11 +498,27 @@ function createNetworkSecurityHook(
 				return allowHookResponse(relayRequest.updatedInput ?? toolInput);
 			}
 
+			// Block direct WebFetch to configured provider endpoints (public or private).
+			// Providers must be queried via `telclaude provider-query` CLI which routes through the relay.
+			if (providerMatch) {
+				logger.warn(
+					{ provider: providerMatch.id, url: url.pathname },
+					"[hook] blocked direct WebFetch to provider endpoint",
+				);
+				return denyHookResponse(
+					`Provider endpoints must be queried via \`telclaude provider-query\` (Bash), not WebFetch. Use: telclaude provider-query --provider ${providerMatch.id} --service <svc> --action <act>. If Bash is unavailable in your tier, ask the operator to run the query.`,
+				);
+			}
+
 			// Extract port (default: 443 for https, 80 for http)
 			const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
 
 			// Check private network access with allowlist and port enforcement
-			const privateCheck = await checkPrivateNetworkAccess(url.hostname, port, privateEndpoints);
+			const privateCheck = await checkPrivateNetworkAccess(
+				url.hostname,
+				port,
+				effectivePrivateEndpoints,
+			);
 
 			if (!privateCheck.allowed) {
 				logger.warn(
@@ -517,25 +530,6 @@ function createNetworkSecurityHook(
 
 			// If it matched a private endpoint, allow it (port already checked)
 			if (privateCheck.matchedEndpoint) {
-				if (providerMatch) {
-					// Inject auth headers for provider requests
-					// Claude can call providers directly via WebFetch
-					if (!actorUserId) {
-						return denyHookResponse("Missing user context for provider request.");
-					}
-					const method = toolInput.method?.toUpperCase() || "GET";
-					// Allow GET for read-only endpoints (health, schema)
-					const isReadOnlyPath = url.pathname === "/v1/health" || url.pathname === "/v1/schema";
-					if (!isReadOnlyPath && method !== "POST") {
-						return denyHookResponse("Provider data endpoints require POST.");
-					}
-					const updatedInput = injectProviderHeaders(toolInput, url, actorUserId);
-					logger.info(
-						{ provider: providerMatch.id, actorUserId, url: url.pathname, method },
-						"[hook] injected x-actor-user-id header for provider call",
-					);
-					return allowHookResponse(updatedInput);
-				}
 				logger.debug(
 					{
 						host: url.hostname,
@@ -572,11 +566,96 @@ function createNetworkSecurityHook(
 	};
 }
 
+function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatcher {
+	const socialContext = isSocialContext(actorUserId);
+	// DESIGN: The container IS the sandbox (read-only rootfs, AppArmor, no secrets mounted).
+	// This hook provides defense-in-depth for two specific threats:
+	// 1. Skill poisoning (untrusted input writes to skills, later executed in trusted context)
+	// 2. Bash in untrusted flows (regex-based command inspection is unwinnable against
+	//    shell obfuscation — so we disable Bash entirely for untrusted actors instead)
+	// File reads are NOT restricted — the container controls what paths exist.
+	// See: docs/architecture.md "Trust Boundaries"
+
+	// Trusted social actors that get full tool access (including Bash).
+	// Untrusted actors (notifications) get no Bash at all.
+	// This eliminates the entire class of skill-poisoning-via-Bash attacks without
+	// playing regex whack-a-mole against shell obfuscation.
+	const trustedActorSuffixes = [":operator", ":autonomous", ":proactive"];
+	const isTrustedActor =
+		actorUserId != null && trustedActorSuffixes.some((suffix) => actorUserId.endsWith(suffix));
+
+	// Paths where writes are blocked via Write/Edit tools (all actors, trusted or not)
+	const writeProtectedPaths = [
+		/\/home\/telclaude-skills(?:\/|$)/i, // skill poisoning: write skill → trusted loads it
+		/\/home\/telclaude-auth(?:\/|$)/i, // auth tokens (not mounted, but explicit)
+		/\/social\/memory(?:\/|$)/i, // memory integrity (container has :ro, belt-and-suspenders)
+	];
+
+	const isWriteProtected = (filePath: string): boolean =>
+		writeProtectedPaths.some((pattern) => pattern.test(filePath));
+
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+
+		if (!socialContext) {
+			return allowHookResponse();
+		}
+
+		const toolName = input.tool_name;
+		const toolInput = input.tool_input as Record<string, unknown>;
+
+		// Block tools that have no legitimate social use
+		if (toolName === "NotebookEdit") {
+			logger.warn({ toolName, actorUserId: actorUserId ?? null }, "[hook] blocked social tool");
+			return denyHookResponse(`Social context: ${toolName} is not permitted.`);
+		}
+
+		// Bash: only allowed for trusted actors (operator, autonomous, proactive).
+		// Untrusted actors (notifications) don't get Bash — notification content
+		// could inject shell commands, and regex inspection can't stop obfuscation.
+		if (toolName === "Bash" && !isTrustedActor) {
+			logger.warn(
+				{ actorUserId: actorUserId ?? null },
+				"[hook] blocked Bash for untrusted social actor",
+			);
+			return denyHookResponse(
+				"Social context: Bash is not available for this operation. Use file tools or WebFetch instead.",
+			);
+		}
+
+		// Write/Edit: block writes to protected paths (all actors, even trusted)
+		if (toolName === "Write" && isWriteInput(toolInput) && isWriteProtected(toolInput.file_path)) {
+			logger.warn(
+				{ path: redactForLog(toolInput.file_path), actorUserId: actorUserId ?? null },
+				"[hook] blocked social write to protected path",
+			);
+			return denyHookResponse("Social context: writing to this location is not permitted.");
+		}
+		if (toolName === "Edit" && isEditInput(toolInput) && isWriteProtected(toolInput.file_path)) {
+			logger.warn(
+				{ path: redactForLog(toolInput.file_path), actorUserId: actorUserId ?? null },
+				"[hook] blocked social edit of protected path",
+			);
+			return denyHookResponse("Social context: editing this file is not permitted.");
+		}
+
+		// All other tools: allow (container isolation is the boundary)
+		return allowHookResponse();
+	};
+
+	return {
+		hooks: [hookCallback],
+		timeout: HOOK_TIMEOUT_SECONDS,
+	};
+}
+
 /**
  * Create a PreToolUse hook for sensitive path protection on filesystem tools.
  *
  * CRITICAL: This is the PRIMARY enforcement for sensitive path blocking.
- * The canUseTool callback does NOT fire in acceptEdits mode, so PreToolUse
+ * The canUseTool callback only runs when a permission prompt would appear, so PreToolUse
  * hooks are required for guaranteed enforcement.
  * See: https://code.claude.com/docs/en/sdk/sdk-permissions
  */
@@ -760,8 +839,13 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// OPENAI_API_KEY and GITHUB_TOKEN should already be in process.env.
 	} else {
 		// Docker mode: Pass explicit env since container provides isolation
+		// Use cwd as HOME when actual HOME is read-only (e.g., social agent's HOME=/social)
+		// This ensures tools like agent-browser can create temp files
+		const effectiveHome = isWritableDir(process.env.HOME ?? "")
+			? (process.env.HOME ?? "")
+			: opts.cwd;
 		sandboxEnv = {
-			HOME: process.env.HOME ?? "",
+			HOME: effectiveHome,
 			USER: process.env.USER ?? "",
 			PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 			SHELL: process.env.SHELL ?? "/bin/sh",
@@ -778,8 +862,16 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (process.env.TELCLAUDE_CAPABILITIES_URL) {
 			sandboxEnv.TELCLAUDE_CAPABILITIES_URL = process.env.TELCLAUDE_CAPABILITIES_URL;
 		}
-		if (process.env.TELCLAUDE_INTERNAL_RPC_SECRET) {
-			sandboxEnv.TELCLAUDE_INTERNAL_RPC_SECRET = process.env.TELCLAUDE_INTERNAL_RPC_SECRET;
+		// Subprocess gets relay public key (for verification) but NOT agent private key.
+		// Auth to relay is via TELCLAUDE_SESSION_TOKEN (passed below), not raw private key.
+		const relayPublicKey = process.env.TELEGRAM_RPC_RELAY_PUBLIC_KEY;
+		if (relayPublicKey) {
+			sandboxEnv.TELEGRAM_RPC_RELAY_PUBLIC_KEY = relayPublicKey;
+		}
+		// Pass relay-minted session token to Claude subprocess (if agent server injected one).
+		// This allows telclaude CLI tools to authenticate to the relay without the private key.
+		if (process.env.TELCLAUDE_SESSION_TOKEN) {
+			sandboxEnv.TELCLAUDE_SESSION_TOKEN = process.env.TELCLAUDE_SESSION_TOKEN;
 		}
 		// Media directories for generated content
 		if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
@@ -787,6 +879,23 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		}
 		if (process.env.TELCLAUDE_MEDIA_OUTBOX_DIR) {
 			sandboxEnv.TELCLAUDE_MEDIA_OUTBOX_DIR = process.env.TELCLAUDE_MEDIA_OUTBOX_DIR;
+		}
+
+		// Claude SDK needs CLAUDE_CONFIG_DIR to discover user-level skills and CLAUDE.md
+		if (process.env.CLAUDE_CONFIG_DIR) {
+			sandboxEnv.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+		}
+		// Playwright browsers path for agent-browser headless automation
+		if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+			sandboxEnv.PLAYWRIGHT_BROWSERS_PATH = process.env.PLAYWRIGHT_BROWSERS_PATH;
+		}
+
+		// Anthropic proxy config — SDK process needs these to route API calls through relay
+		if (process.env.ANTHROPIC_BASE_URL) {
+			sandboxEnv.ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
+		}
+		if (process.env.ANTHROPIC_AUTH_TOKEN) {
+			sandboxEnv.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 		}
 
 		// Tier-based key exposure: FULL_ACCESS gets configured keys
@@ -834,6 +943,11 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
+	const socialContext = isSocialContext(opts.userId);
+	// Social agents get permissive WebFetch — their job is browsing the public internet.
+	// Container hardening (no secrets, AppArmor, separate network) is the boundary.
+	// RFC1918/metadata blocks still apply unconditionally in the network hook.
+	const effectivePermissive = socialContext ? true : isPermissiveMode;
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
@@ -868,17 +982,18 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	// CRITICAL: PreToolUse hooks are the PRIMARY enforcement mechanism.
 	// They run UNCONDITIONALLY before every tool use, even in acceptEdits mode.
-	// Unlike canUseTool (which does NOT fire in acceptEdits mode), these are guaranteed.
+	// Unlike canUseTool (which only runs when a permission prompt would appear), these are guaranteed.
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	sdkOpts.hooks = {
 		PreToolUse: [
 			createNetworkSecurityHook(
-				isPermissiveMode,
+				effectivePermissive,
 				allowedDomains,
 				privateEndpoints,
 				config.providers ?? [],
 				opts.userId,
 			),
+			createSocialToolRestrictionHook(opts.userId),
 			createSensitivePathHook(opts.tier),
 		],
 	};
@@ -889,17 +1004,17 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		sdkOpts.allowDangerouslySkipPermissions = false;
 	} else {
 		const tierTools = TIER_TOOLS[opts.tier];
-		sdkOpts.tools = tierTools;
-		sdkOpts.allowedTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
+		const effectiveTools = opts.enableSkills ? [...tierTools, "Skill"] : tierTools;
+		sdkOpts.tools = effectiveTools;
+		sdkOpts.allowedTools = effectiveTools;
 		sdkOpts.permissionMode = opts.permissionMode ?? "acceptEdits";
 	}
-
 	// Opt-in beta headers
 	if (opts.betas?.length) {
 		sdkOpts.betas = opts.betas;
 	}
 
-	// FALLBACK: canUseTool does NOT fire in acceptEdits mode.
+	// FALLBACK: canUseTool only runs when a permission prompt would appear.
 	// PRIMARY enforcement is via PreToolUse hooks above.
 	// This is belt-and-suspenders for cases where hooks might not run.
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
@@ -1124,16 +1239,18 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// SECURITY: Always load only "project" settings (not "user") to prevent settings bypass.
-	// This blocks attacks where:
-	// - User has disableAllHooks: true in ~/.claude/settings.json (bypasses PreToolUse hook)
-	// - User has permissive WebFetch rules that allow SSRF to private networks
-	// Project settings are controlled by the deployment and can be trusted.
-	// Combined with blocking writes to .claude/settings*.json (via isSensitivePath),
-	// this prevents prompt injection from writing disableAllHooks to project settings.
-	// NOTE: This means user-level model overrides, plugins, etc. won't load in telclaude.
-	// This is intentional - security takes precedence over customization.
-	sdkOpts.settingSources = ["project"];
+	// SECURITY: settingSources controls where the SDK loads settings (CLAUDE.md, skills, settings.json).
+	// "project" = cwd/.claude/, "user" = $CLAUDE_CONFIG_DIR/ (or ~/.claude/).
+	//
+	// Default to "project" only — this prevents loading user-level settings.json which could
+	// contain disableAllHooks: true (bypassing our PreToolUse security hooks).
+	//
+	// When enableSkills is true, we ALSO load "user" settings so the SDK discovers skills at
+	// $CLAUDE_CONFIG_DIR/skills/ (in Docker: /home/telclaude-skills/skills/).
+	// This is safe because writes to $CLAUDE_CONFIG_DIR/settings*.json are blocked by
+	// isSensitivePath (both PreToolUse hook and canUseTool), preventing the agent from
+	// creating a malicious disableAllHooks setting.
+	sdkOpts.settingSources = opts.enableSkills ? ["user", "project"] : ["project"];
 
 	// System prompt configuration
 	// Include user ID in system prompt for skills that need to make authenticated API calls
@@ -1161,31 +1278,27 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 // We pass allowedDomains to SDK via sdkOpts.sandbox.network.allowedDomains in buildSdkOptions()
 
 /**
- * Execute a query with streaming, yielding chunks as they arrive.
+ * Shared stream processing for SDK query iterables.
+ *
+ * Both executeQueryStream and executePooledQuery use the same message
+ * processing logic. This helper extracts it to avoid duplication.
  */
-export async function* executeQueryStream(
-	prompt: string,
-	inputOpts: TelclaudeQueryOptions,
+async function* processMessageStream(
+	iterable: AsyncIterable<SDKMessage>,
+	options: {
+		startTime: number;
+		label: string;
+		/** When true, also extract tool_use blocks from assistant messages (pooled mode). */
+		extractToolUseFromAssistant?: boolean;
+		/** Called on non-success result messages for extra logging. */
+		onFailure?: (
+			error: string | undefined,
+			costUsd: number,
+			numTurns: number,
+			durationMs: number,
+		) => void;
+	},
 ): AsyncGenerator<StreamChunk, void, unknown> {
-	const startTime = Date.now();
-
-	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
-	const sdkOpts = await buildSdkOptions({
-		...inputOpts,
-		includePartialMessages: true,
-	});
-
-	logger.debug(
-		{
-			tier: inputOpts.tier,
-			cwd: inputOpts.cwd,
-			allowedTools: sdkOpts.allowedTools,
-		},
-		"executing streaming SDK query",
-	);
-
-	const q = query({ prompt, options: sdkOpts });
-
 	let response = "";
 	let assistantMessageFallback = "";
 	let costUsd = 0;
@@ -1195,7 +1308,7 @@ export async function* executeQueryStream(
 	let lastToolUseName: string | null = null;
 
 	try {
-		for await (const msg of q) {
+		for await (const msg of iterable) {
 			if (isStreamEvent(msg)) {
 				const event = msg.event;
 				if (isTextDeltaEvent(event)) {
@@ -1226,7 +1339,10 @@ export async function* executeQueryStream(
 				}
 			} else if (isAssistantMessage(msg)) {
 				for (const block of msg.message.content) {
-					if (block.type === "text") {
+					if (options.extractToolUseFromAssistant && block.type === "tool_use") {
+						lastToolUseName = block.name;
+						yield { type: "tool_use", toolName: block.name, input: block.input };
+					} else if (block.type === "text") {
 						assistantMessageFallback += block.text;
 					}
 				}
@@ -1244,6 +1360,10 @@ export async function* executeQueryStream(
 
 				const success = msg.subtype === "success";
 				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
+
+				if (!success && options.onFailure) {
+					options.onFailure(error, costUsd, numTurns, durationMs);
+				}
 
 				const finalResponse = response || assistantMessageFallback;
 				if (!response && assistantMessageFallback) {
@@ -1264,9 +1384,9 @@ export async function* executeQueryStream(
 		const isAborted = err instanceof Error && err.name === "AbortError";
 
 		if (isAborted) {
-			logger.warn({ durationMs: Date.now() - startTime }, "SDK query aborted");
+			logger.warn({ durationMs: Date.now() - options.startTime }, `${options.label} aborted`);
 		} else {
-			logger.error({ error: String(err) }, "SDK streaming query error");
+			logger.error({ error: String(err) }, `${options.label} error`);
 		}
 
 		const finalResponse = response || assistantMessageFallback;
@@ -1279,10 +1399,39 @@ export async function* executeQueryStream(
 				error: isAborted ? "Request was aborted" : String(err),
 				costUsd,
 				numTurns,
-				durationMs: Date.now() - startTime,
+				durationMs: Date.now() - options.startTime,
 			},
 		};
 	}
+}
+
+/**
+ * Execute a query with streaming, yielding chunks as they arrive.
+ */
+export async function* executeQueryStream(
+	prompt: string,
+	inputOpts: TelclaudeQueryOptions,
+): AsyncGenerator<StreamChunk, void, unknown> {
+	const startTime = Date.now();
+
+	const sdkOpts = await buildSdkOptions({
+		...inputOpts,
+		includePartialMessages: true,
+	});
+
+	logger.debug(
+		{
+			tier: inputOpts.tier,
+			cwd: inputOpts.cwd,
+			allowedTools: sdkOpts.allowedTools,
+		},
+		"executing streaming SDK query",
+	);
+
+	yield* processMessageStream(query({ prompt, options: sdkOpts }), {
+		startTime,
+		label: "SDK streaming query",
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1305,135 +1454,38 @@ export async function* executePooledQuery(
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	const startTime = Date.now();
 
-	const opts = inputOpts;
-
-	// SDK sandbox config (including allowedDomains) is set in buildSdkOptions()
 	const sdkOpts = await buildSdkOptions({
-		...opts,
+		...inputOpts,
 		includePartialMessages: true,
 	});
 
 	logger.debug(
 		{
-			tier: opts.tier,
-			poolKey: opts.poolKey,
-			cwd: opts.cwd,
+			tier: inputOpts.tier,
+			poolKey: inputOpts.poolKey,
+			cwd: inputOpts.cwd,
 		},
 		"executing pooled SDK query",
 	);
 
 	const sessionManager = getSessionManager();
-	let response = "";
-	let assistantMessageFallback = "";
-	let costUsd = 0;
-	let numTurns = 0;
-	let durationMs = 0;
-	let currentToolUse: { name: string; input: unknown; inputJson: string } | null = null;
-	let lastToolUseName: string | null = null;
+	const iterable = executeWithSession(sessionManager, inputOpts.poolKey, prompt, sdkOpts);
 
-	try {
-		for await (const msg of executeWithSession(sessionManager, opts.poolKey, prompt, sdkOpts)) {
-			if (isStreamEvent(msg)) {
-				const event = msg.event;
-				if (isTextDeltaEvent(event)) {
-					yield { type: "text", content: event.delta.text };
-					response += event.delta.text;
-				} else if (isToolUseStartEvent(event)) {
-					const cb = (event as unknown as { content_block: { name: string; input?: unknown } })
-						.content_block;
-					currentToolUse = {
-						name: cb.name,
-						input: cb.input ?? {},
-						inputJson: "",
-					};
-				} else if (isInputJsonDeltaEvent(event) && currentToolUse) {
-					currentToolUse.inputJson += event.delta.partial_json;
-				} else if (isContentBlockStopEvent(event) && currentToolUse) {
-					let input = currentToolUse.input;
-					if (currentToolUse.inputJson) {
-						try {
-							input = JSON.parse(currentToolUse.inputJson);
-						} catch {
-							input = currentToolUse.inputJson;
-						}
-					}
-					lastToolUseName = currentToolUse.name;
-					yield { type: "tool_use", toolName: currentToolUse.name, input };
-					currentToolUse = null;
-				}
-			} else if (isAssistantMessage(msg)) {
-				for (const block of msg.message.content) {
-					if (block.type === "tool_use") {
-						lastToolUseName = block.name;
-						yield { type: "tool_use", toolName: block.name, input: block.input };
-					} else if (block.type === "text") {
-						assistantMessageFallback += block.text;
-					}
-				}
-			} else if (isToolResultMessage(msg)) {
-				yield {
-					type: "tool_result",
-					toolName: lastToolUseName ?? "unknown",
-					output: msg.tool_use_result,
-				};
-				lastToolUseName = null;
-			} else if (isResultMessage(msg)) {
-				costUsd = msg.total_cost_usd;
-				numTurns = msg.num_turns;
-				durationMs = msg.duration_ms;
-
-				const success = msg.subtype === "success";
-				const error = !success && "errors" in msg ? msg.errors.join("; ") : undefined;
-
-				if (!success) {
-					logger.error(
-						{
-							requestError: error,
-							costUsd,
-							numTurns,
-							durationMs,
-							poolKey: opts.poolKey,
-						},
-						"SDK result message reported failure",
-					);
-				}
-
-				const finalResponse = response || assistantMessageFallback;
-				if (!response && assistantMessageFallback) {
-					logger.debug(
-						{ streamedLength: response.length, fallbackLength: assistantMessageFallback.length },
-						"using assistant message fallback",
-					);
-					yield { type: "text", content: assistantMessageFallback };
-				}
-
-				yield {
-					type: "done",
-					result: { response: finalResponse, success, error, costUsd, numTurns, durationMs },
-				};
-			}
-		}
-	} catch (err) {
-		const isAborted = err instanceof Error && err.name === "AbortError";
-
-		if (isAborted) {
-			logger.warn({ durationMs: Date.now() - startTime }, "pooled query aborted");
-		} else {
-			logger.error({ error: String(err) }, "pooled query error");
-		}
-
-		const finalResponse = response || assistantMessageFallback;
-
-		yield {
-			type: "done",
-			result: {
-				response: finalResponse,
-				success: false,
-				error: isAborted ? "Request was aborted" : String(err),
-				costUsd,
-				numTurns,
-				durationMs: Date.now() - startTime,
-			},
-		};
-	}
+	yield* processMessageStream(iterable, {
+		startTime,
+		label: "pooled query",
+		extractToolUseFromAssistant: true,
+		onFailure: (error, costUsd, numTurns, durationMs) => {
+			logger.error(
+				{
+					requestError: error,
+					costUsd,
+					numTurns,
+					durationMs,
+					poolKey: inputOpts.poolKey,
+				},
+				"SDK result message reported failure",
+			);
+		},
+	});
 }

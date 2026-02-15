@@ -21,7 +21,7 @@ import { z } from "zod";
 // Protocol Types
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export const ProtocolSchema = z.enum(["http", "postgres", "mysql", "ssh"]);
+export const ProtocolSchema = z.enum(["http", "postgres", "mysql", "ssh", "signing", "secret"]);
 export type Protocol = z.infer<typeof ProtocolSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -130,6 +130,27 @@ export const SshCredentialSchema = z.discriminatedUnion("type", [
 export type SshCredential = z.infer<typeof SshCredentialSchema>;
 
 /**
+ * Signing credentials - Ed25519 keypair for token signing/verification
+ */
+export const SigningCredentialSchema = z.object({
+	type: z.literal("ed25519"),
+	privateKey: z.string().min(1), // base64-encoded DER (pkcs8)
+	publicKey: z.string().min(1), // base64-encoded DER (spki)
+});
+
+export type SigningCredential = z.infer<typeof SigningCredentialSchema>;
+
+/**
+ * Opaque secret - arbitrary values (bot tokens, app configs, etc.)
+ */
+export const OpaqueSecretCredentialSchema = z.object({
+	type: z.literal("opaque"),
+	value: z.string().min(1),
+});
+
+export type OpaqueSecretCredential = z.infer<typeof OpaqueSecretCredentialSchema>;
+
+/**
  * All credential types
  */
 export const CredentialSchema = z.union([
@@ -137,6 +158,8 @@ export const CredentialSchema = z.union([
 	OAuth2CredentialSchema,
 	DbCredentialSchema,
 	SshCredentialSchema,
+	SigningCredentialSchema,
+	OpaqueSecretCredentialSchema,
 ]);
 
 export type Credential = z.infer<typeof CredentialSchema>;
@@ -212,6 +235,40 @@ export const ListRequestSchema = z.object({
 });
 
 /**
+ * Sign a session token with the vault's Ed25519 master key.
+ * Auto-generates keypair if not present.
+ */
+export const SignTokenRequestSchema = z.object({
+	type: z.literal("sign-token"),
+	scope: z.string().min(1), // e.g., "telegram", "social"
+	sessionId: z.string().min(1),
+	ttlMs: z.number().positive(), // token lifetime in milliseconds
+});
+
+/**
+ * Verify a session token signature.
+ */
+export const VerifyTokenRequestSchema = z.object({
+	type: z.literal("verify-token"),
+	token: z.string().min(1), // full token string: v3:{scope}:{sessionId}:{createdAt}:{expiresAt}:{signature}
+});
+
+/**
+ * Get the Ed25519 public key for local token verification.
+ */
+export const GetPublicKeyRequestSchema = z.object({
+	type: z.literal("get-public-key"),
+});
+
+/**
+ * Get an opaque secret value.
+ */
+export const GetSecretRequestSchema = z.object({
+	type: z.literal("get-secret"),
+	target: z.string().min(1), // e.g., "telegram-bot-token"
+});
+
+/**
  * Ping (health check)
  */
 export const PingRequestSchema = z.object({
@@ -224,6 +281,10 @@ export const VaultRequestSchema = z.discriminatedUnion("type", [
 	StoreRequestSchema,
 	DeleteRequestSchema,
 	ListRequestSchema,
+	SignTokenRequestSchema,
+	VerifyTokenRequestSchema,
+	GetPublicKeyRequestSchema,
+	GetSecretRequestSchema,
 	PingRequestSchema,
 ]);
 
@@ -233,6 +294,10 @@ export type GetTokenRequest = z.infer<typeof GetTokenRequestSchema>;
 export type StoreRequest = z.infer<typeof StoreRequestSchema>;
 export type DeleteRequest = z.infer<typeof DeleteRequestSchema>;
 export type ListRequest = z.infer<typeof ListRequestSchema>;
+export type SignTokenRequest = z.infer<typeof SignTokenRequestSchema>;
+export type VerifyTokenRequest = z.infer<typeof VerifyTokenRequestSchema>;
+export type GetPublicKeyRequest = z.infer<typeof GetPublicKeyRequestSchema>;
+export type GetSecretRequest = z.infer<typeof GetSecretRequestSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Response Types
@@ -339,6 +404,76 @@ export const ListResponseSchema = z.object({
 export type ListResponse = z.infer<typeof ListResponseSchema>;
 
 /**
+ * Sign-token response
+ */
+export const SignTokenResponseSchema = z.object({
+	type: z.literal("sign-token"),
+	ok: z.literal(true),
+	token: z.string().min(1), // full token: v3:{scope}:{sessionId}:{createdAt}:{expiresAt}:{signature}
+	expiresAt: z.number(), // Unix timestamp ms
+});
+
+export type SignTokenResponse = z.infer<typeof SignTokenResponseSchema>;
+
+/**
+ * Verify-token response
+ */
+export const VerifyTokenSuccessResponseSchema = z.object({
+	type: z.literal("verify-token"),
+	ok: z.literal(true),
+	scope: z.string(),
+	sessionId: z.string(),
+	createdAt: z.number(),
+	expiresAt: z.number(),
+});
+
+export const VerifyTokenFailureResponseSchema = z.object({
+	type: z.literal("verify-token"),
+	ok: z.literal(false),
+	error: z.string(),
+});
+
+export const VerifyTokenResponseSchema = z.union([
+	VerifyTokenSuccessResponseSchema,
+	VerifyTokenFailureResponseSchema,
+]);
+
+export type VerifyTokenResponse = z.infer<typeof VerifyTokenResponseSchema>;
+
+/**
+ * Get-public-key response
+ */
+export const GetPublicKeyResponseSchema = z.object({
+	type: z.literal("get-public-key"),
+	ok: z.literal(true),
+	publicKey: z.string().min(1), // base64-encoded DER (spki)
+});
+
+export type GetPublicKeyResponse = z.infer<typeof GetPublicKeyResponseSchema>;
+
+/**
+ * Get-secret response
+ */
+export const GetSecretSuccessResponseSchema = z.object({
+	type: z.literal("get-secret"),
+	ok: z.literal(true),
+	value: z.string(),
+});
+
+export const GetSecretNotFoundResponseSchema = z.object({
+	type: z.literal("get-secret"),
+	ok: z.literal(false),
+	error: z.literal("not_found"),
+});
+
+export const GetSecretResponseSchema = z.union([
+	GetSecretSuccessResponseSchema,
+	GetSecretNotFoundResponseSchema,
+]);
+
+export type GetSecretResponse = z.infer<typeof GetSecretResponseSchema>;
+
+/**
  * Pong response
  */
 export const PongResponseSchema = z.object({
@@ -366,6 +501,10 @@ export const VaultResponseSchema = z.union([
 	StoreResponseSchema,
 	DeleteResponseSchema,
 	ListResponseSchema,
+	SignTokenResponseSchema,
+	VerifyTokenResponseSchema,
+	GetPublicKeyResponseSchema,
+	GetSecretResponseSchema,
 	PongResponseSchema,
 	ErrorResponseSchema,
 ]);
@@ -378,9 +517,14 @@ export type VaultResponse = z.infer<typeof VaultResponseSchema>;
 
 /**
  * Get the default socket path for the vault daemon.
- * Uses ~/.telclaude/vault.sock
+ *
+ * Resolution order:
+ * 1) TELCLAUDE_VAULT_SOCKET (recommended for Docker / sidecar setups)
+ * 2) ~/.telclaude/vault.sock
  */
 export function getDefaultSocketPath(): string {
+	const configured = process.env.TELCLAUDE_VAULT_SOCKET?.trim();
+	if (configured) return configured;
 	const home = process.env.HOME || "/tmp";
 	return `${home}/.telclaude/vault.sock`;
 }

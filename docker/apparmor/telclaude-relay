@@ -1,0 +1,93 @@
+#include <tunables/global>
+
+# Telclaude Relay AppArmor profile
+# Restricts the relay container to its intended paths. The relay holds secrets
+# (bot token, API keys) and manages security policy, so it needs network access
+# but should not touch workspace or agent-specific paths.
+
+profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
+  # Basic allowances
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  #include <abstractions/user-tmp>
+
+  # Capabilities required for entrypoint (firewall, privilege drop, chown)
+  capability net_admin,
+  capability dac_override,
+  capability chown,
+  capability fowner,
+  capability setuid,
+  capability setgid,
+
+  # Allow general file access; deny rules below take precedence.
+  file,
+
+  # Allow execution of system binaries/libraries
+  /bin/** ix,
+  /sbin/** ix,
+  /usr/bin/** ix,
+  /usr/sbin/** ix,
+  /usr/local/bin/** ix,
+  /lib/** mr,
+  /lib64/** mr,
+  /usr/lib/** mr,
+  /usr/lib64/** mr,
+
+  # App runtime
+  /etc/alternatives/** ix,
+
+  /app/** r,
+  /app/bin/** ix,
+  /app/node_modules/** mr,
+  /app/dist/** mr,
+
+  # Data directory (SQLite, sessions, config)
+  /data/** rwklix,
+
+  # Auth profile (OAuth tokens, skills)
+  /home/telclaude-auth/** rwklix,
+  /home/telclaude-skills/** rwklix,
+
+  # Sidecar sockets (TOTP + vault)
+  /run/totp/** rw,
+  # Vault socket needs rw: connect() requires write on Unix sockets.
+  # Docker volume is mounted :ro so relay cannot create/delete files in /run/vault.
+  /run/vault/** rw,
+
+  # Media volumes
+  /media/inbox/** rwklix,
+  /media/outbox/** rwklix,
+
+  # Social memory (relay is single writer)
+  /social/memory/** rwklix,
+
+  # Deny workspace (relay should never touch user projects)
+  deny /workspace/** rwklx,
+
+  # Deny social sandbox (only social agent uses it)
+  deny /social/sandbox/** rwklx,
+
+  # Block sensitive system paths
+  deny /run/secrets/** rwklx,
+  deny /var/run/secrets/** rwklx,
+
+  # Block process environment/cmdline reads
+  deny /proc/*/environ r,
+  deny /proc/**/environ r,
+
+  # Prevent tampering with system accounts
+  deny /etc/shadow w,
+  deny /etc/passwd w,
+
+  # Temp + device nodes
+  /tmp/** rwklix,
+  /dev/null rw,
+  /dev/urandom r,
+  /dev/tty rw,
+
+  # Network: allow standard traffic (relay needs egress for Telegram API, etc.)
+  # Note: iptables-nft requires netlink which AppArmor may classify under raw/packet.
+  # Firewall enforcement is the primary network boundary; AppArmor restricts filesystem.
+  network,
+}

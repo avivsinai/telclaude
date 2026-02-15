@@ -232,7 +232,9 @@ export async function generateImages(
 export function isImageGenerationAvailable(): boolean {
 	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		return Boolean(process.env.TELCLAUDE_INTERNAL_RPC_SECRET);
+		return Boolean(
+			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
+		);
 	}
 
 	const config = loadConfig();
