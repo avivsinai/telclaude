@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Telclaude Docker Image
-# Secure container for running telclaude on Windows/Linux hosts
+# Secure container for running telclaude relay and agents
 #
 # Security features (2025 best practices):
 # - Multi-stage build for minimal attack surface
@@ -190,6 +190,11 @@ ENV HOME=/home/node
 # Uses simple process check without procps (saves ~10MB)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD ["curl", "-sf", "http://localhost:8788/health"]
+
+# Mark bind-mount workdirs as safe for git (host UID ≠ container UID).
+# Build-time so /etc/gitconfig is part of the image — no runtime writes needed.
+RUN git config --system --add safe.directory /workspace && \
+    git config --system --add safe.directory /social/sandbox
 
 # Default working directory for Claude operations
 WORKDIR /workspace
