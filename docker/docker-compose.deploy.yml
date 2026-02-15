@@ -23,7 +23,7 @@
 #   totp             — TOTP sidecar (encrypted 2FA)
 #   vault            — Vault sidecar (encrypted credentials)
 #
-# 7 networks (segmented):
+# 8 networks (segmented):
 #   agent-relay-net    (internal) — agent ↔ relay
 #   relay-totp-net     (internal) — relay ↔ totp
 #   relay-vault-net    (internal) — relay ↔ vault
@@ -31,6 +31,7 @@
 #   relay-egress       (bridge)   — relay → Telegram/Anthropic
 #   social-relay-net   (internal) — social ↔ relay
 #   social-egress      (bridge)   — social → internet
+#   vault-egress       (bridge)   — vault → OAuth token endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
 
 services:
@@ -462,6 +463,7 @@ services:
 
     networks:
       - relay-vault-net
+      - vault-egress  # Required for OAuth2 token refresh (outbound to token endpoints)
 
     restart: unless-stopped
 
@@ -586,4 +588,8 @@ networks:
 
   social-egress:
     name: telclaude-social-egress
+    driver: bridge
+
+  vault-egress:
+    name: telclaude-vault-egress
     driver: bridge

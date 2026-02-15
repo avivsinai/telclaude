@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Social services** — Dual-persona architecture with private (Telegram) and public (social) agents running on air-gapped networks with separate memory stores.
+- **Memory system** — Persistent per-source memory with category-based storage (profile, interests, projects, post-ideas). CLI: `telclaude memory read|write|quarantine`. Source boundaries enforced at runtime.
+- **OAuth2 PKCE** — Authorization code flow for social service credentials. CLI: `telclaude oauth authorize|list|revoke`. Token storage in vault with automatic refresh.
+- **X/Twitter backend** — Timeline integration (pay-per-use), posting, engagement. Second social backend after Moltbook.
+- **Moltbook backend** — Social network integration with notification processing, proactive posting, and autonomous timeline activity.
+- **Three-phase social heartbeat** — Notifications (untrusted, Bash blocked), proactive posting (operator-approved, Bash enabled), autonomous activity (session-isolated).
+- **Cross-persona queries** — `/ask-public` routes questions to social agent through relay; `/public-log` shows metadata-only activity summary; `/pending` and `/promote` for post idea quarantine flow.
+- **SOCIAL permission tier** — Trust-gated Bash (operator/autonomous/proactive only), permissive WebFetch (public internet, RFC1918 blocked), protected path writes blocked.
+- **Config split** — `telclaude.json` (policy, all containers) + `telclaude-private.json` (relay-only PII). Deep-merge via `TELCLAUDE_PRIVATE_CONFIG` env var.
+- **Browser automation** — Chromium in agent containers with `agent-browser` CLI. New browser-automation skill.
+- **Summarize skill** — URL content extraction for articles, YouTube, podcasts. CLI: `telclaude summarize`. Also available relay-side via summarize-core.
+- **`/heartbeat` command** — Trigger social heartbeat on demand.
+- **`/status` command** — Consolidated system status with enriched health endpoints.
+- **Deploy compose** — 5-container topology with OAuth proxy, per-agent skill isolation, vault egress network.
+- **Ed25519 RPC keygen** — `telclaude keygen <scope>` generates asymmetric keypairs for agent ↔ relay auth.
+- **Anthropic API proxy** — Relay endpoint for credential injection into agent SDK calls.
+
+### Changed
+
+- **4 permission tiers** — Added SOCIAL tier (was 3: READ_ONLY, WRITE_LOCAL, FULL_ACCESS).
+- **Moltbook demoted** — From first-class citizen to generic pluggable backend behind unified social service interface.
+- **Social sandbox** — Container is the isolation boundary, not application-layer hooks. Matches Anthropic guidance: one boundary, not two.
+- **Docker profiles** — Separate auth profile (relay-only, credentials) and skills profile (shared, no secrets).
+- **Provider architecture** — Providers fetched from relay RPC instead of config mount. Firewall enforcement gated to relay-only containers.
+
+### Fixed
+
+- **Credential proxy truncation** — Compressed responses no longer truncated during proxying.
+- **X/Twitter deployment** — Credential proxy, firewall rules, and free-tier API limits.
+- **OAuth2 token exchange** — Public client flow + vault egress for token refresh.
+- **Docker agent connectivity** — Skill discovery and env-var bypass hardening.
+- **`/ask-public` timeout** — 5-minute minimum for interactive social queries.
+- **Social agent prompt** — Quarantine → promote flow; agents no longer post directly.
+- **AppArmor profiles** — Production-tested and corrected on Pi4.
+
+### Security
+
+- **Air-gap agent isolation** — Agents on separate relay networks; cannot reach each other. 4 red-team fixes.
+- **Ed25519 asymmetric RPC auth** — Bidirectional agent ↔ relay authentication. Shared HMAC replaced.
+- **Social notification hardening** — Notification payloads wrapped with injection warnings; Bash blocked for notification processing.
+- **Memory isolation** — Source boundaries enforced at runtime. Telegram agent never sees social memory.
+- **External audit fixes** — P0-P2 findings from pen test harness addressed.
+- **Outbound scanning** — Telegram message hardening for control commands.
+- **Pre-integration hardening** — Security baseline established before social service integration.
+- **Settings isolation** — `settingSources: ["project"]` prevents disableAllHooks bypass.
+
+### Removed
+
+- **CODE_OF_CONDUCT.md** — Boilerplate for a single-user project.
+- **CONTRIBUTING.md** — No external contributors; useful content lives in CLAUDE.md.
+- **GOVERNANCE.md** — Governance document governing nobody.
+
 ## [0.5.5] - 2026-01-25
 
 ### Added
@@ -195,7 +249,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/avivsinai/telclaude/compare/v0.5.4...v0.5.5
+[0.5.4]: https://github.com/avivsinai/telclaude/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/avivsinai/telclaude/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/avivsinai/telclaude/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/avivsinai/telclaude/compare/v0.5.0...v0.5.1

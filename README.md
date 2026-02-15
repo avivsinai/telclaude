@@ -14,7 +14,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Credential vault: sidecar daemon stores API keys and injects them into requests — agents never see raw credentials.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
-- Three permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, FULL_ACCESS.
+- Four permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
@@ -45,6 +45,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 | --- | --- | --- |
 | READ_ONLY | Read files, search, web fetch/search | No writes; sandbox + secret filter |
 | WRITE_LOCAL | READ_ONLY + write/edit/bash | Blocks destructive bash (rm/chown/kill, etc.); denyWrite patterns |
+| SOCIAL | File tools + Bash + WebFetch/WebSearch | Bash trust-gated by actor type; WebFetch permissive; protected paths blocked |
 | FULL_ACCESS | All tools | Every request requires human approval; still sandboxed |
 
 ## Architecture
@@ -64,8 +65,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                       Permission Tiers                           │
-│     READ_ONLY           WRITE_LOCAL           FULL_ACCESS        │
-│     (5 tools)           (8 tools)            (all, +approval)    │
+│  READ_ONLY    WRITE_LOCAL    SOCIAL         FULL_ACCESS        │
+│  (5 tools)    (8 tools)     (trust-gated)  (all, +approval)   │
 └──────────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -175,6 +176,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 - Permission tiers:
   - `READ_ONLY`: read/search/web only; no writes.
   - `WRITE_LOCAL`: read/write/edit/bash with destructive commands blocked.
+  - `SOCIAL`: file tools + Bash + WebFetch/WebSearch; Bash trust-gated by actor; protected paths blocked.
   - `FULL_ACCESS`: unrestricted tools but every request needs human approval.
   - Set per-user under `security.permissions.users`; `defaultTier` stays `READ_ONLY`.
 - Optional group guardrail:

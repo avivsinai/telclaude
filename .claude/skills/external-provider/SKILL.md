@@ -1,7 +1,9 @@
 ---
 name: external-provider
 description: Access configured sidecar providers (health, banking, government) via CLI commands.
-allowed-tools: Read, Bash
+allowed-tools:
+  - Read
+  - Bash
 ---
 
 # External Provider

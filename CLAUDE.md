@@ -4,7 +4,7 @@
 
 ## Intent
 - Status: alpha (0.x); breaking changes allowed until 1.0.
-- Goal: keep this file lean for Opus 4.5 project memory; use imports for depth.
+- Goal: keep this file lean for project memory; use imports for depth.
 
 ## Ground rules
 - Write clean TypeScript; remove dead code.
@@ -45,16 +45,26 @@
 5) Ask before destructive ops.
 
 ## Repo map
-- `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter.
+- `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter, streaming redactor.
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
-- `src/sdk/` — Claude SDK integration, session manager.
-- `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials).
+- `src/sdk/` — Claude SDK integration, session manager, message guards.
+- `src/relay/` — Anthropic proxy, HTTP credential proxy, git proxy, provider proxy, token manager, capabilities.
+- `src/agent/` — agent server/client, memory client, token client.
+- `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials, video processing).
 - `src/telegram/` — inbound/outbound bot.
-- `src/social/` — generic social services: handler, scheduler, identity, context, activity log.
+- `src/social/` — social services: handler, scheduler, identity, context, activity log.
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
-- `src/oauth/` — OAuth2 PKCE flow, service registry, authorization orchestrator.
-- `src/commands/` — CLI commands.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, integration-test skills.
+- `src/oauth/` — OAuth2 PKCE flow, service registry.
+- `src/providers/` — external provider integration, health, validation, skill injection.
+- `src/vault-daemon/` — credential vault daemon.
+- `src/totp-daemon/` — TOTP daemon; `src/totp-client/` — client.
+- `src/secrets/` — keychain integration.
+- `src/memory/` — memory subsystem.
+- `src/media/` — media store.
+- `src/storage/` — SQLite storage layer.
+- `src/config/` — configuration loading.
+- `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
+- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docker/` — container stack.
 

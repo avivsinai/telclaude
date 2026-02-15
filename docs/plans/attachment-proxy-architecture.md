@@ -1,5 +1,7 @@
 # Attachment Proxy Architecture Plan
 
+> **Status: IMPLEMENTED** (v0.5.4+). See `src/relay/provider-proxy.ts`, `src/storage/attachment-refs.ts`, and `src/commands/send-attachment.ts`. This document is retained as design rationale.
+
 ## Problem Statement
 
 Claude bypasses the `telclaude fetch-attachment` CLI when handling provider attachments. Unlike image-gen/TTS (where Claude CANNOT generate content without the API key), Claude CAN decode inline base64 and process PDFs directly. Skill instructions are just guidance - when Claude has raw bytes, it can bypass any policy.
