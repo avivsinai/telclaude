@@ -27,6 +27,7 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **integration-test**: Full SDK integration test for verifying telclaude configuration
 - **memory**: Social memory management for agents
 - **summarize**: Extracts and summarizes web content from URLs (articles, YouTube, podcasts)
+- **external-provider**: Queries external sidecar APIs via relay-proxied CLI
 
 ## Tool Access by Tier
 | Tier | Available Tools |

@@ -30,7 +30,7 @@ telclaude generate-image "YOUR_PROMPT" --quality high
 ```
 
 **Options:**
-- `--size`: "1024x1024" (square), "1536x1024" (landscape), "1024x1536" (portrait)
+- `--size`: "auto", "1024x1024" (square), "1536x1024" (landscape), "1024x1536" (portrait). Default: 1024x1024
 - `--quality`: "low" (fast/cheap), "medium" (balanced), "high" (best quality)
 
 ### Example

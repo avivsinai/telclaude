@@ -1,7 +1,8 @@
 ---
 name: memory
 description: Social memory management for Telegram and social agents
-allowed-tools: ["Bash"]
+allowed-tools:
+  - Bash
 ---
 
 # Memory Skill

@@ -30,6 +30,7 @@ telclaude integration-test --env       # Environment variable passing
 telclaude integration-test --network   # Network proxy verification
 telclaude integration-test --image     # Image generation (needs OPENAI_API_KEY)
 telclaude integration-test --voice     # Voice message response (needs OPENAI_API_KEY)
+telclaude integration-test --agents    # Agent transport (needs TELCLAUDE_AGENT_URL)
 
 # Verbose output for debugging
 telclaude integration-test --all -v
@@ -79,6 +80,12 @@ Simulates receiving a voice message and validates Claude follows TTS skill rules
 
 This catches the common failure mode where Claude ignores skill instructions and outputs verbose text with wrong format.
 
+### Agent Transport Test (`--agents`)
+Verifies direct agent communication without Telegram:
+- Sends a query directly to an agent container via HTTP
+- Tests: agent transport, RPC auth, session handling
+- Skips if TELCLAUDE_AGENT_URL not configured
+
 ## Interpreting Results
 
 ### Success
@@ -90,7 +97,7 @@ This catches the common failure mode where Claude ignores skill instructions and
   ✓ Voice message response (12345ms)
 
 ── Summary ──
-✓ All 5 tests passed
+✓ All 6 tests passed
 ```
 
 ### Voice Test Failures

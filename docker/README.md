@@ -1,33 +1,29 @@
 # Telclaude Docker Deployment
 
-Secure containerized deployment for telclaude on Windows (WSL2) or Linux hosts.
+Secure containerized deployment for telclaude on any Docker-capable host (Linux, macOS with Colima/Docker Desktop, or WSL2).
 
 ## Architecture
 
+See `docs/architecture.md` for the full system design. At a glance:
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Windows Host (WSL2)                          │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                 Docker Network                            │  │
-│  │                                                           │  │
-│  │  ┌─────────────────┐    internal    ┌─────────────────┐  │  │
-│  │  │    telclaude    │◀──────────────▶│ telclaude-agent  │  │  │
-│  │  │     relay       │                │  SDK + tools     │  │  │
-│  │  └────────┬────────┘                └────────┬────────┘  │  │
-│  │           │                                 │             │  │
-│  │   /data volume (secrets, DB)       /workspace volume       │  │
-│  │   /media inbox/outbox (shared)     (your projects folder)  │  │
-│  │                                                           │  │
-│  └────────────────────────────────────────────┬───────────────┘  │
-│                                               │                  │
-│                    ┌──────────────────────────┘                  │
-│                    ▼                                             │
-│         C:\Users\YourName\Projects                               │
-│         (host filesystem - ONLY this folder exposed)             │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Docker Host                                  │
+│                                                                     │
+│  ┌───────────────┐  ┌────────────────┐  ┌────────────────────────┐ │
+│  │   telclaude   │  │ telclaude-agent│  │    agent-social        │ │
+│  │    (relay)    │  │ (private agent)│  │   (social agent)       │ │
+│  └───────┬───────┘  └───────┬────────┘  └───────┬────────────────┘ │
+│          │                  │                    │                   │
+│  ┌───────┴───────┐  ┌──────┴────────┐  ┌───────┴────────────────┐ │
+│  │ totp  │ vault │  │  /workspace   │  │  /social/sandbox       │ │
+│  │(2FA)  │(creds)│  │ (host mount)  │  │  (isolated)            │ │
+│  └───────────────┘  └───────────────┘  └────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+**5 containers**: relay, telegram agent, social agent, TOTP sidecar, vault sidecar.
+**4 images**: `telclaude:latest`, `telclaude-agent:latest`, `telclaude-totp:latest`, `telclaude-vault:latest`.
 
 ## Security Features
 
@@ -52,30 +48,33 @@ for containers that need initial root privileges.
 
 ### Prerequisites
 
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) 4.50+ with WSL2 backend
-- Windows 10/11 with WSL2 enabled
+- Docker Engine 24+ (or Docker Desktop / Colima)
+- `docker compose` v2
 
 ### Setup
 
 1. **Clone the repository** (or copy the docker folder):
-   ```powershell
+   ```bash
    git clone https://github.com/avivsinai/telclaude.git
    cd telclaude/docker
    ```
 
 2. **Create your environment file**:
-   ```powershell
+   ```bash
    cp .env.example .env
    ```
 
 3. **Edit `.env`** with your values:
    ```bash
    # Required
-   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-   WORKSPACE_PATH=/mnt/c/Users/YourName/Projects
+   WORKSPACE_PATH=/path/to/your/projects
+   TOTP_ENCRYPTION_KEY=<openssl rand -base64 32>
+   VAULT_ENCRYPTION_KEY=<openssl rand -base64 32>
+   ANTHROPIC_PROXY_TOKEN=<openssl rand -hex 32>
 
-   # Optional
-   ANTHROPIC_API_KEY=sk-ant-...
+   # Credentials (vault preferred; env vars as fallback)
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   # ANTHROPIC_API_KEY=sk-ant-...   # or use `claude login` after first run
    ```
 
 4. **Create config files** (see [Config Split](#config-split) below):
@@ -86,13 +85,21 @@ for containers that need initial root privileges.
    echo '{}' > telclaude-private.json
    ```
 
-5. **Build and start**:
-   ```powershell
+5. **Generate RPC keys** (required for agent authentication):
+   ```bash
+   # From the repo root (not docker/):
+   pnpm dev keygen telegram   # generates 4 keys for telegram agent
+   pnpm dev keygen social     # generates 4 keys for social agent
+   # Copy the output into your .env file
+   ```
+
+6. **Build and start**:
+   ```bash
    docker compose up -d --build
    ```
 
-6. **Check logs**:
-   ```powershell
+7. **Check logs**:
+   ```bash
    docker compose logs -f
    ```
 
@@ -104,8 +111,7 @@ for containers that need initial root privileges.
 ./setup-volumes.sh
 ```
 
-This creates `telclaude-claude-auth` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
-The skills volume (`telclaude-claude-skills`) is non-external and will be created automatically.
+This creates `telclaude-claude-auth`, `telclaude-totp-data`, and `telclaude-vault-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
 
 **Note:** `docker compose up` will fail if these volumes don't exist. Always run `setup-volumes.sh` first.
 
@@ -113,7 +119,7 @@ The skills volume (`telclaude-claude-skills`) is non-external and will be create
 
 If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude (relay container):
 
-```powershell
+```bash
 docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
@@ -154,10 +160,11 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 |--------|----------|------------|
 | `telclaude-claude-auth` | Claude OAuth tokens | Must re-run `claude login` |
 | `telclaude-totp-data` | Encrypted 2FA secrets | **UNRECOVERABLE** - must re-enroll all 2FA |
+| `telclaude-vault-data` | Encrypted credentials (API keys, OAuth tokens) | **UNRECOVERABLE** - must re-add all credentials |
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
 
-**Skills volume warning:** `telclaude-claude-skills` is **not** external, so `docker compose down -v` **will delete it**. Reinstalling built-in skills is automatic, but back up custom skills if you added any.
+**Skills volume note:** Skills volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external and will be recreated automatically on restart.
 
 ### Safe Operations
 
@@ -185,6 +192,10 @@ docker volume rm telclaude-totp-data  # DO NOT RUN
 docker run --rm -v telclaude-totp-data:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/totp-backup-$(date +%Y%m%d).tar.gz -C /data .
 
+# Backup vault credentials (CRITICAL)
+docker run --rm -v telclaude-vault-data:/data:ro -v $(pwd):/backup \
+  alpine tar czf /backup/vault-backup-$(date +%Y%m%d).tar.gz -C /data .
+
 # Backup Claude credentials
 docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/claude-backup-$(date +%Y%m%d).tar.gz -C /data .
@@ -197,9 +208,10 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | Container | Path | Purpose | Persisted |
 |----------|------|---------|-----------|
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
-| `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
-| `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | Named volume |
-| `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skills` | Claude skills profile (skills/plugins, no secrets) | Named volume |
+| `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
+| `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
+| `telclaude-agent` | `/home/telclaude-skills` | Claude skills (telegram agent) | Named volume |
+| `agent-social` | `/home/telclaude-skills` | Claude skills (social agent) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
 | `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
@@ -208,11 +220,12 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
-| `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
-| `TELCLAUDE_AUTH_DIR` | No | Relay-only path for Claude OAuth tokens (default `/home/telclaude-auth`) |
-| `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
+| `TOTP_ENCRYPTION_KEY` | Yes | AES-256-GCM key for 2FA secrets. Generate: `openssl rand -base64 32` |
+| `VAULT_ENCRYPTION_KEY` | Yes | AES-256-GCM key for credential storage. Generate: `openssl rand -base64 32` |
+| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents). Generate: `openssl rand -hex 32` |
+| `TELEGRAM_BOT_TOKEN` | Vault/env | Bot token from @BotFather (vault preferred) |
+| `ANTHROPIC_API_KEY` | No | Alternative to `claude login` (vault preferred) |
 | `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Agent private key — signs agent→relay requests. Generate with `telclaude keygen telegram` |
 | `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
 | `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
@@ -221,8 +234,9 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Agent public key — relay verifies social agent requests |
 | `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social agent requests |
 | `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key — social agent verifies relay requests |
-| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents) |
+| `TELCLAUDE_GIT_PROXY_SECRET` | No | HMAC secret for git proxy session tokens. Generate: `openssl rand -hex 32` |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
+| `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
 | `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-social`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
@@ -301,7 +315,7 @@ See `telclaude.json.example` for a full configuration template.
 
 ## Commands
 
-```powershell
+```bash
 # Start
 docker compose up -d
 
@@ -384,16 +398,15 @@ If you see it, you are likely running native mode outside Docker. On Linux, inst
 
 ### "Permission denied" on workspace
 
-Ensure the workspace path is accessible from WSL2:
+Ensure `WORKSPACE_PATH` in `.env` points to a readable directory on the host:
 
-```powershell
-# Check WSL2 can access the path
-wsl ls /mnt/c/Users/YourName/Projects
+```bash
+ls -la $WORKSPACE_PATH
 ```
 
 ### Claude CLI not working
 
-```powershell
+```bash
 # Check Claude version
 docker compose exec telclaude claude --version
 
@@ -403,15 +416,15 @@ docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude l
 
 ### Reset session data (keeps secrets)
 
-```powershell
-# Remove containers and non-external volumes (keeps TOTP secrets and Claude creds)
+```bash
+# Remove containers and non-external volumes (keeps TOTP secrets, vault creds, and Claude auth)
 docker compose down -v
 
 # Rebuild fresh
 docker compose up -d --build
 ```
 
-**Note:** External volumes (`telclaude-claude-auth`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
+**Note:** External volumes (`telclaude-claude-auth`, `telclaude-totp-data`, `telclaude-vault-data`) are protected and will NOT be deleted by `docker compose down -v`.
 
 ## TOTP Daemon (2FA Support)
 
@@ -430,7 +443,7 @@ The Docker deployment includes full TOTP support via a sidecar container (`telcl
    ```
 
 3. **Start the stack** - the TOTP sidecar starts automatically:
-   ```powershell
+   ```bash
    docker compose up -d
    ```
 
