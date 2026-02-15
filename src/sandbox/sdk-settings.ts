@@ -50,7 +50,7 @@ export function buildSdkPermissionsForTier(
 	deny: string[];
 } {
 	const allowWrite: string[] = [];
-	if (tier !== "READ_ONLY") {
+	if (tier === "WRITE_LOCAL" || tier === "FULL_ACCESS") {
 		// Allow writing to the SDK CWD (workspace) for WRITE_LOCAL/FULL_ACCESS
 		allowWrite.push("Write(.)");
 	}

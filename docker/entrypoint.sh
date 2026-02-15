@@ -23,6 +23,8 @@ set -e
 TELCLAUDE_USER="${TELCLAUDE_USER:-node}"
 TELCLAUDE_UID="${TELCLAUDE_UID:-1000}"
 TELCLAUDE_GID="${TELCLAUDE_GID:-1000}"
+TELCLAUDE_CLAUDE_HOME="${TELCLAUDE_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-/home/telclaude-skills}}"
+TELCLAUDE_AUTH_DIR="${TELCLAUDE_AUTH_DIR:-/home/telclaude-auth}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Privileged Operations (run as root)
@@ -48,53 +50,27 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p /tmp/claude
     chmod 1777 /tmp/claude
 
-    # Install bundled skills to ~/.claude/skills (done at runtime so volumes don't obscure them)
+    # Install bundled skills to the configured Claude home (done at runtime so volumes don't obscure them)
     if [ -d "/app/.claude/skills" ]; then
         echo "[entrypoint] Installing bundled skills"
-        mkdir -p /home/node/.claude/skills
-        cp -a /app/.claude/skills/. /home/node/.claude/skills/
+        mkdir -p "${TELCLAUDE_CLAUDE_HOME}/skills"
+        # -r instead of -a: AppArmor may block timestamp preservation (utimensat)
+        cp -r /app/.claude/skills/. "${TELCLAUDE_CLAUDE_HOME}/skills/"
         # chown may fail on NFS with UID squashing - that's OK, files are still accessible
-        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.claude 2>/dev/null || true
+        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "${TELCLAUDE_CLAUDE_HOME}" 2>/dev/null || true
     fi
 
-    # Install bundled CLAUDE.md (agent playbook) if present
+    # Install bundled CLAUDE.md (user-level playbook) if present
     if [ -f "/app/.claude/CLAUDE.md" ]; then
         echo "[entrypoint] Installing bundled CLAUDE.md"
-        mkdir -p /home/node/.claude
-        cp /app/.claude/CLAUDE.md /home/node/.claude/CLAUDE.md
-    fi
-
-    # Skills are installed at user-level (~/.claude/skills/) above.
-    # However, WORKDIR is /workspace, so SDK looks for project-level skills at /workspace/.claude/skills/.
-    # FORCE symlink to ensure SDK reads from the same location relay writes to.
-    # This prevents divergence when host workspace has its own .claude/skills/ directory.
-    if [ -d "/workspace" ] && [ -w "/workspace" ]; then
-        mkdir -p /workspace/.claude
-        if [ -L "/workspace/.claude/skills" ]; then
-            # Already a symlink - nothing to do
-            echo "[entrypoint] Skills symlink already exists"
-        elif [ -e "/workspace/.claude/skills" ]; then
-            # Exists but not a symlink - back it up and replace
-            echo "[entrypoint] WARNING: /workspace/.claude/skills exists but is not a symlink"
-            echo "[entrypoint] Backing up to /workspace/.claude/skills.bak and creating symlink"
-            rm -rf /workspace/.claude/skills.bak
-            mv /workspace/.claude/skills /workspace/.claude/skills.bak
-            ln -s /home/node/.claude/skills /workspace/.claude/skills
-            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude/skills 2>/dev/null || true
-        else
-            # Doesn't exist - create symlink
-            echo "[entrypoint] Symlinking skills to workspace"
-            ln -s /home/node/.claude/skills /workspace/.claude/skills
-            chown -h "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /workspace/.claude /workspace/.claude/skills 2>/dev/null || true
-        fi
-    else
-        echo "[entrypoint] Skipping workspace skills symlink (workspace not writable)"
+        mkdir -p "${TELCLAUDE_CLAUDE_HOME}"
+        cp /app/.claude/CLAUDE.md "${TELCLAUDE_CLAUDE_HOME}/CLAUDE.md"
     fi
 
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
     # NOTE: /workspace is skipped - it's a host bind mount and chowning is slow/unnecessary
-    # NOTE: /home/node must be writable for Claude CLI to create .claude.json
+    # NOTE: TELCLAUDE_CLAUDE_HOME must be writable for Claude CLI to manage settings
     # NOTE: /media/outbox needs write access for generated content (relay container)
     # Create logs directory and file with correct ownership for pino logger
     # Must be done before dropping privileges since tmpfs dirs created as root
@@ -102,7 +78,7 @@ if [ "$(id -u)" = "0" ]; then
     touch /home/node/.telclaude/logs/telclaude.log
     chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude 2>/dev/null || true
 
-    for dir in /data /home/node /home/node/.claude /media/inbox /media/outbox; do
+    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" "${TELCLAUDE_AUTH_DIR}" /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then
@@ -143,8 +119,20 @@ if [ "$(id -u)" = "0" ]; then
         # Relay container: Minimal git config (relay doesn't do git operations)
         # Just set safe defaults for any incidental git usage
         echo "[entrypoint] Relay mode: minimal git config"
-        git config --global init.defaultBranch main
-        git config --global core.autocrlf input
+
+        # Check if HOME is actually writable (not just permissions, but filesystem)
+        # On read-only filesystems, permission checks pass but writes fail
+        if touch "$HOME/.gitconfig-test" 2>/dev/null; then
+            rm -f "$HOME/.gitconfig-test"
+            git config --global init.defaultBranch main
+            git config --global core.autocrlf input
+        else
+            # HOME is read-only (e.g., social agent), use tmpfs
+            echo "[entrypoint] HOME is read-only, using /tmp for git config"
+            export GIT_CONFIG_GLOBAL="/tmp/.gitconfig"
+            git config --file "$GIT_CONFIG_GLOBAL" init.defaultBranch main
+            git config --file "$GIT_CONFIG_GLOBAL" core.autocrlf input
+        fi
     fi
 
     # Drop privileges and exec into the application (unless TELCLAUDE_RUN_AS_ROOT=1)

@@ -109,6 +109,16 @@ ALLOWED_DOMAINS=(
     "unpkg.com"
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # Social services (API + browser automation)
+    # ═══════════════════════════════════════════════════════════════════════════
+    "api.x.com"
+    "x.com"
+    "twitter.com"
+    "abs.twimg.com"
+    "pbs.twimg.com"
+    "t.co"
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # Docker Hub (for container pulls)
     # ═══════════════════════════════════════════════════════════════════════════
     "hub.docker.com"
@@ -142,9 +152,13 @@ append_internal_host() {
 }
 
 # Auto-include provider hosts from telclaude.json (for sidecar services)
+# Set TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1 on agent containers to prevent direct
+# provider access — agents must route through the relay proxy.
 TELCLAUDE_CONFIG_PATH="${TELCLAUDE_CONFIG:-/data/telclaude.json}"
 PROVIDER_HOSTS_RAW=""
-if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+if [ "${TELCLAUDE_FIREWALL_SKIP_PROVIDERS:-0}" = "1" ]; then
+    echo "[firewall] skipping provider hosts (TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1)"
+elif [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
     PROVIDER_HOSTS_RAW="$(
         TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
 const fs = require("fs");
@@ -259,8 +273,8 @@ add_internal_host_rules() {
         if [ -n "$ips" ]; then
             for ip in $ips; do
                 # Check if rule already exists before adding
-                if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
-                    iptables -I OUTPUT 1 -d "$ip" -j ACCEPT 2>/dev/null || true
+                if ! iptables -C TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null; then
+                    iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
                     echo "[firewall] allowed internal: $host ($ip)"
                     ((updated++)) || true
                 fi
@@ -297,51 +311,71 @@ setup_firewall() {
     # Flush existing OUTPUT rules
     iptables -F OUTPUT 2>/dev/null || true
 
+    # Create/flush TELCLAUDE_ALLOW chain for dynamic ACCEPT rules.
+    # All dynamic rules (internal hosts + allowed domains) go here,
+    # ensuring they can never land above metadata DROPs in OUTPUT.
+    iptables -N TELCLAUDE_ALLOW 2>/dev/null || iptables -F TELCLAUDE_ALLOW
+
     # ═══════════════════════════════════════════════════════════════════════════
-    # BLOCK FIRST: Metadata endpoints (SSRF protection - critical!)
-    # These must be blocked BEFORE any allow rules
+    # OUTPUT chain: fixed structure (order is critical for security!)
+    #
+    # 1. ESTABLISHED,RELATED  — performance (most packets match here)
+    # 2. Loopback              — local communication
+    # 3. Metadata DROPs        — SSRF protection (ALWAYS before any ACCEPT)
+    # 4. → TELCLAUDE_ALLOW     — dynamic rules (internal hosts + domains)
+    # 5. RFC1918 DROPs         — after allow chain so Docker bridge IPs pass
+    # 6. DNS rules             — Docker resolver only
+    # 7. Default DROP          — deny everything else
     # ═══════════════════════════════════════════════════════════════════════════
+
+    # Allow established connections (must be first for performance)
+    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+    # Allow loopback (needed for internal communication)
+    iptables -A OUTPUT -o lo -j ACCEPT
+
+    # BLOCK: Metadata endpoints (SSRF protection - critical!)
+    # These must be blocked BEFORE the TELCLAUDE_ALLOW jump so no dynamic
+    # rule can ever bypass them
     for ip in "${BLOCKED_METADATA_IPS[@]}"; do
         iptables -A OUTPUT -d "$ip" -j DROP
         echo "[firewall] blocked metadata: $ip"
     done
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # ALLOW: Internal service hosts (relay/agent RPC)
-    # Wait for internal hosts to be resolvable before blocking RFC1918
-    # This handles container startup races (agent starts before relay is ready)
-    # ═══════════════════════════════════════════════════════════════════════════
-    if [ ${#INTERNAL_HOSTS[@]} -gt 0 ]; then
-        resolve_internal_hosts_with_retry
-        add_internal_host_rules
-    fi
+    # Jump to dynamic allow chain (internal hosts + allowed domains)
+    # Placed AFTER metadata DROPs (can never be bypassed) but BEFORE
+    # RFC1918 DROPs (Docker bridge IPs are RFC1918 and need to pass)
+    iptables -A OUTPUT -j TELCLAUDE_ALLOW
 
-    # ═══════════════════════════════════════════════════════════════════════════
     # BLOCK: RFC1918 private networks (prevent internal network access)
-    # IMPORTANT: This comes AFTER internal host allowlist to ensure RPC works
-    # ═══════════════════════════════════════════════════════════════════════════
+    # AFTER TELCLAUDE_ALLOW jump so explicitly allowed internal hosts pass
     iptables -A OUTPUT -d 10.0.0.0/8 -j DROP
     iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
     iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
     iptables -A OUTPUT -d 169.254.0.0/16 -j DROP  # Link-local
     echo "[firewall] blocked RFC1918 private networks"
 
+    # Allow DNS only to Docker resolver
+    iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -d 127.0.0.11 -j ACCEPT
+    iptables -A OUTPUT -p udp --dport 53 -j DROP
+    iptables -A OUTPUT -p tcp --dport 53 -j DROP
+
+    # Block DNS-over-TLS (DoT)
+    iptables -A OUTPUT -p tcp --dport 853 -j DROP
+    iptables -A OUTPUT -p udp --dport 853 -j DROP
+
     # ═══════════════════════════════════════════════════════════════════════════
-    # ALLOW: Essential services
+    # TELCLAUDE_ALLOW: Internal hosts (needed by ALL modes including permissive)
+    # Must be populated BEFORE the permissive ACCEPT or default DENY,
+    # because RFC1918 DROPs above catch Docker bridge IPs.
     # ═══════════════════════════════════════════════════════════════════════════
 
-    # Allow loopback (needed for internal communication)
-    iptables -A OUTPUT -o lo -j ACCEPT
-
-    # Allow established connections
-    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-    # Allow DNS (UDP and TCP port 53)
-    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-
-    # Allow SSH (for git operations)
-    iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+    # Add internal hosts (Docker bridge IPs — must be allowed before RFC1918 drop)
+    if [ ${#INTERNAL_HOSTS[@]} -gt 0 ]; then
+        resolve_internal_hosts_with_retry
+        add_internal_host_rules
+    fi
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Network Mode: permissive/open allows all public egress
@@ -352,21 +386,21 @@ setup_firewall() {
         iptables -A OUTPUT -j ACCEPT
         echo "[firewall] IPv4 firewall configured with PERMISSIVE policy"
         echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
-        echo "[firewall] allowed: ALL public internet egress (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
+        echo "[firewall] allowed: ALL public internet egress + ${#INTERNAL_HOSTS[@]} internal hosts (TELCLAUDE_NETWORK_MODE=$NETWORK_MODE)"
         return 0
     fi
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # ALLOW: Whitelisted domains (restricted mode only)
-    # ═══════════════════════════════════════════════════════════════════════════
+    # DEFAULT DENY (must be last in OUTPUT)
+    iptables -A OUTPUT -j DROP
+
+    # Add whitelisted domains (restricted mode only)
     for domain in "${ALLOWED_DOMAINS[@]}"; do
         # Resolve domain to IPv4 addresses only (iptables doesn't handle IPv6)
-        # Filter: grep for lines with dots (IPv4) and exclude colons (IPv6)
         ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
 
         if [ -n "$ips" ]; then
             for ip in $ips; do
-                iptables -A OUTPUT -d "$ip" -j ACCEPT
+                iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT
                 echo "[firewall] allowed: $domain ($ip)"
             done
         else
@@ -374,16 +408,9 @@ setup_firewall() {
         fi
     done
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # DEFAULT DENY: Block everything else (must be LAST rule)
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Remove any stale DROP-all rules first to ensure only one at the end
-    while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
-    iptables -A OUTPUT -j DROP
-
     echo "[firewall] IPv4 firewall configured with default-deny policy"
     echo "[firewall] blocked: metadata endpoints, RFC1918 private networks"
-    echo "[firewall] allowed: ${#ALLOWED_DOMAINS[@]} domains + ${#INTERNAL_HOSTS[@]} internal hosts + DNS + SSH"
+    echo "[firewall] allowed: ${#ALLOWED_DOMAINS[@]} domains + ${#INTERNAL_HOSTS[@]} internal hosts + DNS"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -481,9 +508,13 @@ setup_ipv6_firewall() {
     # Allow established connections
     ip6tables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-    # Allow DNS over IPv6
-    ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+    # Block DNS over IPv6 (Docker resolver is IPv4-only)
+    ip6tables -A OUTPUT -p udp --dport 53 -j DROP
+    ip6tables -A OUTPUT -p tcp --dport 53 -j DROP
+
+    # Block DNS-over-TLS (DoT)
+    ip6tables -A OUTPUT -p tcp --dport 853 -j DROP
+    ip6tables -A OUTPUT -p udp --dport 853 -j DROP
 
     # Allow ICMPv6 (needed for IPv6 to function properly)
     ip6tables -A OUTPUT -p icmpv6 -j ACCEPT
@@ -547,13 +578,18 @@ refresh_firewall() {
         return 0
     fi
 
-    echo "[firewall-refresh] refreshing firewall rules..."
+    echo "[firewall-refresh] refreshing TELCLAUDE_ALLOW chain..."
 
     local updated=0
     local failed=0
 
+    # Flush and rebuild the entire TELCLAUDE_ALLOW chain.
+    # This is clean and atomic — no risk of rules landing above
+    # metadata/RFC1918 DROPs in the OUTPUT chain.
+    iptables -F TELCLAUDE_ALLOW 2>/dev/null || true
+
     # ═══════════════════════════════════════════════════════════════════════════
-    # Refresh internal host IPs (handles IP changes after container restarts)
+    # Re-add internal host rules (handles IP changes after container restarts)
     # ═══════════════════════════════════════════════════════════════════════════
     echo "[firewall-refresh] checking internal hosts..."
     for host in "${INTERNAL_HOSTS[@]}"; do
@@ -569,28 +605,17 @@ refresh_firewall() {
         fi
 
         for ip in $new_ips; do
-            if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
-                # Insert at position 1 (top) to ensure it's before RFC1918 drops
-                iptables -I OUTPUT 1 -d "$ip" -j ACCEPT 2>/dev/null || true
-                echo "[firewall-refresh] added internal: $host -> $ip"
-                ((internal_updated++)) || true
-                ((updated++)) || true
-            fi
+            iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
+            ((updated++)) || true
         done
+        echo "[firewall-refresh] allowed internal: $host"
     done
 
-    # Ensure DROP-all is at end after internal host updates
-    if [ ${internal_updated:-0} -gt 0 ]; then
-        while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
-        iptables -A OUTPUT -j DROP
-    fi
-
     # ═══════════════════════════════════════════════════════════════════════════
-    # Refresh allowed domain IPs (handles DNS changes)
+    # Re-add allowed domain rules (handles DNS changes)
     # ═══════════════════════════════════════════════════════════════════════════
     echo "[firewall-refresh] checking allowed domains..."
     for domain in "${ALLOWED_DOMAINS[@]}"; do
-        # Resolve domain to current IP addresses
         local new_ips=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u)
 
         if [ -z "$new_ips" ]; then
@@ -599,29 +624,13 @@ refresh_firewall() {
             continue
         fi
 
-        # Add new IPs that aren't already allowed
         for ip in $new_ips; do
-            if ! iptables -C OUTPUT -d "$ip" -j ACCEPT 2>/dev/null; then
-                # Rule doesn't exist, add it at position 1 (top, before any DROP rules)
-                iptables -I OUTPUT 1 -d "$ip" -j ACCEPT 2>/dev/null || true
-                echo "[firewall-refresh] added: $domain -> $ip"
-                ((updated++)) || true
-            fi
+            iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
         done
+        ((updated++)) || true
     done
 
-    # Ensure DROP-all rule is at the very end (refresh inserts may have shifted it)
-    if [ $updated -gt 0 ]; then
-        # Remove and re-add DROP-all to ensure it's last
-        while iptables -D OUTPUT -j DROP 2>/dev/null; do :; done
-        iptables -A OUTPUT -j DROP
-    fi
-
-    if [ $updated -gt 0 ]; then
-        echo "[firewall-refresh] updated $updated rules"
-    else
-        echo "[firewall-refresh] no updates needed"
-    fi
+    echo "[firewall-refresh] rebuilt TELCLAUDE_ALLOW chain ($updated entries)"
 
     if [ $failed -gt 0 ]; then
         echo "[firewall-refresh] warning: $failed entries failed to resolve"

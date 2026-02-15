@@ -342,7 +342,7 @@ export async function monitorTelegramInbox(
 
 	// Register keyboard handlers (callback queries must be registered before message handlers)
 	if (enableKeyboards) {
-		registerKeyboardHandlers(bot, {} as import("../config/config.js").TelclaudeConfig);
+		registerKeyboardHandlers(bot);
 	}
 
 	// Handle text messages

@@ -1,11 +1,16 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 
 import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
+import { loadSocialContractPrompt } from "../social-contract.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
 
 const logger = getChildLogger({ module: "agent-server" });
 
@@ -14,17 +19,22 @@ const MAX_PROMPT_CHARS = Number(process.env.TELCLAUDE_AGENT_MAX_PROMPT_CHARS ?? 
 const MAX_TIMEOUT_MS = Number(process.env.TELCLAUDE_AGENT_MAX_TIMEOUT_MS ?? 600_000);
 const DEFAULT_TIMEOUT_MS = Number(process.env.TELCLAUDE_AGENT_DEFAULT_TIMEOUT_MS ?? 600_000);
 const AGENT_WORKDIR = process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
+const RESOLVED_AGENT_WORKDIR = path.resolve(AGENT_WORKDIR);
+export const AGENT_STARTED_AT = Date.now();
 
 type QueryRequest = {
 	prompt: string;
 	tier: PermissionTier;
 	poolKey: string;
+	cwd?: string;
 	enableSkills?: boolean;
 	timeoutMs?: number;
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
 	userId?: string;
 	systemPromptAppend?: string;
+	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
+	sessionToken?: string;
 };
 
 type AgentServerOptions = {
@@ -33,7 +43,12 @@ type AgentServerOptions = {
 };
 
 function isPermissionTier(value: unknown): value is PermissionTier {
-	return value === "READ_ONLY" || value === "WRITE_LOCAL" || value === "FULL_ACCESS";
+	return (
+		value === "READ_ONLY" ||
+		value === "WRITE_LOCAL" ||
+		value === "FULL_ACCESS" ||
+		value === "SOCIAL"
+	);
 }
 
 function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -50,6 +65,39 @@ function clampTimeout(value: number): number {
 	return Math.min(Math.max(value, 1000), MAX_TIMEOUT_MS);
 }
 
+function resolveCwd(requested?: string): string {
+	if (!requested) return RESOLVED_AGENT_WORKDIR;
+	const trimmed = requested.trim();
+	if (!trimmed) return RESOLVED_AGENT_WORKDIR;
+
+	const candidateRaw = path.isAbsolute(trimmed)
+		? trimmed
+		: path.join(RESOLVED_AGENT_WORKDIR, trimmed);
+	let candidate = path.resolve(candidateRaw);
+
+	if (fs.existsSync(candidate)) {
+		try {
+			const real = fs.realpathSync(candidate);
+			const stat = fs.statSync(real);
+			if (!stat.isDirectory()) {
+				return RESOLVED_AGENT_WORKDIR;
+			}
+			candidate = real;
+		} catch {
+			return RESOLVED_AGENT_WORKDIR;
+		}
+	}
+
+	const rootWithSep = RESOLVED_AGENT_WORKDIR.endsWith(path.sep)
+		? RESOLVED_AGENT_WORKDIR
+		: `${RESOLVED_AGENT_WORKDIR}${path.sep}`;
+	if (candidate !== RESOLVED_AGENT_WORKDIR && !candidate.startsWith(rootWithSep)) {
+		return RESOLVED_AGENT_WORKDIR;
+	}
+
+	return candidate;
+}
+
 async function streamQuery(
 	req: QueryRequest,
 	res: http.ServerResponse,
@@ -63,7 +111,7 @@ async function streamQuery(
 	});
 
 	for await (const chunk of executePooledQuery(req.prompt, {
-		cwd: AGENT_WORKDIR,
+		cwd: req.cwd ?? RESOLVED_AGENT_WORKDIR,
 		tier: req.tier,
 		poolKey: req.poolKey,
 		userId: req.userId,
@@ -94,7 +142,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 		}
 
 		if (req.method === "GET" && req.url === "/health") {
-			writeJson(res, 200, { ok: true });
+			writeJson(res, 200, {
+				ok: true,
+				service: "agent",
+				runtime: buildRuntimeSnapshot(AGENT_STARTED_AT),
+			});
 			return;
 		}
 
@@ -156,12 +208,48 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					writeJson(res, 400, { error: "Invalid userId." });
 					return;
 				}
+				if (parsed.cwd !== undefined && typeof parsed.cwd !== "string") {
+					writeJson(res, 400, { error: "Invalid cwd." });
+					return;
+				}
 
-				// DEBUG: Log userId to verify it's being passed
+				const scope = authResult.scope;
+				let effectiveTier = parsed.tier;
+				const effectiveEnableSkills = parsed.enableSkills;
+				let effectiveUserId = parsed.userId;
+				const effectiveCwd = resolveCwd(parsed.cwd);
+
+				// Any scope that isn't "telegram" is treated as a social service scope
+				if (scope !== "telegram") {
+					if (parsed.tier !== "SOCIAL") {
+						logger.warn(
+							{ requestedTier: parsed.tier, userId: parsed.userId, poolKey: parsed.poolKey, scope },
+							"social scope forced to SOCIAL tier",
+						);
+					}
+					effectiveTier = "SOCIAL";
+					if (!effectiveUserId?.startsWith(`${scope}:`)) {
+						effectiveUserId = `${scope}:${effectiveUserId ?? "agent"}`;
+					}
+				}
+
 				logger.info(
-					{ userId: parsed.userId, poolKey: parsed.poolKey },
+					{
+						userId: effectiveUserId,
+						poolKey: parsed.poolKey,
+						scope,
+						tier: effectiveTier,
+						cwd: effectiveCwd,
+					},
 					"agent received query request",
 				);
+
+				// Inject relay-minted session token into process env for the Claude subprocess.
+				// This allows telclaude CLI tools (tts, generate-image, memory) to authenticate
+				// to the relay without the private key.
+				if (parsed.sessionToken && typeof parsed.sessionToken === "string") {
+					process.env.TELCLAUDE_SESSION_TOKEN = parsed.sessionToken;
+				}
 
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
@@ -171,9 +259,40 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					abortController.abort();
 				});
 
+				// Inject cached provider summary into system prompt if available
+				let effectiveSystemPromptAppend = parsed.systemPromptAppend;
+				if (scope === "telegram") {
+					const providerSummary = getCachedProviderSummary();
+					if (providerSummary) {
+						const providerBlock = `<available-providers>\n${providerSummary}\n</available-providers>`;
+						effectiveSystemPromptAppend = effectiveSystemPromptAppend
+							? `${effectiveSystemPromptAppend}\n${providerBlock}`
+							: providerBlock;
+					}
+				}
+
+				// Inject social contract with active persona tag
+				const socialPrompt = loadSocialContractPrompt();
+				if (socialPrompt) {
+					const isSocialScope = scope !== "telegram";
+					const persona = isSocialScope ? "public" : "private";
+					const personaDescription = isSocialScope
+						? `You are operating as telclaude's PUBLIC persona on ${scope}. Your responses are visible to others.`
+						: "You are operating as telclaude's PRIVATE persona. This is a direct, confidential conversation with your operator.";
+					const personaBlock = `<social-contract>\n${socialPrompt}\n</social-contract>\n<active-persona>${persona}</active-persona>\n${personaDescription}`;
+					effectiveSystemPromptAppend = effectiveSystemPromptAppend
+						? `${effectiveSystemPromptAppend}\n${personaBlock}`
+						: personaBlock;
+				}
+
 				streamQuery(
 					{
 						...parsed,
+						cwd: effectiveCwd,
+						tier: effectiveTier,
+						enableSkills: effectiveEnableSkills,
+						userId: effectiveUserId,
+						systemPromptAppend: effectiveSystemPromptAppend,
 						timeoutMs,
 					},
 					res,
@@ -201,6 +320,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					})
 					.finally(() => {
 						clearTimeout(timeoutId);
+						// Clean up session token from process env after query completes
+						// to prevent leaked tokens persisting across requests
+						if (parsed.sessionToken) {
+							delete process.env.TELCLAUDE_SESSION_TOKEN;
+						}
 					});
 			} catch (err) {
 				logger.warn({ error: String(err) }, "failed to parse agent request");

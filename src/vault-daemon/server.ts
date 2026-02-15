@@ -11,6 +11,7 @@
  * - No network access (Unix socket only)
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
@@ -32,6 +33,140 @@ import {
 import { getVaultStore, resetVaultStore, type VaultStoreOptions } from "./store.js";
 
 const logger = getChildLogger({ module: "vault-server" });
+
+const SIGNING_KEY_TARGET = "rpc-master";
+const TOKEN_VERSION = "v3";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Ed25519 Token Signing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get or auto-generate the Ed25519 signing keypair.
+ * Stored as `signing:rpc-master` in the vault.
+ */
+async function getOrCreateSigningKeys(): Promise<{ privateKey: string; publicKey: string }> {
+	const store = getVaultStore();
+	const existing = await store.get("signing", SIGNING_KEY_TARGET);
+
+	if (existing && existing.credential.type === "ed25519") {
+		return {
+			privateKey: existing.credential.privateKey,
+			publicKey: existing.credential.publicKey,
+		};
+	}
+
+	// Auto-generate Ed25519 keypair
+	logger.info("auto-generating Ed25519 signing keypair");
+	const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519", {
+		privateKeyEncoding: { type: "pkcs8", format: "der" },
+		publicKeyEncoding: { type: "spki", format: "der" },
+	});
+
+	const privateKeyB64 = privateKey.toString("base64");
+	const publicKeyB64 = publicKey.toString("base64");
+
+	await store.store("signing", SIGNING_KEY_TARGET, {
+		type: "ed25519",
+		privateKey: privateKeyB64,
+		publicKey: publicKeyB64,
+	});
+
+	return { privateKey: privateKeyB64, publicKey: publicKeyB64 };
+}
+
+/**
+ * Sign a session token payload.
+ * Token format: v3:{scope}:{sessionId}:{createdAt}:{expiresAt}:{signature}
+ */
+function signTokenPayload(privateKeyBase64: string, payload: string): string {
+	const privateKey = Buffer.from(privateKeyBase64, "base64");
+	const signature = crypto.sign(null, Buffer.from(payload), {
+		key: privateKey,
+		format: "der",
+		type: "pkcs8",
+	});
+	return signature.toString("base64url");
+}
+
+/**
+ * Verify a session token signature.
+ */
+function verifyTokenSignature(
+	publicKeyBase64: string,
+	payload: string,
+	signatureBase64url: string,
+): boolean {
+	try {
+		const publicKey = Buffer.from(publicKeyBase64, "base64");
+		const signature = Buffer.from(signatureBase64url, "base64url");
+		return crypto.verify(
+			null,
+			Buffer.from(payload),
+			{ key: publicKey, format: "der", type: "spki" },
+			signature,
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Parse a v3 session token into its components.
+ */
+function parseSessionToken(token: string):
+	| {
+			ok: true;
+			version: string;
+			scope: string;
+			sessionId: string;
+			createdAt: number;
+			expiresAt: number;
+			signature: string;
+			payload: string;
+	  }
+	| { ok: false; error: string } {
+	const parts = token.split(":");
+	if (parts.length !== 6) {
+		return { ok: false, error: "Invalid token format: expected 6 colon-separated parts" };
+	}
+
+	const version = parts[0] ?? "";
+	const scope = parts[1] ?? "";
+	const sessionId = parts[2] ?? "";
+	const createdAtStr = parts[3] ?? "";
+	const expiresAtStr = parts[4] ?? "";
+	const signature = parts[5] ?? "";
+
+	if (version !== TOKEN_VERSION) {
+		return { ok: false, error: `Invalid token version: ${version}` };
+	}
+
+	if (!scope || !sessionId || !signature) {
+		return { ok: false, error: "Invalid token: missing required fields" };
+	}
+
+	const createdAt = Number(createdAtStr);
+	const expiresAt = Number(expiresAtStr);
+
+	if (!Number.isFinite(createdAt) || !Number.isFinite(expiresAt)) {
+		return { ok: false, error: "Invalid token: non-numeric timestamps" };
+	}
+
+	// The signed payload is everything except the signature
+	const payload = `${version}:${scope}:${sessionId}:${createdAtStr}:${expiresAtStr}`;
+
+	return {
+		ok: true,
+		version,
+		scope,
+		sessionId,
+		createdAt,
+		expiresAt,
+		signature,
+		payload,
+	};
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Server Types
@@ -336,6 +471,61 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 		case "list": {
 			const entries = await store.list(request.protocol);
 			return { type: "list", ok: true, entries };
+		}
+
+		case "sign-token": {
+			const keys = await getOrCreateSigningKeys();
+			const now = Date.now();
+			const expiresAt = now + request.ttlMs;
+			const payload = `${TOKEN_VERSION}:${request.scope}:${request.sessionId}:${now}:${expiresAt}`;
+			const signature = signTokenPayload(keys.privateKey, payload);
+			const token = `${payload}:${signature}`;
+
+			logger.info(
+				{ scope: request.scope, sessionId: request.sessionId, ttlMs: request.ttlMs },
+				"signed session token",
+			);
+			return { type: "sign-token", ok: true, token, expiresAt };
+		}
+
+		case "verify-token": {
+			const parsed = parseSessionToken(request.token);
+			if (!parsed.ok) {
+				return { type: "verify-token", ok: false, error: parsed.error };
+			}
+
+			// Check expiration
+			if (parsed.expiresAt < Date.now()) {
+				return { type: "verify-token", ok: false, error: "Token expired" };
+			}
+
+			const keys = await getOrCreateSigningKeys();
+			const valid = verifyTokenSignature(keys.publicKey, parsed.payload, parsed.signature);
+			if (!valid) {
+				return { type: "verify-token", ok: false, error: "Invalid signature" };
+			}
+
+			return {
+				type: "verify-token",
+				ok: true,
+				scope: parsed.scope,
+				sessionId: parsed.sessionId,
+				createdAt: parsed.createdAt,
+				expiresAt: parsed.expiresAt,
+			};
+		}
+
+		case "get-public-key": {
+			const keys = await getOrCreateSigningKeys();
+			return { type: "get-public-key", ok: true, publicKey: keys.publicKey };
+		}
+
+		case "get-secret": {
+			const entry = await store.get("secret", request.target);
+			if (!entry || entry.credential.type !== "opaque") {
+				return { type: "get-secret", ok: false, error: "not_found" };
+			}
+			return { type: "get-secret", ok: true, value: entry.credential.value };
 		}
 	}
 }

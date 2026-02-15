@@ -6,7 +6,6 @@
  */
 
 import type { Bot, CallbackQueryContext, Context } from "grammy";
-import type { TelclaudeConfig } from "../config/config.js";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
@@ -36,7 +35,7 @@ export function parseCallbackData(data: string): KeyboardAction | null {
  * Register callback query handlers for inline keyboard buttons.
  * Should be called during bot setup, before starting polling.
  */
-export function registerKeyboardHandlers(bot: Bot, _config: TelclaudeConfig): void {
+export function registerKeyboardHandlers(bot: Bot): void {
 	// Handle "New Session" button
 	bot.callbackQuery(/^action:new$/, async (ctx) => {
 		const chatId = ctx.chat?.id;

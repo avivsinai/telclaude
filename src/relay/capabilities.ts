@@ -6,19 +6,127 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { loadConfig } from "../config/config.js";
-import { verifyInternalAuth } from "../internal-auth.js";
+import { isInternalAuthScope, verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
+import {
+	handleMemoryPropose,
+	handleMemoryQuarantine,
+	handleMemorySnapshot,
+	parseSnapshotBody,
+	parseSnapshotQuery,
+} from "../memory/rpc.js";
+import type { MemoryEntryInput } from "../memory/store.js";
+import type { MemorySource, TrustLevel } from "../memory/types.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import { cachedDNSLookup, isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
+import { summarizeUrl } from "../services/summarize.js";
 import { transcribeAudio } from "../services/transcription.js";
 import { textToSpeech } from "../services/tts.js";
+import {
+	createSocialClient,
+	handleSocialHeartbeat,
+	type SocialHeartbeatPayload,
+} from "../social/index.js";
 import { validateAttachmentRef } from "../storage/attachment-refs.js";
+import type { RuntimeSnapshot } from "../system-metadata.js";
+import { buildRuntimeSnapshot } from "../system-metadata.js";
+import { sendAdminAlert } from "../telegram/admin-alert.js";
+import { handleAnthropicProxyRequest, isAnthropicProxyRequest } from "./anthropic-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
+import {
+	handleTokenExchange,
+	handleTokenRefresh,
+	isScopeAutoStrict,
+	isTokenManagerActive,
+	verifyTokenLocally,
+} from "./token-manager.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
+
+// ── Startup Notification Buffer ──────────────────────────────────────────
+// Collects relay + agent readiness signals, then sends one consolidated
+// Telegram message after a short debounce window.
+
+type StartupEntry = { label: string; version: string; revision: string };
+const startupBuffer: StartupEntry[] = [];
+let startupFlushTimer: ReturnType<typeof setTimeout> | null = null;
+const STARTUP_DEBOUNCE_MS = 8_000;
+
+export function bufferStartupReady(entry: StartupEntry): void {
+	startupBuffer.push(entry);
+	// Reset debounce on each new entry
+	if (startupFlushTimer) clearTimeout(startupFlushTimer);
+	startupFlushTimer = setTimeout(flushStartupNotification, STARTUP_DEBOUNCE_MS);
+}
+
+function flushStartupNotification(): void {
+	startupFlushTimer = null;
+	if (startupBuffer.length === 0) return;
+	const entries = startupBuffer.splice(0);
+	const lines = entries.map((e) => {
+		const rev = e.revision && e.revision !== "unknown" ? ` (${e.revision})` : "";
+		return `${e.label}: v${e.version}${rev}`;
+	});
+	const config = loadConfig();
+	sendAdminAlert(
+		{
+			level: "info",
+			title: "telclaude online",
+			message: lines.join("\n"),
+		},
+		{ fallbackChats: config.telegram?.allowedChats },
+	).catch((err) => {
+		logger.warn({ error: String(err) }, "failed to send startup notification");
+	});
+}
+
+/**
+ * Try to authenticate using a v3 session token header.
+ * Returns null if no session token header present (fall through to v1/v2).
+ */
+function trySessionTokenAuth(
+	req: http.IncomingMessage,
+): import("../internal-auth.js").InternalAuthResult | null {
+	const tokenHeader = req.headers["x-telclaude-session-token"];
+	const authType = req.headers["x-telclaude-auth-type"];
+
+	if (authType !== "session" && !tokenHeader) {
+		return null; // No session token, fall through
+	}
+
+	const token = Array.isArray(tokenHeader) ? tokenHeader[0] : tokenHeader;
+	if (!token) {
+		return null;
+	}
+
+	if (!isTokenManagerActive()) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: "Session token auth not available.",
+		};
+	}
+
+	const result = verifyTokenLocally(token);
+	if (!result.valid || !result.scope || !isInternalAuthScope(result.scope)) {
+		return {
+			ok: false,
+			status: 401,
+			error: "Unauthorized.",
+			reason: result.error ?? "Invalid session token.",
+		};
+	}
+
+	return {
+		ok: true,
+		scope: result.scope,
+	};
+}
 
 const DEFAULT_BODY_LIMIT = 524288;
 const DEFAULT_PROMPT_LIMIT = 8000;
@@ -27,6 +135,7 @@ const DEFAULT_PATH_LIMIT = 4096;
 const MAX_INFLIGHT = 4;
 const DEFAULT_TRANSCRIPTION_LIMITS = { maxPerHourPerUser: 20, maxPerDayPerUser: 50 };
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024;
+const CAPABILITIES_STARTED_AT = Date.now();
 // Base64 encoding adds ~33% overhead, so 20MB file = ~27MB base64
 const ATTACHMENT_DELIVER_BODY_LIMIT = 30 * 1024 * 1024;
 const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
@@ -55,6 +164,14 @@ type TranscriptionRequest = {
 	path: string;
 	language?: string;
 	model?: string;
+	userId?: string;
+};
+
+type SummarizeRequest = {
+	url: string;
+	maxCharacters?: number;
+	timeoutMs?: number;
+	format?: "text" | "markdown";
 	userId?: string;
 };
 
@@ -113,24 +230,34 @@ function parseBody(req: http.IncomingMessage, maxBytes: number): Promise<string>
 	});
 }
 
-function resolveImagePolicy(request: ImageRequest) {
+function resolveImagePolicy(request: ImageRequest): {
+	size: ImageRequest["size"];
+	quality: ImageRequest["quality"];
+} {
 	const config = loadConfig();
 	const imageConfig = config.imageGeneration;
 	const allowedSizes: ImageRequest["size"][] = ["auto", "1024x1024", "1536x1024", "1024x1536"];
 	const allowedQualities: ImageRequest["quality"][] = ["low", "medium", "high"];
 
-	const size =
-		imageConfig?.size && imageConfig.size !== "auto"
-			? imageConfig.size
-			: allowedSizes.includes(request.size ?? "auto")
-				? (request.size ?? imageConfig?.size ?? "1024x1024")
-				: (imageConfig?.size ?? "1024x1024");
+	// Config override takes priority (unless "auto")
+	let size: ImageRequest["size"];
+	if (imageConfig?.size && imageConfig.size !== "auto") {
+		size = imageConfig.size;
+	} else if (allowedSizes.includes(request.size ?? "auto")) {
+		size = request.size ?? imageConfig?.size ?? "1024x1024";
+	} else {
+		size = imageConfig?.size ?? "1024x1024";
+	}
 
-	const quality = imageConfig?.quality
-		? imageConfig.quality
-		: allowedQualities.includes(request.quality ?? "medium")
-			? (request.quality ?? "medium")
-			: "medium";
+	// Config override takes priority for quality
+	let quality: ImageRequest["quality"];
+	if (imageConfig?.quality) {
+		quality = imageConfig.quality;
+	} else if (allowedQualities.includes(request.quality ?? "medium")) {
+		quality = request.quality ?? "medium";
+	} else {
+		quality = "medium";
+	}
 
 	return { size, quality };
 }
@@ -410,6 +537,30 @@ async function streamAttachmentToFile(response: Response, filepath: string): Pro
 	return totalBytes;
 }
 
+/**
+ * Build a scope-restricted memory snapshot request.
+ * Social scopes see only "social" source with untrusted trust and a capped limit.
+ * Telegram scope sees only "telegram" source with no restrictions.
+ */
+function buildScopedSnapshot(
+	baseSnapshot: import("../memory/rpc.js").MemorySnapshotRequest,
+	scope: string,
+	source: MemorySource,
+): import("../memory/rpc.js").MemorySnapshotRequest {
+	if (scope !== "telegram") {
+		return {
+			...baseSnapshot,
+			sources: [source] as MemorySource[],
+			trust: ["untrusted"] as TrustLevel[],
+			limit: Math.min(baseSnapshot.limit ?? 50, 50),
+		};
+	}
+	return {
+		...baseSnapshot,
+		sources: ["telegram"] as MemorySource[],
+	};
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
@@ -426,13 +577,25 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			writeJson(res, 400, { error: "Missing request URL." });
 			return;
 		}
+		const requestPath = req.url.split("?")[0] ?? "";
 
-		if (req.method === "GET" && req.url === "/health") {
-			writeJson(res, 200, { ok: true });
+		if (req.method === "GET" && requestPath === "/health") {
+			writeJson(res, 200, {
+				ok: true,
+				service: "relay",
+				runtime: buildRuntimeSnapshot(CAPABILITIES_STARTED_AT),
+			});
 			return;
 		}
 
-		if (req.method !== "POST") {
+		if (isAnthropicProxyRequest(req.url)) {
+			await handleAnthropicProxyRequest(req, res);
+			return;
+		}
+
+		const isMemorySnapshotGet = req.method === "GET" && requestPath === "/v1/memory.snapshot";
+
+		if (!isMemorySnapshotGet && req.method !== "POST") {
 			writeJson(res, 405, { error: "Method not allowed." });
 			return;
 		}
@@ -442,20 +605,33 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			return;
 		}
 
-		const contentType = req.headers["content-type"] ?? "";
-		if (!contentType.includes("application/json")) {
-			writeJson(res, 415, { error: "Content-Type must be application/json." });
-			return;
+		if (!isMemorySnapshotGet) {
+			const contentType = req.headers["content-type"] ?? "";
+			if (!contentType.includes("application/json")) {
+				writeJson(res, 415, { error: "Content-Type must be application/json." });
+				return;
+			}
 		}
 
 		inFlight += 1;
 
 		try {
-			// Use higher body limit for attachment delivery (base64 payloads)
-			const effectiveBodyLimit =
-				req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit;
-			const body = await parseBody(req, effectiveBodyLimit);
-			const authResult = verifyInternalAuth(req, body);
+			const body = isMemorySnapshotGet
+				? ""
+				: await parseBody(
+						req,
+						req.url === "/v1/attachment/deliver" ? ATTACHMENT_DELIVER_BODY_LIMIT : bodyLimit,
+					);
+
+			// Try v3 session token auth first (no vault roundtrip)
+			let usedSessionToken = false;
+			let authResult = trySessionTokenAuth(req);
+			if (authResult) {
+				usedSessionToken = true;
+			} else {
+				// Fall back to v1/v2 auth
+				authResult = verifyInternalAuth(req, body);
+			}
 			if (!authResult.ok) {
 				logger.warn(
 					{ reason: authResult.reason, url: req.url },
@@ -464,19 +640,289 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
-			const parsed = JSON.parse(body) as ImageRequest &
+			// Social service scopes (anything not "telegram") have restricted endpoint access
+			if (authResult.scope !== "telegram") {
+				const allowedPaths = new Set([
+					"/v1/agent.ready",
+					"/v1/auth/token-exchange",
+					"/v1/auth/token-refresh",
+					"/v1/social.heartbeat",
+					"/v1/memory.propose",
+					"/v1/memory.snapshot",
+					"/v1/summarize",
+				]);
+				if (!allowedPaths.has(requestPath)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+			}
+
+			// Auto-strict: once a scope exchanges a v3 token, block v1/v2 auth for that scope.
+			// IMPORTANT: token-exchange/refresh remain available for bootstrap/recovery.
+			const isTokenAuthEndpoint =
+				requestPath === "/v1/auth/token-exchange" || requestPath === "/v1/auth/token-refresh";
+			if (!isTokenAuthEndpoint && !usedSessionToken && isScopeAutoStrict(authResult.scope)) {
+				writeJson(res, 401, { error: "Unauthorized." });
+				return;
+			}
+			logger.debug(
+				{ scope: authResult.scope, url: req.url, method: req.method },
+				"capability request authenticated",
+			);
+
+			// ── Agent Ready Notification ─────────────────────────────────────
+			if (requestPath === "/v1/agent.ready") {
+				let readyBody: { scope?: string; runtime?: RuntimeSnapshot };
+				try {
+					readyBody = JSON.parse(body) as { scope?: string; runtime?: RuntimeSnapshot };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				const agentScope = readyBody.scope ?? authResult.scope;
+				const agentVersion = readyBody.runtime?.version ?? "unknown";
+				const agentRevision = readyBody.runtime?.revision ?? "unknown";
+				const label = agentScope === "telegram" ? "agent (private)" : `agent (${agentScope})`;
+				logger.info({ scope: agentScope, version: agentVersion }, "agent announced readiness");
+				bufferStartupReady({ label, version: agentVersion, revision: agentRevision });
+				writeJson(res, 200, { ok: true });
+				return;
+			}
+
+			// ── Config Endpoints (sanitized, no secrets) ─────────────────────
+			if (requestPath === "/v1/config.providers") {
+				const config = loadConfig();
+				const providers = (config.providers ?? []).map((p) => ({
+					id: p.id,
+					baseUrl: p.baseUrl,
+					services: p.services,
+					description: p.description,
+				}));
+				writeJson(res, 200, { ok: true, providers });
+				return;
+			}
+
+			// ── Token Exchange & Refresh ──────────────────────────────────────
+			if (requestPath === "/v1/auth/token-exchange") {
+				if (!isTokenManagerActive()) {
+					writeJson(res, 503, { ok: false, error: "Token manager not available" });
+					return;
+				}
+				let exchangeBody: { scope?: string };
+				try {
+					exchangeBody = JSON.parse(body) as { scope?: string };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				if (exchangeBody.scope && exchangeBody.scope !== authResult.scope) {
+					writeJson(res, 403, { ok: false, error: "Forbidden." });
+					return;
+				}
+				const result = await handleTokenExchange(authResult.scope);
+				writeJson(res, result.ok ? 200 : 500, result);
+				return;
+			}
+
+			if (requestPath === "/v1/auth/token-refresh") {
+				if (!isTokenManagerActive()) {
+					writeJson(res, 503, { ok: false, error: "Token manager not available" });
+					return;
+				}
+				// Rate limit token refresh requests
+				const rateLimiter = getMultimediaRateLimiter();
+				const refreshLimit = rateLimiter.checkLimit("token_refresh", authResult.scope, {
+					maxPerHourPerUser: 60,
+					maxPerDayPerUser: 500,
+				});
+				if (!refreshLimit.allowed) {
+					writeJson(res, 429, { ok: false, error: "Token refresh rate limited." });
+					return;
+				}
+				// Resolve the token to refresh: prefer header, fall back to body
+				const sessionToken = req.headers["x-telclaude-session-token"];
+				let tokenStr = Array.isArray(sessionToken) ? sessionToken[0] : sessionToken;
+				if (!tokenStr) {
+					let refreshBody: { token?: string };
+					try {
+						refreshBody = JSON.parse(body) as { token?: string };
+					} catch {
+						writeJson(res, 400, { error: "Invalid JSON." });
+						return;
+					}
+					if (!refreshBody.token) {
+						writeJson(res, 400, { error: "Missing token." });
+						return;
+					}
+					tokenStr = refreshBody.token;
+				}
+				const result = await handleTokenRefresh(tokenStr);
+				// Verify refreshed token scope matches caller's authenticated scope
+				if (result.ok && result.token) {
+					const refreshedPayload = verifyTokenLocally(result.token);
+					if (!refreshedPayload.valid || refreshedPayload.scope !== authResult.scope) {
+						writeJson(res, 403, { error: "Scope mismatch on token refresh." });
+						return;
+					}
+				}
+				rateLimiter.consume("token_refresh", authResult.scope);
+				writeJson(res, result.ok ? 200 : 401, result);
+				return;
+			}
+
+			if (requestPath === "/v1/social.heartbeat") {
+				if (authResult.scope === "telegram") {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				let payload: SocialHeartbeatPayload | undefined;
+				if (body.length > 0) {
+					try {
+						payload = JSON.parse(body) as SocialHeartbeatPayload;
+					} catch {
+						writeJson(res, 400, { error: "Invalid JSON." });
+						return;
+					}
+				}
+
+				const serviceId = payload?.serviceId ?? authResult.scope;
+				const config = loadConfig();
+				const serviceConfig = config.socialServices.find((s) => s.id === serviceId);
+				const client = serviceConfig ? await createSocialClient(serviceConfig) : null;
+				if (!client) {
+					writeJson(res, 200, { ok: false, message: `${serviceId} client not configured` });
+					return;
+				}
+				const heartbeatResult = await handleSocialHeartbeat(
+					serviceId,
+					client,
+					serviceConfig,
+					payload,
+				);
+				writeJson(res, 200, heartbeatResult);
+				return;
+			}
+			// Derive memory source: unified "social" for all social scopes.
+			// SECURITY: never allow non-telegram scope to claim "telegram" source
+			// (would let social agents write trusted memory).
+			const memorySource: MemorySource = authResult.scope === "telegram" ? "telegram" : "social";
+
+			if (isMemorySnapshotGet) {
+				const url = new URL(req.url ?? "", "http://localhost");
+				const snapshotRequest = parseSnapshotQuery(url.searchParams);
+				if (!snapshotRequest.ok) {
+					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
+					return;
+				}
+				const effectiveSnapshot = buildScopedSnapshot(
+					snapshotRequest.value,
+					authResult.scope,
+					memorySource,
+				);
+				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
+				if (!snapshotResult.ok) {
+					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
+					return;
+				}
+				writeJson(res, 200, snapshotResult.value);
+				return;
+			}
+
+			let parsed: ImageRequest &
 				TTSRequest &
 				TranscriptionRequest &
+				SummarizeRequest &
 				AttachmentFetchRequest &
 				LocalFileDeliverRequest &
-				AttachmentDeliverRequest;
+				AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
+			try {
+				parsed = JSON.parse(body) as ImageRequest &
+					TTSRequest &
+					TranscriptionRequest &
+					SummarizeRequest &
+					AttachmentFetchRequest &
+					LocalFileDeliverRequest &
+					AttachmentDeliverRequest & { entries?: unknown; userId?: unknown; serviceId?: string };
+			} catch {
+				writeJson(res, 400, { error: "Invalid JSON." });
+				return;
+			}
 			const userIdResult = parseUserId(parsed.userId);
 			if (userIdResult.error) {
 				writeJson(res, 400, { error: userIdResult.error });
 				return;
 			}
-			const userId = userIdResult.userId;
+			let userId = userIdResult.userId;
+			if (authResult.scope !== "telegram") {
+				const prefix = `${authResult.scope}:`;
+				userId = userId?.startsWith(prefix) ? userId : `${prefix}${userId ?? "agent"}`;
+			}
 			const rateLimitUserId = userId ?? "agent";
+
+			if (req.url === "/v1/memory.propose") {
+				const proposeResult = handleMemoryPropose(
+					{
+						entries: parsed.entries as MemoryEntryInput[],
+						userId,
+						chatId: (parsed as { chatId?: string }).chatId,
+					},
+					{ source: memorySource, userId },
+				);
+				if (!proposeResult.ok) {
+					writeJson(res, proposeResult.status, { error: proposeResult.error });
+					return;
+				}
+				writeJson(res, 200, proposeResult.value);
+				return;
+			}
+
+			if (req.url === "/v1/memory.snapshot") {
+				const snapshotRequest = parseSnapshotBody(parsed);
+				if (!snapshotRequest.ok) {
+					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
+					return;
+				}
+				const effectiveSnapshot = buildScopedSnapshot(
+					snapshotRequest.value,
+					authResult.scope,
+					memorySource,
+				);
+				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
+				if (!snapshotResult.ok) {
+					writeJson(res, snapshotResult.status, { error: snapshotResult.error });
+					return;
+				}
+				writeJson(res, 200, snapshotResult.value);
+				return;
+			}
+
+			// SECURITY: Quarantine and promote are TELEGRAM-ONLY endpoints
+			// These enable the consent-based idea bridge for social posting
+			if (req.url === "/v1/memory.quarantine") {
+				// Hard reject non-telegram scopes (defense-in-depth, also checked in handler)
+				if (authResult.scope !== "telegram") {
+					logger.warn(
+						{ scope: authResult.scope },
+						"rejected /v1/memory.quarantine from social scope",
+					);
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				const quarantineResult = handleMemoryQuarantine(
+					{
+						id: (parsed as { id?: string }).id ?? "",
+						content: (parsed as { content?: string }).content ?? "",
+						chatId: (parsed as { chatId?: string }).chatId,
+					},
+					{ source: memorySource, userId },
+				);
+				if (!quarantineResult.ok) {
+					writeJson(res, quarantineResult.status, { error: quarantineResult.error });
+					return;
+				}
+				writeJson(res, 200, quarantineResult.value);
+				return;
+			}
 
 			if (req.url === "/v1/image.generate") {
 				if (!parsed.prompt || typeof parsed.prompt !== "string") {
@@ -603,6 +1049,79 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					language: result.language,
 					durationSeconds: result.durationSeconds,
 				});
+				return;
+			}
+
+			if (req.url === "/v1/summarize") {
+				const typed = parsed as SummarizeRequest;
+				if (!typed.url || typeof typed.url !== "string") {
+					writeJson(res, 400, { error: "Missing url." });
+					return;
+				}
+				if (typed.url.length > 2048) {
+					writeJson(res, 413, { error: "URL too long." });
+					return;
+				}
+
+				// Validate URL format
+				let parsedUrl: URL;
+				try {
+					parsedUrl = new URL(typed.url);
+				} catch {
+					writeJson(res, 400, { error: "Invalid URL." });
+					return;
+				}
+				if (!parsedUrl.protocol.startsWith("http")) {
+					writeJson(res, 400, { error: "Only HTTP(S) URLs are supported." });
+					return;
+				}
+
+				// Block private/metadata IPs via DNS resolution (SSRF protection)
+				const hostname = parsedUrl.hostname;
+				const resolvedIPs = await cachedDNSLookup(hostname);
+				if (resolvedIPs) {
+					for (const ip of resolvedIPs) {
+						if (isNonOverridableBlock(ip) || isPrivateIP(ip)) {
+							writeJson(res, 403, { error: "Private/internal URLs are not allowed." });
+							return;
+						}
+					}
+				}
+
+				// Rate limit
+				const rateLimiter = getMultimediaRateLimiter();
+				const config = loadConfig();
+				const rateConfig = {
+					maxPerHourPerUser: config.summarize?.maxPerHourPerUser ?? 30,
+					maxPerDayPerUser: config.summarize?.maxPerDayPerUser ?? 100,
+				};
+				const limitResult = rateLimiter.checkLimit("summarize", rateLimitUserId, rateConfig);
+				if (!limitResult.allowed) {
+					writeJson(res, 429, { error: limitResult.reason ?? "Rate limited." });
+					return;
+				}
+
+				// Clamp user-controlled values against config caps
+				const configMaxChars = config.summarize?.maxCharacters ?? 8000;
+				const configTimeoutMs = config.summarize?.timeoutMs ?? 30_000;
+				const maxCharacters = typed.maxCharacters
+					? Math.min(Math.max(1, typed.maxCharacters), configMaxChars * 4)
+					: configMaxChars;
+				const timeoutMs = typed.timeoutMs
+					? Math.min(Math.max(1000, typed.timeoutMs), configTimeoutMs * 4)
+					: configTimeoutMs;
+
+				const result = await summarizeUrl(typed.url, {
+					maxCharacters,
+					timeoutMs,
+					format: typed.format,
+					userId,
+					skipRateLimit: true,
+				});
+
+				rateLimiter.consume("summarize", rateLimitUserId);
+
+				writeJson(res, 200, result);
 				return;
 			}
 

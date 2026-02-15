@@ -78,12 +78,20 @@ for containers that need initial root privileges.
    ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-4. **Build and start**:
+4. **Create config files** (see [Config Split](#config-split) below):
+   ```bash
+   # Policy config (mounted to all containers)
+   echo '{}' > telclaude.json
+   # Private config (relay-only — optional, for allowedChats/permissions)
+   echo '{}' > telclaude-private.json
+   ```
+
+5. **Build and start**:
    ```powershell
    docker compose up -d --build
    ```
 
-5. **Check logs**:
+6. **Check logs**:
    ```powershell
    docker compose logs -f
    ```
@@ -96,19 +104,45 @@ for containers that need initial root privileges.
 ./setup-volumes.sh
 ```
 
-This creates `telclaude-claude` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+This creates `telclaude-claude-auth` and `telclaude-totp-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+The skills volume (`telclaude-claude-skills`) is non-external and will be created automatically.
 
 **Note:** `docker compose up` will fail if these volumes don't exist. Always run `setup-volumes.sh` first.
 
 ### First-Time Authentication
 
-If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude:
+If you didn't set `ANTHROPIC_API_KEY`, authenticate Claude (relay container):
 
 ```powershell
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
-This stores credentials in the shared `telclaude-claude` volume (usable by both containers).
+This stores credentials in the relay-only `telclaude-claude-auth` volume. Agents use the relay proxy, so you do **not** need to run `claude login` in the agent containers.
+
+### Migration: Old Claude Profile Volume
+
+If you previously used a single `telclaude-claude` or `telclaude-claude-private` volume, you have two options:
+
+**Option A: Re-login (simplest)**
+```bash
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
+```
+
+**Option B: Copy credentials from old volume**
+```bash
+docker volume create telclaude-claude-auth
+# Use your old volume name (e.g., telclaude-claude or telclaude-claude-private)
+docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-auth:/new \
+  alpine cp -a /old/.credentials.json /new/ 2>/dev/null || true
+```
+
+If you had custom skills in the old volume, copy them into the new shared skills volume:
+```bash
+docker volume create telclaude-claude-skills
+# Use your old volume name (e.g., telclaude-claude or telclaude-claude-private)
+docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-skills:/new \
+  alpine cp -a /old/skills /new/ 2>/dev/null || true
+```
 
 ## Volume Safety
 
@@ -118,10 +152,12 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 
 | Volume | Contains | If Deleted |
 |--------|----------|------------|
-| `telclaude-claude` | Claude OAuth tokens | Must re-run `claude login` |
+| `telclaude-claude-auth` | Claude OAuth tokens | Must re-run `claude login` |
 | `telclaude-totp-data` | Encrypted 2FA secrets | **UNRECOVERABLE** - must re-enroll all 2FA |
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
+
+**Skills volume warning:** `telclaude-claude-skills` is **not** external, so `docker compose down -v` **will delete it**. Reinstalling built-in skills is automatic, but back up custom skills if you added any.
 
 ### Safe Operations
 
@@ -150,7 +186,7 @@ docker run --rm -v telclaude-totp-data:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/totp-backup-$(date +%Y%m%d).tar.gz -C /data .
 
 # Backup Claude credentials
-docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
+docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
   alpine tar czf /backup/claude-backup-$(date +%Y%m%d).tar.gz -C /data .
 ```
 
@@ -162,8 +198,11 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 |----------|------|---------|-----------|
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions, secrets | Named volume |
-| `telclaude` + `telclaude-agent` | `/home/node/.claude` | Claude credentials | Named volume |
+| `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | Named volume |
+| `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skills` | Claude skills profile (skills/plugins, no secrets) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
+| `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
+| `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
 
 ### Environment Variables
 
@@ -172,47 +211,55 @@ docker run --rm -v telclaude-claude:/data:ro -v $(pwd):/backup \
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
 | `WORKSPACE_PATH` | Yes | Host path to mount as /workspace |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` |
+| `TELCLAUDE_AUTH_DIR` | No | Relay-only path for Claude OAuth tokens (default `/home/telclaude-auth`) |
 | `TELCLAUDE_LOG_LEVEL` | No | `debug`, `info`, `warn`, `error` |
-| `TELCLAUDE_INTERNAL_RPC_SECRET` | Yes | Shared secret for relay ↔ agent HMAC auth |
+| `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Agent private key — signs agent→relay requests. Generate with `telclaude keygen telegram` |
+| `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
+| `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
+| `TELEGRAM_RPC_RELAY_PUBLIC_KEY` | Yes | Relay public key — agent verifies relay→agent requests |
+| `SOCIAL_RPC_AGENT_PRIVATE_KEY` | Yes (if social enabled) | Agent private key for social agent bidirectional auth |
+| `SOCIAL_RPC_AGENT_PUBLIC_KEY` | Yes (if social enabled) | Agent public key — relay verifies social agent requests |
+| `SOCIAL_RPC_RELAY_PRIVATE_KEY` | Yes (if social enabled) | Relay private key for social agent requests |
+| `SOCIAL_RPC_RELAY_PUBLIC_KEY` | Yes (if social enabled) | Relay public key — social agent verifies relay requests |
+| `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents) |
 | `TELCLAUDE_FIREWALL` | **Yes** | **Must be `1`** for network isolation (containers will refuse to start without it) |
-| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent`) |
+| `TELCLAUDE_INTERNAL_HOSTS` | No | Comma-separated internal hostnames to allow through the firewall (defaults to `telclaude,telclaude-agent,agent-social`) |
 | `TELCLAUDE_FIREWALL_RETRY_COUNT` | No | Internal host DNS retry count (defaults to 10) |
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-Use the same `TELCLAUDE_INTERNAL_RPC_SECRET` value in both relay and agent containers.
+For each agent scope, generate key pairs with `telclaude keygen telegram` / `telclaude keygen social`. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`. `ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
 
-### Custom Configuration
+### Config Split
 
-**Required:** Create `telclaude.json` before starting:
+Telclaude uses a two-file config split to keep secrets out of agent containers:
 
-```bash
-cp telclaude.json.example telclaude.json
-# Edit telclaude.json with your chat ID and settings
-```
+| File | Mounted to | Contents |
+|------|-----------|----------|
+| `telclaude.json` | All containers | Policy: providers, network rules, rate limits, SDK config |
+| `telclaude-private.json` | Relay only | Relay-only: allowedChats, permissions, deprecated secret fields |
 
-The config file is mounted into both containers:
+The relay deep-merges private on top of policy (`TELCLAUDE_PRIVATE_CONFIG` env var). Agents only read the policy file.
 
-```yaml
-volumes:
-  - ./telclaude.json:/data/telclaude.json:ro
-```
-
-Minimal `telclaude.json`:
+**Policy config** (`telclaude.json` — safe for all containers):
 ```json
 {
-  "telegram": {
-    "allowedChats": [123456789]
-  },
-  "security": {
-    "permissions": {
-      "defaultTier": "READ_ONLY"
-    }
-  }
+  "providers": [{"id": "svc", "baseUrl": "http://localhost:3001", "services": ["api"]}],
+  "security": {"profile": "strict"}
 }
 ```
 
-> **Important:** `allowedChats` is required. The container ignores all chats that are not explicitly listed, even for the first admin claim. Add your own chat ID (e.g., from `@userinfobot`) before running `docker compose up` or the bot will not respond.
+**Private config** (`telclaude-private.json` — relay only):
+```json
+{
+  "telegram": {"allowedChats": [123456789]},
+  "security": {"permissions": {"defaultTier": "READ_ONLY", "users": {"tg:123456789": {"tier": "FULL_ACCESS"}}}}
+}
+```
+
+> **Important:** `allowedChats` is required (in either file). The container ignores all chats not listed. Add your chat ID before running `docker compose up`.
+
+> **Single-file mode:** For simple setups, put everything in `telclaude.json` and create an empty `telclaude-private.json` (`{}`). The relay works fine without `TELCLAUDE_PRIVATE_CONFIG`.
 
 ### External Providers (Sidecars)
 
@@ -276,7 +323,7 @@ docker compose exec telclaude-agent bash
 docker compose exec telclaude telclaude doctor
 
 # Claude login (if not using API key)
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 
 # View volumes
 docker volume ls | grep telclaude
@@ -348,10 +395,10 @@ wsl ls /mnt/c/Users/YourName/Projects
 
 ```powershell
 # Check Claude version
-docker compose exec telclaude-agent claude --version
+docker compose exec telclaude claude --version
 
 # Re-authenticate
-docker compose exec telclaude-agent claude login
+docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login
 ```
 
 ### Reset session data (keeps secrets)
@@ -364,7 +411,7 @@ docker compose down -v
 docker compose up -d --build
 ```
 
-**Note:** External volumes (`telclaude-claude`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
+**Note:** External volumes (`telclaude-claude-auth`, `telclaude-totp-data`) are protected and will NOT be deleted by `docker compose down -v`.
 
 ## TOTP Daemon (2FA Support)
 

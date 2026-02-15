@@ -14,7 +14,7 @@ import path from "node:path";
 
 import chalk from "chalk";
 import type { Command } from "commander";
-
+import { executeRemoteQuery } from "../agent/client.js";
 import type { PermissionTier } from "../config/config.js";
 import { getMediaOutboxDirSync } from "../media/store.js";
 import { executeQueryStream } from "../sdk/client.js";
@@ -26,6 +26,7 @@ type IntegrationTestOptions = {
 	env?: boolean;
 	network?: boolean;
 	voice?: boolean;
+	agents?: boolean;
 	all?: boolean;
 	verbose?: boolean;
 	timeout?: string;
@@ -40,6 +41,7 @@ export function registerIntegrationTestCommand(program: Command): void {
 		.option("--env", "Test environment variable passing through SDK")
 		.option("--network", "Test sandbox network proxy configuration")
 		.option("--voice", "Test voice message response (TTS skill)")
+		.option("--agents", "Test direct agent transport (real agent, no Telegram)")
 		.option("--all", "Run all integration tests")
 		.option("-v, --verbose", "Show detailed output")
 		.option("--timeout <ms>", "Query timeout in ms", "120000")
@@ -48,12 +50,14 @@ export function registerIntegrationTestCommand(program: Command): void {
 			const timeoutMs = Number.parseInt(opts.timeout ?? "120000", 10);
 
 			const runAll =
-				opts.all || (!opts.image && !opts.echo && !opts.env && !opts.network && !opts.voice);
+				opts.all ||
+				(!opts.image && !opts.echo && !opts.env && !opts.network && !opts.voice && !opts.agents);
 			const runImage = opts.image || runAll;
 			const runEcho = opts.echo || runAll;
 			const runEnv = opts.env || runAll;
 			const runNetwork = opts.network || runAll;
 			const runVoice = opts.voice || runAll;
+			const runAgents = opts.agents || runAll;
 
 			console.log(chalk.bold("\n🔬 Telclaude Integration Test\n"));
 			console.log("This tests the full SDK path (not just sandbox config).\n");
@@ -131,6 +135,23 @@ export function registerIntegrationTestCommand(program: Command): void {
 				console.log();
 			}
 
+			if (runAgents) {
+				console.log(chalk.bold("── Agent Transport Test (No Telegram) ──"));
+				const agentUrl = process.env.TELCLAUDE_AGENT_URL;
+				if (!agentUrl) {
+					console.log(chalk.yellow("  ○ Skipped (TELCLAUDE_AGENT_URL not configured)"));
+					results.push({
+						name: "Agent transport (no Telegram)",
+						passed: true,
+						message: "Skipped (TELCLAUDE_AGENT_URL not configured)",
+					});
+				} else {
+					const result = await testAgentTransport(verbose, timeoutMs, agentUrl);
+					results.push(result);
+				}
+				console.log();
+			}
+
 			// Summary
 			const passed = results.filter((r) => r.passed).length;
 			const failed = results.filter((r) => !r.passed).length;
@@ -198,6 +219,69 @@ async function runSdkQuery(
 	}
 
 	return { output, success: querySuccess, error };
+}
+
+async function testAgentTransport(
+	verbose: boolean,
+	timeoutMs: number,
+	agentUrl: string,
+): Promise<{ name: string; passed: boolean; message: string; duration?: number }> {
+	const name = "Agent transport (no Telegram)";
+	console.log(`  Targeting: ${agentUrl}`);
+	try {
+		const startTime = Date.now();
+		let response = "";
+		let querySuccess = false;
+		let queryError: string | undefined;
+		const expected = "AGENT_TRANSPORT_OK";
+		const stream = executeRemoteQuery(`Reply only with this exact text: ${expected}`, {
+			agentUrl,
+			scope: "telegram",
+			cwd: process.cwd(),
+			tier: "READ_ONLY",
+			poolKey: "integration-test:agent",
+			userId: "integration:agent",
+			enableSkills: false,
+			timeoutMs,
+		});
+
+		for await (const chunk of stream) {
+			if (chunk.type === "text") {
+				response += chunk.content;
+				if (verbose) {
+					process.stdout.write(chalk.gray(chunk.content));
+				}
+			} else if (chunk.type === "done") {
+				querySuccess = chunk.result.success;
+				queryError = chunk.result.error;
+				if (chunk.result.response) {
+					response = chunk.result.response;
+				}
+			}
+		}
+
+		const duration = Date.now() - startTime;
+		const normalized = response.toUpperCase();
+		const expectedNormalized = expected.toUpperCase();
+		if (querySuccess && normalized.includes(expectedNormalized)) {
+			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
+			return { name, passed: true, message: "OK", duration };
+		}
+		if (queryError) {
+			console.log(chalk.red(`  ✗ ${name}: ${queryError}`));
+			return { name, passed: false, message: queryError };
+		}
+
+		console.log(chalk.red(`  ✗ ${name}: expected ${expected} response`));
+		if (verbose) {
+			console.log(chalk.gray(`    Response: ${response.slice(0, 300)}`));
+		}
+		return { name, passed: false, message: `Unexpected output (expected ${expected})` };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		console.log(chalk.red(`  ✗ ${name}: ${message}`));
+		return { name, passed: false, message };
+	}
 }
 
 function escapeRegExp(input: string): string {

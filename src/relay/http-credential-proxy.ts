@@ -250,12 +250,14 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 // Upstream request timeout (60 seconds)
 const UPSTREAM_TIMEOUT_MS = 60 * 1000;
 
-// Headers that should not be forwarded between client and upstream
-const HOP_BY_HOP_HEADERS = new Set([
+// Headers that should not be forwarded between client and upstream.
+// Includes true hop-by-hop headers plus content-encoding (stripped because
+// fetch() auto-decompresses, so the body we stream is already decoded).
+const EXCLUDED_RESPONSE_HEADERS = new Set([
 	"transfer-encoding",
 	"connection",
 	"keep-alive",
-	"content-encoding",
+	"content-encoding", // Not hop-by-hop, but body is auto-decoded by fetch()
 	"proxy-authenticate",
 	"proxy-authorization",
 	"te",
@@ -383,11 +385,15 @@ async function proxyRequest(
 			);
 		}
 
-		// Forward response headers, excluding hop-by-hop headers
+		// Forward response headers, excluding hop-by-hop + decoded headers.
+		// If upstream used content-encoding, also strip content-length since
+		// fetch() auto-decompresses and the original compressed length is wrong.
+		const hadContentEncoding = upstreamResponse.headers.has("content-encoding");
 		upstreamResponse.headers.forEach((value, key) => {
-			if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
-				res.setHeader(key, value);
-			}
+			const lower = key.toLowerCase();
+			if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
+			if (hadContentEncoding && lower === "content-length") return;
+			res.setHeader(key, value);
 		});
 
 		res.writeHead(upstreamResponse.status);
@@ -498,25 +504,39 @@ export function startHttpCredentialProxy(
 
 		// ══════════════════════════════════════════════════════════════════════════
 		// Session Token Validation
-		// SECURITY: All proxy requests require valid session token from relay
+		// SECURITY: All proxy requests require valid session token from relay,
+		// EXCEPT relay-local requests (127.0.0.1 / ::1) which are trusted.
 		// ══════════════════════════════════════════════════════════════════════════
-		const rawSessionHeader = req.headers["x-telclaude-session"];
-		// Normalize: header can be string or string[], take first and trim
-		const sessionHeader =
-			(Array.isArray(rawSessionHeader) ? rawSessionHeader[0] : rawSessionHeader)?.trim() || "";
-		if (!sessionHeader) {
-			logger.warn({ url }, "http proxy request missing session token");
-			res.writeHead(401, { "Content-Type": "text/plain" });
-			res.end("Unauthorized: missing session token");
-			return;
-		}
+		const remoteAddr = req.socket.remoteAddress ?? "";
+		const isLocalhost =
+			remoteAddr === "127.0.0.1" || remoteAddr === "::1" || remoteAddr === "::ffff:127.0.0.1";
 
-		const session = validateSessionToken(sessionHeader);
-		if (!session) {
-			logger.warn({ url }, "http proxy request with invalid session token");
-			res.writeHead(401, { "Content-Type": "text/plain" });
-			res.end("Unauthorized: invalid session token");
-			return;
+		let session: SessionTokenPayload;
+
+		if (isLocalhost) {
+			// Relay calling its own proxy (e.g. social service API calls) — trusted
+			const now = Date.now();
+			session = { sessionId: "relay-local", createdAt: now, expiresAt: now + 3600_000 };
+		} else {
+			const rawSessionHeader = req.headers["x-telclaude-session"];
+			// Normalize: header can be string or string[], take first and trim
+			const sessionHeader =
+				(Array.isArray(rawSessionHeader) ? rawSessionHeader[0] : rawSessionHeader)?.trim() || "";
+			if (!sessionHeader) {
+				logger.warn({ url }, "http proxy request missing session token");
+				res.writeHead(401, { "Content-Type": "text/plain" });
+				res.end("Unauthorized: missing session token");
+				return;
+			}
+
+			const validated = validateSessionToken(sessionHeader);
+			if (!validated) {
+				logger.warn({ url }, "http proxy request with invalid session token");
+				res.writeHead(401, { "Content-Type": "text/plain" });
+				res.end("Unauthorized: invalid session token");
+				return;
+			}
+			session = validated;
 		}
 
 		// Parse proxy URL

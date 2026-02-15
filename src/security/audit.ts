@@ -14,7 +14,12 @@ const DEFAULT_FLAGGED_HISTORY_LIMIT = 500;
 const logger = getChildLogger({ module: "audit" });
 
 /** Valid permission tiers for validation */
-const VALID_PERMISSION_TIERS: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS"];
+const VALID_PERMISSION_TIERS: PermissionTier[] = [
+	"READ_ONLY",
+	"WRITE_LOCAL",
+	"FULL_ACCESS",
+	"SOCIAL",
+];
 
 /** Valid outcomes for validation */
 const VALID_OUTCOMES = ["success", "blocked", "timeout", "error", "rate_limited"] as const;

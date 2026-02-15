@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { getChildLogger } from "../logging.js";
+import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "secrets-keychain" });
 
@@ -216,6 +217,112 @@ class EncryptedFileProvider implements SecretsStorageProvider {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// No-Op Provider (for vault-only mode)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class NoopProvider implements SecretsStorageProvider {
+	readonly name = "noop";
+	private readonly initError?: unknown;
+
+	constructor(initError?: unknown) {
+		this.initError = initError;
+	}
+
+	private getInitErrorSuffix(): string {
+		if (!this.initError) return "";
+		const msg = this.initError instanceof Error ? this.initError.message : String(this.initError);
+		return msg ? ` (fallback init error: ${msg})` : "";
+	}
+
+	async store(_key: string, _value: string): Promise<void> {
+		throw new Error(
+			"No fallback secrets provider configured. Ensure vault is running/accessible" +
+				this.getInitErrorSuffix(),
+		);
+	}
+
+	async get(_key: string): Promise<string | null> {
+		return null;
+	}
+
+	async delete(_key: string): Promise<boolean> {
+		return false;
+	}
+
+	async has(_key: string): Promise<boolean> {
+		return false;
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Vault Provider (delegates to vault daemon when available)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class VaultProvider implements SecretsStorageProvider {
+	readonly name = "vault";
+	private fallback: SecretsStorageProvider;
+
+	constructor(fallback: SecretsStorageProvider) {
+		this.fallback = fallback;
+		logger.debug({ fallback: fallback.name }, "vault provider initialized with fallback");
+	}
+
+	async store(key: string, value: string): Promise<void> {
+		try {
+			const client = getVaultClient();
+			await client.store({
+				protocol: "secret",
+				target: key,
+				credential: { type: "opaque", value },
+				label: key,
+			});
+			logger.debug({ key, provider: this.name }, "stored secret in vault");
+			return;
+		} catch (err) {
+			logger.warn({ key, error: String(err) }, "vault store failed, using fallback");
+		}
+		await this.fallback.store(key, value);
+	}
+
+	async get(key: string): Promise<string | null> {
+		try {
+			const client = getVaultClient();
+			const response = await client.getSecret(key, { timeout: 5000 });
+			if (response.ok && response.type === "get-secret") {
+				return response.value;
+			}
+		} catch (err) {
+			logger.debug({ key, error: String(err) }, "vault get failed, trying fallback");
+		}
+		return this.fallback.get(key);
+	}
+
+	async delete(key: string): Promise<boolean> {
+		let vaultDeleted = false;
+		try {
+			const client = getVaultClient();
+			const response = await client.delete("secret", key);
+			vaultDeleted = response.deleted;
+		} catch (err) {
+			logger.debug({ key, error: String(err) }, "vault delete failed");
+		}
+		const fallbackDeleted = await this.fallback.delete(key);
+		return vaultDeleted || fallbackDeleted;
+	}
+
+	async has(key: string): Promise<boolean> {
+		try {
+			const client = getVaultClient();
+			const response = await client.getSecret(key, { timeout: 5000 });
+			if (response.ok) return true;
+		} catch {
+			// Fall through
+		}
+		return this.fallback.has(key);
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Provider Factory
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -231,37 +338,42 @@ let cachedProvider: SecretsStorageProvider | null = null;
 async function getStorageProvider(): Promise<SecretsStorageProvider> {
 	if (cachedProvider) return cachedProvider;
 
-	const backend = process.env.SECRETS_STORAGE_BACKEND?.toLowerCase();
-	const encryptionKey = process.env.SECRETS_ENCRYPTION_KEY;
+	let baseProvider: SecretsStorageProvider | null = null;
+	let baseProviderError: unknown;
 
-	let useFile = false;
+	const buildBaseProvider = async (): Promise<SecretsStorageProvider> => {
+		const backend = process.env.SECRETS_STORAGE_BACKEND?.toLowerCase();
+		const encryptionKey = process.env.SECRETS_ENCRYPTION_KEY;
 
-	if (backend === "file") {
-		useFile = true;
-	} else if (backend === "keytar") {
-		useFile = false;
-	} else if (encryptionKey) {
-		useFile = true;
-	}
+		let useFile = false;
 
-	if (useFile) {
-		if (!encryptionKey) {
-			throw new Error(
-				"SECRETS_ENCRYPTION_KEY environment variable is required for file-based storage. " +
-					"Generate a strong key: openssl rand -base64 32",
-			);
+		if (backend === "file") {
+			useFile = true;
+		} else if (backend === "keytar") {
+			useFile = false;
+		} else if (encryptionKey) {
+			useFile = true;
 		}
 
-		const dataDir =
-			process.env.TELCLAUDE_DATA_DIR || join(process.env.HOME || "/tmp", ".telclaude");
-		const filePath = process.env.SECRETS_FILE || join(dataDir, "secrets.json");
+		if (useFile) {
+			if (!encryptionKey) {
+				throw new Error(
+					"SECRETS_ENCRYPTION_KEY environment variable is required for file-based storage. " +
+						"Generate a strong key: openssl rand -base64 32",
+				);
+			}
 
-		cachedProvider = new EncryptedFileProvider(filePath, encryptionKey);
-	} else {
+			const dataDir =
+				process.env.TELCLAUDE_DATA_DIR || join(process.env.HOME || "/tmp", ".telclaude");
+			const filePath = process.env.SECRETS_FILE || join(dataDir, "secrets.json");
+
+			return new EncryptedFileProvider(filePath, encryptionKey);
+		}
+
 		try {
 			const provider = new KeytarProvider();
 			await provider.has("__test__");
-			cachedProvider = provider;
+			return provider;
 		} catch (err) {
 			logger.warn(
 				{ error: String(err) },
@@ -279,10 +391,41 @@ async function getStorageProvider(): Promise<SecretsStorageProvider> {
 				process.env.TELCLAUDE_DATA_DIR || join(process.env.HOME || "/tmp", ".telclaude");
 			const filePath = process.env.SECRETS_FILE || join(dataDir, "secrets.json");
 
-			cachedProvider = new EncryptedFileProvider(filePath, encryptionKey);
+			return new EncryptedFileProvider(filePath, encryptionKey);
 		}
+	};
+
+	try {
+		baseProvider = await buildBaseProvider();
+	} catch (err) {
+		baseProviderError = err;
 	}
 
+	// Wrap with vault provider if vault is available. If we can't initialize a base provider
+	// (common in Docker where keytar is unavailable and SECRETS_ENCRYPTION_KEY is unset),
+	// run in vault-only mode.
+	try {
+		if (await isVaultAvailable({ timeout: 1000 })) {
+			const fallback = baseProvider ?? new NoopProvider(baseProviderError);
+			cachedProvider = new VaultProvider(fallback);
+			logger.info(
+				{ provider: cachedProvider.name, fallback: fallback.name },
+				"secrets storage provider initialized with vault",
+			);
+			return cachedProvider;
+		}
+	} catch {
+		// Vault not available, use base provider
+	}
+
+	if (!baseProvider) {
+		throw (
+			baseProviderError ??
+			new Error("Failed to initialize secrets storage provider (and vault is unavailable)")
+		);
+	}
+
+	cachedProvider = baseProvider;
 	logger.info({ provider: cachedProvider.name }, "secrets storage provider initialized");
 	return cachedProvider;
 }
@@ -296,6 +439,7 @@ export const SECRET_KEYS = {
 	OPENAI_API_KEY: "openai-api-key",
 	GIT_CREDENTIALS: "git-credentials",
 	GITHUB_APP: "github-app",
+	MOLTBOOK_API_KEY: "moltbook-api-key",
 } as const;
 
 /** Git credentials structure stored in secrets */

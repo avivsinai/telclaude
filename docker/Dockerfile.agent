@@ -1,0 +1,29 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Telclaude Agent Image
+#
+# Extends telclaude:latest with Chromium (Playwright) and agent-browser CLI.
+# Used for: telclaude-agent (private persona), agent-social (social persona).
+# Relay, TOTP, and vault containers use the lighter telclaude:latest instead.
+#
+# Build order:
+#   1. docker build -t telclaude:latest -f docker/Dockerfile .
+#   2. docker build -t telclaude-agent:latest -f docker/Dockerfile.agent .
+# ═══════════════════════════════════════════════════════════════════════════════
+
+FROM telclaude:latest
+
+USER root
+
+# Install Playwright Chromium and its system dependencies.
+# --with-deps pulls libnss3, libatk1.0, libcups2, etc.
+# Uses npx to avoid adding playwright as a project dependency.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --with-deps chromium \
+    && chown -R node:node /ms-playwright
+
+# Install agent-browser CLI globally for headless browser automation.
+# Package: https://github.com/vercel-labs/agent-browser
+RUN npm install -g agent-browser@latest
+
+# Return to non-root user
+USER node
