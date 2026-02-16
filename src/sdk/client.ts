@@ -873,6 +873,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (process.env.TELCLAUDE_SESSION_TOKEN) {
 			sandboxEnv.TELCLAUDE_SESSION_TOKEN = process.env.TELCLAUDE_SESSION_TOKEN;
 		}
+		// Credential proxy URL — agents route OpenAI/media API calls through relay proxy
+		if (process.env.TELCLAUDE_CREDENTIAL_PROXY_URL) {
+			sandboxEnv.TELCLAUDE_CREDENTIAL_PROXY_URL = process.env.TELCLAUDE_CREDENTIAL_PROXY_URL;
+		}
 		// Media directories for generated content
 		if (process.env.TELCLAUDE_MEDIA_INBOX_DIR) {
 			sandboxEnv.TELCLAUDE_MEDIA_INBOX_DIR = process.env.TELCLAUDE_MEDIA_INBOX_DIR;
