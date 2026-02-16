@@ -148,6 +148,7 @@ export class StreamingResponse {
 	private lastSentContent = "";
 	private pendingUpdate: NodeJS.Timeout | null = null;
 	private isFinished = false;
+	private hasSucceeded = false;
 	private updatePromise: Promise<void> | null = null;
 	private typingInterval: NodeJS.Timeout | null = null;
 	private consecutiveErrors = 0;
@@ -428,6 +429,7 @@ export class StreamingResponse {
 	 */
 	async finish(options?: { keyboard?: InlineKeyboard | null }): Promise<Message | null> {
 		this.isFinished = true;
+		this.hasSucceeded = true;
 		this.stopTypingIndicator();
 
 		// Cancel any pending update
@@ -591,6 +593,16 @@ export class StreamingResponse {
 		}
 
 		if (!this.messageId) {
+			return;
+		}
+
+		// Don't overwrite a successful response — if finish() already sent
+		// the final message, a late timeout/error should not replace it.
+		if (this.hasSucceeded) {
+			logger.info(
+				{ chatId: this.chatId, messageId: this.messageId },
+				"abort called after successful finish, preserving response",
+			);
 			return;
 		}
 

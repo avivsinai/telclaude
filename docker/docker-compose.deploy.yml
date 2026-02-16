@@ -57,6 +57,10 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
+      # Secrets encryption — enables keychain fallback (decrypts secrets.json for vault import)
+      # Defaults to TOTP key when SECRETS_ENCRYPTION_KEY is not explicitly set
+      - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}
+
       # Telclaude configuration (policy + private overlay)
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
@@ -197,6 +201,9 @@ services:
       - TELCLAUDE_GIT_PROXY_URL=http://telclaude:8791
       - TELCLAUDE_GIT_PROXY_SECRET=${TELCLAUDE_GIT_PROXY_SECRET:-}
 
+      # HTTP credential proxy — agents route OpenAI/media API calls through relay
+      - TELCLAUDE_CREDENTIAL_PROXY_URL=http://telclaude:8792
+
       # Media paths
       - TELCLAUDE_MEDIA_INBOX_DIR=/media/inbox
       - TELCLAUDE_MEDIA_OUTBOX_DIR=/media/outbox
@@ -288,6 +295,7 @@ services:
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
       - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
       - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
+      - TELCLAUDE_CREDENTIAL_PROXY_URL=http://telclaude:8792
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1

@@ -6,6 +6,7 @@
  * 1. Keychain (via `telclaude setup-openai`)
  * 2. OPENAI_API_KEY environment variable
  * 3. openai.apiKey in config file
+ * 4. Credential proxy (TELCLAUDE_CREDENTIAL_PROXY_URL — no direct key needed)
  *
  * Proxy support:
  * When HTTP_PROXY or HTTPS_PROXY is set (e.g., inside sandbox), the client
@@ -43,6 +44,7 @@ function redactProxyCredentials(proxyUrl: string): string {
 let client: OpenAI | null = null;
 let cachedApiKey: string | null = null;
 let keySourceChecked = false;
+let usingCredentialProxy = false;
 
 /**
  * Get the OpenAI API key from keychain, env, or config.
@@ -78,6 +80,15 @@ async function getApiKey(): Promise<string | null> {
 		cachedApiKey = config.openai.apiKey;
 		keySourceChecked = true;
 		logger.debug("using OpenAI API key from config file");
+		return cachedApiKey;
+	}
+
+	// 4. Credential proxy mode (agent → relay proxy, no direct key needed)
+	if (process.env.TELCLAUDE_CREDENTIAL_PROXY_URL) {
+		usingCredentialProxy = true;
+		cachedApiKey = "credential-proxy";
+		keySourceChecked = true;
+		logger.debug("using credential proxy for OpenAI (no direct API key needed)");
 		return cachedApiKey;
 	}
 
@@ -122,26 +133,50 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 	}
 
 	const config = loadConfig();
-	const baseURL = config.openai?.baseUrl;
+	const credentialProxyUrl = process.env.TELCLAUDE_CREDENTIAL_PROXY_URL;
+	const isCredentialProxy = !!credentialProxyUrl && usingCredentialProxy;
 
-	// Check if we need to use a proxy (sandbox sets HTTP_PROXY/HTTPS_PROXY)
-	const proxyUrl = getProxyUrl();
+	// Determine base URL and fetch configuration
+	let baseURL: string | undefined;
 	let fetchOptions: OpenAI.RequestOptions["fetchOptions"] | undefined;
+	let customFetch: typeof globalThis.fetch | undefined;
 
-	if (proxyUrl) {
-		// Node's native fetch doesn't respect HTTP_PROXY/HTTPS_PROXY env vars.
-		// We must explicitly configure undici's ProxyAgent to route through the proxy.
-		const proxyAgent = new ProxyAgent(proxyUrl);
-		fetchOptions = {
-			dispatcher: proxyAgent as Dispatcher,
+	if (isCredentialProxy) {
+		// Credential proxy mode: route through relay's HTTP credential proxy.
+		// Proxy looks up real credentials from vault and injects auth headers.
+		// Agent never sees raw API keys.
+		baseURL = `${credentialProxyUrl.replace(/\/+$/, "")}/api.openai.com/v1`;
+
+		// Custom fetch that injects session token for proxy auth.
+		// Session token is set per-query by the agent server in process.env.
+		customFetch = async (url, init) => {
+			const token = process.env.TELCLAUDE_SESSION_TOKEN;
+			const headers = new Headers(init?.headers);
+			if (token) {
+				headers.set("X-Telclaude-Session", token);
+			}
+			return globalThis.fetch(url, { ...init, headers });
 		};
-		// Redact credentials from proxy URL for logging (e.g., http://user:pass@host:port -> http://[redacted]@host:port)
-		const redactedProxyUrl = redactProxyCredentials(proxyUrl);
-		logger.info({ proxyUrl: redactedProxyUrl }, "OpenAI client using proxy agent");
-		// Also log to stderr for debugging in sandbox
-		console.error(`[openai-client] Using proxy: ${redactedProxyUrl}`);
+		logger.info({ baseURL }, "OpenAI client using credential proxy");
+		console.error(`[openai-client] Using credential proxy: ${baseURL}`);
 	} else {
-		console.error("[openai-client] No proxy detected, direct connection");
+		baseURL = config.openai?.baseUrl;
+
+		// Check if we need to use a proxy (sandbox sets HTTP_PROXY/HTTPS_PROXY)
+		const proxyUrl = getProxyUrl();
+		if (proxyUrl) {
+			// Node's native fetch doesn't respect HTTP_PROXY/HTTPS_PROXY env vars.
+			// We must explicitly configure undici's ProxyAgent to route through the proxy.
+			const proxyAgent = new ProxyAgent(proxyUrl);
+			fetchOptions = {
+				dispatcher: proxyAgent as Dispatcher,
+			};
+			const redactedProxyUrl = redactProxyCredentials(proxyUrl);
+			logger.info({ proxyUrl: redactedProxyUrl }, "OpenAI client using proxy agent");
+			console.error(`[openai-client] Using proxy: ${redactedProxyUrl}`);
+		} else {
+			console.error("[openai-client] No proxy detected, direct connection");
+		}
 	}
 
 	client = new OpenAI({
@@ -150,9 +185,13 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 		timeout: 120_000, // 2 minute timeout for large files
 		maxRetries: 3,
 		fetchOptions,
+		...(customFetch && { fetch: customFetch }),
 	});
 
-	logger.debug({ hasCustomBaseUrl: !!baseURL, hasProxy: !!proxyUrl }, "OpenAI client initialized");
+	logger.debug(
+		{ hasCustomBaseUrl: !!baseURL, isCredentialProxy, hasProxy: !!fetchOptions },
+		"OpenAI client initialized",
+	);
 
 	return client;
 }
@@ -188,7 +227,11 @@ export function isOpenAIConfiguredSync(): boolean {
 
 	// Fallback: check env and config only (keychain not yet checked)
 	const config = loadConfig();
-	return !!(process.env.OPENAI_API_KEY ?? config.openai?.apiKey);
+	return !!(
+		process.env.OPENAI_API_KEY ??
+		config.openai?.apiKey ??
+		process.env.TELCLAUDE_CREDENTIAL_PROXY_URL
+	);
 }
 
 /**
@@ -198,6 +241,7 @@ export function isOpenAIConfiguredSync(): boolean {
 export function clearOpenAICache(): void {
 	cachedApiKey = null;
 	keySourceChecked = false;
+	usingCredentialProxy = false;
 	client = null;
 	logger.debug("OpenAI cache cleared");
 }
@@ -207,6 +251,8 @@ export function clearOpenAICache(): void {
  * Returns null if the key hasn't been initialized yet.
  */
 export function getCachedOpenAIKey(): string | null {
+	// Don't expose the proxy placeholder to sandbox env injection
+	if (usingCredentialProxy) return null;
 	return keySourceChecked ? cachedApiKey : null;
 }
 
@@ -228,6 +274,7 @@ export async function getOpenAIKey(): Promise<string | null> {
 	// Clear cache to force fresh read
 	cachedApiKey = null;
 	keySourceChecked = false;
+	usingCredentialProxy = false;
 	return getApiKey();
 }
 

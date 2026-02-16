@@ -506,6 +506,14 @@ function normalizePath(inputPath: string): string {
 function matchesSensitiveCredentialPath(inputPath: string): boolean {
 	const normalizedInput = normalizePath(inputPath);
 
+	// Exempt the Claude SDK's own temp directory (/tmp/claude-{uid}/).
+	// The SDK stores task output, session data, etc. there — blocking it
+	// breaks the Task tool which reads subagent output files.
+	const uid = process.getuid?.();
+	if (uid !== undefined && normalizedInput.startsWith(`/tmp/claude-${uid}/`)) {
+		return false;
+	}
+
 	for (const sensitivePath of SENSITIVE_READ_PATHS) {
 		const normalizedSensitive = normalizePath(sensitivePath);
 		// Check if the input path is under or equals the sensitive path
