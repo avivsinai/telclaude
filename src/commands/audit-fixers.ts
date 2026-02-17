@@ -399,10 +399,7 @@ function applyHookHardeningFixes(cwd: string): FixAction[] {
 
 			if (localSettings.disableAllHooks === true) {
 				delete localSettings.disableAllHooks;
-				atomicJsonWrite(
-					localSettingsFile,
-					`${JSON.stringify(localSettings, null, "\t")}\n`,
-				);
+				atomicJsonWrite(localSettingsFile, `${JSON.stringify(localSettings, null, "\t")}\n`);
 				actions.push({
 					kind: "config",
 					target: ".claude/settings.local.json → disableAllHooks",
