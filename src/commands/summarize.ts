@@ -5,6 +5,7 @@
 
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
+import { initializeOpenAIKey } from "../services/openai-client.js";
 import { summarizeUrl } from "../services/summarize.js";
 
 const logger = getChildLogger({ module: "cmd-summarize" });
@@ -53,6 +54,9 @@ export function registerSummarizeCommand(program: Command): void {
 						process.exit(1);
 					}
 				}
+
+				// Prewarm OpenAI key so getCachedOpenAIKey() works for Whisper transcription
+				await initializeOpenAIKey();
 
 				const result = await summarizeUrl(url, {
 					maxCharacters,

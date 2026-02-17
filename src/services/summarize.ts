@@ -7,7 +7,9 @@ import type { SummarizeConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { relaySummarize } from "../relay/capabilities-client.js";
+import { fetchWithGuard } from "../sandbox/fetch-guard.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
+import { getCachedOpenAIKey } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "summarize" });
 
@@ -35,6 +37,73 @@ const DEFAULT_CONFIG: SummarizeConfig = {
 	maxCharacters: 8000,
 	timeoutMs: 30_000,
 };
+const GUARDED_FETCH_AUTO_RELEASE_TIMEOUT_MS = 60_000;
+
+/**
+ * SSRF-guarded fetch wrapper compatible with the standard fetch signature.
+ * Passes every HTTP request through fetchWithGuard() for DNS pinning
+ * and redirect validation.
+ */
+async function guardedFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+	const url =
+		typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+	const result = await fetchWithGuard({
+		url,
+		init,
+		auditContext: "summarize",
+	});
+	// Attach a release finalizer — the response body stream close will trigger cleanup.
+	// If a wrapped stream is never consumed, auto-release after a safety timeout.
+	const origBody = result.response.body;
+	if (origBody) {
+		// Wrap the response so release() runs when the body is consumed
+		const reader = origBody.getReader();
+		let streamConsumed = false;
+		let releaseTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+			// Safety net for unconsumed responses.
+			if (streamConsumed) return;
+			releaseTimer = null;
+			void result.release();
+		}, GUARDED_FETCH_AUTO_RELEASE_TIMEOUT_MS);
+		const clearReleaseTimer = () => {
+			if (!releaseTimer) return;
+			clearTimeout(releaseTimer);
+			releaseTimer = null;
+		};
+		const wrappedStream = new ReadableStream({
+			async pull(controller) {
+				streamConsumed = true;
+				try {
+					const { done, value } = await reader.read();
+					if (done) {
+						clearReleaseTimer();
+						controller.close();
+						await result.release();
+						return;
+					}
+					controller.enqueue(value);
+				} catch (error) {
+					clearReleaseTimer();
+					controller.error(error);
+					await result.release();
+				}
+			},
+			async cancel(reason) {
+				clearReleaseTimer();
+				await reader.cancel(reason);
+				await result.release();
+			},
+		});
+		return new Response(wrappedStream, {
+			status: result.response.status,
+			statusText: result.response.statusText,
+			headers: result.response.headers,
+		});
+	}
+	// No body — release immediately
+	await result.release();
+	return result.response;
+}
 
 // Lazy singleton — created once per process
 let clientPromise: Promise<import("@steipete/summarize-core/content").LinkPreviewClient> | null =
@@ -43,7 +112,10 @@ let clientPromise: Promise<import("@steipete/summarize-core/content").LinkPrevie
 async function getClient(): Promise<import("@steipete/summarize-core/content").LinkPreviewClient> {
 	if (!clientPromise) {
 		clientPromise = import("@steipete/summarize-core/content").then((mod) =>
-			mod.createLinkPreviewClient({ fetch }),
+			mod.createLinkPreviewClient({
+				fetch: guardedFetch as typeof fetch,
+				openaiApiKey: getCachedOpenAIKey() ?? undefined,
+			}),
 		);
 	}
 	return clientPromise;
