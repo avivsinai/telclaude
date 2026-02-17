@@ -7,6 +7,7 @@ import type { SummarizeConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { relaySummarize } from "../relay/capabilities-client.js";
+import { fetchWithGuard } from "../sandbox/fetch-guard.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
 
 const logger = getChildLogger({ module: "summarize" });
@@ -36,6 +37,51 @@ const DEFAULT_CONFIG: SummarizeConfig = {
 	timeoutMs: 30_000,
 };
 
+/**
+ * SSRF-guarded fetch wrapper compatible with the standard fetch signature.
+ * Passes every HTTP request through fetchWithGuard() for DNS pinning
+ * and redirect validation.
+ */
+async function guardedFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+	const url =
+		typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+	const result = await fetchWithGuard({
+		url,
+		init,
+		auditContext: "summarize",
+	});
+	// Attach a release finalizer — the response body stream close will trigger cleanup.
+	// For safety, also register on the GC path via a try/finally in the caller.
+	const origBody = result.response.body;
+	if (origBody) {
+		// Wrap the response so release() runs when the body is consumed
+		const reader = origBody.getReader();
+		const wrappedStream = new ReadableStream({
+			async pull(controller) {
+				const { done, value } = await reader.read();
+				if (done) {
+					controller.close();
+					await result.release();
+					return;
+				}
+				controller.enqueue(value);
+			},
+			async cancel() {
+				await reader.cancel();
+				await result.release();
+			},
+		});
+		return new Response(wrappedStream, {
+			status: result.response.status,
+			statusText: result.response.statusText,
+			headers: result.response.headers,
+		});
+	}
+	// No body — release immediately
+	await result.release();
+	return result.response;
+}
+
 // Lazy singleton — created once per process
 let clientPromise: Promise<import("@steipete/summarize-core/content").LinkPreviewClient> | null =
 	null;
@@ -43,7 +89,7 @@ let clientPromise: Promise<import("@steipete/summarize-core/content").LinkPrevie
 async function getClient(): Promise<import("@steipete/summarize-core/content").LinkPreviewClient> {
 	if (!clientPromise) {
 		clientPromise = import("@steipete/summarize-core/content").then((mod) =>
-			mod.createLinkPreviewClient({ fetch }),
+			mod.createLinkPreviewClient({ fetch: guardedFetch as typeof fetch }),
 		);
 	}
 	return clientPromise;

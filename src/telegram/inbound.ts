@@ -4,6 +4,7 @@ import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
 import { isChatBanned } from "../security/banned-chats.js";
+import { containsHomoglyphs, foldHomoglyphs } from "../security/homoglyphs.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
 import { isBotMessage, removeReaction, storeReaction } from "../storage/reactions.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
@@ -40,6 +41,34 @@ export type InboxMonitorHandle = {
 	close: () => Promise<void>;
 	onClose: Promise<TelegramListenerCloseReason>;
 };
+
+const ZERO_WIDTH_CHARS_REGEX = /[\u200B\u200C\u200D\uFEFF]/gu;
+
+export type InboundBodyNormalization = {
+	normalized: string;
+	changed: boolean;
+	hadHomoglyphs: boolean;
+	hadZeroWidth: boolean;
+};
+
+/**
+ * Normalize inbound text for classification/prompting while preserving raw body for command parsing.
+ */
+export function normalizeInboundBody(body: string): InboundBodyNormalization {
+	const hadHomoglyphs = containsHomoglyphs(body);
+	const hadZeroWidth = ZERO_WIDTH_CHARS_REGEX.test(body);
+	ZERO_WIDTH_CHARS_REGEX.lastIndex = 0;
+
+	const withoutZeroWidth = body.replace(ZERO_WIDTH_CHARS_REGEX, "");
+	const normalized = foldHomoglyphs(withoutZeroWidth);
+
+	return {
+		normalized,
+		changed: normalized !== body,
+		hadHomoglyphs,
+		hadZeroWidth,
+	};
+}
 
 /**
  * Monitor incoming Telegram messages.
@@ -194,6 +223,19 @@ export async function monitorTelegramInbox(
 
 		const chatId = chatIdToString(chat.id);
 		const body = message.text || message.caption || "";
+		const normalizedBody = normalizeInboundBody(body);
+
+		if (normalizedBody.changed) {
+			logger.debug(
+				{
+					chatId: chat.id,
+					messageId: message.message_id,
+					hadHomoglyphs: normalizedBody.hadHomoglyphs,
+					hadZeroWidth: normalizedBody.hadZeroWidth,
+				},
+				"normalized inbound message body",
+			);
+		}
 
 		// Download media if present
 		let mediaPath: string | undefined;
@@ -231,6 +273,7 @@ export async function monitorTelegramInbox(
 			from: chatId,
 			to: botIdStr,
 			body,
+			normalizedBody: normalizedBody.normalized,
 			pushName: from ? buildPushName(from) : undefined,
 			username: from?.username,
 			chatType: chat.type as "private" | "group" | "supergroup" | "channel",

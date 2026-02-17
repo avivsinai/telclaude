@@ -22,6 +22,14 @@ export {
 	domainMatchesPattern,
 	OPENAI_DOMAINS,
 } from "./domains.js";
+// Fetch guard (DNS-pinned fetch with redirect validation)
+export {
+	createPinnedLookup,
+	FetchGuardError,
+	type FetchWithGuardOptions,
+	type FetchWithGuardResult,
+	fetchWithGuard,
+} from "./fetch-guard.js";
 // Mode detection
 export {
 	getSandboxMode,
@@ -29,7 +37,6 @@ export {
 	type SandboxMode,
 	shouldEnableSdkSandbox,
 } from "./mode.js";
-
 // Network proxy (for isBlockedHost in canUseTool)
 export {
 	checkNetworkRequest,
