@@ -191,4 +191,14 @@ describe("auto-reply control commands", () => {
 			expect.objectContaining({ errorType: "identity_link_group_rejected" }),
 		);
 	});
+
+	it("uses raw body for command parsing and normalized body for processing", () => {
+		const msg = {
+			body: "/approve\u200B 123456",
+			normalizedBody: "/approve 123456",
+		} as any;
+
+		expect(autoReplyTest.resolveCommandBody(msg)).toBe("/approve\u200B 123456");
+		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");
+	});
 });

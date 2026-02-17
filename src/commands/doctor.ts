@@ -1,9 +1,9 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
+import { resolveConfigPath } from "../config/path.js";
 import { getChildLogger } from "../logging.js";
 import {
 	buildAllowedDomainNames,
@@ -19,6 +19,8 @@ import {
 import { CORE_SECRET_PATTERNS, filterOutput, redactSecrets } from "../security/index.js";
 import { formatScanResults, scanAllSkills } from "../security/skill-scanner.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
+import { formatAuditReport, runAuditCollectors } from "./audit-collectors.js";
+import { formatFixReport, runAutoFix } from "./audit-fixers.js";
 
 const logger = getChildLogger({ module: "cmd-doctor" });
 
@@ -67,12 +69,14 @@ export function registerDoctorCommand(program: Command): void {
 		.option("--secrets", "Run secret detection self-test")
 		.option("--skills", "Run skill static code scanner")
 		.option("--security", "Run comprehensive security audit")
+		.option("--fix", "Auto-fix safe security issues (requires --security)")
 		.action(
 			async (options: {
 				network?: boolean;
 				secrets?: boolean;
 				skills?: boolean;
 				security?: boolean;
+				fix?: boolean;
 			}) => {
 				try {
 					// Claude CLI version
@@ -344,155 +348,28 @@ export function registerDoctorCommand(program: Command): void {
 
 					// Run --security audit if requested
 					if (options.security) {
-						console.log("\n🔐 Security Audit");
-						let auditIssues = 0;
-
-						// 1. Config file permissions
-						console.log("\n   Config File Permissions:");
-						const configPaths = [
-							{
-								label: "telclaude.json",
-								path: path.join(process.cwd(), "docker", "telclaude.json"),
-							},
-							{
-								label: "telclaude-private.json",
-								path: path.join(process.cwd(), "docker", "telclaude-private.json"),
-							},
-							{ label: ".env", path: path.join(process.cwd(), "docker", ".env") },
-						];
-						for (const { label, path: filePath } of configPaths) {
-							if (fs.existsSync(filePath)) {
-								const stat = fs.statSync(filePath);
-								const mode = (stat.mode & 0o777).toString(8);
-								const worldReadable = (stat.mode & 0o004) !== 0;
-								if (worldReadable) {
-									console.log(
-										`     ✗ ${label}: mode ${mode} (world-readable — fix: chmod 600 ${filePath})`,
-									);
-									auditIssues++;
-								} else {
-									console.log(`     ✓ ${label}: mode ${mode}`);
-								}
-							}
-						}
-
-						// 2. Secret env vars check
-						console.log("\n   Environment Secrets:");
-						const secretEnvVars = [
-							"TELEGRAM_BOT_TOKEN",
-							"ANTHROPIC_API_KEY",
-							"OPENAI_API_KEY",
-							"GITHUB_TOKEN",
-							"GH_TOKEN",
-						];
-						for (const envVar of secretEnvVars) {
-							if (process.env[envVar]) {
-								console.log(`     ✓ ${envVar}: set`);
-							} else {
-								console.log(`     - ${envVar}: not set`);
-							}
-						}
-
-						// 3. SDK settings isolation
-						console.log("\n   SDK Settings Isolation:");
-						const claudeDir = path.join(process.cwd(), ".claude");
-						const settingsFile = path.join(claudeDir, "settings.json");
-						if (fs.existsSync(settingsFile)) {
-							try {
-								const settings = JSON.parse(fs.readFileSync(settingsFile, "utf-8"));
-								if (settings.settingSources?.includes("project")) {
-									console.log("     ✓ settingSources restricted to project");
-								} else {
-									console.log(
-										"     ⚠️  settingSources not restricted — user settings may override hooks",
-									);
-									auditIssues++;
-								}
-							} catch {
-								console.log("     ⚠️  Failed to parse settings.json");
-							}
-						} else {
-							console.log("     - .claude/settings.json not found");
-						}
-
-						// 4. Sensitive file exposure check
-						console.log("\n   Sensitive File Exposure:");
-						const homeDir = os.homedir();
-						const sensitivePaths = [
-							{ label: "SSH keys", path: path.join(homeDir, ".ssh", "id_rsa") },
-							{ label: "AWS credentials", path: path.join(homeDir, ".aws", "credentials") },
-							{ label: ".env file", path: path.join(process.cwd(), ".env") },
-							{ label: "telclaude DB", path: path.join(homeDir, ".telclaude", "telclaude.db") },
-						];
-						for (const { label, path: filePath } of sensitivePaths) {
-							if (fs.existsSync(filePath)) {
-								const stat = fs.statSync(filePath);
-								const mode = (stat.mode & 0o777).toString(8);
-								const worldReadable = (stat.mode & 0o004) !== 0;
-								if (worldReadable) {
-									console.log(`     ✗ ${label}: exists, mode ${mode} (world-readable)`);
-									auditIssues++;
-								} else {
-									console.log(`     ✓ ${label}: exists, mode ${mode} (ok)`);
-								}
-							} else {
-								console.log(`     - ${label}: not present`);
-							}
-						}
-
-						// 5. Skill safety (summary from scanner)
-						console.log("\n   Skill Safety:");
-						const cwd = process.cwd();
-						const auditSkillRoots = [
-							path.join(cwd, ".claude", "skills"),
-							path.join(cwd, ".claude", "skills-draft"),
-						];
-						let totalSkills = 0;
-						let blockedSkills = 0;
-						for (const root of auditSkillRoots) {
-							if (fs.existsSync(root)) {
-								const results = scanAllSkills(root);
-								totalSkills += results.length;
-								blockedSkills += results.filter((r) => r.blocked).length;
-							}
-						}
-						if (totalSkills === 0) {
-							console.log("     - No skills installed");
-						} else if (blockedSkills === 0) {
-							console.log(`     ✓ ${totalSkills} skill(s) scanned, all clean`);
-						} else {
-							console.log(
-								`     ✗ ${blockedSkills}/${totalSkills} skill(s) contain malicious patterns`,
-							);
-							auditIssues += blockedSkills;
-						}
-
-						// 6. Docker mount safety (if docker-compose.yml exists)
-						const composePath = path.join(process.cwd(), "docker", "docker-compose.yml");
-						if (fs.existsSync(composePath)) {
-							console.log("\n   Docker Compose Mounts:");
-							const composeContent = fs.readFileSync(composePath, "utf-8");
-							const dangerousMounts = ["/var/run/docker.sock", "/etc/shadow", "/etc/passwd"];
-							let mountIssues = 0;
-							for (const mount of dangerousMounts) {
-								if (composeContent.includes(mount)) {
-									console.log(`     ✗ Dangerous mount detected: ${mount}`);
-									mountIssues++;
-								}
-							}
-							if (mountIssues === 0) {
-								console.log("     ✓ No dangerous host mounts detected");
-							}
-							auditIssues += mountIssues;
-						}
-
-						// Summary
-						console.log(
-							`\n   Audit Result: ${auditIssues === 0 ? "✓ No issues found" : `✗ ${auditIssues} issue(s) found`}`,
-						);
-						if (auditIssues > 0) {
+						console.log("\n\uD83D\uDD10 Security Audit (Deep Collectors)");
+						const auditReport = runAuditCollectors(cfg, process.cwd());
+						console.log(formatAuditReport(auditReport));
+						if (auditReport.summary.critical > 0) {
 							process.exitCode = 1;
 						}
+
+						// Auto-fix if --fix is passed
+						if (options.fix) {
+							console.log("\n\uD83D\uDD27 Auto-Remediation (--fix)");
+							const configPath = resolveConfigPath();
+							const fixReport = runAutoFix(cfg, configPath, process.cwd());
+							console.log(formatFixReport(fixReport));
+							if (fixReport.summary.errors > 0) {
+								process.exitCode = 1;
+							}
+						}
+					}
+
+					// Warn if --fix is passed without --security
+					if (options.fix && !options.security) {
+						console.log("\n--fix requires --security. Run: telclaude doctor --security --fix");
 					}
 
 					// Show hint for tests if not running them

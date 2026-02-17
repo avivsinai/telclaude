@@ -53,7 +53,7 @@ import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
 import { createTelegramBot } from "./client.js";
-import { monitorTelegramInbox } from "./inbound.js";
+import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
@@ -277,6 +277,14 @@ function sanitizeInput(input: string): { valid: boolean; sanitized: string; reas
 	}
 
 	return { valid: true, sanitized: input };
+}
+
+function resolveCommandBody(msg: TelegramInboundMessage): string {
+	return msg.body;
+}
+
+function resolveProcessingBody(msg: TelegramInboundMessage): string {
+	return msg.normalizedBody ?? msg.body;
 }
 
 /**
@@ -737,7 +745,12 @@ async function executeWithSession(
 }
 
 // Test-only surface
-export const __test = { executeAndReply, handleLinkCommand };
+export const __test = {
+	executeAndReply,
+	handleLinkCommand,
+	resolveCommandBody,
+	resolveProcessingBody,
+};
 
 export type MonitorOptions = {
 	verbose: boolean;
@@ -1080,7 +1093,7 @@ async function handleInboundMessage(
 	// Exempt: /setup-2fa and /verify-2fa (needed for initial TOTP setup)
 	// ══════════════════════════════════════════════════════════════════════════
 
-	const trimmedBody = msg.body.trim();
+	const trimmedBody = resolveCommandBody(msg).trim();
 
 	// Commands exempt from auth gate (needed for TOTP setup)
 	const isAuthExemptCommand =
@@ -1126,6 +1139,7 @@ async function handleInboundMessage(
 					...msg,
 					id: pendingMsg.messageId,
 					body: pendingMsg.body,
+					normalizedBody: normalizeInboundBody(pendingMsg.body).normalized,
 					mediaPath: pendingMsg.mediaPath,
 					mediaType: pendingMsg.mediaType,
 					mimeType: pendingMsg.mimeType,
@@ -1595,8 +1609,10 @@ async function handleInboundMessage(
 	// DATA PLANE - Regular messages through security checks to Claude
 	// ══════════════════════════════════════════════════════════════════════════
 
+	const processingBody = resolveProcessingBody(msg);
+
 	// Input sanitization - reject malformed messages early
-	const sanitized = sanitizeInput(msg.body);
+	const sanitized = sanitizeInput(processingBody);
 	if (!sanitized.valid) {
 		logger.warn({ userId, reason: sanitized.reason }, "malformed input rejected");
 		await msg.reply(`Message rejected: ${sanitized.reason}`);
@@ -1662,7 +1678,7 @@ async function handleInboundMessage(
 		}
 	}
 
-	const observerResult = await observer.analyze(msg.body, {
+	const observerResult = await observer.analyze(processingBody, {
 		permissionTier: tier,
 	});
 
@@ -1748,7 +1764,7 @@ async function handleInboundMessage(
 
 	await executeAndReply({
 		msg,
-		prompt: msg.body.trim(),
+		prompt: processingBody.trim(),
 		mediaPath: msg.mediaPath,
 		mediaType: msg.mediaType,
 		from: msg.from,
@@ -1871,6 +1887,7 @@ async function handleApproveCommand(
 	const approvedMsg: TelegramInboundMessage = {
 		...msg,
 		body: approval.body,
+		normalizedBody: normalizeInboundBody(approval.body).normalized,
 		mediaPath: approval.mediaPath,
 		mediaFilePath: approval.mediaFilePath,
 		mediaFileId: approval.mediaFileId,
@@ -2003,7 +2020,7 @@ async function executeApprovedRequest(
 
 	await executeAndReply({
 		msg,
-		prompt: msg.body.trim(),
+		prompt: resolveProcessingBody(msg).trim(),
 		mediaPath: approval.mediaPath,
 		mediaType: approval.mediaType,
 		from: approval.from,

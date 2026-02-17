@@ -34,6 +34,7 @@ export type TelegramInboundMessage = {
 	from: string; // Normalized sender ID (tg:123456)
 	to: string; // Bot's ID
 	body: string; // Text content or caption
+	normalizedBody?: string; // Normalized body used for security classification/prompting
 	pushName?: string; // User's display name
 	username?: string; // @username if available
 	chatType?: "private" | "group" | "supergroup" | "channel"; // Chat type for security checks

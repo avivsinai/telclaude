@@ -58,6 +58,12 @@ import {
 	isToolUseStartEvent,
 	isWriteInput,
 } from "./message-guards.js";
+import {
+	buildOverflowRecoverySummary,
+	DEFAULT_MAX_TOOL_RESULT_CHARS,
+	guardToolResultOutput,
+	isContextOverflowError,
+} from "./output-guard.js";
 import { executeWithSession, getSessionManager } from "./session-manager.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
@@ -1384,6 +1390,10 @@ async function* processMessageStream(
 			numTurns: number,
 			durationMs: number,
 		) => void;
+		/** Maximum chars per tool result (default: DEFAULT_MAX_TOOL_RESULT_CHARS). */
+		maxToolResultChars?: number;
+		/** Pool key for session management (used in overflow recovery). */
+		poolKey?: string;
 	},
 ): AsyncGenerator<StreamChunk, void, unknown> {
 	let response = "";
@@ -1434,10 +1444,13 @@ async function* processMessageStream(
 					}
 				}
 			} else if (isToolResultMessage(msg)) {
+				// Apply output size guard to tool results before they accumulate
+				const maxChars = options.maxToolResultChars ?? DEFAULT_MAX_TOOL_RESULT_CHARS;
+				const guarded = guardToolResultOutput(msg.tool_use_result, maxChars);
 				yield {
 					type: "tool_result",
 					toolName: lastToolUseName ?? "unknown",
-					output: msg.tool_use_result,
+					output: guarded.output,
 				};
 				lastToolUseName = null;
 			} else if (isResultMessage(msg)) {
@@ -1469,21 +1482,46 @@ async function* processMessageStream(
 		}
 	} catch (err) {
 		const isAborted = err instanceof Error && err.name === "AbortError";
+		const isOverflow = !isAborted && isContextOverflowError(err);
 
 		if (isAborted) {
 			logger.warn({ durationMs: Date.now() - options.startTime }, `${options.label} aborted`);
+		} else if (isOverflow) {
+			logger.error(
+				{
+					error: String(err),
+					numTurns,
+					poolKey: options.poolKey,
+				},
+				`${options.label} context overflow detected`,
+			);
+			// Clear the session so next query starts fresh
+			if (options.poolKey) {
+				const sessionManager = getSessionManager();
+				sessionManager.clearSession(options.poolKey);
+				logger.info({ poolKey: options.poolKey }, "session cleared for overflow recovery");
+			}
 		} else {
 			logger.error({ error: String(err) }, `${options.label} error`);
 		}
 
 		const finalResponse = response || assistantMessageFallback;
+		const errorMsg = isAborted
+			? "Request was aborted"
+			: isOverflow
+				? buildOverflowRecoverySummary({
+						poolKey: options.poolKey,
+						error: String(err),
+						numTurns,
+					})
+				: String(err);
 
 		yield {
 			type: "done",
 			result: {
 				response: finalResponse,
 				success: false,
-				error: isAborted ? "Request was aborted" : String(err),
+				error: errorMsg,
 				costUsd,
 				numTurns,
 				durationMs: Date.now() - options.startTime,
@@ -1562,6 +1600,7 @@ export async function* executePooledQuery(
 		startTime,
 		label: "pooled query",
 		extractToolUseFromAssistant: true,
+		poolKey: inputOpts.poolKey,
 		onFailure: (error, costUsd, numTurns, durationMs) => {
 			logger.error(
 				{
