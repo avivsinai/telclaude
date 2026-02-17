@@ -652,6 +652,88 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 }
 
 /**
+ * Patterns matching active skill directories (Write/Edit blocked).
+ * Agent can write to .claude/skills-draft/ but NOT .claude/skills/.
+ */
+const ACTIVE_SKILL_WRITE_PATTERNS: RegExp[] = [
+	/(?:^|[/\\])\.claude[/\\]skills[/\\]/i,
+	...(process.env.CLAUDE_CONFIG_DIR
+		? [
+				new RegExp(
+					`^${process.env.CLAUDE_CONFIG_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\\\])skills(?:[/\\\\])`,
+					"i",
+				),
+			]
+		: []),
+];
+
+/**
+ * Check if a path is an active skill directory (NOT skills-draft).
+ * Returns true if writes should be blocked.
+ *
+ * Uses explicit path segment matching to prevent bypass via names like
+ * "skills/skills-draft-evil/" which would contain "skills-draft" as substring.
+ */
+function isActiveSkillPath(filePath: string): boolean {
+	// Normalize to forward slashes for consistent matching
+	const normalized = filePath.replace(/\\/g, "/");
+
+	// Allow writes to an actual skills-draft/ directory (exact segment match)
+	if (/(?:^|[/])\.claude\/skills-draft\//.test(normalized)) return false;
+	if (
+		process.env.CLAUDE_CONFIG_DIR &&
+		normalized.startsWith(`${process.env.CLAUDE_CONFIG_DIR.replace(/\\/g, "/")}/skills-draft/`)
+	)
+		return false;
+
+	return ACTIVE_SKILL_WRITE_PATTERNS.some((p) => p.test(filePath));
+}
+
+/**
+ * Create a PreToolUse hook that blocks writes to active skill directories.
+ * Agents can only write to .claude/skills-draft/<name>/; promotion is operator-only.
+ */
+function createSkillWriteProtectionHook(): HookCallbackMatcher {
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+
+		const toolName = input.tool_name;
+		const toolInput = input.tool_input as Record<string, unknown>;
+
+		// Only check Write and Edit tools
+		if (toolName === "Write" && isWriteInput(toolInput)) {
+			if (isActiveSkillPath(toolInput.file_path)) {
+				logger.warn(
+					{ path: toolInput.file_path },
+					"[hook] blocked write to active skill directory",
+				);
+				return denyHookResponse(
+					"Cannot write to active skill directory. Use .claude/skills-draft/<name>/ instead, then ask the operator to promote with /promote-skill.",
+				);
+			}
+		}
+
+		if (toolName === "Edit" && isEditInput(toolInput)) {
+			if (isActiveSkillPath(toolInput.file_path)) {
+				logger.warn({ path: toolInput.file_path }, "[hook] blocked edit of active skill file");
+				return denyHookResponse(
+					"Cannot edit active skill files. Draft changes to .claude/skills-draft/<name>/ instead.",
+				);
+			}
+		}
+
+		return allowHookResponse();
+	};
+
+	return {
+		hooks: [hookCallback],
+		timeout: HOOK_TIMEOUT_SECONDS,
+	};
+}
+
+/**
  * Create a PreToolUse hook for sensitive path protection on filesystem tools.
  *
  * CRITICAL: This is the PRIMARY enforcement for sensitive path blocking.
@@ -999,6 +1081,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			),
 			createSocialToolRestrictionHook(opts.userId),
 			createSensitivePathHook(opts.tier),
+			createSkillWriteProtectionHook(),
 		],
 	};
 

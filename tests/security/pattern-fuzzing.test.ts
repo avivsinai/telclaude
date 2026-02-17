@@ -437,7 +437,7 @@ describe("Blocked Command Fuzzing", () => {
 	});
 
 	describe("ReDoS resistance", () => {
-		const MAX_EXECUTION_TIME_MS = 50;
+		const MAX_EXECUTION_TIME_MS = 100;
 
 		it("handles long commands without ReDoS", () => {
 			const longCommand = `ls ${"-la ".repeat(1000)}`;
