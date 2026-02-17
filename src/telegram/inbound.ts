@@ -42,7 +42,7 @@ export type InboxMonitorHandle = {
 	onClose: Promise<TelegramListenerCloseReason>;
 };
 
-const ZERO_WIDTH_CHARS_REGEX = /[\u200B\u200C\u200D\uFEFF]/gu;
+const ZERO_WIDTH_CHARS_REGEX = /\u200B|\u200C|\u200D|\uFEFF/gu;
 
 export type InboundBodyNormalization = {
 	normalized: string;
