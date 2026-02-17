@@ -158,7 +158,7 @@ describe("social handler", () => {
 		expect(client.postReply).toHaveBeenCalledWith("post-1", "hello");
 		expect(executeRemoteQueryMock).toHaveBeenCalled();
 		const [prompt, options] = executeRemoteQueryMock.mock.calls[0];
-		expect(String(prompt)).toContain("MOLTBOOK NOTIFICATION");
+		expect(String(prompt)).toContain("SOCIAL NOTIFICATION (MOLTBOOK)");
 		expect(options.tier).toBe("SOCIAL");
 		expect(options.scope).toBe("social");
 	});

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
 import type { Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
+import { listDraftSkills, promoteSkill } from "../commands/skills-promote.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
@@ -1164,6 +1165,9 @@ async function handleInboundMessage(
 		trimmedBody === "/otp" ||
 		trimmedBody.startsWith("/otp ") ||
 		trimmedBody.startsWith("/promote ") ||
+		trimmedBody.startsWith("/promote-skill ") ||
+		trimmedBody === "/list-drafts" ||
+		trimmedBody === "/reload-skills" ||
 		trimmedBody === "/pending" ||
 		trimmedBody === "/heartbeat" ||
 		trimmedBody.startsWith("/heartbeat ") ||
@@ -1310,6 +1314,57 @@ async function handleInboundMessage(
 			return `\`${entry.id}\` "${preview}" — ${ageStr}\n  /promote ${entry.id}`;
 		});
 		await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
+		return;
+	}
+
+	// ── Skill Draft Management ─────────────────────────────────────────
+	if (trimmedBody.startsWith("/promote-skill ")) {
+		const skillName = trimmedBody.split(/\s+/)[1]?.trim();
+		if (!skillName) {
+			await msg.reply("Usage: `/promote-skill <name>`");
+			return;
+		}
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can promote skills.");
+			return;
+		}
+		const result = promoteSkill(skillName);
+		if (result.success) {
+			await msg.reply(`Skill "${skillName}" promoted. Available next session.`);
+		} else {
+			await msg.reply(`Promote failed: ${result.error}`);
+		}
+		return;
+	}
+
+	if (trimmedBody === "/list-drafts") {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can list drafts.");
+			return;
+		}
+		const drafts = listDraftSkills();
+		if (drafts.length === 0) {
+			await msg.reply("No draft skills awaiting promotion.");
+			return;
+		}
+		const lines = drafts.map((name) => `  /promote-skill ${name}`);
+		await msg.reply(`${drafts.length} draft skill(s):\n${lines.join("\n")}`);
+		return;
+	}
+
+	if (trimmedBody === "/reload-skills") {
+		if (!isAdmin(msg.chatId)) {
+			await msg.reply("Only admin can reload skills.");
+			return;
+		}
+		// Skills are re-scanned on each session start via enableSkills + settingSources.
+		// Force a session reset to pick up new skills.
+		const sessionKey = `tg:${msg.chatId}`;
+		deleteSession(sessionKey);
+		getSessionManager().clearSession(sessionKey);
+		await msg.reply(
+			"Skills reloaded. Next message will start a fresh session with updated skills.",
+		);
 		return;
 	}
 
