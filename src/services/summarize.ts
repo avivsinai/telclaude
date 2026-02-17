@@ -9,6 +9,7 @@ import { getChildLogger } from "../logging.js";
 import { relaySummarize } from "../relay/capabilities-client.js";
 import { fetchWithGuard } from "../sandbox/fetch-guard.js";
 import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
+import { getCachedOpenAIKey } from "./openai-client.js";
 
 const logger = getChildLogger({ module: "summarize" });
 
@@ -111,7 +112,10 @@ let clientPromise: Promise<import("@steipete/summarize-core/content").LinkPrevie
 async function getClient(): Promise<import("@steipete/summarize-core/content").LinkPreviewClient> {
 	if (!clientPromise) {
 		clientPromise = import("@steipete/summarize-core/content").then((mod) =>
-			mod.createLinkPreviewClient({ fetch: guardedFetch as typeof fetch }),
+			mod.createLinkPreviewClient({
+				fetch: guardedFetch as typeof fetch,
+				openaiApiKey: getCachedOpenAIKey() ?? undefined,
+			}),
 		);
 	}
 	return clientPromise;
