@@ -189,7 +189,7 @@ export function guardToolResultOutput(
 
 	// Return as string (the model handles string tool results fine)
 	return {
-		output: typeof output === "string" ? result.content : result.content,
+		output: result.content,
 		truncation: result,
 	};
 }

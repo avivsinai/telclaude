@@ -36,6 +36,7 @@ const DEFAULT_CONFIG: SummarizeConfig = {
 	maxCharacters: 8000,
 	timeoutMs: 30_000,
 };
+const GUARDED_FETCH_AUTO_RELEASE_TIMEOUT_MS = 60_000;
 
 /**
  * SSRF-guarded fetch wrapper compatible with the standard fetch signature.
@@ -51,23 +52,44 @@ async function guardedFetch(input: string | URL | Request, init?: RequestInit): 
 		auditContext: "summarize",
 	});
 	// Attach a release finalizer — the response body stream close will trigger cleanup.
-	// For safety, also register on the GC path via a try/finally in the caller.
+	// If a wrapped stream is never consumed, auto-release after a safety timeout.
 	const origBody = result.response.body;
 	if (origBody) {
 		// Wrap the response so release() runs when the body is consumed
 		const reader = origBody.getReader();
+		let streamConsumed = false;
+		let releaseTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+			// Safety net for unconsumed responses.
+			if (streamConsumed) return;
+			releaseTimer = null;
+			void result.release();
+		}, GUARDED_FETCH_AUTO_RELEASE_TIMEOUT_MS);
+		const clearReleaseTimer = () => {
+			if (!releaseTimer) return;
+			clearTimeout(releaseTimer);
+			releaseTimer = null;
+		};
 		const wrappedStream = new ReadableStream({
 			async pull(controller) {
-				const { done, value } = await reader.read();
-				if (done) {
-					controller.close();
+				streamConsumed = true;
+				try {
+					const { done, value } = await reader.read();
+					if (done) {
+						clearReleaseTimer();
+						controller.close();
+						await result.release();
+						return;
+					}
+					controller.enqueue(value);
+				} catch (error) {
+					clearReleaseTimer();
+					controller.error(error);
 					await result.release();
-					return;
 				}
-				controller.enqueue(value);
 			},
-			async cancel() {
-				await reader.cancel();
+			async cancel(reason) {
+				clearReleaseTimer();
+				await reader.cancel(reason);
 				await result.release();
 			},
 		});

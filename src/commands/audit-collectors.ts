@@ -519,8 +519,8 @@ export function collectExposureMatrixFindings(cfg: TelclaudeConfig): AuditFindin
 		});
 	}
 
-	// No users configured at all
-	if (Object.keys(users).length === 0 && !cfg.security.permissions) {
+	// No user permissions configured at all
+	if (!cfg.security.permissions) {
 		findings.push({
 			severity: "warning",
 			category: "exposure",

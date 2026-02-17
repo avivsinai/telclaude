@@ -189,6 +189,18 @@ function parseEnvFile(envPath: string): Record<string, string> {
 	return output;
 }
 
+/**
+ * Best-effort compose parser used by static sandbox posture checks.
+ *
+ * Indentation assumption:
+ * - services are indented with 2 spaces
+ * - service keys with 4 spaces
+ * - list/map entries with 6 spaces
+ * Tabs are normalized to two spaces before matching.
+ *
+ * Non-standard indentation can cause services/keys to be skipped silently.
+ * This is acceptable here because the audit is heuristic and not a full YAML parse.
+ */
 function parseComposeServices(content: string): ComposeService[] {
 	const services: ComposeService[] = [];
 	let inServicesBlock = false;

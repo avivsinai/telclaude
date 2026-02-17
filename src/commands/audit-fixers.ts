@@ -97,8 +97,10 @@ function safeChmod(filePath: string, targetMode: number, label: string): FixActi
 			};
 		}
 
-		// Only tighten — never loosen permissions
-		if (currentMode < targetMode) {
+		// Only tighten — never loosen permissions.
+		// Bitwise check: if current mode has no bits set beyond what target allows,
+		// it's already at least as restrictive (e.g., 0o400 is stricter than 0o600).
+		if ((currentMode & ~targetMode) === 0 && currentMode !== targetMode) {
 			return {
 				kind: "chmod",
 				target: filePath,
@@ -164,6 +166,22 @@ function atomicConfigWrite(configPath: string, content: string): { backupPath: s
 	}
 
 	return { backupPath: bakPath };
+}
+
+/**
+ * Write a JSON file atomically (tmp → rename) with 0o600 permissions.
+ * Unlike atomicConfigWrite, this does not create a .bak — used for
+ * small settings files where backup is unnecessary.
+ */
+function atomicJsonWrite(filePath: string, content: string): void {
+	const tmpPath = `${filePath}.tmp`;
+	fs.writeFileSync(tmpPath, content, "utf-8");
+	fs.renameSync(tmpPath, filePath);
+	try {
+		fs.chmodSync(filePath, 0o600);
+	} catch {
+		// Non-fatal
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -347,7 +365,7 @@ function applyHookHardeningFixes(cwd: string): FixAction[] {
 			}
 
 			if (modified) {
-				fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, "\t")}\n`, "utf-8");
+				atomicJsonWrite(settingsFile, `${JSON.stringify(settings, null, "\t")}\n`);
 			}
 		} catch {
 			// Parse error — don't touch a broken file
@@ -361,8 +379,7 @@ function applyHookHardeningFixes(cwd: string): FixAction[] {
 			fs.mkdirSync(claudeDir, { recursive: true });
 		}
 		const content = JSON.stringify({ settingSources: ["project"] }, null, "\t");
-		fs.writeFileSync(settingsFile, `${content}\n`, "utf-8");
-		fs.chmodSync(settingsFile, 0o600);
+		atomicJsonWrite(settingsFile, `${content}\n`);
 		actions.push({
 			kind: "create",
 			target: settingsFile,
@@ -382,10 +399,9 @@ function applyHookHardeningFixes(cwd: string): FixAction[] {
 
 			if (localSettings.disableAllHooks === true) {
 				delete localSettings.disableAllHooks;
-				fs.writeFileSync(
+				atomicJsonWrite(
 					localSettingsFile,
 					`${JSON.stringify(localSettings, null, "\t")}\n`,
-					"utf-8",
 				);
 				actions.push({
 					kind: "config",
