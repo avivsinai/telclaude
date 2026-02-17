@@ -28,6 +28,8 @@ import { registerSendLocalFileCommand } from "./commands/send-local-file.js";
 import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
+import { registerSkillsCommands } from "./commands/skills-import.js";
+import { registerSkillsPromoteCommand } from "./commands/skills-promote.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerSummarizeCommand } from "./commands/summarize.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
@@ -79,6 +81,8 @@ registerVaultCommand(program);
 registerVaultDaemonCommand(program);
 registerKeygenCommand(program);
 registerMemoryCommands(program);
+registerSkillsCommands(program);
+registerSkillsPromoteCommand(program);
 registerSummarizeCommand(program);
 
 // Pre-parse to extract global options before commands run

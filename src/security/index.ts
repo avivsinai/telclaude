@@ -34,7 +34,22 @@ export {
 } from "./admin-claim.js";
 export * from "./approvals.js";
 export * from "./audit.js";
+// External content wrapping + injection detection
+export {
+	assessRisk,
+	type ContentSource,
+	detectInjection,
+	type InjectionFinding,
+	type InjectionSeverity,
+	type RiskAssessment,
+	type RiskLevel,
+	sanitizeInlineContent,
+	type WrapOptions,
+	wrapExternalContent,
+} from "./external-content.js";
 export * from "./fast-path.js";
+// Unicode homoglyph protection
+export { containsHomoglyphs, detectHomoglyphs, foldHomoglyphs } from "./homoglyphs.js";
 export * from "./linking.js";
 // Output filter for exfiltration prevention
 export {
@@ -65,6 +80,17 @@ export {
 	type SecurityProfile,
 } from "./pipeline.js";
 export * from "./rate-limit.js";
+// Constant-time comparison
+export { safeEqual } from "./safe-equal.js";
+// Skill static code scanner
+export {
+	formatScanResults,
+	type ScanFinding,
+	type ScanResult,
+	type ScanSeverity,
+	scanAllSkills,
+	scanSkill,
+} from "./skill-scanner.js";
 // Streaming redactor for chunk boundary handling
 export {
 	createStreamingRedactor,

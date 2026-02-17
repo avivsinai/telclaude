@@ -49,6 +49,12 @@ cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-
 # OpenAI client - credential proxy sentinel value (not a real key)
 273c4e6086071a01bdd2fa3b77dd749e679ef59e:src/services/openai-client.ts:credentials-javascript:89
 
+# Auto-reply - session key template literal `tg:${msg.chatId}` (not a credential)
+3c63ce8f105e070543ffc7d050f9618ca2b08165:src/telegram/auto-reply.ts:credentials-javascript:1362
+
+# Doctor security audit - fake GitHub PAT used as redaction self-test example
+3c63ce8f105e070543ffc7d050f9618ca2b08165:src/commands/doctor.ts:github-pat:305
+
 # JavaScript - header name constants, pool key strings (not actual credentials)
 c47d4389e7f568398b5dbc704350851bd4b34cc2:src/internal-auth.ts:credentials-javascript:8
 79fd13154a83733e6eb1ff0454a158bc902a3903:src/memory/rpc.ts:credentials-javascript:124
