@@ -202,6 +202,7 @@ export function foldHomoglyphs(input: string): string {
  * Check if a string contains any known homoglyph characters.
  */
 export function containsHomoglyphs(input: string): boolean {
+	HOMOGLYPH_REGEX.lastIndex = 0;
 	return HOMOGLYPH_REGEX.test(input);
 }
 

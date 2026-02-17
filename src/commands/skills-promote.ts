@@ -36,16 +36,38 @@ export type PromoteResult = {
 /**
  * Promote a skill from draft to active directory.
  */
+/** Strict slug pattern for skill names — no path traversal, no special chars. */
+const SKILL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+
 export function promoteSkill(
 	skillName: string,
 	draftRoot?: string,
 	activeRoot?: string,
 ): PromoteResult {
+	// Validate skill name to prevent path traversal
+	if (!SKILL_NAME_PATTERN.test(skillName)) {
+		return {
+			success: false,
+			skillName,
+			error: `Invalid skill name "${skillName}". Must match ${SKILL_NAME_PATTERN} (no path separators or traversal).`,
+		};
+	}
+
 	const cwd = process.cwd();
 	const effectiveDraftRoot = draftRoot ?? path.join(cwd, ".claude", "skills-draft");
 	const effectiveActiveRoot = activeRoot ?? path.join(cwd, ".claude", "skills");
 	const draftDir = path.join(effectiveDraftRoot, skillName);
 	const activeDir = path.join(effectiveActiveRoot, skillName);
+
+	// Verify resolved paths stay within their roots (defense in depth)
+	const resolvedDraft = path.resolve(draftDir);
+	const resolvedActive = path.resolve(activeDir);
+	if (!resolvedDraft.startsWith(`${path.resolve(effectiveDraftRoot)}${path.sep}`)) {
+		return { success: false, skillName, error: "Path traversal detected in draft path." };
+	}
+	if (!resolvedActive.startsWith(`${path.resolve(effectiveActiveRoot)}${path.sep}`)) {
+		return { success: false, skillName, error: "Path traversal detected in active path." };
+	}
 
 	// Check immutable skills
 	if (IMMUTABLE_SKILL_NAMES.has(skillName)) {

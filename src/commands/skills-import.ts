@@ -248,7 +248,11 @@ function copyDirRecursive(source: string, target: string): void {
 /**
  * Import skills from an OpenClaw-format source directory.
  */
-function importSkills(sourceDir: string, targetRoot: string): ImportResult {
+function importSkills(
+	sourceDir: string,
+	targetRoot: string,
+	allowAutoInstall = false,
+): ImportResult {
 	const result: ImportResult = { imported: [], blocked: [], skipped: [], errors: [] };
 
 	const discovered = discoverSkills(sourceDir);
@@ -273,7 +277,14 @@ function importSkills(sourceDir: string, targetRoot: string): ImportResult {
 
 		const conversion = convertSkillMd(content);
 
-		// Check for auto-install directives
+		// Block skills with auto-install directives unless explicitly allowed
+		if (conversion.hasAutoInstall && !allowAutoInstall) {
+			result.skipped.push(skill.name);
+			console.log(`  ⊘ ${skill.name}: SKIPPED (has auto-install directives)`);
+			console.log(`    Deps: ${conversion.autoInstallDeps.join(", ")}`);
+			console.log("    Use --allow-auto-install to import anyway.");
+			continue;
+		}
 		if (conversion.hasAutoInstall) {
 			console.log(`  ⚠ ${skill.name}: has auto-install deps (must install manually)`);
 			console.log(`    Deps: ${conversion.autoInstallDeps.join(", ")}`);
@@ -333,57 +344,66 @@ export function registerSkillsCommands(program: Command): void {
 			path.join(process.cwd(), ".claude", "skills", "openclaw"),
 		)
 		.option("--dry-run", "Show what would be imported without copying")
-		.action(async (source: string, options: { target: string; dryRun?: boolean }) => {
-			const sourceDir = path.resolve(source);
+		.option(
+			"--allow-auto-install",
+			"Import skills with auto-install directives (default: skip them)",
+		)
+		.action(
+			async (
+				source: string,
+				options: { target: string; dryRun?: boolean; allowAutoInstall?: boolean },
+			) => {
+				const sourceDir = path.resolve(source);
 
-			if (!fs.existsSync(sourceDir)) {
-				console.error(`Source directory not found: ${sourceDir}`);
-				process.exit(1);
-			}
+				if (!fs.existsSync(sourceDir)) {
+					console.error(`Source directory not found: ${sourceDir}`);
+					process.exit(1);
+				}
 
-			console.log(`=== OpenClaw Skill Import ===\n`);
-			console.log(`Source: ${sourceDir}`);
-			console.log(`Target: ${options.target}\n`);
+				console.log(`=== OpenClaw Skill Import ===\n`);
+				console.log(`Source: ${sourceDir}`);
+				console.log(`Target: ${options.target}\n`);
 
-			if (options.dryRun) {
-				console.log("(dry run — no files will be copied)\n");
-				const discovered = discoverSkills(sourceDir);
-				if (discovered.length === 0) {
-					console.log("No skills found.");
+				if (options.dryRun) {
+					console.log("(dry run — no files will be copied)\n");
+					const discovered = discoverSkills(sourceDir);
+					if (discovered.length === 0) {
+						console.log("No skills found.");
+						return;
+					}
+					console.log(`Found ${discovered.length} skill(s):`);
+					for (const skill of discovered) {
+						console.log(`  - ${skill.name} (${path.relative(sourceDir, skill.dir)})`);
+					}
 					return;
 				}
-				console.log(`Found ${discovered.length} skill(s):`);
-				for (const skill of discovered) {
-					console.log(`  - ${skill.name} (${path.relative(sourceDir, skill.dir)})`);
-				}
-				return;
-			}
 
-			const result = importSkills(sourceDir, options.target);
+				const result = importSkills(sourceDir, options.target, options.allowAutoInstall);
 
-			console.log("\n=== Import Summary ===");
-			console.log(
-				`Imported: ${result.imported.length}, Blocked: ${result.blocked.length}, Errors: ${result.errors.length}`,
-			);
-
-			if (result.errors.length > 0) {
-				console.log("\nErrors:");
-				for (const err of result.errors) {
-					console.log(`  - ${err}`);
-				}
-				process.exitCode = 1;
-			}
-
-			if (result.blocked.length > 0) {
+				console.log("\n=== Import Summary ===");
 				console.log(
-					"\nBlocked skills contained malicious patterns. Review and re-import manually if safe.",
+					`Imported: ${result.imported.length}, Blocked: ${result.blocked.length}, Skipped: ${result.skipped.length}, Errors: ${result.errors.length}`,
 				);
-			}
 
-			if (result.imported.length > 0) {
-				console.log("\nImported skills will be available in the next agent session.");
-			}
-		});
+				if (result.errors.length > 0) {
+					console.log("\nErrors:");
+					for (const err of result.errors) {
+						console.log(`  - ${err}`);
+					}
+					process.exitCode = 1;
+				}
+
+				if (result.blocked.length > 0) {
+					console.log(
+						"\nBlocked skills contained malicious patterns. Review and re-import manually if safe.",
+					);
+				}
+
+				if (result.imported.length > 0) {
+					console.log("\nImported skills will be available in the next agent session.");
+				}
+			},
+		);
 
 	skills
 		.command("scan")

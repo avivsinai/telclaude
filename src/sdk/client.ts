@@ -670,10 +670,21 @@ const ACTIVE_SKILL_WRITE_PATTERNS: RegExp[] = [
 /**
  * Check if a path is an active skill directory (NOT skills-draft).
  * Returns true if writes should be blocked.
+ *
+ * Uses explicit path segment matching to prevent bypass via names like
+ * "skills/skills-draft-evil/" which would contain "skills-draft" as substring.
  */
 function isActiveSkillPath(filePath: string): boolean {
-	// Allow writes to skills-draft/
-	if (/skills-draft/i.test(filePath)) return false;
+	// Normalize to forward slashes for consistent matching
+	const normalized = filePath.replace(/\\/g, "/");
+
+	// Allow writes to an actual skills-draft/ directory (exact segment match)
+	if (/(?:^|[/])\.claude\/skills-draft\//.test(normalized)) return false;
+	if (
+		process.env.CLAUDE_CONFIG_DIR &&
+		normalized.startsWith(`${process.env.CLAUDE_CONFIG_DIR.replace(/\\/g, "/")}/skills-draft/`)
+	)
+		return false;
 
 	return ACTIVE_SKILL_WRITE_PATTERNS.some((p) => p.test(filePath));
 }
