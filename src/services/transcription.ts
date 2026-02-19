@@ -149,9 +149,7 @@ export async function transcribeAudio(
 	}
 
 	const config = loadConfig();
-	const { useRelay: _useRelay, userId: _userId, ...localOptions } = options ?? {};
-	void _useRelay;
-	void _userId;
+	const { useRelay: _, userId: _u, ...localOptions } = options ?? {};
 	const transcriptionConfig = resolveTranscriptionConfig(config, localOptions);
 
 	logger.debug({ filePath, provider: transcriptionConfig.provider }, "starting transcription");
@@ -314,13 +312,6 @@ export function isTranscriptionAvailable(): boolean {
 		default:
 			return false;
 	}
-}
-
-/**
- * Get supported audio formats for transcription.
- */
-export function getSupportedAudioFormats(): string[] {
-	return ["mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg"];
 }
 
 /**

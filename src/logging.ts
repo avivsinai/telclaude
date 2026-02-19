@@ -180,16 +180,6 @@ export function setLoggerOverride(settings: LoggerSettings | null) {
 	cachedSettings = null;
 }
 
-export function resetLogger() {
-	cachedLogger = null;
-	cachedSettings = null;
-	if (cachedDestination) {
-		closeDestination(cachedDestination);
-		cachedDestination = null;
-	}
-	overrideSettings = null;
-}
-
 export function closeLogger(): void {
 	if (cachedDestination) {
 		closeDestination(cachedDestination);
@@ -197,4 +187,5 @@ export function closeLogger(): void {
 	}
 	cachedLogger = null;
 	cachedSettings = null;
+	overrideSettings = null;
 }

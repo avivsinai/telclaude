@@ -6,11 +6,6 @@ export async function ensureDir(dir: string) {
 	await fs.promises.mkdir(dir, { recursive: true });
 }
 
-export function normalizePath(p: string): string {
-	if (!p.startsWith("/")) return `/${p}`;
-	return p;
-}
-
 /**
  * Convert Telegram chat_id to a normalized string format.
  * Prefixed with "tg:" for clarity and to distinguish from phone numbers.
@@ -65,81 +60,24 @@ export function sleep(ms: number) {
 }
 
 /**
- * Validate and resolve TELCLAUDE_DATA_DIR.
- * Rejects: ~ paths (not expanded), relative paths, empty strings.
+ * Validate and resolve an environment variable as an absolute directory path.
+ * Rejects: ~ paths (not expanded in env vars), relative paths, empty strings.
  * Returns normalized path (no trailing slash) or null if invalid.
  */
-function resolveDataDir(): string | null {
-	const dataDir = process.env.TELCLAUDE_DATA_DIR;
-	if (!dataDir) return null;
+function resolveEnvDir(value: string | undefined, label: string): string | null {
+	if (!value) return null;
 
-	// Reject ~ paths (shell doesn't expand in env vars)
-	if (dataDir.startsWith("~")) {
-		console.error(
-			`ERROR: TELCLAUDE_DATA_DIR contains ~ which won't expand. Use absolute path like /data or ${os.homedir()}/.telclaude`,
-		);
+	if (value.startsWith("~")) {
+		console.error(`ERROR: ${label} contains ~ which won't expand. Use an absolute path instead.`);
 		return null;
 	}
 
-	// Reject relative paths (security risk: could place files in workspace)
-	if (!path.isAbsolute(dataDir)) {
-		console.error(`ERROR: TELCLAUDE_DATA_DIR must be absolute path, got: ${dataDir}`);
+	if (!path.isAbsolute(value)) {
+		console.error(`ERROR: ${label} must be absolute path, got: ${value}`);
 		return null;
 	}
 
-	// Normalize: remove trailing slash for consistent matching
-	return dataDir.replace(/\/+$/, "");
-}
-
-/**
- * Validate and resolve Claude config dir.
- * Uses CLAUDE_CONFIG_DIR (preferred) or TELCLAUDE_CLAUDE_HOME.
- * Rejects: ~ paths, relative paths, empty strings.
- * Returns normalized path (no trailing slash) or null if invalid.
- */
-function resolveClaudeConfigDir(): string | null {
-	const configDir = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
-	if (!configDir) return null;
-	const configDirLabel = process.env.CLAUDE_CONFIG_DIR
-		? "CLAUDE_CONFIG_DIR"
-		: "TELCLAUDE_CLAUDE_HOME";
-
-	if (configDir.startsWith("~")) {
-		console.error(
-			`ERROR: ${configDirLabel} contains ~ which won't expand. Use absolute path like /home/telclaude-skills`,
-		);
-		return null;
-	}
-
-	if (!path.isAbsolute(configDir)) {
-		console.error(`ERROR: ${configDirLabel} must be absolute path, got: ${configDir}`);
-		return null;
-	}
-
-	return configDir.replace(/\/+$/, "");
-}
-
-/**
- * Validate and resolve Claude auth dir.
- * Uses TELCLAUDE_AUTH_DIR.
- */
-function resolveClaudeAuthDir(): string | null {
-	const authDir = process.env.TELCLAUDE_AUTH_DIR;
-	if (!authDir) return null;
-
-	if (authDir.startsWith("~")) {
-		console.error(
-			`ERROR: TELCLAUDE_AUTH_DIR contains ~ which won't expand. Use absolute path like /home/telclaude-auth`,
-		);
-		return null;
-	}
-
-	if (!path.isAbsolute(authDir)) {
-		console.error(`ERROR: TELCLAUDE_AUTH_DIR must be absolute path, got: ${authDir}`);
-		return null;
-	}
-
-	return authDir.replace(/\/+$/, "");
+	return value.replace(/\/+$/, "");
 }
 
 /**
@@ -153,14 +91,23 @@ export function escapeRegex(str: string): string {
  * Validated TELCLAUDE_DATA_DIR (null if not set or invalid).
  * Use this for sensitive path checks instead of raw process.env.
  */
-export const VALIDATED_DATA_DIR = resolveDataDir();
+export const VALIDATED_DATA_DIR = resolveEnvDir(
+	process.env.TELCLAUDE_DATA_DIR,
+	"TELCLAUDE_DATA_DIR",
+);
 
 /**
  * Validated Claude config dir (null if not set or invalid).
  * Use this for sensitive path checks instead of raw process.env.
  */
-export const VALIDATED_CLAUDE_CONFIG_DIR = resolveClaudeConfigDir();
-export const VALIDATED_CLAUDE_AUTH_DIR = resolveClaudeAuthDir();
+export const VALIDATED_CLAUDE_CONFIG_DIR = resolveEnvDir(
+	process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME,
+	process.env.CLAUDE_CONFIG_DIR ? "CLAUDE_CONFIG_DIR" : "TELCLAUDE_CLAUDE_HOME",
+);
+export const VALIDATED_CLAUDE_AUTH_DIR = resolveEnvDir(
+	process.env.TELCLAUDE_AUTH_DIR,
+	"TELCLAUDE_AUTH_DIR",
+);
 
 // Use TELCLAUDE_DATA_DIR if set and valid (Docker), otherwise ~/.telclaude (native)
 export const CONFIG_DIR = VALIDATED_DATA_DIR || `${os.homedir()}/.telclaude`;
