@@ -544,23 +544,10 @@ function isSensitiveBasename(name: string): boolean {
 }
 
 /**
- * Expand ~ to home directory for path comparison.
- */
-function expandHome(p: string): string {
-	if (p.startsWith("~/")) {
-		return path.join(process.env.HOME ?? "", p.slice(2));
-	}
-	if (p === "~") {
-		return process.env.HOME ?? "";
-	}
-	return p;
-}
-
-/**
  * Normalize a path for comparison (resolve ~, make absolute).
  */
 function normalizePath(inputPath: string): string {
-	const expanded = expandHome(inputPath);
+	const expanded = expandHomeLike(inputPath);
 	// Handle relative paths
 	if (!path.isAbsolute(expanded)) {
 		return path.resolve(process.cwd(), expanded);

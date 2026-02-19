@@ -24,47 +24,6 @@ const MAX_TOTAL_RESPONSE_SIZE = 500 * 1024; // 500KB
 const TRUNCATION_WARNING = "\n\n⚠️ [Response truncated - exceeded 500KB limit]";
 
 /**
- * Escape special characters for Telegram MarkdownV2.
- * @deprecated Use telegram-markdown-v2 library instead (see outbound.ts).
- * Kept for potential future use with system messages.
- */
-export function escapeMarkdownV2(text: string): string {
-	return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
-}
-
-/**
- * Escape special characters for legacy Telegram Markdown.
- * Used by formatSystemMessage() for controlled system output.
- */
-export function escapeMarkdown(text: string): string {
-	return text.replace(/([_*`[])/g, "\\$1");
-}
-
-/**
- * Strip all markdown formatting from text.
- * @deprecated No longer used - we now convert to MarkdownV2 instead.
- * Kept for potential fallback scenarios.
- */
-export function stripMarkdown(text: string): string {
-	return (
-		text
-			// Remove code blocks
-			.replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, ""))
-			// Remove inline code
-			.replace(/`([^`]+)`/g, "$1")
-			// Remove bold/italic markers (but keep content)
-			.replace(/\*\*([^*]+)\*\*/g, "$1")
-			.replace(/\*([^*]+)\*/g, "$1")
-			.replace(/__([^_]+)__/g, "$1")
-			.replace(/_([^_]+)_/g, "$1")
-			// Remove links but show URL
-			.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-			// Remove strikethrough
-			.replace(/~~([^~]+)~~/g, "$1")
-	);
-}
-
-/**
  * Find the best split point in text, preferring natural boundaries.
  * Priority: paragraph break > line break > sentence end > word boundary > hard cut
  */
@@ -152,15 +111,6 @@ function removeDangerousChars(text: string): string {
 }
 
 /**
- * Sanitize Claude's response for safe display in Telegram.
- * Removes potentially dangerous formatting while preserving readability.
- * @deprecated Use sanitizeAndSplitResponse() instead which handles both.
- */
-export function sanitizeClaudeResponse(text: string): string {
-	return removeDangerousChars(text);
-}
-
-/**
  * Sanitize and split a long response into multiple Telegram-safe chunks.
  * Combines sanitization with intelligent splitting at natural boundaries.
  *
@@ -190,18 +140,4 @@ export function sanitizeAndSplitResponse(text: string): string[] {
 	}
 
 	return splitMessage(sanitized);
-}
-
-/**
- * Format a system message with controlled markdown.
- * Only use for messages we fully control (not user/Claude content).
- */
-export function formatSystemMessage(template: string, vars: Record<string, string> = {}): string {
-	let result = template;
-	for (const [key, value] of Object.entries(vars)) {
-		// Escape the value to prevent injection
-		const escaped = escapeMarkdown(value);
-		result = result.replace(new RegExp(`\\{${key}\\}`, "g"), escaped);
-	}
-	return result;
 }

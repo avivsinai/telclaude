@@ -62,10 +62,3 @@ export function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> 
 		});
 	});
 }
-
-/**
- * Generate a unique connection ID.
- */
-export function newConnectionId(): string {
-	return `conn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}

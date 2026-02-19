@@ -38,13 +38,6 @@ export function setConfigPath(configPath: string | null): void {
 }
 
 /**
- * Get the current config path override (for testing).
- */
-export function getConfigPathOverride(): string | null {
-	return configPathOverride;
-}
-
-/**
  * Reset config path to default (for testing).
  */
 export function resetConfigPath(): void {

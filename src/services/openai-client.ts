@@ -207,12 +207,10 @@ export async function isOpenAIConfigured(): Promise<boolean> {
 
 /**
  * Initialize OpenAI key lookup (call at startup).
- * This populates the cache so isOpenAIConfiguredSync() works correctly.
+ * Populates the cache so isOpenAIConfiguredSync() works correctly.
+ * Functionally equivalent to isOpenAIConfigured() but named for intent clarity at callsites.
  */
-export async function initializeOpenAIKey(): Promise<boolean> {
-	const apiKey = await getApiKey();
-	return !!apiKey;
-}
+export const initializeOpenAIKey = isOpenAIConfigured;
 
 /**
  * Synchronous check if OpenAI is configured.
@@ -257,15 +255,6 @@ export function getCachedOpenAIKey(): string | null {
 }
 
 /**
- * Pre-warm the OpenAI key cache.
- * Call this at startup so getCachedOpenAIKey() works for sandbox env injection.
- */
-export async function prewarmOpenAIKey(): Promise<boolean> {
-	const key = await getApiKey();
-	return key !== null;
-}
-
-/**
  * Get OpenAI API key fresh from storage (async).
  * Use this for hot-loading support - always reads from keychain/env/config.
  * Returns null if not configured.
@@ -276,11 +265,4 @@ export async function getOpenAIKey(): Promise<string | null> {
 	keySourceChecked = false;
 	usingCredentialProxy = false;
 	return getApiKey();
-}
-
-/**
- * Reset the client (for testing).
- */
-export function resetOpenAIClient(): void {
-	client = null;
 }

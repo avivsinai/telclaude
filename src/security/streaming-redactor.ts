@@ -17,7 +17,6 @@ import {
 	filterOutputWithConfig,
 	redactSecrets,
 	redactSecretsWithConfig,
-	SECRET_PATTERNS,
 	type SecretFilterConfig,
 } from "./output-filter.js";
 
@@ -172,84 +171,14 @@ export class StreamingRedactor {
 	}
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Convenience Functions
-// ═══════════════════════════════════════════════════════════════════════════════
-
 /**
  * Create a streaming redactor with default settings.
- *
- * @param overlapSize - Characters to keep in buffer for overlap detection.
- * @param secretFilterConfig - Optional config for additional patterns and entropy detection.
  */
 export function createStreamingRedactor(
 	overlapSize?: number,
 	secretFilterConfig?: SecretFilterConfig,
 ): StreamingRedactor {
 	return new StreamingRedactor(overlapSize, secretFilterConfig);
-}
-
-/**
- * Process an array of chunks through a redactor.
- * Useful for testing or batch processing.
- *
- * @param chunks - Array of text chunks
- * @returns Fully redacted text
- */
-export function processChunks(chunks: string[]): string {
-	const redactor = new StreamingRedactor();
-	let result = "";
-
-	for (const chunk of chunks) {
-		result += redactor.processChunk(chunk);
-	}
-
-	result += redactor.flush();
-	return result;
-}
-
-/**
- * Create an async generator that wraps another generator with redaction.
- *
- * @param source - Source async generator of text chunks
- * @returns Async generator yielding redacted chunks
- */
-export async function* redactStream(
-	source: AsyncGenerator<string, void, unknown>,
-): AsyncGenerator<string, void, unknown> {
-	const redactor = new StreamingRedactor();
-
-	for await (const chunk of source) {
-		const redacted = redactor.processChunk(chunk);
-		if (redacted.length > 0) {
-			yield redacted;
-		}
-	}
-
-	const final = redactor.flush();
-	if (final.length > 0) {
-		yield final;
-	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Pattern Info Export
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Get the longest pattern length for sizing the overlap buffer.
- */
-export function getLongestPatternLength(): number {
-	// Estimate based on known patterns (GitHub PAT is ~40 chars, etc.)
-	// Add buffer for context around the match
-	return 100;
-}
-
-/**
- * Get pattern names for logging/debugging.
- */
-export function getPatternNames(): string[] {
-	return SECRET_PATTERNS.map((p) => p.name);
 }
 
 // Re-export SecretFilterConfig for convenience

@@ -202,30 +202,6 @@ export async function generateImage(
 }
 
 /**
- * Generate multiple images from a prompt.
- */
-export async function generateImages(
-	prompt: string,
-	count: number,
-	options?: ImageGenerationOptions,
-): Promise<GeneratedImage[]> {
-	const results: GeneratedImage[] = [];
-
-	// Generate one at a time to handle failures gracefully
-	for (let i = 0; i < count; i++) {
-		try {
-			const image = await generateImage(prompt, options);
-			results.push(image);
-		} catch (error) {
-			logger.error({ index: i, error }, "failed to generate image in batch");
-			// Continue with remaining images
-		}
-	}
-
-	return results;
-}
-
-/**
  * Check if image generation is available.
  * Uses sync check for env/config; keychain key will be found at runtime.
  */

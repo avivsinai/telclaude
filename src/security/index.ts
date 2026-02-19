@@ -94,11 +94,7 @@ export {
 // Streaming redactor for chunk boundary handling
 export {
 	createStreamingRedactor,
-	getLongestPatternLength,
-	getPatternNames,
-	processChunks,
 	type RedactionStats,
-	redactStream,
 	StreamingRedactor,
 } from "./streaming-redactor.js";
 export * from "./totp-session.js";
