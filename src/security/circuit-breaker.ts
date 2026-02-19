@@ -202,13 +202,3 @@ export class CircuitBreaker {
 		logger.info({ name: this.name }, "circuit breaker manually reset");
 	}
 }
-
-/**
- * Create a circuit breaker.
- */
-export function createCircuitBreaker(
-	name: string,
-	config?: Partial<CircuitBreakerConfig>,
-): CircuitBreaker {
-	return new CircuitBreaker(name, config);
-}

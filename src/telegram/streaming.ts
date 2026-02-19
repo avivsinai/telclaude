@@ -93,18 +93,6 @@ const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig">> = {
 };
 
 /**
- * Creates the default inline keyboard for responses.
- * Full version with all actions.
- */
-export function createResponseKeyboard(): InlineKeyboard {
-	return new InlineKeyboard()
-		.text("🔄 New", "action:new")
-		.text("🔊 Read Aloud", "action:tts")
-		.row()
-		.text("❓ Help", "action:help");
-}
-
-/**
  * Creates a compact inline keyboard for responses.
  * Single row, icon-only for mobile-friendly display.
  */

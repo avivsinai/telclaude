@@ -576,20 +576,6 @@ export function createInputFile(source: string | Buffer): InputFile {
 }
 
 /**
- * Send typing indicator (chat action).
- */
-export async function sendTypingIndicator(bot: Bot, chatId: number): Promise<void> {
-	await bot.api.sendChatAction(chatId, "typing");
-}
-
-/**
- * Get bot info.
- */
-export async function getBotInfo(bot: Bot) {
-	return bot.api.getMe();
-}
-
-/**
  * Send a message using just a token (creates temporary bot instance).
  */
 export type SendTelegramMessageOptions = {

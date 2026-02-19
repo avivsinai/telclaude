@@ -290,20 +290,6 @@ export function cleanupExpiredApprovals(): number {
 }
 
 /**
- * Get the count of pending approvals.
- */
-export function getPendingApprovalCount(): number {
-	const db = getDb();
-	const now = Date.now();
-
-	const row = db.prepare("SELECT COUNT(*) as count FROM approvals WHERE expires_at > ?").get(now) as
-		| { count: number }
-		| undefined;
-
-	return row?.count ?? 0;
-}
-
-/**
  * Determine if a request requires approval based on tier and classification.
  *
  * @param tier - The user's permission tier
