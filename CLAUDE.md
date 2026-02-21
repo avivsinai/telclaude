@@ -51,7 +51,8 @@
 - `src/relay/` — Anthropic proxy, HTTP credential proxy, git proxy, provider proxy, token manager, capabilities.
 - `src/agent/` — agent server/client, memory client, token client.
 - `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials, video processing).
-- `src/telegram/` — inbound/outbound bot.
+- `src/telegram/` — inbound/outbound bot, mention/command gating, streaming state machine.
+- `src/cron/` — cron scheduler, SQLite job store, schedule parsing.
 - `src/social/` — social services: handler, scheduler, identity, context, activity log.
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
 - `src/oauth/` — OAuth2 PKCE flow, service registry.
@@ -66,6 +67,7 @@
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
 - `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider.
 - `docs/architecture.md` — design rationale & security invariants.
+- `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
 - `docker/` — container stack.
 
 ## Common commands
@@ -84,6 +86,11 @@
 - OAuth list: `pnpm dev oauth list`
 - OAuth revoke: `pnpm dev oauth revoke xtwitter`
 - RPC keygen: `pnpm dev keygen <scope>` (generates Ed25519 keypair; env vars: `{SCOPE}_RPC_AGENT_*` / `{SCOPE}_RPC_RELAY_*`)
+- Cron status: `pnpm dev cron status`
+- Cron list: `pnpm dev cron list [--all] [--json]`
+- Cron add: `pnpm dev cron add --name <n> --every <dur>|--cron <expr>|--at <iso> --social|--private`
+- Cron run: `pnpm dev cron run <id>`
+- Sessions: `pnpm dev sessions [--active <min>] [--json]`
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.
@@ -97,6 +104,7 @@
 - Public activity log: `/public-log [serviceId] [hours]` (metadata-only summary of social actions).
 - Ask public persona: `/ask-public <question>` (routed to social agent, response piped through relay).
 - Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).
+- Cron scheduler: `cron.enabled` (default true), `pollIntervalSeconds` (default 15), `timeoutSeconds` (default 900). Cron jobs and interval heartbeats are mutually exclusive per target.
 
 ## Tier-based key exposure
 API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.

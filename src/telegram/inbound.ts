@@ -8,7 +8,9 @@ import { containsHomoglyphs, foldHomoglyphs } from "../security/homoglyphs.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
 import { isBotMessage, removeReaction, storeReaction } from "../storage/reactions.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
+import { resolveControlCommandGate } from "./command-gating.js";
 import { registerKeyboardHandlers } from "./keyboard-handlers.js";
+import { resolveMentionGatingWithBypass } from "./mention-gating.js";
 import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import {
@@ -31,6 +33,7 @@ export type InboxMonitorOptions = {
 	allowedChats?: (number | string)[];
 	groupChat?: {
 		requireMention?: boolean;
+		allowTextCommands?: boolean;
 	};
 	secretFilterConfig?: SecretFilterConfig;
 	/** Enable inline keyboard buttons on responses. Default: true */
@@ -43,6 +46,40 @@ export type InboxMonitorHandle = {
 };
 
 const ZERO_WIDTH_CHARS_REGEX = /\u200B|\u200C|\u200D|\uFEFF/gu;
+const CONTROL_COMMAND_PREFIXES = [
+	"/link ",
+	"/approve ",
+	"/deny ",
+	"/otp ",
+	"/promote ",
+	"/promote-skill ",
+	"/heartbeat ",
+	"/status ",
+	"/public-log ",
+	"/ask-public ",
+	"/verify-2fa ",
+	"/force-reauth ",
+] as const;
+const CONTROL_COMMAND_EXACT = new Set([
+	"/otp",
+	"/list-drafts",
+	"/reload-skills",
+	"/pending",
+	"/heartbeat",
+	"/status",
+	"/public-log",
+	"/setup-2fa",
+	"/verify-2fa",
+	"/disable-2fa",
+	"/2fa-logout",
+	"/force-reauth",
+	"/skip-totp",
+	"/unlink",
+	"/whoami",
+	"/new",
+	"/reset",
+	"/deny",
+]);
 
 export type InboundBodyNormalization = {
 	normalized: string;
@@ -99,6 +136,7 @@ export async function monitorTelegramInbox(
 	const botUsername = botInfo.username?.toLowerCase();
 
 	const requiresGroupMention = groupChat?.requireMention ?? false;
+	const allowGroupTextCommands = groupChat?.allowTextCommands ?? false;
 
 	const isGroupChat = (chatType: string) => ["group", "supergroup"].includes(chatType);
 
@@ -126,6 +164,22 @@ export async function monitorTelegramInbox(
 		}
 
 		return false;
+	};
+
+	const hasAnyTelegramMention = (message: Context["message"]): boolean => {
+		const entities = message?.entities ?? message?.caption_entities ?? [];
+		return entities.some((entity) => entity.type === "mention" || entity.type === "text_mention");
+	};
+
+	const hasControlCommand = (body: string): boolean => {
+		const trimmed = body.trim();
+		if (!trimmed.startsWith("/")) {
+			return false;
+		}
+		if (CONTROL_COMMAND_EXACT.has(trimmed)) {
+			return true;
+		}
+		return CONTROL_COMMAND_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 	};
 
 	// Helper to check if chat is allowed
@@ -210,11 +264,39 @@ export async function monitorTelegramInbox(
 		}
 
 		if (requiresGroupMention && isGroupChat(chat.type)) {
-			if (!isMessageTargetingBot(message)) {
+			const wasMentioned = isMessageTargetingBot(message);
+			const bodyRaw = message.text ?? message.caption ?? "";
+			const controlCommand = hasControlCommand(bodyRaw);
+			const commandGate = resolveControlCommandGate({
+				useAccessGroups: false,
+				authorizers: [],
+				allowTextCommands: allowGroupTextCommands,
+				hasControlCommand: controlCommand,
+			});
+			const mentionGate = resolveMentionGatingWithBypass({
+				isGroup: true,
+				requireMention: requiresGroupMention,
+				canDetectMention: true,
+				wasMentioned,
+				hasAnyMention: hasAnyTelegramMention(message),
+				allowTextCommands: allowGroupTextCommands,
+				hasControlCommand: controlCommand,
+				commandAuthorized: commandGate.commandAuthorized,
+			});
+
+			// Note: commandGate.shouldBlock is currently always false (useAccessGroups=false, default mode="allow").
+			// When access groups are wired, re-add: commandGate.shouldBlock || mentionGate.shouldSkip
+			if (mentionGate.shouldSkip) {
 				if (verbose) {
 					logger.debug(
-						{ chatId: chat.id, chatType: chat.type },
-						"group message missing bot mention/reply; ignoring",
+						{
+							chatId: chat.id,
+							chatType: chat.type,
+							commandBypass: mentionGate.shouldBypassMention,
+							commandAuthorized: commandGate.commandAuthorized,
+							controlCommand,
+						},
+						"group message gated by mention/command policy; ignoring",
 					);
 				}
 				return null;

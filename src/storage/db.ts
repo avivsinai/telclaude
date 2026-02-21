@@ -273,6 +273,39 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_trust ON memory_entries(trust);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_created ON memory_entries(created_at);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_posted ON memory_entries(posted_at);
+
+		-- Cron jobs (local scheduler state)
+		CREATE TABLE IF NOT EXISTS cron_jobs (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			running INTEGER NOT NULL DEFAULT 0,
+			schedule_kind TEXT NOT NULL,
+			schedule_at INTEGER,
+			schedule_every_ms INTEGER,
+			schedule_cron TEXT,
+			action_kind TEXT NOT NULL,
+			action_service_id TEXT,
+			next_run_at INTEGER,
+			last_run_at INTEGER,
+			last_status TEXT,
+			last_error TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(enabled, next_run_at);
+		CREATE INDEX IF NOT EXISTS idx_cron_jobs_running ON cron_jobs(running, next_run_at);
+
+		-- Cron run history (operational visibility)
+		CREATE TABLE IF NOT EXISTS cron_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id TEXT NOT NULL,
+			started_at INTEGER NOT NULL,
+			finished_at INTEGER,
+			status TEXT NOT NULL,
+			message TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_cron_runs_job_started ON cron_runs(job_id, started_at DESC);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -359,6 +392,7 @@ export function cleanupExpired(): {
 	botMessages: number;
 	messageReactions: number;
 	attachmentRefs: number;
+	cronRuns: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -413,6 +447,12 @@ export function cleanupExpired(): {
 		.prepare("DELETE FROM attachment_refs WHERE expires_at < ?")
 		.run(now);
 
+	// Keep cron run history for 30 days
+	const thirtyDaysAgo = now - 30 * 24 * 3600 * 1000;
+	const cronRunsResult = database
+		.prepare("DELETE FROM cron_runs WHERE started_at < ?")
+		.run(thirtyDaysAgo);
+
 	const result = {
 		approvals: approvalsResult.changes,
 		linkCodes: linkCodesResult.changes,
@@ -423,6 +463,7 @@ export function cleanupExpired(): {
 		botMessages: botMessagesResult.changes,
 		messageReactions: reactionsResult.changes,
 		attachmentRefs: attachmentRefsResult.changes,
+		cronRuns: cronRunsResult.changes,
 	};
 
 	logger.info(result, "expired entries cleaned up");

@@ -21,6 +21,7 @@ import type { MemorySource, TrustLevel } from "../memory/types.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { cachedDNSLookup, isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
+import { filterOutput } from "../security/output-filter.js";
 import { generateImage } from "../services/image-generation.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { summarizeUrl } from "../services/summarize.js";
@@ -561,6 +562,39 @@ function buildScopedSnapshot(
 	};
 }
 
+/**
+ * Fire-and-forget Telegram notification when an agent writes memory.
+ * Runs asynchronously after the HTTP response is already sent.
+ */
+async function notifyMemoryActivity(
+	scope: string,
+	action: "wrote" | "quarantined",
+	entries: Array<{ category: string; content: string }>,
+): Promise<void> {
+	const agent = scope === "telegram" ? "private" : "social";
+	const count = entries.length;
+	const noun = count === 1 ? "entry" : "entries";
+
+	const lines = entries.slice(0, 5).map((e) => {
+		const raw = e.content.length > 150 ? `${e.content.slice(0, 150)}...` : e.content;
+		const snippet = filterOutput(raw).blocked ? "[redacted — secret detected]" : raw;
+		return `[${e.category}] ${snippet}`;
+	});
+	if (count > 5) {
+		lines.push(`... and ${count - 5} more`);
+	}
+
+	const config = loadConfig();
+	await sendAdminAlert(
+		{
+			level: "info",
+			title: `memory / ${agent} agent ${action}`,
+			message: `${count} ${noun}:\n\n${lines.join("\n\n")}`,
+		},
+		{ fallbackChats: config.telegram?.allowedChats },
+	);
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
@@ -873,6 +907,16 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					return;
 				}
 				writeJson(res, 200, proposeResult.value);
+				notifyMemoryActivity(
+					authResult.scope,
+					"wrote",
+					(parsed.entries as MemoryEntryInput[]).map((e) => ({
+						category: e.category,
+						content: e.content,
+					})),
+				).catch((err) => {
+					logger.debug({ error: String(err) }, "memory activity notification failed");
+				});
 				return;
 			}
 
@@ -921,6 +965,14 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					return;
 				}
 				writeJson(res, 200, quarantineResult.value);
+				notifyMemoryActivity("telegram", "quarantined", [
+					{
+						category: "posts",
+						content: (parsed as { content?: string }).content ?? "",
+					},
+				]).catch((err) => {
+					logger.debug({ error: String(err) }, "memory activity notification failed");
+				});
 				return;
 			}
 

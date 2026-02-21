@@ -29,6 +29,7 @@ import { getChildLogger } from "../logging.js";
 import type { SecretFilterConfig } from "../security/output-filter.js";
 import { filterOutput, filterOutputWithConfig } from "../security/output-filter.js";
 import { recordBotMessage } from "../storage/reactions.js";
+import { createDraftStreamLoop, type DraftStreamLoop } from "./draft-stream-loop.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
 const logger = getChildLogger({ module: "telegram-streaming" });
@@ -134,10 +135,10 @@ export class StreamingResponse {
 	private content = "";
 	private lastUpdateTime = 0;
 	private lastSentContent = "";
-	private pendingUpdate: NodeJS.Timeout | null = null;
+	private readonly streamLoop: DraftStreamLoop;
+	private forceUpdateTimer: NodeJS.Timeout | null = null;
 	private isFinished = false;
 	private hasSucceeded = false;
-	private updatePromise: Promise<void> | null = null;
 	private typingInterval: NodeJS.Timeout | null = null;
 	private consecutiveErrors = 0;
 	private useMarkdown = true; // Fall back to plain text after parse errors
@@ -146,6 +147,27 @@ export class StreamingResponse {
 		this.api = api;
 		this.chatId = chatId;
 		this.config = { ...DEFAULT_CONFIG, ...config };
+		this.streamLoop = createDraftStreamLoop({
+			throttleMs: this.config.minUpdateIntervalMs,
+			isStopped: () => this.isFinished,
+			sendOrEditStreamMessage: async () => {
+				const now = Date.now();
+				const timeSinceLastUpdate = now - this.lastUpdateTime;
+				const contentDelta = this.content.length - this.lastSentContent.length;
+				const shouldUpdateNow =
+					timeSinceLastUpdate >= this.config.minUpdateIntervalMs &&
+					contentDelta >= this.config.minCharsForUpdate;
+				const mustUpdateNow =
+					timeSinceLastUpdate >= this.config.maxUpdateIntervalMs && contentDelta > 0;
+
+				if (!shouldUpdateNow && !mustUpdateNow) {
+					return false;
+				}
+
+				await this.doUpdate();
+				return true;
+			},
+		});
 	}
 
 	/**
@@ -226,43 +248,34 @@ export class StreamingResponse {
 	 * Implements intelligent batching to minimize API calls.
 	 */
 	private async scheduleUpdate(): Promise<void> {
-		const now = Date.now();
-		const timeSinceLastUpdate = now - this.lastUpdateTime;
-		const contentDelta = this.content.length - this.lastSentContent.length;
+		this.streamLoop.update(this.content);
+		this.ensureForceUpdateTimer();
+	}
 
-		// Determine if we should update now
-		const shouldUpdateNow =
-			timeSinceLastUpdate >= this.config.minUpdateIntervalMs &&
-			contentDelta >= this.config.minCharsForUpdate;
-
-		const mustUpdateNow =
-			timeSinceLastUpdate >= this.config.maxUpdateIntervalMs && contentDelta > 0;
-
-		if (shouldUpdateNow || mustUpdateNow) {
-			// Cancel any pending scheduled update
-			if (this.pendingUpdate) {
-				clearTimeout(this.pendingUpdate);
-				this.pendingUpdate = null;
-			}
-
-			// Wait for any in-flight update before sending another
-			if (this.updatePromise) {
-				await this.updatePromise;
-			}
-
-			this.updatePromise = this.doUpdate();
-			await this.updatePromise;
-			this.updatePromise = null;
-		} else if (!this.pendingUpdate) {
-			// Schedule a future update
-			const delay = Math.max(this.config.minUpdateIntervalMs - timeSinceLastUpdate, 100);
-			this.pendingUpdate = setTimeout(() => {
-				this.pendingUpdate = null;
-				this.scheduleUpdate().catch((err) => {
-					logger.error({ error: String(err) }, "scheduled update failed");
-				});
-			}, delay);
+	private clearForceUpdateTimer(): void {
+		if (this.forceUpdateTimer) {
+			clearTimeout(this.forceUpdateTimer);
+			this.forceUpdateTimer = null;
 		}
+	}
+
+	private ensureForceUpdateTimer(): void {
+		if (this.isFinished || this.forceUpdateTimer || this.content === this.lastSentContent) {
+			return;
+		}
+		const elapsed = Date.now() - this.lastUpdateTime;
+		const delay = Math.max(this.config.maxUpdateIntervalMs - elapsed, 100);
+		this.forceUpdateTimer = setTimeout(() => {
+			this.forceUpdateTimer = null;
+			this.streamLoop
+				.flush()
+				.catch((err) => {
+					logger.error({ error: String(err) }, "forced streaming flush failed");
+				})
+				.finally(() => {
+					this.ensureForceUpdateTimer();
+				});
+		}, delay);
 	}
 
 	/**
@@ -316,6 +329,7 @@ export class StreamingResponse {
 			this.lastSentContent = this.content;
 			this.lastUpdateTime = Date.now();
 			this.consecutiveErrors = 0; // Reset error counter on success
+			this.clearForceUpdateTimer();
 
 			logger.debug(
 				{
@@ -377,6 +391,7 @@ export class StreamingResponse {
 					);
 					this.lastSentContent = this.content;
 					this.lastUpdateTime = Date.now();
+					this.clearForceUpdateTimer();
 				} catch (fallbackErr) {
 					logger.error({ error: String(fallbackErr) }, "plain text fallback also failed");
 				}
@@ -416,20 +431,16 @@ export class StreamingResponse {
 	 * @returns The final message, or null if sending failed
 	 */
 	async finish(options?: { keyboard?: InlineKeyboard | null }): Promise<Message | null> {
+		this.stopTypingIndicator();
+		this.clearForceUpdateTimer();
+
+		// Flush pending content BEFORE marking finished — flush() exits early when isStopped() is true.
+		await this.streamLoop.flush();
+		this.streamLoop.stop();
+		await this.streamLoop.waitForInFlight();
+
 		this.isFinished = true;
 		this.hasSucceeded = true;
-		this.stopTypingIndicator();
-
-		// Cancel any pending update
-		if (this.pendingUpdate) {
-			clearTimeout(this.pendingUpdate);
-			this.pendingUpdate = null;
-		}
-
-		// Wait for any in-flight update
-		if (this.updatePromise) {
-			await this.updatePromise;
-		}
 
 		if (!this.messageId) {
 			logger.warn({ chatId: this.chatId }, "cannot finish stream - no message ID");
@@ -568,17 +579,15 @@ export class StreamingResponse {
 	 * @param errorMessage - Message to display (default: generic error)
 	 */
 	async abort(errorMessage?: string): Promise<void> {
-		this.isFinished = true;
 		this.stopTypingIndicator();
+		this.clearForceUpdateTimer();
 
-		if (this.pendingUpdate) {
-			clearTimeout(this.pendingUpdate);
-			this.pendingUpdate = null;
-		}
+		// Flush pending content BEFORE marking finished — flush() exits early when isStopped() is true.
+		await this.streamLoop.flush();
+		this.streamLoop.stop();
+		await this.streamLoop.waitForInFlight();
 
-		if (this.updatePromise) {
-			await this.updatePromise;
-		}
+		this.isFinished = true;
 
 		if (!this.messageId) {
 			return;
