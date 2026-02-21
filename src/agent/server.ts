@@ -10,6 +10,7 @@ import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 import { loadSocialContractPrompt } from "../social-contract.js";
+import { loadSoul } from "../soul.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 
 const logger = getChildLogger({ module: "agent-server" });
@@ -271,7 +272,14 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					}
 				}
 
-				// Inject social contract with active persona tag
+				// Inject soul + social contract with active persona tag
+				const soul = loadSoul();
+				if (soul) {
+					const soulBlock = `<soul>\n${soul}\n</soul>`;
+					effectiveSystemPromptAppend = effectiveSystemPromptAppend
+						? `${effectiveSystemPromptAppend}\n${soulBlock}`
+						: soulBlock;
+				}
 				const socialPrompt = loadSocialContractPrompt();
 				if (socialPrompt) {
 					const isSocialScope = scope !== "telegram";

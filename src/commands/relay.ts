@@ -5,6 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
+import { executeCronAction } from "../cron/actions.js";
+import { startCronScheduler } from "../cron/scheduler.js";
+import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
@@ -33,7 +36,6 @@ import { ensureActivityLogTable } from "../social/activity-log.js";
 import {
 	createSocialClient,
 	handleSocialHeartbeat,
-	type SocialScheduler,
 	startSocialScheduler,
 } from "../social/index.js";
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
@@ -113,7 +115,7 @@ export function registerRelayCommand(program: Command): void {
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
 				await readEnv(); // Validates environment variables
-				const socialSchedulers: SocialScheduler[] = [];
+				const schedulerHandles: Array<{ stop: () => void }> = [];
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -208,9 +210,40 @@ export function registerRelayCommand(program: Command): void {
 				// Initialize activity log table for cross-persona queries
 				ensureActivityLogTable();
 
+				const cronEnabled = cfg.cron.enabled !== false;
+				let cronCoverage = {
+					allSocial: false,
+					socialServiceIds: [] as string[],
+					hasPrivateHeartbeat: false,
+				};
+				if (cronEnabled) {
+					const scheduler = startCronScheduler({
+						pollIntervalMs: cfg.cron.pollIntervalSeconds * 1000,
+						timeoutMs: cfg.cron.timeoutSeconds * 1000,
+						executor: (job) => executeCronAction(job, cfg),
+					});
+					schedulerHandles.push(scheduler);
+
+					const summary = getCronStatusSummary();
+					cronCoverage = getCronCoverage();
+					console.log(
+						`  Cron scheduler: enabled (${summary.enabledJobs}/${summary.totalJobs} jobs, poll ${cfg.cron.pollIntervalSeconds}s)`,
+					);
+				} else {
+					console.log("  Cron scheduler: disabled in config");
+				}
+
 				const enabledServices = cfg.socialServices.filter((s) => s.enabled);
 				if (enabledServices.length > 0) {
 					for (const svc of enabledServices) {
+						const coveredByCron =
+							cronEnabled &&
+							(cronCoverage.allSocial || cronCoverage.socialServiceIds.includes(svc.id));
+						if (coveredByCron) {
+							console.log(`  Social service ${svc.id}: cron-managed (interval heartbeat disabled)`);
+							continue;
+						}
+
 						const intervalHours = svc.heartbeatIntervalHours ?? 4;
 						const intervalMs = intervalHours * 60 * 60 * 1000;
 						const scheduler = startSocialScheduler({
@@ -231,7 +264,7 @@ export function registerRelayCommand(program: Command): void {
 								}
 							},
 						});
-						socialSchedulers.push(scheduler);
+						schedulerHandles.push(scheduler);
 						console.log(`  Social service ${svc.id}: enabled (heartbeat every ${intervalHours}h)`);
 					}
 				} else {
@@ -240,23 +273,27 @@ export function registerRelayCommand(program: Command): void {
 
 				// Private heartbeat scheduler (autonomous tasks for telegram persona)
 				if (cfg.telegram?.heartbeat?.enabled) {
-					const privateIntervalHours = cfg.telegram.heartbeat.intervalHours ?? 6;
-					const privateIntervalMs = privateIntervalHours * 60 * 60 * 1000;
-					const privateScheduler = startSocialScheduler({
-						serviceId: "telegram-private",
-						intervalMs: privateIntervalMs,
-						onHeartbeat: async () => {
-							const result = await handlePrivateHeartbeat(cfg);
-							if (result.acted) {
-								logger.info(
-									{ summary: result.summary },
-									"private heartbeat completed with activity",
-								);
-							}
-						},
-					});
-					socialSchedulers.push(privateScheduler);
-					console.log(`  Private heartbeat: enabled (every ${privateIntervalHours}h)`);
+					if (cronEnabled && cronCoverage.hasPrivateHeartbeat) {
+						console.log("  Private heartbeat: cron-managed (interval heartbeat disabled)");
+					} else {
+						const privateIntervalHours = cfg.telegram.heartbeat.intervalHours ?? 6;
+						const privateIntervalMs = privateIntervalHours * 60 * 60 * 1000;
+						const privateScheduler = startSocialScheduler({
+							serviceId: "telegram-private",
+							intervalMs: privateIntervalMs,
+							onHeartbeat: async () => {
+								const result = await handlePrivateHeartbeat(cfg);
+								if (result.acted) {
+									logger.info(
+										{ summary: result.summary },
+										"private heartbeat completed with activity",
+									);
+								}
+							},
+						});
+						schedulerHandles.push(privateScheduler);
+						console.log(`  Private heartbeat: enabled (every ${privateIntervalHours}h)`);
+					}
 				}
 
 				// Detect sandbox mode and verify sandbox availability
@@ -466,11 +503,11 @@ export function registerRelayCommand(program: Command): void {
 					console.log("\nShutting down...");
 					abortController.abort();
 
-					for (const scheduler of socialSchedulers) {
+					for (const scheduler of schedulerHandles) {
 						scheduler.stop();
 					}
-					if (socialSchedulers.length > 0) {
-						logger.info({ count: socialSchedulers.length }, "social schedulers stopped");
+					if (schedulerHandles.length > 0) {
+						logger.info({ count: schedulerHandles.length }, "schedulers stopped");
 					}
 
 					// Clean up session pool
@@ -498,7 +535,7 @@ export function registerRelayCommand(program: Command): void {
 				});
 
 				// Final cleanup after monitor exits
-				for (const scheduler of socialSchedulers) {
+				for (const scheduler of schedulerHandles) {
 					scheduler.stop();
 				}
 				await destroySessionManager();

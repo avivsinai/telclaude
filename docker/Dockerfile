@@ -161,6 +161,7 @@ COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
 COPY --from=builder --chown=node:node /build/src ./src
+COPY --chown=node:node docs/soul.md ./docs/soul.md
 COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
 COPY --chown=node:node docs/architecture.md ./docs/architecture.md
 COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
