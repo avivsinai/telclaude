@@ -576,7 +576,7 @@ async function notifyMemoryActivity(
 	const noun = count === 1 ? "entry" : "entries";
 
 	const lines = entries.slice(0, 5).map((e) => {
-		const raw = e.content.length > 150 ? `${e.content.slice(0, 150)}...` : e.content;
+		const raw = e.content.length > 500 ? `${e.content.slice(0, 500)}…` : e.content;
 		const snippet = filterOutput(raw).blocked ? "[redacted — secret detected]" : raw;
 		return `[${e.category}] ${snippet}`;
 	});
