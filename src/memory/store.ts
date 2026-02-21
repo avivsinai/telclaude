@@ -192,15 +192,14 @@ export function getEntries(query: MemoryQuery = {}): MemoryEntry[] {
 export type PromoteEntryResult = { ok: true; entry: MemoryEntry } | { ok: false; reason: string };
 
 /**
- * Promote a memory entry from quarantined to trusted.
+ * Promote a memory entry to trusted.
  *
- * Security constraints (per Codex review):
- * - Only allows quarantined → trusted (enforces consent-based workflow)
- * - Only allows source === "telegram"
+ * Security constraints:
  * - Only allows category === "posts"
- *
- * This prevents social entries from being promoted into trusted context
- * and enforces that ideas must go through the quarantine workflow.
+ * - Only allows source === "telegram" or "social"
+ * - Telegram entries must be quarantined (consent-based workflow)
+ * - Social entries must be untrusted (agent-written post ideas)
+ * - Operator explicitly approves via /promote — consent is established
  */
 export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryResult {
 	const db = getDb();
@@ -227,15 +226,6 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 		return { ok: false, reason: "Entry not found" };
 	}
 
-	// Security: Only allow telegram source to be promoted
-	if (existing.source !== "telegram") {
-		logger.warn(
-			{ id, source: existing.source },
-			"rejected promotion: only telegram entries can be promoted",
-		);
-		return { ok: false, reason: "Only telegram entries can be promoted" };
-	}
-
 	// Security: Only allow posts category to be promoted
 	if (existing.category !== "posts") {
 		logger.warn(
@@ -245,9 +235,19 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 		return { ok: false, reason: "Only posts can be promoted" };
 	}
 
-	// Security: Only allow quarantined entries to be promoted (enforces consent workflow)
-	if (existing.trust !== "quarantined") {
-		return { ok: false, reason: "Only quarantined entries can be promoted" };
+	// Security: Only allow telegram or social source
+	const allowedSources = ["telegram", "social"];
+	if (!allowedSources.includes(existing.source)) {
+		logger.warn({ id, source: existing.source }, "rejected promotion: invalid source");
+		return { ok: false, reason: "Only telegram or social entries can be promoted" };
+	}
+
+	// Security: Enforce valid pre-promotion trust per source
+	// - Telegram: must be quarantined (consent-based workflow)
+	// - Social: must be untrusted (agent-written post ideas)
+	const validTrust = existing.source === "telegram" ? "quarantined" : "untrusted";
+	if (existing.trust !== validTrust) {
+		return { ok: false, reason: `Only ${validTrust} ${existing.source} entries can be promoted` };
 	}
 
 	const now = Date.now();

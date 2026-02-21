@@ -482,16 +482,16 @@ export async function queryPublicPersona(
  * Query for promoted ideas that haven't been posted yet.
  *
  * Security: Only returns entries that are:
- * - source = "telegram" (consented by user)
+ * - source = "telegram" or "social" (both can generate post ideas)
  * - category = "posts"
- * - trust = "trusted"
+ * - trust = "trusted" (operator-approved via /promote)
  * - promoted_at IS NOT NULL (explicitly approved)
  * - posted_at IS NULL (not yet posted)
  */
 function getPromotedIdeas(): MemoryEntry[] {
 	return getEntries({
 		categories: ["posts"],
-		sources: ["telegram"],
+		sources: ["telegram", "social"],
 		trust: ["trusted"],
 		promoted: true,
 		posted: false,

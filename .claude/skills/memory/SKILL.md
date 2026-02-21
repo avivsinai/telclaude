@@ -88,5 +88,5 @@ You CANNOT promote entries yourself — only the user can approve via `/promote`
 - Creates **untrusted** entries by default
 - Can only read social/untrusted entries
 - Cannot read Telegram memory
-- Cannot promote or quarantine entries
-- Use `memory write` for public profile, interests, and post drafts
+- Cannot promote or quarantine entries (operator promotes via `/promote`)
+- Post ideas (category `posts`) can be promoted by the operator for social posting
