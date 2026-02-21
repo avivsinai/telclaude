@@ -59,6 +59,7 @@ const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
 const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
+const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -341,6 +342,9 @@ const SecurityConfigSchema = z.object({
 const TelegramGroupChatConfigSchema = z.object({
 	// When enabled, group/supergroup messages must mention the bot (or reply to the bot)
 	requireMention: z.boolean().default(false),
+	// Allow known control commands in group chats without mention.
+	// Authorization checks still happen in command handlers.
+	allowTextCommands: z.boolean().default(false),
 });
 
 // Private heartbeat configuration (autonomous background tasks for telegram persona)
@@ -414,6 +418,12 @@ const SocialServiceConfigSchema = z.object({
 	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });
 
+const CronConfigSchema = z.object({
+	enabled: z.boolean().default(CRON_DEFAULTS.enabled),
+	pollIntervalSeconds: z.number().int().positive().default(CRON_DEFAULTS.pollIntervalSeconds),
+	timeoutSeconds: z.number().int().positive().default(CRON_DEFAULTS.timeoutSeconds),
+});
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -433,6 +443,7 @@ const TelclaudeConfigSchema = z.object({
 	providers: z.array(ExternalProviderSchema).default([]),
 	// Generic social services (replaces per-service top-level keys)
 	socialServices: z.array(SocialServiceConfigSchema).default([]),
+	cron: CronConfigSchema.default(CRON_DEFAULTS),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -444,6 +455,7 @@ export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
+export type CronConfig = z.infer<typeof CronConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;

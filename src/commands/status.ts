@@ -2,6 +2,8 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import type { Command } from "commander";
 import { getConfigPath, loadConfig } from "../config/config.js";
+import { getAllSessions } from "../config/sessions.js";
+import { getCronStatusSummary } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
 import { createAuditLogger } from "../security/audit.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
@@ -54,6 +56,24 @@ export type TelclaudeStatus = {
 		uptimeMs: number;
 		uptimeSeconds: number;
 	};
+	operations: {
+		sessions: {
+			total: number;
+			staleOver24h: number;
+			recent: Array<{
+				key: string;
+				updatedAt: string;
+				ageSeconds: number;
+			}>;
+		};
+		cron: {
+			enabled: boolean;
+			totalJobs: number;
+			enabledJobs: number;
+			runningJobs: number;
+			nextRunAt: string | null;
+		};
+	};
 };
 
 function formatUptime(seconds: number): string {
@@ -71,6 +91,22 @@ function formatUptime(seconds: number): string {
 	}
 
 	return `${remainingSeconds}s`;
+}
+
+function formatAgeShort(seconds: number): string {
+	if (seconds < 60) {
+		return `${seconds}s`;
+	}
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) {
+		return `${minutes}m`;
+	}
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) {
+		return `${hours}h`;
+	}
+	const days = Math.floor(hours / 24);
+	return `${days}d`;
 }
 
 export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
@@ -115,6 +151,17 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 	};
 
 	const runtime = buildRuntimeSnapshot(STATUS_STARTED_AT);
+	const sessions = Object.entries(getAllSessions())
+		.map(([key, entry]) => {
+			const ageSeconds = Math.max(0, Math.floor((Date.now() - entry.updatedAt) / 1000));
+			return {
+				key,
+				updatedAt: new Date(entry.updatedAt).toISOString(),
+				ageSeconds,
+			};
+		})
+		.sort((a, b) => a.ageSeconds - b.ageSeconds);
+	const cronSummary = getCronStatusSummary();
 
 	return {
 		config: {
@@ -155,6 +202,20 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 			uptimeMs: runtime.uptimeMs,
 			uptimeSeconds: runtime.uptimeSeconds,
 		},
+		operations: {
+			sessions: {
+				total: sessions.length,
+				staleOver24h: sessions.filter((session) => session.ageSeconds > 24 * 3600).length,
+				recent: sessions.slice(0, 5),
+			},
+			cron: {
+				enabled: cfg?.cron?.enabled ?? true,
+				totalJobs: cronSummary.totalJobs,
+				enabledJobs: cronSummary.enabledJobs,
+				runningJobs: cronSummary.runningJobs,
+				nextRunAt: cronSummary.nextRunAtMs ? new Date(cronSummary.nextRunAtMs).toISOString() : null,
+			},
+		},
 	};
 }
 
@@ -166,12 +227,16 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 			"Runtime:",
 			`  Version: ${status.runtime.version}`,
 			`  Revision: ${status.runtime.revision}`,
-			`  Started: ${status.runtime.startedAt}`,
-			`  Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`,
+			`  CLI Started: ${status.runtime.startedAt}`,
+			`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`,
 			"",
 			"Services:",
 			`  External Providers: ${status.services.externalProviders}`,
 			`  Social Services: ${status.services.enabledSocialServices}/${status.services.socialServices}`,
+			"",
+			"Operations:",
+			`  Sessions: ${status.operations.sessions.total} total (${status.operations.sessions.staleOver24h} stale >24h)`,
+			`  Cron: ${status.operations.cron.enabledJobs}/${status.operations.cron.totalJobs} enabled${status.operations.cron.runningJobs > 0 ? ` (${status.operations.cron.runningJobs} running)` : ""}`,
 			"",
 			"Security:",
 			`  Profile: ${status.security?.profile ?? "unknown"}`,
@@ -211,8 +276,8 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push("Runtime:");
 	lines.push(`  Version: ${status.runtime.version}`);
 	lines.push(`  Revision: ${status.runtime.revision}`);
-	lines.push(`  Started: ${status.runtime.startedAt}`);
-	lines.push(`  Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`);
+	lines.push(`  CLI Started: ${status.runtime.startedAt}`);
+	lines.push(`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`);
 	lines.push("");
 	lines.push("Configuration:");
 	lines.push(`  Path: ${status.config.path}`);
@@ -223,6 +288,22 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push(
 		`  Social Services: ${status.services.enabledSocialServices}/${status.services.socialServices}`,
 	);
+	lines.push("");
+	lines.push("Operations:");
+	lines.push(
+		`  Sessions: ${status.operations.sessions.total} total (${status.operations.sessions.staleOver24h} stale >24h)`,
+	);
+	if (status.operations.sessions.recent.length > 0) {
+		for (const recent of status.operations.sessions.recent) {
+			lines.push(`    ${recent.key} (${formatAgeShort(recent.ageSeconds)} ago)`);
+		}
+	}
+	lines.push(
+		`  Cron: ${status.operations.cron.enabled ? "enabled" : "disabled"} in config, ${status.operations.cron.enabledJobs}/${status.operations.cron.totalJobs} jobs enabled`,
+	);
+	if (status.operations.cron.nextRunAt) {
+		lines.push(`    Next run: ${status.operations.cron.nextRunAt}`);
+	}
 	lines.push("");
 	lines.push("Environment:");
 	lines.push(`  TELEGRAM_BOT_TOKEN: ${status.environment.telegramToken}`);
