@@ -38,6 +38,7 @@ coverage/
 docs/
 !docs/social-contract.md
 !docs/architecture.md
+!docs/soul.md
 
 # OS files
 .DS_Store
