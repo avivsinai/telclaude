@@ -653,10 +653,14 @@ async function handleAutonomousActivity(
 	const autonomousPoolKey = `${serviceId}:autonomous`;
 	const autonomousUserId = `social:${serviceId}:autonomous`;
 
+	// Pi4 cold-start + browser tool use needs generous timeout for autonomous activity
+	const timeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 600_000);
+
 	const responseText = await runSocialQuery(bundle, serviceId, agentUrl, {
 		poolKey: autonomousPoolKey,
 		userId: autonomousUserId,
 		enableSkills,
+		timeoutMs,
 	});
 
 	const trimmed = responseText.trim();
