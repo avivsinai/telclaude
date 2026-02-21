@@ -415,13 +415,11 @@ export function handleMemoryQuarantine(
 }
 
 /**
- * Promote a quarantined memory entry to trusted.
+ * Promote a memory entry to trusted for social posting.
  *
- * Security: TELEGRAM-ONLY. This endpoint must be gated by scope in the relay.
- * Only promotes entries that are:
- * - source = "telegram"
- * - category = "posts"
- * - trust = "quarantined"
+ * Security: TELEGRAM-ONLY caller. This endpoint must be gated by scope in the relay.
+ * The entry itself can be from telegram (quarantined) or social (untrusted) source —
+ * promoteEntryTrust() enforces per-source trust constraints.
  */
 export function handleMemoryPromote(
 	request: MemoryPromoteRequest,
