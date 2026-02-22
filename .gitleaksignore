@@ -61,3 +61,4 @@ c47d4389e7f568398b5dbc704350851bd4b34cc2:src/internal-auth.ts:credentials-javasc
 
 # Test fixture - dummy URL with fake user:token for URL redaction test
 ef7bda8905acf8599ad76d6dbc764ca2942243e6:tests/infra/network-errors.test.ts:generic-auth-tuple:66
+7169843d14a0b9541b1a64b109a68d3d639228f8:tests/infra/network-errors.test.ts:generic-auth-tuple:66
