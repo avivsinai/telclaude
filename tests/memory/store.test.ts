@@ -106,7 +106,7 @@ describe("memory store", () => {
 		expect(updated._provenance.trust).toBe("trusted");
 	});
 
-	it("rejects promotion of social source entries", () => {
+	it("promotes untrusted social posts entries", () => {
 		createEntries(
 			[{ id: "social-entry", category: "posts", content: "from social" }],
 			"social",
@@ -114,9 +114,24 @@ describe("memory store", () => {
 		);
 
 		const result = promoteEntryTrust("social-entry", "admin");
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.entry._provenance.trust).toBe("trusted");
+			expect(result.entry._provenance.source).toBe("social");
+		}
+	});
+
+	it("rejects promotion of non-telegram/social source entries", () => {
+		createEntries(
+			[{ id: "import-entry", category: "posts", content: "from import" }],
+			"import" as "social", // Force disallowed source via type cast
+			20,
+		);
+
+		const result = promoteEntryTrust("import-entry", "admin");
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.reason).toContain("telegram");
+			expect(result.reason).toContain("telegram or social");
 		}
 	});
 

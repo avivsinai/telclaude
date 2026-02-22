@@ -55,7 +55,7 @@ const sampleEntries = [
 	},
 ];
 
-async function* mockStream(text: string, success = true, error?: string) {
+async function* mockStream(text: string, success = true, error?: string, structuredOutput?: unknown) {
 	yield { type: "text", content: text } as const;
 	yield {
 		type: "done",
@@ -66,6 +66,7 @@ async function* mockStream(text: string, success = true, error?: string) {
 			costUsd: 0,
 			numTurns: 1,
 			durationMs: 1,
+			...(structuredOutput !== undefined && { structuredOutput }),
 		},
 	} as const;
 }
@@ -243,7 +244,9 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt() for identity
 
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("My new post content"));
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, { action: "post", content: "My new post content" }),
+		);
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
@@ -292,7 +295,9 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
 
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("[SKIP]"));
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, { action: "skip", reason: "not relevant" }),
+		);
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
@@ -327,7 +332,9 @@ describe("social handler", () => {
 			.mockReturnValueOnce([promotedIdea]) // getPromotedIdeas()
 			.mockReturnValueOnce(sampleEntries); // buildProactivePostPrompt()
 
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("Post content"));
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, { action: "post", content: "Post content" }),
+		);
 
 		await handleSocialHeartbeat(SERVICE_ID, client);
 

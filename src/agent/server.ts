@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
-import type { SdkBeta } from "@anthropic-ai/claude-agent-sdk";
+import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
@@ -36,6 +36,8 @@ type QueryRequest = {
 	systemPromptAppend?: string;
 	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
 	sessionToken?: string;
+	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
+	outputFormat?: OutputFormat;
 };
 
 type AgentServerOptions = {
@@ -122,6 +124,7 @@ async function streamQuery(
 		abortController,
 		betas: req.betas,
 		systemPromptAppend: req.systemPromptAppend,
+		outputFormat: req.outputFormat,
 	})) {
 		if (abortController.signal.aborted) {
 			break;

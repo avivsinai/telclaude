@@ -16,6 +16,7 @@ import {
 	filterOutputWithConfig,
 } from "../../src/security/output-filter.js";
 import { containsBlockedCommand, isSensitivePath } from "../../src/security/permissions.js";
+import { MAX_MESSAGE_CHUNK_LENGTH } from "../../src/telegram/constants.js";
 import { splitMessage } from "../../src/telegram/sanitize.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -640,7 +641,7 @@ describe("Sensitive Path Fuzzing", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("Message Splitting Fuzzing", () => {
-	const MAX_LENGTH = 3200; // Matches MAX_MESSAGE_LENGTH in sanitize.ts (reduced for MarkdownV2 escape expansion)
+	const MAX_LENGTH = MAX_MESSAGE_CHUNK_LENGTH;
 
 	describe("Basic functionality", () => {
 		it("returns single chunk for short messages", () => {

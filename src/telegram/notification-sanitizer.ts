@@ -5,7 +5,7 @@
  * This prevents prompt injection from social content propagating to admin chats.
  */
 
-const MAX_NOTIFICATION_LENGTH = 200;
+import { MAX_NOTIFICATION_LENGTH } from "./constants.js";
 
 // Telegram MarkdownV2 special characters
 const TELEGRAM_SPECIAL_CHARS = /([_*[\]()~`>#+\-=|{}.!\\])/g;

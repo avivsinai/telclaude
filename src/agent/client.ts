@@ -63,6 +63,7 @@ export async function* executeRemoteQuery(
 			userId: options.userId,
 			systemPromptAppend: options.systemPromptAppend,
 			sessionToken,
+			outputFormat: options.outputFormat,
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
 		const scope = options.scope ?? "telegram";
