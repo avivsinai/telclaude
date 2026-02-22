@@ -20,6 +20,7 @@ import {
 	type HookCallback,
 	type HookCallbackMatcher,
 	type HookInput,
+	type OutputFormat,
 	type PermissionMode,
 	query,
 	type SDKMessage,
@@ -254,6 +255,9 @@ export type TelclaudeQueryOptions = {
 
 	/** Optional beta features to enable (e.g., 1M context window). */
 	betas?: SdkBeta[];
+
+	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
+	outputFormat?: OutputFormat;
 };
 
 /**
@@ -266,6 +270,7 @@ export type QueryResult = {
 	costUsd: number;
 	numTurns: number;
 	durationMs: number;
+	structuredOutput?: unknown;
 };
 
 /**
@@ -1030,6 +1035,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// Only pass env in Docker mode (when sandboxEnv is defined)
 		// In native mode, let SDK use process.env and handle sandbox env internally
 		...(sandboxEnv && { env: sandboxEnv }),
+		...(opts.outputFormat && { outputFormat: opts.outputFormat }),
 	};
 
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
@@ -1476,7 +1482,18 @@ async function* processMessageStream(
 
 				yield {
 					type: "done",
-					result: { response: finalResponse, success, error, costUsd, numTurns, durationMs },
+					result: {
+						response: finalResponse,
+						success,
+						error,
+						costUsd,
+						numTurns,
+						durationMs,
+						...("structured_output" in msg &&
+							msg.structured_output !== undefined && {
+								structuredOutput: msg.structured_output,
+							}),
+					},
 				};
 			}
 		}

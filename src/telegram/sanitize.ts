@@ -5,20 +5,7 @@
  * Output is converted to MarkdownV2 by outbound.ts after splitting.
  */
 
-/**
- * Telegram message length limit with margin for MarkdownV2 escape expansion.
- * Telegram's hard limit is 4096 chars. MarkdownV2 conversion can expand text
- * significantly (e.g., "test.com" → "test\.com"), so we use 3200 to leave
- * ~900 chars headroom for escaping special characters.
- */
-const MAX_MESSAGE_LENGTH = 3200;
-
-/**
- * Maximum total response size to prevent DoS.
- * Responses larger than this are truncated with a warning.
- * 500KB should be more than enough for any reasonable response.
- */
-const MAX_TOTAL_RESPONSE_SIZE = 500 * 1024; // 500KB
+import { MAX_MESSAGE_CHUNK_LENGTH, MAX_TOTAL_RESPONSE_SIZE } from "./constants.js";
 
 /** Truncation message appended when response exceeds size limit */
 const TRUNCATION_WARNING = "\n\n⚠️ [Response truncated - exceeded 500KB limit]";
@@ -73,7 +60,7 @@ function findSplitPoint(text: string, maxLength: number): number {
  * @param maxLength - Maximum length per chunk (default: 4000)
  * @returns Array of text chunks, each within maxLength
  */
-export function splitMessage(text: string, maxLength: number = MAX_MESSAGE_LENGTH): string[] {
+export function splitMessage(text: string, maxLength: number = MAX_MESSAGE_CHUNK_LENGTH): string[] {
 	if (text.length <= maxLength) {
 		return [text];
 	}

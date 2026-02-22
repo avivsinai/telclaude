@@ -29,6 +29,7 @@ import { getChildLogger } from "../logging.js";
 import type { SecretFilterConfig } from "../security/output-filter.js";
 import { filterOutput, filterOutputWithConfig } from "../security/output-filter.js";
 import { recordBotMessage } from "../storage/reactions.js";
+import { MAX_STREAMING_UPDATE_LENGTH } from "./constants.js";
 import { createDraftStreamLoop, type DraftStreamLoop } from "./draft-stream-loop.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
@@ -302,8 +303,8 @@ export class StreamingResponse {
 		// Truncate for Telegram's 4096 char limit
 		// Keep the end of the content (most recent) if truncating
 		let displayContent = this.content;
-		if (displayContent.length > 3900) {
-			displayContent = `...\n${displayContent.slice(-3850)}`;
+		if (displayContent.length > MAX_STREAMING_UPDATE_LENGTH) {
+			displayContent = `...\n${displayContent.slice(-(MAX_STREAMING_UPDATE_LENGTH - 50))}`;
 		}
 
 		// Add streaming indicator
