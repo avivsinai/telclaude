@@ -32,7 +32,7 @@ const TRANSIENT_MESSAGE_PATTERNS = [
 	"ECONNRESET",
 	"ETIMEDOUT",
 	"ECONNREFUSED",
-	"request to .* failed",
+	"request to",
 	"client network socket disconnected",
 	"write EPIPE",
 	"read ECONNRESET",

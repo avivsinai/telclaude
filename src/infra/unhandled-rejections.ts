@@ -12,9 +12,9 @@ import { formatErrorSafe, isAbortError, isTransientNetworkError } from "./networ
 
 const logger = getChildLogger({ module: "unhandled-rejections" });
 
-type RejectionCategory = "fatal" | "config" | "transient" | "abort" | "unknown";
+export type RejectionCategory = "fatal" | "config" | "transient" | "abort" | "unknown";
 
-function categorize(err: unknown): RejectionCategory {
+export function categorize(err: unknown): RejectionCategory {
 	if (isAbortError(err)) return "abort";
 	if (isTransientNetworkError(err)) return "transient";
 
