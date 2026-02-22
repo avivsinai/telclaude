@@ -9,6 +9,7 @@ const logger = getChildLogger({ module: "cron-actions" });
 export async function executeCronAction(
 	job: CronJob,
 	cfg: TelclaudeConfig,
+	_signal?: AbortSignal,
 ): Promise<CronActionResult> {
 	switch (job.action.kind) {
 		case "private-heartbeat": {

@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 import type { Command } from "commander";
 import { AGENT_STARTED_AT, startAgentServer } from "../agent/server.js";
 import { bootstrapSessionToken } from "../agent/token-client.js";
+import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
@@ -18,6 +19,8 @@ export function registerAgentCommand(program: Command): void {
 		.option("--port <port>", "Port to bind the agent server")
 		.option("--host <host>", "Host to bind the agent server")
 		.action(async (opts: { port?: string; host?: string }) => {
+			installUnhandledRejectionHandler("agent");
+
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
 			const isSocialAgent = Boolean(
