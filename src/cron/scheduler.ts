@@ -13,21 +13,62 @@ export type CronScheduler = {
 	stop: () => void;
 };
 
-export type CronExecutor = (job: CronJob) => Promise<CronActionResult>;
+/**
+ * Cron executor receives an AbortSignal that fires on timeout.
+ * Pass this signal down to HTTP requests so they actually get cancelled.
+ */
+export type CronExecutor = (job: CronJob, signal: AbortSignal) => Promise<CronActionResult>;
 
-async function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Run a promise with a proper AbortController-based timeout.
+ * Unlike the old Promise.race approach, this actually aborts the executor
+ * when the timeout fires, freeing resources.
+ */
+/** Grace period after abort signal before we forcefully reject (10s). */
+const ABORT_GRACE_MS = 10_000;
+
+async function runWithTimeout(
+	executor: CronExecutor,
+	job: CronJob,
+	timeoutMs: number,
+): Promise<CronActionResult> {
 	if (timeoutMs <= 0) {
-		return promise;
+		return executor(job, new AbortController().signal);
 	}
-	return await Promise.race([
-		promise,
-		new Promise<T>((_resolve, reject) => {
-			const t = setTimeout(() => {
-				reject(new Error(`cron job timed out after ${timeoutMs}ms`));
-			}, timeoutMs);
-			t.unref();
-		}),
-	]);
+
+	const controller = new AbortController();
+
+	// Hard-timeout fallback: even if executor ignores the signal, we reject
+	// after timeoutMs + ABORT_GRACE_MS. This prevents stuck jobs from hanging forever.
+	const executorPromise = executor(job, controller.signal);
+	const hardDeadlineMs = timeoutMs + ABORT_GRACE_MS;
+
+	let softTimer: ReturnType<typeof setTimeout> | undefined;
+	let hardTimer: ReturnType<typeof setTimeout> | undefined;
+
+	const hardTimeoutPromise = new Promise<never>((_resolve, reject) => {
+		softTimer = setTimeout(() => {
+			controller.abort(new Error(`cron job timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		hardTimer = setTimeout(() => {
+			reject(new Error(`cron job timed out after ${timeoutMs}ms (executor did not honor abort)`));
+		}, hardDeadlineMs);
+
+		if (typeof softTimer === "object" && "unref" in softTimer) softTimer.unref();
+		if (typeof hardTimer === "object" && "unref" in hardTimer) hardTimer.unref();
+	});
+
+	try {
+		return await Promise.race([executorPromise, hardTimeoutPromise]);
+	} catch (err) {
+		if (controller.signal.aborted && String(err).includes("timed out")) {
+			throw new Error(`cron job timed out after ${timeoutMs}ms`);
+		}
+		throw err;
+	} finally {
+		if (softTimer) clearTimeout(softTimer);
+		if (hardTimer) clearTimeout(hardTimer);
+	}
 }
 
 async function executeClaimedJob(
@@ -37,7 +78,7 @@ async function executeClaimedJob(
 ): Promise<CronActionResult> {
 	const startedAtMs = Date.now();
 	try {
-		const result = await runWithTimeout(executor(job), timeoutMs);
+		const result = await runWithTimeout(executor, job, timeoutMs);
 		completeClaimedCronJob({
 			job,
 			startedAtMs,

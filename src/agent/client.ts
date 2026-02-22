@@ -1,9 +1,15 @@
+import { isTransientNetworkError } from "../infra/network-errors.js";
+import { retryAsync } from "../infra/retry.js";
+import { withTimeout } from "../infra/timeout.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
 import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 
 const logger = getChildLogger({ module: "agent-client" });
+
+/** Per-chunk read timeout — if no data in 30s, the stream is likely hung. */
+const STREAM_READ_TIMEOUT_MS = 30_000;
 
 type RemoteQueryOptions = PooledQueryOptions & {
 	agentUrl?: string;
@@ -67,15 +73,28 @@ export async function* executeRemoteQuery(
 		});
 		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
 		const scope = options.scope ?? "telegram";
-		const response = await fetch(endpoint, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				...buildInternalAuthHeaders("POST", path, payload, { scope }),
+
+		// Retry the initial fetch on transient network errors (2 attempts, 1s base delay)
+		const response = await retryAsync(
+			() =>
+				fetch(endpoint, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						...buildInternalAuthHeaders("POST", path, payload, { scope }),
+					},
+					body: payload,
+					signal: controller.signal,
+				}),
+			{
+				maxAttempts: 2,
+				baseDelayMs: 1000,
+				shouldRetry: (err) => isTransientNetworkError(err),
+				onRetry: (err, info) =>
+					logger.warn({ error: String(err), attempt: info.attempt }, "retrying agent fetch"),
+				label: "agent-fetch",
 			},
-			body: payload,
-			signal: controller.signal,
-		});
+		);
 
 		if (!response.ok || !response.body) {
 			const message = await response.text();
@@ -86,27 +105,43 @@ export async function* executeRemoteQuery(
 		const decoder = new TextDecoder();
 		let buffer = "";
 
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) {
-				break;
-			}
-			buffer += decoder.decode(value, { stream: true });
-
-			let newlineIndex = buffer.indexOf("\n");
-			while (newlineIndex >= 0) {
-				const line = buffer.slice(0, newlineIndex).trim();
-				buffer = buffer.slice(newlineIndex + 1);
-				if (line.length > 0) {
-					try {
-						const chunk = JSON.parse(line) as StreamChunk;
-						yield chunk;
-					} catch (err) {
-						logger.warn({ error: String(err), line }, "failed to parse agent chunk");
-					}
+		try {
+			while (true) {
+				// Per-chunk read timeout: if no data arrives in 30s, the stream is hung
+				const { value, done } = await withTimeout(
+					reader.read(),
+					STREAM_READ_TIMEOUT_MS,
+					"stream-read",
+				);
+				if (done) {
+					break;
 				}
-				newlineIndex = buffer.indexOf("\n");
+				buffer += decoder.decode(value, { stream: true });
+
+				let newlineIndex = buffer.indexOf("\n");
+				while (newlineIndex >= 0) {
+					const line = buffer.slice(0, newlineIndex).trim();
+					buffer = buffer.slice(newlineIndex + 1);
+					if (line.length > 0) {
+						try {
+							const chunk = JSON.parse(line) as StreamChunk;
+							yield chunk;
+						} catch (err) {
+							logger.warn({ error: String(err), line }, "failed to parse agent chunk");
+						}
+					}
+					newlineIndex = buffer.indexOf("\n");
+				}
 			}
+		} catch (err) {
+			// On timeout or abort, clean up the stream reader
+			try {
+				reader.cancel().catch(() => {});
+			} catch {
+				// best-effort cleanup
+			}
+			controller.abort();
+			throw err;
 		}
 
 		// Process any remaining content in buffer after stream ends

@@ -1,5 +1,8 @@
 import { executeRemoteQuery } from "../agent/client.js";
 import type { SocialServiceConfig } from "../config/config.js";
+import { isTransientNetworkError } from "../infra/network-errors.js";
+import { retryAsync } from "../infra/retry.js";
+import { withTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { getEntries, markEntryPosted } from "../memory/store.js";
 import type { MemoryEntry, MemorySource, TrustLevel } from "../memory/types.js";
@@ -131,8 +134,19 @@ async function fetchTimelineSafe(
 	maxResults = 10,
 ): Promise<SocialTimelinePost[]> {
 	if (!client?.fetchTimeline) return [];
+	const fetchFn = client.fetchTimeline.bind(client);
 	try {
-		return await client.fetchTimeline({ maxResults });
+		return await retryAsync(() => withTimeout(fetchFn({ maxResults }), 15_000, "timeline-fetch"), {
+			maxAttempts: 2,
+			baseDelayMs: 1000,
+			shouldRetry: (err) => isTransientNetworkError(err),
+			onRetry: (err, info) =>
+				logger.warn(
+					{ error: String(err), attempt: info.attempt, serviceId },
+					"retrying timeline fetch",
+				),
+			label: "timeline-fetch",
+		});
 	} catch (err) {
 		logger.warn({ error: String(err), serviceId }, "timeline fetch failed; continuing without");
 		return [];
@@ -342,7 +356,20 @@ async function runHeartbeatPhases(
 	// Phase 1: Handle notifications
 	let notifications: SocialNotification[] = [];
 	try {
-		notifications = await client.fetchNotifications();
+		notifications = await retryAsync(
+			() => withTimeout(client.fetchNotifications(), 15_000, "fetch-notifications"),
+			{
+				maxAttempts: 3,
+				baseDelayMs: 1000,
+				shouldRetry: (err) => isTransientNetworkError(err),
+				onRetry: (err, info) =>
+					logger.warn(
+						{ error: String(err), attempt: info.attempt, serviceId },
+						"retrying notification fetch",
+					),
+				label: "fetch-notifications",
+			},
+		);
 	} catch (err) {
 		logger.error({ error: String(err), serviceId }, "failed to fetch social notifications");
 	}
@@ -382,7 +409,14 @@ async function runHeartbeatPhases(
 			timeline,
 		);
 	} catch (err) {
-		logger.error({ error: String(err), serviceId }, "autonomous activity failed");
+		const errStr = String(err);
+		// TypeError: terminated is a common crash on Pi4 when the stream
+		// is cut mid-flight. Report it cleanly as a timeout, not a crash.
+		if (errStr.includes("TypeError: terminated") || errStr.includes("terminated")) {
+			logger.warn({ serviceId }, "autonomous activity terminated (likely stream timeout)");
+		} else {
+			logger.error({ error: errStr, serviceId }, "autonomous activity failed");
+		}
 	}
 
 	// Notification dispatch
@@ -451,7 +485,21 @@ export async function handleSocialNotification(
 		return { ok: true, message: "empty reply" };
 	}
 
-	const replyResult = await client.postReply(postId, trimmed);
+	const replyResult = await retryAsync(
+		() => withTimeout(client.postReply(postId, trimmed), 30_000, "post-reply"),
+		{
+			maxAttempts: 2,
+			baseDelayMs: 2000,
+			// Only retry on transient network errors, NOT on API-level failures (rate limits, etc.)
+			shouldRetry: (err) => isTransientNetworkError(err),
+			onRetry: (err, info) =>
+				logger.warn(
+					{ error: String(err), attempt: info.attempt, serviceId },
+					"retrying post reply",
+				),
+			label: "post-reply",
+		},
+	);
 	if (!replyResult.ok) {
 		logger.warn(
 			{
@@ -661,7 +709,8 @@ async function handleProactivePosting(
 			continue;
 		}
 
-		if (!parsed.content?.trim()) {
+		const postContent = parsed.content?.trim();
+		if (!postContent) {
 			logger.warn(
 				{ ideaId: idea.id, serviceId },
 				"agent returned post action but empty content; skipping",
@@ -669,7 +718,20 @@ async function handleProactivePosting(
 			continue;
 		}
 
-		const postResult = await client.createPost(parsed.content.trim());
+		const postResult = await retryAsync(
+			() => withTimeout(client.createPost(postContent), 30_000, "create-post"),
+			{
+				maxAttempts: 2,
+				baseDelayMs: 2000,
+				shouldRetry: (err) => isTransientNetworkError(err),
+				onRetry: (err, info) =>
+					logger.warn(
+						{ error: String(err), attempt: info.attempt, serviceId },
+						"retrying create post",
+					),
+				label: "create-post",
+			},
+		);
 
 		if (!postResult.ok) {
 			if (postResult.rateLimited) {
@@ -683,11 +745,18 @@ async function handleProactivePosting(
 			continue;
 		}
 
-		const marked = markEntryPosted(idea.id);
-		if (!marked) {
+		try {
+			const marked = markEntryPosted(idea.id);
+			if (!marked) {
+				logger.warn(
+					{ ideaId: idea.id, postId: postResult.postId, serviceId },
+					"failed to mark entry as posted; may repost on next heartbeat",
+				);
+			}
+		} catch (err) {
 			logger.warn(
-				{ ideaId: idea.id, postId: postResult.postId, serviceId },
-				"failed to mark entry as posted; may repost on next heartbeat",
+				{ ideaId: idea.id, postId: postResult.postId, error: String(err), serviceId },
+				"markEntryPosted threw; post was created but may repost",
 			);
 		}
 

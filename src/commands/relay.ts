@@ -10,6 +10,7 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
 import {
 	checkProviderHealth,
@@ -103,6 +104,8 @@ export function registerRelayCommand(program: Command): void {
 		.option("--dry-run", "Don't actually send replies (for testing)")
 		.option("--profile <profile>", "Security profile: simple, strict, or test (overrides config)")
 		.action(async (opts: RelayOptions) => {
+			installUnhandledRejectionHandler("relay");
+
 			const verbose = program.opts().verbose || opts.verbose;
 
 			if (verbose) {
@@ -220,7 +223,7 @@ export function registerRelayCommand(program: Command): void {
 					const scheduler = startCronScheduler({
 						pollIntervalMs: cfg.cron.pollIntervalSeconds * 1000,
 						timeoutMs: cfg.cron.timeoutSeconds * 1000,
-						executor: (job) => executeCronAction(job, cfg),
+						executor: (job, signal) => executeCronAction(job, cfg, signal),
 					});
 					schedulerHandles.push(scheduler);
 

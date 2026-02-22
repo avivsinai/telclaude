@@ -270,7 +270,7 @@ export function registerCronCommand(program: Command): void {
 				const result = await runCronJobNow({
 					jobId: id,
 					timeoutMs: cfg.cron.timeoutSeconds * 1000,
-					executor: (job) => executeCronAction(job, cfg),
+					executor: (job, signal) => executeCronAction(job, cfg, signal),
 				});
 				const runs = listCronRuns(id, 1);
 				if (opts.json) {

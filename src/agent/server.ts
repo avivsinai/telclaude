@@ -23,6 +23,13 @@ const AGENT_WORKDIR = process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
 const RESOLVED_AGENT_WORKDIR = path.resolve(AGENT_WORKDIR);
 export const AGENT_STARTED_AT = Date.now();
 
+/**
+ * Tracks which request "owns" the current TELCLAUDE_SESSION_TOKEN env var.
+ * Prevents concurrent request cleanup from deleting another request's token.
+ */
+let activeSessionTokenRequestId: string | null = null;
+let requestCounter = 0;
+
 type QueryRequest = {
 	prompt: string;
 	tier: PermissionTier;
@@ -251,8 +258,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				// Inject relay-minted session token into process env for the Claude subprocess.
 				// This allows telclaude CLI tools (tts, generate-image, memory) to authenticate
 				// to the relay without the private key.
+				// Use request ID guard to prevent concurrent requests from deleting each other's tokens.
+				const requestId = `req-${++requestCounter}`;
 				if (parsed.sessionToken && typeof parsed.sessionToken === "string") {
 					process.env.TELCLAUDE_SESSION_TOKEN = parsed.sessionToken;
+					activeSessionTokenRequestId = requestId;
 				}
 
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -331,10 +341,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					})
 					.finally(() => {
 						clearTimeout(timeoutId);
-						// Clean up session token from process env after query completes
-						// to prevent leaked tokens persisting across requests
-						if (parsed.sessionToken) {
+						// Clean up session token — only if this request still owns it.
+						// Prevents concurrent requests from deleting each other's tokens.
+						if (parsed.sessionToken && activeSessionTokenRequestId === requestId) {
 							delete process.env.TELCLAUDE_SESSION_TOKEN;
+							activeSessionTokenRequestId = null;
 						}
 					});
 			} catch (err) {
