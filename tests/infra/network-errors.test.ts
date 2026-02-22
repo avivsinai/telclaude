@@ -63,7 +63,7 @@ describe("infra/network-errors", () => {
 
 	it("formats errors safely with URL redaction and truncation", () => {
 		const err = new Error(
-			"request failed at https://user:token@example.test/path?secret=1 due to timeout",
+			"request failed at https://user:token@example.com/path?secret=1 due to timeout",
 		);
 
 		const formatted = formatErrorSafe(err, 80);
