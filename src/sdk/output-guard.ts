@@ -20,10 +20,10 @@ const logger = getChildLogger({ module: "output-guard" });
 
 /**
  * Default maximum characters for a single tool result.
- * ~100KB is conservative — a single tool result should not dominate the context.
- * At ~4 chars/token, this is ~25K tokens.
+ * ~200KB allows larger file reads and web fetches without premature truncation.
+ * At ~4 chars/token, this is ~50K tokens — ~25% of a 200K-token context window.
  */
-export const DEFAULT_MAX_TOOL_RESULT_CHARS = 100_000;
+export const DEFAULT_MAX_TOOL_RESULT_CHARS = 200_000;
 
 /**
  * Absolute minimum characters to keep when truncating.
