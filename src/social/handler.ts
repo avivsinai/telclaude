@@ -745,8 +745,8 @@ async function handleAutonomousActivity(
 	}
 
 	logger.info({ serviceId }, "autonomous activity completed");
-	// Extract a short summary (first line, limited length) for notifications
-	const summaryLine = trimmed.split("\n")[0].slice(0, 100);
+	// First line as summary — notification sanitizer enforces the final length limit
+	const summaryLine = trimmed.split("\n")[0];
 	return { acted: true, summary: summaryLine };
 }
 
