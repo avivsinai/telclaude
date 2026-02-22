@@ -73,6 +73,7 @@ const PROACTIVE_POST_SCHEMA = {
 	required: ["action"] as const,
 	additionalProperties: false,
 	if: { properties: { action: { const: "post" } } },
+	// biome-ignore lint/suspicious/noThenProperty: JSON Schema if/then conditional, not a Promise
 	then: { required: ["action", "content"] },
 };
 
