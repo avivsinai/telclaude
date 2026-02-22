@@ -216,10 +216,14 @@ secretGroup = 2
 entropy = 2.5
 tags = ["credentials", "auth-tuple"]
 [[rules.allowlists]]
+paths = [
+  '''tests\/''',
+]
 regexes = [
   '''@gmail\.com''',
   '''@github\.com''',
   '''@example\.com''',
+  '''@example\.test''',
 ]
 
 [[rules]]
