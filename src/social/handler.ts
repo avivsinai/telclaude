@@ -479,6 +479,28 @@ export async function queryPublicPersona(
 }
 
 /**
+ * Detect agent meta-commentary that should not be published.
+ *
+ * When the agent narrates its process ("I'll research...", "Let me craft...")
+ * instead of outputting a finished post, we must reject it to prevent
+ * publishing internal reasoning as public content.
+ */
+function looksLikeMetaCommentary(text: string): boolean {
+	const lower = text.toLowerCase();
+	const metaPatterns = [
+		/^i('ll| will| need to| should| want to| can| am going to)\b/,
+		/^let me\b/,
+		/^(here's|here is) (my|the|a) (plan|approach|draft|thought)/,
+		/^(first|okay|alright),? (i('ll| will| need)|let me)\b/,
+		/\bthe summarize tool\b/,
+		/\blet me craft\b/,
+		/\bcurrently unavailable\b/,
+		/\bapproved idea\b/,
+	];
+	return metaPatterns.some((p) => p.test(lower));
+}
+
+/**
  * Query for promoted ideas that haven't been posted yet.
  *
  * Security: Only returns entries that are:
@@ -591,6 +613,17 @@ async function handleProactivePosting(
 			logger.info(
 				{ ideaId: idea.id, serviceId },
 				"agent decided to skip proactive post, trying next",
+			);
+			continue;
+		}
+
+		// Guard: reject meta-commentary that the agent emitted instead of a final post.
+		// The agent sometimes narrates its process ("I'll research...", "Let me craft...")
+		// instead of outputting the actual post text.
+		if (looksLikeMetaCommentary(trimmed)) {
+			logger.warn(
+				{ ideaId: idea.id, serviceId, preview: trimmed.slice(0, 120) },
+				"proactive post rejected: looks like meta-commentary, not a final post",
 			);
 			continue;
 		}
