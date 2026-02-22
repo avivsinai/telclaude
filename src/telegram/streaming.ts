@@ -31,6 +31,7 @@ import { filterOutput, filterOutputWithConfig } from "../security/output-filter.
 import { recordBotMessage } from "../storage/reactions.js";
 import { MAX_STREAMING_UPDATE_LENGTH } from "./constants.js";
 import { createDraftStreamLoop, type DraftStreamLoop } from "./draft-stream-loop.js";
+import { computeBackoff, DEFAULT_RECONNECT_POLICY } from "./reconnect.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
 const logger = getChildLogger({ module: "telegram-streaming" });
@@ -362,8 +363,12 @@ export class StreamingResponse {
 				"rate limited, increasing interval",
 			);
 
-			// Increase minimum interval (capped at 10s)
-			this.config.minUpdateIntervalMs = Math.min(this.config.minUpdateIntervalMs * 1.5, 10000);
+			// Exponential backoff with jitter (capped at 10s)
+			const backoff = computeBackoff(
+				{ ...DEFAULT_RECONNECT_POLICY, initialMs: this.config.minUpdateIntervalMs, maxMs: 10_000 },
+				this.consecutiveErrors,
+			);
+			this.config.minUpdateIntervalMs = backoff;
 			return;
 		}
 
@@ -406,14 +411,22 @@ export class StreamingResponse {
 			"streaming update failed",
 		);
 
-		// If we have too many consecutive errors, stop streaming updates
-		// (we'll still send the final message)
+		// If we have too many consecutive errors, pause and set a recovery timer
 		if (this.consecutiveErrors >= 3) {
 			logger.warn(
 				{ chatId: this.chatId },
-				"too many consecutive errors, pausing streaming updates",
+				"too many consecutive errors, pausing streaming updates (60s recovery)",
 			);
 			this.config.minUpdateIntervalMs = 30000; // Effectively pause updates
+
+			// Recovery timer: reset error counter after 60s so updates can resume
+			setTimeout(() => {
+				if (!this.isFinished) {
+					this.consecutiveErrors = 0;
+					this.config.minUpdateIntervalMs = DEFAULT_CONFIG.minUpdateIntervalMs;
+					logger.debug({ chatId: this.chatId }, "streaming error recovery: counters reset");
+				}
+			}, 60_000);
 		}
 	}
 
