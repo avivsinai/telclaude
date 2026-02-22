@@ -328,7 +328,7 @@ export function wrapExternalContent(content: string, options: WrapOptions): stri
  * Sanitize a single line of external content for inline use.
  * Strips bracket markers that could break prompt envelopes and collapses whitespace.
  */
-export function sanitizeInlineContent(text: string, maxLength = 300): string {
+export function sanitizeInlineContent(text: string, maxLength = 1_000): string {
 	return text
 		.replace(/[\r\n]+/g, " ")
 		.replace(/\[/g, "(")
