@@ -333,6 +333,299 @@ export function requiresApproval(
 	return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLAN APPROVALS — Two-phase execution preview for FULL_ACCESS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_PLAN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * A pending plan approval (Phase 2 of two-phase execution).
+ */
+export type PlanApproval = {
+	nonce: string;
+	requestId: string;
+	chatId: number;
+	createdAt: number;
+	expiresAt: number;
+	tier: PermissionTier;
+	originalBody: string;
+	planText: string;
+	sessionKey: string;
+	sessionId: string;
+	mediaPath?: string;
+	mediaFileId?: string;
+	mediaType?: MediaType;
+	username?: string;
+	from: string;
+	to: string;
+	messageId: string;
+	observerClassification: SecurityClassification;
+	observerConfidence: number;
+	observerReason?: string;
+};
+
+/**
+ * Database row type for plan_approvals.
+ */
+type PlanApprovalRow = {
+	nonce: string;
+	request_id: string;
+	chat_id: number;
+	created_at: number;
+	expires_at: number;
+	tier: string;
+	original_body: string;
+	plan_text: string;
+	session_key: string;
+	session_id: string;
+	media_path: string | null;
+	media_file_id: string | null;
+	media_type: string | null;
+	username: string | null;
+	from_user: string;
+	to_user: string;
+	message_id: string;
+	observer_classification: string;
+	observer_confidence: number;
+	observer_reason: string | null;
+};
+
+function rowToPlanApproval(row: PlanApprovalRow): PlanApproval {
+	return {
+		nonce: row.nonce,
+		requestId: row.request_id,
+		chatId: row.chat_id,
+		createdAt: row.created_at,
+		expiresAt: row.expires_at,
+		tier: row.tier as PermissionTier,
+		originalBody: row.original_body,
+		planText: row.plan_text,
+		sessionKey: row.session_key,
+		sessionId: row.session_id,
+		mediaPath: row.media_path ?? undefined,
+		mediaFileId: row.media_file_id ?? undefined,
+		mediaType: row.media_type as MediaType | undefined,
+		username: row.username ?? undefined,
+		from: row.from_user,
+		to: row.to_user,
+		messageId: row.message_id,
+		observerClassification: row.observer_classification as SecurityClassification,
+		observerConfidence: row.observer_confidence,
+		observerReason: row.observer_reason ?? undefined,
+	};
+}
+
+/**
+ * Create a plan approval entry (Phase 1 complete, awaiting Phase 2 approval).
+ *
+ * SECURITY: Enforces single pending plan approval per chat.
+ */
+export function createPlanApproval(
+	entry: Omit<PlanApproval, "nonce" | "createdAt" | "expiresAt">,
+	ttlMs: number = DEFAULT_PLAN_TTL_MS,
+): CreateApprovalResult {
+	const db = getDb();
+
+	const nonce = crypto.randomBytes(8).toString("hex").toLowerCase();
+	const now = Date.now();
+	const expiresAt = now + ttlMs;
+
+	db.transaction(() => {
+		// Cancel any existing plan approvals for this chat
+		const deleted = db.prepare("DELETE FROM plan_approvals WHERE chat_id = ?").run(entry.chatId);
+		if (deleted.changes > 0) {
+			logger.warn(
+				{ chatId: entry.chatId, cancelledCount: deleted.changes },
+				"cancelled existing plan approvals for new request",
+			);
+		}
+
+		db.prepare(
+			`INSERT INTO plan_approvals (
+				nonce, request_id, chat_id, created_at, expires_at, tier, original_body,
+				plan_text, session_key, session_id,
+				media_path, media_file_id, media_type,
+				username, from_user, to_user,
+				message_id, observer_classification, observer_confidence, observer_reason
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		).run(
+			nonce,
+			entry.requestId,
+			entry.chatId,
+			now,
+			expiresAt,
+			entry.tier,
+			entry.originalBody,
+			entry.planText,
+			entry.sessionKey,
+			entry.sessionId,
+			entry.mediaPath ?? null,
+			entry.mediaFileId ?? null,
+			entry.mediaType ?? null,
+			entry.username ?? null,
+			entry.from,
+			entry.to,
+			entry.messageId,
+			entry.observerClassification,
+			entry.observerConfidence,
+			entry.observerReason ?? null,
+		);
+	})();
+
+	logger.info(
+		{
+			nonce,
+			requestId: entry.requestId,
+			chatId: entry.chatId,
+			tier: entry.tier,
+			expiresIn: Math.round(ttlMs / 1000),
+		},
+		"plan approval request created",
+	);
+
+	return { nonce, createdAt: now, expiresAt };
+}
+
+/**
+ * Consume a plan approval if valid.
+ * Atomic get-and-delete to prevent race conditions.
+ */
+export function consumePlanApproval(nonce: string, chatId: number): Result<PlanApproval> {
+	const db = getDb();
+
+	const result = db.transaction(() => {
+		const row = db.prepare("SELECT * FROM plan_approvals WHERE nonce = ?").get(nonce) as
+			| PlanApprovalRow
+			| undefined;
+
+		if (!row) {
+			return { success: false as const, error: "No pending plan approval found for that code." };
+		}
+
+		if (row.chat_id !== chatId) {
+			logger.warn(
+				{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
+				"plan approval chat mismatch",
+			);
+			return {
+				success: false as const,
+				error: "This approval code belongs to a different chat.",
+			};
+		}
+
+		if (Date.now() > row.expires_at) {
+			db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
+			logger.warn({ nonce, chatId }, "plan approval expired");
+			return {
+				success: false as const,
+				error: "This plan approval has expired. Please retry your request.",
+			};
+		}
+
+		const deleteResult = db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
+		if (deleteResult.changes !== 1) {
+			logger.error(
+				{ nonce, chatId, changes: deleteResult.changes },
+				"SECURITY: Plan approval deletion anomaly",
+			);
+			return {
+				success: false as const,
+				error: "Plan approval consumption failed - please try again",
+			};
+		}
+
+		logger.info({ nonce, requestId: row.request_id, chatId }, "plan approval consumed");
+
+		return { success: true as const, data: rowToPlanApproval(row) };
+	})();
+
+	return result;
+}
+
+/**
+ * Deny/cancel a plan approval.
+ */
+export function denyPlanApproval(nonce: string, chatId: number): Result<PlanApproval> {
+	const db = getDb();
+
+	const result = db.transaction(() => {
+		const row = db.prepare("SELECT * FROM plan_approvals WHERE nonce = ?").get(nonce) as
+			| PlanApprovalRow
+			| undefined;
+
+		if (!row) {
+			return { success: false as const, error: "No pending plan approval found for that code." };
+		}
+
+		if (row.chat_id !== chatId) {
+			return {
+				success: false as const,
+				error: "This approval code belongs to a different chat.",
+			};
+		}
+
+		db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
+
+		logger.info({ nonce, requestId: row.request_id, chatId }, "plan approval denied");
+
+		return { success: true as const, data: rowToPlanApproval(row) };
+	})();
+
+	return result;
+}
+
+/**
+ * Get the most recent pending plan approval for a chat.
+ * Used for /deny without nonce.
+ */
+export function getMostRecentPendingPlanApproval(chatId: number): PlanApproval | null {
+	const db = getDb();
+	const now = Date.now();
+
+	const row = db
+		.prepare(
+			"SELECT * FROM plan_approvals WHERE chat_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 1",
+		)
+		.get(chatId, now) as PlanApprovalRow | undefined;
+
+	if (!row) return null;
+	return rowToPlanApproval(row);
+}
+
+/**
+ * Format a plan approval request for display to the user.
+ * Shows what Claude actually plans to do, not just the user's request.
+ */
+export function formatPlanApprovalRequest(planApproval: PlanApproval): string {
+	const expiresIn = Math.max(0, Math.round((planApproval.expiresAt - Date.now()) / 1000));
+	const minutes = Math.floor(expiresIn / 60);
+	const seconds = expiresIn % 60;
+	const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+
+	// Truncate plan for Telegram's 4096 char limit (leave room for formatting)
+	const maxPlanLength = 2000;
+	const truncatedPlan =
+		planApproval.planText.length > maxPlanLength
+			? `${planApproval.planText.slice(0, maxPlanLength)}\n\n_(plan truncated)_`
+			: planApproval.planText;
+
+	const lines = [
+		"*Execution plan preview* — here's what Claude plans to do:",
+		"",
+		truncatedPlan,
+		"",
+		`*Tier:* ${planApproval.tier}`,
+		"",
+		`To approve execution, reply: \`/approve ${planApproval.nonce}\``,
+		`To deny, reply: \`/deny ${planApproval.nonce}\``,
+		"",
+		`_Expires in ${timeStr}_`,
+	];
+
+	return lines.join("\n");
+}
+
 /**
  * Get the most recent pending approval for a chat.
  * Used for /deny without nonce (denies most recent pending approval).

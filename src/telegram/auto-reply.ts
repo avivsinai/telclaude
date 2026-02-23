@@ -29,11 +29,17 @@ import {
 } from "../security/admin-claim.js";
 import {
 	consumeApproval,
+	consumePlanApproval,
 	createApproval,
+	createPlanApproval,
 	denyApproval,
+	denyPlanApproval,
 	formatApprovalRequest,
+	formatPlanApprovalRequest,
 	getMostRecentPendingApproval,
+	getMostRecentPendingPlanApproval,
 	type PendingApproval,
+	type PlanApproval,
 	requiresApproval,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
@@ -305,6 +311,8 @@ type ExecutionContext = {
 	requestId: string;
 	recentlySent: Set<string>;
 	auditLogger: AuditLogger;
+	/** Additional system prompt content appended after all other appendages. */
+	extraSystemPromptAppend?: string;
 };
 
 /**
@@ -493,7 +501,13 @@ async function executeWithSession(
 
 		// Combine system prompt appendages
 		const systemPromptAppend =
-			[chatContext, voiceProtocolInstruction, reactionAppend, memoryAppend]
+			[
+				chatContext,
+				voiceProtocolInstruction,
+				reactionAppend,
+				memoryAppend,
+				ctx.extraSystemPromptAppend,
+			]
 				.filter(Boolean)
 				.join("\n\n") || undefined;
 
@@ -750,6 +764,7 @@ export const __test = {
 	handleLinkCommand,
 	resolveCommandBody,
 	resolveProcessingBody,
+	shouldShowPlanPreview,
 };
 
 export type MonitorOptions = {
@@ -1874,16 +1889,41 @@ async function handleApproveCommand(
 		// Fall through to regular approval handling
 	}
 
-	const result = consumeApproval(nonce, msg.chatId);
-
-	if (!result.success) {
-		await msg.reply(`${result.error}`);
+	// Check for plan approval (Phase 2) first
+	const planResult = consumePlanApproval(nonce, msg.chatId);
+	if (planResult.success) {
+		await msg.reply("Plan approved. Executing...");
+		await executeApprovedPlanPhase(msg, cfg, planResult.data, auditLogger, recentlySent);
 		return;
 	}
 
-	await msg.reply("Request approved. Processing...");
+	// If plan approval failed with a specific error (not just "not found"),
+	// surface it instead of falling through to regular approvals
+	if (!planResult.success && planResult.error !== "No pending plan approval found for that code.") {
+		await msg.reply(planResult.error);
+		return;
+	}
+
+	// Check regular approval
+	const result = consumeApproval(nonce, msg.chatId);
+
+	if (!result.success) {
+		await msg.reply(result.error);
+		return;
+	}
 
 	const approval = result.data;
+
+	// Check if this approval should go through plan preview (Phase 1)
+	if (shouldShowPlanPreview(approval, cfg)) {
+		await msg.reply("Request approved. Generating execution plan...");
+		await executePlanPhase(msg, cfg, approval, auditLogger);
+		return;
+	}
+
+	// Direct execution (admin, skipPlanPreview, or non-FULL_ACCESS)
+	await msg.reply("Request approved. Processing...");
+
 	const approvedMsg: TelegramInboundMessage = {
 		...msg,
 		body: approval.body,
@@ -1910,6 +1950,35 @@ async function handleDenyCommand(
 		return;
 	}
 
+	// Check plan approvals first
+	const planResult = denyPlanApproval(nonce, msg.chatId);
+	if (planResult.success) {
+		await msg.reply("Plan denied.");
+		const planEntry = planResult.data;
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: planEntry.requestId,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: planEntry.originalBody.slice(0, 100),
+			observerClassification: planEntry.observerClassification,
+			observerConfidence: planEntry.observerConfidence,
+			permissionTier: planEntry.tier,
+			outcome: "blocked",
+			errorType: "user_denied_plan",
+		});
+		return;
+	}
+
+	// If plan denial failed with a specific error (not just "not found"),
+	// surface it instead of falling through to regular approvals
+	if (!planResult.success && planResult.error !== "No pending plan approval found for that code.") {
+		await msg.reply(planResult.error);
+		return;
+	}
+
+	// Check regular approvals
 	const result = denyApproval(nonce, msg.chatId);
 
 	if (!result.success) {
@@ -1958,6 +2027,316 @@ function minTier(a: PermissionTier, b: PermissionTier): PermissionTier {
  * This prevents stale approvals from being executed long after they were granted.
  */
 const MAX_APPROVAL_AGE_MS = 10 * 60 * 1000; // 10 minutes
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TWO-PHASE EXECUTION PLAN PREVIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PLANNING_SYSTEM_PROMPT = `You are in PLANNING MODE. The operator must approve your plan before execution.
+
+Describe your execution plan concisely:
+1. What files you will read, modify, or create
+2. What shell commands you will run
+3. What tools you will use and why
+4. Any risks or side effects
+
+Keep the plan concise (suitable for a Telegram message).
+Do NOT make any changes. Only use Read, Glob, Grep, WebFetch, and WebSearch.
+After describing your plan, stop.`;
+
+/**
+ * Check if an approved request should go through two-phase plan preview.
+ * Returns true only when:
+ * - Tier is FULL_ACCESS
+ * - Config has executionPlanPreview enabled (default: true)
+ * - User doesn't have skipPlanPreview set
+ */
+function shouldShowPlanPreview(approval: PendingApproval, cfg: TelclaudeConfig): boolean {
+	// Only FULL_ACCESS requests need plan preview
+	if (approval.tier !== "FULL_ACCESS") return false;
+
+	// Check config (default: enabled)
+	const previewEnabled = cfg.security?.approvals?.executionPlanPreview ?? true;
+	if (!previewEnabled) return false;
+
+	// Check per-user skipPlanPreview
+	const userPerms = cfg.security?.permissions?.users;
+	if (userPerms) {
+		const link = getIdentityLink(approval.chatId);
+		const userConfig = link
+			? userPerms[link.localUserId]
+			: (userPerms[String(approval.chatId)] ?? userPerms[`tg:${approval.chatId}`]);
+		if (userConfig?.skipPlanPreview) return false;
+	}
+
+	return true;
+}
+
+/**
+ * Phase 1: Execute a planning query at READ_ONLY tier to generate an execution plan.
+ * The plan is shown to the user for approval before proceeding to Phase 2.
+ */
+async function executePlanPhase(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+	approval: PendingApproval,
+	auditLogger: AuditLogger,
+): Promise<void> {
+	const identityLink = getIdentityLink(msg.chatId);
+	const userId = identityLink?.localUserId ?? String(msg.chatId);
+	const replyConfig = cfg.inbound?.reply;
+	const timeoutSeconds = replyConfig?.timeoutSeconds ?? 600;
+
+	const sessionConfig = replyConfig?.session;
+	const scope = sessionConfig?.scope ?? "per-sender";
+	const sessionKey = deriveSessionKey(scope, { From: approval.from });
+
+	await msg.sendComposing();
+
+	// Execute planning query at READ_ONLY tier within session lock
+	let planText = "";
+
+	await withSessionLock(
+		sessionKey,
+		async () => {
+			const existingSession = getSession(sessionKey);
+			const now = Date.now();
+
+			let sessionEntry: SessionEntry;
+			let isNewSession: boolean;
+			if (!existingSession) {
+				sessionEntry = {
+					sessionId: crypto.randomUUID(),
+					updatedAt: now,
+					systemSent: false,
+				};
+				isNewSession = true;
+			} else {
+				sessionEntry = existingSession;
+				isNewSession = false;
+			}
+
+			const queryPrompt = `${approval.body}\n\n(Planning mode: describe what you would do, do not execute.)`;
+
+			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+			const queryStream = useRemoteAgent
+				? executeRemoteQuery(queryPrompt, {
+						cwd: process.cwd(),
+						tier: "READ_ONLY",
+						poolKey: sessionKey,
+						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+						enableSkills: false,
+						timeoutMs: timeoutSeconds * 1000,
+						betas: cfg.sdk?.betas,
+						userId,
+						systemPromptAppend: PLANNING_SYSTEM_PROMPT,
+					})
+				: executePooledQuery(queryPrompt, {
+						cwd: process.cwd(),
+						tier: "READ_ONLY",
+						poolKey: sessionKey,
+						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+						enableSkills: false,
+						timeoutMs: timeoutSeconds * 1000,
+						betas: cfg.sdk?.betas,
+						userId,
+						systemPromptAppend: PLANNING_SYSTEM_PROMPT,
+					});
+
+			for await (const chunk of queryStream) {
+				if (chunk.type === "text") {
+					planText += chunk.content;
+				} else if (chunk.type === "done") {
+					if (!chunk.result.success) {
+						logger.warn(
+							{ requestId: approval.requestId, error: chunk.result.error },
+							"plan phase query failed",
+						);
+						await msg.reply("Failed to generate execution plan. Please try your request again.");
+						return;
+					}
+					// Use accumulated text, or fallback to result response
+					if (!planText && chunk.result.response) {
+						planText = chunk.result.response;
+					}
+
+					// Update session
+					sessionEntry.updatedAt = Date.now();
+					sessionEntry.systemSent = true;
+					setSession(sessionKey, sessionEntry);
+				}
+			}
+		},
+		approval.requestId,
+	);
+
+	if (!planText) {
+		await msg.reply("Failed to generate execution plan (empty response). Please try again.");
+		return;
+	}
+
+	// SECURITY: Truncate plan text BEFORE storing so Phase 2 executes exactly what the user sees.
+	// Without this, truncated display + full execution = confused deputy (user approves unseen content).
+	const MAX_PLAN_DISPLAY_LENGTH = 2000;
+	const displayPlanText =
+		planText.length > MAX_PLAN_DISPLAY_LENGTH
+			? planText.slice(0, MAX_PLAN_DISPLAY_LENGTH)
+			: planText;
+
+	// Get session info for plan approval (need session key + id for Phase 2 resume)
+	const sessionEntry = getSession(sessionKey);
+	const planTtlMs = (cfg.security?.approvals?.planApprovalTtlSeconds ?? 600) * 1000;
+
+	const { nonce, createdAt, expiresAt } = createPlanApproval(
+		{
+			requestId: approval.requestId,
+			chatId: msg.chatId,
+			tier: approval.tier,
+			originalBody: approval.body,
+			planText: displayPlanText,
+			sessionKey,
+			sessionId: sessionEntry?.sessionId ?? crypto.randomUUID(),
+			mediaPath: approval.mediaPath,
+			mediaFileId: approval.mediaFileId,
+			mediaType: approval.mediaType,
+			username: approval.username,
+			from: approval.from,
+			to: approval.to,
+			messageId: approval.messageId,
+			observerClassification: approval.observerClassification,
+			observerConfidence: approval.observerConfidence,
+			observerReason: approval.observerReason,
+		},
+		planTtlMs,
+	);
+
+	const planMessage = formatPlanApprovalRequest({
+		nonce,
+		requestId: approval.requestId,
+		chatId: msg.chatId,
+		createdAt,
+		expiresAt,
+		tier: approval.tier,
+		originalBody: approval.body,
+		planText: displayPlanText,
+		sessionKey,
+		sessionId: sessionEntry?.sessionId ?? "",
+		mediaPath: approval.mediaPath,
+		mediaFileId: approval.mediaFileId,
+		mediaType: approval.mediaType,
+		username: approval.username,
+		from: approval.from,
+		to: approval.to,
+		messageId: approval.messageId,
+		observerClassification: approval.observerClassification,
+		observerConfidence: approval.observerConfidence,
+		observerReason: approval.observerReason,
+	});
+
+	await msg.reply(planMessage);
+
+	await auditLogger.log({
+		timestamp: new Date(),
+		requestId: approval.requestId,
+		telegramUserId: userId,
+		telegramUsername: approval.username,
+		chatId: msg.chatId,
+		messagePreview: approval.body.slice(0, 100),
+		observerClassification: approval.observerClassification,
+		observerConfidence: approval.observerConfidence,
+		permissionTier: "READ_ONLY",
+		outcome: "success",
+		errorType: `plan_preview:${nonce}`,
+	});
+
+	logger.info(
+		{
+			requestId: approval.requestId,
+			planNonce: nonce,
+			planLength: displayPlanText.length,
+			truncated: planText.length > MAX_PLAN_DISPLAY_LENGTH,
+		},
+		"plan preview sent, awaiting Phase 2 approval",
+	);
+}
+
+/**
+ * Phase 2: Execute the approved plan at FULL_ACCESS tier.
+ * The plan text is injected via systemPromptAppend so Claude follows it.
+ */
+async function executeApprovedPlanPhase(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+	planApproval: PlanApproval,
+	auditLogger: AuditLogger,
+	recentlySent: Set<string>,
+): Promise<void> {
+	// Freshness check — use plan-specific TTL from config (expiresAt is the source of truth,
+	// set by createPlanApproval using planApprovalTtlSeconds)
+	const now = Date.now();
+	if (now > planApproval.expiresAt) {
+		logger.warn(
+			{
+				requestId: planApproval.requestId,
+				approvalAge: Math.round((now - planApproval.createdAt) / 1000),
+				ttlSeconds: Math.round((planApproval.expiresAt - planApproval.createdAt) / 1000),
+			},
+			"stale plan approval rejected",
+		);
+		await msg.reply("This plan approval has become stale. Please submit your request again.");
+		return;
+	}
+
+	// Tier re-check with minTier (prevent escalation)
+	const currentTier = getUserPermissionTier(msg.chatId, cfg.security);
+	const effectiveTier = minTier(planApproval.tier, currentTier);
+
+	if (effectiveTier !== planApproval.tier) {
+		logger.info(
+			{
+				requestId: planApproval.requestId,
+				originalTier: planApproval.tier,
+				currentTier,
+				effectiveTier,
+			},
+			"plan execution tier downgraded due to permission change",
+		);
+	}
+
+	// Build the approved plan system prompt appendage
+	const planAppend = `<approved-plan>\nThe operator has reviewed and approved the following execution plan. Proceed with it.\n\n${planApproval.planText}\n</approved-plan>`;
+
+	// Reconstruct the message with original body
+	const approvedMsg: TelegramInboundMessage = {
+		...msg,
+		body: planApproval.originalBody,
+		normalizedBody: normalizeInboundBody(planApproval.originalBody).normalized,
+		mediaPath: planApproval.mediaPath,
+		mediaFileId: planApproval.mediaFileId,
+		mediaType: planApproval.mediaType,
+		from: planApproval.from,
+		to: planApproval.to,
+		id: planApproval.messageId,
+	};
+
+	await executeAndReply({
+		msg: approvedMsg,
+		prompt: "Proceed with the approved plan.",
+		mediaPath: planApproval.mediaPath,
+		mediaType: planApproval.mediaType,
+		from: planApproval.from,
+		to: planApproval.to,
+		username: planApproval.username,
+		tier: effectiveTier,
+		config: cfg,
+		observerClassification: planApproval.observerClassification,
+		observerConfidence: planApproval.observerConfidence,
+		requestId: planApproval.requestId,
+		recentlySent,
+		auditLogger,
+		extraSystemPromptAppend: planAppend,
+	});
+}
 
 async function executeApprovedRequest(
 	msg: TelegramInboundMessage,
@@ -2180,14 +2559,42 @@ async function handleDenyMostRecent(
 	msg: TelegramInboundMessage,
 	auditLogger: AuditLogger,
 ): Promise<void> {
-	const approval = getMostRecentPendingApproval(msg.chatId);
+	// Fetch both types and deny whichever is most recent
+	const planApproval = getMostRecentPendingPlanApproval(msg.chatId);
+	const regularApproval = getMostRecentPendingApproval(msg.chatId);
 
-	if (!approval) {
+	if (!planApproval && !regularApproval) {
 		await msg.reply("No pending approval found.");
 		return;
 	}
 
-	// Use denyApproval with the nonce
+	// Compare createdAt to deny the most recent one
+	if (planApproval && (!regularApproval || planApproval.createdAt >= regularApproval.createdAt)) {
+		const planResult = denyPlanApproval(planApproval.nonce, msg.chatId);
+		if (!planResult.success) {
+			await msg.reply(planResult.error);
+			return;
+		}
+		await msg.reply("Plan denied.");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: planApproval.requestId,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: planApproval.originalBody.slice(0, 100),
+			observerClassification: planApproval.observerClassification,
+			observerConfidence: planApproval.observerConfidence,
+			permissionTier: planApproval.tier,
+			outcome: "blocked",
+			errorType: "user_denied_plan",
+		});
+		return;
+	}
+
+	// regularApproval is guaranteed non-null here: we returned early if both are null,
+	// and the plan branch above handles the case where planApproval is newer.
+	const approval = regularApproval as PendingApproval;
 	const result = denyApproval(approval.nonce, msg.chatId);
 
 	if (!result.success) {

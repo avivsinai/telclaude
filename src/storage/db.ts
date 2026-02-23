@@ -306,6 +306,32 @@ function initializeSchema(database: Database.Database): void {
 			message TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_cron_runs_job_started ON cron_runs(job_id, started_at DESC);
+
+		-- Plan approvals (two-phase execution preview for FULL_ACCESS)
+		CREATE TABLE IF NOT EXISTS plan_approvals (
+			nonce TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			chat_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			tier TEXT NOT NULL,
+			original_body TEXT NOT NULL,
+			plan_text TEXT NOT NULL,
+			session_key TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			media_path TEXT,
+			media_file_id TEXT,
+			media_type TEXT,
+			username TEXT,
+			from_user TEXT NOT NULL,
+			to_user TEXT NOT NULL,
+			message_id TEXT NOT NULL,
+			observer_classification TEXT NOT NULL,
+			observer_confidence REAL NOT NULL,
+			observer_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_plan_approvals_chat_id ON plan_approvals(chat_id);
+		CREATE INDEX IF NOT EXISTS idx_plan_approvals_expires_at ON plan_approvals(expires_at);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -384,6 +410,7 @@ function ensureApprovalsColumns(database: Database.Database): void {
  */
 export function cleanupExpired(): {
 	approvals: number;
+	planApprovals: number;
 	linkCodes: number;
 	rateLimits: number;
 	totpSessions: number;
@@ -399,6 +426,11 @@ export function cleanupExpired(): {
 
 	// Clean expired approvals
 	const approvalsResult = database.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
+
+	// Clean expired plan approvals
+	const planApprovalsResult = database
+		.prepare("DELETE FROM plan_approvals WHERE expires_at < ?")
+		.run(now);
 
 	// Clean expired link codes
 	const linkCodesResult = database
@@ -455,6 +487,7 @@ export function cleanupExpired(): {
 
 	const result = {
 		approvals: approvalsResult.changes,
+		planApprovals: planApprovalsResult.changes,
 		linkCodes: linkCodesResult.changes,
 		rateLimits: rateLimitsResult.changes,
 		totpSessions: totpSessionsResult.changes,
