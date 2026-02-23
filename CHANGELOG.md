@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-23
+
 ### Added
 
 - **Social services** — Dual-persona architecture with private (Telegram) and public (social) agents running on air-gapped networks with separate memory stores.
