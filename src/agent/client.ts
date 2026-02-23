@@ -8,8 +8,10 @@ import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 
 const logger = getChildLogger({ module: "agent-client" });
 
-/** Per-chunk read timeout — if no data in 30s, the stream is likely hung. */
-const STREAM_READ_TIMEOUT_MS = 30_000;
+/** Per-chunk read timeout — if no data arrives, the stream is likely hung.
+ * The agent server sends keepalive newlines every 15s during tool execution,
+ * so 30s (2x keepalive) is sufficient to detect a genuinely dead stream. */
+const STREAM_READ_TIMEOUT_MS = Number(process.env.TELCLAUDE_AGENT_STREAM_READ_TIMEOUT_MS ?? 30_000);
 
 type RemoteQueryOptions = PooledQueryOptions & {
 	agentUrl?: string;
@@ -107,7 +109,7 @@ export async function* executeRemoteQuery(
 
 		try {
 			while (true) {
-				// Per-chunk read timeout: if no data arrives in 30s, the stream is hung
+				// Per-chunk read timeout: detect dead streams (keepalive resets this)
 				const { value, done } = await withTimeout(
 					reader.read(),
 					STREAM_READ_TIMEOUT_MS,

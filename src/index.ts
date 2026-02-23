@@ -114,7 +114,13 @@ main()
 		process.exitCode = 1;
 	})
 	.finally(() => {
-		// Ensure CLI commands can exit cleanly (pino destination + SQLite keep handles open).
+		// Close handles that keep the event loop alive.
 		closeDb();
 		closeLogger();
+		// Force exit after a short grace period — fetch() keep-alive connections
+		// can keep the event loop alive indefinitely in one-shot CLI commands.
+		// Daemons (relay, agent, totp-daemon, vault-daemon) never reach .finally()
+		// during normal operation since their parseAsync() never resolves.
+		// Use 500ms grace to allow stdout/stderr to flush on slow pipes.
+		setTimeout(() => process.exit(process.exitCode ?? 0), 500);
 	});

@@ -54,6 +54,9 @@ function resolveScope(explicit?: InternalAuthScope): InternalAuthScope {
 	return "telegram";
 }
 
+/** Timeout for relay RPC calls — prevents CLI subprocesses from hanging indefinitely. */
+const RPC_TIMEOUT_MS = 15_000;
+
 async function postJson<T>(path: string, body: unknown, scope?: InternalAuthScope): Promise<T> {
 	const baseUrl = getCapabilitiesUrl();
 	const payload = JSON.stringify(body);
@@ -65,6 +68,7 @@ async function postJson<T>(path: string, body: unknown, scope?: InternalAuthScop
 			...buildRpcAuthHeaders("POST", path, payload, effectiveScope),
 		},
 		body: payload,
+		signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {

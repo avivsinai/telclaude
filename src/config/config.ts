@@ -201,6 +201,8 @@ const UserPermissionSchema = z.object({
 			perHour: z.number().int().positive().optional(),
 		})
 		.optional(),
+	/** Skip two-phase plan preview for FULL_ACCESS approvals. */
+	skipPlanPreview: z.boolean().optional(),
 });
 
 // Secret filter configuration for additive patterns
@@ -336,6 +338,15 @@ const SecurityConfigSchema = z.object({
 		})
 		.optional(),
 	network: NetworkConfigSchema.optional(),
+	/** Approval workflow configuration */
+	approvals: z
+		.object({
+			/** Enable two-phase execution plan preview for FULL_ACCESS approvals. Default: true */
+			executionPlanPreview: z.boolean().default(true),
+			/** TTL for plan approval nonces in seconds. Default: 600 (10 minutes) */
+			planApprovalTtlSeconds: z.number().int().positive().default(600),
+		})
+		.optional(),
 });
 
 // Telegram configuration schema

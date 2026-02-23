@@ -108,6 +108,9 @@ function resolveCwd(requested?: string): string {
 	return candidate;
 }
 
+/** Keepalive interval — write empty newlines so the relay knows we're alive. */
+const KEEPALIVE_INTERVAL_MS = 15_000;
+
 async function streamQuery(
 	req: QueryRequest,
 	res: http.ServerResponse,
@@ -120,23 +123,36 @@ async function streamQuery(
 		"X-Content-Type-Options": "nosniff",
 	});
 
-	for await (const chunk of executePooledQuery(req.prompt, {
-		cwd: req.cwd ?? RESOLVED_AGENT_WORKDIR,
-		tier: req.tier,
-		poolKey: req.poolKey,
-		userId: req.userId,
-		resumeSessionId: req.resumeSessionId,
-		enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
-		timeoutMs: req.timeoutMs,
-		abortController,
-		betas: req.betas,
-		systemPromptAppend: req.systemPromptAppend,
-		outputFormat: req.outputFormat,
-	})) {
-		if (abortController.signal.aborted) {
-			break;
+	// Send periodic keepalive newlines so the relay's per-chunk read timeout
+	// doesn't fire during long tool executions (Bash, memory read, etc.).
+	// The client already ignores empty lines after trim.
+	const keepalive = setInterval(() => {
+		if (!res.closed && !abortController.signal.aborted) {
+			res.write("\n");
 		}
-		res.write(`${JSON.stringify(chunk)}\n`);
+	}, KEEPALIVE_INTERVAL_MS);
+
+	try {
+		for await (const chunk of executePooledQuery(req.prompt, {
+			cwd: req.cwd ?? RESOLVED_AGENT_WORKDIR,
+			tier: req.tier,
+			poolKey: req.poolKey,
+			userId: req.userId,
+			resumeSessionId: req.resumeSessionId,
+			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
+			timeoutMs: req.timeoutMs,
+			abortController,
+			betas: req.betas,
+			systemPromptAppend: req.systemPromptAppend,
+			outputFormat: req.outputFormat,
+		})) {
+			if (abortController.signal.aborted) {
+				break;
+			}
+			res.write(`${JSON.stringify(chunk)}\n`);
+		}
+	} finally {
+		clearInterval(keepalive);
 	}
 
 	res.end();
