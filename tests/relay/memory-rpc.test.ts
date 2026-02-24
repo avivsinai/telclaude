@@ -330,7 +330,11 @@ describe("memory rpc", () => {
 	});
 
 	it("creates quarantined entry via /v1/memory.quarantine (telegram scope)", async () => {
-		const quarantineBody = JSON.stringify({ id: "idea-1", content: "An idea for Moltbook" });
+		const quarantineBody = JSON.stringify({
+			id: "idea-1",
+			content: "An idea for Moltbook",
+			chatId: "chat-123",
+		});
 		const quarantineHeaders = buildInternalAuthHeaders(
 			"POST",
 			"/v1/memory.quarantine",
@@ -352,6 +356,26 @@ describe("memory rpc", () => {
 		expect(data.entry.category).toBe("posts");
 		expect(data.entry._provenance.trust).toBe("quarantined");
 		expect(data.entry._provenance.source).toBe("telegram");
+	});
+
+	it("rejects /v1/memory.quarantine without chat id", async () => {
+		const quarantineBody = JSON.stringify({ id: "idea-no-chat", content: "Missing chat scope" });
+		const quarantineHeaders = buildInternalAuthHeaders(
+			"POST",
+			"/v1/memory.quarantine",
+			quarantineBody,
+			{ scope: "telegram" },
+		);
+
+		const quarantineRes = await fetch(`${baseUrl}/v1/memory.quarantine`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...quarantineHeaders },
+			body: quarantineBody,
+		});
+
+		expect(quarantineRes.status).toBe(400);
+		const payload = (await quarantineRes.json()) as { error?: string };
+		expect(payload.error).toContain("Chat ID is required");
 	});
 
 	it("rejects /v1/memory.quarantine from social scope", async () => {

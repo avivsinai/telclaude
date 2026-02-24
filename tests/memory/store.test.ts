@@ -89,6 +89,7 @@ describe("memory store", () => {
 			id: "idea-1",
 			category: "posts",
 			content: "An idea for Moltbook",
+			chatId: "chat-1",
 		});
 
 		expect(entry._provenance.trust).toBe("quarantined");
@@ -156,6 +157,7 @@ describe("memory store", () => {
 			id: "idea-2",
 			category: "posts",
 			content: "Another idea",
+			chatId: "chat-1",
 		});
 
 		// First promotion succeeds
@@ -191,6 +193,7 @@ describe("memory store", () => {
 			id: "q-post",
 			category: "posts",
 			content: "A post idea",
+			chatId: "chat-1",
 		});
 
 		expect(entry.category).toBe("posts");
@@ -204,8 +207,19 @@ describe("memory store", () => {
 				id: "q-profile",
 				category: "profile",
 				content: "A profile entry",
+				chatId: "chat-1",
 			}),
 		).toThrow(/posts category/i);
+	});
+
+	it("rejects quarantined entries without chat id", () => {
+		expect(() =>
+			createQuarantinedEntry({
+				id: "q-no-chat",
+				category: "posts",
+				content: "A post without chat id",
+			}),
+		).toThrow(/chatId/i);
 	});
 
 	it("marks entries as posted", () => {
@@ -213,6 +227,7 @@ describe("memory store", () => {
 			id: "post-me",
 			category: "posts",
 			content: "To be posted",
+			chatId: "chat-1",
 		});
 		promoteEntryTrust("post-me", "user");
 
@@ -226,8 +241,18 @@ describe("memory store", () => {
 	});
 
 	it("filters entries by promoted status", () => {
-		createQuarantinedEntry({ id: "promoted-1", category: "posts", content: "Will promote" });
-		createQuarantinedEntry({ id: "unpromoted-1", category: "posts", content: "Will stay" });
+		createQuarantinedEntry({
+			id: "promoted-1",
+			category: "posts",
+			content: "Will promote",
+			chatId: "chat-1",
+		});
+		createQuarantinedEntry({
+			id: "unpromoted-1",
+			category: "posts",
+			content: "Will stay",
+			chatId: "chat-1",
+		});
 		promoteEntryTrust("promoted-1", "user");
 
 		const promoted = getEntries({ promoted: true, order: "asc" });
@@ -240,8 +265,18 @@ describe("memory store", () => {
 	});
 
 	it("filters entries by posted status", () => {
-		createQuarantinedEntry({ id: "posted-1", category: "posts", content: "Will post" });
-		createQuarantinedEntry({ id: "unposted-1", category: "posts", content: "Will not post" });
+		createQuarantinedEntry({
+			id: "posted-1",
+			category: "posts",
+			content: "Will post",
+			chatId: "chat-1",
+		});
+		createQuarantinedEntry({
+			id: "unposted-1",
+			category: "posts",
+			content: "Will not post",
+			chatId: "chat-1",
+		});
 		promoteEntryTrust("posted-1", "user");
 		promoteEntryTrust("unposted-1", "user");
 		markEntryPosted("posted-1");

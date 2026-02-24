@@ -16,6 +16,16 @@ function parseCsvOption(value: string | undefined): string[] | undefined {
 		.filter(Boolean);
 }
 
+function requireChatId(chatId: string | undefined): string {
+	const trimmed = chatId?.trim();
+	if (!trimmed) {
+		throw new Error(
+			"Chat ID is required for quarantine. Pass --chat-id <id> or set TELCLAUDE_CHAT_ID.",
+		);
+	}
+	return trimmed;
+}
+
 export function registerMemoryCommands(program: Command): void {
 	const memory = program.command("memory").description("Memory management commands");
 
@@ -86,10 +96,11 @@ export function registerMemoryCommands(program: Command): void {
 		.option("--chat-id <id>", "Chat ID for scoping", process.env.TELCLAUDE_CHAT_ID)
 		.action(async (content: string, opts: { id?: string; userId?: string; chatId?: string }) => {
 			try {
+				const chatId = requireChatId(opts.chatId);
 				const entryId = opts.id ?? `mem-${crypto.randomUUID().slice(0, 12)}`;
 				const result = await quarantineIdea(entryId, content, {
 					userId: opts.userId,
-					chatId: opts.chatId,
+					chatId,
 				});
 				console.log(JSON.stringify({ ok: true, ...result }, null, 2));
 			} catch (err) {

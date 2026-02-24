@@ -399,6 +399,9 @@ export function handleMemoryQuarantine(
 	}
 
 	const chatId = validateChatId(request.chatId);
+	if (!chatId) {
+		return fail(400, "Chat ID is required for quarantined entries.");
+	}
 
 	try {
 		const entry = createQuarantinedEntry({
