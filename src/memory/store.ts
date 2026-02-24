@@ -343,15 +343,7 @@ export function createQuarantinedEntry(
 		throw new Error(`Memory entry already exists: ${entry.id}`);
 	}
 
-	insert.run(
-		entry.id,
-		"posts",
-		entry.content,
-		"telegram",
-		"quarantined",
-		createdAt,
-		chatId,
-	);
+	insert.run(entry.id, "posts", entry.content, "telegram", "quarantined", createdAt, chatId);
 
 	logger.debug({ id: entry.id, chatId }, "quarantined memory entry created");
 
