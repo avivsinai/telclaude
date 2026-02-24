@@ -321,10 +321,14 @@ export function createQuarantinedEntry(
 	createdAt = Date.now(),
 ): MemoryEntry {
 	const db = getDb();
+	const chatId = entry.chatId?.trim();
 
 	// Security: Force category to posts and trust to quarantined
 	if (entry.category !== "posts") {
 		throw new Error("Only posts category is allowed for quarantined entries");
+	}
+	if (!chatId) {
+		throw new Error("Quarantined entries require a chatId");
 	}
 
 	const insert = db.prepare(
@@ -346,10 +350,10 @@ export function createQuarantinedEntry(
 		"telegram",
 		"quarantined",
 		createdAt,
-		entry.chatId ?? null,
+		chatId,
 	);
 
-	logger.debug({ id: entry.id, chatId: entry.chatId }, "quarantined memory entry created");
+	logger.debug({ id: entry.id, chatId }, "quarantined memory entry created");
 
 	return {
 		id: entry.id,
@@ -359,7 +363,7 @@ export function createQuarantinedEntry(
 			source: "telegram",
 			trust: "quarantined",
 			createdAt,
-			...(entry.chatId ? { chatId: entry.chatId } : {}),
+			chatId,
 		},
 	};
 }

@@ -129,11 +129,12 @@ describe("memory isolation", () => {
 		);
 
 		// Create a quarantined entry from telegram
-		const entry = createQuarantinedEntry(
-			{ id: "q-1", category: "posts", content: "post idea" },
-			"telegram",
-			"chat-123",
-		);
+		const entry = createQuarantinedEntry({
+			id: "q-1",
+			category: "posts",
+			content: "post idea",
+			chatId: "chat-123",
+		});
 		expect(entry._provenance.source).toBe("telegram");
 		expect(entry._provenance.trust).toBe("quarantined");
 
