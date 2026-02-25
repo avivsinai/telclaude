@@ -30,6 +30,16 @@ export async function handleDrive(
 }
 
 type Drive = ReturnType<typeof google.drive>;
+const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function normalizeFolderId(value: unknown): string | null {
+	if (value === undefined || value === null) return "root";
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (!trimmed) return "root";
+	if (trimmed === "root") return "root";
+	return DRIVE_FILE_ID_PATTERN.test(trimmed) ? trimmed : null;
+}
 
 async function handleSearch(drive: Drive, params: Record<string, unknown>): Promise<FetchResponse> {
 	try {
@@ -50,7 +60,10 @@ async function handleListFiles(
 	params: Record<string, unknown>,
 ): Promise<FetchResponse> {
 	try {
-		const folderId = (params.folderId as string) ?? "root";
+		const folderId = normalizeFolderId(params.folderId);
+		if (!folderId) {
+			return { status: "error", error: "Invalid folderId", attachments: [] };
+		}
 		const res = await drive.files.list({
 			q: `'${folderId}' in parents and trashed = false`,
 			pageSize: (params.maxResults as number) ?? 10,

@@ -6,7 +6,7 @@
 # token verification. The relay proxies all agent requests through this sidecar.
 #
 # SECURITY:
-# - No direct internet access (vault handles OAuth token refresh)
+# - Egress is constrained by Docker network policy in compose
 # - Reads credentials only from vault via Unix socket
 # - Runs as non-root user (node)
 # - Read-only root filesystem

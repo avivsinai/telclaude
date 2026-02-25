@@ -114,13 +114,20 @@ async function handleCreateDraft(
 	params: Record<string, unknown>,
 ): Promise<FetchResponse> {
 	try {
+		const to = sanitizeRfc822HeaderValue(params.to);
+		const subject = sanitizeRfc822HeaderValue(params.subject);
+		const cc = params.cc ? sanitizeRfc822HeaderValue(params.cc) : "";
+		const body = typeof params.body === "string" ? params.body : "";
+		if (!to || !subject) {
+			return { status: "error", error: "Invalid draft headers", attachments: [] };
+		}
 		const headers = [
-			`To: ${params.to as string}`,
-			`Subject: ${params.subject as string}`,
-			params.cc ? `Cc: ${params.cc as string}` : null,
+			`To: ${to}`,
+			`Subject: ${subject}`,
+			cc ? `Cc: ${cc}` : null,
 			"Content-Type: text/plain; charset=utf-8",
 			"",
-			params.body as string,
+			body,
 		]
 			.filter(Boolean)
 			.join("\r\n");
@@ -138,4 +145,9 @@ async function handleCreateDraft(
 function formatError(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
+}
+
+function sanitizeRfc822HeaderValue(value: unknown): string {
+	if (typeof value !== "string") return "";
+	return value.replace(/[\r\n]+/g, " ").trim();
 }

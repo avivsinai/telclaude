@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getAction, getActionsForService, getAllActions, isActionType } from "../../src/google-services/actions.js";
+import { getAction, getActionsForService, getAllActions } from "../../src/google-services/actions.js";
 
 describe("action registry", () => {
 	it("finds gmail search action", () => {
@@ -14,10 +14,10 @@ describe("action registry", () => {
 	});
 
 	it("identifies action types correctly", () => {
-		expect(isActionType("gmail", "create_draft")).toBe("action");
-		expect(isActionType("gmail", "search")).toBe("read");
-		expect(isActionType("calendar", "create_event")).toBe("action");
-		expect(isActionType("calendar", "list_events")).toBe("read");
+		expect(getAction("gmail", "create_draft")?.type).toBe("action");
+		expect(getAction("gmail", "search")?.type).toBe("read");
+		expect(getAction("calendar", "create_event")?.type).toBe("action");
+		expect(getAction("calendar", "list_events")?.type).toBe("read");
 	});
 
 	it("lists all gmail actions", () => {

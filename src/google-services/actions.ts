@@ -3,7 +3,7 @@
  * Defines every supported action with its type (read/action), params, and required scope.
  */
 
-import type { ActionDefinition, ActionType } from "./types.js";
+import type { ActionDefinition } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Gmail Actions
@@ -352,10 +352,6 @@ export function getAction(service: string, actionId: string): ActionDefinition |
 
 export function getActionsForService(service: string): ActionDefinition[] {
 	return ALL_ACTIONS.filter((a) => a.service === service);
-}
-
-export function isActionType(service: string, actionId: string): ActionType | undefined {
-	return actionMap.get(`${service}:${actionId}`)?.type;
 }
 
 export function getAllActions(): ActionDefinition[] {

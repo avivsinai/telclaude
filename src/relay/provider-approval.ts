@@ -89,6 +89,7 @@ export async function consumeProviderApproval(
 			service: entry.parsedBody.service,
 			action: entry.parsedBody.action,
 			params: entry.parsedBody.params,
+			// v1 flow is self-targeted only; delegated subject users are not threaded yet.
 			subjectUserId: null,
 			approvalNonce: nonce,
 		},
