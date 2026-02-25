@@ -528,10 +528,18 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 			return { type: "get-secret", ok: true, value: entry.credential.value };
 		}
 
-		case "sign-payload":
+		case "sign-payload": {
+			const keys = await getOrCreateSigningKeys();
+			const message = `${request.prefix}\n${request.payload}`;
+			const signature = signTokenPayload(keys.privateKey, message);
+			return { type: "sign-payload" as const, signature };
+		}
+
 		case "verify-payload": {
-			// TODO(task-2): implement sign-payload/verify-payload handlers
-			return { type: "error", error: `${request.type} not yet implemented` };
+			const keys = await getOrCreateSigningKeys();
+			const message = `${request.prefix}\n${request.payload}`;
+			const valid = verifyTokenSignature(keys.publicKey, message, request.signature);
+			return { type: "verify-payload" as const, valid };
 		}
 	}
 }
