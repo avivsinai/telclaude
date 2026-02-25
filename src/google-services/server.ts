@@ -9,14 +9,14 @@
 
 import crypto from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
-import { getAction, getAllActions, getActionsForService } from "./actions.js";
-import { JtiStore, verifyApprovalToken } from "./approval.js";
+import { getAction, getActionsForService, getAllActions } from "./actions.js";
+import { type JtiStore, verifyApprovalToken } from "./approval.js";
 import { handleCalendar } from "./handlers/calendar.js";
 import { handleContacts } from "./handlers/contacts.js";
 import { handleDrive } from "./handlers/drive.js";
 import { handleGmail } from "./handlers/gmail.js";
-import { HealthStore } from "./health.js";
-import { TokenManager } from "./token-manager.js";
+import type { HealthStore } from "./health.js";
+import type { TokenManager } from "./token-manager.js";
 import { FetchRequestSchema, type FetchResponse } from "./types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════

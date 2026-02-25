@@ -3,7 +3,7 @@
  * Handles error classification and health state tracking.
  */
 
-import { VaultClient } from "../vault-daemon/client.js";
+import type { VaultClient } from "../vault-daemon/client.js";
 import type { HealthStore } from "./health.js";
 
 const VAULT_TARGET = "googleapis.com";
