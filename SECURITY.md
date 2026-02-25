@@ -81,11 +81,19 @@ Blocked Bash commands: `rm`, `rmdir`, `mv`, `chmod`, `chown`, `kill`, `pkill`, `
 
 **Security Note**: WRITE_LOCAL prevents *accidental* damage, not *malicious* attacks. Determined attackers could write scripts that perform blocked operations. For true isolation, run in a container.
 
+### SOCIAL
+
+Social persona tier. Can use file tools + Bash + WebFetch/WebSearch, but with trust-gating:
+- Bash access gated by actor type: operator queries and proactive posting get Bash; notification processing does not
+- WebFetch permissive (public internet, RFC1918/metadata blocked)
+- Write/Edit blocked to skills, auth, and memory paths
+- Skill invocations require explicit `allowedSkills` in service config (fail-closed if omitted)
+
 ### FULL_ACCESS
 
 Maximum privilege tier. No tool restrictions.
 
-**Every request requires human approval.** This is intentional — FULL_ACCESS grants unrestricted capabilities, so each action must be explicitly approved.
+**Requires human approval** unless the user is a claimed admin. Admins bypass per-request approval but remain sandboxed and subject to all other security layers (secret filtering, rate limits, audit).
 
 ---
 

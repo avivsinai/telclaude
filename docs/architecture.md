@@ -64,7 +64,7 @@ The private persona (Telegram agent) and public persona (social agent) are air-g
 
 ### Relay ↔ Google Sidecar Split
 
-The Google services sidecar sits on two isolated Docker networks: `relay-google` (relay communication) and `google-egress` (outbound to `googleapis.com` only). Agent containers have no route to the sidecar — all Google queries flow through the relay, which handles approval gating, attachment storage, and audit logging. The sidecar connects to the vault via Unix socket for OAuth token retrieval and approval token signature verification, but never sees raw OAuth credentials in its environment.
+The Google services sidecar sits on two isolated Docker networks: `relay-google` (relay communication) and `google-egress` (outbound to `googleapis.com` only, enforced by iptables rules in `init-firewall.sh`). Agent containers have no route to the sidecar — all Google queries flow through the relay, which handles approval gating, attachment storage, and audit logging. The sidecar connects to the vault via Unix socket for OAuth token retrieval and approval token signature verification, but never sees raw OAuth credentials in its environment.
 
 This prevents the **confused deputy problem**: social memory could contain prompt injection from a public timeline. If the private agent processed that memory, the injected instructions would execute with elevated privileges (workspace access, FULL_ACCESS tools). The air gap ensures untrusted social content never reaches the privileged private context.
 
@@ -72,7 +72,7 @@ This prevents the **confused deputy problem**: social memory could contain promp
 
 Five pillars, each addressing a distinct attack surface:
 
-1. **Filesystem isolation** — Agents only see what they need. The Telegram agent mounts the workspace and media volumes; the social agent gets only a sandbox directory. The relay mounts neither. Sensitive paths (~/.telclaude, ~/.ssh, ~/.aws) are blocked at multiple layers. *Why*: minimise blast radius — a compromised agent can only damage what it can reach.
+1. **Filesystem isolation** — Agents only see what they need. The Telegram agent mounts the workspace and media volumes; the social agent gets only a sandbox directory. The relay does not mount the workspace (it mounts media volumes for attachment delivery only). Sensitive paths (~/.telclaude, ~/.ssh, ~/.aws) are blocked at multiple layers. *Why*: minimise blast radius — a compromised agent can only damage what it can reach.
 
 2. **Environment isolation** — Minimal env vars reach agents. Secrets live in the relay; agents get only non-sensitive config. *Why*: env vars are the most common credential leak vector in container deployments. Keeping agents starved of secrets eliminates this class of attack.
 
