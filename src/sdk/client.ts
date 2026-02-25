@@ -1237,7 +1237,8 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// Defense-in-depth: skill allowlist check (PRIMARY enforcement is PreToolUse hook above)
 		// SOCIAL tier without allowedSkills also fails closed here.
 		if (toolName === "Skill") {
-			const effectiveAllowedSkills = opts.allowedSkills ?? (opts.tier === "SOCIAL" && opts.enableSkills ? [] : null);
+			const effectiveAllowedSkills =
+				opts.allowedSkills ?? (opts.tier === "SOCIAL" && opts.enableSkills ? [] : null);
 			if (effectiveAllowedSkills !== null) {
 				const skillName = extractSkillName(input as Record<string, unknown>);
 				if (!skillName || !effectiveAllowedSkills.includes(skillName)) {
