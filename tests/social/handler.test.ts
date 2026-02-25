@@ -447,6 +447,63 @@ describe("social handler", () => {
 		expect(res.message).toContain("proactive post created");
 	});
 
+	it("heartbeat passes allowedSkills from serviceConfig to proactive and autonomous queries", async () => {
+		const promotedIdea = {
+			id: "idea-skills",
+			category: "posts",
+			content: "Test allowedSkills threading",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = mockClient();
+
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea])
+			.mockReturnValueOnce(sampleEntries);
+
+		executeRemoteQueryMock
+			// proactive query
+			.mockReturnValueOnce(
+				mockStream("", true, undefined, { action: "post", content: "Skills test" }),
+			)
+			// autonomous query
+			.mockReturnValueOnce(mockStream("[IDLE]"));
+
+		await handleSocialHeartbeat(SERVICE_ID, client, {
+			id: SERVICE_ID,
+			type: "test",
+			enabled: true,
+			heartbeatIntervalHours: 6,
+			enableSkills: true,
+			allowedSkills: ["memory", "summarize", "social-posting"],
+			notifyOnHeartbeat: "never",
+		});
+
+		// Verify proactive query received allowedSkills
+		const proactiveCall = executeRemoteQueryMock.mock.calls[0];
+		expect(proactiveCall[1].allowedSkills).toEqual(["memory", "summarize", "social-posting"]);
+
+		// Verify autonomous query received allowedSkills
+		const autonomousCall = executeRemoteQueryMock.mock.calls[1];
+		expect(autonomousCall[1].allowedSkills).toEqual(["memory", "summarize", "social-posting"]);
+	});
+
+	it("queryPublicPersona passes allowedSkills from serviceConfig", async () => {
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("response with skills"));
+
+		await queryPublicPersona("test?", SERVICE_ID, {
+			id: SERVICE_ID,
+			type: "test",
+			enabled: true,
+			heartbeatIntervalHours: 6,
+			enableSkills: true,
+			allowedSkills: ["memory", "summarize"],
+			notifyOnHeartbeat: "never",
+		});
+
+		const [, options] = executeRemoteQueryMock.mock.calls[0];
+		expect(options.allowedSkills).toEqual(["memory", "summarize"]);
+	});
+
 	it("proactive posting uses minimal prompt without general memory", async () => {
 		const promotedIdea = {
 			id: "idea-minimal",
