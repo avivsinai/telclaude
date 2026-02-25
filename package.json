@@ -88,6 +88,8 @@
     "commander": "^14.0.3",
     "dotenv": "^17.2.4",
     "fast-glob": "^3.3.3",
+    "fastify": "^5.7.4",
+    "googleapis": "^171.4.0",
     "grammy": "^1.40.0",
     "ip-num": "^1.5.2",
     "json5": "^2.2.3",
