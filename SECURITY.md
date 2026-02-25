@@ -38,6 +38,14 @@ We protect against:
 4. **Denial of Service** — Rate limit abuse
 5. **Unauthorized Access** — Unlinked users or blocked chats
 
+#### Google Services
+
+The Google services sidecar (Gmail, Calendar, Drive, Contacts) adds provider-specific threats:
+
+6. **Token Replay** — Reusing a previously approved action token to repeat or modify an operation. Mitigated by: one-time JTI (SQLite atomic insert), max 300s TTL, SHA-256 params hash binding (changing any parameter invalidates the token).
+7. **Approval Forgery** — Forging an approval token without user consent. Mitigated by: Ed25519 signing via vault (agent never sees signing key), domain-separated signatures (`approval-v1\n<payload>`).
+8. **Direct API Access** — Agent bypassing the relay to call Google APIs directly. Mitigated by: `google-egress` network only routes from the sidecar container; agents have no network path to `googleapis.com`; PreToolUse hook blocks WebFetch to `googleapis.com`.
+
 ### Security Layers
 
 | Layer | Component | Protection |
@@ -164,6 +172,9 @@ When deploying telclaude:
 - [ ] Run the TOTP daemon for 2FA on sensitive operations
 - [ ] Review audit logs regularly
 - [ ] Keep dependencies updated
+- [ ] **Google services**: Run `setup-google` to store OAuth credentials in vault
+- [ ] **Google services**: Verify `google-services` container uses `google-egress` network (googleapis.com only)
+- [ ] **Google services**: Confirm agents have no route to `google-services` container
 
 ### Admin Claim Security
 

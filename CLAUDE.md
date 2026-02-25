@@ -58,6 +58,7 @@
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
 - `src/oauth/` — OAuth2 PKCE flow, service registry.
 - `src/providers/` — external provider integration, health, validation, skill injection.
+- `src/google-services/` — Google services sidecar (actions, approval, handlers, health, server, token manager, types).
 - `src/vault-daemon/` — credential vault daemon.
 - `src/totp-daemon/` — TOTP daemon; `src/totp-client/` — client.
 - `src/secrets/` — keychain integration.
@@ -92,6 +93,7 @@
 - Cron add: `pnpm dev cron add --name <n> --every <dur>|--cron <expr>|--at <iso> --social|--private`
 - Cron run: `pnpm dev cron run <id>`
 - Sessions: `pnpm dev sessions [--active <min>] [--json]`
+- Setup Google: `pnpm dev setup-google`
 
 ## Auth & control plane
 - `allowedChats` must include the chat before first DM.
@@ -118,7 +120,7 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 ## Docker notes
 - **Node version**: Docker images use `node:22-bookworm-slim`.
 - **4 images**: `telclaude:latest` (relay), `telclaude-agent:latest` (agents + Chromium), `telclaude-totp:latest`, `telclaude-vault:latest`.
-- **5 containers**: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `totp`, `vault`.
+- **6 containers**: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `google-services`, `totp`, `vault`.
 - **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
 - **Claude profiles**: Docker uses a shared skills profile (`/home/telclaude-skills`) and a relay-only auth profile (`/home/telclaude-auth`). Anthropic access goes through the relay proxy; credentials never mount in agent containers.
