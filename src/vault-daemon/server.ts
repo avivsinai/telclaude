@@ -527,5 +527,11 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 			}
 			return { type: "get-secret", ok: true, value: entry.credential.value };
 		}
+
+		case "sign-payload":
+		case "verify-payload": {
+			// TODO(task-2): implement sign-payload/verify-payload handlers
+			return { type: "error", error: `${request.type} not yet implemented` };
+		}
 	}
 }

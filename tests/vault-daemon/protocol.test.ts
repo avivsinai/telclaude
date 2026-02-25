@@ -371,6 +371,57 @@ describe("Protocol schemas", () => {
 		});
 	});
 
+	describe("sign-payload request", () => {
+		it("accepts valid sign-payload request", () => {
+			const result = VaultRequestSchema.safeParse({
+				type: "sign-payload",
+				payload: "eyJhbGciOiJFZDI1NTE5In0",
+				prefix: "approval-v1",
+			});
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects sign-payload without prefix", () => {
+			const result = VaultRequestSchema.safeParse({
+				type: "sign-payload",
+				payload: "eyJhbGciOiJFZDI1NTE5In0",
+			});
+			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("verify-payload request", () => {
+		it("accepts valid verify-payload request", () => {
+			const result = VaultRequestSchema.safeParse({
+				type: "verify-payload",
+				payload: "eyJhbGciOiJFZDI1NTE5In0",
+				signature: "c2lnbmF0dXJl",
+				prefix: "approval-v1",
+			});
+			expect(result.success).toBe(true);
+		});
+	});
+
+	describe("sign-payload response", () => {
+		it("accepts valid sign-payload response", () => {
+			const result = VaultResponseSchema.safeParse({
+				type: "sign-payload",
+				signature: "base64signature",
+			});
+			expect(result.success).toBe(true);
+		});
+	});
+
+	describe("verify-payload response", () => {
+		it("accepts valid verify-payload response", () => {
+			const result = VaultResponseSchema.safeParse({
+				type: "verify-payload",
+				valid: true,
+			});
+			expect(result.success).toBe(true);
+		});
+	});
+
 	describe("makeStorageKey / parseStorageKey", () => {
 		it("should create and parse http key", () => {
 			const key = makeStorageKey("http", "api.example.com");
