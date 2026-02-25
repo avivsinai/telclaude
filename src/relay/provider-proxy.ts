@@ -36,6 +36,8 @@ export type ProviderProxyResponse = {
 	status: "ok" | "error";
 	data?: unknown;
 	error?: string;
+	errorCode?: string;
+	approvalNonce?: string;
 };
 
 type ProviderAttachment = {
@@ -336,8 +338,36 @@ export async function proxyProviderRequest(
 	// Check for provider-level error
 	if (!response.ok) {
 		const errorData = data as Record<string, unknown>;
+		const errorCode = errorData.errorCode as string | undefined;
+
+		// Intercept approval_required: create pending approval for /approve flow
+		if (response.status === 403 && errorCode === "approval_required") {
+			const { createProviderApproval } = await import("./provider-approval.js");
+			try {
+				const parsedBody = body ? JSON.parse(body) : {};
+				const nonce = createProviderApproval(
+					request,
+					{
+						service: parsedBody.service ?? "",
+						action: parsedBody.action ?? "",
+						params: parsedBody.params ?? {},
+					},
+					userId || "unknown",
+				);
+				return {
+					status: "error",
+					errorCode: "approval_required",
+					error: (errorData.error as string) || "Action requires approval",
+					approvalNonce: nonce,
+				};
+			} catch (err) {
+				logger.warn({ providerId, error: String(err) }, "failed to create provider approval");
+			}
+		}
+
 		return {
 			status: "error",
+			errorCode,
 			error: (errorData.error as string) || `Provider error: ${response.status}`,
 		};
 	}
