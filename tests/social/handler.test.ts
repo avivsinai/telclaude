@@ -318,6 +318,135 @@ describe("social handler", () => {
 		expect(options.poolKey).toBe(`${SERVICE_ID}:operator-query`);
 	});
 
+	it("heartbeat handles thread action and posts via createThread", async () => {
+		const promotedIdea = {
+			id: "idea-thread",
+			category: "posts",
+			content: "A deep thread idea",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const createThreadMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 201,
+			postId: "thread-first",
+			tweetIds: ["thread-first", "thread-second", "thread-third"],
+		});
+		const client = mockClient();
+		// Add createThread to mock client (X-specific)
+		(client as any).createThread = createThreadMock;
+
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea])
+			.mockReturnValueOnce(sampleEntries);
+
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, {
+				action: "thread",
+				tweets: ["Hook tweet", "Body tweet", "CTA tweet"],
+			}),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("proactive post created");
+		expect(createThreadMock).toHaveBeenCalledWith(["Hook tweet", "Body tweet", "CTA tweet"]);
+		expect(markEntryPostedMock).toHaveBeenCalledWith("idea-thread");
+		expect(consumeMock).toHaveBeenCalled();
+	});
+
+	it("heartbeat returns unsupported for thread on non-X backends", async () => {
+		const promotedIdea = {
+			id: "idea-nothread",
+			category: "posts",
+			content: "Thread on moltbook?",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = mockClient(); // moltbook client — no createThread method
+
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea])
+			.mockReturnValueOnce(sampleEntries);
+
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, {
+				action: "thread",
+				tweets: ["Tweet 1", "Tweet 2"],
+			}),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		// Thread on moltbook should fail (no createThread), idea not marked as posted
+		expect(res.ok).toBe(true);
+		expect(res.message).not.toContain("thread");
+		expect(client.createPost).not.toHaveBeenCalled();
+	});
+
+	it("heartbeat skips thread with insufficient tweets", async () => {
+		const promotedIdea = {
+			id: "idea-short",
+			category: "posts",
+			content: "Too short for thread",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const client = mockClient();
+
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea])
+			.mockReturnValueOnce(sampleEntries);
+
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, {
+				action: "thread",
+				tweets: ["Only one tweet"],
+			}),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).not.toContain("thread");
+		expect(markEntryPostedMock).not.toHaveBeenCalled();
+	});
+
+	it("heartbeat marks partial thread as posted to prevent duplicates", async () => {
+		const promotedIdea = {
+			id: "idea-partial",
+			category: "posts",
+			content: "Partial failure",
+			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+		};
+		const createThreadMock = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 403,
+			error: "thread failed at tweet 2/3",
+			postId: "partial-first", // first tweet was posted
+			tweetIds: ["partial-first"],
+		});
+		const client = mockClient();
+		(client as any).createThread = createThreadMock;
+
+		getEntriesMock
+			.mockReturnValueOnce([promotedIdea])
+			.mockReturnValueOnce(sampleEntries);
+
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("", true, undefined, {
+				action: "thread",
+				tweets: ["Hook", "Body", "CTA"],
+			}),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		// Partial thread: still marked as posted to prevent duplicates
+		expect(markEntryPostedMock).toHaveBeenCalledWith("idea-partial");
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("proactive post created");
+	});
+
 	it("proactive posting uses minimal prompt without general memory", async () => {
 		const promotedIdea = {
 			id: "idea-minimal",

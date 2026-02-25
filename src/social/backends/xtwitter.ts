@@ -238,6 +238,99 @@ export class XTwitterClient implements SocialServiceClient {
 		return { ok: true, status: result.status, postId: tweetId };
 	}
 
+	/**
+	 * Post a thread (reply-to-self chain).
+	 * First tweet is standalone; subsequent tweets reply to the previous one.
+	 * Returns the first tweet's ID as the thread ID, plus all individual tweet IDs.
+	 */
+	async createThread(tweets: string[]): Promise<SocialPostResult & { tweetIds?: string[] }> {
+		if (tweets.length === 0) {
+			return { ok: false, status: 400, error: "empty thread" };
+		}
+		if (tweets.length === 1) {
+			// Single tweet — just use createPost
+			return this.createPost(tweets[0]);
+		}
+
+		const tweetIds: string[] = [];
+
+		for (let i = 0; i < tweets.length; i++) {
+			const text = truncateForX(tweets[i]);
+			const body: Record<string, unknown> = { text };
+
+			if (i > 0) {
+				// Chain: reply to the previous tweet in the thread
+				body.reply = { in_reply_to_tweet_id: tweetIds[i - 1] };
+			}
+
+			const result = await this.request<XTweetResponse>("/2/tweets", {
+				method: "POST",
+				body: JSON.stringify(body),
+			});
+
+			if (!result.ok) {
+				if (result.status === 429) {
+					logger.warn(
+						{ tweetIndex: i, totalTweets: tweets.length },
+						"X thread rate limited mid-chain",
+					);
+					return {
+						ok: false,
+						status: result.status,
+						error: result.error,
+						rateLimited: true,
+						postId: tweetIds[0],
+						tweetIds,
+					};
+				}
+				logger.error(
+					{ tweetIndex: i, totalTweets: tweets.length, error: result.error },
+					"X thread failed mid-chain",
+				);
+				return {
+					ok: false,
+					status: result.status,
+					error: `thread failed at tweet ${i + 1}/${tweets.length}: ${result.error}`,
+					postId: tweetIds[0],
+					tweetIds,
+				};
+			}
+
+			const tweetId = result.data?.data?.id;
+			if (!tweetId) {
+				logger.error(
+					{ tweetIndex: i, totalTweets: tweets.length },
+					"X API returned ok but no tweet ID — cannot continue thread chain",
+				);
+				return {
+					ok: false,
+					status: 502,
+					error: `thread failed at tweet ${i + 1}/${tweets.length}: missing tweet ID in response`,
+					postId: tweetIds[0],
+					tweetIds,
+				};
+			}
+			tweetIds.push(tweetId);
+
+			// Small delay between tweets to respect rate limits and ensure ordering
+			if (i < tweets.length - 1) {
+				await new Promise((resolve) => setTimeout(resolve, 1500));
+			}
+		}
+
+		logger.info(
+			{ threadLength: tweets.length, firstTweetId: tweetIds[0] },
+			"X thread posted successfully",
+		);
+
+		return {
+			ok: true,
+			status: 201,
+			postId: tweetIds[0],
+			tweetIds,
+		};
+	}
+
 	async fetchTimeline(options?: { maxResults?: number }): Promise<SocialTimelinePost[]> {
 		const maxResults = Math.min(Math.max(options?.maxResults ?? 10, 1), 100);
 		const params = new URLSearchParams({
