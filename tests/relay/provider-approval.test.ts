@@ -155,10 +155,10 @@ describe("consumeProviderApproval", () => {
 });
 
 describe("real CLI request shape roundtrip", () => {
-	// provider-query sends: path=/v1/gmail/create_draft, body={service,action,params}
+	// provider-query sends: path=/v1/fetch, body={service,action,params}
 	const cliRequest = {
 		providerId: "google",
-		path: "/v1/gmail/create_draft",
+		path: "/v1/fetch",
 		method: "POST",
 		body: JSON.stringify({
 			service: "gmail",
