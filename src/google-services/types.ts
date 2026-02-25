@@ -76,8 +76,10 @@ export const ApprovalClaimsSchema = z.object({
 	ver: z.literal(1),
 	iss: z.literal("telclaude-vault"),
 	aud: z.literal("google-services"),
-	iat: z.number(),
-	exp: z.number(),
+	/** Issued-at timestamp (Unix seconds, NOT milliseconds) */
+	iat: z.number().int(),
+	/** Expiration timestamp (Unix seconds, NOT milliseconds) */
+	exp: z.number().int(),
 	jti: z.string().min(1),
 	approvalNonce: z.string().min(1),
 	actorUserId: z.string().min(1),
@@ -85,6 +87,7 @@ export const ApprovalClaimsSchema = z.object({
 	service: ServiceId,
 	action: z.string().min(1),
 	subjectUserId: z.string().nullable(),
-	paramsHash: z.string().min(1),
+	/** SHA-256 hex digest, always in Unix seconds context */
+	paramsHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
 export type ApprovalClaims = z.infer<typeof ApprovalClaimsSchema>;
