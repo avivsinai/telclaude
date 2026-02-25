@@ -13,6 +13,24 @@ const logger = getChildLogger({ module: "xtwitter-backend" });
 const X_TWEET_MAX_LENGTH = 280;
 
 /**
+ * Truncate text to fit within X's character limit.
+ * Uses code-point-safe slicing (Array.from) to avoid splitting surrogate pairs.
+ * Prefers word boundaries to avoid cutting mid-word.
+ */
+function truncateForX(text: string): string {
+	const codePoints = Array.from(text);
+	if (codePoints.length <= X_TWEET_MAX_LENGTH) return text;
+	logger.warn(
+		{ length: codePoints.length, max: X_TWEET_MAX_LENGTH },
+		"tweet exceeded char limit, truncating",
+	);
+	const cut = codePoints.slice(0, X_TWEET_MAX_LENGTH - 1).join(""); // leave room for ellipsis
+	const lastSpace = cut.lastIndexOf(" ");
+	const breakpoint = lastSpace > X_TWEET_MAX_LENGTH * 0.6 ? lastSpace : cut.length;
+	return `${cut.slice(0, breakpoint)}…`;
+}
+
+/**
  * X/Twitter API v2 response shapes.
  */
 type XMention = {
@@ -178,7 +196,7 @@ export class XTwitterClient implements SocialServiceClient {
 	}
 
 	async postReply(postId: string, body: string): Promise<SocialReplyResult> {
-		const truncated = body.slice(0, X_TWEET_MAX_LENGTH);
+		const truncated = truncateForX(body);
 		const result = await this.request<XTweetResponse>("/2/tweets", {
 			method: "POST",
 			body: JSON.stringify({
@@ -202,7 +220,7 @@ export class XTwitterClient implements SocialServiceClient {
 		content: string,
 		_options?: { title?: string; tags?: string[] },
 	): Promise<SocialPostResult> {
-		const truncated = content.slice(0, X_TWEET_MAX_LENGTH);
+		const truncated = truncateForX(content);
 		const result = await this.request<XTweetResponse>("/2/tweets", {
 			method: "POST",
 			body: JSON.stringify({ text: truncated }),
