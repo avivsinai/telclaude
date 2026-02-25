@@ -82,6 +82,8 @@ export function registerProviderQueryCommand(program: Command): void {
 
 				// Build the provider request body
 				const requestBody: Record<string, unknown> = {
+					service,
+					action,
 					params,
 				};
 
@@ -111,8 +113,24 @@ export function registerProviderQueryCommand(program: Command): void {
 					approvalToken: opts.approvalToken?.trim(),
 				});
 
-				if (result.status !== "ok" && result.error) {
-					console.error(`Error: ${result.error}`);
+				if (result.status !== "ok") {
+					if (result.errorCode === "approval_required" && result.approvalNonce) {
+						// Surface structured approval info so agent/user can /approve
+						console.log(
+							JSON.stringify(
+								{
+									status: "approval_required",
+									error: result.error,
+									approvalNonce: result.approvalNonce,
+									hint: `This action requires approval. Send: /approve ${result.approvalNonce}`,
+								},
+								null,
+								2,
+							),
+						);
+						process.exit(0); // Not a hard error — actionable by user
+					}
+					console.error(`Error: ${result.error ?? "unknown error"}`);
 					process.exit(1);
 				}
 

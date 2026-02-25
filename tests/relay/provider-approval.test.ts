@@ -153,3 +153,61 @@ describe("consumeProviderApproval", () => {
 		);
 	});
 });
+
+describe("real CLI request shape roundtrip", () => {
+	// provider-query sends: path=/v1/gmail/create_draft, body={service,action,params}
+	const cliRequest = {
+		providerId: "google",
+		path: "/v1/gmail/create_draft",
+		method: "POST",
+		body: JSON.stringify({
+			service: "gmail",
+			action: "create_draft",
+			params: { to: "user@example.com", subject: "Test", body: "Hello" },
+		}),
+		userId: "telegram:456",
+	};
+
+	it("preserves service/action from body in token claims", async () => {
+		const { generateApprovalToken } = await import("../../src/relay/approval-token.js");
+		const parsedBody = JSON.parse(cliRequest.body);
+		const nonce = createProviderApproval(
+			cliRequest,
+			{ service: parsedBody.service, action: parsedBody.action, params: parsedBody.params },
+			cliRequest.userId!,
+		);
+		await consumeProviderApproval(nonce, mockVaultClient);
+
+		expect(generateApprovalToken).toHaveBeenCalledWith(
+			expect.objectContaining({
+				service: "gmail",
+				action: "create_draft",
+				actorUserId: "telegram:456",
+			}),
+			mockVaultClient,
+		);
+	});
+
+	it("nonce roundtrip: create → check → consume → gone", async () => {
+		const parsedBody = JSON.parse(cliRequest.body);
+		const nonce = createProviderApproval(
+			cliRequest,
+			{ service: parsedBody.service, action: parsedBody.action, params: parsedBody.params },
+			cliRequest.userId!,
+		);
+
+		// Check it exists
+		expect(isProviderApproval(nonce)).toBe(true);
+		expect(describeProviderApproval(nonce)).toBe("gmail.create_draft");
+
+		// Consume it
+		const result = await consumeProviderApproval(nonce, mockVaultClient);
+		expect(result).not.toBeNull();
+		expect(result!.status).toBe("ok");
+
+		// Gone after consumption
+		expect(isProviderApproval(nonce)).toBe(false);
+		const result2 = await consumeProviderApproval(nonce, mockVaultClient);
+		expect(result2).toBeNull();
+	});
+});

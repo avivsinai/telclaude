@@ -345,11 +345,21 @@ export async function proxyProviderRequest(
 			const { createProviderApproval } = await import("./provider-approval.js");
 			try {
 				const parsedBody = body ? JSON.parse(body) : {};
+				// Derive service/action from body fields or URL path (/v1/:service/:action)
+				let service = parsedBody.service as string | undefined;
+				let action = parsedBody.action as string | undefined;
+				if (!service || !action) {
+					const pathSegments = request.path.replace(/^\/v1\//, "").split("/");
+					if (pathSegments.length >= 2) {
+						service = service || pathSegments[0];
+						action = action || pathSegments[1];
+					}
+				}
 				const nonce = createProviderApproval(
 					request,
 					{
-						service: parsedBody.service ?? "",
-						action: parsedBody.action ?? "",
+						service: service ?? "",
+						action: action ?? "",
 						params: parsedBody.params ?? {},
 					},
 					userId || "unknown",
