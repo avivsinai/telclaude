@@ -100,7 +100,7 @@ async function handleDownloadAttachment(
 		return {
 			status: "ok",
 			data: { size: res.data.size },
-			attachments: [{ data: res.data.data, size: res.data.size }],
+			attachments: [{ inline: res.data.data, size: res.data.size }],
 		};
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };

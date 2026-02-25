@@ -91,7 +91,7 @@ async function handleDownload(
 		return {
 			status: "ok",
 			data: { size: buf.length },
-			attachments: [{ data: buf.toString("base64"), encoding: "base64", size: buf.length }],
+			attachments: [{ inline: buf.toString("base64"), size: buf.length }],
 		};
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };

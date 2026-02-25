@@ -102,7 +102,8 @@ export async function relayProviderProxy(input: {
 	method?: string;
 	body?: string;
 	userId?: string;
-}): Promise<{ status: string; data?: unknown; error?: string }> {
+	approvalToken?: string;
+}): Promise<{ status: string; data?: unknown; error?: string; errorCode?: string }> {
 	return postJson("/v1/provider/proxy", input);
 }
 

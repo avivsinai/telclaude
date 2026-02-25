@@ -20,42 +20,35 @@ export class TokenManager {
 
 	/**
 	 * Get a fresh Google OAuth access token.
+	 * @param service - The requesting service (for per-service health tracking)
 	 */
-	async getAccessToken(): Promise<
+	async getAccessToken(
+		service?: string,
+	): Promise<
 		| { ok: true; token: string; expiresAt: number }
 		| { ok: false; error: string; errorClass: string }
 	> {
 		try {
 			const result = await this.vault.getToken(VAULT_TARGET);
 			if (result.ok) {
-				this.health.recordSuccess("gmail");
-				this.health.recordSuccess("calendar");
-				this.health.recordSuccess("drive");
-				this.health.recordSuccess("contacts");
+				if (service) this.health.recordSuccess(service);
 				return { ok: true, token: result.token, expiresAt: result.expiresAt };
 			}
 
 			// Classify error
 			const errorClass = classifyTokenError(result.error);
-			if (errorClass === "auth_expired") {
-				this.health.recordAuthExpired("gmail");
-				this.health.recordAuthExpired("calendar");
-				this.health.recordAuthExpired("drive");
-				this.health.recordAuthExpired("contacts");
-			} else {
-				this.health.recordFailure("gmail");
-				this.health.recordFailure("calendar");
-				this.health.recordFailure("drive");
-				this.health.recordFailure("contacts");
+			if (service) {
+				if (errorClass === "auth_expired") {
+					this.health.recordAuthExpired(service);
+				} else {
+					this.health.recordFailure(service);
+				}
 			}
 
 			return { ok: false, error: result.error, errorClass };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.health.recordFailure("gmail");
-			this.health.recordFailure("calendar");
-			this.health.recordFailure("drive");
-			this.health.recordFailure("contacts");
+			if (service) this.health.recordFailure(service);
 			return { ok: false, error: msg, errorClass: "transient" };
 		}
 	}
