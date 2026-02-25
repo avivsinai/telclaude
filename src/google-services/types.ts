@@ -87,7 +87,7 @@ export const ApprovalClaimsSchema = z.object({
 	service: ServiceId,
 	action: z.string().min(1),
 	subjectUserId: z.string().nullable(),
-	/** SHA-256 hex digest, always in Unix seconds context */
+	/** SHA-256 hex digest binding request params to approval */
 	paramsHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 });
 export type ApprovalClaims = z.infer<typeof ApprovalClaimsSchema>;
