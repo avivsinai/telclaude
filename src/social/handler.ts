@@ -195,7 +195,11 @@ function buildSocialPromptBundle(message: string, serviceId: string): SocialProm
 
 	const systemPromptAppend = buildSocialIdentityPreamble(identityEntries);
 	const socialContext = formatSocialContextForPrompt({ entries: socialEntries }, serviceId);
-	const prompt = `${socialContext}\n\n---\n\n${message}`;
+	const charLimitNote =
+		serviceId === "xtwitter"
+			? "\nHARD LIMIT: Your reply must be ≤280 characters. Count carefully. Posts over 280 chars get truncated mid-word.\n"
+			: "";
+	const prompt = `${socialContext}\n${charLimitNote}\n---\n\n${message}`;
 
 	return { prompt, systemPromptAppend };
 }
@@ -641,6 +645,11 @@ function buildProactivePostPrompt(
 		"- If the idea references a file or URL, read it first",
 		"- Craft an authentic post in your voice",
 		`- For ${label}: aim for a punchy, insightful post appropriate to the platform`,
+		...(serviceId === "xtwitter"
+			? [
+					`- HARD LIMIT: ${label} posts must be ≤280 characters. Count carefully. Posts over 280 chars get truncated mid-word.`,
+				]
+			: []),
 		'- If you decide not to post, set action to "skip" with a reason',
 		"",
 		"SECURITY:",
