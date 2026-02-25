@@ -58,7 +58,7 @@
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
 - `src/oauth/` — OAuth2 PKCE flow, service registry.
 - `src/providers/` — external provider integration, health, validation, skill injection.
-- `src/google-services/` — Google services sidecar (actions, approval, handlers, health, server, token manager, types).
+- `src/google-services/` — Google Services sidecar (Gmail, Calendar, Drive, Contacts); Fastify REST server with approval-gated actions.
 - `src/vault-daemon/` — credential vault daemon.
 - `src/totp-daemon/` — TOTP daemon; `src/totp-client/` — client.
 - `src/secrets/` — keychain integration.
@@ -66,46 +66,60 @@
 - `src/media/` — media store.
 - `src/storage/` — SQLite storage layer.
 - `src/config/` — configuration loading.
+- `src/auto-reply/` — auto-reply templating.
+- `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider.
+- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
+- `docs/providers.md` — provider integration guide (sidecar pattern, adding new providers).
 - `docker/` — container stack.
 
 ## Common commands
-- Install: `pnpm install`
-- Dev relay: `pnpm dev relay --profile simple`
-- TOTP daemon: `pnpm dev totp-daemon`
-- Doctor: `pnpm dev doctor --network --secrets`
-- Lint/format: `pnpm lint`, `pnpm format`
-- Typecheck: `pnpm typecheck`
-- Tests: `pnpm test`
-- Integration test: `pnpm dev integration-test --all`
-- Memory read: `pnpm dev memory read --categories profile,interests`
-- Memory write: `pnpm dev memory write "fact" --category meta`
-- Memory quarantine: `pnpm dev memory quarantine "post idea"`
-- OAuth authorize: `pnpm dev oauth authorize xtwitter`
-- OAuth list: `pnpm dev oauth list`
-- OAuth revoke: `pnpm dev oauth revoke xtwitter`
-- RPC keygen: `pnpm dev keygen <scope>` (generates Ed25519 keypair; env vars: `{SCOPE}_RPC_AGENT_*` / `{SCOPE}_RPC_RELAY_*`)
-- Cron status: `pnpm dev cron status`
-- Cron list: `pnpm dev cron list [--all] [--json]`
-- Cron add: `pnpm dev cron add --name <n> --every <dur>|--cron <expr>|--at <iso> --social|--private`
-- Cron run: `pnpm dev cron run <id>`
-- Sessions: `pnpm dev sessions [--active <min>] [--json]`
-- Setup Google: `pnpm dev setup-google`
+
+| Command | Description |
+|---------|-------------|
+| `pnpm install` | Install dependencies |
+| `pnpm dev relay --profile simple` | Start relay (dev mode) |
+| `pnpm dev totp-daemon` | Start TOTP daemon |
+| `pnpm dev doctor --network --secrets` | Health check |
+| `pnpm lint` / `pnpm format` | Lint and format |
+| `pnpm typecheck` | Type check |
+| `pnpm test` | Run tests |
+| `pnpm dev integration-test --all` | Integration tests |
+| `pnpm dev memory read --categories profile,interests` | Read memory entries |
+| `pnpm dev memory write "fact" --category meta` | Write memory entry |
+| `pnpm dev memory quarantine "post idea"` | Quarantine post idea |
+| `pnpm dev oauth authorize xtwitter` | OAuth authorize |
+| `pnpm dev oauth list` / `pnpm dev oauth revoke xtwitter` | OAuth list / revoke |
+| `pnpm dev keygen <scope>` | Generate Ed25519 RPC keypair (`{SCOPE}_RPC_AGENT_*` / `{SCOPE}_RPC_RELAY_*`) |
+| `pnpm dev cron status` | Cron scheduler status |
+| `pnpm dev cron list [--all] [--json]` | List cron jobs |
+| `pnpm dev cron add --name <n> --every <dur>\|--cron <expr>\|--at <iso> --social\|--private` | Add cron job |
+| `pnpm dev cron run <id>` | Run cron job immediately |
+| `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
+| `pnpm dev setup-google` | Configure Google OAuth credentials |
 
 ## Auth & control plane
+
 - `allowedChats` must include the chat before first DM.
 - First admin claim (private chat): bot replies with `/approve CODE`; send it back to become admin.
-- Identity linking: `/link <code>` (generated via CLI) and `/unlink`.
-- Approvals: `/approve <nonce>` or `/deny <nonce>`; TTL 5 minutes.
-- TOTP: `/setup-2fa`, `/verify-2fa <code>`, `/2fa-logout`, `/disable-2fa`.
 - Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
-- Pending posts: `/pending` (list quarantined post ideas).
-- Promote post: `/promote <id>` (approve quarantined idea for social service posting).
-- Public activity log: `/public-log [serviceId] [hours]` (metadata-only summary of social actions).
-- Ask public persona: `/ask-public <question>` (routed to social agent, response piped through relay).
+
+### Telegram commands
+
+| Command | Description |
+|---------|-------------|
+| `/link <code>` / `/unlink` | Identity linking (code generated via CLI) |
+| `/approve <nonce>` / `/deny <nonce>` | Approval workflow (TTL 5 minutes) |
+| `/setup-2fa` / `/verify-2fa <code>` | TOTP setup and verification |
+| `/2fa-logout` / `/disable-2fa` | TOTP session / permanent disable |
+| `/pending` | List quarantined post ideas |
+| `/promote <id>` | Approve quarantined idea for social posting |
+| `/public-log [serviceId] [hours]` | Metadata-only summary of social actions |
+| `/ask-public <question>` | Query social persona (routed through relay) |
+
+### Scheduler config
 - Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).
 - Cron scheduler: `cron.enabled` (default true), `pollIntervalSeconds` (default 15), `timeoutSeconds` (default 900). Cron jobs and interval heartbeats are mutually exclusive per target.
 
@@ -119,7 +133,7 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 
 ## Docker notes
 - **Node version**: Docker images use `node:22-bookworm-slim`.
-- **4 images**: `telclaude:latest` (relay), `telclaude-agent:latest` (agents + Chromium), `telclaude-totp:latest`, `telclaude-vault:latest`.
+- **5 images**: `telclaude:latest` (relay), `telclaude-agent:latest` (agents + Chromium), `telclaude-google-services:latest` (Google sidecar), `telclaude-totp:latest`, `telclaude-vault:latest`.
 - **6 containers**: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `google-services`, `totp`, `vault`.
 - **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
@@ -127,7 +141,7 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 - **Weak local servers**: Build locally and transfer images instead of building on device:
   ```bash
   cd docker && docker compose build
-  docker save telclaude:latest telclaude-agent:latest telclaude-totp:latest telclaude-vault:latest \
+  docker save telclaude:latest telclaude-agent:latest telclaude-google-services:latest telclaude-totp:latest telclaude-vault:latest \
     | ssh <server> "docker load"
   ssh <server> "cd telclaude/docker && docker compose up -d"
   ```
