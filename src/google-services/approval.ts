@@ -17,6 +17,7 @@ import { ApprovalClaimsSchema, type FetchRequest } from "./types.js";
 /**
  * Compute canonical hash for request binding.
  * Deterministic JSON serialization (recursive key sort) + SHA-256.
+ * Keep in sync with src/relay/approval-token.ts.
  */
 export function canonicalHash(input: {
 	service: string;
@@ -64,20 +65,16 @@ export class JtiStore {
 		this.insertStmt = this.db.prepare(
 			"INSERT INTO used_approval_tokens (jti, exp, used_at) VALUES (?, ?, ?)",
 		);
-		this.checkStmt = this.db.prepare("SELECT 1 FROM used_approval_tokens WHERE jti = ?");
 		this.cleanupStmt = this.db.prepare("DELETE FROM used_approval_tokens WHERE exp < ?");
 	}
 
 	private insertStmt: Database.Statement;
-	private checkStmt: Database.Statement;
 	private cleanupStmt: Database.Statement;
 
 	/**
 	 * Atomically record a JTI as used. Returns false if already used (replay).
 	 */
 	recordJti(jti: string, exp: number): boolean {
-		const existing = this.checkStmt.get(jti);
-		if (existing) return false;
 		try {
 			this.insertStmt.run(jti, exp, Math.floor(Date.now() / 1000));
 			return true;

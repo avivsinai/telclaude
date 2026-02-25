@@ -80,7 +80,7 @@ export async function generateApprovalToken(
 
 /**
  * Compute canonical hash for request binding.
- * Matches the sidecar's canonicalHash implementation.
+ * Keep in sync with src/google-services/approval.ts.
  */
 function canonicalHash(input: {
 	service: string;
