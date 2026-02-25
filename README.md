@@ -33,7 +33,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 | `docker/README.md` | Container deployment, firewall, volumes |
 | `CHANGELOG.md` | Version history |
 | `SECURITY.md` | Vulnerability reporting, threat model |
-| `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md` | Community policies |
+| `docs/soul.md` | Agent identity, voice, interests |
 
 ## Support & cadence
 - Status: alpha — breaking changes possible until 1.0.
@@ -374,14 +374,12 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
-| Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see `CLAUDE.md#sandbox-unavailable-relay-wont-start`) |
+| Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see Requirements section above) |
 | TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
 | Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
 
 ## Community
-- Contributing guidelines: see `CONTRIBUTING.md`.
-- Code of Conduct: see `CODE_OF_CONDUCT.md`.
 - Issues & discussions: open GitHub issues; we triage weekly.
 - Changelog: see `CHANGELOG.md`.
 
