@@ -78,11 +78,10 @@ export class TokenManager {
  */
 function classifyTokenError(error: string): string {
 	const lower = error.toLowerCase();
-	if (
-		lower.includes("invalid_grant") ||
-		lower.includes("revoked") ||
-		lower.includes("invalid_client")
-	) {
+	if (lower.includes("invalid_client")) {
+		return "config_error";
+	}
+	if (lower.includes("invalid_grant") || lower.includes("revoked")) {
 		return "auth_expired";
 	}
 	if (lower.includes("rate") || lower.includes("429")) {
