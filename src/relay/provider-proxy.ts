@@ -28,6 +28,8 @@ export type ProviderProxyRequest = {
 	method?: string;
 	body?: string;
 	userId?: string;
+	/** Signed approval token for action-type requests */
+	approvalToken?: string;
 };
 
 export type ProviderProxyResponse = {
@@ -286,6 +288,11 @@ export async function proxyProviderRequest(
 	// Add actor user ID header if provided
 	if (userId) {
 		headers["x-actor-user-id"] = userId;
+	}
+
+	// Forward approval token for action-type requests
+	if (request.approvalToken) {
+		headers["x-approval-token"] = request.approvalToken;
 	}
 
 	// Make request

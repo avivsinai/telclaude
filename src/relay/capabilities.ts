@@ -1328,6 +1328,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					method: typeof typed.method === "string" ? typed.method : "POST",
 					body: typeof typed.body === "string" ? typed.body : undefined,
 					userId,
+					approvalToken: typeof typed.approvalToken === "string" ? typed.approvalToken : undefined,
 				});
 
 				if (result.status === "error") {
