@@ -79,6 +79,16 @@ Social service heartbeats run in three phases, each with escalating trust:
 
 The SOCIAL tier doesn't blanket-allow or blanket-deny Bash. Instead, Bash access is gated on the actor type: operator queries, autonomous heartbeats, and proactive posting get Bash; notification processing does not. *Why*: notifications contain untrusted third-party content that could inject shell commands. Other actors are either the operator themselves or operating under explicitly granted autonomy.
 
+### Skill Allowlisting
+
+The SOCIAL tier requires explicit `allowedSkills` when `enableSkills` is true. If `allowedSkills` is omitted, the runtime fail-closes — all Skill tool calls are denied. An empty array (`allowedSkills: []`) also denies all skills, allowing operators to disable skills while keeping `enableSkills: true` for future use.
+
+Non-SOCIAL tiers (private agents) are unaffected: omitting `allowedSkills` allows all skills, since private agents operate in a trusted context.
+
+Enforcement is two-layer: a PreToolUse hook (primary, unconditional) checks every Skill invocation against the allowlist, and a `canUseTool` callback (fallback, fires only when a permission prompt would appear) provides defense-in-depth. The hook extracts the skill name from `tool_input.skill`, `.name`, or `.command` — if multiple keys carry conflicting values, the call is denied fail-closed.
+
+*Why fail-closed for SOCIAL*: social agents process untrusted timeline content. Without an explicit allowlist, a prompt injection could invoke arbitrary skills (e.g., `external-provider`, `integration-test`) that have no legitimate social use. Requiring the operator to declare which skills are needed bounds the attack surface to exactly what's intended.
+
 ### Cross-Persona Querying
 
 The operator can query the social persona from Telegram via two tiers:
@@ -210,3 +220,4 @@ Things that must always be true, regardless of configuration:
 6. **PreToolUse hooks run unconditionally.** Even in `acceptEdits` mode, even when `canUseTool` is bypassed. This is the primary enforcement layer.
 7. **Social notification content is always untrusted.** Notification payloads are wrapped with injection warnings before reaching the model, and Bash is blocked for notification processing.
 8. **Memory source boundaries are enforced at runtime.** Assertions verify that telegram contexts contain only telegram memory and social contexts contain only social memory. Mismatches throw in dev, warn in prod.
+9. **SOCIAL skill invocations require an explicit allowlist.** When `enableSkills` is true for a SOCIAL service, `allowedSkills` must be set. Omitting it denies all Skill calls at runtime (fail-closed). Enforced by PreToolUse hook (primary) and canUseTool (fallback).
