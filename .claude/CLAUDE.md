@@ -34,7 +34,7 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 |------|-----------------|
 | READ_ONLY | Read, Glob, Grep, WebFetch, WebSearch |
 | WRITE_LOCAL | Above + Write, Edit, Bash (with safety restrictions) |
-| SOCIAL | Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch (Bash trust-gated; WebFetch permissive; protected paths blocked) |
+| SOCIAL | Read, Glob, Grep, Write, Edit, Bash, WebFetch, WebSearch (Bash trust-gated; WebFetch permissive; protected paths blocked; Skill calls require explicit `allowedSkills` in service config — omitting denies all) |
 | FULL_ACCESS | All tools |
 
 ## Network Access

@@ -23,6 +23,7 @@
 - **Settings isolation**: `settingSources: ["project"]` prevents disableAllHooks bypass.
 - **PreToolUse hooks**: PRIMARY enforcement; run unconditionally, even in acceptEdits mode.
 - **canUseTool**: FALLBACK only; runs only when a permission prompt would appear (so not for auto-approved calls in acceptEdits mode).
+- **Skill allowlisting**: SOCIAL tier requires explicit `allowedSkills` when `enableSkills` is true; omitting fail-closes (denies all Skill calls). Non-SOCIAL tiers are unaffected. Enforced by PreToolUse hook (primary) + canUseTool (fallback).
 - Network: PreToolUse hook blocks RFC1918/metadata (including CGNAT 100.64.0.0/10 for Tailscale); Bash uses SDK sandbox (native) or Docker firewall; WebSearch not filtered (server-side). `TELCLAUDE_NETWORK_MODE=open|permissive` broadens WebFetch egress.
 - Profiles: simple (default, rate limits + audit), strict (+observer + approvals + tier enforcement), test (all disabled, requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`).
 
