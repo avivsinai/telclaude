@@ -127,10 +127,15 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 			}
 		}
 
-		// 5. Get access token
-		const tokenResult = await tokenManager.getAccessToken();
+		// 5. Get access token (pass service for per-service health tracking)
+		const tokenResult = await tokenManager.getAccessToken(fetchReq.service);
 		if (!tokenResult.ok) {
-			const statusCode = tokenResult.errorClass === "auth_expired" ? 401 : 502;
+			const statusCode =
+				tokenResult.errorClass === "auth_expired"
+					? 401
+					: tokenResult.errorClass === "config_error"
+						? 500
+						: 502;
 			return reply.status(statusCode).send({
 				status: "error",
 				errorCode: tokenResult.errorClass,

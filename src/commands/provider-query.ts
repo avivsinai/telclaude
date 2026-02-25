@@ -25,6 +25,7 @@ export type ProviderQueryOptions = {
 	userId?: string;
 	subjectUserId?: string;
 	idempotencyKey?: string;
+	approvalToken?: string;
 };
 
 export function registerProviderQueryCommand(program: Command): void {
@@ -38,6 +39,7 @@ export function registerProviderQueryCommand(program: Command): void {
 		.option("--user-id <id>", "Actor user ID for the request (optional)")
 		.option("--subject-user-id <id>", "Subject user ID for delegated requests")
 		.option("--idempotency-key <key>", "Idempotency key for write operations")
+		.option("--approval-token <token>", "Signed approval token for action-type requests")
 		.action(async (opts: ProviderQueryOptions) => {
 			try {
 				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
@@ -106,6 +108,7 @@ export function registerProviderQueryCommand(program: Command): void {
 					method: "POST",
 					body: JSON.stringify(requestBody),
 					userId,
+					approvalToken: opts.approvalToken?.trim(),
 				});
 
 				if (result.status !== "ok" && result.error) {
