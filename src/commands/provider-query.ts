@@ -106,7 +106,7 @@ export function registerProviderQueryCommand(program: Command): void {
 
 				const result = await relayProviderProxy({
 					providerId,
-					path: `/v1/${service}/${action}`,
+					path: "/v1/fetch",
 					method: "POST",
 					body: JSON.stringify(requestBody),
 					userId,
