@@ -18,6 +18,7 @@ vi.mock("../../src/security/permissions.js", async () => {
 		TIER_TOOLS: {
 			READ_ONLY: ["Read", "Glob", "Grep", "WebFetch", "WebSearch"],
 			WRITE_LOCAL: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Write", "Edit", "Bash"],
+			SOCIAL: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "Task"],
 			FULL_ACCESS: [],
 		},
 		containsBlockedCommand,
@@ -414,6 +415,45 @@ describe("buildSdkOptions PreToolUse hook", () => {
 			};
 			// Network hook returns "allow" for non-WebFetch tools
 			expect(res.hookSpecificOutput?.permissionDecision).toBe("allow");
+		});
+	});
+
+	describe("skill allowlist canUseTool fallback", () => {
+		it("denies Skill when not in allowedSkills via canUseTool", async () => {
+			const sdkOpts = await buildSdkOptions({
+				cwd: "/tmp",
+				tier: "SOCIAL",
+				enableSkills: true,
+				allowedSkills: ["memory"],
+				userId: "social:xtwitter:proactive",
+			});
+			const res = await sdkOpts.canUseTool!("Skill", { skill: "external-provider" });
+			expect(res.behavior).toBe("deny");
+			expect(res.message).toContain("not in the allowedSkills");
+		});
+
+		it("allows Skill when in allowedSkills via canUseTool", async () => {
+			const sdkOpts = await buildSdkOptions({
+				cwd: "/tmp",
+				tier: "SOCIAL",
+				enableSkills: true,
+				allowedSkills: ["memory"],
+				userId: "social:xtwitter:proactive",
+			});
+			const res = await sdkOpts.canUseTool!("Skill", { skill: "memory" });
+			expect(res.behavior).toBe("allow");
+		});
+
+		it("denies Skill for SOCIAL tier without allowedSkills via canUseTool (fail-closed)", async () => {
+			const sdkOpts = await buildSdkOptions({
+				cwd: "/tmp",
+				tier: "SOCIAL",
+				enableSkills: true,
+				// no allowedSkills
+				userId: "social:xtwitter:proactive",
+			});
+			const res = await sdkOpts.canUseTool!("Skill", { skill: "memory" });
+			expect(res.behavior).toBe("deny");
 		});
 	});
 

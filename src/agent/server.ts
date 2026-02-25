@@ -36,6 +36,8 @@ type QueryRequest = {
 	poolKey: string;
 	cwd?: string;
 	enableSkills?: boolean;
+	/** When set, only these skills can be invoked. Requires enableSkills: true. */
+	allowedSkills?: string[];
 	timeoutMs?: number;
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
@@ -140,6 +142,7 @@ async function streamQuery(
 			userId: req.userId,
 			resumeSessionId: req.resumeSessionId,
 			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
+			allowedSkills: req.allowedSkills,
 			timeoutMs: req.timeoutMs,
 			abortController,
 			betas: req.betas,

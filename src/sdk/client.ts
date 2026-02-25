@@ -247,6 +247,12 @@ export type TelclaudeQueryOptions = {
 	/** Enable skills loading from project's .claude/skills directory. */
 	enableSkills?: boolean;
 
+	/** When set, only these skills can be invoked via the Skill tool. Requires enableSkills: true.
+	 * Empty array [] means deny ALL skills.
+	 * SOCIAL tier: required when enableSkills is true (fail-closed if omitted).
+	 * Other tiers: omitting allows all skills (private agents are trusted). */
+	allowedSkills?: string[];
+
 	/** Abort controller for external cancellation. */
 	abortController?: AbortController;
 
@@ -745,6 +751,92 @@ function createSkillWriteProtectionHook(): HookCallbackMatcher {
 }
 
 /**
+ * Recognized keys that may carry the skill name in Skill tool input.
+ * The SDK's Skill tool input schema uses "skill" but other keys are checked defensively.
+ */
+const SKILL_NAME_KEYS = ["skill", "name", "command"] as const;
+
+/**
+ * Extract skill name from Skill tool input.
+ * Checks multiple key candidates since the SDK's Skill tool input schema could vary.
+ *
+ * SECURITY: If multiple keys carry different values, returns null (fail-closed).
+ * This prevents bypass via conflicting keys (e.g. {skill: "memory", command: "external-provider"})
+ * where enforcement validates one field but runtime execution uses another.
+ *
+ * Returns null if skill name cannot be determined or keys conflict (caller should deny).
+ */
+function extractSkillName(toolInput: Record<string, unknown>): string | null {
+	let found: string | null = null;
+	for (const key of SKILL_NAME_KEYS) {
+		const value = toolInput[key];
+		if (typeof value === "string" && value.length > 0) {
+			if (found !== null && value !== found) {
+				// Conflicting skill names across keys — fail-closed
+				logger.warn(
+					{ keys: { [key]: value, previous: found } },
+					"[hook] conflicting skill name keys detected — denying",
+				);
+				return null;
+			}
+			found = value;
+		}
+	}
+	return found;
+}
+
+/**
+ * Create a PreToolUse hook that restricts which skills can be invoked.
+ *
+ * FAIL-CLOSED: If tool_input shape is unexpected or skill name can't be extracted, DENY.
+ * Empty allowedSkills [] = deny ALL skills (not allow all).
+ */
+function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher {
+	const allowSet = new Set(allowedSkills);
+
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+
+		if (input.tool_name !== "Skill") {
+			return allowHookResponse();
+		}
+
+		const toolInput = input.tool_input as Record<string, unknown>;
+		const skillName = extractSkillName(toolInput);
+
+		if (!skillName) {
+			logger.warn(
+				{ toolInput: formatToolInputForLog(toolInput) },
+				"[hook] denied Skill: could not extract skill name (fail-closed)",
+			);
+			return denyHookResponse(
+				"Skill invocation denied: could not determine skill name from input.",
+			);
+		}
+
+		if (!allowSet.has(skillName)) {
+			logger.warn(
+				{ skill: skillName, allowed: allowedSkills },
+				"[hook] denied Skill: not in allowedSkills",
+			);
+			return denyHookResponse(
+				`Skill "${skillName}" is not in the allowedSkills list for this service.`,
+			);
+		}
+
+		return allowHookResponse();
+	};
+
+	return {
+		matcher: "Skill",
+		hooks: [hookCallback],
+		timeout: HOOK_TIMEOUT_SECONDS,
+	};
+}
+
+/**
  * Create a PreToolUse hook for sensitive path protection on filesystem tools.
  *
  * CRITICAL: This is the PRIMARY enforcement for sensitive path blocking.
@@ -1082,19 +1174,38 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// They run UNCONDITIONALLY before every tool use, even in acceptEdits mode.
 	// Unlike canUseTool (which only runs when a permission prompt would appear), these are guaranteed.
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
+	const preToolUseHooks: HookCallbackMatcher[] = [
+		createNetworkSecurityHook(
+			effectivePermissive,
+			allowedDomains,
+			privateEndpoints,
+			config.providers ?? [],
+			opts.userId,
+		),
+		createSocialToolRestrictionHook(opts.userId),
+		createSensitivePathHook(opts.tier),
+		createSkillWriteProtectionHook(),
+	];
+
+	// Skill allowlist enforcement:
+	// - When allowedSkills is set: only listed skills can be invoked
+	// - SOCIAL tier with enableSkills but no allowedSkills: fail-closed (deny all)
+	// - Other tiers without allowedSkills: no restriction (private agent is trusted)
+	if (opts.allowedSkills) {
+		preToolUseHooks.push(createSkillAllowlistHook(opts.allowedSkills));
+	} else if (opts.tier === "SOCIAL" && opts.enableSkills) {
+		// SOCIAL tier must explicitly declare which skills are allowed.
+		// Fail-closed: deny all skills rather than allowing everything.
+		// Keyed on tier (not userId prefix) so this fires even if userId is missing.
+		logger.warn(
+			{ userId: opts.userId },
+			"SOCIAL tier has enableSkills=true but no allowedSkills — denying all skills",
+		);
+		preToolUseHooks.push(createSkillAllowlistHook([]));
+	}
+
 	sdkOpts.hooks = {
-		PreToolUse: [
-			createNetworkSecurityHook(
-				effectivePermissive,
-				allowedDomains,
-				privateEndpoints,
-				config.providers ?? [],
-				opts.userId,
-			),
-			createSocialToolRestrictionHook(opts.userId),
-			createSensitivePathHook(opts.tier),
-			createSkillWriteProtectionHook(),
-		],
+		PreToolUse: preToolUseHooks,
 	};
 
 	// Configure tools based on tier
@@ -1122,6 +1233,25 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			{ toolName, input: formatToolInputForLog(input) },
 			"canUseTool invoked (fallback)",
 		);
+
+		// Defense-in-depth: skill allowlist check (PRIMARY enforcement is PreToolUse hook above)
+		// SOCIAL tier without allowedSkills also fails closed here.
+		if (toolName === "Skill") {
+			const effectiveAllowedSkills = opts.allowedSkills ?? (opts.tier === "SOCIAL" && opts.enableSkills ? [] : null);
+			if (effectiveAllowedSkills !== null) {
+				const skillName = extractSkillName(input as Record<string, unknown>);
+				if (!skillName || !effectiveAllowedSkills.includes(skillName)) {
+					logger.warn(
+						{ skill: skillName ?? "unknown" },
+						"blocked Skill not in allowedSkills (canUseTool fallback)",
+					);
+					return {
+						behavior: "deny",
+						message: `Skill "${skillName ?? "unknown"}" is not in the allowedSkills list for this service.`,
+					};
+				}
+			}
+		}
 
 		// Generic guard: block any input that references sensitive paths
 		// Exclude WebSearch - uses `query` (not paths), server-side requests

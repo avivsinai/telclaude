@@ -274,7 +274,13 @@ async function runSocialQuery(
 	bundle: SocialPromptBundle,
 	serviceId: string,
 	agentUrl: string,
-	options?: { poolKey?: string; userId?: string; enableSkills?: boolean; timeoutMs?: number },
+	options?: {
+		poolKey?: string;
+		userId?: string;
+		enableSkills?: boolean;
+		allowedSkills?: string[];
+		timeoutMs?: number;
+	},
 ): Promise<string> {
 	const defaultPoolKey = `${serviceId}:social`;
 	const defaultUserId = `social:${serviceId}`;
@@ -289,6 +295,7 @@ async function runSocialQuery(
 		userId: options?.userId ?? defaultUserId,
 		// SECURITY: disable skills by default for untrusted social inputs
 		enableSkills: options?.enableSkills ?? false,
+		allowedSkills: options?.allowedSkills,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
 	});
@@ -311,7 +318,10 @@ async function runProactiveQuery(
 	bundle: SocialPromptBundle,
 	serviceId: string,
 	agentUrl: string,
-	options?: { outputFormat?: import("@anthropic-ai/claude-agent-sdk").OutputFormat },
+	options?: {
+		allowedSkills?: string[];
+		outputFormat?: import("@anthropic-ai/claude-agent-sdk").OutputFormat;
+	},
 ): Promise<{ text: string; structuredOutput?: unknown }> {
 	const proactivePoolKey = `${serviceId}:proactive`;
 	const proactiveUserId = `social:${serviceId}:proactive`;
@@ -327,6 +337,7 @@ async function runProactiveQuery(
 		userId: proactiveUserId,
 		// Proactive posts are user-promoted (trusted) — enable skills for research
 		enableSkills: true,
+		allowedSkills: options?.allowedSkills,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
 		outputFormat: options?.outputFormat,
@@ -420,7 +431,13 @@ async function runHeartbeatPhases(
 	// Phase 2: Proactive posting (consent-based ideas)
 	let proactiveResult: { posted: boolean; message: string } = { posted: false, message: "" };
 	try {
-		proactiveResult = await handleProactivePosting(serviceId, client, agentUrl, timeline);
+		proactiveResult = await handleProactivePosting(
+			serviceId,
+			client,
+			agentUrl,
+			timeline,
+			serviceConfig?.allowedSkills,
+		);
 	} catch (err) {
 		logger.error({ error: String(err), serviceId }, "proactive posting failed");
 	}
@@ -587,6 +604,7 @@ export async function queryPublicPersona(
 		poolKey: `${serviceId}:operator-query`,
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
+		allowedSkills: serviceConfig?.allowedSkills,
 		timeoutMs: operatorTimeoutMs,
 	});
 }
@@ -699,6 +717,7 @@ async function handleProactivePosting(
 	client: SocialServiceClient,
 	agentUrl: string,
 	timeline?: SocialTimelinePost[],
+	allowedSkills?: string[],
 ): Promise<{ posted: boolean; message: string }> {
 	const rateLimiter = getMultimediaRateLimiter();
 	const proactiveUserId = `social:${serviceId}:proactive`;
@@ -725,6 +744,7 @@ async function handleProactivePosting(
 
 		const bundle = buildProactivePostPrompt(idea, serviceId, timeline);
 		const queryResult = await runProactiveQuery(bundle, serviceId, agentUrl, {
+			allowedSkills,
 			outputFormat: {
 				type: "json_schema",
 				schema: PROACTIVE_POST_SCHEMA,
@@ -901,6 +921,7 @@ async function handleAutonomousActivity(
 	prefetchedTimeline?: SocialTimelinePost[],
 ): Promise<{ acted: boolean; summary: string }> {
 	const enableSkills = serviceConfig?.enableSkills ?? false;
+	const allowedSkills = serviceConfig?.allowedSkills;
 	const timeline = prefetchedTimeline ?? (await fetchTimelineSafe(client, serviceId));
 	const bundle = buildAutonomousPrompt(serviceId, timeline);
 	const autonomousPoolKey = `${serviceId}:autonomous`;
@@ -913,6 +934,7 @@ async function handleAutonomousActivity(
 		poolKey: autonomousPoolKey,
 		userId: autonomousUserId,
 		enableSkills,
+		allowedSkills,
 		timeoutMs,
 	});
 
