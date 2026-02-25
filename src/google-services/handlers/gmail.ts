@@ -97,10 +97,12 @@ async function handleDownloadAttachment(
 			messageId: params.messageId as string,
 			id: params.attachmentId as string,
 		});
+		// Gmail API returns base64url; normalize to standard base64 for provider proxy
+		const b64 = res.data.data ? res.data.data.replace(/-/g, "+").replace(/_/g, "/") : "";
 		return {
 			status: "ok",
 			data: { size: res.data.size },
-			attachments: [{ inline: res.data.data, size: res.data.size }],
+			attachments: [{ inline: b64, size: res.data.size }],
 		};
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };
