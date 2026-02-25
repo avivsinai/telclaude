@@ -39,6 +39,8 @@ services:
         condition: service_healthy
       vault:
         condition: service_healthy
+      google-services:
+        condition: service_healthy
       telclaude-agent:
         condition: service_started
 
@@ -95,7 +97,7 @@ services:
       # Set TELCLAUDE_FIREWALL=1 in .env file (requires --cap-add=NET_ADMIN)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       # Internal hosts allowed through firewall (relay needs to reach agents)
-      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social}
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -171,6 +173,7 @@ services:
       - agent-relay-net
       - relay-totp-net
       - relay-vault-net
+      - relay-google-net
       - relay-egress
       - social-relay-net
 
@@ -397,6 +400,81 @@ services:
       - social-egress
 
     restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Google Services Sidecar
+  #
+  # Fastify REST server providing Gmail, Calendar, Drive, Contacts access.
+  # Reads OAuth tokens from vault via Unix socket. Agents route requests
+  # through the relay's provider proxy — never call this directly.
+  # ─────────────────────────────────────────────────────────────────────────────
+  google-services:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.google-services
+      args:
+        USER_UID: 1000
+        USER_GID: 1000
+    image: telclaude-google-services:latest
+    container_name: telclaude-google-services
+
+    environment:
+      - PORT=3002
+      - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+      - DATA_DIR=/data
+      - LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      - NODE_ENV=production
+
+    volumes:
+      # JTI replay store (SQLite)
+      - google-data:/data:rw
+
+      # Shared vault socket for OAuth tokens
+      - vault-socket:/run/vault:ro
+
+    security_opt:
+      - no-new-privileges:true
+
+    user: "1000:1000"
+
+    cap_drop:
+      - ALL
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+      - /home/node:size=64M,mode=0755,uid=1000,gid=1000
+
+    mem_limit: 256M
+    cpus: 1
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+    networks:
+      - relay-google-net
+      - google-egress  # Outbound to googleapis.com
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3002/v1/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # TOTP Daemon Sidecar
@@ -641,6 +719,10 @@ volumes:
   media-outbox:
     name: telclaude-media-outbox
 
+  # Google services data (JTI replay store)
+  google-data:
+    name: telclaude-google-data
+
   # Social isolated workspace (agent-social RW)
   social-sandbox:
     name: telclaude-social-sandbox
@@ -690,6 +772,15 @@ networks:
 
   social-egress:
     name: telclaude-social-egress
+    driver: bridge
+
+  relay-google-net:
+    name: telclaude-relay-google
+    driver: bridge
+    internal: true
+
+  google-egress:
+    name: telclaude-google-egress
     driver: bridge
 
   vault-egress:
