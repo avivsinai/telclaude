@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Google Services sidecar** — Gmail, Calendar, Drive, Contacts integration via approval-gated Fastify REST API. 20 actions (18 read, 2 action-type). New container: `google-services`.
+- **Approval token system** — Ed25519-signed, one-time-use tokens with JTI replay prevention, params hash binding, and domain-separated signatures for action-type provider operations.
+- **Vault payload signing** — New `sign-payload` and `verify-payload` protocol messages for domain-separated Ed25519 operations.
+- **`setup-google` command** — OAuth2 PKCE flow for Google credentials with scope bundles (read_core, read_plus_download, actions_v1).
+- **Provider integration guide** — New `docs/providers.md` documenting the sidecar pattern and how to add new providers.
+
+### Changed
+
+- **6 containers** — Docker topology expanded from 5 to 6 containers (added `google-services`).
+- **Documentation overhaul** — Architecture, security, and agent playbook docs updated for Google sidecar. Added SOCIAL tier to SECURITY.md. Fixed stale references and broken cross-links.
+
 ## [0.6.0] - 2026-02-23
 
 ### Added
@@ -251,7 +264,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/avivsinai/telclaude/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/avivsinai/telclaude/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/avivsinai/telclaude/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/avivsinai/telclaude/compare/v0.5.2...v0.5.3

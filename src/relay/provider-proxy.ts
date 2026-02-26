@@ -28,12 +28,16 @@ export type ProviderProxyRequest = {
 	method?: string;
 	body?: string;
 	userId?: string;
+	/** Signed approval token for action-type requests */
+	approvalToken?: string;
 };
 
 export type ProviderProxyResponse = {
 	status: "ok" | "error";
 	data?: unknown;
 	error?: string;
+	errorCode?: string;
+	approvalNonce?: string;
 };
 
 type ProviderAttachment = {
@@ -288,6 +292,11 @@ export async function proxyProviderRequest(
 		headers["x-actor-user-id"] = userId;
 	}
 
+	// Forward approval token for action-type requests
+	if (request.approvalToken) {
+		headers["x-approval-token"] = request.approvalToken;
+	}
+
 	// Make request
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), DEFAULT_PROXY_TIMEOUT_MS);
@@ -329,8 +338,46 @@ export async function proxyProviderRequest(
 	// Check for provider-level error
 	if (!response.ok) {
 		const errorData = data as Record<string, unknown>;
+		const errorCode = errorData.errorCode as string | undefined;
+
+		// Intercept approval_required: create pending approval for /approve flow
+		if (response.status === 403 && errorCode === "approval_required") {
+			const { createProviderApproval } = await import("./provider-approval.js");
+			try {
+				const parsedBody = body ? JSON.parse(body) : {};
+				// Derive service/action from body fields or URL path (/v1/:service/:action)
+				let service = parsedBody.service as string | undefined;
+				let action = parsedBody.action as string | undefined;
+				if (!service || !action) {
+					const pathSegments = request.path.replace(/^\/v1\//, "").split("/");
+					if (pathSegments.length >= 2) {
+						service = service || pathSegments[0];
+						action = action || pathSegments[1];
+					}
+				}
+				const nonce = createProviderApproval(
+					request,
+					{
+						service: service ?? "",
+						action: action ?? "",
+						params: parsedBody.params ?? {},
+					},
+					userId || "unknown",
+				);
+				return {
+					status: "error",
+					errorCode: "approval_required",
+					error: (errorData.error as string) || "Action requires approval",
+					approvalNonce: nonce,
+				};
+			} catch (err) {
+				logger.warn({ providerId, error: String(err) }, "failed to create provider approval");
+			}
+		}
+
 		return {
 			status: "error",
+			errorCode,
 			error: (errorData.error as string) || `Provider error: ${response.status}`,
 		};
 	}

@@ -22,7 +22,7 @@ Check the provider schema to see which services are available. The authoritative
 **IMPORTANT: Use the `telclaude` CLI commands for all provider operations.**
 - Do NOT use WebFetch or curl to call provider endpoints directly
 - Use Bash only to run `telclaude` CLI commands (provider-query, send-attachment, etc.)
-- The CLI handles HMAC authentication through the relay
+- The CLI handles authentication through the relay (mechanism is provider-dependent)
 - Direct HTTP calls will fail with "Missing internal auth headers"
 - The relay sanitizes responses (strips inline base64, stores attachments)
 
@@ -70,13 +70,11 @@ telclaude provider-query --provider my-provider --service gov-api --action statu
 
 ### 3. Parse the response
 
-The command outputs JSON:
+The command outputs JSON. The exact shape is provider-dependent, but the common structure is:
 ```json
 {
   "status": "ok" | "auth_required" | "challenge_pending" | "error",
   "data": { ... },
-  "confidence": 0.0-1.0,
-  "lastUpdated": "ISO timestamp",
   "attachments": [
     {
       "id": "att_123",
@@ -88,6 +86,9 @@ The command outputs JSON:
     }
   ]
 }
+```
+
+Some providers may include additional fields (e.g., `confidence`, `lastUpdated`, `errorCode`).
 ```
 
 **Note:** The relay proxy intercepts responses and:
@@ -121,17 +122,17 @@ Use `textContent` to answer questions about the document:
 
 There are two cases depending on file size:
 
-#### Case 1: Small files (≤256KB) - Has `ref`
+#### Case 1: Has `ref` — already stored
 
-For small files, the proxy already stored the file. Use the `ref` field:
+If the attachment has a `ref` field, the relay proxy already stored the file:
 
 ```bash
 telclaude send-attachment --ref <attachment.ref>
 ```
 
-#### Case 2: Large files (>256KB) - Empty `ref`
+#### Case 2: No `ref` — fetch from provider
 
-For large files, `ref` will be empty. Use `fetch-attachment` to fetch from the provider:
+If `ref` is empty, fetch the attachment directly:
 
 ```bash
 telclaude fetch-attachment --provider <providerId> --id <attachment.id> --filename <attachment.filename> --mime <attachment.mimeType>

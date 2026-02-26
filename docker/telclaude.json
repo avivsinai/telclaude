@@ -1,0 +1,71 @@
+{
+  "telegram": {
+    "allowedChats": [453371121]
+  },
+  "security": {
+    "observer": {
+      "enabled": true,
+      "maxLatencyMs": 300000,
+      "dangerThreshold": 0.7,
+      "fallbackOnTimeout": "block"
+    },
+    "permissions": {
+      "defaultTier": "READ_ONLY",
+      "users": {
+        "453371121": {
+          "tier": "WRITE_LOCAL"
+        }
+      }
+    },
+    "network": {
+      "privateEndpoints": [
+        {
+          "label": "israel-services",
+          "host": "israel-services",
+          "ports": [3001],
+          "description": "Israeli citizen services sidecar"
+        },
+        {
+          "label": "google-services",
+          "host": "google-services",
+          "ports": [3002],
+          "description": "Google services sidecar"
+        }
+      ]
+    }
+  },
+  "inbound": {
+    "reply": {
+      "enabled": true
+    }
+  },
+  "logging": {
+    "level": "debug"
+  },
+  "providers": [
+    {
+      "id": "israel-services",
+      "baseUrl": "http://israel-services:3001",
+      "services": ["clalit", "poalim"],
+      "description": "Israeli citizen services (health, banking)"
+    },
+    {
+      "id": "google",
+      "baseUrl": "http://google-services:3002",
+      "services": ["gmail", "calendar", "drive", "contacts"],
+      "description": "Google services (Gmail, Calendar, Drive, Contacts)"
+    }
+  ],
+  "socialServices": [
+    {
+      "id": "xtwitter",
+      "type": "xtwitter",
+      "enabled": true,
+      "heartbeatIntervalHours": 4,
+      "enableSkills": true,
+      "notifyOnHeartbeat": "always",
+      "handle": "telclaudebot",
+      "displayName": "Claude Ici"
+    }
+  ]
+}
