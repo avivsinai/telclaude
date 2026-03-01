@@ -42,6 +42,26 @@ export interface OAuth2ServiceDefinition {
 
 const SERVICES: OAuth2ServiceDefinition[] = [
 	{
+		id: "google",
+		displayName: "Google",
+		authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+		tokenEndpoint: "https://oauth2.googleapis.com/token",
+		defaultScopes: [
+			"https://www.googleapis.com/auth/gmail.readonly",
+			"https://www.googleapis.com/auth/calendar.events.readonly",
+			"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+			"https://www.googleapis.com/auth/calendar.freebusy",
+			"https://www.googleapis.com/auth/drive.metadata.readonly",
+			"https://www.googleapis.com/auth/contacts.readonly",
+		],
+		confidentialClient: false,
+		vaultTarget: "googleapis.com",
+		vaultLabel: "Google OAuth2",
+		userIdEndpoint: "https://www.googleapis.com/oauth2/v2/userinfo",
+		userIdJsonPath: "email",
+		userIdEnvVar: "GOOGLE_USER_EMAIL",
+	},
+	{
 		id: "xtwitter",
 		displayName: "X/Twitter",
 		authorizationUrl: "https://twitter.com/i/oauth2/authorize",

@@ -25,6 +25,7 @@ export type ProviderQueryOptions = {
 	userId?: string;
 	subjectUserId?: string;
 	idempotencyKey?: string;
+	approvalToken?: string;
 };
 
 export function registerProviderQueryCommand(program: Command): void {
@@ -38,6 +39,7 @@ export function registerProviderQueryCommand(program: Command): void {
 		.option("--user-id <id>", "Actor user ID for the request (optional)")
 		.option("--subject-user-id <id>", "Subject user ID for delegated requests")
 		.option("--idempotency-key <key>", "Idempotency key for write operations")
+		.option("--approval-token <token>", "Signed approval token for action-type requests")
 		.action(async (opts: ProviderQueryOptions) => {
 			try {
 				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
@@ -80,6 +82,8 @@ export function registerProviderQueryCommand(program: Command): void {
 
 				// Build the provider request body
 				const requestBody: Record<string, unknown> = {
+					service,
+					action,
 					params,
 				};
 
@@ -102,14 +106,31 @@ export function registerProviderQueryCommand(program: Command): void {
 
 				const result = await relayProviderProxy({
 					providerId,
-					path: `/v1/${service}/${action}`,
+					path: "/v1/fetch",
 					method: "POST",
 					body: JSON.stringify(requestBody),
 					userId,
+					approvalToken: opts.approvalToken?.trim(),
 				});
 
-				if (result.status !== "ok" && result.error) {
-					console.error(`Error: ${result.error}`);
+				if (result.status !== "ok") {
+					if (result.errorCode === "approval_required" && result.approvalNonce) {
+						// Surface structured approval info so agent/user can /approve
+						console.log(
+							JSON.stringify(
+								{
+									status: "approval_required",
+									error: result.error,
+									approvalNonce: result.approvalNonce,
+									hint: `This action requires approval. Send: /approve ${result.approvalNonce}`,
+								},
+								null,
+								2,
+							),
+						);
+						process.exit(0); // Not a hard error — actionable by user
+					}
+					console.error(`Error: ${result.error ?? "unknown error"}`);
 					process.exit(1);
 				}
 

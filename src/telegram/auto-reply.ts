@@ -1889,6 +1889,28 @@ async function handleApproveCommand(
 		// Fall through to regular approval handling
 	}
 
+	// Check for provider approval (sidecar action requiring /approve)
+	const { isProviderApproval, consumeProviderApproval, describeProviderApproval } = await import(
+		"../relay/provider-approval.js"
+	);
+	if (isProviderApproval(nonce)) {
+		const description = describeProviderApproval(nonce) ?? "provider action";
+		await msg.reply(`Approving ${description}...`);
+		const { getVaultClient } = await import("../vault-daemon/client.js");
+		const vaultClient = getVaultClient();
+		const providerResult = await consumeProviderApproval(nonce, vaultClient);
+		if (!providerResult) {
+			await msg.reply("Provider approval expired or already consumed.");
+			return;
+		}
+		if (providerResult.status === "error") {
+			await msg.reply(`Provider action failed: ${providerResult.error ?? "unknown error"}`);
+			return;
+		}
+		await msg.reply("Provider action completed successfully.");
+		return;
+	}
+
 	// Check for plan approval (Phase 2) first
 	const planResult = consumePlanApproval(nonce, msg.chatId);
 	if (planResult.success) {

@@ -15,11 +15,13 @@ import {
 	getDefaultSocketPath,
 	type ListResponse,
 	type Protocol,
+	type SignPayloadResponse,
 	type SignTokenResponse,
 	type StoreRequest,
 	type VaultRequest,
 	type VaultResponse,
 	VaultResponseSchema,
+	type VerifyPayloadResponse,
 	type VerifyTokenResponse,
 } from "./protocol.js";
 
@@ -141,6 +143,36 @@ export class VaultClient {
 	 */
 	async getSecret(target: string, options?: { timeout?: number }): Promise<GetSecretResponse> {
 		return (await this.send({ type: "get-secret", target }, options?.timeout)) as GetSecretResponse;
+	}
+
+	/**
+	 * Sign an arbitrary payload with domain-separated prefix.
+	 * Used for approval tokens (prefix: "approval-v1").
+	 */
+	async signPayload(
+		payload: string,
+		prefix: string,
+		options?: { timeout?: number },
+	): Promise<SignPayloadResponse> {
+		return (await this.send(
+			{ type: "sign-payload", payload, prefix },
+			options?.timeout,
+		)) as SignPayloadResponse;
+	}
+
+	/**
+	 * Verify a signature over an arbitrary payload with domain-separated prefix.
+	 */
+	async verifyPayload(
+		payload: string,
+		signature: string,
+		prefix: string,
+		options?: { timeout?: number },
+	): Promise<VerifyPayloadResponse> {
+		return (await this.send(
+			{ type: "verify-payload", payload, signature, prefix },
+			options?.timeout,
+		)) as VerifyPayloadResponse;
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════

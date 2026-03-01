@@ -28,6 +28,7 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **memory**: Social memory management for agents
 - **summarize**: Extracts and summarizes web content from URLs (articles, YouTube, podcasts)
 - **external-provider**: Queries external sidecar APIs via relay-proxied CLI
+- **social-posting**: Crafts and publishes social media posts
 
 ## Tool Access by Tier
 | Tier | Available Tools |
@@ -72,8 +73,11 @@ Key paths:
 - `/app/src/social/` — social service handler, scheduler, identity, context, backends
 - `/app/src/security/` — permission tiers, observer, approvals, output filter
 - `/app/src/sdk/` — Claude SDK integration, session manager
+- `/app/src/google-services/` — Google Services sidecar (Gmail, Calendar, Drive, Contacts)
+- `/app/src/providers/` — external provider integration, health, validation, skill injection
 - `/app/docs/social-contract.md` — the social contract between telclaude and its operator
 - `/app/docs/architecture.md` — system architecture deep dive
+- `/app/docs/providers.md` — provider integration guide
 
 Use this to understand your own behaviour, debug issues, or answer questions about how you work. You cannot modify these files.
 

@@ -16,6 +16,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Four permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
+- External provider sidecars: Google Services (Gmail, Calendar, Drive, Contacts) with approval-gated actions; extensible pattern for adding new providers.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
 - Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
@@ -28,10 +29,11 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 | `CLAUDE.md` | Agent playbook (auto-loaded by Claude Code) |
 | `AGENTS.md` | Agents guide pointer |
 | `docs/architecture.md` | Architecture design rationale, security model, invariants |
+| `docs/providers.md` | Provider integration guide (sidecar pattern, adding new providers) |
 | `docker/README.md` | Container deployment, firewall, volumes |
 | `CHANGELOG.md` | Version history |
 | `SECURITY.md` | Vulnerability reporting, threat model |
-| `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `GOVERNANCE.md` | Community policies |
+| `docs/soul.md` | Agent identity, voice, interests |
 
 ## Support & cadence
 - Status: alpha — breaking changes possible until 1.0.
@@ -79,11 +81,11 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
                                ▼
                         Claude Agent SDK
 
-┌──────────────────┐     ┌──────────────────┐
-│   TOTP Daemon    │     │  Vault Daemon    │
-│  (OS keychain)   │     │ (credential      │
-└──────────────────┘     │  injection)      │
-                         └──────────────────┘
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   TOTP Daemon    │  │  Vault Daemon    │  │ Google Services  │
+│  (OS keychain)   │  │ (credential      │  │ (Gmail, Calendar │
+└──────────────────┘  │  injection)      │  │  Drive, Contacts)│
+                      └──────────────────┘  └──────────────────┘
 ```
 
 ## Requirements
@@ -106,7 +108,7 @@ docker compose up -d --build
 docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login  # optional if not using ANTHROPIC_API_KEY
 ```
 See `docker/README.md` for firewall, volume, and upgrade details.
-This starts `telclaude` (relay), `telclaude-agent` (SDK + tools), `agent-social` (social persona), and sidecar containers.
+This starts 6 containers: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `google-services` (Google sidecar), `totp`, and `vault`.
 
 Note: Docker uses a shared **skills** profile (`/home/telclaude-skills`) and a relay-only **auth** profile (`/home/telclaude-auth`). Agents access Anthropic through the relay proxy; credentials never mount in agent containers.
 
@@ -253,22 +255,23 @@ telclaude network test http://192.168.1.100:8123/api
 Metadata endpoints (169.254.169.254) and link-local addresses remain blocked regardless of allowlist.
 
 ## External providers (sidecars)
-Telclaude can integrate with private REST APIs ("sidecars") over WebFetch without assuming any specific vendor or schema.
+Telclaude integrates with private REST API sidecars via relay-proxied requests. Agents never call provider endpoints directly (enforced at both application and firewall layers).
 
-**Configuration (generic):**
+**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude setup-google`.
+
+**Configuration:**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
-- Allowlist the provider host/port under `security.network.privateEndpoints`.
-- See `docker/README.md` for the full config shape and examples.
+- See `docs/providers.md` for the full integration guide, including how to add new providers.
 
-**Recommended contract (best-effort):**
-- `GET /v1/schema` — optional but recommended; used for auto-discovery and skills docs.
-- `GET /v1/health` — health check (expected to return JSON with a status field).
-- `POST /v1/{service}/{action}` — perform actions (Telclaude injects `x-actor-user-id` automatically).
-- `POST /v1/challenge/respond` — OTP/2FA completion (handled via Telegram `/otp`, never by the LLM).
+**Required endpoints:**
 
-**Schema notes:**
-- Telclaude tolerates provider-specific shapes and extracts services/actions if present.
-- Optional `credentialFields` metadata is supported to describe required fields for operators; it is never shown as a request for user credentials.
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/health` | GET | Health check (returns JSON with status field) |
+| `/v1/schema` | GET | Action catalog for auto-discovery and skill docs |
+| `/v1/fetch` | POST | Dispatch service action (body: `{ service, action, params }`) |
+
+Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 
 ## CLI reference
 
@@ -302,12 +305,13 @@ Telclaude can integrate with private REST APIs ("sidecars") over WebFetch withou
 | `telclaude vault remove http <host>` | Remove credential |
 | `telclaude vault test http <host>` | Test credential injection |
 
-### API key setup (legacy, use vault for new setups)
+### API key & service setup
 | Command | Description |
 |---------|-------------|
 | `telclaude setup-openai` | Configure OpenAI API key |
 | `telclaude setup-git` | Configure Git credentials |
 | `telclaude setup-github-app` | Configure GitHub App |
+| `telclaude setup-google` | Configure Google OAuth credentials (for Google Services sidecar) |
 
 ### Network & providers
 | Command | Description |
@@ -370,14 +374,12 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
-| Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see `CLAUDE.md#sandbox-unavailable-relay-wont-start`) |
+| Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see Requirements section above) |
 | TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
 | Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
 
 ## Community
-- Contributing guidelines: see `CONTRIBUTING.md`.
-- Code of Conduct: see `CODE_OF_CONDUCT.md`.
 - Issues & discussions: open GitHub issues; we triage weekly.
 - Changelog: see `CHANGELOG.md`.
 

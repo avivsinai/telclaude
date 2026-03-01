@@ -102,8 +102,44 @@ export async function relayProviderProxy(input: {
 	method?: string;
 	body?: string;
 	userId?: string;
-}): Promise<{ status: string; data?: unknown; error?: string }> {
-	return postJson("/v1/provider/proxy", input);
+	approvalToken?: string;
+}): Promise<{
+	status: string;
+	data?: unknown;
+	error?: string;
+	errorCode?: string;
+	approvalNonce?: string;
+}> {
+	// Provider proxy errors carry structured metadata (errorCode, approvalNonce)
+	// that must survive to the caller, so we handle errors inline instead of
+	// letting postJson throw.
+	const baseUrl = getCapabilitiesUrl();
+	const payload = JSON.stringify(input);
+	const response = await fetch(`${baseUrl}/v1/provider/proxy`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...buildRpcAuthHeaders("POST", "/v1/provider/proxy", payload, "telegram"),
+		},
+		body: payload,
+	});
+
+	const data = (await response.json()) as {
+		status: string;
+		data?: unknown;
+		error?: string;
+		errorCode?: string;
+		approvalNonce?: string;
+	};
+
+	if (!response.ok) {
+		logger.warn(
+			{ path: "/v1/provider/proxy", status: response.status, errorCode: data.errorCode },
+			"provider proxy request failed",
+		);
+	}
+
+	return data;
 }
 
 export async function relayValidateAttachment(input: { ref: string; userId?: string }): Promise<{
