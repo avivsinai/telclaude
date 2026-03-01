@@ -113,6 +113,14 @@ function resolveCwd(requested?: string): string {
 /** Keepalive interval — write empty newlines so the relay knows we're alive. */
 const KEEPALIVE_INTERVAL_MS = 15_000;
 
+/** First-chunk watchdog: abort if the SDK produces no real output within this window.
+ *  Generous default (90s) to accommodate slow startup on loaded low-CPU devices (Pi4).
+ *  The watchdog fires once — after the first real chunk, the overall session timeout governs. */
+const FIRST_CHUNK_TIMEOUT_MS = (() => {
+	const raw = Number(process.env.TELCLAUDE_AGENT_FIRST_CHUNK_TIMEOUT_MS ?? 90_000);
+	return Number.isNaN(raw) || raw < 0 ? 90_000 : raw;
+})();
+
 async function streamQuery(
 	req: QueryRequest,
 	res: http.ServerResponse,
@@ -134,6 +142,23 @@ async function streamQuery(
 		}
 	}, KEEPALIVE_INTERVAL_MS);
 
+	// First-chunk watchdog: detect hung SDK sessions where keepalives mask
+	// a dead API connection (e.g. repeated ERR_STREAM_PREMATURE_CLOSE).
+	// Clears on first real chunk; only the overall timeout applies after that.
+	let firstChunkReceived = false;
+	const firstChunkWatchdog =
+		FIRST_CHUNK_TIMEOUT_MS > 0
+			? setTimeout(() => {
+					if (!firstChunkReceived && !abortController.signal.aborted) {
+						logger.warn(
+							{ timeoutMs: FIRST_CHUNK_TIMEOUT_MS },
+							"first-chunk watchdog fired: no SDK output, aborting session",
+						);
+						abortController.abort();
+					}
+				}, FIRST_CHUNK_TIMEOUT_MS)
+			: null;
+
 	try {
 		for await (const chunk of executePooledQuery(req.prompt, {
 			cwd: req.cwd ?? RESOLVED_AGENT_WORKDIR,
@@ -149,12 +174,20 @@ async function streamQuery(
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
 		})) {
+			if (!firstChunkReceived) {
+				firstChunkReceived = true;
+				if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
+			}
+			// Always write the chunk before checking abort — the SDK emits a
+			// done chunk with success:false on abort, and the relay needs it
+			// to clean up the Telegram "Thinking..." message.
+			res.write(`${JSON.stringify(chunk)}\n`);
 			if (abortController.signal.aborted) {
 				break;
 			}
-			res.write(`${JSON.stringify(chunk)}\n`);
 		}
 	} finally {
+		if (firstChunkWatchdog) clearTimeout(firstChunkWatchdog);
 		clearInterval(keepalive);
 	}
 
