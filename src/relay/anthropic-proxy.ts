@@ -393,6 +393,7 @@ function sanitizeRequestHeaders(headers: http.IncomingHttpHeaders, authHeader: A
 		"content-length",
 		"authorization",
 		"x-api-key",
+		"accept-encoding", // Don't forward; fetch() handles compression internally
 	]);
 
 	for (const [key, value] of Object.entries(headers)) {
@@ -568,8 +569,29 @@ export async function handleAnthropicProxyRequest(
 		return;
 	}
 
+	// Forward response headers, excluding hop-by-hop + content-encoding.
+	// fetch() auto-decompresses, so the body we stream is already decoded;
+	// forwarding content-encoding would cause the SDK to double-decompress
+	// and abort with ERR_STREAM_PREMATURE_CLOSE.
+	const excludedResponseHeaders = new Set([
+		"transfer-encoding",
+		"connection",
+		"keep-alive",
+		"content-encoding",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"te",
+		"trailer",
+		"upgrade",
+	]);
+	const hadContentEncoding = upstream.headers.has("content-encoding");
 	res.statusCode = upstream.status;
 	upstream.headers.forEach((value, key) => {
+		const lower = key.toLowerCase();
+		if (excludedResponseHeaders.has(lower)) return;
+		// If upstream used content-encoding, also strip content-length since
+		// fetch() auto-decompresses and the original compressed length is wrong.
+		if (hadContentEncoding && lower === "content-length") return;
 		res.setHeader(key, value);
 	});
 

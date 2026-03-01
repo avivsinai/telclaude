@@ -269,6 +269,26 @@ export const GetSecretRequestSchema = z.object({
 });
 
 /**
+ * Sign an arbitrary payload with the vault's Ed25519 key.
+ * Prefix is prepended before signing to prevent cross-context replay.
+ */
+export const SignPayloadRequestSchema = z.object({
+	type: z.literal("sign-payload"),
+	payload: z.string().min(1),
+	prefix: z.string().min(1),
+});
+
+/**
+ * Verify a signature over an arbitrary payload.
+ */
+export const VerifyPayloadRequestSchema = z.object({
+	type: z.literal("verify-payload"),
+	payload: z.string().min(1),
+	signature: z.string().min(1),
+	prefix: z.string().min(1),
+});
+
+/**
  * Ping (health check)
  */
 export const PingRequestSchema = z.object({
@@ -285,6 +305,8 @@ export const VaultRequestSchema = z.discriminatedUnion("type", [
 	VerifyTokenRequestSchema,
 	GetPublicKeyRequestSchema,
 	GetSecretRequestSchema,
+	SignPayloadRequestSchema,
+	VerifyPayloadRequestSchema,
 	PingRequestSchema,
 ]);
 
@@ -298,6 +320,8 @@ export type SignTokenRequest = z.infer<typeof SignTokenRequestSchema>;
 export type VerifyTokenRequest = z.infer<typeof VerifyTokenRequestSchema>;
 export type GetPublicKeyRequest = z.infer<typeof GetPublicKeyRequestSchema>;
 export type GetSecretRequest = z.infer<typeof GetSecretRequestSchema>;
+export type SignPayloadRequest = z.infer<typeof SignPayloadRequestSchema>;
+export type VerifyPayloadRequest = z.infer<typeof VerifyPayloadRequestSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Response Types
@@ -474,6 +498,26 @@ export const GetSecretResponseSchema = z.union([
 export type GetSecretResponse = z.infer<typeof GetSecretResponseSchema>;
 
 /**
+ * Sign-payload response
+ */
+export const SignPayloadResponseSchema = z.object({
+	type: z.literal("sign-payload"),
+	signature: z.string(),
+});
+
+export type SignPayloadResponse = z.infer<typeof SignPayloadResponseSchema>;
+
+/**
+ * Verify-payload response
+ */
+export const VerifyPayloadResponseSchema = z.object({
+	type: z.literal("verify-payload"),
+	valid: z.boolean(),
+});
+
+export type VerifyPayloadResponse = z.infer<typeof VerifyPayloadResponseSchema>;
+
+/**
  * Pong response
  */
 export const PongResponseSchema = z.object({
@@ -505,6 +549,8 @@ export const VaultResponseSchema = z.union([
 	VerifyTokenResponseSchema,
 	GetPublicKeyResponseSchema,
 	GetSecretResponseSchema,
+	SignPayloadResponseSchema,
+	VerifyPayloadResponseSchema,
 	PongResponseSchema,
 	ErrorResponseSchema,
 ]);
