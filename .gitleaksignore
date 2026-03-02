@@ -45,6 +45,7 @@ e82ee12ace184aece9e37ee32666802d1e8efa43:src/security/streaming-redactor.ts:gene
 5ed752ae82c86f5e10f32b2c4eb5ec7248af65f0:src/security/output-filter.ts:credentials-javascript:582
 103c4bd94feec6d6d59b1e3b9c397b26dd456bd4:src/security/output-filter.ts:credentials-javascript:330
 e33e93fd814c48bd7a95205dd272ffc2214be337:src/security/output-filter.ts:credentials-javascript:406
+668ef78ef400976e51d96733e24727b1e7e760cc:src/security/output-filter.ts:credentials-javascript:406
 cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-javascript:704
 
 # OpenAI client - credential proxy sentinel value (not a real key)
