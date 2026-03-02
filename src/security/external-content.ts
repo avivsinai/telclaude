@@ -12,10 +12,7 @@
  */
 
 import { containsHomoglyphs, foldHomoglyphs } from "./homoglyphs.js";
-import {
-	type InjectionSeverity,
-	PROMPT_INJECTION_PATTERNS,
-} from "./shared-patterns.js";
+import { type InjectionSeverity, PROMPT_INJECTION_PATTERNS } from "./shared-patterns.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Injection Pattern Detection
@@ -28,7 +25,6 @@ export type InjectionFinding = {
 	match: string;
 	severity: InjectionSeverity;
 };
-
 
 /**
  * Scan content for injection patterns.
