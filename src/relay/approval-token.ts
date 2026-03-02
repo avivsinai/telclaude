@@ -10,6 +10,7 @@
  */
 
 import crypto from "node:crypto";
+import { canonicalHash } from "../crypto/canonical-hash.js";
 import type { VaultClient } from "../vault-daemon/client.js";
 
 const SIGNING_PREFIX = "approval-v1";
@@ -76,30 +77,4 @@ export async function generateApprovalToken(
 	}
 
 	return `v1.${claimsB64}.${signResult.signature}`;
-}
-
-/**
- * Compute canonical hash for request binding.
- * Keep in sync with src/google-services/approval.ts.
- */
-function canonicalHash(input: {
-	service: string;
-	action: string;
-	params: Record<string, unknown>;
-	actorUserId: string;
-	subjectUserId: string | null;
-}): string {
-	const canonical = JSON.stringify(sortKeysDeep(input));
-	const hash = crypto.createHash("sha256").update(canonical).digest("hex");
-	return `sha256:${hash}`;
-}
-
-function sortKeysDeep(value: unknown): unknown {
-	if (value === null || typeof value !== "object") return value;
-	if (Array.isArray(value)) return value.map(sortKeysDeep);
-	const sorted: Record<string, unknown> = {};
-	for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-		sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
-	}
-	return sorted;
 }

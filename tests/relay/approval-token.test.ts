@@ -75,8 +75,8 @@ describe("generateApprovalToken", () => {
 	});
 
 	it("produces same paramsHash as sidecar canonicalHash", async () => {
-		// Import sidecar's canonicalHash to verify consistency
-		const { canonicalHash } = await import("../../src/google-services/approval.js");
+		// Import shared canonicalHash to verify consistency
+		const { canonicalHash } = await import("../../src/crypto/canonical-hash.js");
 
 		const vault = createMockVaultClient();
 		const token = await generateApprovalToken(baseInput, vault);
