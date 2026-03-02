@@ -13,30 +13,12 @@
  * - Warning messages explain the risk
  */
 
-import crypto from "node:crypto";
-import * as readline from "node:readline";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import { confirmDangerousReset } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-reset-auth" });
-
-/**
- * Prompt for user input with readline.
- */
-async function prompt(question: string): Promise<string> {
-	const rl = readline.createInterface({
-		input: process.stdin,
-		output: process.stdout,
-	});
-
-	return new Promise((resolve) => {
-		rl.question(question, (answer) => {
-			rl.close();
-			resolve(answer);
-		});
-	});
-}
 
 export function registerResetAuthCommand(program: Command): void {
 	program
@@ -60,29 +42,9 @@ export function registerResetAuthCommand(program: Command): void {
 				console.log("   An attacker with shell access could take over your bot.");
 				console.log("");
 
-				const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-				if (options.force && isTty) {
-					console.log("--force ignored on TTY; interactive confirmations are required.");
-				}
-
-				if (!options.force || isTty) {
-					const answer = await prompt('Type "RESET" to confirm: ');
-					if (answer.trim() !== "RESET") {
-						console.log("");
-						console.log("Aborted. No changes made.");
-						return;
-					}
-				}
-
-				// Second confirmation with a random code when interactive
-				if (isTty) {
-					const confirmationCode = crypto.randomBytes(3).toString("hex").toUpperCase();
-					const codeAnswer = await prompt(`Enter confirmation code ${confirmationCode}: `);
-					if (codeAnswer.trim().toUpperCase() !== confirmationCode) {
-						console.log("");
-						console.log("Aborted. No changes made.");
-						return;
-					}
+				const confirmed = await confirmDangerousReset({ label: "RESET", force: options.force });
+				if (!confirmed) {
+					return;
 				}
 
 				const db = getDb();

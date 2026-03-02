@@ -7,6 +7,7 @@ import { getCronStatusSummary } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
 import { createAuditLogger } from "../security/audit.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
+import { formatDuration, formatUptime } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-status" });
 const STATUS_STARTED_AT = Date.now();
@@ -75,39 +76,6 @@ export type TelclaudeStatus = {
 		};
 	};
 };
-
-function formatUptime(seconds: number): string {
-	const minutes = Math.floor(seconds / 60);
-	const hours = Math.floor(minutes / 60);
-	const remainingMinutes = minutes % 60;
-	const remainingSeconds = seconds % 60;
-
-	if (hours > 0) {
-		return `${hours}h ${remainingMinutes}m ${remainingSeconds}s`;
-	}
-
-	if (minutes > 0) {
-		return `${minutes}m ${remainingSeconds}s`;
-	}
-
-	return `${remainingSeconds}s`;
-}
-
-function formatAgeShort(seconds: number): string {
-	if (seconds < 60) {
-		return `${seconds}s`;
-	}
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) {
-		return `${minutes}m`;
-	}
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) {
-		return `${hours}h`;
-	}
-	const days = Math.floor(hours / 24);
-	return `${days}d`;
-}
 
 export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 	const configPath = getConfigPath();
@@ -295,7 +263,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	);
 	if (status.operations.sessions.recent.length > 0) {
 		for (const recent of status.operations.sessions.recent) {
-			lines.push(`    ${recent.key} (${formatAgeShort(recent.ageSeconds)} ago)`);
+			lines.push(`    ${recent.key} (${formatDuration(recent.ageSeconds * 1000)} ago)`);
 		}
 	}
 	lines.push(

@@ -9,6 +9,7 @@
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { relayDeliverLocalFile } from "../relay/capabilities-client.js";
+import { requireRelay } from "./cli-guards.js";
 
 const logger = getChildLogger({ module: "cmd-send-local-file" });
 
@@ -27,12 +28,7 @@ export function registerSendLocalFileCommand(program: Command): void {
 		.option("--user-id <id>", "User ID for logging (optional)")
 		.action(async (opts: SendLocalFileOptions) => {
 			try {
-				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
-				if (!useRelay) {
-					console.error("Error: TELCLAUDE_CAPABILITIES_URL is not configured.");
-					console.error("This command requires the relay capabilities server.");
-					process.exit(1);
-				}
+				requireRelay();
 
 				const sourcePath = opts.path?.trim();
 				if (!sourcePath) {

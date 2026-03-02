@@ -1,7 +1,7 @@
-import * as readline from "node:readline";
 import type { Command } from "commander";
 import qrcode from "qrcode-terminal";
 import { getTOTPClient } from "../totp-client/client.js";
+import { promptLine } from "./cli-prompt.js";
 
 export type TOTPSetupOptions = {
 	user?: string;
@@ -14,23 +14,6 @@ function displayQRCode(uri: string): Promise<void> {
 	return new Promise((resolve) => {
 		qrcode.generate(uri, { small: true }, () => {
 			resolve();
-		});
-	});
-}
-
-/**
- * Read a line from stdin.
- */
-async function readLine(prompt: string): Promise<string> {
-	const rl = readline.createInterface({
-		input: process.stdin,
-		output: process.stdout,
-	});
-
-	return new Promise((resolve) => {
-		rl.question(prompt, (answer) => {
-			rl.close();
-			resolve(answer);
 		});
 	});
 }
@@ -55,8 +38,8 @@ export function registerTOTPSetupCommand(program: Command): void {
 			const checkResult = await client.check(userId);
 			if (checkResult.status === "enabled") {
 				console.log(`\n⚠️  TOTP is already enabled for user '${userId}'.`);
-				const answer = await readLine("Do you want to reset it? (yes/no): ");
-				if (answer.toLowerCase() !== "yes") {
+				const answer = await promptLine("Do you want to reset it? (yes/no): ");
+				if (answer?.toLowerCase() !== "yes") {
 					console.log("Aborted.");
 					process.exit(0);
 				}
@@ -102,7 +85,7 @@ export function registerTOTPSetupCommand(program: Command): void {
 
 			// Verify setup
 			console.log("Enter the 6-digit code from your authenticator to verify setup:");
-			const code = await readLine("> ");
+			const code = (await promptLine("> ")) ?? "";
 
 			if (!/^\d{6}$/.test(code)) {
 				console.error("\n❌ Invalid code format. Please enter a 6-digit number.");

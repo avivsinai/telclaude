@@ -6,8 +6,6 @@
  * on behalf of a bot user account.
  */
 
-import * as readline from "node:readline";
-
 import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
@@ -17,7 +15,6 @@ import {
 	getSecret,
 	getStorageProviderName,
 	hasSecret,
-	isSecretsStorageAvailable,
 	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
@@ -27,6 +24,9 @@ import {
 	isGitConfigured,
 	testGitConnectivity,
 } from "../services/git-credentials.js";
+import { requireSecretsStorage } from "./cli-guards.js";
+import { mask } from "./cli-mask.js";
+import { promptLine, promptSecret, promptYesNo } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-setup-git" });
 
@@ -48,14 +48,7 @@ export function registerSetupGitCommand(program: Command): void {
 				test?: boolean;
 			}) => {
 				try {
-					// Check if storage is available
-					if (!(await isSecretsStorageAvailable())) {
-						console.error(
-							"Error: Secrets storage not available.\n" +
-								"On Linux, install libsecret-1-dev, or set SECRETS_ENCRYPTION_KEY for file storage.",
-						);
-						process.exit(1);
-					}
+					await requireSecretsStorage();
 
 					const providerName = await getStorageProviderName();
 
@@ -98,7 +91,7 @@ export function registerSetupGitCommand(program: Command): void {
 								console.log(`Git credentials (${providerName}):`);
 								console.log(`  Username: ${creds.username}`);
 								console.log(`  Email:    ${creds.email}`);
-								console.log(`  Token:    ${maskToken(creds.token)}`);
+								console.log(`  Token:    ${mask(creds.token, { threshold: 12, prefix: 8 })}`);
 							} catch {
 								console.log("Stored credentials are corrupted. Run setup-git again.");
 							}
@@ -109,7 +102,7 @@ export function registerSetupGitCommand(program: Command): void {
 								console.log("Git credentials (env vars):");
 								console.log(`  Username: ${process.env.GIT_USERNAME}`);
 								console.log(`  Email:    ${process.env.GIT_EMAIL}`);
-								console.log(`  Token:    ${maskToken(envToken)}`);
+								console.log(`  Token:    ${mask(envToken, { threshold: 12, prefix: 8 })}`);
 							} else {
 								console.log("No git credentials configured.");
 							}
@@ -190,7 +183,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 			console.log("Current credentials:");
 			console.log(`  Username: ${creds.username}`);
 			console.log(`  Email:    ${creds.email}`);
-			console.log(`  Token:    ${maskToken(creds.token)}`);
+			console.log(`  Token:    ${mask(creds.token, { threshold: 12, prefix: 8 })}`);
 			console.log("");
 			console.log("Enter new credentials to replace, or Ctrl+C to cancel.");
 			console.log("");
@@ -201,7 +194,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	}
 
 	// Prompt for username
-	const username = await promptForInput("Git username (e.g., myproject-bot): ");
+	const username = await promptLine("Git username (e.g., myproject-bot): ");
 	if (!username) {
 		console.log("Cancelled.");
 		return;
@@ -210,11 +203,11 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	// Prompt for email (with default)
 	const defaultEmail = `${username}@users.noreply.github.com`;
 	const emailPrompt = `Git email [${defaultEmail}]: `;
-	const emailInput = await promptForInput(emailPrompt);
+	const emailInput = await promptLine(emailPrompt);
 	const email = emailInput || defaultEmail;
 
 	// Prompt for token (hidden)
-	const token = await promptForSecret("GitHub PAT (fine-grained token): ");
+	const token = await promptSecret("GitHub PAT (fine-grained token): ");
 	if (!token) {
 		console.log("Cancelled.");
 		return;
@@ -276,112 +269,4 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	console.log("  telclaude setup-git --apply  # Apply git identity");
 
 	logger.info({ username, email, provider: providerName }, "Git credentials stored");
-}
-
-/**
- * Mask a token for display.
- */
-function maskToken(token: string): string {
-	if (token.length <= 12) {
-		return "****";
-	}
-	return `${token.slice(0, 8)}...${token.slice(-4)}`;
-}
-
-/**
- * Prompt for visible input.
- */
-async function promptForInput(prompt: string): Promise<string | null> {
-	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		rl.question(prompt, (answer) => {
-			rl.close();
-			resolve(answer.trim() || null);
-		});
-
-		// Handle Ctrl+C
-		rl.on("close", () => {
-			resolve(null);
-		});
-	});
-}
-
-/**
- * Prompt for secret input (hidden).
- */
-async function promptForSecret(prompt: string): Promise<string | null> {
-	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		const stdin = process.stdin;
-		const wasRaw = stdin.isRaw;
-
-		process.stdout.write(prompt);
-
-		if (stdin.isTTY) {
-			stdin.setRawMode(true);
-		}
-
-		let input = "";
-
-		const onData = (char: Buffer) => {
-			const c = char.toString();
-
-			if (c === "\n" || c === "\r") {
-				if (stdin.isTTY) {
-					stdin.setRawMode(wasRaw ?? false);
-				}
-				stdin.removeListener("data", onData);
-				process.stdout.write("\n");
-				rl.close();
-				resolve(input.trim() || null);
-			} else if (c === "\u0003") {
-				// Ctrl+C
-				if (stdin.isTTY) {
-					stdin.setRawMode(wasRaw ?? false);
-				}
-				stdin.removeListener("data", onData);
-				process.stdout.write("\n");
-				rl.close();
-				resolve(null);
-			} else if (c === "\u007F" || c === "\b") {
-				// Backspace
-				if (input.length > 0) {
-					input = input.slice(0, -1);
-					process.stdout.write("\b \b");
-				}
-			} else if (c.charCodeAt(0) >= 32) {
-				// Printable character
-				input += c;
-				process.stdout.write("*");
-			}
-		};
-
-		stdin.on("data", onData);
-		stdin.resume();
-	});
-}
-
-/**
- * Prompt for yes/no confirmation.
- */
-async function promptYesNo(question: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		rl.question(`${question} (y/N): `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
 }

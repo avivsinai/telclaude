@@ -3,6 +3,7 @@ import { loadConfig } from "../config/config.js";
 import { readEnv } from "../env.js";
 import { getChildLogger } from "../logging.js";
 import { sendTelegramMessage } from "../telegram/outbound.js";
+import { parseChatId } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-send" });
 
@@ -28,11 +29,7 @@ export function registerSendCommand(program: Command): void {
 				const cfg = loadConfig();
 				const token = env.telegramBotToken;
 
-				const numericChatId = Number.parseInt(chatId, 10);
-				if (Number.isNaN(numericChatId)) {
-					console.error("Error: chatId must be a numeric value");
-					process.exit(1);
-				}
+				const numericChatId = parseChatId(chatId);
 
 				if (!message && !opts.media) {
 					console.error("Error: Either message or --media must be provided");

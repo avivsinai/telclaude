@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { generateLinkCode, listIdentityLinks, removeIdentityLink } from "../security/linking.js";
+import { parseChatId } from "./cli-utils.js";
 
 export type LinkOptions = {
 	list?: boolean;
@@ -35,11 +36,7 @@ export function registerLinkCommand(program: Command): void {
 			}
 
 			if (opts.remove) {
-				const chatId = Number.parseInt(opts.remove, 10);
-				if (Number.isNaN(chatId)) {
-					console.error("Error: Invalid chat ID");
-					process.exit(1);
-				}
+				const chatId = parseChatId(opts.remove);
 
 				const removed = removeIdentityLink(chatId);
 				if (removed) {
