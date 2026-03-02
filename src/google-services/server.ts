@@ -36,6 +36,7 @@ export interface ServerOptions {
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
 	const { tokenManager, jtiStore, healthStore } = opts;
+	let cachedPublicKey: crypto.KeyObject | null = null;
 
 	const server = Fastify({
 		logger: { level: opts.logLevel ?? "info" },
@@ -100,15 +101,23 @@ export async function buildServer(opts: ServerOptions): Promise<FastifyInstance>
 				});
 			}
 
-			const pubKey = await tokenManager.getPublicKey();
-			const verifySignature = (payload: string, signature: string): boolean => {
-				const message = `approval-v1\n${payload}`;
-				const key = crypto.createPublicKey({
+			if (!cachedPublicKey) {
+				const pubKey = await tokenManager.getPublicKey();
+				cachedPublicKey = crypto.createPublicKey({
 					key: Buffer.from(pubKey, "base64"),
 					format: "der",
 					type: "spki",
 				});
-				return crypto.verify(null, Buffer.from(message), key, Buffer.from(signature, "base64url"));
+			}
+			const publicKey = cachedPublicKey;
+			const verifySignature = (payload: string, signature: string): boolean => {
+				const message = `approval-v1\n${payload}`;
+				return crypto.verify(
+					null,
+					Buffer.from(message),
+					publicKey,
+					Buffer.from(signature, "base64url"),
+				);
 			};
 
 			const result = verifyApprovalToken(

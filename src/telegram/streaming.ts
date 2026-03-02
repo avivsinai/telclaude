@@ -27,10 +27,10 @@ import { convert as convertToTelegramMarkdown } from "telegram-markdown-v2";
 
 import { getChildLogger } from "../logging.js";
 import type { SecretFilterConfig } from "../security/output-filter.js";
-import { filterOutput, filterOutputWithConfig } from "../security/output-filter.js";
 import { recordBotMessage } from "../storage/reactions.js";
 import { MAX_STREAMING_UPDATE_LENGTH } from "./constants.js";
 import { createDraftStreamLoop, type DraftStreamLoop } from "./draft-stream-loop.js";
+import { filterWithOptionalConfig } from "./outbound.js";
 import { computeBackoff, DEFAULT_RECONNECT_POLICY } from "./reconnect.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 
@@ -290,9 +290,7 @@ export class StreamingResponse {
 		}
 
 		// Filter content for secrets (during streaming, we just check - don't block)
-		const filterResult = this.config.secretFilterConfig
-			? filterOutputWithConfig(this.content, this.config.secretFilterConfig)
-			: filterOutput(this.content);
+		const filterResult = filterWithOptionalConfig(this.content, this.config.secretFilterConfig);
 
 		if (filterResult.blocked) {
 			logger.debug(
@@ -462,9 +460,7 @@ export class StreamingResponse {
 		}
 
 		// Filter final content for secrets
-		const filterResult = this.config.secretFilterConfig
-			? filterOutputWithConfig(this.content, this.config.secretFilterConfig)
-			: filterOutput(this.content);
+		const filterResult = filterWithOptionalConfig(this.content, this.config.secretFilterConfig);
 
 		let finalContent = this.content;
 		if (filterResult.blocked) {

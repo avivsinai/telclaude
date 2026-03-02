@@ -827,12 +827,7 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 200, { ok: false, message: `${serviceId} client not configured` });
 					return;
 				}
-				const heartbeatResult = await handleSocialHeartbeat(
-					serviceId,
-					client,
-					serviceConfig,
-					payload,
-				);
+				const heartbeatResult = await handleSocialHeartbeat(serviceId, client, serviceConfig);
 				writeJson(res, 200, heartbeatResult);
 				return;
 			}

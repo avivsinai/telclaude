@@ -3,14 +3,14 @@
  */
 
 import { google } from "googleapis";
+import { createGoogleAuth, formatError } from "../handler-utils.js";
 import type { FetchRequest, FetchResponse } from "../types.js";
 
 export async function handleDrive(
 	request: FetchRequest,
 	accessToken: string,
 ): Promise<FetchResponse> {
-	const auth = new google.auth.OAuth2();
-	auth.setCredentials({ access_token: accessToken });
+	const auth = createGoogleAuth(accessToken);
 	const drive = google.drive({ version: "v3", auth });
 
 	switch (request.action) {
@@ -126,9 +126,4 @@ async function handleListShared(
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };
 	}
-}
-
-function formatError(err: unknown): string {
-	if (err instanceof Error) return err.message;
-	return String(err);
 }
