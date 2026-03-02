@@ -7,15 +7,14 @@
  * This prevents Claude from accessing raw attachment bytes directly.
  */
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
 import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
-import { getMediaOutboxDirSync } from "../media/store.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { createAttachmentRef } from "../storage/attachment-refs.js";
+import { buildAttachmentFilename, ensureDocumentsDir } from "./attachment-helpers.js";
 
 const logger = getChildLogger({ module: "provider-proxy" });
 
@@ -59,46 +58,6 @@ type RewrittenAttachment = {
 	textContent?: string;
 	expiresAt?: string;
 };
-
-const MIME_EXTENSION_MAP: Record<string, string> = {
-	"application/pdf": ".pdf",
-	"image/png": ".png",
-	"image/jpeg": ".jpg",
-	"image/jpg": ".jpg",
-	"image/webp": ".webp",
-	"text/plain": ".txt",
-	"application/json": ".json",
-};
-
-function sanitizeFilename(input?: string): string {
-	if (!input || typeof input !== "string") {
-		return "attachment";
-	}
-	const base = path.basename(input.trim());
-	const normalized = base.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-	if (!normalized || normalized === "." || normalized === "..") {
-		return "attachment";
-	}
-	return normalized;
-}
-
-function buildAttachmentFilename(filename?: string, mimeType?: string): string {
-	const safe = sanitizeFilename(filename);
-	const extFromName = path.extname(safe);
-	const fallbackExt = mimeType ? (MIME_EXTENSION_MAP[mimeType] ?? "") : "";
-	const ext = extFromName || fallbackExt;
-	const stem = (extFromName ? safe.slice(0, -extFromName.length) : safe) || "attachment";
-	const suffix = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-	const truncatedStem = stem.slice(0, 80);
-	return `${truncatedStem}-${suffix}${ext}`;
-}
-
-async function ensureDocumentsDir(): Promise<string> {
-	const outboxRoot = getMediaOutboxDirSync();
-	const documentsDir = path.join(outboxRoot, "documents");
-	await fs.promises.mkdir(documentsDir, { recursive: true, mode: 0o700 });
-	return documentsDir;
-}
 
 /**
  * Estimate base64 decoded size without decoding.
