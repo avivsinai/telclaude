@@ -260,7 +260,7 @@ const config = {
 			const message = "Hello\u200Bworld"; // Zero-width space
 			const issues = checkStructuralIssues(message);
 
-			expect(issues).toContain("Contains zero-width characters");
+			expect(issues).toContain("Contains zero-width or homoglyph characters");
 		});
 
 		it("detects excessive word repetition", () => {

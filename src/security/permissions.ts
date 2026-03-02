@@ -185,7 +185,7 @@ export function getUserRateLimitOverride(
  * Dangerous patterns beyond simple command names.
  * These patterns detect shell features that could be abused.
  */
-const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+const DANGEROUS_COMMAND_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 	// Global/system-wide package installs
 	{ pattern: /npm\s+(?:i|install)\s+.*-g\b/i, reason: "global npm install" },
 	{ pattern: /npm\s+(?:i|install)\s+.*--global\b/i, reason: "global npm install" },
@@ -337,7 +337,7 @@ const PIPE_INTERPRETERS = new Set([
  */
 export function containsBlockedCommand(command: string): string | null {
 	// Check dangerous patterns first (regex-based, handles complex multi-token patterns)
-	for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+	for (const { pattern, reason } of DANGEROUS_COMMAND_PATTERNS) {
 		if (pattern.test(command)) {
 			return reason;
 		}

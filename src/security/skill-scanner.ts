@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getChildLogger } from "../logging.js";
+import { PROMPT_INJECTION_PATTERNS } from "./shared-patterns.js";
 
 const logger = getChildLogger({ module: "skill-scanner" });
 
@@ -227,21 +228,15 @@ const CONTENT_PATTERNS: ScanPattern[] = [
 		severity: "high",
 	},
 
-	// === Prompt injection in skill definitions ===
-	{
-		rule: "prompt-injection-ignore",
-		pattern:
-			/\b(?:ignore\s+(?:all\s+)?(?:previous|above|prior)\s+instructions|disregard\s+(?:all\s+)?(?:your|the)\s+instructions)\b/gi,
-		message: "Prompt injection pattern: instruction override attempt",
-		severity: "high",
-	},
-	{
-		rule: "prompt-injection-system",
-		pattern:
-			/\b(?:you\s+are\s+now\s+(?:a|an|in)|new\s+system\s+prompt|override\s+(?:your\s+)?(?:system|safety)\s+(?:prompt|instructions))\b/gi,
-		message: "Prompt injection pattern: identity/system override",
-		severity: "high",
-	},
+	// === Prompt injection in skill definitions (from shared patterns) ===
+	...PROMPT_INJECTION_PATTERNS.filter(
+		(p) => p.severity === "critical" || p.severity === "high",
+	).map((p) => ({
+		rule: `prompt-injection-${p.name}`,
+		pattern: p.regex,
+		message: `Prompt injection pattern: ${p.name}`,
+		severity: "high" as const,
+	})),
 ];
 
 /**
