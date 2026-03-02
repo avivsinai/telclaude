@@ -4,6 +4,7 @@ import { getChildLogger } from "../logging.js";
 import type { MemorySnapshotRequest, MemorySnapshotResponse } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemoryEntry } from "../memory/types.js";
+import { stripTrailingSlash } from "../utils.js";
 
 const logger = getChildLogger({ module: "agent-memory-client" });
 
@@ -12,7 +13,7 @@ function getCapabilitiesUrl(): string {
 	if (!url) {
 		throw new Error("TELCLAUDE_CAPABILITIES_URL is not configured");
 	}
-	return url.replace(/\/+$/, "");
+	return stripTrailingSlash(url);
 }
 
 /**

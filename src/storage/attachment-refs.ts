@@ -19,6 +19,12 @@ const logger = getChildLogger({ module: "attachment-refs" });
 // Default TTL: 15 minutes (configurable via TELCLAUDE_ATTACHMENT_REF_TTL_MS)
 const DEFAULT_REF_TTL_MS = 15 * 60 * 1000;
 
+/** Number of hex chars to keep from SHA-256 hash for ref uniqueness. */
+const HASH_TRUNCATE_LEN = 8;
+
+/** Number of hex chars to keep from HMAC-SHA256 signature. */
+const SIG_TRUNCATE_LEN = 16;
+
 export type AttachmentRef = {
 	ref: string;
 	actorUserId: string;
@@ -86,7 +92,11 @@ function generateRef(params: {
 
 	// Generate hash for uniqueness
 	const hashInput = `${filepath}|${actorUserId}|${createdAt}`;
-	const hash = crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 8);
+	const hash = crypto
+		.createHash("sha256")
+		.update(hashInput)
+		.digest("hex")
+		.slice(0, HASH_TRUNCATE_LEN);
 
 	// Ref prefix (without signature)
 	const expiresAtSec = Math.floor(expiresAt / 1000);
@@ -105,7 +115,7 @@ function generateRef(params: {
 		.createHmac("sha256", secret)
 		.update(signatureInput)
 		.digest("hex")
-		.slice(0, 16);
+		.slice(0, SIG_TRUNCATE_LEN);
 
 	return `${refPrefix}.${signature}`;
 }
@@ -136,7 +146,7 @@ function verifyRefSignature(ref: string, stored: AttachmentRef): boolean {
 		.createHmac("sha256", secret)
 		.update(signatureInput)
 		.digest("hex")
-		.slice(0, 16);
+		.slice(0, SIG_TRUNCATE_LEN);
 
 	// Timing-safe comparison
 	if (providedSig.length !== expectedSig.length) return false;
