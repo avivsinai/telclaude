@@ -40,7 +40,7 @@ import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
-import { containsBlockedCommand, isSensitivePath, TIER_TOOLS } from "../security/permissions.js";
+import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { getGitCredentials } from "../services/git-credentials.js";
 import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {
@@ -48,10 +48,7 @@ import {
 	isBashInput,
 	isContentBlockStopEvent,
 	isEditInput,
-	isGlobInput,
-	isGrepInput,
 	isInputJsonDeltaEvent,
-	isReadInput,
 	isResultMessage,
 	isStreamEvent,
 	isTextDeltaEvent,
@@ -66,6 +63,7 @@ import {
 	isContextOverflowError,
 } from "./output-guard.js";
 import { executeWithSession, getSessionManager } from "./session-manager.js";
+import { getUrlPortNumber, validateToolPath } from "./tool-validation.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
 let keysExposedLogged = false;
@@ -97,10 +95,6 @@ function isSocialContext(actorUserId?: string): boolean {
 // Security Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Resolve symlinks to get the real path.
- * Returns the original path if the file doesn't exist or resolution fails.
- */
 const TOOL_INPUT_LOG_LIMIT = 200;
 
 function formatToolInputForLog(input: unknown, limit = TOOL_INPUT_LOG_LIMIT): string {
@@ -118,15 +112,6 @@ function redactForLog(value: string): string {
 	return redactSecrets(value);
 }
 
-function resolveRealPath(inputPath: string): string {
-	try {
-		return fs.realpathSync(inputPath);
-	} catch {
-		// File doesn't exist yet or other error - return original
-		return inputPath;
-	}
-}
-
 function isWritableDir(dirPath: string): boolean {
 	try {
 		fs.accessSync(dirPath, fs.constants.W_OK);
@@ -134,83 +119,6 @@ function isWritableDir(dirPath: string): boolean {
 	} catch {
 		return false;
 	}
-}
-
-/**
- * Fields that contain paths and should be scanned for sensitive paths.
- * Excludes content fields like Write.content, Edit.old_string/new_string,
- * WebSearch.query, etc. to avoid false positives on legitimate content.
- */
-const PATH_BEARING_FIELDS = new Set([
-	"file_path", // Read, Write, Edit
-	"path", // Glob, Grep
-	"pattern", // Glob (can contain path prefixes)
-	"command", // Bash
-	"notebook_path", // NotebookEdit
-]);
-
-/**
- * Extract the path prefix from a glob pattern for symlink resolution.
- * E.g., "src/foo/*.ts" resolves "src/foo", "*.txt" returns "".
- * Returns the first path segment(s) before any wildcard characters.
- */
-function extractPathPrefix(pattern: string): string {
-	// Split by path separator
-	const segments = pattern.split("/");
-
-	// Find segments before any wildcard
-	const pathSegments: string[] = [];
-	for (const segment of segments) {
-		if (segment.includes("*") || segment.includes("?") || segment.includes("[")) {
-			break;
-		}
-		pathSegments.push(segment);
-	}
-
-	// Return the path prefix (or empty string if pattern starts with wildcard)
-	return pathSegments.join("/");
-}
-
-/**
- * Scan ONLY path-bearing fields in an input payload for sensitive paths.
- * This avoids false positives on content fields (Write.content, Edit.new_string, etc.).
- */
-function inputContainsSensitivePath(payload: unknown): boolean {
-	if (payload == null || typeof payload !== "object") {
-		return false;
-	}
-
-	const obj = payload as Record<string, unknown>;
-
-	for (const [key, value] of Object.entries(obj)) {
-		// Only check known path-bearing fields
-		if (PATH_BEARING_FIELDS.has(key) && typeof value === "string") {
-			if (isSensitivePath(value)) {
-				return true;
-			}
-		}
-	}
-
-	return false;
-}
-
-/**
- * Check if a path (after symlink resolution) is sensitive.
- * Defends against symlink attacks where attacker creates a symlink
- * to bypass path checks.
- */
-function isPathSensitive(inputPath: string): boolean {
-	// Check original path
-	if (isSensitivePath(inputPath)) {
-		return true;
-	}
-	// Resolve symlinks and check real path
-	const realPath = resolveRealPath(inputPath);
-	if (realPath !== inputPath && isSensitivePath(realPath)) {
-		logger.warn({ inputPath, realPath }, "symlink to sensitive path detected");
-		return true;
-	}
-	return false;
 }
 
 /**
@@ -328,11 +236,7 @@ function matchProviderForUrl(
 	for (const provider of providers) {
 		try {
 			const base = new URL(provider.baseUrl);
-			const basePort =
-				base.port || (base.protocol === "https:" ? "443" : base.protocol === "http:" ? "80" : "");
-			const urlPort =
-				url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
-			if (base.hostname === url.hostname && basePort === urlPort) {
+			if (base.hostname === url.hostname && getUrlPortNumber(base) === getUrlPortNumber(url)) {
 				return provider;
 			}
 		} catch {
@@ -340,10 +244,6 @@ function matchProviderForUrl(
 		}
 	}
 	return null;
-}
-
-function getUrlPort(url: URL): string {
-	return url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "");
 }
 
 function isRelayAttachmentEndpoint(url: URL): boolean {
@@ -354,7 +254,7 @@ function isRelayAttachmentEndpoint(url: URL): boolean {
 		return (
 			url.protocol === relayUrl.protocol &&
 			url.hostname === relayUrl.hostname &&
-			getUrlPort(url) === getUrlPort(relayUrl)
+			getUrlPortNumber(url) === getUrlPortNumber(relayUrl)
 		);
 	} catch {
 		return false;
@@ -527,8 +427,7 @@ function createNetworkSecurityHook(
 				);
 			}
 
-			// Extract port (default: 443 for https, 80 for http)
-			const port = url.port ? Number.parseInt(url.port, 10) : url.protocol === "https:" ? 443 : 80;
+			const port = getUrlPortNumber(url);
 
 			// Check private network access with allowlist and port enforcement
 			const privateCheck = await checkPrivateNetworkAccess(
@@ -853,121 +752,26 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 		const toolName = input.tool_name;
 		const toolInput = input.tool_input as Record<string, unknown>;
 
-		// Check Read tool
-		if (toolName === "Read" && isReadInput(toolInput)) {
-			const realPath = resolveRealPath(toolInput.file_path);
-			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn(
-					{ path: redactForLog(toolInput.file_path) },
-					"[hook] blocked read of sensitive path",
-				);
-				return denyHookResponse("Access to this file is not permitted for security reasons.");
-			}
-		}
-
-		// Check Write tool
-		if (toolName === "Write" && isWriteInput(toolInput)) {
-			const realPath = resolveRealPath(toolInput.file_path);
-			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn(
-					{ path: redactForLog(toolInput.file_path) },
-					"[hook] blocked write to sensitive path",
-				);
-				return denyHookResponse("Writing to this location is not permitted for security reasons.");
-			}
-		}
-
-		// Check Edit tool
-		if (toolName === "Edit" && isEditInput(toolInput)) {
-			const realPath = resolveRealPath(toolInput.file_path);
-			if (isSensitivePath(realPath) || isSensitivePath(toolInput.file_path)) {
-				logger.warn(
-					{ path: redactForLog(toolInput.file_path) },
-					"[hook] blocked edit of sensitive path",
-				);
-				return denyHookResponse("Editing this file is not permitted for security reasons.");
-			}
-		}
-
-		// Check Glob tool (resolve path prefix symlinks to prevent bypass)
-		if (toolName === "Glob" && isGlobInput(toolInput)) {
-			// Use path if provided, otherwise extract prefix from pattern
-			const searchPath = toolInput.path ?? extractPathPrefix(toolInput.pattern);
-			if (searchPath) {
-				const realPath = resolveRealPath(searchPath);
-				if (isSensitivePath(realPath) || isSensitivePath(searchPath)) {
-					logger.warn(
-						{ path: redactForLog(searchPath), realPath: redactForLog(realPath) },
-						"[hook] blocked glob of sensitive path",
-					);
-					return denyHookResponse("Searching this location is not permitted for security reasons.");
-				}
-			}
-			// Also check the full pattern for obvious sensitive paths
-			if (isSensitivePath(toolInput.pattern)) {
-				logger.warn(
-					{ pattern: redactForLog(toolInput.pattern) },
-					"[hook] blocked glob pattern targeting sensitive path",
-				);
-				return denyHookResponse("Searching this location is not permitted for security reasons.");
-			}
-		}
-
-		// Check Grep tool (resolve path prefix symlinks to prevent bypass)
-		if (toolName === "Grep" && isGrepInput(toolInput)) {
-			const searchPath = toolInput.path ?? "";
-			if (searchPath) {
-				// Extract path prefix if the path contains wildcards
-				const pathPrefix = extractPathPrefix(searchPath);
-				const realPath = pathPrefix ? resolveRealPath(pathPrefix) : "";
-				if (
-					(realPath && isSensitivePath(realPath)) ||
-					isSensitivePath(searchPath) ||
-					(pathPrefix && isSensitivePath(pathPrefix))
-				) {
-					logger.warn(
-						{ path: redactForLog(searchPath), realPath: redactForLog(realPath) },
-						"[hook] blocked grep of sensitive path",
-					);
-					return denyHookResponse("Searching this location is not permitted for security reasons.");
-				}
-			}
-		}
-
-		// Check Bash tool
-		if (toolName === "Bash" && isBashInput(toolInput)) {
-			// Block access to sensitive paths via shell
-			if (isSensitivePath(toolInput.command)) {
-				logger.warn(
-					{ command: redactForLog(toolInput.command) },
-					"[hook] blocked bash access to sensitive path",
-				);
-				return denyHookResponse("Access to sensitive paths via shell is not permitted.");
-			}
-
-			// For WRITE_LOCAL, check for blocked commands
-			if (tier === "WRITE_LOCAL") {
-				const blocked = containsBlockedCommand(toolInput.command);
-				if (blocked) {
-					logger.warn(
-						{ command: redactForLog(toolInput.command), blocked },
-						"[hook] blocked dangerous command",
-					);
-					return denyHookResponse(`Command contains blocked operation: ${blocked}`);
-				}
-			}
-		}
-
-		// Generic guard: scan all input for sensitive paths
-		// Exclude WebSearch - it uses `query` parameter (not paths) and requests are
-		// made server-side by Anthropic. Blocking would cause false positives on
-		// search queries like "how to access ~/.ssh"
-		if (toolName !== "WebSearch" && inputContainsSensitivePath(toolInput)) {
+		// Unified path validation (shared with canUseTool fallback)
+		const pathResult = validateToolPath(toolName, toolInput);
+		if (pathResult.denied) {
 			logger.warn(
 				{ toolName, input: formatToolInputForLog(toolInput) },
-				"[hook] blocked input containing sensitive path",
+				`[hook] blocked: ${pathResult.reason}`,
 			);
-			return denyHookResponse("Input contains reference to sensitive paths.");
+			return denyHookResponse(pathResult.reason);
+		}
+
+		// Tier-specific: WRITE_LOCAL blocked commands (Bash only)
+		if (toolName === "Bash" && tier === "WRITE_LOCAL" && isBashInput(toolInput)) {
+			const blocked = containsBlockedCommand(toolInput.command);
+			if (blocked) {
+				logger.warn(
+					{ command: redactForLog(toolInput.command), blocked },
+					"[hook] blocked dangerous command",
+				);
+				return denyHookResponse(`Command contains blocked operation: ${blocked}`);
+			}
 		}
 
 		return allowHookResponse();
@@ -1254,130 +1058,32 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			}
 		}
 
-		// Generic guard: block any input that references sensitive paths
-		// Exclude WebSearch - uses `query` (not paths), server-side requests
-		if (toolName !== "WebSearch" && inputContainsSensitivePath(input)) {
+		// Unified path validation (shared with PreToolUse hook)
+		const pathResult = validateToolPath(toolName, input as Record<string, unknown>);
+		if (pathResult.denied) {
 			logger.warn(
 				{ toolName, input: formatToolInputForLog(input) },
-				"blocked tool input containing sensitive path",
+				`blocked (canUseTool fallback): ${pathResult.reason}`,
 			);
 			return {
 				behavior: "deny",
-				message: "Access to sensitive paths is not permitted for security reasons.",
+				message: pathResult.reason,
 			};
 		}
 
-		// Block access to sensitive paths (with symlink resolution for bypass prevention)
-		if (toolName === "Read" && isReadInput(input)) {
-			const realPath = resolveRealPath(input.file_path);
-			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: redactForLog(input.file_path) }, "blocked read of sensitive path");
-				return {
-					behavior: "deny",
-					message: "Access to this file is not permitted for security reasons.",
-				};
-			}
-		}
-
-		if (toolName === "Write" && isWriteInput(input)) {
-			const realPath = resolveRealPath(input.file_path);
-			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: redactForLog(input.file_path) }, "blocked write to sensitive path");
-				return {
-					behavior: "deny",
-					message: "Writing to this location is not permitted for security reasons.",
-				};
-			}
-		}
-
-		// CRITICAL: Edit tool must be checked (was missing - security gap!)
-		if (toolName === "Edit" && isEditInput(input)) {
-			const realPath = resolveRealPath(input.file_path);
-			if (isPathSensitive(realPath) || isPathSensitive(input.file_path)) {
-				logger.warn({ path: redactForLog(input.file_path) }, "blocked edit of sensitive path");
-				return {
-					behavior: "deny",
-					message: "Editing this file is not permitted for security reasons.",
-				};
-			}
-		}
-
-		if (toolName === "Glob" && isGlobInput(input)) {
-			// Use path if provided, otherwise extract prefix from pattern
-			const searchPath = input.path ?? extractPathPrefix(input.pattern);
-			if (searchPath) {
-				const realPath = resolveRealPath(searchPath);
-				if (isPathSensitive(realPath) || isPathSensitive(searchPath)) {
-					logger.warn({ path: redactForLog(searchPath) }, "blocked glob of sensitive path");
-					return {
-						behavior: "deny",
-						message: "Searching this location is not permitted for security reasons.",
-					};
-				}
-			}
-			// Also check the full pattern for obvious sensitive paths
-			if (isPathSensitive(input.pattern)) {
+		// Tier-specific: WRITE_LOCAL blocked commands (Bash only)
+		if (toolName === "Bash" && opts.tier === "WRITE_LOCAL" && isBashInput(input)) {
+			const blocked = containsBlockedCommand(input.command);
+			if (blocked) {
 				logger.warn(
-					{ pattern: redactForLog(input.pattern) },
-					"blocked glob pattern targeting sensitive path",
+					{ command: redactForLog(input.command), blocked },
+					"blocked dangerous bash command",
 				);
 				return {
 					behavior: "deny",
-					message: "Searching this location is not permitted for security reasons.",
+					message: `Command contains blocked operation: ${blocked}`,
 				};
 			}
-		}
-
-		if (toolName === "Grep" && isGrepInput(input)) {
-			const searchPath = input.path ?? "";
-			if (searchPath) {
-				// Extract path prefix if the path contains wildcards
-				const pathPrefix = extractPathPrefix(searchPath);
-				const realPath = pathPrefix ? resolveRealPath(pathPrefix) : "";
-				if (
-					(realPath && isPathSensitive(realPath)) ||
-					isPathSensitive(searchPath) ||
-					(pathPrefix && isPathSensitive(pathPrefix))
-				) {
-					logger.warn({ path: redactForLog(searchPath) }, "blocked grep of sensitive path");
-					return {
-						behavior: "deny",
-						message: "Searching this location is not permitted for security reasons.",
-					};
-				}
-			}
-		}
-
-		if (toolName === "Bash" && isBashInput(input)) {
-			// Block access to sensitive paths via shell (policy layer)
-			if (isSensitivePath(input.command)) {
-				logger.warn(
-					{ command: redactForLog(input.command) },
-					"blocked bash access to sensitive path",
-				);
-				return {
-					behavior: "deny",
-					message: "Access to sensitive paths via shell is not permitted.",
-				};
-			}
-
-			// For WRITE_LOCAL, check for blocked commands (policy layer)
-			if (opts.tier === "WRITE_LOCAL") {
-				const blocked = containsBlockedCommand(input.command);
-				if (blocked) {
-					logger.warn(
-						{ command: redactForLog(input.command), blocked },
-						"blocked dangerous bash command",
-					);
-					return {
-						behavior: "deny",
-						message: `Command contains blocked operation: ${blocked}`,
-					};
-				}
-			}
-
-			// SDK sandbox handles OS-level isolation for Bash when enabled.
-			// No additional wrapping is needed here.
 		}
 
 		// Belt-and-suspenders: Application-layer network check for WebFetch/WebSearch
@@ -1401,12 +1107,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 						};
 					}
 
-					// Extract port (default: 443 for https, 80 for http)
-					const port = url.port
-						? Number.parseInt(url.port, 10)
-						: url.protocol === "https:"
-							? 443
-							: 80;
+					const port = getUrlPortNumber(url);
 
 					// Check private network access with allowlist and port enforcement
 					const privateCheck = await checkPrivateNetworkAccess(
