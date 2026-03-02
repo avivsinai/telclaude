@@ -14,6 +14,7 @@
  * - Timeout enforced on token endpoint requests
  */
 
+import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { sanitizeError } from "../utils.js";
 import type { OAuth2Credential } from "./protocol.js";
@@ -205,43 +206,33 @@ async function refreshToken(credential: OAuth2Credential): Promise<TokenResponse
 		body.set("scope", credential.scope);
 	}
 
-	// Use AbortController for timeout
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), TOKEN_REQUEST_TIMEOUT_MS);
-
-	try {
-		const response = await fetch(credential.tokenEndpoint, {
+	const response = await fetchWithTimeout(
+		credential.tokenEndpoint,
+		{
 			method: "POST",
 			headers: {
 				"Content-Type": "application/x-www-form-urlencoded",
 			},
 			body: body.toString(),
-			signal: controller.signal,
 			// SECURITY: Disable redirects - a redirect from a token endpoint is an error.
 			// Following redirects could leak client_secret and refresh_token.
 			redirect: "error",
-		});
+		},
+		TOKEN_REQUEST_TIMEOUT_MS,
+	);
 
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(`Token endpoint returned ${response.status}: ${errorText}`);
-		}
-
-		const tokenResponse = (await response.json()) as TokenResponse;
-
-		if (!tokenResponse.access_token) {
-			throw new Error("Token endpoint did not return access_token");
-		}
-
-		return tokenResponse;
-	} catch (err) {
-		if (err instanceof Error && err.name === "AbortError") {
-			throw new Error(`Token endpoint request timed out after ${TOKEN_REQUEST_TIMEOUT_MS}ms`);
-		}
-		throw err;
-	} finally {
-		clearTimeout(timeoutId);
+	if (!response.ok) {
+		const errorText = await response.text();
+		throw new Error(`Token endpoint returned ${response.status}: ${errorText}`);
 	}
+
+	const tokenResponse = (await response.json()) as TokenResponse;
+
+	if (!tokenResponse.access_token) {
+		throw new Error("Token endpoint did not return access_token");
+	}
+
+	return tokenResponse;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

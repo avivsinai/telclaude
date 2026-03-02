@@ -13,6 +13,7 @@
 
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { stripTrailingSlash } from "../utils.js";
 
 const logger = getChildLogger({ module: "agent-token-client" });
 
@@ -63,7 +64,7 @@ export async function bootstrapSessionToken(
 	relayUrl: string,
 	scope: InternalAuthScope,
 ): Promise<boolean> {
-	const endpoint = `${relayUrl.replace(/\/+$/, "")}/v1/auth/token-exchange`;
+	const endpoint = `${stripTrailingSlash(relayUrl)}/v1/auth/token-exchange`;
 	const body = JSON.stringify({ scope });
 
 	try {
@@ -145,7 +146,7 @@ function scheduleRefresh(relayUrl: string): void {
 async function refreshSessionToken(relayUrl: string): Promise<boolean> {
 	if (!currentToken) return false;
 
-	const endpoint = `${relayUrl.replace(/\/+$/, "")}/v1/auth/token-refresh`;
+	const endpoint = `${stripTrailingSlash(relayUrl)}/v1/auth/token-refresh`;
 	const body = JSON.stringify({ token: currentToken.token });
 
 	try {

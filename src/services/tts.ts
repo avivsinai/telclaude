@@ -4,14 +4,14 @@
  */
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 
 import { loadConfig, type TTSConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
 import { relayTextToSpeech } from "../relay/capabilities-client.js";
-import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
+import { consumeRateLimit, enforceRateLimit } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
+import { isRelayReachable } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "tts" });
 
@@ -173,21 +173,16 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 		);
 	}
 
-	// Rate limiting check (if userId provided)
 	const userId = options?.userId;
-	if (userId && !options?.skipRateLimit) {
-		const rateLimiter = getMultimediaRateLimiter();
-		const rateLimitConfig = {
+	enforceRateLimit(
+		"tts",
+		userId,
+		{
 			maxPerHourPerUser: ttsConfig.maxPerHourPerUser,
 			maxPerDayPerUser: ttsConfig.maxPerDayPerUser,
-		};
-		const limitResult = rateLimiter.checkLimit("tts", userId, rateLimitConfig);
-
-		if (!limitResult.allowed) {
-			logger.warn({ userId, remaining: limitResult.remaining }, "TTS rate limited");
-			throw new Error(limitResult.reason ?? "Text-to-speech rate limit exceeded");
-		}
-	}
+		},
+		options,
+	);
 
 	const client = await getOpenAIClient();
 	const voice = options?.voice ?? ttsConfig.voice ?? "alloy";
@@ -250,8 +245,6 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 			extension: `.${finalFormat}`,
 		});
 
-		const stat = await fs.promises.stat(saved.path);
-
 		// Estimate duration based on text length and speed
 		// Average speaking rate is ~150 words per minute, ~5 chars per word
 		const wordsPerMinute = 150 * speed;
@@ -266,22 +259,18 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
 				voiceMessage,
 				format: finalFormat,
 				durationMs,
-				sizeBytes: stat.size,
+				sizeBytes: buffer.length,
 				estimatedDurationSeconds,
 			},
 			"speech generated successfully",
 		);
 
-		// Consume rate limit point after successful generation
-		if (userId && !options?.skipRateLimit) {
-			const rateLimiter = getMultimediaRateLimiter();
-			rateLimiter.consume("tts", userId);
-		}
+		consumeRateLimit("tts", userId, options);
 
 		return {
 			path: saved.path,
 			format: finalFormat,
-			sizeBytes: stat.size,
+			sizeBytes: buffer.length,
 			voice,
 			speed,
 			estimatedDurationSeconds,
@@ -297,18 +286,10 @@ export async function textToSpeech(text: string, options?: TTSOptions): Promise<
  * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isTTSAvailable(): boolean {
-	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
-	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		return Boolean(
-			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
-		);
-	}
+	if (isRelayReachable()) return true;
 
 	const config = loadConfig();
-
-	if (config.tts?.provider === "disabled") {
-		return false;
-	}
+	if (config.tts?.provider === "disabled") return false;
 
 	return isOpenAIConfiguredSync();
 }

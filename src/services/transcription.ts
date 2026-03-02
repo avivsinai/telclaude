@@ -10,6 +10,7 @@ import { loadConfig, type TelclaudeConfig, type TranscriptionConfig } from "../c
 import { getChildLogger } from "../logging.js";
 import { relayTranscribe } from "../relay/capabilities-client.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
+import { isRelayReachable } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "transcription" });
 
@@ -64,16 +65,13 @@ export type TranscriptionAvailability = {
  */
 export async function getTranscriptionAvailability(): Promise<TranscriptionAvailability> {
 	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		const hasAuth =
-			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY;
-		if (!hasAuth) {
-			return {
-				available: false,
-				provider: "relay",
-				reason: "Relay auth required (TELEGRAM_RPC_AGENT_PRIVATE_KEY or session token).",
-			};
-		}
-		return { available: true, provider: "relay" };
+		return isRelayReachable()
+			? { available: true, provider: "relay" }
+			: {
+					available: false,
+					provider: "relay",
+					reason: "Relay auth required (TELEGRAM_RPC_AGENT_PRIVATE_KEY or session token).",
+				};
 	}
 
 	const config = loadConfig();

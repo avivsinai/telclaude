@@ -60,6 +60,13 @@ export function sleep(ms: number) {
 }
 
 /**
+ * Remove one or more trailing slashes from a URL/path string.
+ */
+export function stripTrailingSlash(value: string): string {
+	return value.replace(/\/+$/, "");
+}
+
+/**
  * Validate and resolve an environment variable as an absolute directory path.
  * Rejects: ~ paths (not expanded in env vars), relative paths, empty strings.
  * Returns normalized path (no trailing slash) or null if invalid.
