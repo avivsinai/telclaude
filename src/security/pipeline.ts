@@ -27,8 +27,8 @@ import { isAdmin } from "./linking.js";
 import {
 	calculateEntropy,
 	detectHighEntropyBlobs,
-	filterOutput,
-	redactSecrets,
+	filterOutputWithConfig,
+	redactSecretsWithConfig,
 	type SecretFilterConfig,
 } from "./output-filter.js";
 import { getUserPermissionTier } from "./permissions.js";
@@ -94,6 +94,75 @@ export interface SecurityPipeline {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Shared Checks
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Run the three common hard-enforcement checks shared by all non-test pipelines:
+ * 1. Infrastructure secret block (NON-OVERRIDABLE)
+ * 2. Permission tier lookup
+ * 3. Rate limit check
+ *
+ * Returns a blocking SecurityDecision if any check fails, or `{ tier }` on success.
+ */
+async function runCommonChecks(
+	ctx: MessageContext,
+	securityConfig: SecurityConfig | undefined,
+	rateLimiter: RateLimiter,
+): Promise<{ blocked: SecurityDecision } | { tier: PermissionTier }> {
+	// 1. Infrastructure secret check (NON-OVERRIDABLE)
+	const infraCheck = checkInfrastructureSecrets(ctx.body);
+	if (infraCheck.blocked) {
+		logger.error(
+			{ chatId: ctx.chatId, patterns: infraCheck.patterns },
+			"BLOCKED: Infrastructure secrets - NON-OVERRIDABLE",
+		);
+		return {
+			blocked: {
+				action: "block",
+				tier: "READ_ONLY",
+				reason: "Infrastructure secrets detected (bot tokens, API keys, private keys)",
+				infraBlocked: true,
+			},
+		};
+	}
+
+	// 2. Get permission tier
+	const tier = getUserPermissionTier(ctx.chatId, securityConfig);
+
+	// 3. Rate limit check
+	const rateLimitResult = await rateLimiter.checkLimit(ctx.userId, tier);
+	if (!rateLimitResult.allowed) {
+		logger.info({ userId: ctx.userId, tier }, "rate limited");
+		return {
+			blocked: {
+				action: "block",
+				tier,
+				reason: `Rate limit exceeded. Wait ${Math.ceil(rateLimitResult.resetMs / 1000)}s.`,
+				rateLimited: true,
+			},
+		};
+	}
+
+	return { tier };
+}
+
+/**
+ * Redact secrets from text using config, returning structured redaction results.
+ * Delegates to output-filter's filterOutputWithConfig (for detection) and
+ * redactSecretsWithConfig (for replacement).
+ */
+function redactWithConfig(text: string, config?: SecretFilterConfig): RedactionResult {
+	const filterResult = filterOutputWithConfig(text, config);
+	const redactions: RedactionEvent[] = filterResult.matches.map((m) => ({
+		patternId: m.pattern,
+		count: 1,
+	}));
+	const redacted = filterResult.blocked ? redactSecretsWithConfig(text, config) : text;
+	return { redacted, redactions };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Simple Profile Pipeline
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -108,40 +177,13 @@ class SimplePipeline implements SecurityPipeline {
 	) {}
 
 	async beforeExecution(ctx: MessageContext): Promise<SecurityDecision> {
-		// 1. Infrastructure secret check (NON-OVERRIDABLE)
-		const infraCheck = checkInfrastructureSecrets(ctx.body);
-		if (infraCheck.blocked) {
-			logger.error(
-				{ chatId: ctx.chatId, patterns: infraCheck.patterns },
-				"BLOCKED: Infrastructure secrets - NON-OVERRIDABLE",
-			);
-			return {
-				action: "block",
-				tier: "READ_ONLY",
-				reason: "Infrastructure secrets detected (bot tokens, API keys, private keys)",
-				infraBlocked: true,
-			};
-		}
-
-		// 2. Get permission tier
-		const tier = getUserPermissionTier(ctx.chatId, this.securityConfig);
-
-		// 3. Rate limit check
-		const rateLimitResult = await this.rateLimiter.checkLimit(ctx.userId, tier);
-		if (!rateLimitResult.allowed) {
-			logger.info({ userId: ctx.userId, tier }, "rate limited");
-			return {
-				action: "block",
-				tier,
-				reason: `Rate limit exceeded. Wait ${Math.ceil(rateLimitResult.resetMs / 1000)}s.`,
-				rateLimited: true,
-			};
-		}
+		const result = await runCommonChecks(ctx, this.securityConfig, this.rateLimiter);
+		if ("blocked" in result) return result.blocked;
 
 		// Simple profile: allow everything that passes hard checks
 		return {
 			action: "allow",
-			tier,
+			tier: result.tier,
 			classification: "ALLOW",
 			confidence: 1.0,
 		};
@@ -183,34 +225,9 @@ class StrictPipeline implements SecurityPipeline {
 	) {}
 
 	async beforeExecution(ctx: MessageContext): Promise<SecurityDecision> {
-		// 1. Infrastructure secret check (NON-OVERRIDABLE)
-		const infraCheck = checkInfrastructureSecrets(ctx.body);
-		if (infraCheck.blocked) {
-			logger.error(
-				{ chatId: ctx.chatId, patterns: infraCheck.patterns },
-				"BLOCKED: Infrastructure secrets - NON-OVERRIDABLE",
-			);
-			return {
-				action: "block",
-				tier: "READ_ONLY",
-				reason: "Infrastructure secrets detected",
-				infraBlocked: true,
-			};
-		}
-
-		// 2. Get permission tier
-		const tier = getUserPermissionTier(ctx.chatId, this.securityConfig);
-
-		// 3. Rate limit check
-		const rateLimitResult = await this.rateLimiter.checkLimit(ctx.userId, tier);
-		if (!rateLimitResult.allowed) {
-			return {
-				action: "block",
-				tier,
-				reason: `Rate limit exceeded. Wait ${Math.ceil(rateLimitResult.resetMs / 1000)}s.`,
-				rateLimited: true,
-			};
-		}
+		const result = await runCommonChecks(ctx, this.securityConfig, this.rateLimiter);
+		if ("blocked" in result) return result.blocked;
+		const { tier } = result;
 
 		// 4. Security observer analysis
 		let hasFlaggedHistory = false;
@@ -277,53 +294,6 @@ class TestPipeline implements SecurityPipeline {
 	redactOutput(text: string): RedactionResult {
 		return { redacted: text, redactions: [] };
 	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Redaction with Config
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function redactWithConfig(text: string, config?: SecretFilterConfig): RedactionResult {
-	let redacted = text;
-	const redactions: RedactionEvent[] = [];
-
-	// Core patterns (always applied)
-	const filterResult = filterOutput(redacted);
-	if (filterResult.blocked) {
-		for (const match of filterResult.matches) {
-			redactions.push({ patternId: match.pattern, count: 1 });
-		}
-		redacted = redactSecrets(redacted);
-	}
-
-	// User patterns (additive)
-	if (config?.additionalPatterns) {
-		for (const { id, pattern } of config.additionalPatterns) {
-			try {
-				const regex = new RegExp(pattern, "g");
-				const matches = redacted.match(regex);
-				if (matches) {
-					redactions.push({ patternId: `user:${id}`, count: matches.length });
-					redacted = redacted.replace(regex, `[REDACTED:user:${id}]`);
-				}
-			} catch {
-				logger.warn({ patternId: id }, "invalid user secret pattern");
-			}
-		}
-	}
-
-	// Entropy detection
-	if (config?.entropyDetection?.enabled !== false) {
-		const threshold = config?.entropyDetection?.threshold ?? 4.5;
-		const minLength = config?.entropyDetection?.minLength ?? 32;
-		const blobs = detectHighEntropyBlobs(redacted, threshold, minLength);
-		for (const blob of blobs) {
-			redactions.push({ patternId: "HIGH_ENTROPY", count: 1 });
-			redacted = redacted.replace(blob, "[REDACTED:HIGH_ENTROPY]");
-		}
-	}
-
-	return { redacted, redactions };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
