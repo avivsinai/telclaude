@@ -3,14 +3,13 @@
  * Uses GPT Image 1.5 (December 2025).
  */
 
-import fs from "node:fs";
-
 import { type ImageGenerationConfig, loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaBuffer } from "../media/store.js";
 import { relayGenerateImage } from "../relay/capabilities-client.js";
-import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
+import { consumeRateLimit, enforceRateLimit } from "./multimedia-rate-limit.js";
 import { getOpenAIClient, isOpenAIConfigured, isOpenAIConfiguredSync } from "./openai-client.js";
+import { isRelayReachable } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "image-generation" });
 
@@ -103,21 +102,16 @@ export async function generateImage(
 		throw new Error("Image generation is disabled in config");
 	}
 
-	// Rate limiting check (if userId provided)
 	const userId = options?.userId;
-	if (userId && !options?.skipRateLimit) {
-		const rateLimiter = getMultimediaRateLimiter();
-		const rateLimitConfig = {
+	enforceRateLimit(
+		"image_generation",
+		userId,
+		{
 			maxPerHourPerUser: imageConfig.maxPerHourPerUser,
 			maxPerDayPerUser: imageConfig.maxPerDayPerUser,
-		};
-		const limitResult = rateLimiter.checkLimit("image_generation", userId, rateLimitConfig);
-
-		if (!limitResult.allowed) {
-			logger.warn({ userId, remaining: limitResult.remaining }, "image generation rate limited");
-			throw new Error(limitResult.reason ?? "Image generation rate limit exceeded");
-		}
-	}
+		},
+		options,
+	);
 
 	const client = await getOpenAIClient();
 	const model = imageConfig.model ?? "gpt-image-1.5";
@@ -168,30 +162,24 @@ export async function generateImage(
 			extension: ".png",
 		});
 
-		const stat = await fs.promises.stat(saved.path);
-
 		logger.info(
 			{
 				model,
 				size,
 				quality,
 				durationMs,
-				sizeBytes: stat.size,
+				sizeBytes: buffer.length,
 				revisedPrompt: imageData.revised_prompt?.slice(0, 50),
 			},
 			"image generated successfully",
 		);
 
-		// Consume rate limit point after successful generation
-		if (userId && !options?.skipRateLimit) {
-			const rateLimiter = getMultimediaRateLimiter();
-			rateLimiter.consume("image_generation", userId);
-		}
+		consumeRateLimit("image_generation", userId, options);
 
 		return {
 			path: saved.path,
 			revisedPrompt: imageData.revised_prompt,
-			sizeBytes: stat.size,
+			sizeBytes: buffer.length,
 			model,
 			quality,
 		};
@@ -206,18 +194,10 @@ export async function generateImage(
  * Uses sync check for env/config; keychain key will be found at runtime.
  */
 export function isImageGenerationAvailable(): boolean {
-	// Available via relay when TELCLAUDE_CAPABILITIES_URL is set
-	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		return Boolean(
-			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
-		);
-	}
+	if (isRelayReachable()) return true;
 
 	const config = loadConfig();
-
-	if (config.imageGeneration?.provider === "disabled") {
-		return false;
-	}
+	if (config.imageGeneration?.provider === "disabled") return false;
 
 	return isOpenAIConfiguredSync();
 }

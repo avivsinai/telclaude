@@ -423,81 +423,64 @@ export function cleanupExpired(): {
 } {
 	const database = getDb();
 	const now = Date.now();
-
-	// Clean expired approvals
-	const approvalsResult = database.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
-
-	// Clean expired plan approvals
-	const planApprovalsResult = database
-		.prepare("DELETE FROM plan_approvals WHERE expires_at < ?")
-		.run(now);
-
-	// Clean expired link codes
-	const linkCodesResult = database
-		.prepare("DELETE FROM pending_link_codes WHERE expires_at < ?")
-		.run(now);
-
-	// Clean old rate limit windows (older than 1 hour)
 	const oneHourAgo = now - 3600 * 1000;
-	const rateLimitsResult = database
-		.prepare("DELETE FROM rate_limits WHERE window_start < ?")
-		.run(oneHourAgo);
-
-	// Clean expired TOTP sessions
-	const totpSessionsResult = database
-		.prepare("DELETE FROM totp_sessions WHERE expires_at < ?")
-		.run(now);
-
-	// Clean expired admin claims
-	const adminClaimsResult = database
-		.prepare("DELETE FROM pending_admin_claims WHERE expires_at < ?")
-		.run(now);
-
-	// Clean expired pending TOTP messages
-	const pendingTotpResult = database
-		.prepare("DELETE FROM pending_totp_messages WHERE expires_at < ?")
-		.run(now);
-
-	// Clean old bot messages (older than 24 hours)
 	const oneDayAgo = now - 24 * 3600 * 1000;
-	const botMessagesResult = database
-		.prepare("DELETE FROM bot_messages WHERE sent_at < ?")
-		.run(oneDayAgo);
-
-	// Clean reactions for deleted bot messages (cascade via subquery)
-	const reactionsResult = database
-		.prepare(
-			`DELETE FROM message_reactions
-			 WHERE (chat_id, message_id) NOT IN (
-				 SELECT chat_id, message_id FROM bot_messages
-			 )`,
-		)
-		.run();
-
-	// Clean expired attachment refs
-	const attachmentRefsResult = database
-		.prepare("DELETE FROM attachment_refs WHERE expires_at < ?")
-		.run(now);
-
-	// Keep cron run history for 30 days
 	const thirtyDaysAgo = now - 30 * 24 * 3600 * 1000;
-	const cronRunsResult = database
-		.prepare("DELETE FROM cron_runs WHERE started_at < ?")
-		.run(thirtyDaysAgo);
 
-	const result = {
-		approvals: approvalsResult.changes,
-		planApprovals: planApprovalsResult.changes,
-		linkCodes: linkCodesResult.changes,
-		rateLimits: rateLimitsResult.changes,
-		totpSessions: totpSessionsResult.changes,
-		adminClaims: adminClaimsResult.changes,
-		pendingTotpMessages: pendingTotpResult.changes,
-		botMessages: botMessagesResult.changes,
-		messageReactions: reactionsResult.changes,
-		attachmentRefs: attachmentRefsResult.changes,
-		cronRuns: cronRunsResult.changes,
-	};
+	const run = database.transaction(() => {
+		const approvalsResult = database.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
+		const planApprovalsResult = database
+			.prepare("DELETE FROM plan_approvals WHERE expires_at < ?")
+			.run(now);
+		const linkCodesResult = database
+			.prepare("DELETE FROM pending_link_codes WHERE expires_at < ?")
+			.run(now);
+		const rateLimitsResult = database
+			.prepare("DELETE FROM rate_limits WHERE window_start < ?")
+			.run(oneHourAgo);
+		const totpSessionsResult = database
+			.prepare("DELETE FROM totp_sessions WHERE expires_at < ?")
+			.run(now);
+		const adminClaimsResult = database
+			.prepare("DELETE FROM pending_admin_claims WHERE expires_at < ?")
+			.run(now);
+		const pendingTotpResult = database
+			.prepare("DELETE FROM pending_totp_messages WHERE expires_at < ?")
+			.run(now);
+		const botMessagesResult = database
+			.prepare("DELETE FROM bot_messages WHERE sent_at < ?")
+			.run(oneDayAgo);
+		const reactionsResult = database
+			.prepare(
+				`DELETE FROM message_reactions
+				 WHERE (chat_id, message_id) NOT IN (
+					 SELECT chat_id, message_id FROM bot_messages
+				 )`,
+			)
+			.run();
+		const attachmentRefsResult = database
+			.prepare("DELETE FROM attachment_refs WHERE expires_at < ?")
+			.run(now);
+		const cronRunsResult = database
+			.prepare("DELETE FROM cron_runs WHERE started_at < ?")
+			.run(thirtyDaysAgo);
+
+		return {
+			approvals: approvalsResult.changes,
+			planApprovals: planApprovalsResult.changes,
+			linkCodes: linkCodesResult.changes,
+			rateLimits: rateLimitsResult.changes,
+			totpSessions: totpSessionsResult.changes,
+			adminClaims: adminClaimsResult.changes,
+			pendingTotpMessages: pendingTotpResult.changes,
+			botMessages: botMessagesResult.changes,
+			messageReactions: reactionsResult.changes,
+			attachmentRefs: attachmentRefsResult.changes,
+			cronRuns: cronRunsResult.changes,
+		};
+	});
+
+	const result = run();
 
 	logger.info(result, "expired entries cleaned up");
 

@@ -1,3 +1,4 @@
+import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { validateProviderBaseUrl } from "./provider-validation.js";
 
@@ -48,37 +49,26 @@ export async function checkProviderHealth(
 		const { url: base } = await validateProviderBaseUrl(baseUrl);
 		const url = new URL("/v1/health", base);
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 10000);
+		const response = await fetchWithTimeout(
+			url.toString(),
+			{ method: "GET", headers: { accept: "application/json" } },
+			10_000,
+		);
 
+		if (!response.ok) {
+			result.error = `HTTP ${response.status}: ${response.statusText}`;
+			return result;
+		}
+
+		const text = await response.text();
 		try {
-			const response = await fetch(url.toString(), {
-				method: "GET",
-				headers: {
-					accept: "application/json",
-				},
-				signal: controller.signal,
-			});
-
-			if (!response.ok) {
-				result.error = `HTTP ${response.status}: ${response.statusText}`;
-				return result;
-			}
-
-			const text = await response.text();
-			try {
-				result.response = JSON.parse(text) as ProviderHealthResponse;
-				result.reachable = true;
-			} catch {
-				result.error = "Invalid JSON response from health endpoint";
-			}
-		} finally {
-			clearTimeout(timeout);
+			result.response = JSON.parse(text) as ProviderHealthResponse;
+			result.reachable = true;
+		} catch {
+			result.error = "Invalid JSON response from health endpoint";
 		}
 	} catch (err) {
-		if (err instanceof Error && err.name === "AbortError") {
-			result.error = "Request timeout (10s)";
-		} else if (err instanceof Error && err.message) {
+		if (err instanceof Error && err.message) {
 			result.error = err.message;
 		} else {
 			result.error = String(err);

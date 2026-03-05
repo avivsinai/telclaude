@@ -217,6 +217,38 @@ export class MultimediaRateLimiter {
 	}
 }
 
+/**
+ * Check rate limit for a multimedia operation.
+ * No-ops when userId is absent or skipRateLimit is true.
+ * Throws on limit exceeded (fail-closed).
+ */
+export function enforceRateLimit(
+	feature: MultimediaFeature,
+	userId: string | undefined,
+	config: FeatureRateLimitConfig,
+	opts?: { skipRateLimit?: boolean },
+): void {
+	if (!userId || opts?.skipRateLimit) return;
+	const limiter = getMultimediaRateLimiter();
+	const result = limiter.checkLimit(feature, userId, config);
+	if (!result.allowed) {
+		throw new Error(result.reason ?? `${feature} rate limit exceeded`);
+	}
+}
+
+/**
+ * Consume a rate limit point after a successful operation.
+ * No-ops when userId is absent or skipRateLimit is true.
+ */
+export function consumeRateLimit(
+	feature: MultimediaFeature,
+	userId: string | undefined,
+	opts?: { skipRateLimit?: boolean },
+): void {
+	if (!userId || opts?.skipRateLimit) return;
+	getMultimediaRateLimiter().consume(feature, userId);
+}
+
 /** Singleton instance */
 let instance: MultimediaRateLimiter | null = null;
 

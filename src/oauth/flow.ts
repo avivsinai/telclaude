@@ -7,6 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import { getAuthCode, getRedirectUrl } from "oauth-callback";
+import { fetchWithTimeout } from "../infra/timeout.js";
 import { generatePKCE } from "./pkce.js";
 import type { OAuth2ServiceDefinition } from "./registry.js";
 
@@ -209,38 +210,30 @@ async function exchangeCode(params: {
 		body.set("client_secret", params.clientSecret);
 	}
 
-	const headers: Record<string, string> = {
-		"Content-Type": "application/x-www-form-urlencoded",
-	};
-
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), TOKEN_EXCHANGE_TIMEOUT_MS);
-
-	try {
-		const response = await fetch(params.tokenEndpoint, {
+	const response = await fetchWithTimeout(
+		params.tokenEndpoint,
+		{
 			method: "POST",
-			headers,
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			body: body.toString(),
-			signal: controller.signal,
 			// SECURITY: Prevent credential leakage on redirects
 			redirect: "error",
-		});
+		},
+		TOKEN_EXCHANGE_TIMEOUT_MS,
+	);
 
-		if (!response.ok) {
-			const errorText = await response.text();
-			throw new Error(`Token endpoint returned ${response.status}: ${errorText}`);
-		}
-
-		const data = (await response.json()) as TokenEndpointResponse;
-
-		if (!data.access_token) {
-			throw new Error("Token endpoint did not return access_token");
-		}
-
-		return data;
-	} finally {
-		clearTimeout(timeoutId);
+	if (!response.ok) {
+		const errorText = await response.text();
+		throw new Error(`Token endpoint returned ${response.status}: ${errorText}`);
 	}
+
+	const data = (await response.json()) as TokenEndpointResponse;
+
+	if (!data.access_token) {
+		throw new Error("Token endpoint did not return access_token");
+	}
+
+	return data;
 }
 
 async function fetchUserId(
@@ -248,14 +241,12 @@ async function fetchUserId(
 	accessToken: string,
 	jsonPath?: string,
 ): Promise<{ id?: string; username?: string }> {
-	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 10_000);
-
 	try {
-		const response = await fetch(endpoint, {
-			headers: { Authorization: `Bearer ${accessToken}` },
-			signal: controller.signal,
-		});
+		const response = await fetchWithTimeout(
+			endpoint,
+			{ headers: { Authorization: `Bearer ${accessToken}` } },
+			10_000,
+		);
 
 		if (!response.ok) {
 			return {};
@@ -274,8 +265,6 @@ async function fetchUserId(
 	} catch {
 		// User ID fetch is best-effort — don't fail the whole flow
 		return {};
-	} finally {
-		clearTimeout(timeoutId);
 	}
 }
 
