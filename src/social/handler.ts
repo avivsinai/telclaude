@@ -945,9 +945,10 @@ async function handleAutonomousActivity(
 	}
 
 	logger.info({ serviceId }, "autonomous activity completed");
-	// First line as summary — notification sanitizer enforces the final length limit
-	const summaryLine = trimmed.split("\n")[0];
-	return { acted: true, summary: summaryLine };
+	// Keep first paragraph (up to first double-newline) as summary.
+	// Notification sanitizer enforces the final length limit near send time.
+	const firstParagraph = trimmed.split(/\n\n/)[0];
+	return { acted: true, summary: firstParagraph };
 }
 
 /**

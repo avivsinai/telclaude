@@ -348,6 +348,9 @@ export async function monitorTelegramInbox(
 			}
 		}
 
+		// Extract forum topic thread ID (present in supergroup forum messages)
+		const messageThreadId = message.message_thread_id;
+
 		const inboundMsg: TelegramInboundMessage = {
 			id: String(message.message_id),
 			chatId: chat.id,
@@ -363,6 +366,7 @@ export async function monitorTelegramInbox(
 			isEdited,
 			editedTimestamp: isEdited && message.edit_date ? message.edit_date * 1000 : undefined,
 			replyToMessageId: message.reply_to_message?.message_id,
+			messageThreadId,
 			mediaPath,
 			mediaType,
 			mediaFilePath,
@@ -373,7 +377,9 @@ export async function monitorTelegramInbox(
 					logger.debug({ chatId: chat.id }, "dry-run: would send typing action");
 					return;
 				}
-				await bot.api.sendChatAction(chat.id, "typing");
+				await bot.api.sendChatAction(chat.id, "typing", {
+					message_thread_id: messageThreadId,
+				});
 			},
 			reply: async (text: string, options?: { useMarkdown?: boolean }) => {
 				// SECURITY: Filter for secret exfiltration BEFORE any processing
@@ -397,7 +403,9 @@ export async function monitorTelegramInbox(
 						return;
 					}
 					// Send blocked notification instead of the secret-containing message
-					await bot.api.sendMessage(chat.id, SECRET_BLOCKED_MESSAGE);
+					await bot.api.sendMessage(chat.id, SECRET_BLOCKED_MESSAGE, {
+						message_thread_id: messageThreadId,
+					});
 					return;
 				}
 
@@ -422,12 +430,16 @@ export async function monitorTelegramInbox(
 					const chunk = chunks[i];
 					if (options?.useMarkdown) {
 						// Legacy Markdown for system messages that are pre-formatted
-						await bot.api.sendMessage(chat.id, chunk, { parse_mode: "Markdown" });
+						await bot.api.sendMessage(chat.id, chunk, {
+							parse_mode: "Markdown",
+							message_thread_id: messageThreadId,
+						});
 					} else {
 						// Convert Claude's markdown to Telegram MarkdownV2
 						await convertAndSendMessage(bot.api, chat.id, chunk, {
 							replyToMessageId: i === 0 ? message.message_id : undefined,
 							secretFilterConfig,
+							messageThreadId,
 						});
 					}
 				}
@@ -444,7 +456,9 @@ export async function monitorTelegramInbox(
 					);
 					return;
 				}
-				await sendMediaToChat(bot.api, chat.id, payload, undefined, secretFilterConfig);
+				await sendMediaToChat(bot.api, chat.id, payload, undefined, secretFilterConfig, {
+					messageThreadId,
+				});
 			},
 			startStreaming: async (streamingConfig) => {
 				if (dryRun) {
@@ -455,6 +469,7 @@ export async function monitorTelegramInbox(
 				const streamer = createStreamingResponse(bot.api, chat.id, {
 					...(streamingConfig ?? {}),
 					secretFilterConfig,
+					messageThreadId,
 				});
 				await streamer.start();
 				return streamer;

@@ -16,6 +16,7 @@ import {
 } from "../security/output-filter.js";
 import { recordBotMessage } from "../storage/reactions.js";
 import { stringToChatId } from "../utils.js";
+import { TELEGRAM_CAPTION_CHAR_LIMIT } from "./constants.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
 import type { TelegramMediaPayload } from "./types.js";
 
@@ -79,6 +80,7 @@ export type SendMessageOptions = {
 	mediaPath?: string;
 	parseMode?: "Markdown" | "HTML" | "MarkdownV2";
 	replyToMessageId?: number;
+	messageThreadId?: number;
 	secretFilterConfig?: SecretFilterConfig;
 };
 
@@ -103,11 +105,13 @@ async function sendWithMarkdownFallback(
 	rawText: string,
 	parseMode: "Markdown" | "HTML" | "MarkdownV2",
 	replyToMessageId?: number,
+	messageThreadId?: number,
 ): Promise<Message> {
 	try {
 		return await api.sendMessage(chatId, formattedText, {
 			parse_mode: parseMode,
 			reply_to_message_id: replyToMessageId,
+			message_thread_id: messageThreadId,
 		});
 	} catch (err) {
 		const errStr = String(err);
@@ -115,6 +119,7 @@ async function sendWithMarkdownFallback(
 			logger.warn({ chatId, error: errStr }, "MarkdownV2 parse failed, falling back to plain text");
 			return api.sendMessage(chatId, rawText, {
 				reply_to_message_id: replyToMessageId,
+				message_thread_id: messageThreadId,
 			});
 		}
 		throw err;
@@ -135,13 +140,17 @@ export async function sendMessageTelegram(
 ): Promise<SendResult> {
 	const chatId = typeof to === "number" ? to : stringToChatId(to);
 
+	const threadId = options.messageThreadId;
+
 	// SECURITY: Filter output for secrets
 	try {
 		filterBeforeSend(body, options.secretFilterConfig);
 	} catch (err) {
 		if (err instanceof SecretExfiltrationBlockedError) {
 			// Send blocked notification instead
-			const result = await bot.api.sendMessage(chatId, SECRET_BLOCKED_MESSAGE);
+			const result = await bot.api.sendMessage(chatId, SECRET_BLOCKED_MESSAGE, {
+				message_thread_id: threadId,
+			});
 			logger.warn(
 				{ chatId, messageId: result.message_id },
 				"sent blocked notification (secrets detected)",
@@ -153,7 +162,7 @@ export async function sendMessageTelegram(
 
 	// Send typing indicator
 	try {
-		await bot.api.sendChatAction(chatId, "typing");
+		await bot.api.sendChatAction(chatId, "typing", { message_thread_id: threadId });
 	} catch {
 		// Non-fatal
 	}
@@ -170,10 +179,16 @@ export async function sendMessageTelegram(
 		? rawChunks.map((chunk) => convertToTelegramMarkdown(chunk))
 		: rawChunks;
 
-	// Handle media
+	// Handle media — captions are limited to 1024 chars (vs 4096 for text)
 	const mediaSource = options.mediaPath;
 	if (mediaSource) {
-		const payload = inferMediaPayload(mediaSource, formattedChunks[0]); // Use first chunk as caption
+		// If caption exceeds Telegram's caption limit, send media without caption
+		// and follow up with the full text as separate messages.
+		const captionTooLong =
+			formattedChunks[0] && formattedChunks[0].length > TELEGRAM_CAPTION_CHAR_LIMIT;
+		const caption = captionTooLong ? undefined : formattedChunks[0];
+		const payload = inferMediaPayload(mediaSource, caption);
+
 		// Note: sendMediaToChat already calls recordBotMessage internally
 		const result = await sendMediaToChat(
 			bot.api,
@@ -181,15 +196,21 @@ export async function sendMessageTelegram(
 			payload,
 			effectiveParseMode,
 			options.secretFilterConfig,
+			{ messageThreadId: threadId },
 		);
-		// Send remaining chunks as follow-up messages
-		for (let i = 1; i < formattedChunks.length; i++) {
+
+		// Send text chunks as follow-up messages.
+		// If caption was too long, start from chunk 0; otherwise from chunk 1.
+		const startChunk = captionTooLong ? 0 : 1;
+		for (let i = startChunk; i < formattedChunks.length; i++) {
 			const followUp = await sendWithMarkdownFallback(
 				bot.api,
 				chatId,
 				formattedChunks[i],
 				rawChunks[i],
 				effectiveParseMode,
+				undefined,
+				threadId,
 			);
 			recordBotMessage(chatId, followUp.message_id);
 		}
@@ -207,6 +228,7 @@ export async function sendMessageTelegram(
 			rawChunks[i],
 			effectiveParseMode,
 			i === 0 ? options.replyToMessageId : undefined,
+			threadId,
 		);
 		// Track for reaction context
 		recordBotMessage(chatId, lastResult.message_id);
@@ -238,6 +260,7 @@ export async function convertAndSendMessage(
 	options?: {
 		parseMode?: "Markdown" | "HTML" | "MarkdownV2";
 		replyToMessageId?: number;
+		messageThreadId?: number;
 		secretFilterConfig?: SecretFilterConfig;
 	},
 ): Promise<Message> {
@@ -252,6 +275,7 @@ export async function convertAndSendMessage(
 			);
 			return api.sendMessage(chatId, SECRET_BLOCKED_MESSAGE, {
 				reply_to_message_id: options?.replyToMessageId,
+				message_thread_id: options?.messageThreadId,
 			});
 		}
 		throw err;
@@ -269,6 +293,7 @@ export async function convertAndSendMessage(
 		text,
 		parseMode,
 		options?.replyToMessageId,
+		options?.messageThreadId,
 	);
 	// Track for reaction context
 	recordBotMessage(chatId, result.message_id);
@@ -467,7 +492,10 @@ export async function sendMediaToChat(
 	payload: TelegramMediaPayload,
 	parseMode?: "Markdown" | "MarkdownV2" | "HTML",
 	secretFilterConfig?: SecretFilterConfig,
+	extra?: { messageThreadId?: number },
 ): Promise<Message> {
+	const threadId = extra?.messageThreadId;
+
 	// SECURITY: Scan file content for secrets before sending (async to avoid blocking)
 	const fileScan = await scanFileForSecrets(payload.source, secretFilterConfig);
 	if (!fileScan.safe) {
@@ -482,6 +510,7 @@ export async function sendMediaToChat(
 				(fileScan.reason ??
 					"The file appears to contain sensitive credentials (API keys, tokens, or private keys). " +
 						"This is a security measure to prevent accidental exposure of secrets."),
+			{ message_thread_id: threadId },
 		);
 	}
 
@@ -511,19 +540,32 @@ export async function sendMediaToChat(
 	let result: Message;
 	switch (payload.type) {
 		case "photo":
-			result = await api.sendPhoto(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendPhoto(chatId, source, {
+				caption: safeCaption,
+				parse_mode: parseMode,
+				message_thread_id: threadId,
+			});
 			break;
 		case "document":
 			result = await api.sendDocument(chatId, source, {
 				caption: safeCaption,
 				parse_mode: parseMode,
+				message_thread_id: threadId,
 			});
 			break;
 		case "voice":
-			result = await api.sendVoice(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendVoice(chatId, source, {
+				caption: safeCaption,
+				parse_mode: parseMode,
+				message_thread_id: threadId,
+			});
 			break;
 		case "video":
-			result = await api.sendVideo(chatId, source, { caption: safeCaption, parse_mode: parseMode });
+			result = await api.sendVideo(chatId, source, {
+				caption: safeCaption,
+				parse_mode: parseMode,
+				message_thread_id: threadId,
+			});
 			break;
 		case "audio":
 			result = await api.sendAudio(chatId, source, {
@@ -531,15 +573,19 @@ export async function sendMediaToChat(
 				parse_mode: parseMode,
 				title: payload.title,
 				performer: payload.performer,
+				message_thread_id: threadId,
 			});
 			break;
 		case "sticker":
-			result = await api.sendSticker(chatId, source);
+			result = await api.sendSticker(chatId, source, {
+				message_thread_id: threadId,
+			});
 			break;
 		case "animation":
 			result = await api.sendAnimation(chatId, source, {
 				caption: safeCaption,
 				parse_mode: parseMode,
+				message_thread_id: threadId,
 			});
 			break;
 		default:
@@ -624,7 +670,12 @@ export async function sendTelegramMessage(
 		}
 
 		if (options.mediaPath) {
-			const payload = inferMediaPayload(options.mediaPath, options.caption ?? options.text);
+			const captionText = options.caption ?? options.text;
+			const captionTooLong = captionText && captionText.length > TELEGRAM_CAPTION_CHAR_LIMIT;
+			const payload = inferMediaPayload(
+				options.mediaPath,
+				captionTooLong ? undefined : captionText,
+			);
 			const result = await sendMediaToChat(
 				bot.api,
 				options.chatId,
@@ -632,6 +683,16 @@ export async function sendTelegramMessage(
 				undefined,
 				options.secretFilterConfig,
 			);
+			// If caption was too long, send the text as follow-up messages
+			if (captionTooLong && captionText) {
+				const chunks = sanitizeAndSplitResponse(captionText);
+				const convertedChunks = chunks.map((chunk) => convertToTelegramMarkdown(chunk));
+				for (const chunk of convertedChunks) {
+					await bot.api.sendMessage(options.chatId, chunk, {
+						parse_mode: "MarkdownV2",
+					});
+				}
+			}
 			return { success: true, messageId: result.message_id };
 		}
 
