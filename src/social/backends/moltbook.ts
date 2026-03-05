@@ -3,6 +3,7 @@ import { getChildLogger } from "../../logging.js";
 import { getSecret, SECRET_KEYS } from "../../secrets/index.js";
 import type { SocialServiceClient } from "../client.js";
 import type { SocialNotification, SocialPostResult, SocialReplyResult } from "../types.js";
+import { type ApiResult, socialApiRequest } from "./shared.js";
 
 const logger = getChildLogger({ module: "moltbook-backend" });
 
@@ -41,10 +42,6 @@ type MoltbookNotificationEnvelope =
 	| { notifications?: MoltbookNotification[] }
 	| { data?: MoltbookNotification[] };
 
-type MoltbookApiResult<T> =
-	| { ok: true; status: number; data: T }
-	| { ok: false; status: number; error: string };
-
 function getApiBase(): string {
 	const base = process.env.MOLTBOOK_API_BASE || DEFAULT_API_BASE;
 	return base.replace(/\/+$/, "");
@@ -67,14 +64,6 @@ async function resolveApiKey(config: Pick<SocialServiceConfig, "apiKey">): Promi
 	}
 
 	return null;
-}
-
-function safeJsonParse(input: string): unknown {
-	try {
-		return JSON.parse(input);
-	} catch {
-		return null;
-	}
 }
 
 /**
@@ -117,7 +106,7 @@ export class MoltbookClient implements SocialServiceClient {
 		this.fetchImpl = options.fetchImpl ?? fetch;
 	}
 
-	private async request<T>(path: string, init: RequestInit): Promise<MoltbookApiResult<T>> {
+	private async request<T>(path: string, init: RequestInit): Promise<ApiResult<T>> {
 		const url = `${this.baseUrl}${path}`;
 		const headers = new Headers(init.headers ?? {});
 		headers.set("Authorization", `Bearer ${this.apiKey}`);
@@ -125,20 +114,17 @@ export class MoltbookClient implements SocialServiceClient {
 			headers.set("Content-Type", "application/json");
 		}
 
-		const response = await this.fetchImpl(url, { ...init, headers });
-		const status = response.status;
-		const raw = await response.text();
-		const payload = raw ? safeJsonParse(raw) : null;
-
-		if (!response.ok) {
-			const error =
-				(payload && typeof payload === "object" && "error" in payload
-					? String((payload as { error?: unknown }).error)
-					: raw) || response.statusText;
-			return { ok: false, status, error };
-		}
-
-		return { ok: true, status, data: payload as T };
+		return socialApiRequest<T>(
+			this.fetchImpl,
+			url,
+			{ ...init, headers },
+			(payload, raw, statusText) => {
+				if (payload && typeof payload === "object" && "error" in payload) {
+					return String((payload as { error?: unknown }).error);
+				}
+				return raw || statusText;
+			},
+		);
 	}
 
 	async fetchNotifications(): Promise<SocialNotification[]> {

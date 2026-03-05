@@ -57,9 +57,114 @@ type ApprovalRow = {
 	observer_reason: string | null;
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GENERIC TABLE HELPERS — shared consume/deny logic for approvals + plan_approvals
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type RowBase = {
+	nonce: string;
+	chat_id: number;
+	expires_at: number;
+	request_id: string;
+};
+
 /**
- * Convert database row to PendingApproval.
+ * Atomically consume a row from a table: SELECT → validate → DELETE.
+ * Shared by consumeApproval and consumePlanApproval.
  */
+function consumeFromTable<TRow extends RowBase, T>(
+	table: string,
+	label: string,
+	nonce: string,
+	chatId: number,
+	mapper: (row: TRow) => T,
+): Result<T> {
+	const db = getDb();
+
+	return db.transaction(() => {
+		const row = db.prepare(`SELECT * FROM ${table} WHERE nonce = ?`).get(nonce) as TRow | undefined;
+
+		if (!row) {
+			return { success: false as const, error: `No pending ${label} found for that code.` };
+		}
+
+		if (row.chat_id !== chatId) {
+			logger.warn(
+				{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
+				`${label} chat mismatch`,
+			);
+			return {
+				success: false as const,
+				error: "This approval code belongs to a different chat.",
+			};
+		}
+
+		if (Date.now() > row.expires_at) {
+			db.prepare(`DELETE FROM ${table} WHERE nonce = ?`).run(nonce);
+			logger.warn({ nonce, chatId }, `${label} expired`);
+			return {
+				success: false as const,
+				error: `This ${label} has expired. Please retry your request.`,
+			};
+		}
+
+		const deleteResult = db.prepare(`DELETE FROM ${table} WHERE nonce = ?`).run(nonce);
+		if (deleteResult.changes !== 1) {
+			logger.error(
+				{ nonce, chatId, changes: deleteResult.changes },
+				`SECURITY: ${label} deletion anomaly - possible race condition`,
+			);
+			return {
+				success: false as const,
+				error: `${label} consumption failed - please try again`,
+			};
+		}
+
+		logger.info({ nonce, requestId: row.request_id, chatId }, `${label} consumed`);
+
+		return { success: true as const, data: mapper(row) };
+	})();
+}
+
+/**
+ * Atomically deny/cancel a row from a table: SELECT → validate chat → DELETE.
+ * Shared by denyApproval and denyPlanApproval.
+ */
+function denyFromTable<TRow extends RowBase, T>(
+	table: string,
+	label: string,
+	nonce: string,
+	chatId: number,
+	mapper: (row: TRow) => T,
+): Result<T> {
+	const db = getDb();
+
+	return db.transaction(() => {
+		const row = db.prepare(`SELECT * FROM ${table} WHERE nonce = ?`).get(nonce) as TRow | undefined;
+
+		if (!row) {
+			return { success: false as const, error: `No pending ${label} found for that code.` };
+		}
+
+		if (row.chat_id !== chatId) {
+			return {
+				success: false as const,
+				error: "This approval code belongs to a different chat.",
+			};
+		}
+
+		db.prepare(`DELETE FROM ${table} WHERE nonce = ?`).run(nonce);
+
+		logger.info({ nonce, requestId: row.request_id, chatId }, `${label} denied`);
+
+		return { success: true as const, data: mapper(row) };
+	})();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// APPROVAL ROW MAPPING
+// ═══════════════════════════════════════════════════════════════════════════════
+
 function rowToApproval(row: ApprovalRow): PendingApproval {
 	return {
 		nonce: row.nonce,
@@ -178,85 +283,26 @@ export function createApproval(
  * requests could both consume the same approval.
  */
 export function consumeApproval(nonce: string, chatId: number): Result<PendingApproval> {
-	const db = getDb();
-
-	// Use a transaction for atomic get-and-delete
-	const result = db.transaction(() => {
-		const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
-			| ApprovalRow
-			| undefined;
-
-		if (!row) {
-			return { success: false as const, error: "No pending approval found for that code." };
-		}
-
-		// Verify chat ID matches
-		if (row.chat_id !== chatId) {
-			logger.warn(
-				{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
-				"approval chat mismatch",
-			);
-			return { success: false as const, error: "This approval code belongs to a different chat." };
-		}
-
-		// Check expiry
-		if (Date.now() > row.expires_at) {
-			// Delete expired entry
-			db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
-			logger.warn({ nonce, chatId }, "approval expired");
-			return {
-				success: false as const,
-				error: "This approval has expired. Please retry your request.",
-			};
-		}
-
-		// SECURITY: Atomically consume the approval - verify it was actually deleted
-		// This prevents replay attacks if somehow the approval wasn't deleted
-		const deleteResult = db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
-		if (deleteResult.changes !== 1) {
-			// This should never happen in normal operation, but if it does, fail safe
-			logger.error(
-				{ nonce, chatId, changes: deleteResult.changes },
-				"SECURITY: Approval deletion anomaly - possible race condition",
-			);
-			return { success: false as const, error: "Approval consumption failed - please try again" };
-		}
-
-		logger.info({ nonce, requestId: row.request_id, chatId }, "approval consumed");
-
-		return { success: true as const, data: rowToApproval(row) };
-	})();
-
-	return result;
+	return consumeFromTable<ApprovalRow, PendingApproval>(
+		"approvals",
+		"approval",
+		nonce,
+		chatId,
+		rowToApproval,
+	);
 }
 
 /**
  * Deny/cancel an approval.
  */
 export function denyApproval(nonce: string, chatId: number): Result<PendingApproval> {
-	const db = getDb();
-
-	const result = db.transaction(() => {
-		const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
-			| ApprovalRow
-			| undefined;
-
-		if (!row) {
-			return { success: false as const, error: "No pending approval found for that code." };
-		}
-
-		if (row.chat_id !== chatId) {
-			return { success: false as const, error: "This approval code belongs to a different chat." };
-		}
-
-		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
-
-		logger.info({ nonce, requestId: row.request_id, chatId }, "approval denied");
-
-		return { success: true as const, data: rowToApproval(row) };
-	})();
-
-	return result;
+	return denyFromTable<ApprovalRow, PendingApproval>(
+		"approvals",
+		"approval",
+		nonce,
+		chatId,
+		rowToApproval,
+	);
 }
 
 /**
@@ -492,87 +538,26 @@ export function createPlanApproval(
  * Atomic get-and-delete to prevent race conditions.
  */
 export function consumePlanApproval(nonce: string, chatId: number): Result<PlanApproval> {
-	const db = getDb();
-
-	const result = db.transaction(() => {
-		const row = db.prepare("SELECT * FROM plan_approvals WHERE nonce = ?").get(nonce) as
-			| PlanApprovalRow
-			| undefined;
-
-		if (!row) {
-			return { success: false as const, error: "No pending plan approval found for that code." };
-		}
-
-		if (row.chat_id !== chatId) {
-			logger.warn(
-				{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
-				"plan approval chat mismatch",
-			);
-			return {
-				success: false as const,
-				error: "This approval code belongs to a different chat.",
-			};
-		}
-
-		if (Date.now() > row.expires_at) {
-			db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
-			logger.warn({ nonce, chatId }, "plan approval expired");
-			return {
-				success: false as const,
-				error: "This plan approval has expired. Please retry your request.",
-			};
-		}
-
-		const deleteResult = db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
-		if (deleteResult.changes !== 1) {
-			logger.error(
-				{ nonce, chatId, changes: deleteResult.changes },
-				"SECURITY: Plan approval deletion anomaly",
-			);
-			return {
-				success: false as const,
-				error: "Plan approval consumption failed - please try again",
-			};
-		}
-
-		logger.info({ nonce, requestId: row.request_id, chatId }, "plan approval consumed");
-
-		return { success: true as const, data: rowToPlanApproval(row) };
-	})();
-
-	return result;
+	return consumeFromTable<PlanApprovalRow, PlanApproval>(
+		"plan_approvals",
+		"plan approval",
+		nonce,
+		chatId,
+		rowToPlanApproval,
+	);
 }
 
 /**
  * Deny/cancel a plan approval.
  */
 export function denyPlanApproval(nonce: string, chatId: number): Result<PlanApproval> {
-	const db = getDb();
-
-	const result = db.transaction(() => {
-		const row = db.prepare("SELECT * FROM plan_approvals WHERE nonce = ?").get(nonce) as
-			| PlanApprovalRow
-			| undefined;
-
-		if (!row) {
-			return { success: false as const, error: "No pending plan approval found for that code." };
-		}
-
-		if (row.chat_id !== chatId) {
-			return {
-				success: false as const,
-				error: "This approval code belongs to a different chat.",
-			};
-		}
-
-		db.prepare("DELETE FROM plan_approvals WHERE nonce = ?").run(nonce);
-
-		logger.info({ nonce, requestId: row.request_id, chatId }, "plan approval denied");
-
-		return { success: true as const, data: rowToPlanApproval(row) };
-	})();
-
-	return result;
+	return denyFromTable<PlanApprovalRow, PlanApproval>(
+		"plan_approvals",
+		"plan approval",
+		nonce,
+		chatId,
+		rowToPlanApproval,
+	);
 }
 
 /**
