@@ -5,6 +5,7 @@ import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-au
 import { getChildLogger } from "../logging.js";
 import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
 import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
+import { stripTrailingSlash } from "../utils.js";
 
 const logger = getChildLogger({ module: "agent-client" });
 
@@ -74,7 +75,7 @@ export async function* executeRemoteQuery(
 			sessionToken,
 			outputFormat: options.outputFormat,
 		});
-		const endpoint = `${agentUrl.replace(/\/+$/, "")}${path}`;
+		const endpoint = `${stripTrailingSlash(agentUrl)}${path}`;
 		const scope = options.scope ?? "telegram";
 
 		// Retry the initial fetch on transient network errors (2 attempts, 1s base delay)

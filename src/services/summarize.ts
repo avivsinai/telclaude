@@ -8,8 +8,9 @@ import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { relaySummarize } from "../relay/capabilities-client.js";
 import { fetchWithGuard } from "../sandbox/fetch-guard.js";
-import { getMultimediaRateLimiter } from "./multimedia-rate-limit.js";
+import { consumeRateLimit, enforceRateLimit } from "./multimedia-rate-limit.js";
 import { getCachedOpenAIKey } from "./openai-client.js";
+import { isRelayReachable } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "summarize" });
 
@@ -147,19 +148,16 @@ export async function summarizeUrl(
 	const timeoutMs = options?.timeoutMs ?? summarizeConfig.timeoutMs;
 	const format = options?.format ?? "text";
 
-	// Rate limiting (if userId provided and not skipped)
 	const userId = options?.userId;
-	if (userId && !options?.skipRateLimit) {
-		const rateLimiter = getMultimediaRateLimiter();
-		const rateConfig = {
+	enforceRateLimit(
+		"summarize",
+		userId,
+		{
 			maxPerHourPerUser: summarizeConfig.maxPerHourPerUser,
 			maxPerDayPerUser: summarizeConfig.maxPerDayPerUser,
-		};
-		const limitResult = rateLimiter.checkLimit("summarize", userId, rateConfig);
-		if (!limitResult.allowed) {
-			throw new Error(limitResult.reason ?? "Summarize rate limit exceeded");
-		}
-	}
+		},
+		options,
+	);
 
 	logger.info({ url: url.slice(0, 120), maxCharacters, timeoutMs, format }, "extracting content");
 	const startTime = Date.now();
@@ -184,11 +182,7 @@ export async function summarizeUrl(
 			"content extracted",
 		);
 
-		// Consume rate limit point after success
-		if (userId && !options?.skipRateLimit) {
-			const rateLimiter = getMultimediaRateLimiter();
-			rateLimiter.consume("summarize", userId);
-		}
+		consumeRateLimit("summarize", userId, options);
 
 		return {
 			url: result.url,
@@ -209,10 +203,6 @@ export async function summarizeUrl(
  * Check if summarize is available (always true — no API key needed).
  */
 export function isSummarizeAvailable(): boolean {
-	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		return Boolean(
-			process.env.TELCLAUDE_SESSION_TOKEN ?? process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
-		);
-	}
-	return true;
+	if (isRelayReachable()) return true;
+	return !process.env.TELCLAUDE_CAPABILITIES_URL;
 }

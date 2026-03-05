@@ -242,6 +242,42 @@ export function handleMemoryPropose(
 	}
 }
 
+function validateSnapshotFields(raw: {
+	categories?: string[];
+	trust?: string[];
+	sources?: string[];
+	limit?: number;
+	chatId?: unknown;
+}): MemoryRpcResult<MemorySnapshotRequest> {
+	if (raw.categories && !raw.categories.every(isValidCategory)) {
+		return fail(400, "Invalid categories filter.");
+	}
+	if (raw.trust && !raw.trust.every(isValidTrust)) {
+		return fail(400, "Invalid trust filter.");
+	}
+	if (raw.sources && !raw.sources.every(isValidSource)) {
+		return fail(400, "Invalid sources filter.");
+	}
+
+	let limit: number | undefined;
+	if (raw.limit !== undefined) {
+		if (!Number.isFinite(raw.limit)) {
+			return fail(400, "Invalid limit.");
+		}
+		limit = normalizeLimit(raw.limit);
+	}
+
+	const chatId = validateChatId(raw.chatId);
+
+	return ok({
+		categories: raw.categories as MemoryCategory[] | undefined,
+		trust: raw.trust as TrustLevel[] | undefined,
+		sources: raw.sources as MemorySource[] | undefined,
+		limit,
+		chatId,
+	});
+}
+
 export function parseSnapshotBody(input: unknown): MemoryRpcResult<MemorySnapshotRequest> {
 	if (input === undefined || input === null) {
 		return ok({});
@@ -258,31 +294,13 @@ export function parseSnapshotBody(input: unknown): MemoryRpcResult<MemorySnapsho
 		chatId?: unknown;
 	};
 
-	const categories = normalizeList(raw.categories as MemoryCategory[] | MemoryCategory | undefined);
-	if (categories && !categories.every(isValidCategory)) {
-		return fail(400, "Invalid categories filter.");
-	}
-	const trust = normalizeList(raw.trust as TrustLevel[] | TrustLevel | undefined);
-	if (trust && !trust.every(isValidTrust)) {
-		return fail(400, "Invalid trust filter.");
-	}
-	const sources = normalizeList(raw.sources as MemorySource[] | MemorySource | undefined);
-	if (sources && !sources.every(isValidSource)) {
-		return fail(400, "Invalid sources filter.");
-	}
-
-	let limit: number | undefined;
-	if (raw.limit !== undefined) {
-		const parsed = Number(raw.limit);
-		if (!Number.isFinite(parsed)) {
-			return fail(400, "Invalid limit.");
-		}
-		limit = normalizeLimit(parsed);
-	}
-
-	const chatId = validateChatId(raw.chatId);
-
-	return ok({ categories, trust, sources, limit, chatId });
+	return validateSnapshotFields({
+		categories: normalizeList(raw.categories as MemoryCategory[] | MemoryCategory | undefined),
+		trust: normalizeList(raw.trust as TrustLevel[] | TrustLevel | undefined),
+		sources: normalizeList(raw.sources as MemorySource[] | MemorySource | undefined),
+		limit: raw.limit !== undefined ? Number(raw.limit) : undefined,
+		chatId: raw.chatId,
+	});
 }
 
 export function parseSnapshotQuery(query: URLSearchParams): MemoryRpcResult<MemorySnapshotRequest> {
@@ -294,37 +312,14 @@ export function parseSnapshotQuery(query: URLSearchParams): MemoryRpcResult<Memo
 			.filter(Boolean);
 	};
 
-	const categories = parseList(query.get("categories"));
-	if (categories && !categories.every(isValidCategory)) {
-		return fail(400, "Invalid categories filter.");
-	}
-	const trust = parseList(query.get("trust"));
-	if (trust && !trust.every(isValidTrust)) {
-		return fail(400, "Invalid trust filter.");
-	}
-	const sources = parseList(query.get("sources"));
-	if (sources && !sources.every(isValidSource)) {
-		return fail(400, "Invalid sources filter.");
-	}
-
-	let limit: number | undefined;
 	const rawLimit = query.get("limit");
-	if (rawLimit) {
-		const parsed = Number(rawLimit);
-		if (!Number.isFinite(parsed)) {
-			return fail(400, "Invalid limit.");
-		}
-		limit = normalizeLimit(parsed);
-	}
 
-	const chatId = validateChatId(query.get("chatId"));
-
-	return ok({
-		categories: categories as MemoryCategory[] | undefined,
-		trust: trust as TrustLevel[] | undefined,
-		sources: sources as MemorySource[] | undefined,
-		limit,
-		chatId,
+	return validateSnapshotFields({
+		categories: parseList(query.get("categories")),
+		trust: parseList(query.get("trust")),
+		sources: parseList(query.get("sources")),
+		limit: rawLimit ? Number(rawLimit) : undefined,
+		chatId: query.get("chatId"),
 	});
 }
 
@@ -374,22 +369,15 @@ export function handleMemoryQuarantine(
 	if (!request || typeof request !== "object") {
 		return fail(400, "Invalid request body.");
 	}
-	if (typeof request.id !== "string" || request.id.trim().length === 0) {
-		return fail(400, "Entry id is required.");
-	}
-	const trimmedId = request.id.trim();
-	if (trimmedId.length > MAX_ID_LENGTH) {
-		return fail(400, "Entry id too long.");
-	}
-	if (typeof request.content !== "string" || request.content.trim().length === 0) {
-		return fail(400, "Entry content is required.");
-	}
-	if (request.content.length > MAX_STRING_LENGTH) {
-		return fail(400, "Entry content too long.");
-	}
-	const forbidden = checkForbiddenPatterns(request.content);
-	if (forbidden) {
-		return fail(400, forbidden);
+
+	// Delegate field validation to validateEntry (id, content, category, patterns, secrets)
+	const validationError = validateEntry({
+		id: request.id,
+		category: "posts",
+		content: request.content,
+	});
+	if (validationError) {
+		return fail(400, validationError);
 	}
 
 	const actor = context.userId?.trim() || "agent";
@@ -405,7 +393,7 @@ export function handleMemoryQuarantine(
 
 	try {
 		const entry = createQuarantinedEntry({
-			id: trimmedId,
+			id: request.id.trim(),
 			category: "posts",
 			content: request.content,
 			chatId,

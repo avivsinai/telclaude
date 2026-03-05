@@ -136,48 +136,61 @@ export function getReactionsForMessage(chatId: number, messageId: number): Store
 export function getRecentReactions(chatId: number, limit = 5): ReactionSummary[] {
 	const db = getDb();
 
-	// Get recent bot messages that have at least one reaction
-	const messages = db
+	// Single JOIN query instead of N+1: fetch reactions for recent reacted-to messages
+	const rows = db
 		.prepare(
-			`SELECT DISTINCT bm.message_id
-			 FROM bot_messages bm
-			 INNER JOIN message_reactions mr ON bm.chat_id = mr.chat_id AND bm.message_id = mr.message_id
-			 WHERE bm.chat_id = ?
-			 ORDER BY bm.sent_at DESC
-			 LIMIT ?`,
+			`SELECT mr.message_id, mr.user_id, mr.emoji, mr.reacted_at
+			 FROM message_reactions mr
+			 INNER JOIN bot_messages bm ON bm.chat_id = mr.chat_id AND bm.message_id = mr.message_id
+			 WHERE mr.chat_id = ?
+			   AND bm.message_id IN (
+				 SELECT DISTINCT bm2.message_id
+				 FROM bot_messages bm2
+				 INNER JOIN message_reactions mr2 ON bm2.chat_id = mr2.chat_id AND bm2.message_id = mr2.message_id
+				 WHERE bm2.chat_id = ?
+				 ORDER BY bm2.sent_at DESC
+				 LIMIT ?
+			   )
+			 ORDER BY bm.sent_at DESC, mr.reacted_at ASC`,
 		)
-		.all(chatId, limit) as Array<{ message_id: number }>;
+		.all(chatId, chatId, limit) as Array<{
+		message_id: number;
+		user_id: number;
+		emoji: string;
+		reacted_at: number;
+	}>;
 
-	if (messages.length === 0) {
+	if (rows.length === 0) {
 		return [];
 	}
 
-	// Get reactions for each message
-	const summaries: ReactionSummary[] = [];
-	for (const msg of messages) {
-		const reactions = getReactionsForMessage(chatId, msg.message_id);
-		if (reactions.length > 0) {
-			// Group by emoji
-			const byEmoji = new Map<string, { count: number; userIds: number[] }>();
-			for (const r of reactions) {
-				const existing = byEmoji.get(r.emoji);
-				if (existing) {
-					existing.count++;
-					existing.userIds.push(r.userId);
-				} else {
-					byEmoji.set(r.emoji, { count: 1, userIds: [r.userId] });
-				}
-			}
-
-			summaries.push({
-				messageId: msg.message_id,
-				reactions: Array.from(byEmoji.entries()).map(([emoji, data]) => ({
-					emoji,
-					count: data.count,
-					userIds: data.userIds,
-				})),
-			});
+	// Group by message, then by emoji
+	const byMessage = new Map<number, Map<string, { count: number; userIds: number[] }>>();
+	for (const row of rows) {
+		let emojiMap = byMessage.get(row.message_id);
+		if (!emojiMap) {
+			emojiMap = new Map();
+			byMessage.set(row.message_id, emojiMap);
 		}
+		const existing = emojiMap.get(row.emoji);
+		if (existing) {
+			existing.count++;
+			existing.userIds.push(row.user_id);
+		} else {
+			emojiMap.set(row.emoji, { count: 1, userIds: [row.user_id] });
+		}
+	}
+
+	const summaries: ReactionSummary[] = [];
+	for (const [messageId, emojiMap] of byMessage) {
+		summaries.push({
+			messageId,
+			reactions: Array.from(emojiMap.entries()).map(([emoji, data]) => ({
+				emoji,
+				count: data.count,
+				userIds: data.userIds,
+			})),
+		});
 	}
 
 	return summaries;

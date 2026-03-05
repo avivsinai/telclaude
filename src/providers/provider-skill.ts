@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ExternalProviderConfig } from "../config/config.js";
+import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { validateProviderBaseUrl } from "./provider-validation.js";
 
@@ -230,41 +231,27 @@ async function fetchProviderSchema(
 		const { url: base } = await validateProviderBaseUrl(provider.baseUrl);
 		const endpoint = new URL("/v1/schema", base);
 
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 10000);
+		const response = await fetchWithTimeout(
+			endpoint.toString(),
+			{ method: "GET", headers: { accept: "application/json" } },
+			10_000,
+		);
 
+		if (!response.ok) {
+			return {
+				provider,
+				error: `HTTP ${response.status}: ${response.statusText}`,
+			};
+		}
+
+		const text = await response.text();
 		try {
-			const response = await fetch(endpoint.toString(), {
-				method: "GET",
-				headers: {
-					accept: "application/json",
-				},
-				signal: controller.signal,
-			});
-
-			if (!response.ok) {
-				return {
-					provider,
-					error: `HTTP ${response.status}: ${response.statusText}`,
-				};
-			}
-
-			const text = await response.text();
-			try {
-				return { provider, schema: JSON.parse(text) };
-			} catch {
-				return { provider, error: "Invalid JSON response from schema endpoint" };
-			}
-		} finally {
-			clearTimeout(timeout);
+			return { provider, schema: JSON.parse(text) };
+		} catch {
+			return { provider, error: "Invalid JSON response from schema endpoint" };
 		}
 	} catch (err) {
-		const message =
-			err instanceof Error && err.name === "AbortError"
-				? "Request timeout (10s)"
-				: err instanceof Error && err.message
-					? err.message
-					: String(err);
+		const message = err instanceof Error && err.message ? err.message : String(err);
 		return { provider, error: message };
 	}
 }

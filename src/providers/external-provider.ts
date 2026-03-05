@@ -1,4 +1,5 @@
 import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
+import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { validateProviderBaseUrl } from "./provider-validation.js";
 
@@ -65,11 +66,9 @@ export async function sendProviderOtp(request: ProviderOtpRequest): Promise<Prov
 	const { url } = await validateProviderBaseUrl(provider.baseUrl);
 	const endpoint = new URL("/v1/challenge/respond", url);
 
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), 15000);
-
-	try {
-		const response = await fetch(endpoint.toString(), {
+	const response = await fetchWithTimeout(
+		endpoint.toString(),
+		{
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
@@ -82,27 +81,23 @@ export async function sendProviderOtp(request: ProviderOtpRequest): Promise<Prov
 				challengeId: request.challengeId,
 				actorUserId: request.actorUserId,
 			}),
-			signal: controller.signal,
-		});
+		},
+		15_000,
+	);
 
-		const text = await response.text();
-		if (!response.ok) {
-			const snippet = text.replace(/\s+/g, " ").trim().slice(0, 120);
-			logger.warn(
-				{ status: response.status, provider: provider.id, body: text.slice(0, 200) },
-				"provider OTP request failed",
-			);
-			throw new Error(
-				`Provider responded with ${response.status}${snippet ? `: ${snippet}` : ""}.`,
-			);
-		}
+	const text = await response.text();
+	if (!response.ok) {
+		const snippet = text.replace(/\s+/g, " ").trim().slice(0, 120);
+		logger.warn(
+			{ status: response.status, provider: provider.id, body: text.slice(0, 200) },
+			"provider OTP request failed",
+		);
+		throw new Error(`Provider responded with ${response.status}${snippet ? `: ${snippet}` : ""}.`);
+	}
 
-		try {
-			return JSON.parse(text) as ProviderOtpResponse;
-		} catch {
-			return { status: "ok", message: text };
-		}
-	} finally {
-		clearTimeout(timeout);
+	try {
+		return JSON.parse(text) as ProviderOtpResponse;
+	} catch {
+		return { status: "ok", message: text };
 	}
 }

@@ -15,12 +15,9 @@ import {
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemoryEntry } from "../memory/types.js";
+import { isAgentSide } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "memory-service" });
-
-function isAgentSide(): boolean {
-	return Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
-}
 
 /**
  * Read memory entries. Dual-mode: agent routes through relay, relay reads SQLite directly.
