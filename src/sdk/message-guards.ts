@@ -200,9 +200,9 @@ export function isEditInput(
 }
 
 /**
- * Type guard for Glob tool input.
+ * Type guard for pattern+path tool input (Glob and Grep share identical shapes).
  */
-export function isGlobInput(input: unknown): input is { pattern: string; path?: string } {
+export function isPatternPathInput(input: unknown): input is { pattern: string; path?: string } {
 	return (
 		typeof input === "object" &&
 		input !== null &&
@@ -211,14 +211,8 @@ export function isGlobInput(input: unknown): input is { pattern: string; path?: 
 	);
 }
 
-/**
- * Type guard for Grep tool input.
- */
-export function isGrepInput(input: unknown): input is { pattern: string; path?: string } {
-	return (
-		typeof input === "object" &&
-		input !== null &&
-		"pattern" in input &&
-		typeof (input as { pattern: unknown }).pattern === "string"
-	);
-}
+/** @deprecated Use isPatternPathInput instead. */
+export const isGlobInput = isPatternPathInput;
+
+/** @deprecated Use isPatternPathInput instead. */
+export const isGrepInput = isPatternPathInput;

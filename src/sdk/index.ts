@@ -15,6 +15,7 @@ export {
 	isContentBlockStopEvent,
 	isGlobInput,
 	isGrepInput,
+	isPatternPathInput,
 	isReadInput,
 	isResultMessage,
 	isStreamEvent,
@@ -29,3 +30,12 @@ export {
 	getSessionManager,
 	type SessionInfo,
 } from "./session-manager.js";
+export {
+	checkPathWithSymlinks,
+	extractPathPrefix,
+	getUrlPortNumber,
+	inputContainsSensitivePath,
+	resolveRealPath,
+	type ToolPathValidationResult,
+	validateToolPath,
+} from "./tool-validation.js";
