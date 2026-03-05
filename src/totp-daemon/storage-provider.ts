@@ -9,7 +9,11 @@
  * or auto-detected at runtime.
  */
 
+import { join } from "node:path";
+
 import { Secret } from "otpauth";
+import { EncryptedFileStore } from "../crypto/encrypted-file-store.js";
+import { KeytarStore } from "../crypto/keytar-store.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "totp-storage" });
@@ -38,44 +42,23 @@ export interface TOTPStorageProvider {
 // Keytar Provider (OS Keychain)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const SERVICE_NAME = "telclaude";
-
 class KeytarProvider implements TOTPStorageProvider {
 	readonly name = "keytar";
-	private keytar: typeof import("keytar") | null = null;
-
-	private async getKeytar() {
-		if (!this.keytar) {
-			try {
-				// keytar is a CommonJS module, so dynamic import returns it under .default
-				const mod = await import("keytar");
-				this.keytar = (mod.default ?? mod) as typeof import("keytar");
-			} catch (err) {
-				throw new Error(`keytar not available: ${String(err)}`);
-			}
-		}
-		return this.keytar;
-	}
+	private keytarStore = new KeytarStore();
 
 	async storeSecret(localUserId: string, secret: Secret): Promise<void> {
-		const keytar = await this.getKeytar();
-		const account = `totp:${localUserId}`;
-		await keytar.setPassword(SERVICE_NAME, account, secret.base32);
+		await this.keytarStore.store(`totp:${localUserId}`, secret.base32);
 		logger.debug({ localUserId, provider: this.name }, "stored TOTP secret");
 	}
 
 	async getSecret(localUserId: string): Promise<Secret | null> {
-		const keytar = await this.getKeytar();
-		const account = `totp:${localUserId}`;
-		const base32 = await keytar.getPassword(SERVICE_NAME, account);
+		const base32 = await this.keytarStore.get(`totp:${localUserId}`);
 		if (!base32) return null;
 		return Secret.fromBase32(base32);
 	}
 
 	async deleteSecret(localUserId: string): Promise<boolean> {
-		const keytar = await this.getKeytar();
-		const account = `totp:${localUserId}`;
-		const deleted = await keytar.deletePassword(SERVICE_NAME, account);
+		const deleted = await this.keytarStore.delete(`totp:${localUserId}`);
 		if (deleted) {
 			logger.info({ localUserId, provider: this.name }, "deleted TOTP secret");
 		}
@@ -83,10 +66,7 @@ class KeytarProvider implements TOTPStorageProvider {
 	}
 
 	async hasSecret(localUserId: string): Promise<boolean> {
-		const keytar = await this.getKeytar();
-		const account = `totp:${localUserId}`;
-		const secret = await keytar.getPassword(SERVICE_NAME, account);
-		return secret !== null;
+		return this.keytarStore.has(`totp:${localUserId}`);
 	}
 }
 
@@ -94,150 +74,42 @@ class KeytarProvider implements TOTPStorageProvider {
 // Encrypted File Provider (Docker-compatible)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-
-interface EncryptedSecrets {
-	/** Base64-encoded salt for key derivation (random, stored with file) */
-	salt: string;
-	secrets: Record<string, EncryptedEntry>;
-}
-
-interface EncryptedEntry {
-	/** Base64-encoded IV */
-	iv: string;
-	/** Base64-encoded encrypted data */
-	data: string;
-	/** Base64-encoded auth tag */
-	tag: string;
-}
-
 class EncryptedFileProvider implements TOTPStorageProvider {
 	readonly name = "encrypted-file";
-	private filePath: string;
-	private rawKey: string;
-	private derivedKey: Buffer | null = null;
-	private cachedSalt: Buffer | null = null;
+	private store: EncryptedFileStore;
 
 	constructor(filePath: string, encryptionKey: string) {
-		this.filePath = filePath;
-		this.rawKey = encryptionKey;
-
-		// Ensure directory exists
-		const dir = dirname(filePath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true, mode: 0o700 });
-		}
-
+		this.store = new EncryptedFileStore(filePath, encryptionKey);
 		logger.debug({ filePath, provider: this.name }, "initialized encrypted file provider");
 	}
 
-	/**
-	 * Get the derived encryption key.
-	 * The salt is stored in the secrets file (generated on first use).
-	 * This ensures backups can be restored anywhere with just the encryption key.
-	 */
-	private getEncryptionKey(secrets: EncryptedSecrets): Buffer {
-		const salt = Buffer.from(secrets.salt, "base64");
-
-		// Cache the derived key if salt hasn't changed
-		if (this.derivedKey && this.cachedSalt && salt.equals(this.cachedSalt)) {
-			return this.derivedKey;
-		}
-
-		// Derive a 256-bit key from the provided key using scrypt
-		this.derivedKey = scryptSync(this.rawKey, salt, 32);
-		this.cachedSalt = salt;
-		return this.derivedKey;
-	}
-
-	private readSecrets(): EncryptedSecrets {
-		if (!existsSync(this.filePath)) {
-			// Generate a random salt for new files (16 bytes = 128 bits)
-			const salt = randomBytes(16);
-			return { salt: salt.toString("base64"), secrets: {} };
-		}
-
-		try {
-			const content = readFileSync(this.filePath, "utf8");
-			return JSON.parse(content) as EncryptedSecrets;
-		} catch {
-			logger.warn({ filePath: this.filePath }, "failed to read secrets file, starting fresh");
-			const salt = randomBytes(16);
-			return { salt: salt.toString("base64"), secrets: {} };
-		}
-	}
-
-	private writeSecrets(secrets: EncryptedSecrets): void {
-		const content = JSON.stringify(secrets, null, 2);
-		writeFileSync(this.filePath, content, { mode: 0o600 });
-	}
-
-	private encrypt(plaintext: string, key: Buffer): EncryptedEntry {
-		const iv = randomBytes(12); // 96-bit IV for GCM
-		const cipher = createCipheriv("aes-256-gcm", key, iv);
-
-		const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-
-		const tag = cipher.getAuthTag();
-
-		return {
-			iv: iv.toString("base64"),
-			data: encrypted.toString("base64"),
-			tag: tag.toString("base64"),
-		};
-	}
-
-	private decrypt(entry: EncryptedEntry, key: Buffer): string {
-		const iv = Buffer.from(entry.iv, "base64");
-		const data = Buffer.from(entry.data, "base64");
-		const tag = Buffer.from(entry.tag, "base64");
-
-		const decipher = createDecipheriv("aes-256-gcm", key, iv);
-		decipher.setAuthTag(tag);
-
-		const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
-
-		return decrypted.toString("utf8");
-	}
-
 	async storeSecret(localUserId: string, secret: Secret): Promise<void> {
-		const secrets = this.readSecrets();
-		const key = this.getEncryptionKey(secrets);
-		secrets.secrets[localUserId] = this.encrypt(secret.base32, key);
-		this.writeSecrets(secrets);
+		this.store.store(localUserId, secret.base32);
 		logger.debug({ localUserId, provider: this.name }, "stored TOTP secret");
 	}
 
 	async getSecret(localUserId: string): Promise<Secret | null> {
-		const secrets = this.readSecrets();
-		const entry = secrets.secrets[localUserId];
-		if (!entry) return null;
+		const base32 = this.store.get(localUserId);
+		if (!base32) return null;
 
 		try {
-			const key = this.getEncryptionKey(secrets);
-			const base32 = this.decrypt(entry, key);
 			return Secret.fromBase32(base32);
 		} catch (err) {
-			logger.error({ localUserId, error: String(err) }, "failed to decrypt TOTP secret");
+			logger.error({ localUserId, error: String(err) }, "failed to parse TOTP secret");
 			return null;
 		}
 	}
 
 	async deleteSecret(localUserId: string): Promise<boolean> {
-		const secrets = this.readSecrets();
-		if (!secrets.secrets[localUserId]) return false;
-
-		delete secrets.secrets[localUserId];
-		this.writeSecrets(secrets);
-		logger.info({ localUserId, provider: this.name }, "deleted TOTP secret");
-		return true;
+		const deleted = this.store.delete(localUserId);
+		if (deleted) {
+			logger.info({ localUserId, provider: this.name }, "deleted TOTP secret");
+		}
+		return deleted;
 	}
 
 	async hasSecret(localUserId: string): Promise<boolean> {
-		const secrets = this.readSecrets();
-		return localUserId in secrets.secrets;
+		return this.store.has(localUserId);
 	}
 }
 

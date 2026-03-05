@@ -8,16 +8,14 @@
  * Used for storing API keys and other sensitive credentials.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
+import { EncryptedFileStore } from "../crypto/encrypted-file-store.js";
+import { KeytarStore } from "../crypto/keytar-store.js";
 import { getChildLogger } from "../logging.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
 
 const logger = getChildLogger({ module: "secrets-keychain" });
-
-const SERVICE_NAME = "telclaude";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Storage Provider Interface
@@ -45,34 +43,19 @@ interface SecretsStorageProvider {
 
 class KeytarProvider implements SecretsStorageProvider {
 	readonly name = "keytar";
-	private keytar: typeof import("keytar") | null = null;
-
-	private async getKeytar() {
-		if (!this.keytar) {
-			try {
-				const mod = await import("keytar");
-				this.keytar = (mod.default ?? mod) as typeof import("keytar");
-			} catch (err) {
-				throw new Error(`keytar not available: ${String(err)}`);
-			}
-		}
-		return this.keytar;
-	}
+	private keytarStore = new KeytarStore();
 
 	async store(key: string, value: string): Promise<void> {
-		const keytar = await this.getKeytar();
-		await keytar.setPassword(SERVICE_NAME, key, value);
+		await this.keytarStore.store(key, value);
 		logger.debug({ key, provider: this.name }, "stored secret");
 	}
 
 	async get(key: string): Promise<string | null> {
-		const keytar = await this.getKeytar();
-		return keytar.getPassword(SERVICE_NAME, key);
+		return this.keytarStore.get(key);
 	}
 
 	async delete(key: string): Promise<boolean> {
-		const keytar = await this.getKeytar();
-		const deleted = await keytar.deletePassword(SERVICE_NAME, key);
+		const deleted = await this.keytarStore.delete(key);
 		if (deleted) {
 			logger.info({ key, provider: this.name }, "deleted secret");
 		}
@@ -80,9 +63,7 @@ class KeytarProvider implements SecretsStorageProvider {
 	}
 
 	async has(key: string): Promise<boolean> {
-		const keytar = await this.getKeytar();
-		const secret = await keytar.getPassword(SERVICE_NAME, key);
-		return secret !== null;
+		return this.keytarStore.has(key);
 	}
 }
 
@@ -90,129 +71,34 @@ class KeytarProvider implements SecretsStorageProvider {
 // Encrypted File Provider (Docker-compatible)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-interface EncryptedSecrets {
-	salt: string;
-	secrets: Record<string, EncryptedEntry>;
-}
-
-interface EncryptedEntry {
-	iv: string;
-	data: string;
-	tag: string;
-}
-
 class EncryptedFileProvider implements SecretsStorageProvider {
 	readonly name = "encrypted-file";
-	private filePath: string;
-	private rawKey: string;
-	private derivedKey: Buffer | null = null;
-	private cachedSalt: Buffer | null = null;
+	private fileStore: EncryptedFileStore;
 
 	constructor(filePath: string, encryptionKey: string) {
-		this.filePath = filePath;
-		this.rawKey = encryptionKey;
-
-		const dir = dirname(filePath);
-		if (!existsSync(dir)) {
-			mkdirSync(dir, { recursive: true, mode: 0o700 });
-		}
-
+		this.fileStore = new EncryptedFileStore(filePath, encryptionKey);
 		logger.debug({ filePath, provider: this.name }, "initialized encrypted file provider");
 	}
 
-	private getEncryptionKey(secrets: EncryptedSecrets): Buffer {
-		const salt = Buffer.from(secrets.salt, "base64");
-
-		if (this.derivedKey && this.cachedSalt && salt.equals(this.cachedSalt)) {
-			return this.derivedKey;
-		}
-
-		this.derivedKey = scryptSync(this.rawKey, salt, 32);
-		this.cachedSalt = salt;
-		return this.derivedKey;
-	}
-
-	private readSecrets(): EncryptedSecrets {
-		if (!existsSync(this.filePath)) {
-			const salt = randomBytes(16);
-			return { salt: salt.toString("base64"), secrets: {} };
-		}
-
-		try {
-			const content = readFileSync(this.filePath, "utf8");
-			return JSON.parse(content) as EncryptedSecrets;
-		} catch {
-			logger.warn({ filePath: this.filePath }, "failed to read secrets file, starting fresh");
-			const salt = randomBytes(16);
-			return { salt: salt.toString("base64"), secrets: {} };
-		}
-	}
-
-	private writeSecrets(secrets: EncryptedSecrets): void {
-		const content = JSON.stringify(secrets, null, 2);
-		writeFileSync(this.filePath, content, { mode: 0o600 });
-	}
-
-	private encrypt(plaintext: string, key: Buffer): EncryptedEntry {
-		const iv = randomBytes(12);
-		const cipher = createCipheriv("aes-256-gcm", key, iv);
-		const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-		const tag = cipher.getAuthTag();
-
-		return {
-			iv: iv.toString("base64"),
-			data: encrypted.toString("base64"),
-			tag: tag.toString("base64"),
-		};
-	}
-
-	private decrypt(entry: EncryptedEntry, key: Buffer): string {
-		const iv = Buffer.from(entry.iv, "base64");
-		const data = Buffer.from(entry.data, "base64");
-		const tag = Buffer.from(entry.tag, "base64");
-
-		const decipher = createDecipheriv("aes-256-gcm", key, iv);
-		decipher.setAuthTag(tag);
-
-		const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
-		return decrypted.toString("utf8");
-	}
-
 	async store(key: string, value: string): Promise<void> {
-		const secrets = this.readSecrets();
-		const encKey = this.getEncryptionKey(secrets);
-		secrets.secrets[key] = this.encrypt(value, encKey);
-		this.writeSecrets(secrets);
+		this.fileStore.store(key, value);
 		logger.debug({ key, provider: this.name }, "stored secret");
 	}
 
 	async get(key: string): Promise<string | null> {
-		const secrets = this.readSecrets();
-		const entry = secrets.secrets[key];
-		if (!entry) return null;
-
-		try {
-			const encKey = this.getEncryptionKey(secrets);
-			return this.decrypt(entry, encKey);
-		} catch (err) {
-			logger.error({ key, error: String(err) }, "failed to decrypt secret");
-			return null;
-		}
+		return this.fileStore.get(key);
 	}
 
 	async delete(key: string): Promise<boolean> {
-		const secrets = this.readSecrets();
-		if (!secrets.secrets[key]) return false;
-
-		delete secrets.secrets[key];
-		this.writeSecrets(secrets);
-		logger.info({ key, provider: this.name }, "deleted secret");
-		return true;
+		const deleted = this.fileStore.delete(key);
+		if (deleted) {
+			logger.info({ key, provider: this.name }, "deleted secret");
+		}
+		return deleted;
 	}
 
 	async has(key: string): Promise<boolean> {
-		const secrets = this.readSecrets();
-		return key in secrets.secrets;
+		return this.fileStore.has(key);
 	}
 }
 
