@@ -252,7 +252,8 @@ export function registerGitProxyInitCommand(program: Command): void {
 				setInterval(() => void refresh(), refreshMs);
 
 				// Keep the process alive
-				await new Promise(() => {});
+				const { runDaemon } = await import("./cli-utils.js");
+				await runDaemon();
 			}
 		});
 }

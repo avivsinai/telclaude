@@ -10,6 +10,7 @@ import { setVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { getDefaultSocketPath, startServer } from "../totp-daemon/index.js";
 import { getStorageProvider } from "../totp-daemon/storage-provider.js";
+import { runDaemon } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-totp-daemon" });
 
@@ -52,19 +53,10 @@ export function registerTOTPDaemonCommand(program: Command): void {
 				console.log(`Secrets stored in: ${storageDesc}`);
 				console.log("Press Ctrl+C to stop.");
 
-				// Set up graceful shutdown
-				const shutdown = async () => {
-					console.log("\nShutting down TOTP daemon...");
-					await handle.stop();
-					process.exit(0);
-				};
-
-				process.on("SIGINT", shutdown);
-				process.on("SIGTERM", shutdown);
-
-				// Keep the process running
-				await new Promise(() => {
-					// Never resolves - daemon runs until signal
+				await runDaemon({
+					onShutdown: async () => {
+						await handle.stop();
+					},
 				});
 			} catch (err) {
 				logger.error({ error: String(err) }, "totp-daemon command failed");

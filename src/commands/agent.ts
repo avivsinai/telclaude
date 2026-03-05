@@ -9,6 +9,7 @@ import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
+import { runDaemon } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-agent" });
 
@@ -127,7 +128,7 @@ export function registerAgentCommand(program: Command): void {
 			}
 
 			// Keep the process alive (server runs indefinitely)
-			await new Promise(() => {});
+			await runDaemon();
 		});
 }
 

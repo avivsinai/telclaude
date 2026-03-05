@@ -1,20 +1,9 @@
-import crypto from "node:crypto";
-import * as readline from "node:readline";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { resetDatabase } from "../storage/db.js";
+import { confirmDangerousReset } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-reset-db" });
-
-async function prompt(question: string): Promise<string> {
-	const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-	return new Promise((resolve) => {
-		rl.question(question, (answer) => {
-			rl.close();
-			resolve(answer);
-		});
-	});
-}
 
 export function registerResetDbCommand(program: Command): void {
 	program
@@ -36,27 +25,9 @@ export function registerResetDbCommand(program: Command): void {
 				console.log("   Audit logs and media files are NOT affected.");
 				console.log("");
 
-				const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
-
-				if (options.force && isTty) {
-					console.log("--force ignored on TTY; interactive confirmations are required.");
-				}
-
-				if (!options.force || isTty) {
-					const answer = await prompt('Type "RESET DB" to confirm: ');
-					if (answer.trim().toUpperCase() !== "RESET DB") {
-						console.log("Aborted. No changes made.");
-						return;
-					}
-				}
-
-				if (isTty) {
-					const confirmationCode = crypto.randomBytes(3).toString("hex").toUpperCase();
-					const codeAnswer = await prompt(`Enter confirmation code ${confirmationCode}: `);
-					if (codeAnswer.trim().toUpperCase() !== confirmationCode) {
-						console.log("Aborted. No changes made.");
-						return;
-					}
+				const confirmed = await confirmDangerousReset({ label: "RESET DB", force: options.force });
+				if (!confirmed) {
+					return;
 				}
 
 				resetDatabase();

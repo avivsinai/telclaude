@@ -10,65 +10,16 @@
  * - telclaude oauth revoke <service> - Revoke + remove from vault
  */
 
-import { createInterface } from "node:readline";
 import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
 import { authorize, getCallbackUrl } from "../oauth/flow.js";
 import { getService, listServices } from "../oauth/registry.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/index.js";
+import { mask } from "./cli-mask.js";
+import { promptSecret } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-oauth" });
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Prompt for a secret without echoing to terminal.
- */
-async function promptSecret(prompt: string): Promise<string> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		if (process.stdin.isTTY) {
-			process.stdout.write(prompt);
-			process.stdin.setRawMode(true);
-
-			let secret = "";
-			process.stdin.resume();
-			process.stdin.on("data", function handler(char) {
-				const c = char.toString();
-				if (c === "\n" || c === "\r" || c === "\u0004") {
-					process.stdin.setRawMode(false);
-					process.stdin.removeListener("data", handler);
-					rl.close();
-					console.log();
-					resolve(secret);
-				} else if (c === "\u0003") {
-					process.exit(1);
-				} else if (c === "\u007F" || c === "\b") {
-					secret = secret.slice(0, -1);
-				} else {
-					secret += c;
-				}
-			});
-		} else {
-			rl.question(prompt, (answer) => {
-				rl.close();
-				resolve(answer);
-			});
-		}
-	});
-}
-
-function mask(value: string): string {
-	if (value.length <= 6) return "********";
-	return `${value.slice(0, 4)}..${value.slice(-3)}`;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Command Registration
@@ -143,7 +94,7 @@ export function registerOAuthCommand(program: Command): void {
 					const scopes = opts.scope?.split(" ") ?? service.defaultScopes;
 
 					// Collect credentials
-					const clientId = opts.clientId ?? (await promptSecret("Client ID: "));
+					const clientId = opts.clientId ?? (await promptSecret("Client ID: ")) ?? "";
 					if (!clientId) {
 						console.error("Client ID is required.");
 						process.exit(1);
@@ -151,7 +102,7 @@ export function registerOAuthCommand(program: Command): void {
 
 					let clientSecret = "";
 					if (service.confidentialClient) {
-						clientSecret = opts.clientSecret ?? (await promptSecret("Client Secret: "));
+						clientSecret = opts.clientSecret ?? (await promptSecret("Client Secret: ")) ?? "";
 						if (!clientSecret) {
 							console.error("Client Secret is required for confidential clients.");
 							process.exit(1);
@@ -165,7 +116,7 @@ export function registerOAuthCommand(program: Command): void {
 					console.log(`Callback URL (must be registered in Developer Console):`);
 					console.log(`  ${callbackUrl}`);
 					console.log();
-					console.log(`Client ID: ${mask(clientId)}`);
+					console.log(`Client ID: ${mask(clientId, { threshold: 6, suffix: 3 })}`);
 					if (service.confidentialClient) {
 						console.log(`Client Secret: ********`);
 					}

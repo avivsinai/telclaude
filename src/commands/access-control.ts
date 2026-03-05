@@ -22,6 +22,7 @@ import {
 } from "../security/banned-chats.js";
 import { getIdentityLink } from "../security/linking.js";
 import { invalidateTOTPSession } from "../security/totp-session.js";
+import { parseChatId } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-access-control" });
 
@@ -36,11 +37,7 @@ export function registerAccessControlCommands(program: Command): void {
 		.option("-r, --reason <reason>", "Reason for the ban")
 		.action(async (chatIdStr: string, options: { reason?: string }) => {
 			try {
-				const chatId = Number.parseInt(chatIdStr, 10);
-				if (Number.isNaN(chatId)) {
-					console.error(`Invalid chat ID: ${chatIdStr}`);
-					process.exit(1);
-				}
+				const chatId = parseChatId(chatIdStr);
 
 				const result = banChat(chatId, "cli:admin", options.reason);
 
@@ -69,11 +66,7 @@ export function registerAccessControlCommands(program: Command): void {
 		.description("Restore access for a banned chat")
 		.action(async (chatIdStr: string) => {
 			try {
-				const chatId = Number.parseInt(chatIdStr, 10);
-				if (Number.isNaN(chatId)) {
-					console.error(`Invalid chat ID: ${chatIdStr}`);
-					process.exit(1);
-				}
+				const chatId = parseChatId(chatIdStr);
 
 				const result = unbanChat(chatId);
 
@@ -99,11 +92,7 @@ export function registerAccessControlCommands(program: Command): void {
 		.description("Invalidate TOTP session for a chat, requiring re-verification")
 		.action(async (chatIdStr: string) => {
 			try {
-				const chatId = Number.parseInt(chatIdStr, 10);
-				if (Number.isNaN(chatId)) {
-					console.error(`Invalid chat ID: ${chatIdStr}`);
-					process.exit(1);
-				}
+				const chatId = parseChatId(chatIdStr);
 
 				// Get identity link to find the local user
 				const link = getIdentityLink(chatId);
