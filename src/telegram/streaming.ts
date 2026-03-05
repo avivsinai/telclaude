@@ -84,9 +84,15 @@ export interface StreamingConfig {
 	 * Default: true
 	 */
 	showTypingIndicator?: boolean;
+
+	/**
+	 * Forum topic thread ID. When set, all messages and typing actions
+	 * are sent to this specific thread within a supergroup forum.
+	 */
+	messageThreadId?: number;
 }
 
-const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig">> = {
+const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId">> = {
 	minUpdateIntervalMs: 1500,
 	maxUpdateIntervalMs: 5000,
 	minCharsForUpdate: 50,
@@ -129,9 +135,12 @@ export function createCompactKeyboard(): InlineKeyboard {
 export class StreamingResponse {
 	private readonly api: Api;
 	private readonly chatId: number;
-	private readonly config: Required<Omit<StreamingConfig, "secretFilterConfig">> & {
+	private readonly config: Required<
+		Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId">
+	> & {
 		secretFilterConfig?: SecretFilterConfig;
 	};
+	private readonly messageThreadId?: number;
 
 	private messageId: number | null = null;
 	private content = "";
@@ -145,10 +154,17 @@ export class StreamingResponse {
 	private consecutiveErrors = 0;
 	private useMarkdown = true; // Fall back to plain text after parse errors
 
+	/** Offset into this.content where the current streaming message starts. */
+	private rolledContentOffset = 0;
+	/** Message IDs of finalized rollover messages (for tracking). */
+	private readonly finalizedMessageIds: number[] = [];
+
 	constructor(api: Api, chatId: number, config: StreamingConfig = {}) {
 		this.api = api;
 		this.chatId = chatId;
-		this.config = { ...DEFAULT_CONFIG, ...config };
+		const { messageThreadId, ...rest } = config;
+		this.messageThreadId = messageThreadId;
+		this.config = { ...DEFAULT_CONFIG, ...rest };
 		this.streamLoop = createDraftStreamLoop({
 			throttleMs: this.config.minUpdateIntervalMs,
 			isStopped: () => this.isFinished,
@@ -177,7 +193,9 @@ export class StreamingResponse {
 	 * Also starts a typing indicator interval if configured.
 	 */
 	async start(): Promise<Message> {
-		const message = await this.api.sendMessage(this.chatId, this.config.initialMessage);
+		const message = await this.api.sendMessage(this.chatId, this.config.initialMessage, {
+			message_thread_id: this.messageThreadId,
+		});
 		this.messageId = message.message_id;
 		this.lastUpdateTime = Date.now();
 
@@ -200,9 +218,13 @@ export class StreamingResponse {
 	private startTypingIndicator(): void {
 		this.typingInterval = setInterval(() => {
 			if (!this.isFinished) {
-				this.api.sendChatAction(this.chatId, "typing").catch(() => {
-					// Ignore typing indicator errors
-				});
+				this.api
+					.sendChatAction(this.chatId, "typing", {
+						message_thread_id: this.messageThreadId,
+					})
+					.catch(() => {
+						// Ignore typing indicator errors
+					});
 			}
 		}, 4000);
 	}
@@ -283,6 +305,9 @@ export class StreamingResponse {
 	/**
 	 * Perform the actual message edit.
 	 * Handles rate limits, parse errors, and "message not modified" gracefully.
+	 *
+	 * When content exceeds MAX_STREAMING_UPDATE_LENGTH, rolls over to a new
+	 * message instead of truncating the beginning.
 	 */
 	private async doUpdate(): Promise<void> {
 		if (!this.messageId || this.content === this.lastSentContent) {
@@ -299,15 +324,17 @@ export class StreamingResponse {
 			);
 		}
 
-		// Truncate for Telegram's 4096 char limit
-		// Keep the end of the content (most recent) if truncating
-		let displayContent = this.content;
-		if (displayContent.length > MAX_STREAMING_UPDATE_LENGTH) {
-			displayContent = `...\n${displayContent.slice(-(MAX_STREAMING_UPDATE_LENGTH - 50))}`;
+		// Content for the current streaming message (from rollover offset)
+		const currentContent = this.content.slice(this.rolledContentOffset);
+
+		// If current message content exceeds the limit, roll over to a new message
+		if (currentContent.length > MAX_STREAMING_UPDATE_LENGTH) {
+			await this.rollOverToNewMessage(currentContent);
+			return;
 		}
 
 		// Add streaming indicator
-		const streamingContent = `${displayContent}\n\n⏳ _generating..._`;
+		const streamingContent = `${currentContent}\n\n⏳ _generating..._`;
 
 		try {
 			// Convert to MarkdownV2 if we haven't fallen back to plain text
@@ -318,7 +345,7 @@ export class StreamingResponse {
 				textToSend = convertToTelegramMarkdown(streamingContent);
 				parseMode = "MarkdownV2";
 			} else {
-				textToSend = `${displayContent}\n\n⏳ generating...`;
+				textToSend = `${currentContent}\n\n⏳ generating...`;
 				parseMode = undefined;
 			}
 
@@ -340,7 +367,132 @@ export class StreamingResponse {
 				"streaming update sent",
 			);
 		} catch (err) {
-			await this.handleUpdateError(err, displayContent);
+			await this.handleUpdateError(err, currentContent);
+		}
+	}
+
+	/**
+	 * Finalize the current streaming message and start a new one for continuation.
+	 * This preserves the beginning of the response instead of truncating it.
+	 *
+	 * State transitions are atomic: offset and finalized list are only committed
+	 * after the continuation message is successfully created. On failure, the
+	 * current message ID remains valid for future edits (degraded tail-truncation).
+	 */
+	private async rollOverToNewMessage(currentContent: string): Promise<void> {
+		if (!this.messageId) return;
+
+		const finalizeContent = currentContent.slice(0, MAX_STREAMING_UPDATE_LENGTH);
+
+		// SECURITY: Filter the chunk BEFORE finalizing — once sent, it cannot be recalled.
+		const filterResult = filterWithOptionalConfig(finalizeContent, this.config.secretFilterConfig);
+		if (filterResult.blocked) {
+			logger.warn(
+				{ chatId: this.chatId, patterns: filterResult.matches.map((m) => m.pattern) },
+				"secrets detected in rollover chunk — aborting rollover",
+			);
+			// Replace the current message with a warning and stop streaming
+			try {
+				await this.api.editMessageText(
+					this.chatId,
+					this.messageId,
+					"⚠️ Response blocked by security filter.\n\n" +
+						"The response contained what appears to be sensitive credentials.",
+				);
+			} catch {
+				// Best effort
+			}
+			this.isFinished = true;
+			return;
+		}
+
+		// Finalize the current message (no "generating..." indicator).
+		// Successful finalization is a prerequisite for rollover — if both edits
+		// fail, abort and fall back to normal update-error handling.
+		let finalized = false;
+		let finalizeError: unknown;
+		try {
+			const finalizeText = this.useMarkdown
+				? convertToTelegramMarkdown(finalizeContent)
+				: finalizeContent;
+
+			await this.api.editMessageText(this.chatId, this.messageId, finalizeText, {
+				parse_mode: this.useMarkdown ? "MarkdownV2" : undefined,
+			});
+			finalized = true;
+		} catch {
+			// If MarkdownV2 fails, try plain text
+			try {
+				await this.api.editMessageText(this.chatId, this.messageId, finalizeContent);
+				finalized = true;
+			} catch (fallbackErr) {
+				finalizeError = fallbackErr;
+				logger.error({ error: String(fallbackErr) }, "rollover finalization failed");
+			}
+		}
+
+		if (!finalized) {
+			// Cannot finalize current message — abort rollover, degrade to tail-truncation.
+			// Pass the real error so handleUpdateError can detect 429/parse errors.
+			const cappedContent =
+				currentContent.length > MAX_STREAMING_UPDATE_LENGTH
+					? `...\n${currentContent.slice(-(MAX_STREAMING_UPDATE_LENGTH - 50))}`
+					: currentContent;
+			await this.handleUpdateError(finalizeError, cappedContent);
+			return;
+		}
+
+		// Save pre-rollover state so we can revert on continuation failure
+		const prevMessageId = this.messageId;
+		const prevOffset = this.rolledContentOffset;
+
+		// Tentatively advance state
+		this.finalizedMessageIds.push(this.messageId);
+		this.rolledContentOffset += finalizeContent.length;
+
+		// Send a new message for the continuation
+		const continuationContent = this.content.slice(this.rolledContentOffset);
+		const streamingContent = `${continuationContent}\n\n⏳ _generating..._`;
+		try {
+			const textToSend = this.useMarkdown
+				? convertToTelegramMarkdown(streamingContent)
+				: `${continuationContent}\n\n⏳ generating...`;
+
+			const newMessage = await this.api.sendMessage(this.chatId, textToSend, {
+				parse_mode: this.useMarkdown ? "MarkdownV2" : undefined,
+				message_thread_id: this.messageThreadId,
+			});
+
+			this.messageId = newMessage.message_id;
+			recordBotMessage(this.chatId, newMessage.message_id);
+
+			this.lastSentContent = this.content;
+			this.lastUpdateTime = Date.now();
+			this.consecutiveErrors = 0;
+			this.clearForceUpdateTimer();
+
+			logger.info(
+				{
+					chatId: this.chatId,
+					messageId: this.messageId,
+					rolledMessages: this.finalizedMessageIds.length,
+					contentLength: this.content.length,
+				},
+				"streaming rolled over to new message",
+			);
+		} catch (err) {
+			// Revert state — keep editing the current (finalized) message as fallback.
+			// Route through handleUpdateError for plain-text fallback and 429 backoff.
+			// Cap content to streaming limit so the plain-text retry fits in one message.
+			this.finalizedMessageIds.pop();
+			this.rolledContentOffset = prevOffset;
+			this.messageId = prevMessageId;
+			const fallbackContent = this.content.slice(this.rolledContentOffset);
+			const cappedContent =
+				fallbackContent.length > MAX_STREAMING_UPDATE_LENGTH
+					? `...\n${fallbackContent.slice(-(MAX_STREAMING_UPDATE_LENGTH - 50))}`
+					: fallbackContent;
+			await this.handleUpdateError(err, cappedContent);
 		}
 	}
 
@@ -459,26 +611,44 @@ export class StreamingResponse {
 			return null;
 		}
 
-		// Filter final content for secrets
+		// Filter final content for secrets — check the FULL content across all messages.
+		// Note: rollover chunks are pre-filtered in rollOverToNewMessage(), so this
+		// catches secrets that only appear when chunks are concatenated.
 		const filterResult = filterWithOptionalConfig(this.content, this.config.secretFilterConfig);
 
-		let finalContent = this.content;
 		if (filterResult.blocked) {
-			finalContent =
+			const blockedMsg =
 				"⚠️ Response blocked by security filter.\n\n" +
 				"The response contained what appears to be sensitive credentials.";
 			logger.warn(
 				{ chatId: this.chatId, patterns: filterResult.matches.map((m) => m.pattern) },
 				"secrets detected in final streaming content",
 			);
+			// Delete previously finalized rollover messages
+			for (const msgId of this.finalizedMessageIds) {
+				try {
+					await this.api.deleteMessage(this.chatId, msgId);
+				} catch {
+					// Best effort — message may already be gone
+				}
+			}
+			// Replace the current message with a warning
+			try {
+				await this.api.editMessageText(this.chatId, this.messageId, blockedMsg);
+			} catch {
+				// Best effort
+			}
+			return null;
 		}
 
-		// Handle empty content
-		if (!finalContent.trim()) {
-			finalContent = "_(No response generated)_";
-		}
+		// Only finalize the remaining content from the current message (after rollover offset).
+		// Previous rollover messages are already finalized.
+		const remainingContent = this.content.slice(this.rolledContentOffset);
 
-		// Split for Telegram's message limit
+		// Handle empty remaining content
+		const finalContent = remainingContent.trim() ? remainingContent : "_(No response generated)_";
+
+		// Split remaining content for Telegram's message limit
 		const chunks = sanitizeAndSplitResponse(finalContent);
 
 		// Determine keyboard to use
@@ -488,7 +658,7 @@ export class StreamingResponse {
 				: undefined;
 
 		try {
-			// First chunk replaces the streaming message
+			// First chunk replaces the current streaming message
 			const firstChunk = chunks[0];
 			let textToSend: string;
 			let parseMode: "MarkdownV2" | undefined;
@@ -517,6 +687,7 @@ export class StreamingResponse {
 				lastResult = await this.api.sendMessage(this.chatId, chunkText, {
 					parse_mode: this.useMarkdown ? "MarkdownV2" : undefined,
 					reply_markup: isLast ? keyboard : undefined,
+					message_thread_id: this.messageThreadId,
 				});
 				// Track for reaction context
 				recordBotMessage(this.chatId, lastResult.message_id);
@@ -526,8 +697,9 @@ export class StreamingResponse {
 				{
 					chatId: this.chatId,
 					messageId: this.messageId,
-					contentLength: finalContent.length,
+					contentLength: this.content.length,
 					chunks: chunks.length,
+					rolledMessages: this.finalizedMessageIds.length,
 					usedMarkdown: this.useMarkdown,
 				},
 				"streaming response finished",
@@ -568,6 +740,7 @@ export class StreamingResponse {
 						const isLast = i === chunks.length - 1;
 						lastResult = await this.api.sendMessage(this.chatId, chunks[i], {
 							reply_markup: isLast ? keyboard : undefined,
+							message_thread_id: this.messageThreadId,
 						});
 						// Track for reaction context
 						recordBotMessage(this.chatId, lastResult.message_id);

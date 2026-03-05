@@ -106,7 +106,8 @@ export async function handlePrivateHeartbeat(
 			return { acted: false, summary: "" };
 		}
 
-		const summaryLine = trimmed.split("\n")[0].slice(0, 100);
+		// Keep first paragraph — notification sanitizer enforces the final length limit.
+		const summaryLine = trimmed.split(/\n\n/)[0];
 		logger.info({ summary: summaryLine }, "private heartbeat completed with activity");
 
 		// Send notification if configured

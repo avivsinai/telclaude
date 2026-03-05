@@ -42,6 +42,7 @@ export type TelegramInboundMessage = {
 	isEdited?: boolean;
 	editedTimestamp?: number;
 	replyToMessageId?: number;
+	messageThreadId?: number; // Forum topic thread ID
 
 	// Media info (if present)
 	mediaPath?: string;
