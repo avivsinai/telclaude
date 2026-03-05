@@ -12,137 +12,19 @@
  */
 
 import { containsHomoglyphs, foldHomoglyphs } from "./homoglyphs.js";
+import { type InjectionSeverity, PROMPT_INJECTION_PATTERNS } from "./shared-patterns.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Injection Pattern Detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export type InjectionSeverity = "low" | "medium" | "high" | "critical";
+export type { InjectionSeverity };
 
 export type InjectionFinding = {
 	pattern: string;
 	match: string;
 	severity: InjectionSeverity;
 };
-
-type InjectionPattern = {
-	name: string;
-	regex: RegExp;
-	severity: InjectionSeverity;
-};
-
-/**
- * Patterns that indicate prompt injection attempts in external content.
- */
-const INJECTION_PATTERNS: InjectionPattern[] = [
-	// === Instruction override ===
-	{
-		name: "ignore-instructions",
-		regex:
-			/\b(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|above|prior|your)\s+(?:instructions|rules|guidelines|constraints)\b/gi,
-		severity: "critical",
-	},
-	{
-		name: "new-instructions",
-		regex: /\b(?:new|updated|revised)\s+(?:system\s+)?(?:instructions|prompt|rules)\s*:/gi,
-		severity: "critical",
-	},
-	{
-		name: "identity-override",
-		regex: /\b(?:you\s+are\s+now|act\s+as|pretend\s+to\s+be|your\s+new\s+role)\b/gi,
-		severity: "critical",
-	},
-	{
-		name: "system-prompt-override",
-		regex: /\b(?:system\s*:\s*|<system>|<<SYS>>|\[SYSTEM\])/gi,
-		severity: "critical",
-	},
-
-	// === Tool/action manipulation ===
-	{
-		name: "tool-invocation",
-		regex: /\b(?:run|execute|call|use)\s+(?:the\s+)?(?:bash|shell|terminal|command|tool)\b/gi,
-		severity: "high",
-	},
-	{
-		name: "file-operations",
-		regex: /\b(?:write|create|delete|modify|edit)\s+(?:the\s+)?(?:file|config|\.env|\.ssh)\b/gi,
-		severity: "high",
-	},
-	{
-		name: "code-execution",
-		regex:
-			/```(?:bash|sh|python|node|javascript)\s*\n[^`]*(?:curl|wget|rm|chmod|eval|exec)[^`]*```/gis,
-		severity: "high",
-	},
-
-	// === Exfiltration attempts ===
-	{
-		name: "data-request",
-		regex:
-			/\b(?:send|post|upload|transmit)\s+(?:the\s+)?(?:api\s*key|token|secret|password|credential)\b/gi,
-		severity: "critical",
-	},
-	{
-		name: "url-injection",
-		regex: /\b(?:fetch|visit|navigate|go\s+to|open)\s+(?:https?:\/\/)/gi,
-		severity: "medium",
-	},
-	{
-		name: "env-harvest",
-		regex:
-			/\b(?:show|print|display|output)\s+(?:your\s+)?(?:environment|env\s*vars?|process\.env|api\s*key|token)\b/gi,
-		severity: "critical",
-	},
-
-	// === Social engineering ===
-	{
-		name: "urgency-pressure",
-		regex:
-			/\b(?:urgent|emergency|immediately|critical)\s*[!:]\s*(?:you\s+must|please\s+(?:do|run|execute))/gi,
-		severity: "medium",
-	},
-	{
-		name: "authority-claim",
-		regex:
-			/\b(?:I\s+am\s+(?:the\s+)?(?:admin|developer|owner|operator)|authorized\s+(?:by|to))\b/gi,
-		severity: "high",
-	},
-	{
-		name: "permission-claim",
-		regex: /\b(?:you\s+(?:are|have)\s+(?:been\s+)?(?:authorized|permitted|allowed)\s+to)\b/gi,
-		severity: "high",
-	},
-
-	// === Encoding/obfuscation ===
-	{
-		name: "base64-block",
-		regex: /[A-Za-z0-9+/]{40,}={0,2}/g,
-		severity: "low",
-	},
-	{
-		name: "hex-block",
-		regex: /(?:0x)?[0-9a-f]{40,}/gi,
-		severity: "low",
-	},
-	{
-		name: "unicode-escape",
-		regex: /(?:\\u[0-9a-f]{4}){4,}/gi,
-		severity: "medium",
-	},
-
-	// === Hidden content ===
-	{
-		name: "invisible-chars",
-		regex: /(?:\u200B|\u200C|\u200D|\u2060|\uFEFF){2,}/g,
-		severity: "high",
-	},
-	{
-		name: "rtl-override",
-		regex: /[\u202A-\u202E\u2066-\u2069]/g,
-		severity: "high",
-	},
-];
 
 /**
  * Scan content for injection patterns.
@@ -151,7 +33,7 @@ const INJECTION_PATTERNS: InjectionPattern[] = [
 export function detectInjection(content: string): InjectionFinding[] {
 	const findings: InjectionFinding[] = [];
 
-	for (const { name, regex, severity } of INJECTION_PATTERNS) {
+	for (const { name, regex, severity } of PROMPT_INJECTION_PATTERNS) {
 		regex.lastIndex = 0;
 		let match = regex.exec(content);
 		while (match !== null) {

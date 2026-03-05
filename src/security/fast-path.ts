@@ -1,4 +1,6 @@
+import { containsHomoglyphs } from "./homoglyphs.js";
 import { filterInfrastructureSecrets } from "./output-filter.js";
+import { PROMPT_INJECTION_PATTERNS } from "./shared-patterns.js";
 import type { SecurityClassification } from "./types.js";
 
 /**
@@ -93,14 +95,10 @@ export const DANGEROUS_PATTERNS: RegExp[] = [
 	/su\s+-?\s*$/i,
 	/pkexec/i,
 
-	// Prompt injection attempts
-	/ignore\s+(all\s+)?previous\s+instructions?/i,
-	/disregard\s+(all\s+)?prior\s+instructions?/i,
-	/forget\s+(all\s+)?your\s+instructions?/i,
-	/you\s+are\s+now\s+/i,
-	/your\s+new\s+(role|persona|identity)/i,
-	/system\s*prompt/i,
-	/reveal\s+your\s+prompt/i,
+	// Prompt injection attempts (from shared patterns, without global flag for .test() safety)
+	...PROMPT_INJECTION_PATTERNS.filter((p) => p.severity === "critical").map(
+		(p) => new RegExp(p.regex.source, p.regex.flags.replace("g", "")),
+	),
 
 	// Network exfiltration
 	/curl\s+.*-X\s*(POST|PUT)/i,
@@ -161,10 +159,9 @@ export function fastPathClassify(message: string): {
 export function checkStructuralIssues(message: string): string[] {
 	const issues: string[] = [];
 
-	// Check for zero-width characters (hidden text)
-	// Using alternation instead of character class due to ZWJ combining behavior
-	if (/\u200B|\u200C|\u200D|\uFEFF/.test(message)) {
-		issues.push("Contains zero-width characters");
+	// Check for zero-width / homoglyph characters (hidden text, lookalike attacks)
+	if (containsHomoglyphs(message)) {
+		issues.push("Contains zero-width or homoglyph characters");
 	}
 
 	// Check for excessive repetition (trying to overwhelm context)

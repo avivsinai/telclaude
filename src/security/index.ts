@@ -82,6 +82,11 @@ export {
 export * from "./rate-limit.js";
 // Constant-time comparison
 export { safeEqual } from "./safe-equal.js";
+// Shared prompt injection patterns
+export {
+	PROMPT_INJECTION_PATTERNS,
+	type PromptInjectionPattern,
+} from "./shared-patterns.js";
 // Skill static code scanner
 export {
 	formatScanResults,
