@@ -14,7 +14,6 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
@@ -26,57 +25,9 @@ import {
 	type Protocol,
 	ProtocolSchema,
 } from "../vault-daemon/index.js";
+import { promptSecret } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-vault" });
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Prompt for a password/secret without echoing to terminal.
- */
-async function promptSecret(prompt: string): Promise<string> {
-	return new Promise((resolve) => {
-		const rl = createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		// Disable echo (best effort - may not work on all terminals)
-		if (process.stdin.isTTY) {
-			process.stdout.write(prompt);
-			process.stdin.setRawMode(true);
-
-			let secret = "";
-			process.stdin.resume();
-			process.stdin.on("data", function handler(char) {
-				const c = char.toString();
-				if (c === "\n" || c === "\r" || c === "\u0004") {
-					process.stdin.setRawMode(false);
-					process.stdin.removeListener("data", handler);
-					rl.close();
-					console.log(); // Newline after hidden input
-					resolve(secret);
-				} else if (c === "\u0003") {
-					// Ctrl+C
-					process.exit(1);
-				} else if (c === "\u007F" || c === "\b") {
-					// Backspace
-					secret = secret.slice(0, -1);
-				} else {
-					secret += c;
-				}
-			});
-		} else {
-			// Non-TTY fallback
-			rl.question(prompt, (answer) => {
-				rl.close();
-				resolve(answer);
-			});
-		}
-	});
-}
 
 /**
  * Validate protocol string.
@@ -233,7 +184,7 @@ export function registerVaultCommand(program: Command): void {
 
 						switch (type) {
 							case "bearer": {
-								const token = opts.token ?? (await promptSecret("Token: "));
+								const token = opts.token ?? (await promptSecret("Token: ")) ?? "";
 								if (!token) {
 									console.error("Token is required for bearer auth");
 									process.exit(1);
@@ -243,7 +194,7 @@ export function registerVaultCommand(program: Command): void {
 							}
 
 							case "api-key": {
-								const token = opts.token ?? (await promptSecret("API Key: "));
+								const token = opts.token ?? (await promptSecret("API Key: ")) ?? "";
 								const header = opts.header ?? "X-API-Key";
 								if (!token) {
 									console.error("Token is required for api-key auth");
@@ -259,13 +210,13 @@ export function registerVaultCommand(program: Command): void {
 									console.error("--username is required for basic auth");
 									process.exit(1);
 								}
-								const password = opts.token ?? (await promptSecret("Password: "));
+								const password = opts.token ?? (await promptSecret("Password: ")) ?? "";
 								credential = { type: "basic", username, password };
 								break;
 							}
 
 							case "query": {
-								const token = opts.token ?? (await promptSecret("Token: "));
+								const token = opts.token ?? (await promptSecret("Token: ")) ?? "";
 								const param = opts.param ?? "api_key";
 								if (!token) {
 									console.error("Token is required for query auth");
@@ -284,8 +235,10 @@ export function registerVaultCommand(program: Command): void {
 									console.error("--token-endpoint is required for oauth2");
 									process.exit(1);
 								}
-								const clientSecret = opts.clientSecret ?? (await promptSecret("Client Secret: "));
-								const refreshToken = opts.refreshToken ?? (await promptSecret("Refresh Token: "));
+								const clientSecret =
+									opts.clientSecret ?? (await promptSecret("Client Secret: ")) ?? "";
+								const refreshToken =
+									opts.refreshToken ?? (await promptSecret("Refresh Token: ")) ?? "";
 
 								if (!clientSecret || !refreshToken) {
 									console.error("Client secret and refresh token are required for oauth2");
@@ -314,7 +267,7 @@ export function registerVaultCommand(program: Command): void {
 							console.error("--username is required for database credentials");
 							process.exit(1);
 						}
-						const password = opts.token ?? (await promptSecret("Password: "));
+						const password = opts.token ?? (await promptSecret("Password: ")) ?? "";
 						credential = {
 							type: "db",
 							username,
@@ -337,7 +290,7 @@ export function registerVaultCommand(program: Command): void {
 							const fs = await import("node:fs");
 							const privateKey = fs.readFileSync(opts.key, "utf-8");
 							const passphrase =
-								opts.passphrase ?? (await promptSecret("Key passphrase (or empty): "));
+								opts.passphrase ?? (await promptSecret("Key passphrase (or empty): ")) ?? "";
 							credential = {
 								type: "ssh-key",
 								username,
@@ -345,7 +298,7 @@ export function registerVaultCommand(program: Command): void {
 								passphrase: passphrase || undefined,
 							};
 						} else if (type === "ssh-password") {
-							const password = opts.token ?? (await promptSecret("Password: "));
+							const password = opts.token ?? (await promptSecret("Password: ")) ?? "";
 							credential = { type: "ssh-password", username, password };
 						} else {
 							console.error(`Invalid SSH credential type: ${type}`);
@@ -353,7 +306,7 @@ export function registerVaultCommand(program: Command): void {
 							process.exit(1);
 						}
 					} else if (protocol === "secret") {
-						const value = opts.token ?? (await promptSecret("Secret value: "));
+						const value = opts.token ?? (await promptSecret("Secret value: ")) ?? "";
 						if (!value) {
 							console.error("Secret value is required");
 							process.exit(1);

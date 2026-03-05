@@ -13,6 +13,7 @@ import fs from "node:fs";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { relayValidateAttachment } from "../relay/capabilities-client.js";
+import { requireRelay } from "./cli-guards.js";
 
 const logger = getChildLogger({ module: "cmd-send-attachment" });
 
@@ -29,12 +30,7 @@ export function registerSendAttachmentCommand(program: Command): void {
 		.option("--user-id <id>", "User ID for validation (optional)")
 		.action(async (opts: SendAttachmentOptions) => {
 			try {
-				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
-				if (!useRelay) {
-					console.error("Error: TELCLAUDE_CAPABILITIES_URL is not configured.");
-					console.error("This command requires the relay capabilities server.");
-					process.exit(1);
-				}
+				requireRelay();
 
 				const ref = opts.ref?.trim();
 				if (!ref) {

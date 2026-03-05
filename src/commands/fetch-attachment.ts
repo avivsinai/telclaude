@@ -6,6 +6,7 @@
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { relayFetchAttachment } from "../relay/capabilities-client.js";
+import { requireRelay } from "./cli-guards.js";
 
 const logger = getChildLogger({ module: "cmd-fetch-attachment" });
 
@@ -32,12 +33,7 @@ export function registerFetchAttachmentCommand(program: Command): void {
 		.option("--user-id <id>", "User ID for rate limiting (optional)")
 		.action(async (opts: FetchAttachmentOptions) => {
 			try {
-				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
-				if (!useRelay) {
-					console.error("Error: TELCLAUDE_CAPABILITIES_URL is not configured.");
-					console.error("This command requires the relay capabilities server.");
-					process.exit(1);
-				}
+				requireRelay();
 
 				const providerId = opts.provider?.trim() ?? "";
 				const attachmentId = opts.id?.trim() ?? "";

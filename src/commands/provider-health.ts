@@ -126,12 +126,10 @@ export function registerProviderHealthCommand(program: Command): void {
 					return;
 				}
 
-				// Check all providers
-				const results: HealthCheckResult[] = [];
-				for (const provider of toCheck) {
-					const result = await checkProviderHealth(provider.id, provider.baseUrl);
-					results.push(result);
-				}
+				// Check all providers in parallel
+				const results = await Promise.all(
+					toCheck.map((provider) => checkProviderHealth(provider.id, provider.baseUrl)),
+				);
 
 				// Output results
 				console.log(formatHealthOutput(results, options.json ?? false));

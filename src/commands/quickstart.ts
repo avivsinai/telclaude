@@ -1,27 +1,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import type { Command } from "commander";
 import { CONFIG_DIR } from "../utils.js";
-
-/**
- * Quickstart command - creates a minimal config for first-time users.
- *
- * Sets up:
- * - READ_ONLY tier (safe default)
- * - Simple security profile (no observer, no approvals)
- * - No TOTP requirement
- * - Minimal friction to get started
- */
-
-function prompt(rl: readline.Interface, question: string): Promise<string> {
-	return new Promise((resolve) => {
-		rl.question(question, (answer) => {
-			resolve(answer.trim());
-		});
-	});
-}
+import { promptLine } from "./cli-prompt.js";
 
 export interface QuickstartOptions {
 	token?: string;
@@ -40,11 +22,6 @@ export function registerQuickstartCommand(program: Command): void {
 			const configPath = path.join(CONFIG_DIR, "telclaude.json");
 			const configExists = fs.existsSync(configPath);
 
-			const rl = readline.createInterface({
-				input: process.stdin,
-				output: process.stdout,
-			});
-
 			try {
 				console.log("\n🚀 Telclaude Quickstart\n");
 				console.log("This will create a minimal config with:");
@@ -54,11 +31,10 @@ export function registerQuickstartCommand(program: Command): void {
 
 				// Check for existing config
 				if (configExists && !opts.force) {
-					const overwrite = await prompt(
-						rl,
+					const overwrite = await promptLine(
 						`Config already exists at ${configPath}. Overwrite? [y/N]: `,
 					);
-					if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
+					if (overwrite?.toLowerCase() !== "y" && overwrite?.toLowerCase() !== "yes") {
 						console.log("\nAborted. Your existing config is unchanged.");
 						return;
 					}
@@ -69,7 +45,7 @@ export function registerQuickstartCommand(program: Command): void {
 				if (!token) {
 					console.log("Step 1: Get your bot token from @BotFather on Telegram");
 					console.log("        (Send /newbot to @BotFather to create one)\n");
-					token = await prompt(rl, "Bot token: ");
+					token = (await promptLine("Bot token: ")) ?? "";
 				}
 
 				if (!token || !token.includes(":")) {
@@ -84,7 +60,7 @@ export function registerQuickstartCommand(program: Command): void {
 					console.log("        Send a message to your bot, then visit:");
 					console.log(`        https://api.telegram.org/bot${token}/getUpdates`);
 					console.log('        Look for "chat":{"id": YOUR_CHAT_ID}\n');
-					chatId = await prompt(rl, "Your chat ID (numeric): ");
+					chatId = (await promptLine("Your chat ID (numeric): ")) ?? "";
 				}
 
 				const numericChatId = Number.parseInt(chatId, 10);
@@ -146,8 +122,9 @@ export function registerQuickstartCommand(program: Command): void {
 
 				console.log("Edit the config to change permissions:");
 				console.log(`  ${configPath}\n`);
-			} finally {
-				rl.close();
+			} catch (err) {
+				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+				process.exit(1);
 			}
 		});
 }

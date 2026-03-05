@@ -13,6 +13,7 @@ import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
 import { getDefaultSocketPath, startServer } from "../vault-daemon/index.js";
+import { runDaemon } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-vault-daemon" });
 
@@ -38,20 +39,10 @@ export function registerVaultDaemonCommand(program: Command): void {
 
 				console.log(`Vault daemon listening on ${handle.socketPath}`);
 
-				// Handle graceful shutdown
-				const shutdown = async (signal: string) => {
-					logger.info({ signal }, "received shutdown signal");
-					console.log(`\nReceived ${signal}, shutting down...`);
-					await handle.stop();
-					process.exit(0);
-				};
-
-				process.on("SIGINT", () => shutdown("SIGINT"));
-				process.on("SIGTERM", () => shutdown("SIGTERM"));
-
-				// Keep process running
-				await new Promise(() => {
-					// Never resolves - daemon runs until signaled
+				await runDaemon({
+					onShutdown: async () => {
+						await handle.stop();
+					},
 				});
 			} catch (err) {
 				logger.error({ error: String(err) }, "vault-daemon command failed");

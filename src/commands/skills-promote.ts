@@ -17,6 +17,7 @@ import path from "node:path";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { scanSkill } from "../security/skill-scanner.js";
+import { copyDirRecursive } from "./cli-utils.js";
 
 const logger = getChildLogger({ module: "cmd-skills-promote" });
 
@@ -137,20 +138,6 @@ export function promoteSkill(
 
 	logger.info({ skillName }, "skill promoted from draft to active");
 	return { success: true, skillName };
-}
-
-function copyDirRecursive(source: string, target: string): void {
-	fs.mkdirSync(target, { recursive: true });
-	const entries = fs.readdirSync(source, { withFileTypes: true });
-	for (const entry of entries) {
-		const srcPath = path.join(source, entry.name);
-		const tgtPath = path.join(target, entry.name);
-		if (entry.isDirectory()) {
-			copyDirRecursive(srcPath, tgtPath);
-		} else if (entry.isFile()) {
-			fs.copyFileSync(srcPath, tgtPath);
-		}
-	}
 }
 
 /**

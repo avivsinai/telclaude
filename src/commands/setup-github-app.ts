@@ -8,7 +8,6 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import * as readline from "node:readline";
 
 import type { Command } from "commander";
 
@@ -17,7 +16,6 @@ import {
 	deleteSecret,
 	getSecret,
 	getStorageProviderName,
-	isSecretsStorageAvailable,
 	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
@@ -30,6 +28,8 @@ import {
 	listAccessibleRepositories,
 	testGitHubAppConnectivity,
 } from "../services/github-app.js";
+import { requireSecretsStorage } from "./cli-guards.js";
+import { promptLine, promptYesNo } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-setup-github-app" });
 
@@ -83,13 +83,7 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 				privateKey?: string;
 			}) => {
 				try {
-					if (!(await isSecretsStorageAvailable())) {
-						console.error(
-							"Error: Secrets storage not available.\n" +
-								"On Linux, install libsecret-1-dev, or set SECRETS_ENCRYPTION_KEY for file storage.",
-						);
-						process.exit(1);
-					}
+					await requireSecretsStorage();
 
 					const providerName = await getStorageProviderName();
 
@@ -298,7 +292,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	}
 
 	// Prompt for App ID
-	const appId = await promptForInput("GitHub App ID: ");
+	const appId = await promptLine("GitHub App ID: ");
 	if (!appId) {
 		console.log("Cancelled.");
 		return;
@@ -311,7 +305,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	console.log("  2. Click 'Configure' on your app");
 	console.log("  3. The ID is in the URL: /installations/<INSTALLATION_ID>");
 	console.log("");
-	const installationId = await promptForInput("Installation ID: ");
+	const installationId = await promptLine("Installation ID: ");
 	if (!installationId) {
 		console.log("Cancelled.");
 		return;
@@ -319,7 +313,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 
 	// Prompt for private key path
 	console.log("");
-	const privateKeyPath = await promptForInput("Path to private key (.pem file): ");
+	const privateKeyPath = await promptLine("Path to private key (.pem file): ");
 	if (!privateKeyPath) {
 		console.log("Cancelled.");
 		return;
@@ -439,48 +433,4 @@ function maskPrivateKey(keyOrPath: string): string {
 	}
 	// It's inline content, mask it
 	return "-----BEGIN RSA PRIVATE KEY-----...-----END RSA PRIVATE KEY-----";
-}
-
-async function promptForInput(prompt: string): Promise<string | null> {
-	return new Promise((resolve) => {
-		let resolved = false;
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		rl.question(prompt, (answer) => {
-			resolved = true;
-			rl.close();
-			resolve(answer.trim() || null);
-		});
-
-		rl.on("close", () => {
-			if (!resolved) {
-				resolve(null);
-			}
-		});
-	});
-}
-
-async function promptYesNo(question: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		let resolved = false;
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		rl.question(`${question} (y/N): `, (answer) => {
-			resolved = true;
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-
-		rl.on("close", () => {
-			if (!resolved) {
-				resolve(false); // Default to "no" if closed without answer
-			}
-		});
-	});
 }

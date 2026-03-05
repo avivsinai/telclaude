@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { getAllSessions, type SessionEntry } from "../config/sessions.js";
+import { formatDuration } from "./cli-utils.js";
 
 export type SessionListRow = {
 	key: string;
@@ -35,23 +36,6 @@ function toRows(store: Record<string, SessionEntry>): SessionListRow[] {
 			systemSent: entry.systemSent === true,
 		}))
 		.sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-function formatAge(ageMs: number): string {
-	const seconds = Math.floor(ageMs / 1000);
-	if (seconds < 60) {
-		return `${seconds}s`;
-	}
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) {
-		return `${minutes}m`;
-	}
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) {
-		return `${hours}h`;
-	}
-	const days = Math.floor(hours / 24);
-	return `${days}d`;
 }
 
 function pad(value: string, width: number): string {
@@ -149,7 +133,7 @@ export function registerSessionsCommand(program: Command): void {
 						[
 							pad(row.kind, 7),
 							pad(truncate(row.key, 20), 20),
-							pad(formatAge(row.ageMs), 8),
+							pad(formatDuration(row.ageMs), 8),
 							pad(truncate(row.sessionId, 14), 14),
 							flags,
 						]

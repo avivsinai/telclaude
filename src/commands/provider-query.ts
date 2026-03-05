@@ -14,6 +14,7 @@
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { relayProviderProxy } from "../relay/capabilities-client.js";
+import { requireRelay } from "./cli-guards.js";
 
 const logger = getChildLogger({ module: "cmd-provider-query" });
 
@@ -42,12 +43,7 @@ export function registerProviderQueryCommand(program: Command): void {
 		.option("--approval-token <token>", "Signed approval token for action-type requests")
 		.action(async (opts: ProviderQueryOptions) => {
 			try {
-				const useRelay = Boolean(process.env.TELCLAUDE_CAPABILITIES_URL);
-				if (!useRelay) {
-					console.error("Error: TELCLAUDE_CAPABILITIES_URL is not configured.");
-					console.error("This command requires the relay capabilities server.");
-					process.exit(1);
-				}
+				requireRelay();
 
 				const providerId = opts.provider?.trim();
 				const service = opts.service?.trim();

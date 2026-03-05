@@ -3,8 +3,6 @@
  * Stores the key securely in OS keychain or encrypted file.
  */
 
-import * as readline from "node:readline";
-
 import type { Command } from "commander";
 
 import { getChildLogger } from "../logging.js";
@@ -13,11 +11,13 @@ import {
 	getSecret,
 	getStorageProviderName,
 	hasSecret,
-	isSecretsStorageAvailable,
 	SECRET_KEYS,
 	storeSecret,
 } from "../secrets/index.js";
 import { clearOpenAICache } from "../services/openai-client.js";
+import { requireSecretsStorage } from "./cli-guards.js";
+import { mask } from "./cli-mask.js";
+import { promptSecret, promptYesNo } from "./cli-prompt.js";
 
 const logger = getChildLogger({ module: "cmd-setup-openai" });
 
@@ -31,14 +31,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 		.option("--check", "Check if an API key is configured")
 		.action(async (opts: { delete?: boolean; show?: boolean; check?: boolean }) => {
 			try {
-				// Check if storage is available
-				if (!(await isSecretsStorageAvailable())) {
-					console.error(
-						"Error: Secrets storage not available.\n" +
-							"On Linux, install libsecret-1-dev, or set SECRETS_ENCRYPTION_KEY for file storage.",
-					);
-					process.exit(1);
-				}
+				await requireSecretsStorage();
 
 				const providerName = await getStorageProviderName();
 
@@ -76,12 +69,12 @@ export function registerSetupOpenAICommand(program: Command): void {
 				if (opts.show) {
 					const key = await getSecret(SECRET_KEYS.OPENAI_API_KEY);
 					if (key) {
-						const masked = maskApiKey(key);
+						const masked = mask(key);
 						console.log(`OpenAI API key (${providerName}): ${masked}`);
 					} else {
 						const envKey = process.env.OPENAI_API_KEY;
 						if (envKey) {
-							const masked = maskApiKey(envKey);
+							const masked = mask(envKey);
 							console.log(`OpenAI API key (env var): ${masked}`);
 						} else {
 							console.log("No OpenAI API key configured.");
@@ -101,7 +94,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 				if (existingKey) {
 					const current = await getSecret(SECRET_KEYS.OPENAI_API_KEY);
 					if (current) {
-						console.log(`Current key: ${maskApiKey(current)}`);
+						console.log(`Current key: ${mask(current)}`);
 					}
 					console.log(
 						"A key is already stored. Enter a new key to replace it, or Ctrl+C to cancel.",
@@ -110,7 +103,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 				}
 
 				// Prompt for key
-				const apiKey = await promptForApiKey();
+				const apiKey = await promptSecret("Enter OpenAI API key: ");
 
 				if (!apiKey) {
 					console.log("Cancelled.");
@@ -145,92 +138,4 @@ export function registerSetupOpenAICommand(program: Command): void {
 		});
 
 	// Command alias is registered above.
-}
-
-/**
- * Mask an API key for display.
- */
-function maskApiKey(key: string): string {
-	if (key.length <= 8) {
-		return "****";
-	}
-	return `${key.slice(0, 4)}...${key.slice(-4)}`;
-}
-
-/**
- * Prompt for API key input (hidden).
- */
-async function promptForApiKey(): Promise<string | null> {
-	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		// Hide input
-		const stdin = process.stdin;
-		const wasRaw = stdin.isRaw;
-
-		process.stdout.write("Enter OpenAI API key: ");
-
-		if (stdin.isTTY) {
-			stdin.setRawMode(true);
-		}
-
-		let input = "";
-
-		const onData = (char: Buffer) => {
-			const c = char.toString();
-
-			if (c === "\n" || c === "\r") {
-				// Enter pressed
-				if (stdin.isTTY) {
-					stdin.setRawMode(wasRaw ?? false);
-				}
-				stdin.removeListener("data", onData);
-				process.stdout.write("\n");
-				rl.close();
-				resolve(input.trim() || null);
-			} else if (c === "\u0003") {
-				// Ctrl+C
-				if (stdin.isTTY) {
-					stdin.setRawMode(wasRaw ?? false);
-				}
-				stdin.removeListener("data", onData);
-				process.stdout.write("\n");
-				rl.close();
-				resolve(null);
-			} else if (c === "\u007F" || c === "\b") {
-				// Backspace
-				if (input.length > 0) {
-					input = input.slice(0, -1);
-					process.stdout.write("\b \b");
-				}
-			} else if (c.charCodeAt(0) >= 32) {
-				// Printable character
-				input += c;
-				process.stdout.write("*");
-			}
-		};
-
-		stdin.on("data", onData);
-		stdin.resume();
-	});
-}
-
-/**
- * Prompt for yes/no confirmation.
- */
-async function promptYesNo(question: string): Promise<boolean> {
-	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
-		rl.question(`${question} (y/N): `, (answer) => {
-			rl.close();
-			resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
-		});
-	});
 }
