@@ -8,6 +8,8 @@ import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
+import { forwardResponseHeaders } from "./proxy-headers.js";
+import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 
 const logger = getChildLogger({ module: "anthropic-proxy" });
 
@@ -29,21 +31,7 @@ type AuthHeader = {
 	extraHeaders?: Record<string, string>;
 };
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function checkRateLimit(key: string, limitPerMinute: number): boolean {
-	const now = Date.now();
-	const entry = rateLimitMap.get(key);
-	if (!entry || entry.resetAt < now) {
-		rateLimitMap.set(key, { count: 1, resetAt: now + 60_000 });
-		return true;
-	}
-	if (entry.count >= limitPerMinute) {
-		return false;
-	}
-	entry.count++;
-	return true;
-}
+const rateLimiter = new SlidingWindowRateLimiter();
 
 function normalizeRemoteAddress(remoteAddress?: string | null): string | null {
 	if (!remoteAddress) return null;
@@ -468,7 +456,7 @@ export async function handleAnthropicProxyRequest(
 	}
 
 	if (RATE_LIMIT_PER_MINUTE > 0 && remoteAddress) {
-		if (!checkRateLimit(remoteAddress, RATE_LIMIT_PER_MINUTE)) {
+		if (!rateLimiter.check(remoteAddress, RATE_LIMIT_PER_MINUTE)) {
 			res.writeHead(429, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "Rate limited." }));
 			return;
@@ -569,31 +557,8 @@ export async function handleAnthropicProxyRequest(
 		return;
 	}
 
-	// Forward response headers, excluding hop-by-hop + content-encoding.
-	// fetch() auto-decompresses, so the body we stream is already decoded;
-	// forwarding content-encoding would cause the SDK to double-decompress
-	// and abort with ERR_STREAM_PREMATURE_CLOSE.
-	const excludedResponseHeaders = new Set([
-		"transfer-encoding",
-		"connection",
-		"keep-alive",
-		"content-encoding",
-		"proxy-authenticate",
-		"proxy-authorization",
-		"te",
-		"trailer",
-		"upgrade",
-	]);
-	const hadContentEncoding = upstream.headers.has("content-encoding");
 	res.statusCode = upstream.status;
-	upstream.headers.forEach((value, key) => {
-		const lower = key.toLowerCase();
-		if (excludedResponseHeaders.has(lower)) return;
-		// If upstream used content-encoding, also strip content-length since
-		// fetch() auto-decompresses and the original compressed length is wrong.
-		if (hadContentEncoding && lower === "content-length") return;
-		res.setHeader(key, value);
-	});
+	forwardResponseHeaders(upstream, res);
 
 	if (!upstream.body) {
 		res.end();

@@ -33,6 +33,8 @@ import {
 	type OAuth2Credential,
 } from "../vault-daemon/index.js";
 import { type SessionTokenPayload, validateSessionToken } from "./git-proxy-auth.js";
+import { forwardResponseHeaders } from "./proxy-headers.js";
+import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 
 const logger = getChildLogger({ module: "http-credential-proxy" });
 
@@ -95,52 +97,7 @@ interface ParsedProxyUrl {
 // Rate Limiting
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function checkRateLimit(host: string, limitPerMinute: number): boolean {
-	const now = Date.now();
-	const entry = rateLimitMap.get(host);
-
-	if (!entry || entry.resetAt < now) {
-		rateLimitMap.set(host, { count: 1, resetAt: now + 60000 });
-		return true;
-	}
-
-	if (entry.count >= limitPerMinute) {
-		return false;
-	}
-
-	entry.count++;
-	return true;
-}
-
-// Clean up old rate limit entries periodically
-let cleanupInterval: NodeJS.Timeout | null = null;
-
-function startCleanupInterval(): void {
-	if (cleanupInterval) return;
-
-	cleanupInterval = setInterval(
-		() => {
-			const now = Date.now();
-			for (const [key, entry] of rateLimitMap.entries()) {
-				if (entry.resetAt < now) {
-					rateLimitMap.delete(key);
-				}
-			}
-		},
-		5 * 60 * 1000,
-	); // Every 5 minutes
-
-	cleanupInterval.unref();
-}
-
-function stopCleanupInterval(): void {
-	if (cleanupInterval) {
-		clearInterval(cleanupInterval);
-		cleanupInterval = null;
-	}
-}
+const rateLimiter = new SlidingWindowRateLimiter();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // URL Parsing
@@ -249,21 +206,6 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 
 // Upstream request timeout (60 seconds)
 const UPSTREAM_TIMEOUT_MS = 60 * 1000;
-
-// Headers that should not be forwarded between client and upstream.
-// Includes true hop-by-hop headers plus content-encoding (stripped because
-// fetch() auto-decompresses, so the body we stream is already decoded).
-const EXCLUDED_RESPONSE_HEADERS = new Set([
-	"transfer-encoding",
-	"connection",
-	"keep-alive",
-	"content-encoding", // Not hop-by-hop, but body is auto-decoded by fetch()
-	"proxy-authenticate",
-	"proxy-authorization",
-	"te",
-	"trailer",
-	"upgrade",
-]);
 
 /**
  * Send an error response if headers haven't been sent yet, otherwise just end.
@@ -385,16 +327,7 @@ async function proxyRequest(
 			);
 		}
 
-		// Forward response headers, excluding hop-by-hop + decoded headers.
-		// If upstream used content-encoding, also strip content-length since
-		// fetch() auto-decompresses and the original compressed length is wrong.
-		const hadContentEncoding = upstreamResponse.headers.has("content-encoding");
-		upstreamResponse.headers.forEach((value, key) => {
-			const lower = key.toLowerCase();
-			if (EXCLUDED_RESPONSE_HEADERS.has(lower)) return;
-			if (hadContentEncoding && lower === "content-length") return;
-			res.setHeader(key, value);
-		});
+		forwardResponseHeaders(upstreamResponse, res);
 
 		res.writeHead(upstreamResponse.status);
 
@@ -463,7 +396,7 @@ export function startHttpCredentialProxy(
 	);
 
 	// Start rate limit cleanup
-	startCleanupInterval();
+	rateLimiter.startCleanup();
 
 	const server = http.createServer(async (req, res) => {
 		const url = req.url ?? "";
@@ -548,7 +481,7 @@ export function startHttpCredentialProxy(
 		}
 
 		// Rate limiting (per session)
-		if (!checkRateLimit(session.sessionId, finalConfig.rateLimitPerMinute)) {
+		if (!rateLimiter.check(session.sessionId, finalConfig.rateLimitPerMinute)) {
 			logger.warn(
 				{ sessionId: session.sessionId, host: parsed.host },
 				"http proxy rate limit exceeded",
@@ -613,7 +546,7 @@ export function startHttpCredentialProxy(
 		// Check credential-specific rate limit
 		if (entry.rateLimitPerMinute) {
 			const key = `cred:${parsed.host}`;
-			if (!checkRateLimit(key, entry.rateLimitPerMinute)) {
+			if (!rateLimiter.check(key, entry.rateLimitPerMinute)) {
 				logger.warn(
 					{ sessionId: session.sessionId, host: parsed.host },
 					"credential rate limit exceeded",
@@ -638,7 +571,7 @@ export function startHttpCredentialProxy(
 	return {
 		server,
 		stop: async () => {
-			stopCleanupInterval();
+			rateLimiter.stopCleanup();
 			return new Promise((resolve) => {
 				server.close(() => resolve());
 			});
