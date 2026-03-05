@@ -25,6 +25,8 @@ import { getChildLogger } from "../logging.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { getGitHubAppIdentity, getInstallationToken } from "../services/github-app.js";
 import { type SessionTokenPayload, validateSessionTokenV3 } from "./git-proxy-auth.js";
+import { EXCLUDED_RESPONSE_HEADERS } from "./proxy-headers.js";
+import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 import { getPublicKey } from "./token-manager.js";
 
 const logger = getChildLogger({ module: "git-proxy" });
@@ -57,37 +59,8 @@ interface GitOperation {
 // Rate Limiting
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function checkRateLimit(sessionId: string, limitPerMinute: number): boolean {
-	const now = Date.now();
-	const entry = rateLimitMap.get(sessionId);
-
-	if (!entry || entry.resetAt < now) {
-		rateLimitMap.set(sessionId, { count: 1, resetAt: now + 60000 });
-		return true;
-	}
-
-	if (entry.count >= limitPerMinute) {
-		return false;
-	}
-
-	entry.count++;
-	return true;
-}
-
-// Clean up old rate limit entries periodically
-setInterval(
-	() => {
-		const now = Date.now();
-		for (const [key, entry] of rateLimitMap.entries()) {
-			if (entry.resetAt < now) {
-				rateLimitMap.delete(key);
-			}
-		}
-	},
-	5 * 60 * 1000,
-); // Every 5 minutes
+const rateLimiter = new SlidingWindowRateLimiter();
+rateLimiter.startCleanup();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // URL Parsing
@@ -235,10 +208,7 @@ async function proxyRequest(
 
 		// Forward response headers, excluding hop-by-hop headers
 		upstreamResponse.headers.forEach((value, key) => {
-			const lowerKey = key.toLowerCase();
-			if (
-				!["transfer-encoding", "connection", "keep-alive", "content-encoding"].includes(lowerKey)
-			) {
+			if (!EXCLUDED_RESPONSE_HEADERS.has(key.toLowerCase())) {
 				res.setHeader(key, value);
 			}
 		});
@@ -325,7 +295,7 @@ export function startGitProxyServer(config: Partial<GitProxyConfig> = {}): http.
 		}
 
 		// Rate limiting
-		if (!checkRateLimit(session.sessionId, finalConfig.rateLimitPerMinute)) {
+		if (!rateLimiter.check(session.sessionId, finalConfig.rateLimitPerMinute)) {
 			logger.warn({ sessionId: session.sessionId }, "git proxy rate limit exceeded");
 			res.writeHead(429, { "Content-Type": "text/plain" });
 			res.end("Too many requests");
