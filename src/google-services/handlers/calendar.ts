@@ -3,14 +3,14 @@
  */
 
 import { google } from "googleapis";
+import { createGoogleAuth, formatError } from "../handler-utils.js";
 import type { FetchRequest, FetchResponse } from "../types.js";
 
 export async function handleCalendar(
 	request: FetchRequest,
 	accessToken: string,
 ): Promise<FetchResponse> {
-	const auth = new google.auth.OAuth2();
-	auth.setCredentials({ access_token: accessToken });
+	const auth = createGoogleAuth(accessToken);
 	const calendar = google.calendar({ version: "v3", auth });
 
 	switch (request.action) {
@@ -139,9 +139,4 @@ async function handleCreateEvent(
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };
 	}
-}
-
-function formatError(err: unknown): string {
-	if (err instanceof Error) return err.message;
-	return String(err);
 }

@@ -7,6 +7,7 @@ import type {
 	SocialReplyResult,
 	SocialTimelinePost,
 } from "../types.js";
+import { type ApiResult, socialApiRequest } from "./shared.js";
 
 const logger = getChildLogger({ module: "xtwitter-backend" });
 
@@ -70,10 +71,6 @@ type XTimelineResponse = {
 	meta?: { newest_id?: string; oldest_id?: string; result_count?: number };
 };
 
-type XApiResult<T> =
-	| { ok: true; status: number; data: T }
-	| { ok: false; status: number; error: string };
-
 /**
  * Resolve the base URL for X API calls.
  * In production: routed through the vault credential proxy (http://relay:8792/api.x.com).
@@ -87,14 +84,6 @@ function getApiBase(): string {
 	}
 	// Direct API (for testing or when vault injects auth)
 	return process.env.X_API_BASE ?? "https://api.x.com";
-}
-
-function safeJsonParse(input: string): unknown {
-	try {
-		return JSON.parse(input);
-	} catch {
-		return null;
-	}
 }
 
 function normalizeMention(mention: XMention): SocialNotification {
@@ -138,7 +127,7 @@ export class XTwitterClient implements SocialServiceClient {
 		this.fetchImpl = options.fetchImpl ?? fetch;
 	}
 
-	private async request<T>(path: string, init: RequestInit): Promise<XApiResult<T>> {
+	private async request<T>(path: string, init: RequestInit): Promise<ApiResult<T>> {
 		const url = `${this.baseUrl}${path}`;
 		const headers = new Headers(init.headers ?? {});
 		// Bearer token only needed for direct API access (not when using vault proxy)
@@ -149,20 +138,19 @@ export class XTwitterClient implements SocialServiceClient {
 			headers.set("Content-Type", "application/json");
 		}
 
-		const response = await this.fetchImpl(url, { ...init, headers });
-		const status = response.status;
-		const raw = await response.text();
-		const payload = raw ? safeJsonParse(raw) : null;
-
-		if (!response.ok) {
-			const error =
-				(payload && typeof payload === "object" && "errors" in payload
-					? JSON.stringify((payload as { errors?: unknown[] }).errors?.slice(0, 2) ?? "unknown")
-					: raw) || response.statusText;
-			return { ok: false, status, error };
-		}
-
-		return { ok: true, status, data: payload as T };
+		return socialApiRequest<T>(
+			this.fetchImpl,
+			url,
+			{ ...init, headers },
+			(payload, raw, statusText) => {
+				if (payload && typeof payload === "object" && "errors" in payload) {
+					return JSON.stringify(
+						(payload as { errors?: unknown[] }).errors?.slice(0, 2) ?? "unknown",
+					);
+				}
+				return raw || statusText;
+			},
+		);
 	}
 
 	async fetchNotifications(): Promise<SocialNotification[]> {

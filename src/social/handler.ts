@@ -19,7 +19,6 @@ import { formatSocialContextForPrompt } from "./context.js";
 import { buildSocialIdentityPreamble } from "./identity.js";
 import type {
 	SocialHandlerResult,
-	SocialHeartbeatPayload,
 	SocialNotification,
 	SocialPostResult,
 	SocialPromptBundle,
@@ -180,10 +179,7 @@ async function fetchTimelineSafe(
  * Get trusted social entries using unified "social" source.
  * All social services share a single memory pool for a cohesive public identity.
  */
-function getTrustedSocialEntries(
-	_serviceId: string,
-	categories?: Array<MemoryEntry["category"]>,
-): MemoryEntry[] {
+function getTrustedSocialEntries(categories?: Array<MemoryEntry["category"]>): MemoryEntry[] {
 	const entries = getEntries({
 		categories,
 		sources: [SOCIAL_MEMORY_SOURCE],
@@ -212,12 +208,20 @@ function getTrustedSocialEntries(
 	return entries;
 }
 
-function buildSocialPromptBundle(message: string, serviceId: string): SocialPromptBundle {
-	const socialEntries = getTrustedSocialEntries(serviceId, SOCIAL_CONTEXT_CATEGORIES);
-	const identityEntries = getTrustedSocialEntries(serviceId, IDENTITY_CATEGORIES);
+function loadSocialContext(serviceId: string): {
+	systemPromptAppend: string;
+	socialContext: string;
+} {
+	const socialEntries = getTrustedSocialEntries(SOCIAL_CONTEXT_CATEGORIES);
+	const identityEntries = getTrustedSocialEntries(IDENTITY_CATEGORIES);
+	return {
+		systemPromptAppend: buildSocialIdentityPreamble(identityEntries),
+		socialContext: formatSocialContextForPrompt({ entries: socialEntries }, serviceId),
+	};
+}
 
-	const systemPromptAppend = buildSocialIdentityPreamble(identityEntries);
-	const socialContext = formatSocialContextForPrompt({ entries: socialEntries }, serviceId);
+function buildSocialPromptBundle(message: string, serviceId: string): SocialPromptBundle {
+	const { systemPromptAppend, socialContext } = loadSocialContext(serviceId);
 	const charLimitNote =
 		serviceId === "xtwitter"
 			? "\nHARD LIMIT: Your reply must be ≤280 characters. Count carefully. Posts over 280 chars get truncated mid-word.\n"
@@ -362,7 +366,6 @@ export async function handleSocialHeartbeat(
 	serviceId: string,
 	client: SocialServiceClient,
 	serviceConfig?: SocialServiceConfig,
-	_payload?: SocialHeartbeatPayload,
 ): Promise<SocialHandlerResult> {
 	if (heartbeatInFlight.has(serviceId)) {
 		logger.warn({ serviceId }, "heartbeat already in flight; skipping");
@@ -663,11 +666,7 @@ function buildProactivePostPrompt(
 	timeline?: SocialTimelinePost[],
 ): SocialPromptBundle {
 	const label = capitalizeServiceId(serviceId);
-	const socialEntries = getTrustedSocialEntries(serviceId, SOCIAL_CONTEXT_CATEGORIES);
-	const identityEntries = getTrustedSocialEntries(serviceId, IDENTITY_CATEGORIES);
-
-	const systemPromptAppend = buildSocialIdentityPreamble(identityEntries);
-	const socialContext = formatSocialContextForPrompt({ entries: socialEntries }, serviceId);
+	const { systemPromptAppend, socialContext } = loadSocialContext(serviceId);
 	const timelineBlock = timeline?.length ? formatTimelineForPrompt(timeline) : "";
 
 	const prompt = [
@@ -1009,11 +1008,7 @@ function buildAutonomousPrompt(
 	timeline?: SocialTimelinePost[],
 ): SocialPromptBundle {
 	const label = capitalizeServiceId(serviceId);
-	const socialEntries = getTrustedSocialEntries(serviceId, SOCIAL_CONTEXT_CATEGORIES);
-	const identityEntries = getTrustedSocialEntries(serviceId, IDENTITY_CATEGORIES);
-
-	const systemPromptAppend = buildSocialIdentityPreamble(identityEntries);
-	const socialContext = formatSocialContextForPrompt({ entries: socialEntries }, serviceId);
+	const { systemPromptAppend, socialContext } = loadSocialContext(serviceId);
 
 	const timelineBlock = timeline?.length ? formatTimelineForPrompt(timeline) : "";
 

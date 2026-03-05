@@ -3,6 +3,7 @@
  */
 
 import { google } from "googleapis";
+import { createGoogleAuth, formatError } from "../handler-utils.js";
 import type { FetchRequest, FetchResponse } from "../types.js";
 
 const PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,photos";
@@ -11,8 +12,7 @@ export async function handleContacts(
 	request: FetchRequest,
 	accessToken: string,
 ): Promise<FetchResponse> {
-	const auth = new google.auth.OAuth2();
-	auth.setCredentials({ access_token: accessToken });
+	const auth = createGoogleAuth(accessToken);
 	const people = google.people({ version: "v1", auth });
 
 	switch (request.action) {
@@ -73,9 +73,4 @@ async function handleGet(people: People, params: Record<string, unknown>): Promi
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };
 	}
-}
-
-function formatError(err: unknown): string {
-	if (err instanceof Error) return err.message;
-	return String(err);
 }

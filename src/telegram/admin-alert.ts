@@ -8,6 +8,7 @@ import { loadConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import { normalizeTelegramId, stringToChatId } from "../utils.js";
+import { escapeMarkdownV2 } from "./notification-sanitizer.js";
 
 const logger = getChildLogger({ module: "admin-alert" });
 
@@ -92,7 +93,7 @@ export async function sendAdminAlert(
 	}
 
 	const emoji = alert.level === "error" ? "🚨" : alert.level === "warn" ? "⚠️" : "ℹ️";
-	const text = `${emoji} *${escapeMarkdown(alert.title)}*\n\n${escapeMarkdown(alert.message)}`;
+	const text = `${emoji} *${escapeMarkdownV2(alert.title)}*\n\n${escapeMarkdownV2(alert.message)}`;
 
 	// Send to each admin chat
 	const errors: Error[] = [];
@@ -135,12 +136,4 @@ async function sendTelegramMessage(botToken: string, chatId: number, text: strin
 		const body = await response.text();
 		throw new Error(`Telegram API error: ${response.status} ${body}`);
 	}
-}
-
-/**
- * Escape text for MarkdownV2 format.
- */
-function escapeMarkdown(text: string): string {
-	// MarkdownV2 requires escaping these characters
-	return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, "\\$1");
 }

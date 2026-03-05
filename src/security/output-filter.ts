@@ -186,6 +186,19 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
  */
 export const SECRET_PATTERNS: SecretPattern[] = CORE_SECRET_PATTERNS;
 
+/**
+ * Pre-compiled global regexes for SECRET_PATTERNS.
+ * Avoids re-creating RegExp objects on every scan/redact call.
+ * Each entry corresponds to the same index in SECRET_PATTERNS.
+ *
+ * SECURITY: Uses the same source/flags as the original patterns,
+ * with 'g' flag guaranteed for global matching.
+ */
+const COMPILED_GLOBAL_PATTERNS: RegExp[] = SECRET_PATTERNS.map(({ pattern }) => {
+	const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+	return new RegExp(pattern.source, flags);
+});
+
 export interface FilterMatch {
 	pattern: string;
 	severity: "critical" | "high";
@@ -223,10 +236,10 @@ function redact(secret: string): string {
 export function redactSecrets(text: string): string {
 	let result = text;
 
-	for (const { name, pattern } of SECRET_PATTERNS) {
-		// Create new regex instance, preserving original flags but ensuring global
-		const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-		const regex = new RegExp(pattern.source, flags);
+	for (let i = 0; i < SECRET_PATTERNS.length; i++) {
+		const { name } = SECRET_PATTERNS[i];
+		const regex = COMPILED_GLOBAL_PATTERNS[i];
+		regex.lastIndex = 0;
 		if (name === "totp_seed") {
 			// Avoid redacting low-entropy base32-looking text (reduces false positives)
 			result = result.replace(regex, (m) =>
@@ -247,11 +260,10 @@ export function redactSecrets(text: string): string {
 function scanPlainText(text: string): FilterMatch[] {
 	const matches: FilterMatch[] = [];
 
-	for (const { name, pattern, severity, description } of SECRET_PATTERNS) {
-		// Create new regex instance, preserving original flags but ensuring global
-		// CRITICAL: Without 'g' flag, exec() never advances lastIndex → infinite loop
-		const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-		const regex = new RegExp(pattern.source, flags);
+	for (let i = 0; i < SECRET_PATTERNS.length; i++) {
+		const { name, severity, description } = SECRET_PATTERNS[i];
+		const regex = COMPILED_GLOBAL_PATTERNS[i];
+		regex.lastIndex = 0;
 
 		for (let match = regex.exec(text); match !== null; match = regex.exec(text)) {
 			// Reduce false positives for base32-like TOTP seeds by checking entropy
@@ -385,6 +397,20 @@ function scanUrlEncoded(text: string): FilterMatch[] {
 }
 
 /**
+ * Deduplicate filter matches by pattern + redactedMatch.
+ * Preserves first occurrence of each unique match.
+ */
+function deduplicateMatches(matches: FilterMatch[]): FilterMatch[] {
+	const seen = new Set<string>();
+	return matches.filter((m) => {
+		const key = `${m.pattern}:${m.redactedMatch}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+/**
  * Main filter function: scan text for secrets using all detection methods.
  *
  * @param text - The text to scan (Telegram message, URL, request body, etc.)
@@ -405,14 +431,7 @@ export function filterOutput(text: string): FilterResult {
 	// Layer 4: URL encoded
 	allMatches.push(...scanUrlEncoded(text));
 
-	// Deduplicate by pattern + redactedMatch
-	const seen = new Set<string>();
-	const uniqueMatches = allMatches.filter((m) => {
-		const key = `${m.pattern}:${m.redactedMatch}`;
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
+	const uniqueMatches = deduplicateMatches(allMatches);
 
 	return {
 		blocked: uniqueMatches.length > 0,
@@ -437,17 +456,9 @@ export function filterInfrastructureSecrets(text: string): FilterResult {
 /**
  * Rolling buffer for detecting secrets split across message chunks.
  *
- * Usage:
- * ```
- * const buffer = new ChunkBuffer();
- * for (const chunk of responseChunks) {
- *   buffer.add(chunk);
- *   const result = buffer.scan();
- *   if (result.blocked) {
- *     // Abort - secret detected
- *   }
- * }
- * ```
+ * @deprecated Use {@link StreamingRedactor} from `./streaming-redactor.js` instead.
+ * StreamingRedactor handles overlap detection, config-aware filtering, and stats.
+ * ChunkBuffer is retained only for backward compatibility with the public export.
  */
 export class ChunkBuffer {
 	private buffer = "";
@@ -594,14 +605,7 @@ export function filterOutputWithConfig(text: string, config?: SecretFilterConfig
 		}
 	}
 
-	// Deduplicate by pattern + redactedMatch
-	const seen = new Set<string>();
-	const uniqueMatches = allMatches.filter((m) => {
-		const key = `${m.pattern}:${m.redactedMatch}`;
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
+	const uniqueMatches = deduplicateMatches(allMatches);
 
 	return {
 		blocked: uniqueMatches.length > 0,

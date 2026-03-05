@@ -36,7 +36,6 @@ export interface ServerOptions {
 
 export async function buildServer(opts: ServerOptions): Promise<FastifyInstance> {
 	const { tokenManager, jtiStore, healthStore } = opts;
-
 	const server = Fastify({
 		logger: { level: opts.logLevel ?? "info" },
 	});

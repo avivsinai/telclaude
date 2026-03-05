@@ -36,15 +36,20 @@ export class SecretExfiltrationBlockedError extends Error {
 }
 
 /**
+ * Apply the appropriate filter variant based on whether a config is provided.
+ */
+export function filterWithOptionalConfig(text: string, config?: SecretFilterConfig): FilterResult {
+	return config ? filterOutputWithConfig(text, config) : filterOutput(text);
+}
+
+/**
  * Filter text before sending. Throws if secrets detected.
  *
  * SECURITY: This is the last line of defense against secret exfiltration.
  * All outbound text MUST pass through this filter.
  */
 function filterBeforeSend(text: string, secretFilterConfig?: SecretFilterConfig): void {
-	const result = secretFilterConfig
-		? filterOutputWithConfig(text, secretFilterConfig)
-		: filterOutput(text);
+	const result = filterWithOptionalConfig(text, secretFilterConfig);
 	if (result.blocked) {
 		logger.error(
 			{
@@ -407,9 +412,7 @@ async function scanFileForSecrets(
 			content = buf.toString("utf-8");
 		} else {
 			// URL - still check the URL string for obvious secrets, but avoid downloading
-			const filterResult = secretFilterConfig
-				? filterOutputWithConfig(source, secretFilterConfig)
-				: filterOutput(source);
+			const filterResult = filterWithOptionalConfig(source, secretFilterConfig);
 			if (filterResult.blocked) {
 				logger.error(
 					{
@@ -429,9 +432,7 @@ async function scanFileForSecrets(
 		}
 
 		// Filter file content
-		const filterResult = secretFilterConfig
-			? filterOutputWithConfig(content, secretFilterConfig)
-			: filterOutput(content);
+		const filterResult = filterWithOptionalConfig(content, secretFilterConfig);
 		if (filterResult.blocked) {
 			logger.error(
 				{
@@ -488,9 +489,7 @@ export async function sendMediaToChat(
 	// Note: sticker type doesn't have caption, so we check if it exists
 	let safeCaption: string | undefined;
 	if ("caption" in payload && payload.caption) {
-		const filterResult = secretFilterConfig
-			? filterOutputWithConfig(payload.caption, secretFilterConfig)
-			: filterOutput(payload.caption);
+		const filterResult = filterWithOptionalConfig(payload.caption, secretFilterConfig);
 		if (filterResult.blocked) {
 			logger.error(
 				{
