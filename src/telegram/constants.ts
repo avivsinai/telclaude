@@ -19,29 +19,42 @@ export const TELEGRAM_API_CHAR_LIMIT = 4096;
 /**
  * Maximum characters per message chunk after splitting.
  *
- * Set to 3200 to leave ~900 chars headroom for MarkdownV2 escape expansion
- * (e.g., "test.com" becomes "test\.com"). Used by sanitizeAndSplitResponse().
+ * Telegram's 4096 limit applies to text after entities parsing, not the raw
+ * MarkdownV2 payload. We split at 3800 (not 4096) to leave modest headroom
+ * for edge cases. The sendWithMarkdownFallback path handles rare post-conversion
+ * overflows by retrying as plain text.
  */
-export const MAX_MESSAGE_CHUNK_LENGTH = 3200;
+export const MAX_MESSAGE_CHUNK_LENGTH = 3800;
 
 /**
- * Maximum total response size (bytes) before truncation.
+ * Maximum total response size (characters) before truncation.
  *
  * Prevents DoS from extremely long LLM responses that could block the
- * event loop during sanitisation and splitting. 500 KB is well above any
- * reasonable Telegram conversation response.
+ * event loop during sanitisation and splitting. ~500K characters is well
+ * above any reasonable Telegram conversation response.
+ *
+ * Note: compared against string length (UTF-16 code units), not byte count.
  */
-export const MAX_TOTAL_RESPONSE_SIZE = 500 * 1024; // 500KB
+export const MAX_TOTAL_RESPONSE_SIZE = 500 * 1024;
 
 /**
  * Maximum length for heartbeat / admin notification text.
  *
- * These are metadata-only summaries (counts, service IDs, action labels),
- * not raw LLM output, so a moderate limit is safe. 800 chars gives enough
- * room for multi-service heartbeat summaries while staying well under the
- * Telegram API limit.
+ * These are sanitised summaries (counts, service IDs, action labels),
+ * not raw LLM output. 2000 chars leaves headroom for MarkdownV2 escaping
+ * while fitting in a single Telegram message (4096 after entities parsing).
  */
-export const MAX_NOTIFICATION_LENGTH = 800;
+export const MAX_NOTIFICATION_LENGTH = 2000;
+
+/**
+ * Telegram Bot API hard character limit for media captions.
+ *
+ * Media captions (photos, videos, documents, etc.) are limited to 1024
+ * characters after entities parsing — much smaller than the 4096 text limit.
+ *
+ * @see https://core.telegram.org/bots/api#sendphoto
+ */
+export const TELEGRAM_CAPTION_CHAR_LIMIT = 1024;
 
 /**
  * Maximum display length for in-flight streaming updates.
