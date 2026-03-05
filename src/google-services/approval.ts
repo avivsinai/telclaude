@@ -5,44 +5,12 @@
  * Format: v1.<claims_b64url>.<sig_b64url>
  */
 
-import crypto from "node:crypto";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { canonicalHash } from "../crypto/canonical-hash.js";
 import { ApprovalClaimsSchema, type FetchRequest } from "./types.js";
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Canonical Hash
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Compute canonical hash for request binding.
- * Deterministic JSON serialization (recursive key sort) + SHA-256.
- * Keep in sync with src/relay/approval-token.ts.
- */
-export function canonicalHash(input: {
-	service: string;
-	action: string;
-	params: Record<string, unknown>;
-	actorUserId: string;
-	subjectUserId: string | null;
-}): string {
-	const canonical = JSON.stringify(sortKeysDeep(input));
-	const hash = crypto.createHash("sha256").update(canonical).digest("hex");
-	return `sha256:${hash}`;
-}
-
-/**
- * Recursively sort object keys for deterministic serialization.
- */
-function sortKeysDeep(value: unknown): unknown {
-	if (value === null || typeof value !== "object") return value;
-	if (Array.isArray(value)) return value.map(sortKeysDeep);
-	const sorted: Record<string, unknown> = {};
-	for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-		sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
-	}
-	return sorted;
-}
+export { canonicalHash };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // JTI Replay Store
