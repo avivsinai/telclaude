@@ -58,7 +58,21 @@ interface CachedDNSResult {
 
 const DNS_CACHE = new Map<string, CachedDNSResult>();
 const DNS_CACHE_TTL_MS = 60_000; // 60 seconds
+const DNS_CACHE_MAX_ENTRIES = 1000;
 const DNS_LOOKUP_TIMEOUT_MS = 3_000; // 3 seconds
+
+/**
+ * Evict oldest DNS cache entries when the cache exceeds the max size.
+ * Uses Map insertion order (oldest entries come first from the iterator).
+ */
+function evictDNSCacheIfNeeded(): void {
+	if (DNS_CACHE.size < DNS_CACHE_MAX_ENTRIES) return;
+	const iter = DNS_CACHE.keys();
+	const oldest = iter.next();
+	if (!oldest.done) {
+		DNS_CACHE.delete(oldest.value);
+	}
+}
 
 /**
  * Perform DNS lookup with timeout.
@@ -110,6 +124,7 @@ export async function cachedDNSLookup(host: string): Promise<string[] | null> {
 
 	if (results) {
 		const addresses = results.map((r) => r.address);
+		evictDNSCacheIfNeeded();
 		DNS_CACHE.set(host, {
 			addresses,
 			blocked: addresses.some((addr) => isBlockedIP(addr)),
@@ -119,6 +134,7 @@ export async function cachedDNSLookup(host: string): Promise<string[] | null> {
 	}
 
 	// Cache negative results too (prevents repeated slow lookups)
+	evictDNSCacheIfNeeded();
 	DNS_CACHE.set(host, {
 		addresses: [],
 		blocked: false,
@@ -143,9 +159,14 @@ export function clearDNSCache(host?: string): void {
 /**
  * Get DNS cache statistics for diagnostics.
  */
-export function getDNSCacheStats(): { size: number; ttlMs: number } {
+export function getDNSCacheStats(): {
+	size: number;
+	maxEntries: number;
+	ttlMs: number;
+} {
 	return {
 		size: DNS_CACHE.size,
+		maxEntries: DNS_CACHE_MAX_ENTRIES,
 		ttlMs: DNS_CACHE_TTL_MS,
 	};
 }
@@ -186,6 +207,33 @@ export const DEFAULT_NETWORK_CONFIG: NetworkProxyConfig = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// IPv4 Classification (shared by isBlockedIP and isPrivateIP)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type IPv4Classification =
+	| "loopback" // 127.0.0.0/8
+	| "private-10" // 10.0.0.0/8
+	| "private-172" // 172.16.0.0/12
+	| "private-192" // 192.168.0.0/16
+	| "link-local" // 169.254.0.0/16
+	| "cgnat" // 100.64.0.0/10
+	| "public";
+
+/**
+ * Classify an IPv4 address by its first two octets.
+ * Used by both isBlockedIP and isPrivateIP to avoid duplicating range checks.
+ */
+function classifyIPv4(a: number, b: number): IPv4Classification {
+	if (a === 127) return "loopback";
+	if (a === 10) return "private-10";
+	if (a === 172 && b >= 16 && b <= 31) return "private-172";
+	if (a === 192 && b === 168) return "private-192";
+	if (a === 169 && b === 254) return "link-local";
+	if (a === 100 && b >= 64 && b <= 127) return "cgnat";
+	return "public";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Domain Matching
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -207,25 +255,7 @@ export function isBlockedIP(ip: string): boolean {
 		const ipv4Match = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
 		if (!ipv4Match) return false;
 		const [, a, b] = ipv4Match.map(Number);
-
-		// 127.0.0.0/8
-		if (a === 127) return true;
-
-		// 10.0.0.0/8
-		if (a === 10) return true;
-
-		// 172.16.0.0/12
-		if (a === 172 && b >= 16 && b <= 31) return true;
-
-		// 192.168.0.0/16
-		if (a === 192 && b === 168) return true;
-
-		// 169.254.0.0/16 (link-local)
-		if (a === 169 && b === 254) return true;
-
-		// 100.64.0.0/10 (CGNAT / shared address space)
-		if (a === 100 && b >= 64 && b <= 127) return true;
-		return false;
+		return classifyIPv4(a, b) !== "public";
 	}
 
 	// Check IPv6 private/link-local ranges declared in BLOCKED_PRIVATE_NETWORKS
@@ -382,17 +412,9 @@ export function isPrivateIP(ip: string): boolean {
 		const match = ip.match(/^(\d+)\.(\d+)\./);
 		if (!match) return false;
 		const [, a, b] = match.map(Number);
-
-		// 127.0.0.0/8 (loopback)
-		if (a === 127) return true;
-		// 10.0.0.0/8
-		if (a === 10) return true;
-		// 172.16.0.0/12
-		if (a === 172 && b >= 16 && b <= 31) return true;
-		// 192.168.0.0/16
-		if (a === 192 && b === 168) return true;
-		// 100.64.0.0/10 (CGNAT / Tailscale) - RFC 6598 shared address space
-		if (a === 100 && b >= 64 && b <= 127) return true;
+		const cls = classifyIPv4(a, b);
+		// link-local is handled by isNonOverridableBlock above
+		return cls !== "public" && cls !== "link-local";
 	} else if (ipType === 6) {
 		// Handle IPv4-mapped IPv6 (::ffff:192.168.1.1)
 		if (ip.includes(".")) {

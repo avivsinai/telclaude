@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { isBlockedIP } from "../../src/sandbox/network-proxy.js";
+import {
+	clearDNSCache,
+	getDNSCacheStats,
+	isBlockedIP,
+	isPrivateIP,
+} from "../../src/sandbox/network-proxy.js";
 
 describe("isBlockedIP", () => {
 	it("blocks IPv6 link-local addresses (fe80::/10)", () => {
@@ -28,5 +33,57 @@ describe("isBlockedIP", () => {
 		expect(isBlockedIP("2001:4860:4860::8888")).toBe(false);
 		expect(isBlockedIP("::ffff:8.8.8.8")).toBe(false);
 		expect(isBlockedIP("8.8.8.8")).toBe(false);
+	});
+
+	it("blocks all RFC1918 IPv4 ranges", () => {
+		expect(isBlockedIP("10.0.0.1")).toBe(true);
+		expect(isBlockedIP("172.16.0.1")).toBe(true);
+		expect(isBlockedIP("172.31.255.254")).toBe(true);
+		expect(isBlockedIP("192.168.0.1")).toBe(true);
+		expect(isBlockedIP("127.0.0.1")).toBe(true);
+		expect(isBlockedIP("169.254.1.1")).toBe(true);
+	});
+
+	it("allows public IPv4 outside private ranges", () => {
+		expect(isBlockedIP("172.32.0.1")).toBe(false);
+		expect(isBlockedIP("100.128.0.1")).toBe(false);
+		expect(isBlockedIP("1.1.1.1")).toBe(false);
+	});
+});
+
+describe("isPrivateIP", () => {
+	it("classifies RFC1918 addresses as private", () => {
+		expect(isPrivateIP("10.0.0.1")).toBe(true);
+		expect(isPrivateIP("172.16.0.1")).toBe(true);
+		expect(isPrivateIP("192.168.1.1")).toBe(true);
+		expect(isPrivateIP("127.0.0.1")).toBe(true);
+	});
+
+	it("classifies CGNAT as private", () => {
+		expect(isPrivateIP("100.64.0.1")).toBe(true);
+		expect(isPrivateIP("100.127.255.254")).toBe(true);
+	});
+
+	it("excludes non-overridable blocks (link-local)", () => {
+		// link-local is handled by isNonOverridableBlock, not isPrivateIP
+		expect(isPrivateIP("169.254.1.1")).toBe(false);
+	});
+
+	it("allows public addresses", () => {
+		expect(isPrivateIP("8.8.8.8")).toBe(false);
+		expect(isPrivateIP("1.1.1.1")).toBe(false);
+	});
+});
+
+describe("DNS cache", () => {
+	it("reports maxEntries in stats", () => {
+		const stats = getDNSCacheStats();
+		expect(stats.maxEntries).toBe(1000);
+		expect(stats.ttlMs).toBe(60_000);
+	});
+
+	it("clears cache entries", () => {
+		clearDNSCache();
+		expect(getDNSCacheStats().size).toBe(0);
 	});
 });
