@@ -1296,15 +1296,14 @@ async function handleInboundMessage(
 			await msg.reply("Only admin can promote entries.");
 			return;
 		}
-		// Verify the entry belongs to this chat before promoting
-		const chatEntries = getEntries({
+		// Verify the entry exists as a quarantined post (from any source — social
+		// agent quarantines with source "social", operator quarantines with "telegram")
+		const quarantinedPosts = getEntries({
 			categories: ["posts"],
 			trust: ["quarantined"],
-			sources: ["telegram"],
-			chatId: String(msg.chatId),
 		});
-		if (!chatEntries.some((e) => e.id === entryId)) {
-			await msg.reply("Entry not found in this chat.");
+		if (!quarantinedPosts.some((e) => e.id === entryId)) {
+			await msg.reply("Entry not found. Use /pending to list quarantined posts.");
 			return;
 		}
 		const result = promoteEntryTrust(entryId, String(msg.chatId));
@@ -1326,8 +1325,6 @@ async function handleInboundMessage(
 		const pending = getEntries({
 			categories: ["posts"],
 			trust: ["quarantined"],
-			sources: ["telegram"],
-			chatId: String(msg.chatId),
 			limit: 20,
 			order: "desc",
 		});
