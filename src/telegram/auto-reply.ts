@@ -1296,14 +1296,21 @@ async function handleInboundMessage(
 			await msg.reply("Only admin can promote entries.");
 			return;
 		}
-		// Verify the entry exists as a quarantined post (from any source — social
-		// agent quarantines with source "social", operator quarantines with "telegram")
-		const quarantinedPosts = getEntries({
+		// Verify entry is promotable: telegram quarantined (same chat) OR social untrusted
+		const telegramEntries = getEntries({
 			categories: ["posts"],
 			trust: ["quarantined"],
+			sources: ["telegram"],
+			chatId: String(msg.chatId),
 		});
-		if (!quarantinedPosts.some((e) => e.id === entryId)) {
-			await msg.reply("Entry not found. Use /pending to list quarantined posts.");
+		const socialEntries = getEntries({
+			categories: ["posts"],
+			trust: ["untrusted"],
+			sources: ["social"],
+		});
+		const allPromotable = [...telegramEntries, ...socialEntries];
+		if (!allPromotable.some((e) => e.id === entryId)) {
+			await msg.reply("Entry not found. Use /pending to list promotable posts.");
 			return;
 		}
 		const result = promoteEntryTrust(entryId, String(msg.chatId));
@@ -1322,12 +1329,25 @@ async function handleInboundMessage(
 			await msg.reply("Only admin can view pending entries.");
 			return;
 		}
-		const pending = getEntries({
+		// Union: telegram quarantined (same chat) + social untrusted (post ideas)
+		const telegramPending = getEntries({
 			categories: ["posts"],
 			trust: ["quarantined"],
+			sources: ["telegram"],
+			chatId: String(msg.chatId),
 			limit: 20,
 			order: "desc",
 		});
+		const socialPending = getEntries({
+			categories: ["posts"],
+			trust: ["untrusted"],
+			sources: ["social"],
+			limit: 20,
+			order: "desc",
+		});
+		const pending = [...telegramPending, ...socialPending]
+			.sort((a, b) => b._provenance.createdAt - a._provenance.createdAt)
+			.slice(0, 20);
 		if (pending.length === 0) {
 			await msg.reply("No pending posts.");
 			return;
