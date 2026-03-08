@@ -12,6 +12,7 @@ import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { sendAdminAlert } from "../telegram/admin-alert.js";
 import {
 	formatHeartbeatNotification,
+	sanitizeNotificationText,
 	shouldNotifyOnHeartbeat,
 } from "../telegram/notification-sanitizer.js";
 import type { SocialServiceClient } from "./client.js";
@@ -396,6 +397,8 @@ async function runHeartbeatPhases(
 
 	// Phase 1: Handle notifications
 	let notifications: SocialNotification[] = [];
+	let notificationsFailed = 0;
+	let notificationFetchFailed = false;
 	try {
 		notifications = await retryAsync(
 			() => withTimeout(client.fetchNotifications(), 15_000, "fetch-notifications"),
@@ -412,7 +415,14 @@ async function runHeartbeatPhases(
 			},
 		);
 	} catch (err) {
-		logger.error({ error: String(err), serviceId }, "failed to fetch social notifications");
+		notificationFetchFailed = true;
+		const errStr = String(err);
+		logger.error({ error: errStr, serviceId }, "failed to fetch social notifications");
+		await sendAdminAlert({
+			level: "warn",
+			title: `${serviceId} notification fetch failed`,
+			message: sanitizeNotificationText(errStr),
+		}).catch(() => {});
 	}
 
 	let notificationsProcessed = 0;
@@ -421,6 +431,7 @@ async function runHeartbeatPhases(
 			await handleSocialNotification(notification, serviceId, client, agentUrl);
 			notificationsProcessed++;
 		} catch (err) {
+			notificationsFailed++;
 			logger.error(
 				{ error: String(err), notificationId: notification.id, serviceId },
 				"notification failed",
@@ -433,6 +444,7 @@ async function runHeartbeatPhases(
 
 	// Phase 2: Proactive posting (consent-based ideas)
 	let proactiveResult: { posted: boolean; message: string } = { posted: false, message: "" };
+	let proactiveError: string | undefined;
 	try {
 		proactiveResult = await handleProactivePosting(
 			serviceId,
@@ -442,11 +454,18 @@ async function runHeartbeatPhases(
 			serviceConfig?.allowedSkills,
 		);
 	} catch (err) {
-		logger.error({ error: String(err), serviceId }, "proactive posting failed");
+		proactiveError = String(err);
+		logger.error({ error: proactiveError, serviceId }, "proactive posting failed");
+		await sendAdminAlert({
+			level: "warn",
+			title: `${serviceId} proactive posting failed`,
+			message: sanitizeNotificationText(proactiveError),
+		}).catch(() => {});
 	}
 
 	// Phase 3: Autonomous activity
 	let autonomousResult: { acted: boolean; summary: string } = { acted: false, summary: "" };
+	let autonomousError: string | undefined;
 	try {
 		autonomousResult = await handleAutonomousActivity(
 			serviceId,
@@ -460,27 +479,40 @@ async function runHeartbeatPhases(
 		// TypeError: terminated is a common crash on Pi4 when the stream
 		// is cut mid-flight. Report it cleanly as a timeout, not a crash.
 		if (errStr.includes("TypeError: terminated") || errStr.includes("terminated")) {
+			autonomousError = "stream timeout";
 			logger.warn({ serviceId }, "autonomous activity terminated (likely stream timeout)");
 		} else {
+			autonomousError = errStr;
 			logger.error({ error: errStr, serviceId }, "autonomous activity failed");
 		}
+		await sendAdminAlert({
+			level: "warn",
+			title: `${serviceId} autonomous activity failed`,
+			message: sanitizeNotificationText(autonomousError),
+		}).catch(() => {});
 	}
 
 	// Notification dispatch
 	const notifyPolicy = serviceConfig?.notifyOnHeartbeat ?? "activity";
+	const hadErrors =
+		notificationFetchFailed || notificationsFailed > 0 || !!proactiveError || !!autonomousError;
 	const hadActivity =
 		notificationsProcessed > 0 || proactiveResult.posted || autonomousResult.acted;
 
-	if (shouldNotifyOnHeartbeat(notifyPolicy, hadActivity)) {
+	if (shouldNotifyOnHeartbeat(notifyPolicy, hadActivity || hadErrors)) {
 		try {
 			const notificationText = formatHeartbeatNotification(serviceId, {
 				notificationsProcessed,
+				notificationFetchFailed,
+				notificationsFailed,
 				proactivePosted: proactiveResult.posted,
+				proactiveError,
 				autonomousActed: autonomousResult.acted,
 				autonomousSummary: autonomousResult.summary,
+				autonomousError,
 			});
 			await sendAdminAlert({
-				level: "info",
+				level: hadErrors ? "warn" : "info",
 				title: `${serviceId} heartbeat`,
 				message: notificationText,
 			});
@@ -490,14 +522,26 @@ async function runHeartbeatPhases(
 	}
 
 	const messages: string[] = [];
+	if (notificationFetchFailed) {
+		messages.push("notification fetch failed");
+	}
 	if (notificationsProcessed > 0) {
 		messages.push(`${notificationsProcessed} notifications`);
+	}
+	if (notificationsFailed > 0) {
+		messages.push(`${notificationsFailed} notification(s) failed`);
 	}
 	if (proactiveResult.posted) {
 		messages.push("proactive post created");
 	}
+	if (proactiveError) {
+		messages.push("proactive posting failed");
+	}
 	if (autonomousResult.acted) {
 		messages.push(`autonomous: ${autonomousResult.summary}`);
+	}
+	if (autonomousError) {
+		messages.push("autonomous activity failed");
 	}
 	if (messages.length === 0) {
 		messages.push("no activity");

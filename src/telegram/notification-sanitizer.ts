@@ -53,24 +53,40 @@ export function formatHeartbeatNotification(
 	serviceId: string,
 	summary: {
 		notificationsProcessed?: number;
+		notificationFetchFailed?: boolean;
+		notificationsFailed?: number;
 		proactivePosted?: boolean;
+		proactiveError?: string;
 		autonomousActed?: boolean;
 		autonomousSummary?: string;
+		autonomousError?: string;
 	},
 ): string {
 	const parts: string[] = [];
 
+	if (summary.notificationFetchFailed) {
+		parts.push("notification fetch failed");
+	}
 	if (summary.notificationsProcessed && summary.notificationsProcessed > 0) {
 		parts.push(`${summary.notificationsProcessed} notification(s) processed`);
 	}
+	if (summary.notificationsFailed && summary.notificationsFailed > 0) {
+		parts.push(`${summary.notificationsFailed} notification(s) failed`);
+	}
 	if (summary.proactivePosted) {
 		parts.push("proactive post created");
+	}
+	if (summary.proactiveError) {
+		parts.push(`proactive failed: ${sanitizeNotificationText(summary.proactiveError)}`);
 	}
 	if (summary.autonomousActed) {
 		const detail = summary.autonomousSummary
 			? sanitizeNotificationText(summary.autonomousSummary)
 			: "activity completed";
 		parts.push(`autonomous: ${detail}`);
+	}
+	if (summary.autonomousError) {
+		parts.push(`autonomous failed: ${sanitizeNotificationText(summary.autonomousError)}`);
 	}
 
 	if (parts.length === 0) {
