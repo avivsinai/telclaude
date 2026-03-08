@@ -325,6 +325,9 @@ services:
       - TELCLAUDE_AGENT_WORKDIR=/social/sandbox
       - TELCLAUDE_CONFIG=/data/telclaude.json
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
+      # Social agent needs generous first-chunk timeout for skill-heavy queries
+      # (proactive posting loads social-posting skill, browses, researches)
+      - TELCLAUDE_AGENT_FIRST_CHUNK_TIMEOUT_MS=180000
       - TELCLAUDE_CAPABILITIES_URL=http://telclaude:8790
       # Use relay proxy for Anthropic API (agent has no credentials)
       - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
