@@ -37,6 +37,7 @@ vi.mock("../../src/telegram/admin-alert.js", () => ({
 
 vi.mock("../../src/telegram/notification-sanitizer.js", () => ({
 	formatHeartbeatNotification: vi.fn().mockReturnValue("test notification"),
+	sanitizeNotificationText: vi.fn().mockImplementation((text: string) => text),
 	shouldNotifyOnHeartbeat: vi.fn().mockReturnValue(false),
 }));
 
@@ -126,18 +127,20 @@ describe("social handler", () => {
 		const client = mockClient({
 			fetchNotifications: vi.fn().mockRejectedValue(new Error("fail")),
 		});
-		// No promoted ideas
+		// No promoted ideas; idle autonomous response
 		getEntriesMock.mockReturnValue([]);
+		executeRemoteQueryMock.mockReturnValue(mockStream("[IDLE]"));
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
-		expect(res.message).toContain("no activity");
+		expect(res.message).toContain("notification fetch failed");
 	});
 
 	it("heartbeat returns no activity when no notifications and no ideas", async () => {
 		const client = mockClient();
-		// No promoted ideas
+		// No promoted ideas; idle autonomous response
 		getEntriesMock.mockReturnValue([]);
+		executeRemoteQueryMock.mockReturnValue(mockStream("[IDLE]"));
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
