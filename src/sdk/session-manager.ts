@@ -132,7 +132,16 @@ export async function* executeWithSession(
 		logger.debug({ sessionKey }, "creating new session");
 	}
 
+	logger.debug(
+		{
+			sessionKey,
+			hasOutputFormat: !!queryOptions.outputFormat,
+			hasResume: !!options.resume,
+		},
+		"calling SDK query()",
+	);
 	const q = query({ prompt: message, options });
+	logger.debug({ sessionKey }, "SDK query() returned iterable");
 
 	for await (const msg of q) {
 		// Capture session ID for future resume
