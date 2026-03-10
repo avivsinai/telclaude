@@ -1350,13 +1350,16 @@ async function* processMessageStream(
 			logger.error({ error: String(err) }, `${options.label} error`);
 		}
 
-		// Clear session on any error — a failed query's session state is unreliable.
-		// Without this, aborted/errored sessions get resumed on the next heartbeat,
-		// causing the SDK to hang trying to resume a zombie session.
-		if (options.poolKey) {
+		// Clear session on terminal errors (abort, overflow) where the session
+		// is definitely dead. Transient errors (network hiccups, etc.) should NOT
+		// clear the session — it may still be valid for resume on the next turn.
+		if ((isAborted || isOverflow) && options.poolKey) {
 			const sessionManager = getSessionManager();
 			sessionManager.clearSession(options.poolKey);
-			logger.info({ poolKey: options.poolKey }, "session cleared after error");
+			logger.info(
+				{ poolKey: options.poolKey, isAborted, isOverflow },
+				"session cleared after terminal error",
+			);
 		}
 
 		const finalResponse = response || assistantMessageFallback;
