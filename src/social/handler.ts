@@ -606,28 +606,34 @@ export async function queryPublicPersona(
 
 /**
  * Extract a JSON object from a text response.
- * Looks for the first ```json fenced block, then falls back to the first { ... } object.
+ * Prefers the LAST fenced ```json block (the final answer), then falls back
+ * to the last bare { ... } object. This avoids picking up example JSON
+ * the model may include earlier in its reasoning.
  */
 function extractJsonFromText(text: string): unknown {
-	// Try fenced JSON block first
-	const fencedMatch = text.match(/```json\s*\n([\s\S]*?)```/);
-	if (fencedMatch) {
+	// Try last fenced JSON block (model may include examples before the final answer)
+	const fencedMatches = [...text.matchAll(/```json\s*\n([\s\S]*?)```/g)];
+	for (let i = fencedMatches.length - 1; i >= 0; i--) {
 		try {
-			return JSON.parse(fencedMatch[1].trim());
+			return JSON.parse(fencedMatches[i][1].trim());
 		} catch {
-			// fall through
+			// try earlier block
 		}
 	}
 
-	// Try bare JSON block — find first { and last matching }
-	const start = text.indexOf("{");
-	if (start === -1) return null;
-	// Walk backwards from end to find the matching closing brace
-	for (let end = text.lastIndexOf("}"); end > start; end = text.lastIndexOf("}", end - 1)) {
+	// Fall back to last bare JSON object
+	const lastBrace = text.lastIndexOf("}");
+	if (lastBrace === -1) return null;
+	// Walk backwards from last } to find its matching {
+	for (
+		let start = text.lastIndexOf("{", lastBrace);
+		start >= 0;
+		start = text.lastIndexOf("{", start - 1)
+	) {
 		try {
-			return JSON.parse(text.slice(start, end + 1));
+			return JSON.parse(text.slice(start, lastBrace + 1));
 		} catch {
-			// try shorter substring
+			// try earlier opening brace
 		}
 	}
 	return null;
