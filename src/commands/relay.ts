@@ -437,12 +437,11 @@ export function registerRelayCommand(program: Command): void {
 					const exitCode = computeProviderHealthExitCode(results);
 					const allowDegraded = process.env.TELCLAUDE_ALLOW_DEGRADED_PROVIDERS === "1";
 					// Exit code 1 = degraded (warn), exit code 2 = error (unreachable/unhealthy)
-					const shouldExit = exitCode === 2 || (exitCode === 1 && !allowDegraded);
-					if (shouldExit) {
+					if (exitCode > 0 && !allowDegraded) {
 						console.error(`Provider health check failed: ${formatProviderHealthSummary(results)}`);
 						process.exit(exitCode);
 					}
-					if (exitCode === 1 && allowDegraded) {
+					if (exitCode > 0 && allowDegraded) {
 						console.warn(
 							`Provider health degraded but continuing due to TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=1`,
 						);
