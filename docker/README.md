@@ -79,10 +79,8 @@ for containers that need initial root privileges.
 
 4. **Create config files** (see [Config Split](#config-split) below):
    ```bash
-   # Policy config (mounted to all containers)
-   echo '{}' > telclaude.json
-   # Private config (relay-only — optional, for allowedChats/permissions)
-   echo '{}' > telclaude-private.json
+   cp telclaude.json.example telclaude.json
+   cp telclaude-private.json.example telclaude-private.json
    ```
 
 5. **Generate RPC keys** (required for agent authentication):
@@ -311,7 +309,8 @@ Telclaude can communicate with private REST APIs (sidecars) for services like he
 /otp <service> <code>
 ```
 
-See `telclaude.json.example` for a full configuration template.
+See `telclaude.json.example` and `telclaude-private.json.example` for safe templates.
+Use local `docker-compose.override.yml` for host-specific services or volumes; keep private sidecars out of tracked compose files.
 
 ## Commands
 

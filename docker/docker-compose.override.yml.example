@@ -1,6 +1,8 @@
 # NFS Volume Override Example
 #
 # Copy this file to docker-compose.override.yml (gitignored) and customize.
+# This is also the right place for host-specific sidecars or deployment-only
+# compose changes that should not be committed to the shared repo.
 # This enables NFS-backed storage for production deployments.
 #
 # Prerequisites:

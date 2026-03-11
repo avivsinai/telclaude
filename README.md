@@ -104,6 +104,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 git clone https://github.com/avivsinai/telclaude.git
 cd telclaude/docker
 cp .env.example .env   # set TELEGRAM_BOT_TOKEN, WORKSPACE_PATH, TOTP_ENCRYPTION_KEY, run `telclaude keygen telegram` and `telclaude keygen social` for RPC keys, ANTHROPIC_PROXY_TOKEN
+cp telclaude.json.example telclaude.json
+cp telclaude-private.json.example telclaude-private.json
 docker compose up -d --build
 docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login  # optional if not using ANTHROPIC_API_KEY
 ```

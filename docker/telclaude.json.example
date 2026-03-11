@@ -18,7 +18,19 @@
     "network": {
       // Private endpoints allow WebFetch to local network services
       // Required for external providers (sidecars)
+      //
+      // Built-in sidecar: telclaude ships a Google Services container.
+      // Uncomment the entry below in your LOCAL copy if you want the agent
+      // to reach it. Keep host-specific sidecars such as israel-services in
+      // your local config only; do not commit them to the repo.
       "privateEndpoints": [
+        // {
+        //   "label": "google-services",
+        //   "host": "google-services",
+        //   "ports": [3002],
+        //   "description": "Google services sidecar"
+        // },
+        //
         // Example: Local sidecar on port 3001
         // {
         //   "label": "citizen-services",
@@ -46,8 +58,17 @@
   },
 
   // External providers (sidecar services)
-  // These are private REST APIs that telclaude can call via WebFetch
+  // These are private REST APIs that telclaude can call via WebFetch.
+  // The built-in Google sidecar is shown first; private sidecars should stay
+  // in your local config and/or docker-compose.override.yml, not tracked files.
   "providers": [
+    // {
+    //   "id": "google",
+    //   "baseUrl": "http://google-services:3002",
+    //   "services": ["gmail", "calendar", "drive", "contacts"],
+    //   "description": "Google services (Gmail, Calendar, Drive, Contacts)"
+    // },
+    //
     // Example: Citizen services sidecar
     // {
     //   "id": "citizen-services",
