@@ -1,0 +1,25 @@
+{
+  // Relay-only config overlay (not mounted into agent containers)
+  // Copy to telclaude-private.json and customize locally.
+  //
+  // JSON5 format - comments allowed, trailing commas OK
+
+  "telegram": {
+    // REQUIRED: Your Telegram chat ID(s) - bot ignores unlisted chats
+    "allowedChats": [123456789]
+  },
+
+  "security": {
+    "permissions": {
+      // Default tier for new/unlinked users.
+      "defaultTier": "READ_ONLY",
+
+      // Optional per-user overrides. Use Telegram actor IDs (tg:<chat-id>).
+      "users": {
+        "tg:123456789": {
+          "tier": "FULL_ACCESS"
+        }
+      }
+    }
+  }
+}
