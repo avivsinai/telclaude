@@ -38,9 +38,7 @@ describe("memory store", () => {
 
 	it("assigns trust based on source", () => {
 		createEntries(
-			[
-				{ id: "entry-telegram", category: "profile", content: "from telegram" },
-			],
+			[{ id: "entry-telegram", category: "profile", content: "from telegram" }],
 			"telegram",
 			1,
 		);
@@ -67,11 +65,7 @@ describe("memory store", () => {
 			"telegram",
 			10,
 		);
-		createEntries(
-			[{ id: "profile-2", category: "profile", content: "untrusted" }],
-			"social",
-			11,
-		);
+		createEntries([{ id: "profile-2", category: "profile", content: "untrusted" }], "social", 11);
 
 		const profiles = getEntries({ categories: ["profile"], order: "asc" });
 		expect(profiles).toHaveLength(2);
@@ -122,6 +116,40 @@ describe("memory store", () => {
 		}
 	});
 
+	it("persists metadata for social quote proposals", () => {
+		createEntries(
+			[
+				{
+					id: "quote-entry",
+					category: "posts",
+					content: "Quoted take",
+					metadata: {
+						action: "quote",
+						targetPostId: "tweet-1",
+						targetAuthor: "@writer",
+						targetExcerpt: "Original post excerpt",
+					},
+				},
+			],
+			"social",
+			25,
+		);
+
+		const stored = getEntries({ order: "asc" })[0];
+		expect(stored.metadata).toEqual({
+			action: "quote",
+			targetPostId: "tweet-1",
+			targetAuthor: "@writer",
+			targetExcerpt: "Original post excerpt",
+		});
+
+		const promoted = promoteEntryTrust("quote-entry", "admin");
+		expect(promoted.ok).toBe(true);
+		if (promoted.ok) {
+			expect(promoted.entry.metadata).toEqual(stored.metadata);
+		}
+	});
+
 	it("rejects promotion of non-telegram/social source entries", () => {
 		createEntries(
 			[{ id: "import-entry", category: "posts", content: "from import" }],
@@ -153,7 +181,7 @@ describe("memory store", () => {
 	});
 
 	it("rejects promotion of already trusted entries", () => {
-		const entry = createQuarantinedEntry({
+		createQuarantinedEntry({
 			id: "idea-2",
 			category: "posts",
 			content: "Another idea",
@@ -173,18 +201,10 @@ describe("memory store", () => {
 	});
 
 	it("rejects duplicate entry ids", () => {
-		createEntries(
-			[{ id: "dup-1", category: "profile", content: "first" }],
-			"telegram",
-			30,
-		);
+		createEntries([{ id: "dup-1", category: "profile", content: "first" }], "telegram", 30);
 
 		expect(() =>
-			createEntries(
-				[{ id: "dup-1", category: "profile", content: "second" }],
-				"telegram",
-				31,
-			),
+			createEntries([{ id: "dup-1", category: "profile", content: "second" }], "telegram", 31),
 		).toThrow(/already exists/i);
 	});
 
@@ -223,7 +243,7 @@ describe("memory store", () => {
 	});
 
 	it("marks entries as posted", () => {
-		const entry = createQuarantinedEntry({
+		createQuarantinedEntry({
 			id: "post-me",
 			category: "posts",
 			content: "To be posted",

@@ -31,11 +31,7 @@ describe("XTwitterClient.createThread", () => {
 			fetchImpl,
 		});
 
-		const result = await client.createThread([
-			"Hook tweet",
-			"Body tweet",
-			"CTA tweet",
-		]);
+		const result = await client.createThread(["Hook tweet", "Body tweet", "CTA tweet"]);
 
 		expect(result.ok).toBe(true);
 		expect(result.postId).toBe("tweet-1");
@@ -169,5 +165,32 @@ describe("XTwitterClient.createThread", () => {
 
 		const result = await client.createThread([longTweet]);
 		expect(result.ok).toBe(true);
+	});
+});
+
+describe("XTwitterClient.quotePost", () => {
+	it("creates a quote tweet using quote_tweet_id", async () => {
+		const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse(String(init?.body));
+			expect(body).toEqual({
+				text: "Quoted take",
+				quote_tweet_id: "tweet-123",
+			});
+			return jsonResponse({ data: { id: "quote-1", text: body.text } }, 201);
+		});
+
+		const client = new XTwitterClient({
+			userId: "user-1",
+			baseUrl: "https://api.x.com",
+			fetchImpl,
+		});
+
+		const result = await client.quotePost("tweet-123", "Quoted take");
+
+		expect(result).toEqual({
+			ok: true,
+			status: 201,
+			postId: "quote-1",
+		});
 	});
 });

@@ -260,6 +260,7 @@ function initializeSchema(database: Database.Database): void {
 			id TEXT PRIMARY KEY,
 			category TEXT NOT NULL,
 			content TEXT NOT NULL,
+			metadata TEXT,
 			source TEXT NOT NULL,
 			trust TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
@@ -488,7 +489,7 @@ export function cleanupExpired(): {
 }
 
 /**
- * Ensure memory_entries table has the posted_at column.
+ * Ensure memory_entries table has the current optional columns.
  * Adds it if missing (for existing databases).
  */
 function ensureMemoryEntriesColumns(database: Database.Database): void {
@@ -508,6 +509,11 @@ function ensureMemoryEntriesColumns(database: Database.Database): void {
 	if (!columns.has("chat_id")) {
 		logger.info("adding chat_id column to memory_entries table");
 		database.exec("ALTER TABLE memory_entries ADD COLUMN chat_id TEXT");
+	}
+
+	if (!columns.has("metadata")) {
+		logger.info("adding metadata column to memory_entries table");
+		database.exec("ALTER TABLE memory_entries ADD COLUMN metadata TEXT");
 	}
 
 	// Always ensure index exists (handles both migration and fresh DB)

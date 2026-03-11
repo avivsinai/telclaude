@@ -27,6 +27,9 @@ export interface SocialServiceClient {
 		options?: { title?: string; tags?: string[] },
 	): Promise<SocialPostResult>;
 
+	/** Create a quote post referencing an existing post/thread (optional backend capability). */
+	quotePost?(postId: string, body: string): Promise<SocialPostResult>;
+
 	/** Fetch recent timeline posts (optional — not all backends support this). */
 	fetchTimeline?(options?: { maxResults?: number }): Promise<SocialTimelinePost[]>;
 }

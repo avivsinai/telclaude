@@ -49,6 +49,7 @@ const MAX_UPDATES_PER_REQUEST = 5;
 const MAX_STRING_LENGTH = 500;
 const MAX_ID_LENGTH = 128;
 const MAX_CHAT_ID_LENGTH = 64;
+const MAX_METADATA_LENGTH = 1_000;
 const MAX_QUERY_LIMIT = 500;
 const DEFAULT_QUERY_LIMIT = 200;
 const HOUR_MS = 60 * 60 * 1000;
@@ -144,6 +145,19 @@ function validateEntry(entry: MemoryEntryInput): string | null {
 	if (secretResult.blocked) {
 		const names = secretResult.matches.map((m) => m.pattern).join(", ");
 		return `Content rejected: potential secret detected (${names}).`;
+	}
+	if (entry.metadata !== undefined) {
+		if (!entry.metadata || typeof entry.metadata !== "object" || Array.isArray(entry.metadata)) {
+			return "Entry metadata must be an object.";
+		}
+		try {
+			const serialized = JSON.stringify(entry.metadata);
+			if (serialized.length > MAX_METADATA_LENGTH) {
+				return "Entry metadata too long.";
+			}
+		} catch {
+			return "Entry metadata must be JSON-serializable.";
+		}
 	}
 	return null;
 }
