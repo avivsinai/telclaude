@@ -8,6 +8,7 @@ export type MemoryEntryInput = {
 	id: string;
 	category: MemoryCategory;
 	content: string;
+	metadata?: Record<string, unknown>;
 	chatId?: string;
 };
 
@@ -37,6 +38,7 @@ type MemoryEntryRow = {
 	id: string;
 	category: string;
 	content: string;
+	metadata: string | null;
 	source: string;
 	trust: string;
 	created_at: number;
@@ -46,11 +48,31 @@ type MemoryEntryRow = {
 	chat_id: string | null;
 };
 
+function parseMetadata(raw: string | null): Record<string, unknown> | undefined {
+	if (!raw) return undefined;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+	} catch (err) {
+		logger.warn({ error: String(err) }, "failed to parse memory entry metadata");
+	}
+	return undefined;
+}
+
+function serializeMetadata(metadata?: Record<string, unknown>): string | null {
+	if (!metadata) return null;
+	return JSON.stringify(metadata);
+}
+
 function rowToEntry(row: MemoryEntryRow): MemoryEntry {
+	const metadata = parseMetadata(row.metadata);
 	return {
 		id: row.id,
 		category: row.category as MemoryCategory,
 		content: row.content,
+		...(metadata ? { metadata } : {}),
 		_provenance: {
 			source: row.source as MemorySource,
 			trust: row.trust as TrustLevel,
@@ -73,8 +95,8 @@ export function createEntries(
 
 	const insert = db.prepare(
 		`INSERT INTO memory_entries
-			(id, category, content, source, trust, created_at, promoted_at, promoted_by, chat_id)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+			(id, category, content, metadata, source, trust, created_at, promoted_at, promoted_by, chat_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
 	);
 	const exists = db.prepare("SELECT 1 FROM memory_entries WHERE id = ?");
 
@@ -89,6 +111,7 @@ export function createEntries(
 				entry.id,
 				entry.category,
 				entry.content,
+				serializeMetadata(entry.metadata),
 				source,
 				trust,
 				createdAt,
@@ -98,6 +121,7 @@ export function createEntries(
 				id: entry.id,
 				category: entry.category,
 				content: entry.content,
+				...(entry.metadata ? { metadata: entry.metadata } : {}),
 				_provenance: {
 					source,
 					trust,
@@ -177,7 +201,7 @@ export function getEntries(query: MemoryQuery = {}): MemoryEntry[] {
 	const order = query.order === "asc" ? "ASC" : "DESC";
 	const limit = Math.min(Math.max(query.limit ?? DEFAULT_QUERY_LIMIT, 1), MAX_QUERY_LIMIT);
 
-	const sql = `SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id
+	const sql = `SELECT id, category, content, metadata, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id
 		FROM memory_entries
 		${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
 		ORDER BY created_at ${order}
@@ -205,13 +229,14 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 	const db = getDb();
 	const existing = db
 		.prepare(
-			"SELECT id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id FROM memory_entries WHERE id = ?",
+			"SELECT id, category, content, metadata, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id FROM memory_entries WHERE id = ?",
 		)
 		.get(id) as
 		| {
 				id: string;
 				category: string;
 				content: string;
+				metadata: string | null;
 				source: string;
 				trust: string;
 				created_at: number;
@@ -264,6 +289,7 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 	}
 
 	logger.info({ id, promotedBy }, "memory entry promoted to trusted");
+	const metadata = parseMetadata(existing.metadata);
 
 	return {
 		ok: true,
@@ -271,12 +297,14 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 			id: existing.id,
 			category: existing.category as MemoryCategory,
 			content: existing.content,
+			...(metadata ? { metadata } : {}),
 			_provenance: {
 				source: existing.source as MemorySource,
 				trust: "trusted",
 				createdAt: existing.created_at,
 				promotedAt: now,
 				promotedBy,
+				...(existing.chat_id ? { chatId: existing.chat_id } : {}),
 			},
 		},
 	};
@@ -333,8 +361,8 @@ export function createQuarantinedEntry(
 
 	const insert = db.prepare(
 		`INSERT INTO memory_entries
-			(id, category, content, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
+			(id, category, content, metadata, source, trust, created_at, promoted_at, promoted_by, posted_at, chat_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)`,
 	);
 	const exists = db.prepare("SELECT 1 FROM memory_entries WHERE id = ?");
 
@@ -343,7 +371,16 @@ export function createQuarantinedEntry(
 		throw new Error(`Memory entry already exists: ${entry.id}`);
 	}
 
-	insert.run(entry.id, "posts", entry.content, "telegram", "quarantined", createdAt, chatId);
+	insert.run(
+		entry.id,
+		"posts",
+		entry.content,
+		serializeMetadata(entry.metadata),
+		"telegram",
+		"quarantined",
+		createdAt,
+		chatId,
+	);
 
 	logger.debug({ id: entry.id, chatId }, "quarantined memory entry created");
 
@@ -351,6 +388,7 @@ export function createQuarantinedEntry(
 		id: entry.id,
 		category: "posts",
 		content: entry.content,
+		...(entry.metadata ? { metadata: entry.metadata } : {}),
 		_provenance: {
 			source: "telegram",
 			trust: "quarantined",

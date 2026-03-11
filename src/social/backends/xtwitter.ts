@@ -226,6 +226,28 @@ export class XTwitterClient implements SocialServiceClient {
 		return { ok: true, status: result.status, postId: tweetId };
 	}
 
+	async quotePost(postId: string, body: string): Promise<SocialPostResult> {
+		const truncated = truncateForX(body);
+		const result = await this.request<XTweetResponse>("/2/tweets", {
+			method: "POST",
+			body: JSON.stringify({
+				text: truncated,
+				quote_tweet_id: postId,
+			}),
+		});
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("X quote post rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		const tweetId = result.data?.data?.id;
+		return { ok: true, status: result.status, postId: tweetId };
+	}
+
 	/**
 	 * Post a thread (reply-to-self chain).
 	 * First tweet is standalone; subsequent tweets reply to the previous one.

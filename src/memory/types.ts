@@ -16,5 +16,6 @@ export type MemoryEntry = {
 	id: string;
 	category: MemoryCategory;
 	content: string;
+	metadata?: Record<string, unknown>;
 	_provenance: MemoryProvenance;
 };

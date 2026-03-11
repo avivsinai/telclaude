@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeRemoteQueryMock = vi.hoisted(() => vi.fn());
+const createEntriesMock = vi.hoisted(() => vi.fn());
 const getEntriesMock = vi.hoisted(() => vi.fn());
 const markEntryPostedMock = vi.hoisted(() => vi.fn());
 const checkLimitMock = vi.hoisted(() => vi.fn());
@@ -11,6 +12,7 @@ vi.mock("../../src/agent/client.js", () => ({
 }));
 
 vi.mock("../../src/memory/store.js", () => ({
+	createEntries: (...args: unknown[]) => createEntriesMock(...args),
 	getEntries: (...args: unknown[]) => getEntriesMock(...args),
 	markEntryPosted: (...args: unknown[]) => markEntryPostedMock(...args),
 }));
@@ -41,8 +43,12 @@ vi.mock("../../src/telegram/notification-sanitizer.js", () => ({
 	shouldNotifyOnHeartbeat: vi.fn().mockReturnValue(false),
 }));
 
-import { handleSocialHeartbeat, handleSocialNotification, queryPublicPersona } from "../../src/social/handler.js";
 import type { SocialServiceClient } from "../../src/social/client.js";
+import {
+	handleSocialHeartbeat,
+	handleSocialNotification,
+	queryPublicPersona,
+} from "../../src/social/handler.js";
 
 const SERVICE_ID = "moltbook";
 
@@ -56,7 +62,12 @@ const sampleEntries = [
 	},
 ];
 
-async function* mockStream(text: string, success = true, error?: string, structuredOutput?: unknown) {
+async function* mockStream(
+	text: string,
+	success = true,
+	error?: string,
+	structuredOutput?: unknown,
+) {
 	yield { type: "text", content: text } as const;
 	yield {
 		type: "done",
@@ -87,13 +98,25 @@ describe("social handler", () => {
 
 	beforeEach(() => {
 		executeRemoteQueryMock.mockReset();
+		createEntriesMock.mockReset();
 		getEntriesMock.mockReset();
 		markEntryPostedMock.mockReset();
 		checkLimitMock.mockReset();
 		consumeMock.mockReset();
 		getEntriesMock.mockReturnValue(sampleEntries);
+		createEntriesMock.mockImplementation(
+			(entries: Array<Record<string, unknown>>, source: string) =>
+				entries.map((entry) => ({
+					...entry,
+					_provenance: { source, trust: "untrusted", createdAt: 1 },
+				})),
+		);
 		// Default: rate limit allows proactive posting
-		checkLimitMock.mockReturnValue({ allowed: true, remaining: { hour: 1, day: 9 }, resetMs: { hour: 1000, day: 10000 } });
+		checkLimitMock.mockReturnValue({
+			allowed: true,
+			remaining: { hour: 1, day: 9 },
+			resetMs: { hour: 1000, day: 10000 },
+		});
 		process.env.TELCLAUDE_SOCIAL_AGENT_URL = "http://agent-social:8789";
 	});
 
@@ -147,6 +170,76 @@ describe("social handler", () => {
 		expect(res.message).toContain("no activity");
 	});
 
+	it("heartbeat executes autonomous reply for a visible timeline post", async () => {
+		const client = mockClient({
+			fetchTimeline: vi
+				.fn()
+				.mockResolvedValue([
+					{ id: "post-42", text: "Tell me something sharp", authorHandle: "alice" },
+				]),
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream(
+				'{"action":"reply","targetPostId":"post-42","body":"Here is the sharp reply.","rationale":"worth engaging"}',
+			),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("autonomous: replied to @alice");
+		expect(client.postReply).toHaveBeenCalledWith("post-42", "Here is the sharp reply.");
+		expect(createEntriesMock).not.toHaveBeenCalled();
+		expect(consumeMock).toHaveBeenCalledWith("moltbook_reply", "social:moltbook:autonomous-reply");
+		expect(consumeMock).toHaveBeenCalledWith(
+			"moltbook_reply_target",
+			"social:moltbook:target:post-42",
+		);
+	});
+
+	it("heartbeat queues autonomous quote proposals with target metadata", async () => {
+		const client = mockClient({
+			serviceId: "xtwitter",
+			fetchTimeline: vi.fn().mockResolvedValue([
+				{
+					id: "tweet-7",
+					text: "This deserves a bigger response than a plain reply.",
+					authorHandle: "writer",
+				},
+			]),
+			quotePost: vi.fn(),
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream(
+				'{"action":"quote","targetPostId":"tweet-7","body":"Building on this: here is the quote take.","rationale":"broader audience"}',
+			),
+		);
+
+		const res = await handleSocialHeartbeat("xtwitter", client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("autonomous: queued quote proposal");
+		expect(createEntriesMock).toHaveBeenCalledTimes(1);
+		expect(createEntriesMock).toHaveBeenCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({
+					category: "posts",
+					content: "Building on this: here is the quote take.",
+					metadata: expect.objectContaining({
+						action: "quote",
+						targetPostId: "tweet-7",
+						targetAuthor: "@writer",
+						targetExcerpt: "This deserves a bigger response than a plain reply.",
+					}),
+				}),
+			]),
+			"social",
+		);
+		expect(client.postReply).not.toHaveBeenCalled();
+	});
+
 	it("handleSocialNotification posts reply with trimmed response", async () => {
 		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream(" hello "));
@@ -185,12 +278,7 @@ describe("social handler", () => {
 
 	it("handleSocialNotification reports missing post id", async () => {
 		const client = mockClient();
-		const res = await handleSocialNotification(
-			{ id: "n1" },
-			SERVICE_ID,
-			client,
-			"http://agent",
-		);
+		const res = await handleSocialNotification({ id: "n1" }, SERVICE_ID, client, "http://agent");
 		expect(res.ok).toBe(false);
 		expect(res.message).toContain("missing post id");
 	});
@@ -200,12 +288,7 @@ describe("social handler", () => {
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("oops", false, "agent failed"));
 
 		await expect(
-			handleSocialNotification(
-				{ id: "n1", postId: "post-1" },
-				SERVICE_ID,
-				client,
-				"http://agent",
-			),
+			handleSocialNotification({ id: "n1", postId: "post-1" }, SERVICE_ID, client, "http://agent"),
 		).rejects.toThrow("agent failed");
 	});
 
@@ -236,7 +319,13 @@ describe("social handler", () => {
 			id: "idea-1",
 			category: "posts",
 			content: "A great idea",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient();
 
@@ -262,7 +351,11 @@ describe("social handler", () => {
 
 	it("heartbeat skips proactive posting when rate limited", async () => {
 		const client = mockClient();
-		checkLimitMock.mockReturnValue({ allowed: false, remaining: { hour: 0, day: 0 }, reason: "Rate limited" });
+		checkLimitMock.mockReturnValue({
+			allowed: false,
+			remaining: { hour: 0, day: 0 },
+			reason: "Rate limited",
+		});
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 
@@ -289,7 +382,13 @@ describe("social handler", () => {
 			id: "idea-skip",
 			category: "posts",
 			content: "An idea to skip",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient();
 
@@ -326,7 +425,13 @@ describe("social handler", () => {
 			id: "idea-thread",
 			category: "posts",
 			content: "A deep thread idea",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const createThreadMock = vi.fn().mockResolvedValue({
 			ok: true,
@@ -334,13 +439,9 @@ describe("social handler", () => {
 			postId: "thread-first",
 			tweetIds: ["thread-first", "thread-second", "thread-third"],
 		});
-		const client = mockClient();
-		// Add createThread to mock client (X-specific)
-		(client as any).createThread = createThreadMock;
+		const client = Object.assign(mockClient(), { createThread: createThreadMock });
 
-		getEntriesMock
-			.mockReturnValueOnce([promotedIdea])
-			.mockReturnValueOnce(sampleEntries);
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
 		executeRemoteQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
@@ -358,18 +459,63 @@ describe("social handler", () => {
 		expect(consumeMock).toHaveBeenCalled();
 	});
 
+	it("heartbeat publishes promoted quote ideas via quotePost", async () => {
+		const promotedIdea = {
+			id: "idea-quote",
+			category: "posts",
+			content: "The approved quote body",
+			metadata: {
+				action: "quote",
+				targetPostId: "tweet-99",
+				targetAuthor: "@writer",
+				targetExcerpt: "Target post excerpt",
+			},
+			_provenance: {
+				source: "social",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
+		};
+		const quotePostMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 201,
+			postId: "quote-1",
+		});
+		const client = mockClient({
+			quotePost: quotePostMock,
+		});
+
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream('{"action":"idle","rationale":"done"}'));
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("proactive post created");
+		expect(quotePostMock).toHaveBeenCalledWith("tweet-99", "The approved quote body");
+		expect(client.createPost).not.toHaveBeenCalled();
+		expect(markEntryPostedMock).toHaveBeenCalledWith("idea-quote");
+		expect(consumeMock).toHaveBeenCalledWith("moltbook_post", "social:moltbook:proactive");
+	});
+
 	it("heartbeat returns unsupported for thread on non-X backends", async () => {
 		const promotedIdea = {
 			id: "idea-nothread",
 			category: "posts",
 			content: "Thread on moltbook?",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient(); // moltbook client — no createThread method
 
-		getEntriesMock
-			.mockReturnValueOnce([promotedIdea])
-			.mockReturnValueOnce(sampleEntries);
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
 		executeRemoteQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
@@ -391,13 +537,17 @@ describe("social handler", () => {
 			id: "idea-short",
 			category: "posts",
 			content: "Too short for thread",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient();
 
-		getEntriesMock
-			.mockReturnValueOnce([promotedIdea])
-			.mockReturnValueOnce(sampleEntries);
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
 		executeRemoteQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
@@ -418,7 +568,13 @@ describe("social handler", () => {
 			id: "idea-partial",
 			category: "posts",
 			content: "Partial failure",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const createThreadMock = vi.fn().mockResolvedValue({
 			ok: false,
@@ -427,12 +583,9 @@ describe("social handler", () => {
 			postId: "partial-first", // first tweet was posted
 			tweetIds: ["partial-first"],
 		});
-		const client = mockClient();
-		(client as any).createThread = createThreadMock;
+		const client = Object.assign(mockClient(), { createThread: createThreadMock });
 
-		getEntriesMock
-			.mockReturnValueOnce([promotedIdea])
-			.mockReturnValueOnce(sampleEntries);
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
 		executeRemoteQueryMock.mockReturnValueOnce(
 			mockStream("", true, undefined, {
@@ -455,13 +608,17 @@ describe("social handler", () => {
 			id: "idea-skills",
 			category: "posts",
 			content: "Test allowedSkills threading",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient();
 
-		getEntriesMock
-			.mockReturnValueOnce([promotedIdea])
-			.mockReturnValueOnce(sampleEntries);
+		getEntriesMock.mockReturnValueOnce([promotedIdea]).mockReturnValueOnce(sampleEntries);
 
 		executeRemoteQueryMock
 			// proactive query
@@ -512,7 +669,13 @@ describe("social handler", () => {
 			id: "idea-minimal",
 			category: "posts",
 			content: "Only this idea should appear",
-			_provenance: { source: "telegram", trust: "trusted", createdAt: 1, promotedAt: 2, promotedBy: "user" },
+			_provenance: {
+				source: "telegram",
+				trust: "trusted",
+				createdAt: 1,
+				promotedAt: 2,
+				promotedBy: "user",
+			},
 		};
 		const client = mockClient();
 

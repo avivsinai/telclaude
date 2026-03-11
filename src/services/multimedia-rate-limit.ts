@@ -19,7 +19,9 @@ export type MultimediaFeature =
 	| "social_post"
 	| "summarize"
 	| "token_refresh"
-	| `${string}_post`;
+	| `${string}_post`
+	| `${string}_reply`
+	| `${string}_reply_target`;
 
 /** Rate limit configuration for a feature */
 export type FeatureRateLimitConfig = {

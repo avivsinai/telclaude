@@ -56,6 +56,7 @@ import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/tot
 import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
+import { parseSocialQuoteProposalMetadata } from "../social/proposal-metadata.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
 import { createTelegramBot } from "./client.js";
@@ -1357,7 +1358,19 @@ async function handleInboundMessage(
 			const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
 			const preview =
 				entry.content.length > 60 ? `${entry.content.slice(0, 60)}...` : entry.content;
-			return `\`${entry.id}\` "${preview}" — ${ageStr}\n  /promote ${entry.id}`;
+			const quoteMetadata = parseSocialQuoteProposalMetadata(entry.metadata);
+			const contextLine = quoteMetadata
+				? `\n  quote ${quoteMetadata.targetPostId}${
+						quoteMetadata.targetAuthor ? ` (${quoteMetadata.targetAuthor})` : ""
+					}${
+						quoteMetadata.targetExcerpt
+							? `: "${quoteMetadata.targetExcerpt.slice(0, 60)}${
+									quoteMetadata.targetExcerpt.length > 60 ? "..." : ""
+								}"`
+							: ""
+					}`
+				: "";
+			return `\`${entry.id}\` "${preview}" — ${ageStr}${contextLine}\n  /promote ${entry.id}`;
 		});
 		await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
 		return;
