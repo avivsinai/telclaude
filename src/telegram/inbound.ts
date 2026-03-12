@@ -9,6 +9,7 @@ import { filterOutputWithConfig, type SecretFilterConfig } from "../security/out
 import { isBotMessage, removeReaction, storeReaction } from "../storage/reactions.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
 import { resolveControlCommandGate } from "./command-gating.js";
+import { hasTelegramControlCommand } from "./control-commands.js";
 import { registerKeyboardHandlers } from "./keyboard-handlers.js";
 import { resolveMentionGatingWithBypass } from "./mention-gating.js";
 import { convertAndSendMessage, SECRET_BLOCKED_MESSAGE, sendMediaToChat } from "./outbound.js";
@@ -46,41 +47,6 @@ export type InboxMonitorHandle = {
 };
 
 const ZERO_WIDTH_CHARS_REGEX = /\u200B|\u200C|\u200D|\uFEFF/gu;
-const CONTROL_COMMAND_PREFIXES = [
-	"/link ",
-	"/approve ",
-	"/deny ",
-	"/otp ",
-	"/promote ",
-	"/promote-skill ",
-	"/heartbeat ",
-	"/status ",
-	"/public-log ",
-	"/ask-public ",
-	"/verify-2fa ",
-	"/force-reauth ",
-] as const;
-const CONTROL_COMMAND_EXACT = new Set([
-	"/otp",
-	"/list-drafts",
-	"/reload-skills",
-	"/pending",
-	"/heartbeat",
-	"/status",
-	"/public-log",
-	"/setup-2fa",
-	"/verify-2fa",
-	"/disable-2fa",
-	"/2fa-logout",
-	"/force-reauth",
-	"/skip-totp",
-	"/unlink",
-	"/whoami",
-	"/new",
-	"/reset",
-	"/deny",
-]);
-
 export type InboundBodyNormalization = {
 	normalized: string;
 	changed: boolean;
@@ -172,14 +138,7 @@ export async function monitorTelegramInbox(
 	};
 
 	const hasControlCommand = (body: string): boolean => {
-		const trimmed = body.trim();
-		if (!trimmed.startsWith("/")) {
-			return false;
-		}
-		if (CONTROL_COMMAND_EXACT.has(trimmed)) {
-			return true;
-		}
-		return CONTROL_COMMAND_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+		return hasTelegramControlCommand(body, { botUsername });
 	};
 
 	// Helper to check if chat is allowed

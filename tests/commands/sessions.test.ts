@@ -6,7 +6,7 @@ vi.mock("../../src/config/sessions.js", () => ({
 	getAllSessions: (...args: unknown[]) => getAllSessionsImpl(...args),
 }));
 
-import { collectSessionRows } from "../../src/commands/sessions.js";
+import { collectSessionRows, formatSessionRows } from "../../src/commands/sessions.js";
 
 describe("collectSessionRows", () => {
 	it("sorts by most recently active and classifies session kinds", () => {
@@ -36,5 +36,24 @@ describe("collectSessionRows", () => {
 		const rows = collectSessionRows({ activeMinutes: 2, limit: 1 });
 		expect(rows).toHaveLength(1);
 		expect(rows[0].key).toBe("tg:1");
+	});
+
+	it("formats a Telegram-friendly session summary", () => {
+		const rows = [
+			{
+				key: "tg:123",
+				kind: "direct" as const,
+				sessionId: "abc",
+				updatedAt: Date.now() - 5_000,
+				ageMs: 5_000,
+				systemSent: true,
+			},
+		];
+
+		const output = formatSessionRows(rows, { limit: 5 });
+		expect(output).toContain("Sessions: 1");
+		expect(output).toContain("Showing up to 5 most recent session(s).");
+		expect(output).toContain("direct tg:123 updated");
+		expect(output).toContain("system prompt sent");
 	});
 });
