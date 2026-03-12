@@ -139,7 +139,9 @@ describe("social handler", () => {
 			.mockImplementationOnce(() => {
 				throw new Error("boom");
 			})
-			.mockImplementationOnce(() => mockStream("reply"));
+			.mockImplementationOnce(() =>
+				mockStream('{"action":"reply","body":"reply","rationale":"worth replying"}'),
+			);
 
 		const res = await handleSocialHeartbeat(SERVICE_ID, client);
 		expect(res.ok).toBe(true);
@@ -240,9 +242,11 @@ describe("social handler", () => {
 		expect(client.postReply).not.toHaveBeenCalled();
 	});
 
-	it("handleSocialNotification posts reply with trimmed response", async () => {
+	it("handleSocialNotification posts reply with trimmed structured response", async () => {
 		const client = mockClient();
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream(" hello "));
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"reply","body":" hello ","rationale":"worth replying"}'),
+		);
 
 		const res = await handleSocialNotification(
 			{ id: "n1", postId: "post-1" },
@@ -260,7 +264,7 @@ describe("social handler", () => {
 		expect(options.scope).toBe("social");
 	});
 
-	it("handleSocialNotification skips empty replies", async () => {
+	it("handleSocialNotification ignores empty decisions", async () => {
 		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(mockStream("   "));
 
@@ -272,7 +276,43 @@ describe("social handler", () => {
 		);
 
 		expect(res.ok).toBe(true);
-		expect(res.message).toContain("empty reply");
+		expect(res.message).toContain("ignored");
+		expect(client.postReply).not.toHaveBeenCalled();
+	});
+
+	it("handleSocialNotification ignores spam mentions when agent returns ignore", async () => {
+		const client = mockClient();
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"ignore","rationale":"spam mention"}'),
+		);
+
+		const res = await handleSocialNotification(
+			{ id: "n1", postId: "post-1" },
+			SERVICE_ID,
+			client,
+			"http://agent",
+		);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("ignored");
+		expect(client.postReply).not.toHaveBeenCalled();
+	});
+
+	it("handleSocialNotification ignores legacy plain-text refusal output", async () => {
+		const client = mockClient();
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream("Spam mention - ignoring. No response warranted."),
+		);
+
+		const res = await handleSocialNotification(
+			{ id: "n1", postId: "post-1" },
+			SERVICE_ID,
+			client,
+			"http://agent",
+		);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("ignored");
 		expect(client.postReply).not.toHaveBeenCalled();
 	});
 
@@ -301,7 +341,9 @@ describe("social handler", () => {
 				rateLimited: true,
 			}),
 		});
-		executeRemoteQueryMock.mockReturnValueOnce(mockStream("reply"));
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"reply","body":"reply","rationale":"worth replying"}'),
+		);
 
 		const res = await handleSocialNotification(
 			{ id: "n1", postId: "post-1" },

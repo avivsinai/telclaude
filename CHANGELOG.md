@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **6 containers** — Docker topology expanded from 5 to 6 containers (added `google-services`).
 - **Documentation overhaul** — Architecture, security, and agent playbook docs updated for Google sidecar. Added SOCIAL tier to SECURITY.md. Fixed stale references and broken cross-links.
 
+### Fixed
+
+- **Social spam mentions** — Notification replies now use explicit `reply`/`ignore` decisions and fail closed on invalid output, so spam mentions are skipped instead of being answered with “ignoring” posts.
+
 ## [0.6.0] - 2026-02-23
 
 ### Added

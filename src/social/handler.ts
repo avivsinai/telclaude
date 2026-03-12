@@ -72,6 +72,10 @@ type ProactivePostOutput = {
 	reason?: string;
 };
 
+type NotificationAction =
+	| { action: "reply"; body: string; rationale?: string }
+	| { action: "ignore"; rationale?: string };
+
 type AutonomousAction =
 	| { action: "idle"; rationale?: string }
 	| { action: "propose_post"; content: string; rationale?: string }
@@ -207,6 +211,44 @@ function formatNotificationForPrompt(notification: SocialNotification, serviceId
 		source: "social-notification",
 		serviceId,
 	});
+}
+
+function buildNotificationPrompt(
+	notification: SocialNotification,
+	serviceId: string,
+): SocialPromptBundle {
+	const label = capitalizeServiceId(serviceId);
+	const { systemPromptAppend, socialContext } = loadSocialContext(serviceId);
+	const charLimitRule =
+		serviceId === "xtwitter"
+			? "- If you reply, the reply must be ≤280 characters"
+			: "- If you reply, keep it concise and natural for the platform";
+	const prompt = [
+		socialContext,
+		"",
+		"---",
+		"",
+		"[NOTIFICATION RESPONSE REQUEST]",
+		"",
+		`You are reviewing an incoming ${label} notification/mention.`,
+		"Decide whether it deserves a public reply.",
+		"",
+		formatNotificationForPrompt(notification, serviceId),
+		"",
+		"RULES:",
+		"- Ignore spam, scams, crypto shilling, mention farming, random tag blasts, bait, or anything not worth engaging with",
+		'- If no reply is warranted, return action "ignore"',
+		"- Never post a public message that merely says you are ignoring, declining, muting, or refusing to engage",
+		"- Reply only when there is a real conversational reason to engage",
+		charLimitRule,
+		"- Output exactly one JSON object and nothing else",
+		"",
+		"OUTPUT FORMAT:",
+		'- {"action":"reply","body":"your reply text","rationale":"why this is worth answering"}',
+		'- {"action":"ignore","rationale":"why no public reply is warranted"}',
+	].join("\n");
+
+	return { prompt, systemPromptAppend };
 }
 
 function extractPostId(notification: SocialNotification): string | null {
@@ -548,18 +590,37 @@ export async function handleSocialNotification(
 		return { ok: false, message: "missing post id" };
 	}
 
-	const promptMessage = formatNotificationForPrompt(notification, serviceId);
-	const bundle = buildSocialPromptBundle(promptMessage, serviceId);
+	const bundle = buildNotificationPrompt(notification, serviceId);
 	const poolKey = `${serviceId}:notification:${notification.id}`;
 	const responseText = await runSocialQuery(bundle, serviceId, agentUrl, { poolKey });
 	const trimmed = responseText.trim();
 
 	if (!trimmed) {
-		logger.info({ notificationId: notification.id, serviceId }, "empty reply; skipping post");
-		return { ok: true, message: "empty reply" };
+		logger.info(
+			{ notificationId: notification.id, serviceId },
+			"empty notification decision; ignoring",
+		);
+		return { ok: true, message: "ignored" };
 	}
 
-	const replyResult = await postReplyWithRetry(client, postId, trimmed, serviceId);
+	const parsed = parseNotificationAction(extractJsonFromText(trimmed));
+	if (!parsed) {
+		logger.warn(
+			{ notificationId: notification.id, serviceId, textLength: trimmed.length },
+			"invalid notification decision output; ignoring",
+		);
+		return { ok: true, message: "ignored" };
+	}
+
+	if (parsed.action === "ignore") {
+		logger.info(
+			{ notificationId: notification.id, serviceId, rationale: parsed.rationale },
+			"notification ignored",
+		);
+		return { ok: true, message: "ignored" };
+	}
+
+	const replyResult = await postReplyWithRetry(client, postId, parsed.body, serviceId);
 	if (!replyResult.ok) {
 		logger.warn(
 			{
@@ -705,6 +766,35 @@ function parseAutonomousAction(structuredOutput: unknown): AutonomousAction | nu
 			return {
 				action: "quote",
 				targetPostId: obj.targetPostId.trim(),
+				body: obj.body.trim(),
+				rationale,
+			};
+		default:
+			return null;
+	}
+}
+
+function parseNotificationAction(structuredOutput: unknown): NotificationAction | null {
+	if (
+		!structuredOutput ||
+		typeof structuredOutput !== "object" ||
+		Array.isArray(structuredOutput)
+	) {
+		return null;
+	}
+
+	const obj = structuredOutput as Record<string, unknown>;
+	const rationale =
+		typeof obj.rationale === "string" && obj.rationale.trim() ? obj.rationale.trim() : undefined;
+	switch (obj.action) {
+		case "ignore":
+			return { action: "ignore", rationale };
+		case "reply":
+			if (typeof obj.body !== "string" || !obj.body.trim()) {
+				return null;
+			}
+			return {
+				action: "reply",
 				body: obj.body.trim(),
 				rationale,
 			};
