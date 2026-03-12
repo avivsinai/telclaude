@@ -7,22 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-12
+
 ### Added
 
-- **Google Services sidecar** — Gmail, Calendar, Drive, Contacts integration via approval-gated Fastify REST API. 20 actions (18 read, 2 action-type). New container: `google-services`.
-- **Approval token system** — Ed25519-signed, one-time-use tokens with JTI replay prevention, params hash binding, and domain-separated signatures for action-type provider operations.
-- **Vault payload signing** — New `sign-payload` and `verify-payload` protocol messages for domain-separated Ed25519 operations.
-- **`setup-google` command** — OAuth2 PKCE flow for Google credentials with scope bundles (read_core, read_plus_download, actions_v1).
-- **Provider integration guide** — New `docs/providers.md` documenting the sidecar pattern and how to add new providers.
+- **Google Services sidecar** - Gmail, Calendar, Drive, and Contacts integration via an approval-gated Fastify API. Adds the `google-services` container and provider-side action schema and health endpoints.
+- **Approval token signing flow** - Ed25519-signed one-time approval tokens for provider actions, plus vault `sign-payload` and `verify-payload` support for domain-separated signatures.
+- **`setup-google` command** - OAuth2 PKCE setup flow for Google credentials with bundled scopes.
+- **Telegram command registry** - Central command catalog with natural-language system help and stricter command target matching.
+- **Autonomous social actions** - Autonomous engagement actions for the social agent, including X thread posting via reply-to-self chaining.
 
 ### Changed
 
-- **6 containers** — Docker topology expanded from 5 to 6 containers (added `google-services`).
-- **Documentation overhaul** — Architecture, security, and agent playbook docs updated for Google sidecar. Added SOCIAL tier to SECURITY.md. Fixed stale references and broken cross-links.
+- **6-container Docker topology** - Docker deployment now includes the Google sidecar alongside the relay, agent, TOTP, and vault services.
+- **Provider and skill policy enforcement** - `allowedSkills` enforcement is now applied per service, with updated provider documentation and deployment docs.
+- **Internal maintainability sweep** - Security, relay, SDK, command, crypto, sandbox, Telegram, and social modules were refactored across PRs #41-#50 while preserving the existing release flow.
 
 ### Fixed
 
-- **Social spam mentions** — Notification replies now use explicit `reply`/`ignore` decisions and fail closed on invalid output, so spam mentions are skipped instead of being answered with “ignoring” posts.
+- **Social spam mentions** - Notification processing now explicitly ignores spam mentions instead of replying with low-signal text.
+- **Telegram quarantine commands** - `/pending` and `/promote` now find quarantined entries from both Telegram and the social agent.
+- **Telegram output handling** - Message length limits and streaming overflow handling were corrected to avoid truncation and malformed updates.
+- **Google/provider request flow** - Approval forwarding, `/v1/fetch` routing, Gmail base64url handling, sanitization, and degraded-provider behavior were corrected across the new sidecar path.
+- **SDK and heartbeat reliability** - Added a first-chunk watchdog, fixed zombie session cleanup, removed a proactive posting SDK hang, and surfaced heartbeat phase failures back to Telegram.
+
+### Security
+
+- **Approval verification safety** - Google sidecar approval verification now preserves key rotation safety by avoiding stale public key caching.
+- **Credential and secret scanning hygiene** - Gitleaks false positives introduced by new security checks and Telegram session key templates are explicitly suppressed so release automation stays green.
 
 ## [0.6.0] - 2026-02-23
 
@@ -268,7 +280,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/avivsinai/telclaude/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/avivsinai/telclaude/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/avivsinai/telclaude/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/avivsinai/telclaude/compare/v0.5.3...v0.5.4
