@@ -376,7 +376,7 @@ async function handleWhoAmICommand(msg: TelegramInboundMessage): Promise<void> {
 }
 
 async function handleSessionResetCommand(msg: TelegramInboundMessage): Promise<void> {
-	const sessionKey = `tg:${msg.chatId}`;
+	const sessionKey = msg.from;
 	deleteSession(sessionKey);
 	getSessionManager().clearSession(sessionKey);
 
@@ -651,7 +651,7 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("Only admin can reload skills.");
 				return true;
 			}
-			const sessionKey = `tg:${msg.chatId}`;
+			const sessionKey = msg.from;
 			deleteSession(sessionKey);
 			getSessionManager().clearSession(sessionKey);
 			await msg.reply(

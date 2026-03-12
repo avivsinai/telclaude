@@ -575,7 +575,10 @@ export function matchTelegramControlCommand(
 	const atIndex = commandToken.indexOf("@");
 	if (atIndex !== -1) {
 		const explicitTarget = commandToken.slice(atIndex + 1);
-		if (options?.botUsername && explicitTarget !== options.botUsername.toLowerCase()) {
+		if (!options?.botUsername) {
+			return null;
+		}
+		if (explicitTarget !== options.botUsername.toLowerCase()) {
 			return null;
 		}
 		commandToken = commandToken.slice(0, atIndex);

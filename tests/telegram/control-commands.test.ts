@@ -26,6 +26,7 @@ describe("telegram control command registry", () => {
 				botUsername: "telclaude_bot",
 			}),
 		).toBeNull();
+		expect(matchTelegramControlCommand("/status@other_bot")).toBeNull();
 	});
 
 	it("detects known commands for inbound gating", () => {
