@@ -13,7 +13,14 @@ import {
 	removeCronJob,
 	setCronJobEnabled,
 } from "../cron/store.js";
-import type { CronAction, CronAddInput, CronJob, CronSchedule } from "../cron/types.js";
+import type {
+	CronAction,
+	CronAddInput,
+	CronCoverage,
+	CronJob,
+	CronSchedule,
+	CronStatusSummary,
+} from "../cron/types.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "cmd-cron" });
@@ -93,6 +100,56 @@ function formatAction(action: CronAction): string {
 	return "social heartbeat (all enabled)";
 }
 
+export type CronOverview = {
+	enabled: boolean;
+	pollIntervalSeconds: number;
+	timeoutSeconds: number;
+	summary: CronStatusSummary;
+	coverage: CronCoverage;
+	jobs: CronJob[];
+};
+
+export function collectCronOverview(options?: {
+	includeDisabled?: boolean;
+	limit?: number;
+}): CronOverview {
+	const cfg = loadConfig();
+	const jobs = listCronJobs({ includeDisabled: options?.includeDisabled });
+	return {
+		enabled: cfg.cron.enabled,
+		pollIntervalSeconds: cfg.cron.pollIntervalSeconds,
+		timeoutSeconds: cfg.cron.timeoutSeconds,
+		summary: getCronStatusSummary(),
+		coverage: getCronCoverage(),
+		jobs: typeof options?.limit === "number" ? jobs.slice(0, options.limit) : jobs,
+	};
+}
+
+export function formatCronOverview(overview: CronOverview): string {
+	const lines = [
+		"Cron scheduler",
+		`Enabled in config: ${overview.enabled ? "yes" : "no"}`,
+		`Poll interval: ${overview.pollIntervalSeconds}s`,
+		`Job timeout: ${overview.timeoutSeconds}s`,
+		`Jobs: ${overview.summary.enabledJobs}/${overview.summary.totalJobs} enabled`,
+		`Running now: ${overview.summary.runningJobs}`,
+		`Next run: ${formatTimestamp(overview.summary.nextRunAtMs)}`,
+		`Coverage: social(all=${overview.coverage.allSocial ? "yes" : "no"}, specific=${overview.coverage.socialServiceIds.length}), private=${overview.coverage.hasPrivateHeartbeat ? "yes" : "no"}`,
+	];
+
+	if (overview.jobs.length > 0) {
+		lines.push("", "Recent jobs:");
+		for (const job of overview.jobs) {
+			const status = job.lastStatus ? `, last=${job.lastStatus}` : "";
+			lines.push(
+				`- ${job.id}: ${job.name} (${job.enabled ? "enabled" : "disabled"}, next=${formatTimestamp(job.nextRunAtMs)}, action=${formatAction(job.action)}${status})`,
+			);
+		}
+	}
+
+	return lines.join("\n");
+}
+
 function printJobs(jobs: CronJob[]): void {
 	if (jobs.length === 0) {
 		console.log("No cron jobs.");
@@ -122,30 +179,12 @@ export function registerCronCommand(program: Command): void {
 		.description("Show scheduler status and cron coverage")
 		.option("--json", "Output as JSON")
 		.action((opts: { json?: boolean }) => {
-			const cfg = loadConfig();
-			const summary = getCronStatusSummary();
-			const coverage = getCronCoverage();
-			const payload = {
-				enabled: cfg.cron.enabled,
-				pollIntervalSeconds: cfg.cron.pollIntervalSeconds,
-				timeoutSeconds: cfg.cron.timeoutSeconds,
-				summary,
-				coverage,
-			};
+			const payload = collectCronOverview();
 			if (opts.json) {
 				console.log(JSON.stringify(payload, null, 2));
 				return;
 			}
-			console.log("Cron scheduler:");
-			console.log(`  Enabled in config: ${cfg.cron.enabled ? "yes" : "no"}`);
-			console.log(`  Poll interval: ${cfg.cron.pollIntervalSeconds}s`);
-			console.log(`  Job timeout: ${cfg.cron.timeoutSeconds}s`);
-			console.log(`  Jobs: ${summary.totalJobs} total, ${summary.enabledJobs} enabled`);
-			console.log(`  Running now: ${summary.runningJobs}`);
-			console.log(`  Next run: ${formatTimestamp(summary.nextRunAtMs)}`);
-			console.log(
-				`  Coverage: social(all=${coverage.allSocial ? "yes" : "no"}, specific=${coverage.socialServiceIds.length}), private=${coverage.hasPrivateHeartbeat ? "yes" : "no"}`,
-			);
+			console.log(formatCronOverview(payload));
 		});
 
 	cron

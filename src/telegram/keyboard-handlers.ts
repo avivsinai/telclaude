@@ -9,6 +9,7 @@ import type { Bot, CallbackQueryContext, Context } from "grammy";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
+import { formatTelegramHelpOverview } from "./control-commands.js";
 
 const logger = getChildLogger({ module: "keyboard-handlers" });
 
@@ -158,21 +159,6 @@ async function handleTTS(ctx: CallbackQueryContext<Context>, chatId: number): Pr
  * Handle "Help" button press.
  */
 async function handleHelp(ctx: CallbackQueryContext<Context>): Promise<void> {
-	const helpText = `*Quick Commands*
-
-🔄 /new \\- Start fresh conversation
-❓ /whoami \\- Show your identity
-
-*Media*
-📷 Send images for analysis
-🎤 Send voice for transcription
-
-*Buttons*
-🔄 Reset session
-🔊 Read aloud \\(TTS\\)
-
-_Long\\-press messages to copy_`;
-
 	await ctx.answerCallbackQuery();
-	await ctx.reply(helpText, { parse_mode: "MarkdownV2" });
+	await ctx.reply(formatTelegramHelpOverview());
 }
