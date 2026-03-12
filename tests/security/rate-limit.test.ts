@@ -78,28 +78,29 @@ describe("RateLimiter", () => {
 			const userId = "user-minute-test";
 
 			// Exhaust per-user minute limit (default: 10)
+			// Use FULL_ACCESS tier (30/min) so tier limit isn't hit first
 			for (let i = 0; i < 10; i++) {
-				const result = await limiter.checkLimit(userId, "READ_ONLY");
+				const result = await limiter.checkLimit(userId, "FULL_ACCESS");
 				expect(result.allowed).toBe(true);
 			}
 
-			// Next request should be blocked
-			const blocked = await limiter.checkLimit(userId, "READ_ONLY");
+			// Next request should be blocked by per-user limit
+			const blocked = await limiter.checkLimit(userId, "FULL_ACCESS");
 			expect(blocked.allowed).toBe(false);
 			expect(blocked.limitType).toBe("user");
 		});
 
 		it("blocks requests after per-tier minute limit exceeded", async () => {
-			// FULL_ACCESS tier has stricter limits (5 per minute)
+			// READ_ONLY tier has the strictest limits (5 per minute)
 			const userId = "tier-test-user";
 
 			for (let i = 0; i < 5; i++) {
-				const result = await limiter.checkLimit(userId, "FULL_ACCESS");
+				const result = await limiter.checkLimit(userId, "READ_ONLY");
 				expect(result.allowed).toBe(true);
 			}
 
 			// Next request should be blocked by tier limit
-			const blocked = await limiter.checkLimit(userId, "FULL_ACCESS");
+			const blocked = await limiter.checkLimit(userId, "READ_ONLY");
 			expect(blocked.allowed).toBe(false);
 			expect(blocked.limitType).toBe("tier");
 		});

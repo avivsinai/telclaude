@@ -38,9 +38,9 @@ const DEFAULT_RATE_LIMITS: RateLimitConfig = {
 		perHour: 60,
 	},
 	perTier: {
-		READ_ONLY: { perMinute: 20, perHour: 200 },
+		READ_ONLY: { perMinute: 5, perHour: 30 },
 		WRITE_LOCAL: { perMinute: 10, perHour: 100 },
-		FULL_ACCESS: { perMinute: 5, perHour: 30 },
+		FULL_ACCESS: { perMinute: 30, perHour: 300 },
 		SOCIAL: { perMinute: 10, perHour: 100 },
 	},
 };
