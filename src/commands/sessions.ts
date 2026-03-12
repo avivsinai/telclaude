@@ -82,6 +82,35 @@ export function collectSessionRows(options?: {
 	return rows.slice(0, limit);
 }
 
+export function formatSessionRows(
+	rows: SessionListRow[],
+	options?: {
+		activeMinutes?: number;
+		limit?: number;
+	},
+): string {
+	const lines = [`Sessions: ${rows.length}`];
+	if (options?.activeMinutes) {
+		lines.push(`Filtered to the last ${options.activeMinutes} minute(s).`);
+	}
+	if (options?.limit) {
+		lines.push(`Showing up to ${options.limit} most recent session(s).`);
+	}
+	if (rows.length === 0) {
+		lines.push("No sessions found.");
+		return lines.join("\n");
+	}
+
+	lines.push("");
+	for (const row of rows) {
+		const flags = [row.systemSent ? "system prompt sent" : null].filter(Boolean).join(", ");
+		const suffix = flags ? ` (${flags})` : "";
+		lines.push(`- ${row.kind} ${row.key} updated ${formatDuration(row.ageMs)} ago${suffix}`);
+	}
+
+	return lines.join("\n");
+}
+
 export function registerSessionsCommand(program: Command): void {
 	program
 		.command("sessions")

@@ -1,6 +1,7 @@
 import { autoRetry } from "@grammyjs/auto-retry";
 import { Bot, GrammyError, HttpError } from "grammy";
 import { getChildLogger } from "../logging.js";
+import { getTelegramMenuCommands } from "./control-commands.js";
 import type { BotInfo } from "./types.js";
 
 export type TelegramBotOptions = {
@@ -68,6 +69,18 @@ export async function createTelegramBot(options: TelegramBotOptions): Promise<Te
 	logger.info({ botId: me.id, username: me.username }, "bot authenticated");
 
 	return { bot, botInfo: me };
+}
+
+export async function syncTelegramCommandMenu(bot: Bot): Promise<void> {
+	const logger = getChildLogger({ module: "telegram-client" });
+
+	try {
+		const commands = getTelegramMenuCommands();
+		await bot.api.setMyCommands(commands);
+		logger.info({ commandCount: commands.length }, "telegram command menu synced");
+	} catch (err) {
+		logger.warn({ error: String(err) }, "failed to sync telegram command menu");
+	}
 }
 
 /**

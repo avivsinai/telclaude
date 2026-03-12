@@ -53,6 +53,8 @@ cb853d9b343174696ced01e3cab2198c15e26fe5:src/telegram/auto-reply.ts:credentials-
 
 # Auto-reply - session key template literal `tg:${msg.chatId}` (not a credential)
 3c63ce8f105e070543ffc7d050f9618ca2b08165:src/telegram/auto-reply.ts:credentials-javascript:1362
+ae5fb38e614163f7258498e48ae04604c03bbf5f:src/telegram/auto-reply.ts:credentials-javascript:379
+ae5fb38e614163f7258498e48ae04604c03bbf5f:src/telegram/auto-reply.ts:credentials-javascript:654
 
 # Doctor security audit - fake GitHub PAT used as redaction self-test example
 3c63ce8f105e070543ffc7d050f9618ca2b08165:src/commands/doctor.ts:github-pat:305
