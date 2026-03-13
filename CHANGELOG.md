@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docker agent connectivity** — Skill discovery and env-var bypass hardening.
 - **`/ask-public` timeout** — 5-minute minimum for interactive social queries.
 - **Social agent prompt** — Quarantine → promote flow; agents no longer post directly.
-- **AppArmor profiles** — Production-tested and corrected on Pi4.
+- **AppArmor profiles** — Production-tested and corrected on ARM hosts.
 
 ### Security
 

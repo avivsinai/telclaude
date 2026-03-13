@@ -356,7 +356,7 @@ async function runProactiveQuery(
 ): Promise<{ text: string; structuredOutput?: unknown }> {
 	const proactivePoolKey = `${serviceId}:proactive`;
 	const proactiveUserId = `social:${serviceId}:proactive`;
-	// Skills + Pi4 cold-start need more than default 120s — match operator query timeout
+	// Skills + cold-start need more than default 120s — match operator query timeout
 	const timeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 300_000);
 
 	const stream = executeRemoteQuery(bundle.prompt, {
@@ -501,7 +501,7 @@ async function runHeartbeatPhases(
 		);
 	} catch (err) {
 		const errStr = String(err);
-		// TypeError: terminated is a common crash on Pi4 when the stream
+		// TypeError: terminated is a common crash when the stream
 		// is cut mid-flight. Report it cleanly as a timeout, not a crash.
 		if (errStr.includes("TypeError: terminated") || errStr.includes("terminated")) {
 			autonomousError = "stream timeout";
@@ -1280,7 +1280,7 @@ async function handleAutonomousActivity(
 	const autonomousPoolKey = `${serviceId}:autonomous`;
 	const autonomousUserId = `social:${serviceId}:autonomous`;
 
-	// Pi4 cold-start + browser tool use needs generous timeout for autonomous activity
+	// Cold-start + browser tool use needs generous timeout for autonomous activity
 	const timeoutMs = Math.max(getDefaultTimeoutMs(serviceId), 600_000);
 
 	const responseText = await runSocialQuery(bundle, serviceId, agentUrl, {

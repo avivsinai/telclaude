@@ -138,7 +138,7 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 - **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
 - **Claude profiles**: Docker uses a shared skills profile (`/home/telclaude-skills`) and a relay-only auth profile (`/home/telclaude-auth`). Anthropic access goes through the relay proxy; credentials never mount in agent containers.
-- **Weak local servers**: Build locally and transfer images instead of building on device:
+- **Remote deployment**: Build locally and transfer images to the deployment target:
   ```bash
   cd docker && docker compose build
   docker save telclaude:latest telclaude-agent:latest telclaude-google-services:latest telclaude-totp:latest telclaude-vault:latest \

@@ -114,7 +114,7 @@ function resolveCwd(requested?: string): string {
 const KEEPALIVE_INTERVAL_MS = 15_000;
 
 /** First-chunk watchdog: abort if the SDK produces no real output within this window.
- *  Generous default (90s) to accommodate slow startup on loaded low-CPU devices (Pi4).
+ *  Generous default (90s) to accommodate slow startup on loaded hosts.
  *  The watchdog fires once — after the first real chunk, the overall session timeout governs. */
 const FIRST_CHUNK_TIMEOUT_MS = (() => {
 	const raw = Number(process.env.TELCLAUDE_AGENT_FIRST_CHUNK_TIMEOUT_MS ?? 90_000);

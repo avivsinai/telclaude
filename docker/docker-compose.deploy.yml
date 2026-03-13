@@ -1,8 +1,8 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # Telclaude Docker Compose - 5-Container Deployment
 #
-# For deployment targets (Pi4, VPS) with pre-built images.
-# Mirrors docker-compose.yml topology, adapted for resource-constrained hosts.
+# For deployment targets with pre-built images.
+# Mirrors docker-compose.yml topology.
 #
 # Usage:
 #   1. Build images locally:
@@ -100,8 +100,7 @@ services:
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
 
-      # Pi4 default: run as root (kernel quirk with gosu on some Pi kernels)
-      # Override to 0 in .env for non-Pi deployments to enable privilege drop
+      # Set to 1 only if your kernel has quirks with gosu privilege dropping
       - TELCLAUDE_RUN_AS_ROOT=${TELCLAUDE_RUN_AS_ROOT:-0}
       - NODE_ENV=production
 
