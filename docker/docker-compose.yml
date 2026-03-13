@@ -346,6 +346,8 @@ services:
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      # Opt-in permissive network for social browsing (default: restricted)
+      - TELCLAUDE_NETWORK_MODE=${TELCLAUDE_SOCIAL_NETWORK_MODE:-restricted}
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - NODE_ENV=production
 
