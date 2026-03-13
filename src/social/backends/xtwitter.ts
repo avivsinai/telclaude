@@ -71,6 +71,71 @@ type XTimelineResponse = {
 	meta?: { newest_id?: string; oldest_id?: string; result_count?: number };
 };
 
+type XSingleTweetResponse = {
+	data?: XTimelineTweet;
+	includes?: { users?: Array<{ id: string; name: string; username: string }> };
+	errors?: Array<{ message: string; type: string }>;
+};
+
+const X_STATUS_HOSTS = new Set([
+	"x.com",
+	"www.x.com",
+	"twitter.com",
+	"www.twitter.com",
+	"mobile.twitter.com",
+	"mobile.x.com",
+]);
+
+export function extractTweetId(tweetRef: string): string | null {
+	const trimmed = tweetRef.trim();
+	if (/^\d+$/.test(trimmed)) {
+		return trimmed;
+	}
+
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		return null;
+	}
+
+	if (!X_STATUS_HOSTS.has(parsed.hostname.toLowerCase())) {
+		return null;
+	}
+
+	const segments = parsed.pathname.split("/").filter(Boolean);
+	for (let i = 0; i < segments.length - 1; i++) {
+		const segment = segments[i]?.toLowerCase();
+		const candidate = segments[i + 1];
+		if ((segment === "status" || segment === "statuses") && /^\d+$/.test(candidate ?? "")) {
+			return candidate ?? null;
+		}
+	}
+
+	return null;
+}
+
+function mapTweetToTimelinePost(
+	tweet: XTimelineTweet,
+	users?: Array<{ id: string; name: string; username: string }>,
+): SocialTimelinePost {
+	const author = tweet.author_id ? users?.find((user) => user.id === tweet.author_id) : undefined;
+	return {
+		id: tweet.id,
+		text: tweet.text,
+		authorName: author?.name,
+		authorHandle: author?.username,
+		createdAt: tweet.created_at,
+		metrics: tweet.public_metrics
+			? {
+					likes: tweet.public_metrics.like_count,
+					retweets: tweet.public_metrics.retweet_count,
+					replies: tweet.public_metrics.reply_count,
+				}
+			: undefined,
+	};
+}
+
 /**
  * Resolve the base URL for X API calls.
  * In production: routed through the vault credential proxy (http://relay:8792/api.x.com).
@@ -248,6 +313,43 @@ export class XTwitterClient implements SocialServiceClient {
 		return { ok: true, status: result.status, postId: tweetId };
 	}
 
+	async fetchTweet(tweetRef: string): Promise<SocialTimelinePost | null> {
+		const tweetId = extractTweetId(tweetRef);
+		if (!tweetId) {
+			return null;
+		}
+
+		const params = new URLSearchParams({
+			"tweet.fields": "created_at,public_metrics,author_id",
+			expansions: "author_id",
+			"user.fields": "name,username",
+		});
+
+		const result = await this.request<XSingleTweetResponse>(
+			`/2/tweets/${encodeURIComponent(tweetId)}?${params}`,
+			{ method: "GET" },
+		);
+
+		if (!result.ok) {
+			if ([402, 403, 404, 429].includes(result.status)) {
+				logger.info({ status: result.status, tweetId }, "X tweet lookup unavailable; skipping");
+				return null;
+			}
+			throw new Error(`X tweet lookup failed (${result.status}): ${result.error}`);
+		}
+
+		const tweet = result.data?.data;
+		if (!tweet) {
+			return null;
+		}
+
+		return mapTweetToTimelinePost(tweet, result.data?.includes?.users);
+	}
+
+	async fetchPostByUrl(url: string): Promise<SocialTimelinePost | null> {
+		return this.fetchTweet(url);
+	}
+
 	/**
 	 * Post a thread (reply-to-self chain).
 	 * First tweet is standalone; subsequent tweets reply to the previous one.
@@ -368,29 +470,7 @@ export class XTwitterClient implements SocialServiceClient {
 			return [];
 		}
 
-		// Build author lookup from includes.users expansion
-		const userMap = new Map<string, { name: string; username: string }>();
-		for (const user of result.data?.includes?.users ?? []) {
-			userMap.set(user.id, { name: user.name, username: user.username });
-		}
-
-		return tweets.map((tweet): SocialTimelinePost => {
-			const author = tweet.author_id ? userMap.get(tweet.author_id) : undefined;
-			return {
-				id: tweet.id,
-				text: tweet.text,
-				authorName: author?.name,
-				authorHandle: author?.username,
-				createdAt: tweet.created_at,
-				metrics: tweet.public_metrics
-					? {
-							likes: tweet.public_metrics.like_count,
-							retweets: tweet.public_metrics.retweet_count,
-							replies: tweet.public_metrics.reply_count,
-						}
-					: undefined,
-			};
-		});
+		return tweets.map((tweet) => mapTweetToTimelinePost(tweet, result.data?.includes?.users));
 	}
 }
 

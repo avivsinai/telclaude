@@ -32,4 +32,7 @@ export interface SocialServiceClient {
 
 	/** Fetch recent timeline posts (optional — not all backends support this). */
 	fetchTimeline?(options?: { maxResults?: number }): Promise<SocialTimelinePost[]>;
+
+	/** Resolve a public post URL into structured post data (optional backend capability). */
+	fetchPostByUrl?(url: string): Promise<SocialTimelinePost | null>;
 }

@@ -9,7 +9,7 @@ vi.mock("../../src/logging.js", () => ({
 	}),
 }));
 
-import { XTwitterClient } from "../../src/social/backends/xtwitter.js";
+import { extractTweetId, XTwitterClient } from "../../src/social/backends/xtwitter.js";
 
 function jsonResponse(payload: unknown, status = 200) {
 	return new Response(JSON.stringify(payload), { status });
@@ -191,6 +191,68 @@ describe("XTwitterClient.quotePost", () => {
 			ok: true,
 			status: 201,
 			postId: "quote-1",
+		});
+	});
+});
+
+describe("extractTweetId", () => {
+	it("extracts tweet IDs from x.com and twitter.com status URLs", () => {
+		expect(extractTweetId("https://x.com/example/status/12345?s=20")).toBe("12345");
+		expect(extractTweetId("https://twitter.com/example/statuses/67890")).toBe("67890");
+		expect(extractTweetId("https://x.com/i/web/status/24680")).toBe("24680");
+		expect(extractTweetId("13579")).toBe("13579");
+		expect(extractTweetId("https://example.com/not-a-tweet")).toBeNull();
+	});
+});
+
+describe("XTwitterClient.fetchTweet", () => {
+	it("fetches and normalizes a tweet from the X API", async () => {
+		const fetchImpl = vi.fn(async (url: string) => {
+			const parsed = new URL(url);
+			expect(parsed.pathname).toBe("/2/tweets/12345");
+			expect(parsed.searchParams.get("tweet.fields")).toBe("created_at,public_metrics,author_id");
+			expect(parsed.searchParams.get("expansions")).toBe("author_id");
+			expect(parsed.searchParams.get("user.fields")).toBe("name,username");
+			return jsonResponse(
+				{
+					data: {
+						id: "12345",
+						text: "Fetched tweet",
+						author_id: "user-7",
+						created_at: "2026-03-01T10:00:00.000Z",
+						public_metrics: {
+							like_count: 7,
+							retweet_count: 3,
+							reply_count: 2,
+						},
+					},
+					includes: {
+						users: [{ id: "user-7", name: "Writer", username: "writer" }],
+					},
+				},
+				200,
+			);
+		});
+
+		const client = new XTwitterClient({
+			userId: "user-1",
+			baseUrl: "https://api.x.com",
+			fetchImpl,
+		});
+
+		const tweet = await client.fetchTweet("https://x.com/writer/status/12345");
+
+		expect(tweet).toEqual({
+			id: "12345",
+			text: "Fetched tweet",
+			authorName: "Writer",
+			authorHandle: "writer",
+			createdAt: "2026-03-01T10:00:00.000Z",
+			metrics: {
+				likes: 7,
+				retweets: 3,
+				replies: 2,
+			},
 		});
 	});
 });
