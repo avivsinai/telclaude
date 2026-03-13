@@ -149,6 +149,44 @@ async function fetchTimelineSafe(
 	}
 }
 
+function extractCandidateUrls(text: string): string[] {
+	return (text.match(/https?:\/\/\S+/giu) ?? [])
+		.map((url) => url.replace(/[),.;!?]+$/u, ""))
+		.filter(Boolean);
+}
+
+async function fetchReferencedPostsSafe(
+	client: SocialServiceClient | undefined,
+	serviceId: string,
+	text: string,
+): Promise<SocialTimelinePost[]> {
+	if (!client?.fetchPostByUrl) {
+		return [];
+	}
+
+	const urls = Array.from(new Set(extractCandidateUrls(text))).slice(0, 3);
+	if (urls.length === 0) {
+		return [];
+	}
+
+	const fetchPostByUrl = client.fetchPostByUrl.bind(client);
+	const posts = await Promise.all(
+		urls.map(async (url) => {
+			try {
+				return await withTimeout(fetchPostByUrl(url), 15_000, "post-fetch");
+			} catch (err) {
+				logger.warn(
+					{ error: String(err), serviceId, url },
+					"referenced post fetch failed; continuing without",
+				);
+				return null;
+			}
+		}),
+	);
+
+	return posts.filter((post): post is SocialTimelinePost => post !== null);
+}
+
 /**
  * Get trusted social entries using unified "social" source.
  * All social services share a single memory pool for a cohesive public identity.
@@ -664,14 +702,25 @@ export async function queryPublicPersona(
 	}
 
 	const timeline = await fetchTimelineSafe(client ?? undefined, serviceId);
+	const referencedPosts = await fetchReferencedPostsSafe(client ?? undefined, serviceId, question);
 	const timelineBlock = timeline.length > 0 ? `\n\n${formatTimelineForPrompt(timeline)}` : "";
-	const apiHint = timelineBlock
-		? "\nYour timeline data is already included below via the API — do not use browser automation to fetch it again."
-		: "";
+	const referencedPostBlock =
+		referencedPosts.length > 0 ? `\n\n${formatReferencedPostsForPrompt(referencedPosts)}` : "";
+	const apiHints = [
+		timelineBlock
+			? "Your timeline data is already included below via the API — do not use browser automation to fetch it again."
+			: "",
+		referencedPostBlock
+			? "Referenced post data is already included below via the API — do not use browser automation to fetch those posts again."
+			: "",
+	]
+		.filter(Boolean)
+		.map((hint) => `\n${hint}`)
+		.join("");
 	const postingHint =
 		"\nYou CANNOT post directly — do not use browser automation to post. To propose a post, quarantine it via the memory skill. Your operator will review and promote it.";
 	const bundle = buildSocialPromptBundle(
-		`[OPERATOR QUESTION - TRUSTED]\nYour admin is asking about your public activity.${apiHint}${postingHint}${timelineBlock}\n\n${question}`,
+		`[OPERATOR QUESTION - TRUSTED]\nYour admin is asking about your public activity.${apiHints}${postingHint}${timelineBlock}${referencedPostBlock}\n\n${question}`,
 		serviceId,
 	);
 	// Operator queries are interactive (user waiting) and may use skills/browser.
@@ -1421,6 +1470,15 @@ function formatTimelineForPrompt(timeline: SocialTimelinePost[]): string {
 		foldHomoglyphs: true,
 		includeRiskAssessment: true,
 	});
+}
+
+function formatReferencedPostsForPrompt(posts: SocialTimelinePost[]): string {
+	if (posts.length === 0) return "";
+	return [
+		"[API-FETCHED REFERENCED POSTS]",
+		formatTimelineForPrompt(posts),
+		"[END API-FETCHED REFERENCED POSTS]",
+	].join("\n");
 }
 
 /**

@@ -6,6 +6,7 @@ const getEntriesMock = vi.hoisted(() => vi.fn());
 const markEntryPostedMock = vi.hoisted(() => vi.fn());
 const checkLimitMock = vi.hoisted(() => vi.fn());
 const consumeMock = vi.hoisted(() => vi.fn());
+const createXTwitterClientMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../src/agent/client.js", () => ({
 	executeRemoteQuery: (...args: unknown[]) => executeRemoteQueryMock(...args),
@@ -31,6 +32,10 @@ vi.mock("../../src/logging.js", () => ({
 		error: vi.fn(),
 		debug: vi.fn(),
 	}),
+}));
+
+vi.mock("../../src/social/backends/xtwitter.js", () => ({
+	createXTwitterClient: (...args: unknown[]) => createXTwitterClientMock(...args),
 }));
 
 vi.mock("../../src/telegram/admin-alert.js", () => ({
@@ -103,6 +108,7 @@ describe("social handler", () => {
 		markEntryPostedMock.mockReset();
 		checkLimitMock.mockReset();
 		consumeMock.mockReset();
+		createXTwitterClientMock.mockReset();
 		getEntriesMock.mockReturnValue(sampleEntries);
 		createEntriesMock.mockImplementation(
 			(entries: Array<Record<string, unknown>>, source: string) =>
@@ -704,6 +710,33 @@ describe("social handler", () => {
 
 		const [, options] = executeRemoteQueryMock.mock.calls[0];
 		expect(options.allowedSkills).toEqual(["memory", "summarize"]);
+	});
+
+	it("queryPublicPersona injects API-fetched referenced X posts into the prompt", async () => {
+		const fetchPostByUrl = vi.fn().mockResolvedValue({
+			id: "tweet-123",
+			text: "API-resolved tweet text",
+			authorHandle: "writer",
+		});
+		createXTwitterClientMock.mockResolvedValue(
+			mockClient({
+				serviceId: "xtwitter",
+				fetchTimeline: vi.fn().mockResolvedValue([]),
+				fetchPostByUrl,
+			}),
+		);
+		executeRemoteQueryMock.mockReturnValueOnce(mockStream("response"));
+
+		await queryPublicPersona(
+			"what do you think of https://x.com/writer/status/12345?s=20 ?",
+			"xtwitter",
+		);
+
+		expect(fetchPostByUrl).toHaveBeenCalledWith("https://x.com/writer/status/12345?s=20");
+		const [prompt] = executeRemoteQueryMock.mock.calls[0];
+		expect(prompt).toContain("[API-FETCHED REFERENCED POSTS]");
+		expect(prompt).toContain("API-resolved tweet text");
+		expect(prompt).toContain("do not use browser automation to fetch those posts again");
 	});
 
 	it("proactive posting uses minimal prompt without general memory", async () => {
