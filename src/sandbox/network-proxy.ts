@@ -629,6 +629,8 @@ export async function checkPrivateNetworkAccess(
 
 	// 4. Check EACH resolved IP
 	const matchedEndpoints: PrivateEndpoint[] = [];
+	let hasPublicIP = false;
+	let hasPrivateIP = false;
 
 	for (const ip of targetIPs) {
 		const canonicalIP = canonicalizeIP(ip);
@@ -649,6 +651,7 @@ export async function checkPrivateNetworkAccess(
 
 		// 4b. Check if IP is private - if so, must be in allowlist
 		if (isPrivateIP(canonicalIP)) {
+			hasPrivateIP = true;
 			const match = findMatchingPrivateEndpoint(canonicalIP, endpoints, hostname);
 			if (!match.matched) {
 				return {
@@ -659,8 +662,17 @@ export async function checkPrivateNetworkAccess(
 			if (match.endpoint) {
 				matchedEndpoints.push(match.endpoint);
 			}
+		} else {
+			hasPublicIP = true;
 		}
-		// If it's a public IP, it's handled by the regular domain allowlist
+	}
+
+	// 4c. Fail closed on mixed public/private resolution (DNS rebinding indicator)
+	if (hasPublicIP && hasPrivateIP) {
+		return {
+			allowed: false,
+			reason: `Mixed private/public DNS resolution for ${hostname} — possible DNS rebinding`,
+		};
 	}
 
 	// 5. Port enforcement - check ALL matched endpoints

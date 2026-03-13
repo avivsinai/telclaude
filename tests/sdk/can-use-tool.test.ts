@@ -466,12 +466,13 @@ describe("buildSdkOptions PreToolUse hook", () => {
 			expect(sdkOptsWithoutSkills.settingSources).toEqual(["project"]);
 		});
 
-		it("includes user settings when skills are enabled for skill discovery", async () => {
-			// When enableSkills is true, we need "user" in settingSources so the SDK
-			// discovers skills at $CLAUDE_CONFIG_DIR/skills/.
-			// Safe because isSensitivePath blocks writes to $CLAUDE_CONFIG_DIR/settings*.json.
+		it("uses project-only settings even when skills are enabled", async () => {
+			// SECURITY: Always project-only. Loading "user" settings would allow a pre-seeded
+			// settings.json in CLAUDE_CONFIG_DIR to set disableAllHooks: true, bypassing
+			// PreToolUse security hooks. Skills are discovered via CLAUDE_CONFIG_DIR/skills/
+			// which the SDK loads regardless of settingSources when enableSkills is true.
 			const sdkOptsWithSkills = await buildSdkOptions({ ...baseOpts, enableSkills: true });
-			expect(sdkOptsWithSkills.settingSources).toEqual(["user", "project"]);
+			expect(sdkOptsWithSkills.settingSources).toEqual(["project"]);
 		});
 	});
 });

@@ -212,6 +212,39 @@ if [ -n "$PROVIDER_HOSTS_RAW" ]; then
     echo "[firewall] added provider hosts: ${PROVIDER_HOSTS[*]}"
 fi
 
+# Parse privateEndpoints from config (security.network.privateEndpoints[])
+# These allow agent WebFetch access to specific trusted private network hosts/CIDRs.
+PRIVATE_ENDPOINTS_RAW=""
+if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+    PRIVATE_ENDPOINTS_RAW="$(
+        TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
+const fs = require("fs");
+const configPath = process.env.TELCLAUDE_CONFIG_PATH || "/data/telclaude.json";
+if (!fs.existsSync(configPath)) process.exit(0);
+let JSON5;
+try { JSON5 = require("/app/node_modules/json5"); } catch {
+  try { JSON5 = require("json5"); } catch { process.exit(0); }
+}
+let raw;
+try { raw = fs.readFileSync(configPath, "utf8"); } catch { process.exit(0); }
+let cfg;
+try { cfg = JSON5.parse(raw); } catch { process.exit(0); }
+const endpoints = cfg?.security?.network?.privateEndpoints;
+if (!Array.isArray(endpoints)) process.exit(0);
+const rules = [];
+for (const ep of endpoints) {
+  if (!ep) continue;
+  const target = ep.cidr || ep.host;
+  if (!target) continue;
+  // Match app-layer default: omitted/empty ports → 80,443 only
+  const ports = Array.isArray(ep.ports) && ep.ports.length > 0 ? ep.ports.join(",") : "80,443";
+  rules.push(target + "|" + ports);
+}
+process.stdout.write(rules.join("\n"));
+NODE
+    )"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Blocked metadata endpoints (cloud instance metadata - SSRF targets)
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -220,6 +253,25 @@ BLOCKED_METADATA_IPS=(
     "169.254.170.2"    # AWS ECS container metadata
     "100.100.100.200"  # Alibaba Cloud metadata
 )
+
+# Check if an IP is public (not RFC1918, not CGNAT, not link-local, not loopback, not metadata)
+is_public_ip() {
+    local ip="$1"
+    case "$ip" in
+        10.*) return 1 ;;
+        172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 1 ;;
+        192.168.*) return 1 ;;
+        169.254.*) return 1 ;;
+        100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*) return 1 ;;
+        127.*) return 1 ;;
+    esac
+    for blocked in "${BLOCKED_METADATA_IPS[@]}"; do
+        if [ "$ip" = "$blocked" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Internal Host Resolution with Retry
@@ -353,7 +405,8 @@ setup_firewall() {
     iptables -A OUTPUT -d 172.16.0.0/12 -j DROP
     iptables -A OUTPUT -d 192.168.0.0/16 -j DROP
     iptables -A OUTPUT -d 169.254.0.0/16 -j DROP  # Link-local
-    echo "[firewall] blocked RFC1918 private networks"
+    iptables -A OUTPUT -d 100.64.0.0/10 -j DROP   # CGNAT (Tailscale, carrier NAT)
+    echo "[firewall] blocked RFC1918 + CGNAT private networks"
 
     # Allow DNS only to Docker resolver
     iptables -A OUTPUT -p udp --dport 53 -d 127.0.0.11 -j ACCEPT
@@ -375,6 +428,26 @@ setup_firewall() {
     if [ ${#INTERNAL_HOSTS[@]} -gt 0 ]; then
         resolve_internal_hosts_with_retry
         add_internal_host_rules
+    fi
+
+    # Add private endpoint rules (from security.network.privateEndpoints config)
+    if [ -n "$PRIVATE_ENDPOINTS_RAW" ]; then
+        echo "[firewall] adding private endpoint rules..."
+        while IFS='|' read -r target ports; do
+            [ -z "$target" ] && continue
+            if [ -n "$ports" ]; then
+                IFS=',' read -r -a port_arr <<< "$ports"
+                for port in "${port_arr[@]}"; do
+                    iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
+                    echo "[firewall] allowed private endpoint: $target:$port"
+                done
+            else
+                # Defensive fallback — serializer should always emit ports (default 80,443)
+                echo "[firewall] WARNING: private endpoint $target has no ports, applying default 80,443"
+                iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+                iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+            fi
+        done <<< "$PRIVATE_ENDPOINTS_RAW"
     fi
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -400,8 +473,12 @@ setup_firewall() {
 
         if [ -n "$ips" ]; then
             for ip in $ips; do
-                iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT
-                echo "[firewall] allowed: $domain ($ip)"
+                if is_public_ip "$ip"; then
+                    iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT
+                    echo "[firewall] allowed: $domain ($ip)"
+                else
+                    echo "[firewall] WARNING: $domain resolved to private IP $ip, skipping"
+                fi
             done
         else
             echo "[firewall] warning: could not resolve $domain"
@@ -625,10 +702,33 @@ refresh_firewall() {
         fi
 
         for ip in $new_ips; do
-            iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
+            if is_public_ip "$ip"; then
+                iptables -A TELCLAUDE_ALLOW -d "$ip" -j ACCEPT 2>/dev/null || true
+            else
+                echo "[firewall-refresh] WARNING: $domain resolved to private IP $ip, skipping"
+            fi
         done
         ((updated++)) || true
     done
+
+    # Re-add private endpoint rules
+    if [ -n "$PRIVATE_ENDPOINTS_RAW" ]; then
+        while IFS='|' read -r target ports; do
+            [ -z "$target" ] && continue
+            if [ -n "$ports" ]; then
+                IFS=',' read -r -a port_arr <<< "$ports"
+                for port in "${port_arr[@]}"; do
+                    iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
+                done
+            else
+                # Defensive fallback — serializer should always emit ports
+                iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+                iptables -A TELCLAUDE_ALLOW -d "$target" -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
+            fi
+            ((updated++)) || true
+        done <<< "$PRIVATE_ENDPOINTS_RAW"
+        echo "[firewall-refresh] re-added private endpoint rules"
+    fi
 
     echo "[firewall-refresh] rebuilt TELCLAUDE_ALLOW chain ($updated entries)"
 

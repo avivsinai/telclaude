@@ -23,13 +23,6 @@ const AGENT_WORKDIR = process.env.TELCLAUDE_AGENT_WORKDIR ?? process.cwd();
 const RESOLVED_AGENT_WORKDIR = path.resolve(AGENT_WORKDIR);
 export const AGENT_STARTED_AT = Date.now();
 
-/**
- * Tracks which request "owns" the current TELCLAUDE_SESSION_TOKEN env var.
- * Prevents concurrent request cleanup from deleting another request's token.
- */
-let activeSessionTokenRequestId: string | null = null;
-let requestCounter = 0;
-
 type QueryRequest = {
 	prompt: string;
 	tier: PermissionTier;
@@ -168,6 +161,7 @@ async function streamQuery(
 			resumeSessionId: req.resumeSessionId,
 			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
 			allowedSkills: req.allowedSkills,
+			sessionToken: req.sessionToken,
 			timeoutMs: req.timeoutMs,
 			abortController,
 			betas: req.betas,
@@ -307,16 +301,6 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					"agent received query request",
 				);
 
-				// Inject relay-minted session token into process env for the Claude subprocess.
-				// This allows telclaude CLI tools (tts, generate-image, memory) to authenticate
-				// to the relay without the private key.
-				// Use request ID guard to prevent concurrent requests from deleting each other's tokens.
-				const requestId = `req-${++requestCounter}`;
-				if (parsed.sessionToken && typeof parsed.sessionToken === "string") {
-					process.env.TELCLAUDE_SESSION_TOKEN = parsed.sessionToken;
-					activeSessionTokenRequestId = requestId;
-				}
-
 				const timeoutMs = clampTimeout(parsed.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 				const abortController = new AbortController();
 				const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
@@ -393,12 +377,6 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					})
 					.finally(() => {
 						clearTimeout(timeoutId);
-						// Clean up session token — only if this request still owns it.
-						// Prevents concurrent requests from deleting each other's tokens.
-						if (parsed.sessionToken && activeSessionTokenRequestId === requestId) {
-							delete process.env.TELCLAUDE_SESSION_TOKEN;
-							activeSessionTokenRequestId = null;
-						}
 					});
 			} catch (err) {
 				logger.warn({ error: String(err) }, "failed to parse agent request");

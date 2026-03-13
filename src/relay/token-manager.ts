@@ -196,6 +196,17 @@ export function verifyTokenLocally(token: string): {
 			return { valid: false, error: "Invalid signature" };
 		}
 
+		// Enforce sessionId membership: token must be current or grace-period
+		const scopeState = scopeTokens.get(scope as InternalAuthScope);
+		if (scopeState) {
+			const isCurrentSession = scopeState.current.sessionId === sessionId;
+			const isPreviousSession = scopeState.previous?.sessionId === sessionId;
+			if (!isCurrentSession && !isPreviousSession) {
+				return { valid: false, error: "Session ID not recognized (rotated out)" };
+			}
+		}
+		// If no scope state (relay just restarted), accept any valid-signature token
+
 		return { valid: true, scope, sessionId, expiresAt };
 	} catch {
 		return { valid: false, error: "Signature verification failed" };

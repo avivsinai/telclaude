@@ -5,7 +5,7 @@
  * for git operations with automatically signed commits.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -50,8 +50,8 @@ async function applyGitIdentity(): Promise<boolean> {
 	}
 
 	try {
-		execSync(`git config --global user.name "${identity.username}"`, { stdio: "pipe" });
-		execSync(`git config --global user.email "${identity.email}"`, { stdio: "pipe" });
+		execFileSync("git", ["config", "--global", "user.name", identity.username], { stdio: "pipe" });
+		execFileSync("git", ["config", "--global", "user.email", identity.email], { stdio: "pipe" });
 		return true;
 	} catch (err) {
 		logger.warn({ error: String(err) }, "failed to apply git identity");

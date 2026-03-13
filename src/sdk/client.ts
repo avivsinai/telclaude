@@ -161,6 +161,9 @@ export type TelclaudeQueryOptions = {
 	 * Other tiers: omitting allows all skills (private agents are trusted). */
 	allowedSkills?: string[];
 
+	/** Pre-minted session token for relay capabilities (request-scoped, NOT from process.env). */
+	sessionToken?: string;
+
 	/** Abort controller for external cancellation. */
 	abortController?: AbortController;
 
@@ -826,6 +829,19 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// User ID for rate limiting is passed via system prompt below instead of
 		// env var to avoid race conditions with concurrent requests.
 		// OPENAI_API_KEY and GITHUB_TOKEN should already be in process.env.
+		//
+		// Session token: In native mode we must use process.env since there's no
+		// sandboxEnv to inject into (SDK hangs with custom env + sandbox.enabled).
+		// KNOWN LIMITATION: Under concurrent requests in native mode, there is a
+		// race window between this set and the SDK subprocess spawn. This is an
+		// inherent SDK constraint — the production Docker path uses per-request
+		// sandboxEnv and is fully race-free. Native mode is dev/test only.
+		// Always set-or-delete to prevent stale tokens from prior requests.
+		if (opts.sessionToken) {
+			process.env.TELCLAUDE_SESSION_TOKEN = opts.sessionToken;
+		} else {
+			delete process.env.TELCLAUDE_SESSION_TOKEN;
+		}
 	} else {
 		// Docker mode: Pass explicit env since container provides isolation
 		// Use cwd as HOME when actual HOME is read-only (e.g., social agent's HOME=/social)
@@ -857,10 +873,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (relayPublicKey) {
 			sandboxEnv.TELEGRAM_RPC_RELAY_PUBLIC_KEY = relayPublicKey;
 		}
-		// Pass relay-minted session token to Claude subprocess (if agent server injected one).
+		// Pass relay-minted session token to Claude subprocess (request-scoped via opts).
 		// This allows telclaude CLI tools to authenticate to the relay without the private key.
-		if (process.env.TELCLAUDE_SESSION_TOKEN) {
-			sandboxEnv.TELCLAUDE_SESSION_TOKEN = process.env.TELCLAUDE_SESSION_TOKEN;
+		if (opts.sessionToken) {
+			sandboxEnv.TELCLAUDE_SESSION_TOKEN = opts.sessionToken;
 		}
 		// Credential proxy URL — agents route OpenAI/media API calls through relay proxy
 		if (process.env.TELCLAUDE_CREDENTIAL_PROXY_URL) {
@@ -1143,7 +1159,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
 					// In permissive mode, skip allowlist check - only block private/metadata above
 					if (
-						!isPermissiveMode &&
+						!effectivePermissive &&
 						!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))
 					) {
 						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebFetch");
@@ -1170,18 +1186,11 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		return { behavior: "allow", updatedInput: input };
 	};
 
-	// SECURITY: settingSources controls where the SDK loads settings (CLAUDE.md, skills, settings.json).
-	// "project" = cwd/.claude/, "user" = $CLAUDE_CONFIG_DIR/ (or ~/.claude/).
-	//
-	// Default to "project" only — this prevents loading user-level settings.json which could
-	// contain disableAllHooks: true (bypassing our PreToolUse security hooks).
-	//
-	// When enableSkills is true, we ALSO load "user" settings so the SDK discovers skills at
-	// $CLAUDE_CONFIG_DIR/skills/ (in Docker: /home/telclaude-skills/skills/).
-	// This is safe because writes to $CLAUDE_CONFIG_DIR/settings*.json are blocked by
-	// isSensitivePath (both PreToolUse hook and canUseTool), preventing the agent from
-	// creating a malicious disableAllHooks setting.
-	sdkOpts.settingSources = opts.enableSkills ? ["user", "project"] : ["project"];
+	// SECURITY: Always project-only. Loading "user" settings would allow a pre-seeded
+	// settings.json in CLAUDE_CONFIG_DIR to set disableAllHooks: true, bypassing
+	// PreToolUse security hooks. Skills are discovered via CLAUDE_CONFIG_DIR/skills/
+	// which the SDK loads regardless of settingSources when enableSkills is true.
+	sdkOpts.settingSources = ["project"];
 
 	// System prompt configuration
 	// Include user ID in system prompt for skills that need to make authenticated API calls

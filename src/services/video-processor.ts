@@ -124,8 +124,13 @@ export async function processVideo(
 	}
 
 	// Create unique output directory based on video hash
-	const videoBuffer = await fs.promises.readFile(videoPath);
-	const hash = crypto.createHash("sha256").update(videoBuffer).digest("hex").slice(0, 16);
+	const hash = await new Promise<string>((resolve, reject) => {
+		const hasher = crypto.createHash("sha256");
+		const stream = fs.createReadStream(videoPath);
+		stream.on("data", (chunk: Buffer) => hasher.update(chunk));
+		stream.on("end", () => resolve(hasher.digest("hex").slice(0, 16)));
+		stream.on("error", reject);
+	});
 	const outputDir = await createMediaSubdir("video-frames", hash);
 
 	logger.info({ videoPath, hash, outputDir }, "processing video");
