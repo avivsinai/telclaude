@@ -55,10 +55,7 @@ function resolveRevision(): string {
 	}
 
 	// 3. .revision file (Docker fallback — baked by prebuild from host, or copied into image)
-	const revisionPaths = [
-		"/app/.revision",
-		path.resolve(sourceDir, "../.revision"),
-	];
+	const revisionPaths = ["/app/.revision", path.resolve(sourceDir, "../.revision")];
 	for (const revPath of revisionPaths) {
 		try {
 			const rev = fs.readFileSync(revPath, "utf-8").trim();
