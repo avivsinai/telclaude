@@ -97,4 +97,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
 WORKDIR /data
 
 ENTRYPOINT ["/app/bin/telclaude.js"]
-CMD ["vault-daemon", "--socket", "/run/vault/vault.sock"]
+CMD ["maintenance", "vault-daemon", "--socket", "/run/vault/vault.sock"]
