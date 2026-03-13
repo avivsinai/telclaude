@@ -846,8 +846,11 @@ export function hasTelegramControlCommand(
 	return matchTelegramControlCommand(body, options) !== null;
 }
 
-export function isTelegramAuthExemptCommand(body: string): boolean {
-	const match = matchTelegramControlCommand(body);
+export function isTelegramAuthExemptCommand(
+	body: string,
+	options?: { botUsername?: string },
+): boolean {
+	const match = matchTelegramControlCommand(body, options);
 	return match?.command.authExempt === true;
 }
 
