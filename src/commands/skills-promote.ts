@@ -155,29 +155,27 @@ export function listDraftSkills(draftRoot?: string): string[] {
 }
 
 /**
- * Register CLI promote command.
+ * Register skills promote/drafts subcommands on a parent command group.
+ * Parent is expected to be the "skills" group.
  */
-export function registerSkillsPromoteCommand(program: Command): void {
-	// This is registered as a subcommand of the existing "skills" command group.
-	// Since commander doesn't easily allow adding subcommands after creation,
-	// we add it directly here. The caller should integrate this into the skills group.
-	program
-		.command("promote-skill")
+export function registerSkillsPromoteSubcommands(parent: Command): void {
+	parent
+		.command("promote")
 		.description("Promote a draft skill to active")
 		.argument("<name>", "Name of the draft skill to promote")
 		.action((name: string) => {
 			const result = promoteSkill(name);
 
 			if (result.success) {
-				console.log(`✓ Skill "${name}" promoted to active. Available next session.`);
+				console.log(`Skill "${name}" promoted to active. Available next session.`);
 			} else {
-				console.error(`✗ ${result.error}`);
+				console.error(`Error: ${result.error}`);
 				process.exitCode = 1;
 			}
 		});
 
-	program
-		.command("list-drafts")
+	parent
+		.command("drafts")
 		.description("List draft skills awaiting promotion")
 		.action(() => {
 			const drafts = listDraftSkills();

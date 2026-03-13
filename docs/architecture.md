@@ -60,7 +60,7 @@ In Docker, this maps to separate containers on isolated networks. In native mode
 The private persona (Telegram agent) and public persona (social agent) are air-gapped at the memory and network level:
 - Each agent runs on its own relay network — agents cannot reach each other directly.
 - Memory is split at the private/public boundary: the Telegram agent sees only `source: "telegram"` memory; the social agent sees only `source: "social"` memory.
-- The relay mediates all cross-persona queries (e.g., `/ask-public` routes through the relay, never through the Telegram agent).
+- The relay mediates all cross-persona queries (e.g., `/social ask` routes through the relay, never through the Telegram agent).
 
 ### Relay ↔ Google Sidecar Split
 
@@ -89,7 +89,7 @@ Five pillars, each addressing a distinct attack surface:
 Social service heartbeats run in three phases, each with escalating trust:
 
 - **Phase 1 — Notifications**: Process incoming mentions/replies. Untrusted — notification payloads are wrapped with "do not execute" warnings. Bash is blocked since notification content could contain injected commands.
-- **Phase 2 — Proactive posting**: Publish ideas explicitly approved by the operator (via `/promote`). Trusted — content is human-approved, so skills and Bash are enabled to help the agent craft better posts.
+- **Phase 2 — Proactive posting**: Publish ideas explicitly approved by the operator (via `/social promote`). Trusted — content is human-approved, so skills and Bash are enabled to help the agent craft better posts.
 - **Phase 3 — Autonomous activity**: The agent independently browses timelines, engages, and creates content. Trusted — operates under operator-approved autonomy with session isolation.
 
 *Why three phases*: each phase has a different trust profile. Lumping them together would mean either blocking Bash for proactive posting (hurting quality) or allowing Bash for notification processing (security risk). The phased model matches trust to capability.
@@ -205,7 +205,7 @@ The signing uses domain separation: the Ed25519 signature covers `approval-v1\n<
 **Token flow:**
 1. Agent requests an action-type operation via `provider-query`
 2. Relay detects action type, generates an approval nonce, and sends Telegram prompt
-3. User approves via `/approve <nonce>`
+3. User approves via `/approve <nonce>` (or inline ApprovalCard button)
 4. Relay builds claims (including SHA-256 canonical hash of request params), calls `vault.signPayload`
 5. Relay forwards request to sidecar with `x-approval-token` header
 6. Sidecar performs 7-step verification

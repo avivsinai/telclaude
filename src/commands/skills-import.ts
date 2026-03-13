@@ -331,10 +331,12 @@ function importSkills(
 // Command Registration
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export function registerSkillsCommands(program: Command): void {
-	const skills = program.command("skills").description("Manage telclaude skills");
-
-	skills
+/**
+ * Register skills import/scan subcommands on a parent command.
+ * When called with the "skills" group command, registers import-openclaw and scan directly.
+ */
+export function registerSkillsImportSubcommands(parent: Command): void {
+	parent
 		.command("import-openclaw")
 		.description("Import skills from an OpenClaw-format directory")
 		.argument("<source>", "Path to OpenClaw source directory")
@@ -405,7 +407,7 @@ export function registerSkillsCommands(program: Command): void {
 			},
 		);
 
-	skills
+	parent
 		.command("scan")
 		.description("Scan all installed skills for malicious patterns")
 		.option("--path <dir>", "Path to skills directory to scan")
