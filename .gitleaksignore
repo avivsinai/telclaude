@@ -66,3 +66,9 @@ c47d4389e7f568398b5dbc704350851bd4b34cc2:src/internal-auth.ts:credentials-javasc
 # Test fixture - dummy URL with fake user:token for URL redaction test
 ef7bda8905acf8599ad76d6dbc764ca2942243e6:tests/infra/network-errors.test.ts:generic-auth-tuple:66
 7169843d14a0b9541b1a64b109a68d3d639228f8:tests/infra/network-errors.test.ts:generic-auth-tuple:66
+
+# Card callback token template literal `c:${shortId}:${action}:${revision}` (routing token, not a credential)
+d4b1e62c0e878c1858defe91e2b0eb33ed87c2a0:src/telegram/cards/callback-tokens.ts:credentials-javascript:25
+
+# Wizard handler key template literal `${chatId}:${wizardId}` (routing key, not a credential)
+d4b1e62c0e878c1858defe91e2b0eb33ed87c2a0:src/telegram/wizard/prompter.ts:credentials-javascript:233
