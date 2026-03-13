@@ -68,7 +68,7 @@ Multi-channel gains. Massive security regression — credentials in-process, no 
 
 ### Option C: Run both (hybrid)
 
-Double maintenance, identity fragmentation, Pi4 resource constraints. The "non-sensitive boundary" is hard to maintain in practice.
+Double maintenance, identity fragmentation, resource constraints on low-power hosts. The "non-sensitive boundary" is hard to maintain in practice.
 
 ### Option D: Security-hardened OpenClaw fork
 
