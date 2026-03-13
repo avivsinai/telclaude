@@ -54,6 +54,7 @@ jobs:
     needs: [verify]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, deploy]
+    timeout-minutes: 15
     environment: production
     concurrency:
       group: production
