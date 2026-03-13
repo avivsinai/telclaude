@@ -17,6 +17,7 @@ import {
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
+import { getCachedSchemaMarkdown } from "../providers/provider-skill.js";
 import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { cachedDNSLookup, isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
@@ -694,7 +695,9 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					services: p.services,
 					description: p.description,
 				}));
-				writeJson(res, 200, { ok: true, providers });
+				// Include schema markdown so agents don't need to fetch from providers directly
+				const schemaMarkdown = getCachedSchemaMarkdown();
+				writeJson(res, 200, { ok: true, providers, schemaMarkdown });
 				return;
 			}
 

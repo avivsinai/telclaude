@@ -72,9 +72,14 @@ function getGeneratedMediaPattern(): RegExp {
 		.filter(Boolean)
 		.join("|");
 
+	// Use non-greedy quantifiers throughout to correctly split adjacent paths
+	// when Claude outputs multiple media paths without whitespace between them.
+	// e.g. "/media/outbox/generated/img.png/media/outbox/voice/audio.ogg"
+	// Without non-greedy, \S* greedily consumes the first path and \S+ consumes
+	// the second, producing one match instead of two.
 	_cachedPattern = new RegExp(
-		`(\\S*(?:${mediaRootsPattern})/(?:generated|tts|voice|documents)/\\S+)`,
-		"g",
+		`(\\S*?(?:${mediaRootsPattern})/(?:generated|tts|voice|documents)/\\S+?\\.(?:${ALL_MEDIA_EXTENSIONS}))`,
+		"gi",
 	);
 	_cachedMediaOutboxRoot = roots.outbox;
 	_cachedLegacyMediaRoot = roots.legacy;
@@ -106,6 +111,15 @@ const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opu
  * Voice message extensions that should be sent via sendVoice.
  */
 const VOICE_EXTENSIONS = new Set([".ogg", ".opus"]);
+
+/**
+ * All supported media extensions for regex matching.
+ * Used to terminate the path pattern at a known extension boundary,
+ * preventing greedy matches from consuming adjacent paths.
+ * Includes document extensions since /documents/ can contain any file type.
+ */
+const ALL_MEDIA_EXTENSIONS =
+	"png|jpg|jpeg|gif|webp|mp3|m4a|wav|flac|ogg|opus|aac|pdf|doc|docx|xlsx|xls|csv|txt|json|xml|html|zip|pptx|rtf";
 
 export type DetectedMedia = {
 	path: string;

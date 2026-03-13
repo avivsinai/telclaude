@@ -423,11 +423,10 @@ export function registerRelayCommand(program: Command): void {
 					);
 				}
 
-				// External providers: update skills and verify health before continuing
+				// External providers: verify health first, then update skills
 				const providers = cfg.providers ?? [];
 				if (providers.length > 0) {
 					console.log(`Providers: ${providers.length} configured`);
-					await refreshExternalProviderSkill(providers);
 
 					const results = await Promise.all(
 						providers.map((provider) => checkProviderHealth(provider.id, provider.baseUrl)),
@@ -446,6 +445,9 @@ export function registerRelayCommand(program: Command): void {
 							`Provider health degraded but continuing due to TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=1`,
 						);
 					}
+
+					// Fetch schemas AFTER health check passes (provider is ready)
+					await refreshExternalProviderSkill(providers);
 				}
 
 				// Check TOTP daemon availability

@@ -226,34 +226,41 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 
 async function fetchProviderSchema(
 	provider: ExternalProviderConfig,
+	retries = 2,
 ): Promise<ProviderSchemaResult> {
-	try {
-		const { url: base } = await validateProviderBaseUrl(provider.baseUrl);
-		const endpoint = new URL("/v1/schema", base);
-
-		const response = await fetchWithTimeout(
-			endpoint.toString(),
-			{ method: "GET", headers: { accept: "application/json" } },
-			10_000,
-		);
-
-		if (!response.ok) {
-			return {
-				provider,
-				error: `HTTP ${response.status}: ${response.statusText}`,
-			};
+	let lastError: string | undefined;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		if (attempt > 0) {
+			const delay = attempt * 3_000;
+			logger.debug({ provider: provider.id, attempt, delay }, "retrying schema fetch");
+			await new Promise((resolve) => setTimeout(resolve, delay));
 		}
-
-		const text = await response.text();
 		try {
-			return { provider, schema: JSON.parse(text) };
-		} catch {
-			return { provider, error: "Invalid JSON response from schema endpoint" };
+			const { url: base } = await validateProviderBaseUrl(provider.baseUrl);
+			const endpoint = new URL("/v1/schema", base);
+
+			const response = await fetchWithTimeout(
+				endpoint.toString(),
+				{ method: "GET", headers: { accept: "application/json" } },
+				15_000,
+			);
+
+			if (!response.ok) {
+				lastError = `HTTP ${response.status}: ${response.statusText}`;
+				continue;
+			}
+
+			const text = await response.text();
+			try {
+				return { provider, schema: JSON.parse(text) };
+			} catch {
+				return { provider, error: "Invalid JSON response from schema endpoint" };
+			}
+		} catch (err) {
+			lastError = err instanceof Error && err.message ? err.message : String(err);
 		}
-	} catch (err) {
-		const message = err instanceof Error && err.message ? err.message : String(err);
-		return { provider, error: message };
 	}
+	return { provider, error: lastError ?? "schema fetch failed" };
 }
 
 function formatServiceDoc(service: ServiceDoc): string[] {
@@ -398,12 +405,24 @@ async function resolveSkillLocation(): Promise<SkillLocation | null> {
 // text — to prevent prompt-injection via compromised provider /v1/schema responses.
 let cachedProviderSummary: string | null = null;
 
+// Full schema markdown cached for serving to agents via config.providers.
+// Agents can't fetch schema directly (firewall blocks provider access).
+let cachedSchemaMarkdown: string | null = null;
+
 /**
  * Returns a brief summary of configured providers, or null if none.
  * Injected into systemPromptAppend so the model always knows about available providers.
  */
 export function getCachedProviderSummary(): string | null {
 	return cachedProviderSummary;
+}
+
+/**
+ * Returns the full schema markdown, or null if not yet fetched.
+ * Used by the relay to serve schema to agents via config.providers.
+ */
+export function getCachedSchemaMarkdown(): string | null {
+	return cachedSchemaMarkdown;
 }
 
 function buildProviderSummary(providers: ExternalProviderConfig[]): string {
@@ -432,7 +451,20 @@ export async function refreshExternalProviderSkill(
 	// Cache a minimal summary for system prompt injection (IDs + URLs only, no schema text)
 	cachedProviderSummary = buildProviderSummary(providers);
 
-	// Also write to skill references directory if available
+	// Only cache full schema when at least one provider succeeded.
+	// Prevents error-only markdown from poisoning agents after transient failures.
+	const anySucceeded = results.some((r) => r.schema && !r.error);
+	if (anySucceeded) {
+		cachedSchemaMarkdown = section;
+	} else {
+		logger.warn("all provider schema fetches failed; not updating cached schema");
+	}
+
+	// Only write to disk when at least one schema succeeded (same guard as in-memory cache)
+	if (!anySucceeded) {
+		return;
+	}
+
 	const skillLocation = await resolveSkillLocation();
 	if (!skillLocation) {
 		logger.debug("external-provider skill directory not found; using system prompt injection only");
@@ -446,6 +478,35 @@ export async function refreshExternalProviderSkill(
 		logger.warn(
 			{ error: String(err), path: skillLocation.referencePath },
 			"failed to update external provider schema reference",
+		);
+	}
+}
+
+/**
+ * Write pre-fetched schema markdown to the skill reference file.
+ * Used by agents that receive the schema from the relay (can't fetch directly).
+ */
+export async function writeProviderSchemaFromRelay(
+	providers: ExternalProviderConfig[],
+	schemaMarkdown: string,
+): Promise<void> {
+	cachedProviderSummary = buildProviderSummary(providers);
+	cachedSchemaMarkdown = schemaMarkdown;
+
+	const skillLocation = await resolveSkillLocation();
+	if (!skillLocation) {
+		logger.debug("external-provider skill directory not found; using system prompt injection only");
+		return;
+	}
+
+	try {
+		await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
+		await fs.writeFile(skillLocation.referencePath, schemaMarkdown, "utf8");
+		logger.info({ path: skillLocation.referencePath }, "wrote provider schema from relay");
+	} catch (err) {
+		logger.warn(
+			{ error: String(err), path: skillLocation.referencePath },
+			"failed to write provider schema from relay",
 		);
 	}
 }

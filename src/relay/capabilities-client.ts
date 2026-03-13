@@ -52,6 +52,7 @@ export async function relayGetProviders(): Promise<{
 		services: string[];
 		description?: string;
 	}>;
+	schemaMarkdown?: string;
 }> {
 	return postJson("/v1/config.providers", {});
 }
