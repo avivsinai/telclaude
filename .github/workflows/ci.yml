@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,7 +27,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 25
+          node-version: 22
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -36,69 +36,8 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 25
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Type check
-        run: pnpm run typecheck
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 25
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run tests
+      - name: Test
         run: pnpm test
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 25
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm run build
@@ -108,34 +47,42 @@ jobs:
           test -f dist/index.js
           test -f dist/index.d.ts
 
-  compatibility:
-    name: Compatibility (${{ matrix.os }}, Node ${{ matrix.node }})
-    runs-on: ${{ matrix.os }}
+  deploy:
+    name: Deploy
+    needs: [verify]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [25]
+    runs-on: [self-hosted, deploy]
+    environment: production
+    concurrency:
+      group: production
+      cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Pull latest
+        run: git -C ~/telclaude pull --ff-only
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+      - name: Build and restart
+        run: cd ~/telclaude && ./docker/build.sh && cd docker && docker compose up -d
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node }}
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm run build
-
-      - name: Test
-        run: pnpm test
+      - name: Wait for healthy
+        run: |
+          sleep 5
+          cd ~/telclaude/docker && docker compose ps --format json | \
+            python3 -c "
+          import sys, json
+          lines = sys.stdin.read().strip().split('\n')
+          all_ok = True
+          for line in lines:
+              svc = json.loads(line)
+              name = svc.get('Name', 'unknown')
+              state = svc.get('State', 'unknown')
+              health = svc.get('Health', '')
+              if state != 'running':
+                  print(f'FAIL: {name} is {state}')
+                  all_ok = False
+              elif health and health != 'healthy':
+                  print(f'WARN: {name} health={health}')
+          if all_ok:
+              print('All containers running')
+          else:
+              sys.exit(1)
+          "
