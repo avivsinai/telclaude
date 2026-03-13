@@ -175,6 +175,21 @@ export type TelclaudeQueryOptions = {
 
 	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
 	outputFormat?: OutputFormat;
+
+	/** Relay-resolved credentials for Docker mode.
+	 * In Docker, buildSdkOptions() runs in the agent container which has no vault access.
+	 * The relay resolves credentials and passes them here so the agent can inject them
+	 * into the SDK subprocess environment for FULL_ACCESS tier. */
+	exposedCredentials?: ExposedCredentials;
+};
+
+/**
+ * Credentials resolved by the relay for tier-based key exposure.
+ * Narrow type — avoids turning the relay→agent payload into arbitrary env injection.
+ */
+export type ExposedCredentials = {
+	githubToken?: string;
+	openaiApiKey?: string;
 };
 
 /**
@@ -907,23 +922,25 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			sandboxEnv.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
 		}
 
-		// Tier-based key exposure: FULL_ACCESS gets configured keys
+		// Tier-based key exposure: FULL_ACCESS gets configured keys.
+		// In Docker mode, the relay resolves credentials (it has vault access) and passes
+		// them via opts.exposedCredentials. In native mode, resolve locally as fallback.
 		if (shouldExposeKeys(opts.tier)) {
 			const exposedKeys: string[] = [];
 
-			// OpenAI key
-			const openaiKey = getCachedOpenAIKey();
+			// OpenAI key — prefer relay-provided, fall back to local cache
+			const openaiKey = opts.exposedCredentials?.openaiApiKey ?? getCachedOpenAIKey();
 			if (openaiKey) {
 				sandboxEnv.OPENAI_API_KEY = openaiKey;
 				exposedKeys.push("OPENAI_API_KEY");
 			}
 
-			// GitHub token - from setup-git/setup-github-app or env vars
-			// NOTE: Token is refreshed per-query, but once set in sandbox env it's static for
-			// the session lifetime. If a single session exceeds GitHub App token TTL (~1h),
-			// git/gh calls will fail. In practice, sessions are short-lived (30min idle timeout).
-			const gitCreds = await getGitCredentials();
-			const githubToken = gitCreds?.token || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+			// GitHub token — prefer relay-provided, fall back to local resolution
+			const githubToken =
+				opts.exposedCredentials?.githubToken ||
+				(await getGitCredentials())?.token ||
+				process.env.GITHUB_TOKEN ||
+				process.env.GH_TOKEN;
 			if (githubToken) {
 				sandboxEnv.GITHUB_TOKEN = githubToken;
 				sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this

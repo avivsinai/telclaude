@@ -4,7 +4,9 @@ import { withTimeout } from "../infra/timeout.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
-import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
+import type { ExposedCredentials, PooledQueryOptions, StreamChunk } from "../sdk/client.js";
+import { getGitCredentials } from "../services/git-credentials.js";
+import { getOpenAIKey } from "../services/openai-client.js";
 import { stripTrailingSlash } from "../utils.js";
 
 const logger = getChildLogger({ module: "agent-client" });
@@ -60,6 +62,37 @@ export async function* executeRemoteQuery(
 				// Best-effort; agent falls back to static auth if available
 			}
 		}
+		// Resolve credentials on the relay side for FULL_ACCESS tier (private scopes only).
+		// The agent container has no vault access, so the relay must provide these.
+		// Gate on scope to prevent credential leakage to social agents — the agent server
+		// downgrades non-telegram scopes to SOCIAL tier, but that happens AFTER this payload
+		// is serialized. Credentials must never enter a social agent container.
+		const effectiveScope = options.scope ?? "telegram";
+		let exposedCredentials: ExposedCredentials | undefined;
+		if (options.tier === "FULL_ACCESS" && effectiveScope === "telegram") {
+			const creds: ExposedCredentials = {};
+			try {
+				const gitCreds = await getGitCredentials();
+				if (gitCreds?.token) {
+					creds.githubToken = gitCreds.token;
+				}
+			} catch {
+				// Best-effort; agent falls back to env vars
+			}
+			try {
+				const openaiKey = await getOpenAIKey();
+				// Don't inject the credential-proxy sentinel — only real keys
+				if (openaiKey && openaiKey !== "credential-proxy") {
+					creds.openaiApiKey = openaiKey;
+				}
+			} catch {
+				// Best-effort; agent uses credential proxy for OpenAI
+			}
+			if (creds.githubToken || creds.openaiApiKey) {
+				exposedCredentials = creds;
+			}
+		}
+
 		const payload = JSON.stringify({
 			prompt,
 			cwd: options.cwd,
@@ -74,6 +107,7 @@ export async function* executeRemoteQuery(
 			systemPromptAppend: options.systemPromptAppend,
 			sessionToken,
 			outputFormat: options.outputFormat,
+			exposedCredentials,
 		});
 		const endpoint = `${stripTrailingSlash(agentUrl)}${path}`;
 		const scope = options.scope ?? "telegram";
