@@ -333,6 +333,29 @@ function initializeSchema(database: Database.Database): void {
 		);
 		CREATE INDEX IF NOT EXISTS idx_plan_approvals_chat_id ON plan_approvals(chat_id);
 		CREATE INDEX IF NOT EXISTS idx_plan_approvals_expires_at ON plan_approvals(expires_at);
+
+		-- Relay-owned Telegram cards for typed control-plane UI
+		CREATE TABLE IF NOT EXISTS card_instances (
+			card_id TEXT PRIMARY KEY,
+			short_id TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			actor_scope TEXT NOT NULL,
+			entity_ref TEXT NOT NULL,
+			revision INTEGER NOT NULL,
+			state TEXT NOT NULL,
+			expires_at INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_card_instances_short_id ON card_instances(short_id);
+		CREATE INDEX IF NOT EXISTS idx_card_instances_chat_message ON card_instances(chat_id, message_id);
+		CREATE INDEX IF NOT EXISTS idx_card_instances_entity ON card_instances(kind, chat_id, entity_ref, status);
+		CREATE INDEX IF NOT EXISTS idx_card_instances_expires_at ON card_instances(status, expires_at);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -421,6 +444,7 @@ export function cleanupExpired(): {
 	messageReactions: number;
 	attachmentRefs: number;
 	cronRuns: number;
+	cardInstances: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -465,6 +489,13 @@ export function cleanupExpired(): {
 		const cronRunsResult = database
 			.prepare("DELETE FROM cron_runs WHERE started_at < ?")
 			.run(thirtyDaysAgo);
+		const cardInstancesResult = database
+			.prepare(
+				`UPDATE card_instances
+				 SET status = 'expired', revision = revision + 1, updated_at = ?
+				 WHERE status = 'active' AND expires_at < ?`,
+			)
+			.run(now, now);
 
 		return {
 			approvals: approvalsResult.changes,
@@ -478,6 +509,7 @@ export function cleanupExpired(): {
 			messageReactions: reactionsResult.changes,
 			attachmentRefs: attachmentRefsResult.changes,
 			cronRuns: cronRunsResult.changes,
+			cardInstances: cardInstancesResult.changes,
 		};
 	});
 

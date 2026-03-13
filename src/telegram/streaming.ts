@@ -33,6 +33,12 @@ import { createDraftStreamLoop, type DraftStreamLoop } from "./draft-stream-loop
 import { filterWithOptionalConfig } from "./outbound.js";
 import { computeBackoff, DEFAULT_RECONNECT_POLICY } from "./reconnect.js";
 import { sanitizeAndSplitResponse } from "./sanitize.js";
+import {
+	createStatusReactionController,
+	type StatusReactionController,
+	type StatusReactionOptions,
+} from "./status-reactions.js";
+import { createTypingController, type TypingController } from "./typing.js";
 
 const logger = getChildLogger({ module: "telegram-streaming" });
 
@@ -90,9 +96,19 @@ export interface StreamingConfig {
 	 * are sent to this specific thread within a supergroup forum.
 	 */
 	messageThreadId?: number;
+
+	/**
+	 * Enable status reactions on the bot's reply message.
+	 * When true (or an options object), emoji reactions show agent progress
+	 * (queued → thinking → coding/searching/web → done/error).
+	 * Default: false
+	 */
+	statusReactions?: boolean | StatusReactionOptions;
 }
 
-const DEFAULT_CONFIG: Required<Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId">> = {
+const DEFAULT_CONFIG: Required<
+	Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId" | "statusReactions">
+> = {
 	minUpdateIntervalMs: 1500,
 	maxUpdateIntervalMs: 5000,
 	minCharsForUpdate: 50,
@@ -136,7 +152,7 @@ export class StreamingResponse {
 	private readonly api: Api;
 	private readonly chatId: number;
 	private readonly config: Required<
-		Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId">
+		Omit<StreamingConfig, "secretFilterConfig" | "messageThreadId" | "statusReactions">
 	> & {
 		secretFilterConfig?: SecretFilterConfig;
 	};
@@ -150,9 +166,11 @@ export class StreamingResponse {
 	private forceUpdateTimer: NodeJS.Timeout | null = null;
 	private isFinished = false;
 	private hasSucceeded = false;
-	private typingInterval: NodeJS.Timeout | null = null;
+	private typingController: TypingController | null = null;
 	private consecutiveErrors = 0;
 	private useMarkdown = true; // Fall back to plain text after parse errors
+	private reactionController: StatusReactionController | null = null;
+	private readonly statusReactionsConfig: false | StatusReactionOptions;
 
 	/** Offset into this.content where the current streaming message starts. */
 	private rolledContentOffset = 0;
@@ -162,8 +180,14 @@ export class StreamingResponse {
 	constructor(api: Api, chatId: number, config: StreamingConfig = {}) {
 		this.api = api;
 		this.chatId = chatId;
-		const { messageThreadId, ...rest } = config;
+		const { messageThreadId, statusReactions, ...rest } = config;
 		this.messageThreadId = messageThreadId;
+		this.statusReactionsConfig =
+			statusReactions === true
+				? {}
+				: statusReactions === false || !statusReactions
+					? false
+					: statusReactions;
 		this.config = { ...DEFAULT_CONFIG, ...rest };
 		this.streamLoop = createDraftStreamLoop({
 			throttleMs: this.config.minUpdateIntervalMs,
@@ -202,6 +226,17 @@ export class StreamingResponse {
 		// Track for reaction context
 		recordBotMessage(this.chatId, message.message_id);
 
+		// Create status reaction controller if enabled
+		if (this.statusReactionsConfig !== false) {
+			this.reactionController = createStatusReactionController(
+				this.api,
+				this.chatId,
+				message.message_id,
+				this.statusReactionsConfig,
+			);
+			this.reactionController.setQueued();
+		}
+
 		// Start typing indicator if enabled
 		if (this.config.showTypingIndicator) {
 			this.startTypingIndicator();
@@ -212,30 +247,24 @@ export class StreamingResponse {
 	}
 
 	/**
-	 * Start periodic typing indicator.
-	 * Telegram's "typing" action lasts 5 seconds, so we refresh every 4s.
+	 * Start debounced typing indicator.
+	 * Uses a 200ms debounce to avoid flicker on fast responses.
+	 * Once fired, repeats every 4s (Telegram typing expires after 5s).
 	 */
 	private startTypingIndicator(): void {
-		this.typingInterval = setInterval(() => {
-			if (!this.isFinished) {
-				this.api
-					.sendChatAction(this.chatId, "typing", {
-						message_thread_id: this.messageThreadId,
-					})
-					.catch(() => {
-						// Ignore typing indicator errors
-					});
-			}
-		}, 4000);
+		this.typingController = createTypingController(this.api, this.chatId, {
+			messageThreadId: this.messageThreadId,
+		});
+		this.typingController.start();
 	}
 
 	/**
 	 * Stop the typing indicator.
 	 */
 	private stopTypingIndicator(): void {
-		if (this.typingInterval) {
-			clearInterval(this.typingInterval);
-			this.typingInterval = null;
+		if (this.typingController) {
+			this.typingController.stop();
+			this.typingController = null;
 		}
 	}
 
@@ -265,6 +294,14 @@ export class StreamingResponse {
 	 */
 	getMessageId(): number | null {
 		return this.messageId;
+	}
+
+	/**
+	 * Get the status reaction controller, if enabled.
+	 * Callers use this to signal agent state transitions (thinking, tool use, etc.).
+	 */
+	getReactionController(): StatusReactionController | null {
+		return this.reactionController;
 	}
 
 	/**
@@ -705,6 +742,11 @@ export class StreamingResponse {
 				"streaming response finished",
 			);
 
+			// Signal successful completion via status reaction
+			if (this.reactionController) {
+				await this.reactionController.setDone();
+			}
+
 			return lastResult;
 		} catch (err) {
 			return this.handleFinishError(err, chunks, keyboard);
@@ -793,6 +835,11 @@ export class StreamingResponse {
 			logger.info({ chatId: this.chatId }, "streaming response aborted");
 		} catch (err) {
 			logger.error({ error: String(err) }, "failed to abort streaming message");
+		}
+
+		// Signal error via status reaction (unless this was a successful finish + late abort)
+		if (this.reactionController && !this.hasSucceeded) {
+			await this.reactionController.setError();
 		}
 	}
 }

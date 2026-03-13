@@ -53,6 +53,12 @@
 - `src/agent/` — agent server/client, memory client, token client.
 - `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials, video processing).
 - `src/telegram/` — inbound/outbound bot, mention/command gating, streaming state machine.
+- `src/telegram/cards/` — card system: types, SQLite store, callback tokens, lifecycle, 7 renderers.
+- `src/telegram/wizard/` — wizard prompter for guided multi-step Telegram flows.
+- `src/telegram/intent-router.ts` — NL intent resolution to typed domain intents.
+- `src/telegram/status-reactions.ts` — emoji progress indicators (queued→thinking→tool→done/error).
+- `src/telegram/directives.ts` — directive tags (@social, @reply, @silent, @card, @tts, @reaction).
+- `src/telegram/typing.ts` — debounced typing indicator controller.
 - `src/cron/` — cron scheduler, SQLite job store, schedule parsing.
 - `src/social/` — social services: handler, scheduler, identity, context, activity log.
 - `src/social/backends/` — per-service API clients (moltbook, xtwitter).
@@ -81,24 +87,24 @@
 |---------|-------------|
 | `pnpm install` | Install dependencies |
 | `pnpm dev relay --profile simple` | Start relay (dev mode) |
-| `pnpm dev totp-daemon` | Start TOTP daemon |
 | `pnpm dev doctor --network --secrets` | Health check |
 | `pnpm lint` / `pnpm format` | Lint and format |
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |
 | `pnpm dev integration-test --all` | Integration tests |
+| `pnpm dev identity link --generate` | Generate identity link code |
+| `pnpm dev auth oauth authorize xtwitter` | OAuth authorize |
+| `pnpm dev auth oauth list` / `pnpm dev auth oauth revoke xtwitter` | OAuth list / revoke |
+| `pnpm dev social pending` | List pending post ideas |
+| `pnpm dev social promote <id>` | Promote post idea |
+| `pnpm dev maintenance cron status` | Cron scheduler status |
+| `pnpm dev maintenance cron list [--all] [--json]` | List cron jobs |
+| `pnpm dev maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |
+| `pnpm dev maintenance cron run <id>` | Run cron job immediately |
+| `pnpm dev secrets setup-google` | Configure Google OAuth |
 | `pnpm dev memory read --categories profile,interests` | Read memory entries |
 | `pnpm dev memory write "fact" --category meta` | Write memory entry |
-| `pnpm dev memory quarantine "post idea"` | Quarantine post idea |
-| `pnpm dev oauth authorize xtwitter` | OAuth authorize |
-| `pnpm dev oauth list` / `pnpm dev oauth revoke xtwitter` | OAuth list / revoke |
-| `pnpm dev keygen <scope>` | Generate Ed25519 RPC keypair (`{SCOPE}_RPC_AGENT_*` / `{SCOPE}_RPC_RELAY_*`) |
-| `pnpm dev cron status` | Cron scheduler status |
-| `pnpm dev cron list [--all] [--json]` | List cron jobs |
-| `pnpm dev cron add --name <n> --every <dur>\|--cron <expr>\|--at <iso> --social\|--private` | Add cron job |
-| `pnpm dev cron run <id>` | Run cron job immediately |
 | `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
-| `pnpm dev setup-google` | Configure Google OAuth credentials |
 
 ## Auth & control plane
 
@@ -110,14 +116,14 @@
 
 | Command | Description |
 |---------|-------------|
-| `/link <code>` / `/unlink` | Identity linking (code generated via CLI) |
-| `/approve <nonce>` / `/deny <nonce>` | Approval workflow (TTL 5 minutes) |
-| `/setup-2fa` / `/verify-2fa <code>` | TOTP setup and verification |
-| `/2fa-logout` / `/disable-2fa` | TOTP session / permanent disable |
-| `/pending` | List quarantined post ideas |
-| `/promote <id>` | Approve quarantined idea for social posting |
-| `/public-log [serviceId] [hours]` | Metadata-only summary of social actions |
-| `/ask-public <question>` | Query social persona (routed through relay) |
+| `/help [topic]` | Contextual help, topic list |
+| `/me [show\|link\|unlink]` | Identity management |
+| `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
+| `/system [status\|sessions\|cron\|ask <question>]` | System introspection |
+| `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
+| `/skills [drafts\|promote <name>\|reload]` | Skill management |
+| `/approve <code>` | Fast-path approval |
+| `/new` | Reset conversation session |
 
 ### Scheduler config
 - Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).

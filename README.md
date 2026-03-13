@@ -168,7 +168,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 7) First admin claim
 - DM your bot from the allowed chat; it replies with `/approve <code>`.
 - Send that command back to link the chat as admin (FULL_ACCESS with per-request approvals).
-- In the same chat, run `/setup-2fa` to bind TOTP for periodic identity verification (daemon must be running). `/skip-totp` is allowed but not recommended.
+- In the same chat, run `/auth setup` to bind TOTP for periodic identity verification (daemon must be running). `/auth skip` is allowed but not recommended.
 - Optional hardening: set `TELCLAUDE_ADMIN_SECRET` and start with `/claim <secret>` to prevent scanner bots claiming admin first (see `SECURITY.md`).
 
 ## Telegram command surface
@@ -355,7 +355,7 @@ pnpm dev totp-daemon &
 pnpm dev relay --profile strict
 # In Telegram (allowed chat):
 # 1) bot replies with /approve CODE for admin claim
-# 2) run /setup-2fa to bind TOTP
+# 2) run /auth setup to bind TOTP
 ```
 
 Use `pnpm dev <command>` during development (tsx). For production: `pnpm build && pnpm start <command>` (runs from `dist/`).
