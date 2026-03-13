@@ -1574,6 +1574,7 @@ export async function monitorTelegramProvider(
 						auditLogger,
 						recentlySent,
 						securityProfile,
+						botInfo.username,
 					);
 				},
 			});
@@ -1692,6 +1693,7 @@ async function handleInboundMessage(
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
 	securityProfile: "simple" | "strict" | "test",
+	botUsername?: string,
 ): Promise<void> {
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
@@ -1743,10 +1745,11 @@ async function handleInboundMessage(
 	// ══════════════════════════════════════════════════════════════════════════
 
 	const trimmedBody = resolveCommandBody(msg).trim();
-	const controlCommandMatch = matchTelegramControlCommand(trimmedBody);
+	const commandMatchOpts = botUsername ? { botUsername } : undefined;
+	const controlCommandMatch = matchTelegramControlCommand(trimmedBody, commandMatchOpts);
 
 	// Commands exempt from auth gate (needed for TOTP setup)
-	const isAuthExemptCommand = isTelegramAuthExemptCommand(trimmedBody);
+	const isAuthExemptCommand = isTelegramAuthExemptCommand(trimmedBody, commandMatchOpts);
 
 	if (!isAuthExemptCommand) {
 		const authGateResult = await checkTOTPAuthGate(msg.chatId, msg.body, {
@@ -1803,6 +1806,7 @@ async function handleInboundMessage(
 					auditLogger,
 					recentlySent,
 					securityProfile,
+					botUsername,
 				);
 				return;
 			}

@@ -10,7 +10,6 @@ import {
 import { getIdentityLink, listIdentityLinks } from "../security/linking.js";
 import { hasTOTP } from "../security/totp.js";
 import { getTOTPSessionForChat } from "../security/totp-session.js";
-import { normalizeTelegramId, stringToChatId } from "../utils.js";
 import {
 	sendApprovalCard,
 	sendAuthCard,
@@ -358,29 +357,11 @@ export function createNudgeEngine(opts: {
 	};
 }
 
-function normalizePrivateChatIds(values?: Array<number | string>): number[] {
-	const chatIds = new Set<number>();
-
-	for (const value of values ?? []) {
-		const normalized = normalizeTelegramId(value);
-		if (!normalized) {
-			continue;
-		}
-
-		const chatId = stringToChatId(normalized);
-		if (!Number.isNaN(chatId) && chatId > 0) {
-			chatIds.add(chatId);
-		}
-	}
-
-	return Array.from(chatIds);
-}
-
 function buildKindsKey(kinds: Iterable<NudgeKind>): string {
 	return Array.from(new Set(kinds)).sort().join(",");
 }
 
-function resolveNudgeTargets(allowedChats?: Array<number | string>): Map<number, Set<NudgeKind>> {
+function resolveNudgeTargets(): Map<number, Set<NudgeKind>> {
 	const targets = new Map<number, Set<NudgeKind>>();
 
 	for (const link of listIdentityLinks()) {
@@ -396,8 +377,9 @@ function resolveNudgeTargets(allowedChats?: Array<number | string>): Map<number,
 	const adminChatIds = listIdentityLinks()
 		.filter((link) => link.localUserId === "admin" && link.chatId > 0)
 		.map((link) => link.chatId);
-	const operatorChatIds =
-		adminChatIds.length > 0 ? adminChatIds : normalizePrivateChatIds(allowedChats);
+	// Only admin-linked chats receive operator nudges (approvals, heartbeat, digest).
+	// Do NOT fall back to all allowedChats — that would leak operator info to non-admin users.
+	const operatorChatIds = adminChatIds;
 
 	for (const chatId of operatorChatIds) {
 		const kinds = targets.get(chatId) ?? new Set<NudgeKind>();
@@ -425,7 +407,7 @@ export function createNudgeCoordinator(opts: {
 	let tickTimer: NodeJS.Timeout | null = null;
 
 	function syncTargets(): void {
-		const targets = resolveNudgeTargets(opts.allowedChats);
+		const targets = resolveNudgeTargets();
 
 		for (const [chatId, targetKinds] of targets.entries()) {
 			const kindsKey = buildKindsKey(targetKinds);

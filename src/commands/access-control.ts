@@ -124,6 +124,11 @@ export function registerForceReauthSubcommand(parent: Command): void {
 		.argument("[chat-id]", "Telegram chat ID to force re-authentication")
 		.action(async (chatIdStr: string) => {
 			try {
+				if (!chatIdStr) {
+					console.error("Usage: telclaude auth force-reauth <chat-id>");
+					console.error("  Invalidates the TOTP session for the given chat.");
+					process.exit(1);
+				}
 				const chatId = parseChatId(chatIdStr);
 
 				const link = getIdentityLink(chatId);

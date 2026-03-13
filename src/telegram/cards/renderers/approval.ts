@@ -1,3 +1,5 @@
+import { getChildLogger } from "../../../logging.js";
+import { consumeApproval, denyApproval } from "../../../security/approvals.js";
 import type {
 	ApprovalCardAction,
 	ApprovalCardState,
@@ -9,6 +11,8 @@ import type {
 	CardRenderResult,
 } from "../types.js";
 import { btn, esc, keyboard, renderTerminalState } from "./helpers.js";
+
+const logger = getChildLogger({ module: "approval-card" });
 
 type K = typeof CardKind.Approval;
 
@@ -63,22 +67,39 @@ export const approvalRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "approve":
-				// TODO: call existing approval system (approvals.resolveApproval)
-				// The entityRef should contain the approval nonce.
+			case "approve": {
+				const nonce = card.entityRef;
+				const result = consumeApproval(nonce, card.chatId);
+				if (!result.success) {
+					logger.warn({ nonce, error: result.error }, "approval card: consumeApproval failed");
+					return {
+						callbackText: `Approval failed: ${result.error}`,
+						callbackAlert: true,
+					};
+				}
 				return {
 					state: { ...card.state, approved: true, denied: false },
 					status: "consumed",
 					callbackText: "Approved",
 				};
+			}
 
-			case "deny":
-				// TODO: call existing approval system (approvals.resolveApproval)
+			case "deny": {
+				const nonce = card.entityRef;
+				const result = denyApproval(nonce, card.chatId);
+				if (!result.success) {
+					logger.warn({ nonce, error: result.error }, "approval card: denyApproval failed");
+					return {
+						callbackText: `Denial failed: ${result.error}`,
+						callbackAlert: true,
+					};
+				}
 				return {
 					state: { ...card.state, denied: true, approved: false },
 					status: "consumed",
 					callbackText: "Denied",
 				};
+			}
 
 			case "explain":
 				// TODO: generate explanation for the approval request
