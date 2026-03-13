@@ -50,11 +50,7 @@ function actorMatchesScope(scope: string, ctx: CallbackQueryContext<Context>): b
 		return Number.isInteger(scopedChatId) && chatId === scopedChatId;
 	}
 
-	const rawNumericScope = Number.parseInt(scope, 10);
-	if (Number.isInteger(rawNumericScope) && `${rawNumericScope}` === scope) {
-		return rawNumericScope === actorId;
-	}
-
+	// Fail closed: unrecognized scope format rejects. All callers must use typed prefixes.
 	return false;
 }
 
