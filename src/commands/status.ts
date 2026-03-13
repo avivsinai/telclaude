@@ -5,6 +5,8 @@ import { getConfigPath, loadConfig } from "../config/config.js";
 import { getAllSessions } from "../config/sessions.js";
 import { getCronStatusSummary } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
+import type { SandboxMode } from "../sandbox/mode.js";
+import { getSandboxMode } from "../sandbox/mode.js";
 import { createAuditLogger } from "../security/audit.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { formatDuration, formatUptime } from "./cli-utils.js";
@@ -53,6 +55,7 @@ export type TelclaudeStatus = {
 	runtime: {
 		version: string;
 		revision: string;
+		sandboxMode: SandboxMode;
 		startedAt: string;
 		uptimeMs: number;
 		uptimeSeconds: number;
@@ -166,6 +169,7 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 		runtime: {
 			version: runtime.version,
 			revision: runtime.revision,
+			sandboxMode: getSandboxMode(),
 			startedAt: runtime.startedAt,
 			uptimeMs: runtime.uptimeMs,
 			uptimeSeconds: runtime.uptimeSeconds,
@@ -195,6 +199,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 			"Runtime:",
 			`  Version: ${status.runtime.version}`,
 			`  Revision: ${status.runtime.revision}`,
+			`  Mode: ${status.runtime.sandboxMode}`,
 			`  CLI Started: ${status.runtime.startedAt}`,
 			`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`,
 			"",
@@ -244,6 +249,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push("Runtime:");
 	lines.push(`  Version: ${status.runtime.version}`);
 	lines.push(`  Revision: ${status.runtime.revision}`);
+	lines.push(`  Mode: ${status.runtime.sandboxMode}`);
 	lines.push(`  CLI Started: ${status.runtime.startedAt}`);
 	lines.push(`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`);
 	lines.push("");
