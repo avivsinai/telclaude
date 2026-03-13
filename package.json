@@ -21,6 +21,7 @@
     "examples"
   ],
   "scripts": {
+    "prebuild": "REV=$(git rev-parse HEAD 2>/dev/null) && printf '%.7s\\n' \"$REV\" > .revision || [ -s .revision ] || echo unknown > .revision",
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
