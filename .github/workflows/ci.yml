@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel in-progress verify runs on new pushes, but never cancel deploys
+  # (deploy job has its own concurrency group with cancel-in-progress: false)
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -60,29 +62,5 @@ jobs:
       - name: Pull latest
         run: git -C ~/telclaude pull --ff-only
 
-      - name: Build and restart
-        run: cd ~/telclaude && ./docker/build.sh && cd docker && docker compose up -d
-
-      - name: Wait for healthy
-        run: |
-          sleep 5
-          cd ~/telclaude/docker && docker compose ps --format json | \
-            python3 -c "
-          import sys, json
-          lines = sys.stdin.read().strip().split('\n')
-          all_ok = True
-          for line in lines:
-              svc = json.loads(line)
-              name = svc.get('Name', 'unknown')
-              state = svc.get('State', 'unknown')
-              health = svc.get('Health', '')
-              if state != 'running':
-                  print(f'FAIL: {name} is {state}')
-                  all_ok = False
-              elif health and health != 'healthy':
-                  print(f'WARN: {name} health={health}')
-          if all_ok:
-              print('All containers running')
-          else:
-              sys.exit(1)
-          "
+      - name: Build and deploy
+        run: cd ~/telclaude && ./docker/build.sh && cd docker && docker compose up -d --wait --wait-timeout 120
