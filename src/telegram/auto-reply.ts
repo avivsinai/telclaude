@@ -1539,11 +1539,11 @@ export async function monitorTelegramProvider(
 				const nudgeCoordinator = createNudgeCoordinator({
 					api: bot.api,
 					allowedChats: cfg.telegram?.allowedChats,
-					intervalMs: nudgeConfig.intervalSeconds * 1000,
+					intervalMs: (nudgeConfig.intervalSeconds ?? 300) * 1000,
 					quietHoursStart: nudgeConfig.quietHoursStart,
 					quietHoursEnd: nudgeConfig.quietHoursEnd,
 					maxPerHour: nudgeConfig.maxPerHour,
-					digestIntervalMs: nudgeConfig.digestIntervalHours * 60 * 60 * 1000,
+					digestIntervalMs: (nudgeConfig.digestIntervalHours ?? 24) * 60 * 60 * 1000,
 				});
 				nudgeCoordinator.start();
 				stopNudges = () => nudgeCoordinator.stop();

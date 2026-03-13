@@ -36,6 +36,85 @@ import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "telegram-directives" });
 
+/**
+ * Telegram-allowed bot reaction emoji. Agent-provided emoji not in this set are rejected.
+ */
+const VALID_REACTION_EMOJI = new Set<string>([
+	"👍",
+	"👎",
+	"❤",
+	"🔥",
+	"🥰",
+	"👏",
+	"😁",
+	"🤔",
+	"🤯",
+	"😱",
+	"🤬",
+	"😢",
+	"🎉",
+	"🤩",
+	"🤮",
+	"💩",
+	"🙏",
+	"👌",
+	"🕊",
+	"🤡",
+	"🥱",
+	"🥴",
+	"😍",
+	"🐳",
+	"❤‍🔥",
+	"🌚",
+	"🌭",
+	"💯",
+	"🤣",
+	"⚡",
+	"🍌",
+	"🏆",
+	"💔",
+	"🤨",
+	"😐",
+	"🍓",
+	"🍾",
+	"💋",
+	"🖕",
+	"😈",
+	"😴",
+	"😭",
+	"🤓",
+	"👻",
+	"👨‍💻",
+	"👀",
+	"🎃",
+	"🙈",
+	"😇",
+	"😨",
+	"🤝",
+	"✍",
+	"🤗",
+	"🫡",
+	"🎅",
+	"🎄",
+	"☃",
+	"💅",
+	"🤪",
+	"🗿",
+	"🆒",
+	"💘",
+	"🙉",
+	"🦄",
+	"😘",
+	"💊",
+	"🙊",
+	"😎",
+	"👾",
+	"🤷‍♂",
+	"🤷",
+	"🤷‍♀",
+	"😡",
+]);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -389,6 +468,10 @@ export function executeDirectives(directives: Directive[], ctx: DirectiveContext
 
 			case "reaction": {
 				const { emoji, messageId: reactionTargetId } = directive;
+				if (!VALID_REACTION_EMOJI.has(emoji)) {
+					logger.warn({ emoji }, "reaction directive: unsupported emoji, skipping");
+					break;
+				}
 				const targetMessageId = reactionTargetId ?? ctx.originalMessageId;
 				if (targetMessageId) {
 					result.sideEffects.push(async () => {

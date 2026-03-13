@@ -166,15 +166,15 @@ const INTENT_PATTERNS: PatternEntry[] = [
 
 	// ── Approvals ────────────────────────────────────────────────────────────
 	{
-		patterns: [/^(?:approve|accept|yes|ok|confirm)\s+(\S+)$/i],
+		patterns: [/^(?:approve|accept)\s+([a-zA-Z0-9_-]{4,})$/i],
 		intent: (m) => ({ domain: "approval", action: "approve", nonce: m[1] }),
 	},
 	{
-		patterns: [/^(?:deny|reject|no|decline)\s+(\S+)$/i],
+		patterns: [/^(?:deny|reject)\s+([a-zA-Z0-9_-]{4,})$/i],
 		intent: (m) => ({ domain: "approval", action: "deny", nonce: m[1] }),
 	},
 	{
-		patterns: [/^(?:deny|reject|no|decline)$/i],
+		patterns: [/^(?:deny|reject)$/i],
 		intent: { domain: "approval", action: "deny" },
 	},
 
