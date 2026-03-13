@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerSkillsCommands } from "../../src/commands/skills-import.js";
+import { registerSkillsImportSubcommands } from "../../src/commands/skills-import.js";
 
 function writeOpenClawSkill(sourceRoot: string, skillName: string, skillContent: string): void {
 	const skillDir = path.join(sourceRoot, "skills", skillName);
@@ -13,7 +13,8 @@ function writeOpenClawSkill(sourceRoot: string, skillName: string, skillContent:
 
 async function runSkillsCli(args: string[]): Promise<void> {
 	const program = new Command();
-	registerSkillsCommands(program);
+	const skills = program.command("skills").description("Manage telclaude skills");
+	registerSkillsImportSubcommands(skills);
 	await program.parseAsync(args, { from: "user" });
 }
 
