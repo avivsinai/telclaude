@@ -951,13 +951,11 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	};
 
 	// Check if permissive network mode is enabled (affects WebFetch/WebSearch via canUseTool)
+	// Social agents that need public browsing must opt in via TELCLAUDE_NETWORK_MODE=permissive
+	// on their container — the SDK no longer unconditionally forces permissive for social contexts.
+	// RFC1918/metadata blocks still apply unconditionally in the network hook.
 	const envNetworkMode = process.env.TELCLAUDE_NETWORK_MODE?.toLowerCase();
 	const isPermissiveMode = envNetworkMode === "open" || envNetworkMode === "permissive";
-	const socialContext = isSocialContext(opts.userId);
-	// Social agents get permissive WebFetch — their job is browsing the public internet.
-	// Container hardening (no secrets, AppArmor, separate network) is the boundary.
-	// RFC1918/metadata blocks still apply unconditionally in the network hook.
-	const effectivePermissive = socialContext ? true : isPermissiveMode;
 
 	// Build permissions (filesystem only - network handled by canUseTool and SDK sandbox)
 	const additionalDomains = config.security?.network?.additionalDomains ?? [];
@@ -996,7 +994,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// See: https://code.claude.com/docs/en/sdk/sdk-permissions
 	const preToolUseHooks: HookCallbackMatcher[] = [
 		createNetworkSecurityHook(
-			effectivePermissive,
+			isPermissiveMode,
 			allowedDomains,
 			privateEndpoints,
 			config.providers ?? [],
@@ -1159,7 +1157,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 					// Check domain allowlist (belt-and-suspenders with SDK sandbox)
 					// In permissive mode, skip allowlist check - only block private/metadata above
 					if (
-						!effectivePermissive &&
+						!isPermissiveMode &&
 						!allowedDomains.some((pattern) => domainMatchesPattern(url.hostname, pattern))
 					) {
 						logger.warn({ host: url.hostname }, "blocked non-allowlisted domain in WebFetch");
