@@ -43,7 +43,10 @@ function readConfigFile(): Record<string, unknown> {
  */
 function writeConfigFile(config: Record<string, unknown>): void {
 	const configPath = getConfigPath();
-	fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+	const tmpPath = `${configPath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
+	fs.renameSync(tmpPath, configPath);
+	logger.debug("config written atomically (note: JSON5 comments/trailing commas are stripped)");
 }
 
 /**
