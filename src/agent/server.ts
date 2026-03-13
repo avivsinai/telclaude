@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
+import type { ExposedCredentials } from "../sdk/client.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getCachedProviderSummary } from "../providers/provider-skill.js";
@@ -40,6 +41,8 @@ type QueryRequest = {
 	sessionToken?: string;
 	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
 	outputFormat?: OutputFormat;
+	/** Relay-resolved credentials for tier-based key exposure (Docker mode). */
+	exposedCredentials?: ExposedCredentials;
 };
 
 type AgentServerOptions = {
@@ -167,6 +170,7 @@ async function streamQuery(
 			betas: req.betas,
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
+			exposedCredentials: req.exposedCredentials,
 		})) {
 			if (!firstChunkReceived) {
 				firstChunkReceived = true;
@@ -287,6 +291,13 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					effectiveTier = "SOCIAL";
 					if (!effectiveUserId?.startsWith(`${scope}:`)) {
 						effectiveUserId = `${scope}:${effectiveUserId ?? "agent"}`;
+					}
+					// Defense-in-depth: strip credentials from social scopes.
+					// The relay should never send them for non-telegram scopes, but
+					// if it does, drop them here before they reach buildSdkOptions().
+					if (parsed.exposedCredentials) {
+						logger.warn({ scope }, "stripping exposedCredentials from social scope request");
+						parsed.exposedCredentials = undefined;
 					}
 				}
 
