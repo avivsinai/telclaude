@@ -4,11 +4,11 @@ import path from "node:path";
 
 import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
-import type { ExposedCredentials } from "../sdk/client.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getCachedProviderSummary } from "../providers/provider-skill.js";
 import { getSandboxMode } from "../sandbox/index.js";
+import type { ExposedCredentials } from "../sdk/client.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 import { loadSocialContractPrompt } from "../social-contract.js";
 import { loadSoul } from "../soul.js";
