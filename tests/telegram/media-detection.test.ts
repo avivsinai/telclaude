@@ -133,6 +133,14 @@ describe("media-detection", () => {
 			expect(results).toEqual([{ path: realVoicePath, type: "voice" }]);
 		});
 
+		it("detects adjacent paths without whitespace separator", () => {
+			const text = `${imagePath}${voicePath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toHaveLength(2);
+			expect(results).toContainEqual({ path: realImagePath, type: "photo" });
+			expect(results).toContainEqual({ path: realVoicePath, type: "voice" });
+		});
+
 		it("deduplicates repeated paths", () => {
 			const text = `${audioPath} ... ${audioPath}`;
 			const results = extractGeneratedMediaPaths(text);
@@ -167,6 +175,15 @@ describe("media-detection", () => {
 			const text = `Sending your visit summary: ${documentPath}`;
 			const results = extractGeneratedMediaPaths(text);
 			expect(results).toEqual([{ path: realDocumentPath, type: "document" }]);
+		});
+
+		it("detects non-PDF document paths (xlsx, txt, etc.)", () => {
+			const xlsxPath = path.join(mediaRoot, "documents", "report-123456.xlsx");
+			fs.writeFileSync(xlsxPath, "fake xlsx");
+			const realXlsxPath = fs.realpathSync(xlsxPath);
+			const text = `Here's your report: ${xlsxPath}`;
+			const results = extractGeneratedMediaPaths(text);
+			expect(results).toEqual([{ path: realXlsxPath, type: "document" }]);
 		});
 
 		it("rejects non-existent document paths (wrong filename)", () => {

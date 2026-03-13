@@ -5,7 +5,10 @@ import { bootstrapSessionToken } from "../agent/token-client.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
-import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
+import {
+	refreshExternalProviderSkill,
+	writeProviderSchemaFromRelay,
+} from "../providers/provider-skill.js";
 import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
@@ -100,7 +103,13 @@ export function registerAgentCommand(program: Command): void {
 						try {
 							const result = await relayGetProviders();
 							if (result.ok && result.providers.length > 0) {
-								await refreshExternalProviderSkill(result.providers);
+								if (result.schemaMarkdown) {
+									// Use relay-provided schema (agent can't fetch from providers directly)
+									await writeProviderSchemaFromRelay(result.providers, result.schemaMarkdown);
+								} else {
+									// Fallback: fetch schema directly (may fail if firewall blocks)
+									await refreshExternalProviderSkill(result.providers);
+								}
 								logger.info(
 									{ count: result.providers.length },
 									"provider config fetched from relay",
