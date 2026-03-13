@@ -3,6 +3,7 @@ import type { Bot, Context } from "grammy";
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
+import type { AuditLogger } from "../security/audit.js";
 import { isChatBanned } from "../security/banned-chats.js";
 import { containsHomoglyphs, foldHomoglyphs } from "../security/homoglyphs.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
@@ -37,6 +38,7 @@ export type InboxMonitorOptions = {
 		allowTextCommands?: boolean;
 	};
 	secretFilterConfig?: SecretFilterConfig;
+	auditLogger?: AuditLogger;
 	/** Enable inline keyboard buttons on responses. Default: true */
 	enableKeyboards?: boolean;
 };
@@ -88,6 +90,7 @@ export async function monitorTelegramInbox(
 		allowedChats,
 		groupChat,
 		secretFilterConfig,
+		auditLogger,
 		enableKeyboards = true,
 	} = options;
 	const logger = getChildLogger({ module: "telegram-inbound" });
@@ -441,7 +444,7 @@ export async function monitorTelegramInbox(
 
 	// Register keyboard handlers (callback queries must be registered before message handlers)
 	if (enableKeyboards) {
-		registerKeyboardHandlers(bot);
+		registerKeyboardHandlers(bot, { auditLogger });
 	}
 
 	// Handle text messages

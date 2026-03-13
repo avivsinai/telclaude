@@ -8,34 +8,43 @@ type TelegramCommandCategory =
 	| "Social"
 	| "Skills";
 
+/**
+ * Hierarchical command IDs: "domain:subcommand" for routed commands,
+ * flat names for fast-path shortcuts.
+ */
 export type TelegramCommandId =
+	// Domain roots (bare "/domain" invocations)
 	| "help"
-	| "commands"
+	| "help:commands"
+	| "me"
+	| "me:link"
+	| "me:unlink"
+	| "auth"
+	| "auth:setup"
+	| "auth:verify"
+	| "auth:logout"
+	| "auth:disable"
+	| "auth:skip"
+	| "auth:force-reauth"
 	| "system"
-	| "link"
-	| "unlink"
-	| "whoami"
+	| "system:sessions"
+	| "system:cron"
+	| "system:ask"
+	| "social"
+	| "social:queue"
+	| "social:promote"
+	| "social:run"
+	| "social:log"
+	| "social:ask"
+	| "skills"
+	| "skills:drafts"
+	| "skills:promote"
+	| "skills:reload"
+	// Fast-path shortcuts (no domain prefix)
 	| "approve"
 	| "deny"
-	| "otp"
-	| "setup-2fa"
-	| "verify-2fa"
-	| "disable-2fa"
-	| "2fa-logout"
-	| "force-reauth"
-	| "skip-totp"
-	| "status"
-	| "sessions"
-	| "cron"
-	| "heartbeat"
-	| "pending"
-	| "promote"
-	| "public-log"
-	| "ask-public"
-	| "list-drafts"
-	| "promote-skill"
-	| "reload-skills"
-	| "new";
+	| "new"
+	| "otp";
 
 type TelegramControlCommandDefinition = {
 	id: TelegramCommandId;
@@ -51,6 +60,12 @@ type TelegramControlCommandDefinition = {
 	rateLimited?: boolean;
 	menuDescription?: string;
 	hideFromCatalog?: boolean;
+	/** Domain root command name (e.g. "me", "auth", "system") — set for hierarchical commands. */
+	domain?: string;
+	/** Subcommand name within domain — set for non-default subcommands. */
+	subcommand?: string;
+	/** Whether this is the default subcommand when only the domain root is typed. */
+	domainDefault?: boolean;
 };
 
 export type TelegramCommandMatch = {
@@ -83,7 +98,7 @@ export type TelegramHelpMatch =
 export type TelegramSystemIntent =
 	| {
 			kind: "command";
-			commandId: "status" | "sessions" | "cron" | "whoami";
+			commandId: "system" | "system:sessions" | "system:cron" | "me";
 	  }
 	| {
 			kind: "help";
@@ -93,10 +108,17 @@ export type TelegramSystemIntent =
 			kind: "unknown";
 	  };
 
+// ---------------------------------------------------------------------------
+// Command definitions — hierarchical
+// ---------------------------------------------------------------------------
+
 const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
+	// ── /help ──────────────────────────────────────────────────────────
 	{
 		id: "help",
 		name: "help",
+		domain: "help",
+		domainDefault: true,
 		category: "Discover",
 		description: "Explain commands, topics, or operator workflows.",
 		usage: "/help [command or topic]",
@@ -106,98 +128,346 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		menuDescription: "Explain commands and topics",
 	},
 	{
-		id: "commands",
-		name: "commands",
+		id: "help:commands",
+		name: "help",
+		domain: "help",
+		subcommand: "commands",
 		category: "Discover",
 		description: "List the Telegram command catalog.",
-		usage: "/commands",
-		examples: ["/commands"],
+		usage: "/help commands",
+		examples: ["/help commands"],
 		keywords: ["commands", "command list", "menu", "available commands"],
 		readOnly: true,
-		menuDescription: "List available commands",
+		hideFromCatalog: true,
 	},
+	// ── /me ────────────────────────────────────────────────────────────
+	{
+		id: "me",
+		name: "me",
+		domain: "me",
+		domainDefault: true,
+		category: "Identity",
+		description: "Show which local user this chat is linked to.",
+		usage: "/me [show|link <code>|unlink]",
+		examples: ["/me", "/me show", "/me link ABCD-1234", "/me unlink"],
+		keywords: ["me", "whoami", "who am i", "identity", "linked user", "which user"],
+		readOnly: true,
+		menuDescription: "Identity management",
+	},
+	{
+		id: "me:link",
+		name: "me",
+		domain: "me",
+		subcommand: "link",
+		category: "Identity",
+		description: "Link this private chat to a local user with a one-time code.",
+		usage: "/me link <code>",
+		examples: ["/me link ABCD-1234"],
+		keywords: ["link", "pair", "identity link", "bind chat", "claim user"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "me:unlink",
+		name: "me",
+		domain: "me",
+		subcommand: "unlink",
+		category: "Identity",
+		description: "Remove the identity link for this chat.",
+		usage: "/me unlink",
+		examples: ["/me unlink"],
+		keywords: ["unlink", "remove link", "disconnect identity"],
+		hideFromCatalog: true,
+	},
+	// ── /auth ──────────────────────────────────────────────────────────
+	{
+		id: "auth",
+		name: "auth",
+		domain: "auth",
+		domainDefault: true,
+		category: "Security",
+		description: "Two-factor authentication management.",
+		usage: "/auth [setup|verify <code>|logout|disable|skip|force-reauth [chatId]]",
+		examples: ["/auth setup", "/auth verify 123456", "/auth logout"],
+		keywords: ["auth", "2fa", "totp", "two factor", "authentication"],
+		readOnly: true,
+		authExempt: true,
+		menuDescription: "Two-factor authentication",
+		hideFromCatalog: true,
+	},
+	{
+		id: "auth:setup",
+		name: "auth",
+		domain: "auth",
+		subcommand: "setup",
+		category: "Security",
+		description: "Start the local TOTP setup flow.",
+		usage: "/auth setup",
+		examples: ["/auth setup"],
+		keywords: ["2fa", "setup totp", "enable two factor", "totp setup"],
+		authExempt: true,
+	},
+	{
+		id: "auth:verify",
+		name: "auth",
+		domain: "auth",
+		subcommand: "verify",
+		category: "Security",
+		description: "Verify the current TOTP code and start a 2FA-backed session.",
+		usage: "/auth verify <6-digit-code>",
+		examples: ["/auth verify 123456"],
+		keywords: ["verify 2fa", "totp code", "authenticate"],
+		authExempt: true,
+	},
+	{
+		id: "auth:logout",
+		name: "auth",
+		domain: "auth",
+		subcommand: "logout",
+		category: "Security",
+		description: "Invalidate the current TOTP-backed session.",
+		usage: "/auth logout",
+		examples: ["/auth logout"],
+		keywords: ["2fa logout", "logout", "end auth session", "reauth"],
+	},
+	{
+		id: "auth:disable",
+		name: "auth",
+		domain: "auth",
+		subcommand: "disable",
+		category: "Security",
+		description: "Disable TOTP for this chat.",
+		usage: "/auth disable",
+		examples: ["/auth disable"],
+		keywords: ["disable 2fa", "turn off totp"],
+	},
+	{
+		id: "auth:skip",
+		name: "auth",
+		domain: "auth",
+		subcommand: "skip",
+		category: "Security",
+		description: "Acknowledge that TOTP setup is being skipped for now.",
+		usage: "/auth skip",
+		examples: ["/auth skip"],
+		keywords: ["skip totp", "skip 2fa"],
+	},
+	{
+		id: "auth:force-reauth",
+		name: "auth",
+		domain: "auth",
+		subcommand: "force-reauth",
+		category: "Security",
+		description: "Invalidate your own 2FA session, or an admin can target another chat.",
+		usage: "/auth force-reauth [chatId]",
+		examples: ["/auth force-reauth", "/auth force-reauth 123456789"],
+		keywords: ["force reauth", "invalidate totp", "end session"],
+	},
+	// ── /system ────────────────────────────────────────────────────────
 	{
 		id: "system",
 		name: "system",
+		domain: "system",
+		domainDefault: true,
+		category: "System",
+		description: "Show runtime, security, service, and configuration status.",
+		usage: "/system [status|sessions|cron|ask <question>]",
+		examples: ["/system", "/system sessions", "/system cron", "/system ask what's running?"],
+		keywords: [
+			"system",
+			"status",
+			"health",
+			"runtime",
+			"security",
+			"audit",
+			"config",
+			"environment",
+		],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "System introspection",
+	},
+	{
+		id: "system:sessions",
+		name: "system",
+		domain: "system",
+		subcommand: "sessions",
+		category: "System",
+		description: "Show recent session state for active chats.",
+		usage: "/system sessions",
+		examples: ["/system sessions"],
+		keywords: ["sessions", "session state", "active sessions", "context"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "system:cron",
+		name: "system",
+		domain: "system",
+		subcommand: "cron",
+		category: "System",
+		description: "Show cron scheduler state and recent jobs.",
+		usage: "/system cron",
+		examples: ["/system cron"],
+		keywords: ["cron", "schedule", "scheduled jobs", "heartbeat schedule", "next run"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "system:ask",
+		name: "system",
+		domain: "system",
+		subcommand: "ask",
 		category: "System",
 		description: "Answer a natural-language question about status, sessions, cron, or identity.",
-		usage: "/system <question>",
+		usage: "/system ask <question>",
 		examples: [
-			"/system what's the current status?",
-			"/system any cron jobs running?",
-			"/system who am i linked as?",
+			"/system ask what's the current status?",
+			"/system ask any cron jobs running?",
+			"/system ask who am i linked as?",
 		],
 		keywords: ["system", "status question", "natural language", "what is running"],
 		readOnly: true,
 		rateLimited: true,
-		menuDescription: "Ask about system state",
+		hideFromCatalog: true,
 	},
+	// ── /social ────────────────────────────────────────────────────────
 	{
-		id: "status",
-		name: "status",
-		category: "System",
-		description: "Show runtime, security, service, and configuration status.",
-		usage: "/status",
-		examples: ["/status"],
-		keywords: ["status", "health", "runtime", "security", "audit", "config", "environment"],
+		id: "social",
+		name: "social",
+		domain: "social",
+		domainDefault: true,
+		category: "Social",
+		description: "Social persona management.",
+		usage: "/social [queue|promote <id>|run [svc]|log [svc] [hours]|ask [svc] <q>]",
+		examples: ["/social queue", "/social promote post_123", "/social run xtwitter"],
+		keywords: ["social", "public persona", "heartbeat", "posts"],
 		readOnly: true,
-		rateLimited: true,
-		menuDescription: "Show runtime status",
+		menuDescription: "Social persona management",
+		hideFromCatalog: true,
 	},
 	{
-		id: "sessions",
-		name: "sessions",
-		category: "System",
-		description: "Show recent session state for active chats.",
-		usage: "/sessions",
-		examples: ["/sessions"],
-		keywords: ["sessions", "session state", "active sessions", "context"],
-		readOnly: true,
-		rateLimited: true,
-		menuDescription: "Inspect chat sessions",
-	},
-	{
-		id: "cron",
-		name: "cron",
-		category: "System",
-		description: "Show cron scheduler state and recent jobs.",
-		usage: "/cron",
-		examples: ["/cron", "/system when is the next heartbeat"],
-		keywords: ["cron", "schedule", "scheduled jobs", "heartbeat schedule", "next run"],
-		readOnly: true,
-		rateLimited: true,
-		menuDescription: "Inspect cron jobs",
-	},
-	{
-		id: "link",
-		name: "link",
-		category: "Identity",
-		description: "Link this private chat to a local user with a one-time code.",
-		usage: "/link <code>",
-		examples: ["/link ABCD-1234"],
-		keywords: ["link", "pair", "identity link", "bind chat", "claim user"],
+		id: "social:queue",
+		name: "social",
+		domain: "social",
+		subcommand: "queue",
+		category: "Social",
+		description: "List pending promotable post ideas.",
+		usage: "/social queue",
+		examples: ["/social queue"],
+		keywords: ["pending posts", "quarantine", "draft posts", "social queue"],
 		rateLimited: true,
 	},
 	{
-		id: "unlink",
-		name: "unlink",
-		category: "Identity",
-		description: "Remove the identity link for this chat.",
-		usage: "/unlink",
-		examples: ["/unlink"],
-		keywords: ["unlink", "remove link", "disconnect identity"],
+		id: "social:promote",
+		name: "social",
+		domain: "social",
+		subcommand: "promote",
+		category: "Social",
+		description: "Promote a pending post idea so it can be published.",
+		usage: "/social promote <entry-id>",
+		examples: ["/social promote post_123"],
+		keywords: ["promote", "approve post", "publish idea"],
+		rateLimited: true,
+		hideFromCatalog: true,
 	},
 	{
-		id: "whoami",
-		name: "whoami",
-		category: "Identity",
-		description: "Show which local user this chat is linked to.",
-		usage: "/whoami",
-		examples: ["/whoami"],
-		keywords: ["whoami", "who am i", "identity", "linked user", "which user"],
-		readOnly: true,
-		menuDescription: "Show linked identity",
+		id: "social:run",
+		name: "social",
+		domain: "social",
+		subcommand: "run",
+		category: "Social",
+		description: "Run a social heartbeat now for one service or all enabled services.",
+		usage: "/social run [serviceId]",
+		examples: ["/social run", "/social run xtwitter"],
+		keywords: ["heartbeat", "social run", "post now", "trigger scheduler"],
+		rateLimited: true,
+		hideFromCatalog: true,
 	},
+	{
+		id: "social:log",
+		name: "social",
+		domain: "social",
+		subcommand: "log",
+		category: "Social",
+		description: "Summarize recent public persona activity.",
+		usage: "/social log [serviceId] [hours]",
+		examples: ["/social log", "/social log xtwitter 12"],
+		keywords: ["public log", "activity log", "social history"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "social:ask",
+		name: "social",
+		domain: "social",
+		subcommand: "ask",
+		category: "Social",
+		description:
+			"Ask the social persona a question without routing the reply through the private persona.",
+		usage: "/social ask [serviceId] <question>",
+		examples: ["/social ask what did you post today?", "/social ask xtwitter draft a reply"],
+		keywords: ["ask public", "public persona", "social query"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	// ── /skills ────────────────────────────────────────────────────────
+	{
+		id: "skills",
+		name: "skills",
+		domain: "skills",
+		domainDefault: true,
+		category: "Skills",
+		description: "Skill management.",
+		usage: "/skills [drafts|promote <name>|reload]",
+		examples: ["/skills drafts", "/skills promote my-skill", "/skills reload"],
+		keywords: ["skills", "draft skills", "skill management"],
+		readOnly: true,
+		menuDescription: "Skill management",
+		hideFromCatalog: true,
+	},
+	{
+		id: "skills:drafts",
+		name: "skills",
+		domain: "skills",
+		subcommand: "drafts",
+		category: "Skills",
+		description: "List draft skills awaiting promotion.",
+		usage: "/skills drafts",
+		examples: ["/skills drafts"],
+		keywords: ["draft skills", "list drafts", "skills queue"],
+		rateLimited: true,
+	},
+	{
+		id: "skills:promote",
+		name: "skills",
+		domain: "skills",
+		subcommand: "promote",
+		category: "Skills",
+		description: "Promote a draft skill into the live skill set.",
+		usage: "/skills promote <name>",
+		examples: ["/skills promote my-skill"],
+		keywords: ["promote skill", "publish skill"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "skills:reload",
+		name: "skills",
+		domain: "skills",
+		subcommand: "reload",
+		category: "Skills",
+		description: "Force the next session to start with the latest skills.",
+		usage: "/skills reload",
+		examples: ["/skills reload"],
+		keywords: ["reload skills", "refresh skills"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
 		id: "approve",
 		name: "approve",
@@ -229,62 +499,6 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		rateLimited: true,
 	},
 	{
-		id: "setup-2fa",
-		name: "setup-2fa",
-		category: "Security",
-		description: "Start the local TOTP setup flow.",
-		usage: "/setup-2fa",
-		examples: ["/setup-2fa"],
-		keywords: ["2fa", "setup totp", "enable two factor", "totp setup"],
-		authExempt: true,
-	},
-	{
-		id: "verify-2fa",
-		name: "verify-2fa",
-		category: "Security",
-		description: "Verify the current TOTP code and start a 2FA-backed session.",
-		usage: "/verify-2fa <6-digit-code>",
-		examples: ["/verify-2fa 123456"],
-		keywords: ["verify 2fa", "totp code", "authenticate"],
-		authExempt: true,
-	},
-	{
-		id: "disable-2fa",
-		name: "disable-2fa",
-		category: "Security",
-		description: "Disable TOTP for this chat.",
-		usage: "/disable-2fa",
-		examples: ["/disable-2fa"],
-		keywords: ["disable 2fa", "turn off totp"],
-	},
-	{
-		id: "2fa-logout",
-		name: "2fa-logout",
-		category: "Security",
-		description: "Invalidate the current TOTP-backed session.",
-		usage: "/2fa-logout",
-		examples: ["/2fa-logout"],
-		keywords: ["2fa logout", "logout", "end auth session", "reauth"],
-	},
-	{
-		id: "force-reauth",
-		name: "force-reauth",
-		category: "Security",
-		description: "Invalidate your own 2FA session, or an admin can target another chat.",
-		usage: "/force-reauth [chatId]",
-		examples: ["/force-reauth", "/force-reauth 123456789"],
-		keywords: ["force reauth", "invalidate totp", "end session"],
-	},
-	{
-		id: "skip-totp",
-		name: "skip-totp",
-		category: "Security",
-		description: "Acknowledge that TOTP setup is being skipped for now.",
-		usage: "/skip-totp",
-		examples: ["/skip-totp"],
-		keywords: ["skip totp", "skip 2fa"],
-	},
-	{
 		id: "new",
 		name: "new",
 		aliases: ["reset"],
@@ -296,89 +510,11 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		readOnly: true,
 		menuDescription: "Start a fresh session",
 	},
-	{
-		id: "heartbeat",
-		name: "heartbeat",
-		category: "Social",
-		description: "Run a social heartbeat now for one service or all enabled services.",
-		usage: "/heartbeat [serviceId]",
-		examples: ["/heartbeat", "/heartbeat xtwitter"],
-		keywords: ["heartbeat", "social run", "post now", "trigger scheduler"],
-		rateLimited: true,
-	},
-	{
-		id: "pending",
-		name: "pending",
-		category: "Social",
-		description: "List pending promotable post ideas.",
-		usage: "/pending",
-		examples: ["/pending"],
-		keywords: ["pending posts", "quarantine", "draft posts"],
-		rateLimited: true,
-	},
-	{
-		id: "promote",
-		name: "promote",
-		category: "Social",
-		description: "Promote a pending post idea so it can be published.",
-		usage: "/promote <entry-id>",
-		examples: ["/promote post_123"],
-		keywords: ["promote", "approve post", "publish idea"],
-		rateLimited: true,
-	},
-	{
-		id: "public-log",
-		name: "public-log",
-		category: "Social",
-		description: "Summarize recent public persona activity.",
-		usage: "/public-log [serviceId] [hours]",
-		examples: ["/public-log", "/public-log xtwitter 12"],
-		keywords: ["public log", "activity log", "social history"],
-		readOnly: true,
-		rateLimited: true,
-	},
-	{
-		id: "ask-public",
-		name: "ask-public",
-		category: "Social",
-		description:
-			"Ask the social persona a question without routing the reply through the private persona.",
-		usage: "/ask-public [serviceId] <question>",
-		examples: ["/ask-public what did you post today?", "/ask-public xtwitter draft a reply"],
-		keywords: ["ask public", "public persona", "social query"],
-		rateLimited: true,
-	},
-	{
-		id: "list-drafts",
-		name: "list-drafts",
-		category: "Skills",
-		description: "List draft skills awaiting promotion.",
-		usage: "/list-drafts",
-		examples: ["/list-drafts"],
-		keywords: ["draft skills", "list drafts", "skills queue"],
-		rateLimited: true,
-	},
-	{
-		id: "promote-skill",
-		name: "promote-skill",
-		category: "Skills",
-		description: "Promote a draft skill into the live skill set.",
-		usage: "/promote-skill <name>",
-		examples: ["/promote-skill my-skill"],
-		keywords: ["promote skill", "publish skill"],
-		rateLimited: true,
-	},
-	{
-		id: "reload-skills",
-		name: "reload-skills",
-		category: "Skills",
-		description: "Force the next session to start with the latest skills.",
-		usage: "/reload-skills",
-		examples: ["/reload-skills"],
-		keywords: ["reload skills", "refresh skills"],
-		rateLimited: true,
-	},
 ];
+
+// ---------------------------------------------------------------------------
+// Help topics — updated to use hierarchical command IDs
+// ---------------------------------------------------------------------------
 
 const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 	{
@@ -393,41 +529,48 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "identity",
 		title: "Identity",
 		summary:
-			"Identity linking binds a Telegram chat to a local user. Link in a private chat, inspect it with /whoami, and remove it with /unlink.",
-		keywords: ["identity", "link", "unlink", "who am i", "whoami", "pairing"],
-		commands: ["link", "whoami", "unlink"],
+			"Identity linking binds a Telegram chat to a local user. Use /me to inspect, /me link <code> to link, and /me unlink to remove.",
+		keywords: ["identity", "link", "unlink", "who am i", "whoami", "pairing", "me"],
+		commands: ["me", "me:link", "me:unlink"],
 	},
 	{
 		id: "2fa",
 		title: "Two-Factor Auth",
 		summary:
-			"2FA is set up locally. /setup-2fa explains the local flow, /verify-2fa activates it, /2fa-logout ends the current session, and /disable-2fa removes it.",
+			"2FA is set up locally. /auth setup explains the local flow, /auth verify activates it, /auth logout ends the current session, and /auth disable removes it.",
 		keywords: ["2fa", "totp", "two factor", "reauth", "force reauth", "auth"],
-		commands: ["setup-2fa", "verify-2fa", "2fa-logout", "disable-2fa", "force-reauth", "skip-totp"],
+		commands: [
+			"auth:setup",
+			"auth:verify",
+			"auth:logout",
+			"auth:disable",
+			"auth:force-reauth",
+			"auth:skip",
+		],
 	},
 	{
 		id: "system",
 		title: "System Introspection",
 		summary:
-			"Use /status for runtime and security state, /sessions for recent chat sessions, /cron for scheduled jobs, or /system <question> when you want the bot to route a natural-language system question for you.",
+			"Use /system for runtime and security state, /system sessions for recent chat sessions, /system cron for scheduled jobs, or /system ask <question> for natural-language system queries.",
 		keywords: ["system", "status", "sessions", "cron", "health", "diagnostics"],
-		commands: ["status", "sessions", "cron", "system"],
+		commands: ["system", "system:sessions", "system:cron", "system:ask"],
 	},
 	{
 		id: "social",
 		title: "Social Persona",
 		summary:
-			"Social commands are still explicit and admin-gated. Use /pending and /promote for queued ideas, /heartbeat to run posting now, /public-log for metadata history, and /ask-public to query the social persona directly.",
+			"Social commands are admin-gated. Use /social queue and /social promote for queued ideas, /social run to heartbeat now, /social log for metadata history, and /social ask to query the social persona.",
 		keywords: ["social", "public persona", "heartbeat", "posts", "pending", "promote"],
-		commands: ["pending", "promote", "heartbeat", "public-log", "ask-public"],
+		commands: ["social:queue", "social:promote", "social:run", "social:log", "social:ask"],
 	},
 	{
 		id: "skills",
 		title: "Skills",
 		summary:
-			"Skills are promoted intentionally. /list-drafts shows candidates, /promote-skill activates one, and /reload-skills resets the next session so the refreshed set is loaded.",
+			"Skills are promoted intentionally. /skills drafts shows candidates, /skills promote activates one, and /skills reload resets the next session so the refreshed set is loaded.",
 		keywords: ["skills", "draft skills", "promote skill", "reload skills"],
-		commands: ["list-drafts", "promote-skill", "reload-skills"],
+		commands: ["skills:drafts", "skills:promote", "skills:reload"],
 	},
 	{
 		id: "reset-session",
@@ -439,15 +582,42 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 	},
 ];
 
+// ---------------------------------------------------------------------------
+// Lookup indexes
+// ---------------------------------------------------------------------------
+
 const COMMAND_BY_ID = new Map(
 	TELEGRAM_CONTROL_COMMANDS.map((command) => [command.id, command] as const),
 );
 
-const COMMAND_BY_TRIGGER = new Map<string, TelegramControlCommandDefinition>();
+/**
+ * Domain root names → commands that belong to each domain.
+ * Used for hierarchical resolution: "/system sessions" → system:sessions.
+ */
+const DOMAIN_COMMANDS = new Map<string, TelegramControlCommandDefinition[]>();
+const DOMAIN_DEFAULTS = new Map<string, TelegramControlCommandDefinition>();
 for (const command of TELEGRAM_CONTROL_COMMANDS) {
-	COMMAND_BY_TRIGGER.set(command.name, command);
-	for (const alias of command.aliases ?? []) {
-		COMMAND_BY_TRIGGER.set(alias, command);
+	if (!command.domain) continue;
+	const list = DOMAIN_COMMANDS.get(command.domain) ?? [];
+	list.push(command);
+	DOMAIN_COMMANDS.set(command.domain, list);
+	if (command.domainDefault) {
+		DOMAIN_DEFAULTS.set(command.domain, command);
+	}
+}
+
+/**
+ * Direct trigger map for flat commands (approve, deny, new/reset, otp)
+ * and domain roots when used without subcommands.
+ */
+const DIRECT_TRIGGER_MAP = new Map<string, TelegramControlCommandDefinition>();
+for (const command of TELEGRAM_CONTROL_COMMANDS) {
+	// Only register flat (non-domain) commands and domain defaults
+	if (!command.domain) {
+		DIRECT_TRIGGER_MAP.set(command.name, command);
+		for (const alias of command.aliases ?? []) {
+			DIRECT_TRIGGER_MAP.set(alias, command);
+		}
 	}
 }
 
@@ -461,6 +631,10 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Social",
 	"Skills",
 ];
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 
 function normalizeLookup(value: string): string {
 	return value
@@ -503,7 +677,14 @@ function scoreLookup(query: string, terms: string[]): number {
 	return best;
 }
 
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
 function formatCommandTrigger(command: TelegramControlCommandDefinition): string {
+	if (command.domain && command.subcommand) {
+		return `/${command.domain} ${command.subcommand}`;
+	}
 	const aliases = (command.aliases ?? []).map((alias) => `/${alias}`);
 	if (aliases.length === 0) {
 		return `/${command.name}`;
@@ -544,6 +725,10 @@ function formatTopicDetail(topic: TelegramHelpTopic): string {
 	return lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 export function listTelegramControlCommands(): TelegramControlCommandDefinition[] {
 	return [...TELEGRAM_CONTROL_COMMANDS];
 }
@@ -558,6 +743,13 @@ export function getTelegramControlCommand(
 	return command;
 }
 
+/**
+ * Match an incoming message body against the command registry.
+ *
+ * Supports two forms:
+ * 1. Hierarchical: "/system sessions" → system:sessions
+ * 2. Shortcuts: "/approve 123" → approve
+ */
 export function matchTelegramControlCommand(
 	body: string,
 	options?: { botUsername?: string },
@@ -584,19 +776,67 @@ export function matchTelegramControlCommand(
 		commandToken = commandToken.slice(0, atIndex);
 	}
 
-	const command = COMMAND_BY_TRIGGER.get(commandToken);
-	if (!command) {
-		return null;
+	// 1. Try hierarchical domain routing: "/system sessions" → system:sessions
+	const domainCommands = DOMAIN_COMMANDS.get(commandToken);
+	if (domainCommands) {
+		const argParts = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
+		const firstArg = argParts[0]?.toLowerCase();
+
+		if (firstArg) {
+			// Try to match subcommand
+			const subcommandMatch = domainCommands.find((cmd) => cmd.subcommand === firstArg);
+			if (subcommandMatch) {
+				const subRawArgs = rawArgs.slice(firstArg.length).trim();
+				return {
+					command: subcommandMatch,
+					commandToken,
+					raw: trimmed,
+					rawArgs: subRawArgs,
+					args: subRawArgs ? subRawArgs.split(/\s+/).filter(Boolean) : [],
+				};
+			}
+
+			// No subcommand matched but args present — if domain has an "ask" subcommand,
+			// route unrecognized tokens to it (e.g. "/system who am i?" → system:ask).
+			const askSubcommand = domainCommands.find((cmd) => cmd.subcommand === "ask");
+			if (askSubcommand) {
+				return {
+					command: askSubcommand,
+					commandToken,
+					raw: trimmed,
+					rawArgs,
+					args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
+				};
+			}
+		}
+
+		// No args — use domain default (bare "/system")
+		const domainDefault = DOMAIN_DEFAULTS.get(commandToken);
+		if (domainDefault) {
+			return {
+				command: domainDefault,
+				commandToken,
+				raw: trimmed,
+				rawArgs,
+				args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
+			};
+		}
 	}
 
-	return {
-		command,
-		commandToken,
-		aliasUsed: commandToken !== command.name ? commandToken : undefined,
-		raw: trimmed,
-		rawArgs,
-		args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
-	};
+	// 2. Try direct flat commands (approve, deny, new/reset, otp)
+	const direct = DIRECT_TRIGGER_MAP.get(commandToken);
+	if (direct) {
+		return {
+			command: direct,
+			commandToken,
+			aliasUsed: commandToken !== direct.name ? commandToken : undefined,
+			raw: trimmed,
+			rawArgs,
+			args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
+		};
+	}
+
+	return null;
 }
 
 export function hasTelegramControlCommand(
@@ -611,6 +851,10 @@ export function isTelegramAuthExemptCommand(body: string): boolean {
 	return match?.command.authExempt === true;
 }
 
+// ---------------------------------------------------------------------------
+// Help formatting
+// ---------------------------------------------------------------------------
+
 export function formatTelegramHelpOverview(): string {
 	const lines = [
 		"Telclaude help",
@@ -619,15 +863,15 @@ export function formatTelegramHelpOverview(): string {
 		"- /help approvals",
 		"- /help reset session",
 		"- /help 2fa",
-		"- /system what's the current status?",
+		"- /system ask what's the current status?",
 		"",
 		"Common commands:",
 		`- ${formatCommandLine(getTelegramControlCommand("help"))}`,
-		`- ${formatCommandLine(getTelegramControlCommand("status"))}`,
-		`- ${formatCommandLine(getTelegramControlCommand("whoami"))}`,
+		`- ${formatCommandLine(getTelegramControlCommand("system"))}`,
+		`- ${formatCommandLine(getTelegramControlCommand("me"))}`,
 		`- ${formatCommandLine(getTelegramControlCommand("new"))}`,
 		"",
-		"Use /commands for the full catalog.",
+		"Use /help commands for the full catalog.",
 	];
 
 	return lines.join("\n");
@@ -660,9 +904,18 @@ export function resolveTelegramHelpQuery(query: string): TelegramHelpMatch | nul
 		return null;
 	}
 
-	const exactCommand = COMMAND_BY_TRIGGER.get(normalized);
-	if (exactCommand) {
-		return { kind: "command", command: exactCommand };
+	// Check for exact command trigger — support both "system sessions" and "sessions"
+	// Try colon-joined form first (e.g. "system sessions" → "system:sessions")
+	const colonJoined = normalized.replace(/\s+/, ":");
+	const exactById = COMMAND_BY_ID.get(colonJoined as TelegramCommandId);
+	if (exactById) {
+		return { kind: "command", command: exactById };
+	}
+
+	// Try domain default
+	const domainDefault = DOMAIN_DEFAULTS.get(normalized);
+	if (domainDefault) {
+		return { kind: "command", command: domainDefault };
 	}
 
 	const exactTopic = TELEGRAM_HELP_TOPICS.find((topic) =>
@@ -713,10 +966,10 @@ export function formatTelegramHelp(query?: string): string {
 			"Try:",
 			"- /help approvals",
 			"- /help 2fa",
-			"- /help status",
+			"- /help system",
 			"- /help reset session",
 			"",
-			"Use /commands to browse the full catalog.",
+			"Use /help commands to browse the full catalog.",
 		].join("\n");
 	}
 
@@ -725,13 +978,34 @@ export function formatTelegramHelp(query?: string): string {
 		: formatTopicDetail(match.topic);
 }
 
-export function getTelegramMenuCommands(): Array<{ command: string; description: string }> {
-	return TELEGRAM_CONTROL_COMMANDS.filter((command) => Boolean(command.menuDescription)).map(
-		(command) => ({
-			command: command.name,
-			description: command.menuDescription ?? command.description,
-		}),
-	);
+/**
+ * Build the Telegram bot menu commands, scoped by chat type.
+ * Returns entries for setMyCommands per scope.
+ */
+export function getTelegramMenuCommands(
+	scope?: "private" | "group",
+): Array<{ command: string; description: string }> {
+	const effectiveScope = scope ?? "private";
+
+	if (effectiveScope === "group") {
+		// Groups only see /help and /new
+		return [
+			{ command: "help", description: "Explain commands and topics" },
+			{ command: "new", description: "Start a fresh session" },
+		];
+	}
+
+	// Private chat: all 6 domain roots + 2 shortcuts
+	return [
+		{ command: "help", description: "Explain commands and topics" },
+		{ command: "me", description: "Identity management" },
+		{ command: "auth", description: "Two-factor authentication" },
+		{ command: "system", description: "System introspection" },
+		{ command: "social", description: "Social persona management" },
+		{ command: "skills", description: "Skill management" },
+		{ command: "approve", description: "Approve a pending request" },
+		{ command: "new", description: "Start a fresh session" },
+	];
 }
 
 export function resolveTelegramSystemIntent(query: string): TelegramSystemIntent {
@@ -777,10 +1051,10 @@ export function resolveTelegramSystemIntent(query: string): TelegramSystemIntent
 	]);
 
 	const bestCommand = [
-		{ commandId: "whoami" as const, score: whoamiScore },
-		{ commandId: "status" as const, score: statusScore },
-		{ commandId: "sessions" as const, score: sessionsScore },
-		{ commandId: "cron" as const, score: cronScore },
+		{ commandId: "me" as const, score: whoamiScore },
+		{ commandId: "system" as const, score: statusScore },
+		{ commandId: "system:sessions" as const, score: sessionsScore },
+		{ commandId: "system:cron" as const, score: cronScore },
 	].sort((a, b) => b.score - a.score)[0];
 
 	if (bestCommand && bestCommand.score >= 20) {

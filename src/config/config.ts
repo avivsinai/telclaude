@@ -57,6 +57,12 @@ const SUMMARIZE_DEFAULTS = {
 
 const SECURITY_DEFAULTS = { profile: "simple" } as const;
 const TELEGRAM_DEFAULTS = { heartbeatSeconds: 60 } as const;
+const TELEGRAM_NUDGES_DEFAULTS = {
+	enabled: false,
+	intervalSeconds: 300,
+	maxPerHour: 5,
+	digestIntervalHours: 24,
+} as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
 const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
@@ -366,6 +372,15 @@ const TelegramHeartbeatConfigSchema = z.object({
 	notifyOnActivity: z.boolean().default(true),
 });
 
+const TelegramNudgesConfigSchema = z.object({
+	enabled: z.boolean().default(TELEGRAM_NUDGES_DEFAULTS.enabled),
+	intervalSeconds: z.number().int().positive().default(TELEGRAM_NUDGES_DEFAULTS.intervalSeconds),
+	quietHoursStart: z.number().int().min(0).max(23).optional(),
+	quietHoursEnd: z.number().int().min(0).max(23).optional(),
+	maxPerHour: z.number().int().positive().default(TELEGRAM_NUDGES_DEFAULTS.maxPerHour),
+	digestIntervalHours: z.number().positive().default(TELEGRAM_NUDGES_DEFAULTS.digestIntervalHours),
+});
+
 const TelegramConfigSchema = z.object({
 	// Bot token - stored here (in ~/.telclaude/) rather than .env for security
 	// The ~/.telclaude/ directory is blocked from Claude's sandbox
@@ -397,6 +412,8 @@ const TelegramConfigSchema = z.object({
 		.optional(),
 	/** Private heartbeat: autonomous background tasks for the telegram persona */
 	heartbeat: TelegramHeartbeatConfigSchema.optional(),
+	/** Proactive Telegram cards for auth expiry, approvals, failures, and periodic digest. */
+	nudges: TelegramNudgesConfigSchema.optional(),
 });
 
 // Logging configuration schema

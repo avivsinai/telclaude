@@ -1,0 +1,29 @@
+import { cardRegistry } from "../registry.js";
+import { CardKind } from "../types.js";
+import { approvalRenderer } from "./approval.js";
+import { authRenderer } from "./auth.js";
+import { heartbeatRenderer } from "./heartbeat.js";
+import { pendingQueueRenderer } from "./pending-queue.js";
+import { sessionRenderer } from "./session.js";
+import { skillDraftRenderer } from "./skill-draft.js";
+import { statusRenderer } from "./status.js";
+
+export function registerAllCardRenderers(): void {
+	cardRegistry.register(CardKind.Approval, approvalRenderer);
+	cardRegistry.register(CardKind.PendingQueue, pendingQueueRenderer);
+	cardRegistry.register(CardKind.Status, statusRenderer);
+	cardRegistry.register(CardKind.Auth, authRenderer);
+	cardRegistry.register(CardKind.Heartbeat, heartbeatRenderer);
+	cardRegistry.register(CardKind.SkillDraft, skillDraftRenderer);
+	cardRegistry.register(CardKind.Session, sessionRenderer);
+}
+
+export {
+	approvalRenderer,
+	authRenderer,
+	heartbeatRenderer,
+	pendingQueueRenderer,
+	sessionRenderer,
+	skillDraftRenderer,
+	statusRenderer,
+};

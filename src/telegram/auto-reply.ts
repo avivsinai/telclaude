@@ -71,11 +71,19 @@ import {
 	type TelegramCommandMatch,
 } from "./control-commands.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
+import { intentToCommandId, intentToRawArgs, resolveIntent } from "./intent-router.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
+import {
+	format2FASetupInstructions,
+	handleStartOnboarding,
+	sendPostAuthStatusCard,
+} from "./onboarding.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { StreamingResponse } from "./streaming.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
+import { createTypingControllerFromCallback } from "./typing.js";
+import { routeWizardTextMessage } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
 
@@ -305,6 +313,7 @@ function resolveProcessingBody(msg: TelegramInboundMessage): string {
 }
 
 type TelegramControlCommandContext = {
+	bot: Bot;
 	msg: TelegramInboundMessage;
 	cfg: TelclaudeConfig;
 	auditLogger: AuditLogger;
@@ -371,7 +380,7 @@ async function handleWhoAmICommand(msg: TelegramInboundMessage): Promise<void> {
 
 	await msg.reply(
 		"This chat is not linked to any local user.\n" +
-			"Use `telclaude link <user-id>` on your machine to generate a link code.",
+			"Use `telclaude identity deep-link <user-id>` on your machine to generate a deep link.",
 	);
 }
 
@@ -392,13 +401,13 @@ async function handleSystemCommand(
 	if (!trimmedQuery) {
 		await msg.reply(
 			[
-				"Usage: /system <question>",
+				"Usage: /system ask <question>",
 				"",
 				"Examples:",
-				"- /system what's the current status?",
-				"- /system any active sessions?",
-				"- /system when is the next heartbeat?",
-				"- /system who am i linked as?",
+				"- /system ask what's the current status?",
+				"- /system ask any active sessions?",
+				"- /system ask when is the next heartbeat?",
+				"- /system ask who am i linked as?",
 			].join("\n"),
 		);
 		return;
@@ -408,16 +417,16 @@ async function handleSystemCommand(
 	switch (intent.kind) {
 		case "command":
 			switch (intent.commandId) {
-				case "status":
+				case "system":
 					await handleStatusCommand(msg);
 					return;
-				case "sessions":
+				case "system:sessions":
 					await handleSessionsCommand(msg);
 					return;
-				case "cron":
+				case "system:cron":
 					await handleCronCommand(msg);
 					return;
-				case "whoami":
+				case "me":
 					await handleWhoAmICommand(msg);
 					return;
 				default: {
@@ -444,22 +453,346 @@ async function dispatchTelegramControlCommand(
 	match: TelegramCommandMatch,
 	context: TelegramControlCommandContext,
 ): Promise<boolean> {
-	const { msg, cfg, auditLogger, recentlySent, requestId } = context;
+	const { bot, msg, cfg, auditLogger, recentlySent, requestId } = context;
 
 	switch (match.command.id) {
+		// ── /help domain ───────────────────────────────────────────────
 		case "help":
 			await handleHelpCommand(msg, match.rawArgs);
 			return true;
-		case "commands":
+		case "help:commands":
 			await handleCommandsCommand(msg);
 			return true;
-		case "system":
-			await handleSystemCommand(msg, match.rawArgs);
+		// ── /me domain ─────────────────────────────────────────────────
+		case "me":
+			await handleWhoAmICommand(msg);
 			return true;
-		case "link": {
+		case "me:link": {
 			await handleLinkCommand(msg, match.args[0]?.trim(), auditLogger);
 			return true;
 		}
+		case "me:unlink": {
+			const { removeIdentityLink } = await import("../security/linking.js");
+			const removed = removeIdentityLink(msg.chatId);
+			if (removed) {
+				await msg.reply("Identity link removed for this chat.");
+			} else {
+				await msg.reply("No identity link found for this chat.");
+			}
+			return true;
+		}
+		// ── /auth domain ───────────────────────────────────────────────
+		case "auth":
+			await msg.reply(
+				[
+					"/auth - Two-factor authentication",
+					"",
+					"Subcommands:",
+					"- /auth setup - Start TOTP setup",
+					"- /auth verify <code> - Verify TOTP code",
+					"- /auth logout - End 2FA session",
+					"- /auth disable - Disable TOTP",
+					"- /auth skip - Skip TOTP setup",
+					"- /auth force-reauth [chatId] - Force re-auth (admin)",
+				].join("\n"),
+			);
+			return true;
+		case "auth:setup":
+			await handleSetup2FA(msg);
+			return true;
+		case "auth:verify":
+			await handleVerify2FA(msg, match.args[0]?.trim(), bot);
+			return true;
+		case "auth:logout":
+			await handleLogout2FA(msg);
+			return true;
+		case "auth:disable":
+			await handleDisable2FA(msg);
+			return true;
+		case "auth:skip": {
+			const link = getIdentityLink(msg.chatId);
+			const setupCmd = link
+				? `telclaude auth totp-setup ${link.localUserId}`
+				: "telclaude auth totp-setup <user-id>";
+			await msg.reply(
+				`⚠️ *TOTP setup skipped*\n\nYou can set up two-factor authentication later by running:\n\`${setupCmd}\`\n\n${link ? "Tip: you can confirm your user-id with /me.\n\n" : ""}Note: Without 2FA, anyone with access to your Telegram account can use this bot.`,
+			);
+			return true;
+		}
+		case "auth:force-reauth":
+			await handleForceReauth(msg, match.args[0]?.trim());
+			return true;
+		// ── /system domain ─────────────────────────────────────────────
+		case "system":
+			await handleStatusCommand(msg);
+			return true;
+		case "system:sessions":
+			await handleSessionsCommand(msg);
+			return true;
+		case "system:cron":
+			await handleCronCommand(msg);
+			return true;
+		case "system:ask":
+			await handleSystemCommand(msg, match.rawArgs);
+			return true;
+		// ── /social domain ─────────────────────────────────────────────
+		case "social":
+			await msg.reply(
+				[
+					"/social - Social persona management",
+					"",
+					"Subcommands:",
+					"- /social queue - List pending posts",
+					"- /social promote <id> - Promote a post idea",
+					"- /social run [svc] - Run heartbeat now",
+					"- /social log [svc] [hours] - Activity summary",
+					"- /social ask [svc] <question> - Query public persona",
+				].join("\n"),
+			);
+			return true;
+		case "social:queue": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can view pending entries.");
+				return true;
+			}
+			const telegramPending = getEntries({
+				categories: ["posts"],
+				trust: ["quarantined"],
+				sources: ["telegram"],
+				chatId: String(msg.chatId),
+				limit: 20,
+				order: "desc",
+			});
+			const socialPending = getEntries({
+				categories: ["posts"],
+				trust: ["untrusted"],
+				sources: ["social"],
+				limit: 20,
+				order: "desc",
+			});
+			const pending = [...telegramPending, ...socialPending]
+				.sort((a, b) => b._provenance.createdAt - a._provenance.createdAt)
+				.slice(0, 20);
+			if (pending.length === 0) {
+				await msg.reply("No pending posts.");
+				return true;
+			}
+			const lines = pending.map((entry) => {
+				const age = Math.round((Date.now() - entry._provenance.createdAt) / 60000);
+				const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+				const preview =
+					entry.content.length > 60 ? `${entry.content.slice(0, 60)}...` : entry.content;
+				const quoteMetadata = parseSocialQuoteProposalMetadata(entry.metadata);
+				const contextLine = quoteMetadata
+					? `\n  quote ${quoteMetadata.targetPostId}${
+							quoteMetadata.targetAuthor ? ` (${quoteMetadata.targetAuthor})` : ""
+						}${
+							quoteMetadata.targetExcerpt
+								? `: "${quoteMetadata.targetExcerpt.slice(0, 60)}${
+										quoteMetadata.targetExcerpt.length > 60 ? "..." : ""
+									}"`
+								: ""
+						}`
+					: "";
+				return `\`${entry.id}\` "${preview}" — ${ageStr}${contextLine}\n  /social promote ${entry.id}`;
+			});
+			await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
+			return true;
+		}
+		case "social:promote": {
+			const entryId = match.args[0]?.trim();
+			if (!entryId) {
+				await msg.reply("Usage: `/social promote <entry-id>`");
+				return true;
+			}
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can promote entries.");
+				return true;
+			}
+			const telegramEntries = getEntries({
+				categories: ["posts"],
+				trust: ["quarantined"],
+				sources: ["telegram"],
+				chatId: String(msg.chatId),
+			});
+			const socialEntries = getEntries({
+				categories: ["posts"],
+				trust: ["untrusted"],
+				sources: ["social"],
+			});
+			const allPromotable = [...telegramEntries, ...socialEntries];
+			if (!allPromotable.some((entry) => entry.id === entryId)) {
+				await msg.reply("Entry not found. Use /social queue to list promotable posts.");
+				return true;
+			}
+			const result = promoteEntryTrust(entryId, String(msg.chatId));
+			if (!result.ok) {
+				await msg.reply(`Promote failed: ${result.reason}`);
+				return true;
+			}
+			await msg.reply(
+				`Promoted \`${entryId}\`. Send /social run to publish now, or wait for the next scheduled one.`,
+			);
+			return true;
+		}
+		case "social:run": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can trigger heartbeats.");
+				return true;
+			}
+			const serviceIdArg = match.args[0]?.trim() || undefined;
+			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
+			if (enabledServices.length === 0) {
+				await msg.reply("No social services are enabled.");
+				return true;
+			}
+			const targets = serviceIdArg
+				? enabledServices.filter((service) => service.id === serviceIdArg)
+				: enabledServices;
+			if (targets.length === 0) {
+				const ids = enabledServices.map((service) => service.id).join(", ");
+				await msg.reply(`Unknown service. Available: ${ids}`);
+				return true;
+			}
+			const { createSocialClient, handleSocialHeartbeat } = await import("../social/index.js");
+			const label = targets.map((service) => service.id).join(", ");
+			await msg.reply(`Running heartbeat: ${label}...`);
+			await msg.sendComposing();
+			const results = await Promise.allSettled(
+				targets.map(async (service) => {
+					const client = await createSocialClient(service);
+					if (!client) {
+						return { serviceId: service.id, ok: false, message: "client not configured" };
+					}
+					const result = await handleSocialHeartbeat(service.id, client, service);
+					return { serviceId: service.id, ...result };
+				}),
+			);
+			const lines = results.map((result, index) => {
+				const serviceId = targets[index].id;
+				if (result.status === "rejected") {
+					return `${serviceId}: failed — ${String(result.reason).slice(0, 80)}`;
+				}
+				const { ok, message } = result.value;
+				return `${serviceId}: ${ok ? message || "done" : `failed — ${message}`}`;
+			});
+			await msg.reply(lines.join("\n"));
+			return true;
+		}
+		case "social:log": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can view public activity.");
+				return true;
+			}
+			const serviceIdArg = match.args[0]?.trim() || undefined;
+			const hoursArg = match.args[1] ? Number.parseInt(match.args[1], 10) : 4;
+			const hours = Number.isNaN(hoursArg) ? 4 : hoursArg;
+			const { formatActivityLog, getActivitySummary } = await import("../social/activity-log.js");
+			const summary = getActivitySummary(serviceIdArg, hours);
+			await msg.reply(formatActivityLog(summary, hours));
+			return true;
+		}
+		case "social:ask": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can query the public persona.");
+				return true;
+			}
+			const payload = match.rawArgs.trim();
+			if (!payload) {
+				await msg.reply("Usage: `/social ask [serviceId] <question>`");
+				return true;
+			}
+			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
+			if (enabledServices.length === 0) {
+				await msg.reply("No social services are enabled.");
+				return true;
+			}
+			const parts = payload.split(/\s+/);
+			const maybeService = enabledServices.find((service) => service.id === parts[0]);
+			const service = maybeService ?? enabledServices[0];
+			const question = maybeService ? payload.slice(parts[0].length + 1).trim() : payload;
+			if (!question) {
+				const serviceIds = enabledServices.map((enabledService) => enabledService.id).join(", ");
+				await msg.reply(
+					`Usage: \`/social ask [serviceId] <question>\`\nAvailable services: ${serviceIds}`,
+				);
+				return true;
+			}
+			const typing = createTypingControllerFromCallback(() => {
+				msg.sendComposing().catch(() => {});
+			});
+			typing.start();
+			try {
+				const { queryPublicPersona } = await import("../social/handler.js");
+				const response = await queryPublicPersona(question, service.id, service);
+				await msg.reply(response || "No response from public persona.");
+			} catch (err) {
+				logger.warn({ error: String(err), serviceId: service.id }, "/social ask query failed");
+				await msg.reply("Failed to reach public persona. Check logs.");
+			} finally {
+				typing.stop();
+			}
+			return true;
+		}
+		// ── /skills domain ─────────────────────────────────────────────
+		case "skills":
+			await msg.reply(
+				[
+					"/skills - Skill management",
+					"",
+					"Subcommands:",
+					"- /skills drafts - List draft skills",
+					"- /skills promote <name> - Promote a draft skill",
+					"- /skills reload - Reload skills for next session",
+				].join("\n"),
+			);
+			return true;
+		case "skills:drafts": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can list drafts.");
+				return true;
+			}
+			const drafts = listDraftSkills();
+			if (drafts.length === 0) {
+				await msg.reply("No draft skills awaiting promotion.");
+				return true;
+			}
+			const lines = drafts.map((name) => `  /skills promote ${name}`);
+			await msg.reply(`${drafts.length} draft skill(s):\n${lines.join("\n")}`);
+			return true;
+		}
+		case "skills:promote": {
+			const skillName = match.args[0]?.trim();
+			if (!skillName) {
+				await msg.reply("Usage: `/skills promote <name>`");
+				return true;
+			}
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can promote skills.");
+				return true;
+			}
+			const result = promoteSkill(skillName);
+			if (result.success) {
+				await msg.reply(`Skill "${skillName}" promoted. Available next session.`);
+			} else {
+				await msg.reply(`Promote failed: ${result.error}`);
+			}
+			return true;
+		}
+		case "skills:reload": {
+			if (!isAdmin(msg.chatId)) {
+				await msg.reply("Only admin can reload skills.");
+				return true;
+			}
+			const sessionKey = msg.from;
+			deleteSession(sessionKey);
+			getSessionManager().clearSession(sessionKey);
+			await msg.reply(
+				"Skills reloaded. Next message will start a fresh session with updated skills.",
+			);
+			return true;
+		}
+		// ── Fast-path shortcuts ────────────────────────────────────────
 		case "approve": {
 			await handleApproveCommand(msg, match.args[0]?.trim(), cfg, auditLogger, recentlySent);
 			return true;
@@ -527,282 +860,6 @@ async function dispatchTelegramControlCommand(
 					`OTP failed for service '${service}'. Check provider status and try again.`,
 				);
 			}
-			return true;
-		}
-		case "promote": {
-			const entryId = match.args[0]?.trim();
-			if (!entryId) {
-				await msg.reply("Usage: `/promote <entry-id>`");
-				return true;
-			}
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can promote entries.");
-				return true;
-			}
-			const telegramEntries = getEntries({
-				categories: ["posts"],
-				trust: ["quarantined"],
-				sources: ["telegram"],
-				chatId: String(msg.chatId),
-			});
-			const socialEntries = getEntries({
-				categories: ["posts"],
-				trust: ["untrusted"],
-				sources: ["social"],
-			});
-			const allPromotable = [...telegramEntries, ...socialEntries];
-			if (!allPromotable.some((entry) => entry.id === entryId)) {
-				await msg.reply("Entry not found. Use /pending to list promotable posts.");
-				return true;
-			}
-			const result = promoteEntryTrust(entryId, String(msg.chatId));
-			if (!result.ok) {
-				await msg.reply(`Promote failed: ${result.reason}`);
-				return true;
-			}
-			await msg.reply(
-				`Promoted \`${entryId}\`. Send /heartbeat to publish now, or wait for the next scheduled one.`,
-			);
-			return true;
-		}
-		case "pending": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can view pending entries.");
-				return true;
-			}
-			const telegramPending = getEntries({
-				categories: ["posts"],
-				trust: ["quarantined"],
-				sources: ["telegram"],
-				chatId: String(msg.chatId),
-				limit: 20,
-				order: "desc",
-			});
-			const socialPending = getEntries({
-				categories: ["posts"],
-				trust: ["untrusted"],
-				sources: ["social"],
-				limit: 20,
-				order: "desc",
-			});
-			const pending = [...telegramPending, ...socialPending]
-				.sort((a, b) => b._provenance.createdAt - a._provenance.createdAt)
-				.slice(0, 20);
-			if (pending.length === 0) {
-				await msg.reply("No pending posts.");
-				return true;
-			}
-			const lines = pending.map((entry) => {
-				const age = Math.round((Date.now() - entry._provenance.createdAt) / 60000);
-				const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
-				const preview =
-					entry.content.length > 60 ? `${entry.content.slice(0, 60)}...` : entry.content;
-				const quoteMetadata = parseSocialQuoteProposalMetadata(entry.metadata);
-				const contextLine = quoteMetadata
-					? `\n  quote ${quoteMetadata.targetPostId}${
-							quoteMetadata.targetAuthor ? ` (${quoteMetadata.targetAuthor})` : ""
-						}${
-							quoteMetadata.targetExcerpt
-								? `: "${quoteMetadata.targetExcerpt.slice(0, 60)}${
-										quoteMetadata.targetExcerpt.length > 60 ? "..." : ""
-									}"`
-								: ""
-						}`
-					: "";
-				return `\`${entry.id}\` "${preview}" — ${ageStr}${contextLine}\n  /promote ${entry.id}`;
-			});
-			await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
-			return true;
-		}
-		case "promote-skill": {
-			const skillName = match.args[0]?.trim();
-			if (!skillName) {
-				await msg.reply("Usage: `/promote-skill <name>`");
-				return true;
-			}
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can promote skills.");
-				return true;
-			}
-			const result = promoteSkill(skillName);
-			if (result.success) {
-				await msg.reply(`Skill "${skillName}" promoted. Available next session.`);
-			} else {
-				await msg.reply(`Promote failed: ${result.error}`);
-			}
-			return true;
-		}
-		case "list-drafts": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can list drafts.");
-				return true;
-			}
-			const drafts = listDraftSkills();
-			if (drafts.length === 0) {
-				await msg.reply("No draft skills awaiting promotion.");
-				return true;
-			}
-			const lines = drafts.map((name) => `  /promote-skill ${name}`);
-			await msg.reply(`${drafts.length} draft skill(s):\n${lines.join("\n")}`);
-			return true;
-		}
-		case "reload-skills": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can reload skills.");
-				return true;
-			}
-			const sessionKey = msg.from;
-			deleteSession(sessionKey);
-			getSessionManager().clearSession(sessionKey);
-			await msg.reply(
-				"Skills reloaded. Next message will start a fresh session with updated skills.",
-			);
-			return true;
-		}
-		case "status":
-			await handleStatusCommand(msg);
-			return true;
-		case "sessions":
-			await handleSessionsCommand(msg);
-			return true;
-		case "cron":
-			await handleCronCommand(msg);
-			return true;
-		case "heartbeat": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can trigger heartbeats.");
-				return true;
-			}
-			const serviceIdArg = match.args[0]?.trim() || undefined;
-			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
-			if (enabledServices.length === 0) {
-				await msg.reply("No social services are enabled.");
-				return true;
-			}
-			const targets = serviceIdArg
-				? enabledServices.filter((service) => service.id === serviceIdArg)
-				: enabledServices;
-			if (targets.length === 0) {
-				const ids = enabledServices.map((service) => service.id).join(", ");
-				await msg.reply(`Unknown service. Available: ${ids}`);
-				return true;
-			}
-			const { createSocialClient, handleSocialHeartbeat } = await import("../social/index.js");
-			const label = targets.map((service) => service.id).join(", ");
-			await msg.reply(`Running heartbeat: ${label}...`);
-			await msg.sendComposing();
-			const results = await Promise.allSettled(
-				targets.map(async (service) => {
-					const client = await createSocialClient(service);
-					if (!client) {
-						return { serviceId: service.id, ok: false, message: "client not configured" };
-					}
-					const result = await handleSocialHeartbeat(service.id, client, service);
-					return { serviceId: service.id, ...result };
-				}),
-			);
-			const lines = results.map((result, index) => {
-				const serviceId = targets[index].id;
-				if (result.status === "rejected") {
-					return `${serviceId}: failed — ${String(result.reason).slice(0, 80)}`;
-				}
-				const { ok, message } = result.value;
-				return `${serviceId}: ${ok ? message || "done" : `failed — ${message}`}`;
-			});
-			await msg.reply(lines.join("\n"));
-			return true;
-		}
-		case "public-log": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can view public activity.");
-				return true;
-			}
-			const serviceIdArg = match.args[0]?.trim() || undefined;
-			const hoursArg = match.args[1] ? Number.parseInt(match.args[1], 10) : 4;
-			const hours = Number.isNaN(hoursArg) ? 4 : hoursArg;
-			const { formatActivityLog, getActivitySummary } = await import("../social/activity-log.js");
-			const summary = getActivitySummary(serviceIdArg, hours);
-			await msg.reply(formatActivityLog(summary, hours));
-			return true;
-		}
-		case "ask-public": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can query the public persona.");
-				return true;
-			}
-			const payload = match.rawArgs.trim();
-			if (!payload) {
-				await msg.reply("Usage: `/ask-public [serviceId] <question>`");
-				return true;
-			}
-			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
-			if (enabledServices.length === 0) {
-				await msg.reply("No social services are enabled.");
-				return true;
-			}
-			const parts = payload.split(/\s+/);
-			const maybeService = enabledServices.find((service) => service.id === parts[0]);
-			const service = maybeService ?? enabledServices[0];
-			const question = maybeService ? payload.slice(parts[0].length + 1).trim() : payload;
-			if (!question) {
-				const serviceIds = enabledServices.map((enabledService) => enabledService.id).join(", ");
-				await msg.reply(
-					`Usage: \`/ask-public [serviceId] <question>\`\nAvailable services: ${serviceIds}`,
-				);
-				return true;
-			}
-			await msg.sendComposing();
-			const typingTimer = setInterval(() => {
-				msg.sendComposing().catch(() => {});
-			}, 4000);
-			try {
-				const { queryPublicPersona } = await import("../social/handler.js");
-				const response = await queryPublicPersona(question, service.id, service);
-				await msg.reply(response || "No response from public persona.");
-			} catch (err) {
-				logger.warn({ error: String(err), serviceId: service.id }, "/ask-public query failed");
-				await msg.reply("Failed to reach public persona. Check logs.");
-			} finally {
-				clearInterval(typingTimer);
-			}
-			return true;
-		}
-		case "unlink": {
-			const { removeIdentityLink } = await import("../security/linking.js");
-			const removed = removeIdentityLink(msg.chatId);
-			if (removed) {
-				await msg.reply("Identity link removed for this chat.");
-			} else {
-				await msg.reply("No identity link found for this chat.");
-			}
-			return true;
-		}
-		case "whoami":
-			await handleWhoAmICommand(msg);
-			return true;
-		case "setup-2fa":
-			await handleSetup2FA(msg);
-			return true;
-		case "verify-2fa":
-			await handleVerify2FA(msg, match.args[0]?.trim());
-			return true;
-		case "disable-2fa":
-			await handleDisable2FA(msg);
-			return true;
-		case "2fa-logout":
-			await handleLogout2FA(msg);
-			return true;
-		case "force-reauth":
-			await handleForceReauth(msg, match.args[0]?.trim());
-			return true;
-		case "skip-totp": {
-			const link = getIdentityLink(msg.chatId);
-			const setupCmd = link
-				? `telclaude totp-setup ${link.localUserId}`
-				: "telclaude totp-setup <user-id>";
-			await msg.reply(
-				`⚠️ *TOTP setup skipped*\n\nYou can set up two-factor authentication later by running:\n\`${setupCmd}\`\n\n${link ? "Tip: you can confirm your user-id with /whoami.\n\n" : ""}Note: Without 2FA, anyone with access to your Telegram account can use this bot.`,
-			);
 			return true;
 		}
 		case "new":
@@ -939,16 +996,18 @@ async function executeWithSession(
 	// Streaming response holder (declared here for access in catch block)
 	let streamer: StreamingResponse | null = null;
 
-	// Typing indicator refresh - only used when streaming is disabled or unavailable
+	// Debounced typing indicator - only used when streaming is disabled or unavailable
 	// (StreamingResponse has its own typing indicator to avoid duplicates)
 	const replyConfig = ctx.config.inbound?.reply;
 	const typingInterval = (replyConfig?.typingIntervalSeconds ?? 8) * 1000;
-	let typingTimer: NodeJS.Timeout | null = null;
-	const startTypingTimer = () => {
-		if (typingTimer) return;
-		typingTimer = setInterval(() => {
+	const typingController = createTypingControllerFromCallback(
+		() => {
 			msg.sendComposing().catch(() => {});
-		}, typingInterval);
+		},
+		{ repeatIntervalMs: typingInterval },
+	);
+	const startTypingTimer = () => {
+		typingController.start();
 	};
 
 	try {
@@ -1082,9 +1141,19 @@ async function executeWithSession(
 			startTypingTimer();
 		}
 
+		// Status reaction controller (if streaming with reactions enabled)
+		const reactions = streamer?.getReactionController() ?? null;
+		let hasReceivedFirstText = false;
+
 		// Execute with session pool for connection reuse and timeout
 		for await (const chunk of queryStream) {
 			if (chunk.type === "text") {
+				// Signal thinking on first text chunk
+				if (!hasReceivedFirstText) {
+					hasReceivedFirstText = true;
+					reactions?.setThinking();
+				}
+
 				// Process through streaming redactor to catch secrets
 				const safeContent = redactor.processChunk(chunk.content);
 				responseText += safeContent;
@@ -1093,6 +1162,9 @@ async function executeWithSession(
 				if (streamer) {
 					await streamer.append(safeContent);
 				}
+			} else if (chunk.type === "tool_use") {
+				// Signal tool use stage via status reactions
+				reactions?.setTool(chunk.toolName);
 			} else if (chunk.type === "done") {
 				if (!chunk.result.success) {
 					const errorMsg = chunk.result.error?.includes("aborted")
@@ -1274,9 +1346,7 @@ async function executeWithSession(
 			await msg.reply("An error occurred while processing your request. Please try again.");
 		}
 	} finally {
-		if (typingTimer) {
-			clearInterval(typingTimer);
-		}
+		typingController.stop();
 	}
 }
 
@@ -1376,6 +1446,10 @@ export async function monitorTelegramProvider(
 		}, OPENAI_RECHECK_INTERVAL_MS);
 	}
 
+	// Initialize the card system (registers renderers, starts expiry sweep)
+	const { initCardSystem } = await import("./cards/init.js");
+	initCardSystem();
+
 	// SECURITY: One-time cleanup of expired security artifacts on startup
 	// This runs BEFORE entering the connection loop to ensure stale approvals,
 	// link codes, TOTP sessions, and admin claims are purged on every run.
@@ -1446,6 +1520,8 @@ export async function monitorTelegramProvider(
 	while (true) {
 		if (abortSignal?.aborted) break;
 
+		let stopNudges: (() => void) | null = null;
+
 		try {
 			const env = await readEnv();
 			const token = env.telegramBotToken;
@@ -1456,6 +1532,29 @@ export async function monitorTelegramProvider(
 			console.log(`Connected as @${botInfo.username}`);
 
 			logger.info({ botId: botInfo.id, username: botInfo.username }, "connected to Telegram");
+
+			const nudgeConfig = cfg.telegram?.nudges;
+			if (nudgeConfig?.enabled) {
+				const { createNudgeCoordinator } = await import("./nudges.js");
+				const nudgeCoordinator = createNudgeCoordinator({
+					api: bot.api,
+					allowedChats: cfg.telegram?.allowedChats,
+					intervalMs: nudgeConfig.intervalSeconds * 1000,
+					quietHoursStart: nudgeConfig.quietHoursStart,
+					quietHoursEnd: nudgeConfig.quietHoursEnd,
+					maxPerHour: nudgeConfig.maxPerHour,
+					digestIntervalMs: nudgeConfig.digestIntervalHours * 60 * 60 * 1000,
+				});
+				nudgeCoordinator.start();
+				stopNudges = () => nudgeCoordinator.stop();
+				logger.info(
+					{
+						intervalSeconds: nudgeConfig.intervalSeconds,
+						digestIntervalHours: nudgeConfig.digestIntervalHours,
+					},
+					"telegram nudges enabled",
+				);
+			}
 
 			const { close, onClose } = await monitorTelegramInbox({
 				bot,
@@ -1524,6 +1623,8 @@ export async function monitorTelegramProvider(
 			clearInterval(cleanupInterval);
 			runner.stop();
 			await close();
+			stopNudges?.();
+			stopNudges = null;
 
 			if (closeReason === "aborted" || abortSignal?.aborted) {
 				logger.info("monitor aborted by signal");
@@ -1541,6 +1642,7 @@ export async function monitorTelegramProvider(
 			logger.info({ delay, attempt: reconnectAttempts }, "reconnecting");
 			await sleepWithAbort(delay, abortSignal);
 		} catch (err) {
+			stopNudges?.();
 			const errorStr = String(err);
 			logger.error({ error: errorStr }, "monitor error");
 
@@ -1611,6 +1713,15 @@ async function handleInboundMessage(
 
 	// Determine chat type for admin claim check
 	const chatType = msg.chatType ?? "private"; // Default to private if not specified
+
+	const onboardingHandled = await handleStartOnboarding({
+		msg,
+		api: _bot.api,
+		auditLogger,
+	});
+	if (onboardingHandled) {
+		return;
+	}
 
 	// Check for first-time admin claim (only if no admin is set up yet)
 	const adminClaimResult = await handleFirstMessageIfNoAdmin(
@@ -1716,6 +1827,7 @@ async function handleInboundMessage(
 
 	if (controlCommandMatch) {
 		await dispatchTelegramControlCommand(controlCommandMatch, {
+			bot: _bot,
 			msg,
 			cfg,
 			auditLogger,
@@ -1723,6 +1835,47 @@ async function handleInboundMessage(
 			requestId,
 		});
 		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// WIZARD TEXT ROUTING - Intercept text messages for active wizard prompts
+	// ══════════════════════════════════════════════════════════════════════════
+
+	if (routeWizardTextMessage(msg.chatId, trimmedBody)) {
+		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
+		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// NATURAL LANGUAGE INTENT ROUTER - Map NL to control commands
+	// Runs AFTER explicit /command matching fails but BEFORE agent processing.
+	// Conservative: only fires on unambiguous pattern matches or strong heuristics.
+	// ══════════════════════════════════════════════════════════════════════════
+
+	const nlIntent = resolveIntent(trimmedBody);
+	if (nlIntent && nlIntent.domain !== "agent") {
+		const commandId = intentToCommandId(nlIntent);
+		if (commandId) {
+			const rawArgs = intentToRawArgs(nlIntent) ?? "";
+			const syntheticMatch = matchTelegramControlCommand(
+				`/${commandId.replace(":", " ")} ${rawArgs}`.trim(),
+			);
+			if (syntheticMatch) {
+				logger.debug(
+					{ intent: nlIntent, commandId, rawArgs },
+					"NL intent resolved to control command",
+				);
+				await dispatchTelegramControlCommand(syntheticMatch, {
+					bot: _bot,
+					msg,
+					cfg,
+					auditLogger,
+					recentlySent,
+					requestId,
+				});
+				return;
+			}
+		}
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1929,9 +2082,10 @@ async function handleLinkCommand(
 
 	if (!code) {
 		await msg.reply(
-			"Usage: `/link <code>`\n\n" +
-				"Generate a link code on your machine with:\n" +
-				"`telclaude link <your-user-id>`",
+			"Usage: `/me link <code>`\n\n" +
+				"Generate a deep link on your machine with:\n" +
+				"`telclaude identity deep-link <your-user-id>`",
+			{ useMarkdown: true },
 		);
 		return;
 	}
@@ -1944,7 +2098,8 @@ async function handleLinkCommand(
 	}
 
 	await msg.reply(
-		`*Identity linked successfully!*\n\nThis chat is now linked to local user: *${result.data.localUserId}*\n\nYou can verify with \`/whoami\` or unlink with \`/unlink\`.`,
+		`*Identity linked successfully!*\n\nThis chat is now linked to local user: *${result.data.localUserId}*\n\nYou can verify with \`/me\` or unlink with \`/me unlink\`.`,
+		{ useMarkdown: true },
 	);
 
 	await auditLogger.log({
@@ -2557,22 +2712,21 @@ async function handleSetup2FA(msg: TelegramInboundMessage): Promise<void> {
 	if (!link) {
 		await msg.reply(
 			"You must link your identity first before setting up 2FA.\n\n" +
-				"Ask an admin to run `telclaude link <user-id>` to generate a link code.",
+				"Ask an admin to run `telclaude identity deep-link <user-id>` to generate a deep link.",
 		);
 		return;
 	}
 
-	await msg.reply(
-		`*Setting up Two-Factor Authentication*\n\nFor security reasons, TOTP secrets cannot be sent via Telegram (anyone with access to chat history could recreate your 2FA device).\n\n*To set up 2FA:*\n1. Run this command on your local machine:\n   \`telclaude totp-setup ${link.localUserId}\`\n\n2. Scan the QR code or enter the secret in your authenticator app\n\n3. Return here and send \`/verify-2fa <6-digit-code>\` to confirm your setup\n\nTip: You can confirm your user-id with /whoami.\n\nOnce configured, you’ll be prompted for your 6-digit code when your session expires.`,
-	);
+	await msg.reply(format2FASetupInstructions(link.localUserId), { useMarkdown: true });
 }
 
 async function handleVerify2FA(
 	msg: TelegramInboundMessage,
 	code: string | undefined,
+	bot: Bot,
 ): Promise<void> {
 	if (!code) {
-		await msg.reply("Usage: `/verify-2fa <6-digit-code>`");
+		await msg.reply("Usage: `/auth verify <6-digit-code>`");
 		return;
 	}
 
@@ -2586,7 +2740,7 @@ async function handleVerify2FA(
 	if (!link) {
 		await msg.reply(
 			"You must link your identity first before verifying 2FA.\n\n" +
-				"Ask an admin to run `telclaude link <user-id>` to generate a link code.",
+				"Ask an admin to run `telclaude identity deep-link <user-id>` to generate a link code.",
 		);
 		return;
 	}
@@ -2615,9 +2769,15 @@ async function handleVerify2FA(
 			"Your identity will be verified periodically when your session expires. Simply enter your 6-digit code when prompted.\n\n" +
 			"After you verify once, your session will be remembered for a while so you won't need to enter the code again for subsequent messages.\n\n" +
 			"Commands:\n" +
-			"• `/2fa-logout` - End your session early\n" +
-			"• `/disable-2fa` - Disable 2FA completely",
+			"• `/auth logout` - End your session early\n" +
+			"• `/auth disable` - Disable 2FA completely",
+		{ useMarkdown: true },
 	);
+
+	await sendPostAuthStatusCard(bot.api, msg.chatId, {
+		localUserId: link.localUserId,
+		threadId: msg.messageThreadId,
+	});
 }
 
 async function handleDisable2FA(msg: TelegramInboundMessage): Promise<void> {

@@ -75,9 +75,25 @@ export async function syncTelegramCommandMenu(bot: Bot): Promise<void> {
 	const logger = getChildLogger({ module: "telegram-client" });
 
 	try {
-		const commands = getTelegramMenuCommands();
-		await bot.api.setMyCommands(commands);
-		logger.info({ commandCount: commands.length }, "telegram command menu synced");
+		// Private chat scope: all domain roots + shortcuts
+		const privateCommands = getTelegramMenuCommands("private");
+		await bot.api.setMyCommands(privateCommands, {
+			scope: { type: "all_private_chats" },
+		});
+
+		// Group chat scope: minimal set
+		const groupCommands = getTelegramMenuCommands("group");
+		await bot.api.setMyCommands(groupCommands, {
+			scope: { type: "all_group_chats" },
+		});
+
+		// Default scope (fallback): private commands
+		await bot.api.setMyCommands(privateCommands);
+
+		logger.info(
+			{ privateCount: privateCommands.length, groupCount: groupCommands.length },
+			"telegram command menu synced (scoped)",
+		);
 	} catch (err) {
 		logger.warn({ error: String(err) }, "failed to sync telegram command menu");
 	}

@@ -9,7 +9,10 @@ import type { Bot, CallbackQueryContext, Context } from "grammy";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
+import type { AuditLogger } from "../security/audit.js";
+import { handleCallback as handleCardCallback } from "./cards/callback-controller.js";
 import { formatTelegramHelpOverview } from "./control-commands.js";
+import { routeWizardCallback } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "keyboard-handlers" });
 
@@ -36,7 +39,7 @@ export function parseCallbackData(data: string): KeyboardAction | null {
  * Register callback query handlers for inline keyboard buttons.
  * Should be called during bot setup, before starting polling.
  */
-export function registerKeyboardHandlers(bot: Bot): void {
+export function registerKeyboardHandlers(bot: Bot, options?: { auditLogger?: AuditLogger }): void {
 	// Handle "New Session" button
 	bot.callbackQuery(/^action:new$/, async (ctx) => {
 		const chatId = ctx.chat?.id;
@@ -70,6 +73,21 @@ export function registerKeyboardHandlers(bot: Bot): void {
 	// Handle "Help" button
 	bot.callbackQuery(/^action:help$/, async (ctx) => {
 		await handleHelp(ctx);
+	});
+
+	// Relay-owned card callbacks (c:<shortId>:<action>:<revision>)
+	bot.callbackQuery(/^c:/, async (ctx) => {
+		await handleCardCallback(ctx, { auditLogger: options?.auditLogger });
+	});
+
+	// Wizard callbacks (w:<wizardId>:<payload>)
+	bot.callbackQuery(/^w:/, async (ctx) => {
+		const handled = routeWizardCallback(ctx.callbackQuery.data);
+		if (handled) {
+			await ctx.answerCallbackQuery();
+		} else {
+			await ctx.answerCallbackQuery({ text: "Wizard session expired" });
+		}
 	});
 
 	// Catch-all for unknown callback queries (grammY best practice)
