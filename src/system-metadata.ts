@@ -34,10 +34,11 @@ function resolveRevision(): string {
 		}
 	}
 
-	// 2. Live git (native mode — always fresh; fails in Docker where .git is absent)
 	// Anchored to the source directory, not process.cwd()
+	const sourceDir = path.dirname(fileURLToPath(import.meta.url));
+
+	// 2. Live git (native mode — always fresh; fails in Docker where .git is absent)
 	try {
-		const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 		const rev = execSync("git rev-parse HEAD", {
 			cwd: sourceDir,
 			encoding: "utf-8",
@@ -56,7 +57,7 @@ function resolveRevision(): string {
 	// 3. .revision file (Docker fallback — baked by prebuild from host, or copied into image)
 	const revisionPaths = [
 		"/app/.revision",
-		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.revision"),
+		path.resolve(sourceDir, "../.revision"),
 	];
 	for (const revPath of revisionPaths) {
 		try {
