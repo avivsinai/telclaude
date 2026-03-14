@@ -21,7 +21,7 @@ export interface HealthAlert {
 }
 
 export interface ProviderHealthResponse {
-	status: "healthy" | "degraded" | "unhealthy";
+	status: "healthy" | "ok" | "degraded" | "unhealthy";
 	connectors?: Record<string, ConnectorHealth>;
 	alerts?: HealthAlert[];
 	error?: string;
@@ -111,7 +111,9 @@ export function computeProviderHealthExitCode(results: HealthCheckResult[]): num
 
 export function formatProviderHealthSummary(results: HealthCheckResult[]): string {
 	const issues = results.filter(
-		(result) => !result.reachable || result.response?.status !== "healthy",
+		(result) =>
+			!result.reachable ||
+			(result.response?.status !== "healthy" && result.response?.status !== "ok"),
 	);
 	if (issues.length === 0) {
 		return "All providers healthy.";
@@ -131,7 +133,7 @@ export function logProviderHealthResults(results: HealthCheckResult[]): void {
 			continue;
 		}
 		const status = result.response?.status ?? "unknown";
-		if (status === "healthy") {
+		if (status === "healthy" || status === "ok") {
 			logger.info({ provider: result.providerId }, "provider healthy");
 		} else {
 			logger.warn({ provider: result.providerId, status }, "provider not healthy");
