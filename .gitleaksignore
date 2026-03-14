@@ -72,3 +72,6 @@ d4b1e62c0e878c1858defe91e2b0eb33ed87c2a0:src/telegram/cards/callback-tokens.ts:c
 
 # Wizard handler key template literal `${chatId}:${wizardId}` (routing key, not a credential)
 d4b1e62c0e878c1858defe91e2b0eb33ed87c2a0:src/telegram/wizard/prompter.ts:credentials-javascript:233
+
+# ffprobe output format flag `noprint_wrappers=1:nokey=1` (not a credential)
+657bbcc897c1e98cd88aca1cc86689e7ce2f7bda:.claude/skills/video-frames/scripts/frame.sh:credentials-shell:20
