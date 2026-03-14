@@ -18,6 +18,8 @@ const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	Auth: "WRITE_LOCAL",
 	Heartbeat: "SOCIAL",
 	SkillDraft: "WRITE_LOCAL",
+	SkillsMenu: "READ_ONLY",
+	SocialMenu: "SOCIAL",
 	Session: "WRITE_LOCAL",
 };
 

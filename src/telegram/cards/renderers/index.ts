@@ -6,6 +6,8 @@ import { heartbeatRenderer } from "./heartbeat.js";
 import { pendingQueueRenderer } from "./pending-queue.js";
 import { sessionRenderer } from "./session.js";
 import { skillDraftRenderer } from "./skill-draft.js";
+import { skillsMenuRenderer } from "./skills-menu.js";
+import { socialMenuRenderer } from "./social-menu.js";
 import { statusRenderer } from "./status.js";
 
 export function registerAllCardRenderers(): void {
@@ -15,6 +17,8 @@ export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.Auth, authRenderer);
 	cardRegistry.register(CardKind.Heartbeat, heartbeatRenderer);
 	cardRegistry.register(CardKind.SkillDraft, skillDraftRenderer);
+	cardRegistry.register(CardKind.SkillsMenu, skillsMenuRenderer);
+	cardRegistry.register(CardKind.SocialMenu, socialMenuRenderer);
 	cardRegistry.register(CardKind.Session, sessionRenderer);
 }
 
@@ -25,5 +29,7 @@ export {
 	pendingQueueRenderer,
 	sessionRenderer,
 	skillDraftRenderer,
+	skillsMenuRenderer,
+	socialMenuRenderer,
 	statusRenderer,
 };
