@@ -23,8 +23,24 @@ type ThreadOptions = {
 	message_thread_id?: number;
 };
 
+type SocialAskWizardScope = {
+	actorId: number;
+	chatId: number;
+	threadId?: number;
+};
+
+const activeSocialAskWizardScopes = new Set<string>();
+
 function threadOptions(threadId?: number): ThreadOptions {
 	return threadId === undefined ? {} : { message_thread_id: threadId };
+}
+
+function socialAskWizardScopeKey(scope: SocialAskWizardScope): string {
+	return `${scope.chatId}:${scope.threadId ?? "root"}:${scope.actorId}`;
+}
+
+export function hasActiveSocialAskWizard(scope: SocialAskWizardScope): boolean {
+	return activeSocialAskWizardScopes.has(socialAskWizardScopeKey(scope));
 }
 
 export async function openSocialQueueCard(
@@ -265,6 +281,15 @@ export function startSocialAskWizard(
 		return { callbackText: "No social services are enabled.", callbackAlert: true };
 	}
 
+	const scopeKey = socialAskWizardScopeKey(opts);
+	if (activeSocialAskWizardScopes.has(scopeKey)) {
+		return {
+			callbackText: "Already waiting for your question.",
+			callbackAlert: true,
+		};
+	}
+
+	activeSocialAskWizardScopes.add(scopeKey);
 	void (async () => {
 		const wizard = createWizardPrompter({
 			api,
@@ -311,6 +336,7 @@ export function startSocialAskWizard(
 			);
 		} finally {
 			await wizard.dismiss().catch(() => {});
+			activeSocialAskWizardScopes.delete(scopeKey);
 		}
 	})();
 
