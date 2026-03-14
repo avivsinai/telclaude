@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { run } from "@grammyjs/runner";
-import type { Bot } from "grammy";
+import type { Api, Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
@@ -60,19 +60,22 @@ import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
-import { sendPendingQueueCard, sendSkillDraftCard } from "./cards/create-helpers.js";
+import {
+	sendPendingQueueCard,
+	sendSkillDraftCard,
+	sendStatusCard,
+} from "./cards/create-helpers.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	formatTelegramCommandCatalog,
 	formatTelegramHelp,
+	isKnownDomainCommand,
 	isTelegramAuthExemptCommand,
 	matchTelegramControlCommand,
-	resolveTelegramSystemIntent,
 	type TelegramCommandMatch,
 } from "./control-commands.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
-import { intentToCommandId, intentToRawArgs, resolveIntent } from "./intent-router.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import { buildMultimodalPrompt, processMultimodalContext } from "./multimodal.js";
 import {
@@ -82,6 +85,7 @@ import {
 } from "./onboarding.js";
 import { computeBackoff, resolveReconnectPolicy, sleepWithAbort } from "./reconnect.js";
 import type { StreamingResponse } from "./streaming.js";
+import { buildSystemInfoContext } from "./system-context.js";
 import type { TelegramInboundMessage, TelegramMediaType } from "./types.js";
 import { createTypingControllerFromCallback } from "./typing.js";
 import { routeWizardTextMessage } from "./wizard/index.js";
@@ -333,7 +337,11 @@ async function handleCommandsCommand(msg: TelegramInboundMessage): Promise<void>
 	await msg.reply(formatTelegramCommandCatalog());
 }
 
-async function handleStatusCommand(msg: TelegramInboundMessage): Promise<void> {
+async function sendSystemStatusCard(
+	api: Api,
+	msg: TelegramInboundMessage,
+	initialView?: "overview" | "sessions" | "cron",
+): Promise<void> {
 	if (!isAdmin(msg.chatId)) {
 		await msg.reply("Only admin can query status.");
 		return;
@@ -341,32 +349,57 @@ async function handleStatusCommand(msg: TelegramInboundMessage): Promise<void> {
 	await msg.sendComposing();
 	try {
 		const status = await collectTelclaudeStatus();
-		await msg.reply(formatTelclaudeStatus(status, true));
+		const formatted = formatTelclaudeStatus(status, true);
+		const lines = formatted.split("\n");
+		const details = lines.slice(1).filter((line) => line.trim().length > 0);
+
+		let summary = "System overview ready.";
+		let title = "System Status";
+		let cardDetails = details;
+		const view = initialView ?? "overview";
+
+		if (view === "sessions") {
+			const limit = 8;
+			const rows = collectSessionRows({ limit });
+			const sessionFormatted = formatSessionRows(rows, { limit });
+			const sessionLines = sessionFormatted.split("\n");
+			title = "System Status";
+			summary = sessionLines[0] ?? "Sessions";
+			cardDetails = sessionLines.slice(1).filter((line) => line.trim().length > 0);
+		} else if (view === "cron") {
+			const cronOverview = collectCronOverview({ includeDisabled: true, limit: 8 });
+			const cronFormatted = formatCronOverview(cronOverview);
+			const cronLines = cronFormatted.split("\n");
+			title = "System Status";
+			summary = cronLines[0] ?? "Cron scheduler";
+			cardDetails = cronLines.slice(1).filter((line) => line.trim().length > 0);
+		}
+
+		await sendStatusCard(api, msg.chatId, {
+			title,
+			summary,
+			details: cardDetails,
+			actorScope: `user:${msg.senderId ?? msg.chatId}`,
+			threadId: msg.messageThreadId,
+			entityRef: "system-status",
+			view,
+		});
 	} catch (err) {
 		logger.warn({ error: String(err), chatId: msg.chatId }, "status command failed");
 		await msg.reply("Failed to collect status. Check logs.");
 	}
 }
 
-async function handleSessionsCommand(msg: TelegramInboundMessage): Promise<void> {
-	if (!isAdmin(msg.chatId)) {
-		await msg.reply("Only admin can inspect sessions.");
-		return;
-	}
-
-	const limit = 8;
-	const rows = collectSessionRows({ limit });
-	await msg.reply(formatSessionRows(rows, { limit }));
+async function handleStatusCommand(api: Api, msg: TelegramInboundMessage): Promise<void> {
+	await sendSystemStatusCard(api, msg, "overview");
 }
 
-async function handleCronCommand(msg: TelegramInboundMessage): Promise<void> {
-	if (!isAdmin(msg.chatId)) {
-		await msg.reply("Only admin can inspect cron.");
-		return;
-	}
+async function handleSessionsCommand(api: Api, msg: TelegramInboundMessage): Promise<void> {
+	await sendSystemStatusCard(api, msg, "sessions");
+}
 
-	const overview = collectCronOverview({ includeDisabled: true, limit: 8 });
-	await msg.reply(formatCronOverview(overview));
+async function handleCronCommand(api: Api, msg: TelegramInboundMessage): Promise<void> {
+	await sendSystemStatusCard(api, msg, "cron");
 }
 
 async function handleWhoAmICommand(msg: TelegramInboundMessage): Promise<void> {
@@ -392,62 +425,6 @@ async function handleSessionResetCommand(msg: TelegramInboundMessage): Promise<v
 
 	logger.info({ chatId: msg.chatId, sessionKey }, "session reset via control command");
 	await msg.reply("Session reset. Starting fresh conversation.");
-}
-
-async function handleSystemCommand(
-	msg: TelegramInboundMessage,
-	query: string | undefined,
-): Promise<void> {
-	const trimmedQuery = query?.trim();
-	if (!trimmedQuery) {
-		await msg.reply(
-			[
-				"Usage: /system ask <question>",
-				"",
-				"Examples:",
-				"- /system ask what's the current status?",
-				"- /system ask any active sessions?",
-				"- /system ask when is the next heartbeat?",
-				"- /system ask who am i linked as?",
-			].join("\n"),
-		);
-		return;
-	}
-
-	const intent = resolveTelegramSystemIntent(trimmedQuery);
-	switch (intent.kind) {
-		case "command":
-			switch (intent.commandId) {
-				case "system":
-					await handleStatusCommand(msg);
-					return;
-				case "system:sessions":
-					await handleSessionsCommand(msg);
-					return;
-				case "system:cron":
-					await handleCronCommand(msg);
-					return;
-				case "me":
-					await handleWhoAmICommand(msg);
-					return;
-				default: {
-					const exhaustiveCheck: never = intent.commandId;
-					throw new Error(`Unhandled system command: ${String(exhaustiveCheck)}`);
-				}
-			}
-		case "help":
-			await handleHelpCommand(msg, intent.query);
-			return;
-		case "unknown":
-			await msg.reply(
-				`I couldn't map "${trimmedQuery}" to a safe system view.\n\nTry /status, /sessions, /cron, /whoami, or /help <topic>.`,
-			);
-			return;
-		default: {
-			const exhaustiveCheck: never = intent;
-			throw new Error(`Unhandled system intent: ${String(exhaustiveCheck)}`);
-		}
-	}
 }
 
 async function dispatchTelegramControlCommand(
@@ -525,16 +502,13 @@ async function dispatchTelegramControlCommand(
 			return true;
 		// ── /system domain ─────────────────────────────────────────────
 		case "system":
-			await handleStatusCommand(msg);
+			await handleStatusCommand(bot.api, msg);
 			return true;
 		case "system:sessions":
-			await handleSessionsCommand(msg);
+			await handleSessionsCommand(bot.api, msg);
 			return true;
 		case "system:cron":
-			await handleCronCommand(msg);
-			return true;
-		case "system:ask":
-			await handleSystemCommand(msg, match.rawArgs);
+			await handleCronCommand(bot.api, msg);
 			return true;
 		// ── /social domain ─────────────────────────────────────────────
 		case "social":
@@ -1057,10 +1031,14 @@ async function executeWithSession(
 		// Build chat context for agent (skills need chat ID for memory scoping)
 		const chatContext = `<chat-context chat-id="${msg.chatId}" />`;
 
+		// Build lightweight system info for agent awareness
+		const systemInfoContext = buildSystemInfoContext(msg.chatId);
+
 		// Combine system prompt appendages
 		const systemPromptAppend =
 			[
 				chatContext,
+				systemInfoContext,
 				voiceProtocolInstruction,
 				reactionAppend,
 				memoryAppend,
@@ -1818,6 +1796,13 @@ async function handleInboundMessage(
 		return;
 	}
 
+	// Unknown subcommand for a known domain (e.g. "/system crno") — show usage
+	if (!controlCommandMatch && isKnownDomainCommand(trimmedBody)) {
+		const domain = trimmedBody.slice(1).split(/[\s@]/)[0]?.toLowerCase();
+		await msg.reply(`Unknown subcommand. Try /help ${domain} or /${domain} for the default view.`);
+		return;
+	}
+
 	// ══════════════════════════════════════════════════════════════════════════
 	// WIZARD TEXT ROUTING - Intercept text messages for active wizard prompts
 	// ══════════════════════════════════════════════════════════════════════════
@@ -1825,38 +1810,6 @@ async function handleInboundMessage(
 	if (routeWizardTextMessage(msg.chatId, trimmedBody)) {
 		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
 		return;
-	}
-
-	// ══════════════════════════════════════════════════════════════════════════
-	// NATURAL LANGUAGE INTENT ROUTER - Map NL to control commands
-	// Runs AFTER explicit /command matching fails but BEFORE agent processing.
-	// Conservative: only fires on unambiguous pattern matches or strong heuristics.
-	// ══════════════════════════════════════════════════════════════════════════
-
-	const nlIntent = resolveIntent(trimmedBody);
-	if (nlIntent && nlIntent.domain !== "agent") {
-		const commandId = intentToCommandId(nlIntent);
-		if (commandId) {
-			const rawArgs = intentToRawArgs(nlIntent) ?? "";
-			const syntheticMatch = matchTelegramControlCommand(
-				`/${commandId.replace(":", " ")} ${rawArgs}`.trim(),
-			);
-			if (syntheticMatch) {
-				logger.debug(
-					{ intent: nlIntent, commandId, rawArgs },
-					"NL intent resolved to control command",
-				);
-				await dispatchTelegramControlCommand(syntheticMatch, {
-					bot: _bot,
-					msg,
-					cfg,
-					auditLogger,
-					recentlySent,
-					requestId,
-				});
-				return;
-			}
-		}
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════

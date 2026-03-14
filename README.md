@@ -172,10 +172,11 @@ docker compose exec telclaude pnpm start relay --profile strict
 - Optional hardening: set `TELCLAUDE_ADMIN_SECRET` and start with `/claim <secret>` to prevent scanner bots claiming admin first (see `SECURITY.md`).
 
 ## Telegram command surface
-- Telegram syncs a native command menu on connect for the safe discovery and read-only commands: `/help`, `/commands`, `/system`, `/status`, `/sessions`, `/cron`, `/whoami`, `/new`.
-- `/help <command or topic>` answers natural-language operator questions such as `/help approvals`, `/help 2fa`, or `/help reset session`.
-- `/system <question>` routes natural-language system questions to the safe read-only views. Example: `/system what's the current status?` or `/system when is the next heartbeat?`.
-- Mutating commands remain explicit and narrow. Telclaude still does not expose a broad control UI or generic remote execution surface through Telegram.
+- Chat normally — anything not starting with `/` goes to the AI agent.
+- `/help <topic>` — contextual help for approvals, 2fa, sessions, etc.
+- `/system` — system status, sessions, cron (card-based with inline buttons).
+- `/me`, `/auth`, `/social`, `/skills` — identity, 2FA, social persona, skill management.
+- `/approve`, `/new` — fast-path shortcuts for approvals and session reset.
 
 ## Configuration
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).

@@ -171,6 +171,7 @@ export async function sendStatusCard(
 		actorScope: CardActorScope;
 		threadId?: number;
 		entityRef?: string;
+		view?: StatusCardState["view"];
 	},
 ): Promise<CardInstance<typeof CK.Status>> {
 	const state: StatusCardState = {
@@ -179,6 +180,7 @@ export async function sendStatusCard(
 		summary: opts.summary,
 		details: opts.details,
 		lastRefreshedAt: Date.now(),
+		view: opts.view,
 	};
 	return createAndSendCard(api, chatId, CK.Status, state, {
 		actorScope: opts.actorScope,

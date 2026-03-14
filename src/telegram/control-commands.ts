@@ -29,7 +29,6 @@ export type TelegramCommandId =
 	| "system"
 	| "system:sessions"
 	| "system:cron"
-	| "system:ask"
 	| "social"
 	| "social:queue"
 	| "social:promote"
@@ -66,6 +65,8 @@ type TelegramControlCommandDefinition = {
 	subcommand?: string;
 	/** Whether this is the default subcommand when only the domain root is typed. */
 	domainDefault?: boolean;
+	/** Whether the domain default handler accepts freeform args (e.g. /help [topic]). */
+	acceptsFreeformArgs?: boolean;
 };
 
 export type TelegramCommandMatch = {
@@ -95,19 +96,6 @@ export type TelegramHelpMatch =
 			topic: TelegramHelpTopic;
 	  };
 
-export type TelegramSystemIntent =
-	| {
-			kind: "command";
-			commandId: "system" | "system:sessions" | "system:cron" | "me";
-	  }
-	| {
-			kind: "help";
-			query: string;
-	  }
-	| {
-			kind: "unknown";
-	  };
-
 // ---------------------------------------------------------------------------
 // Command definitions — hierarchical
 // ---------------------------------------------------------------------------
@@ -119,6 +107,7 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		name: "help",
 		domain: "help",
 		domainDefault: true,
+		acceptsFreeformArgs: true,
 		category: "Discover",
 		description: "Explain commands, topics, or operator workflows.",
 		usage: "/help [command or topic]",
@@ -148,8 +137,8 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "Identity",
 		description: "Show which local user this chat is linked to.",
-		usage: "/me [show|link <code>|unlink]",
-		examples: ["/me", "/me show", "/me link ABCD-1234", "/me unlink"],
+		usage: "/me [link <code>|unlink]",
+		examples: ["/me", "/me link ABCD-1234", "/me unlink"],
 		keywords: ["me", "whoami", "who am i", "identity", "linked user", "which user"],
 		readOnly: true,
 		menuDescription: "Identity management",
@@ -271,8 +260,8 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "System",
 		description: "Show runtime, security, service, and configuration status.",
-		usage: "/system [status|sessions|cron|ask <question>]",
-		examples: ["/system", "/system sessions", "/system cron", "/system ask what's running?"],
+		usage: "/system [sessions|cron]",
+		examples: ["/system", "/system sessions", "/system cron"],
 		keywords: [
 			"system",
 			"status",
@@ -311,24 +300,6 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		usage: "/system cron",
 		examples: ["/system cron"],
 		keywords: ["cron", "schedule", "scheduled jobs", "heartbeat schedule", "next run"],
-		readOnly: true,
-		rateLimited: true,
-		hideFromCatalog: true,
-	},
-	{
-		id: "system:ask",
-		name: "system",
-		domain: "system",
-		subcommand: "ask",
-		category: "System",
-		description: "Answer a natural-language question about status, sessions, cron, or identity.",
-		usage: "/system ask <question>",
-		examples: [
-			"/system ask what's the current status?",
-			"/system ask any cron jobs running?",
-			"/system ask who am i linked as?",
-		],
-		keywords: ["system", "status question", "natural language", "what is running"],
 		readOnly: true,
 		rateLimited: true,
 		hideFromCatalog: true,
@@ -552,9 +523,9 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "system",
 		title: "System Introspection",
 		summary:
-			"Use /system for runtime and security state, /system sessions for recent chat sessions, /system cron for scheduled jobs, or /system ask <question> for natural-language system queries.",
+			"Use /system for runtime and security state, /system sessions for recent chat sessions, /system cron for scheduled jobs.",
 		keywords: ["system", "status", "sessions", "cron", "health", "diagnostics"],
-		commands: ["system", "system:sessions", "system:cron", "system:ask"],
+		commands: ["system", "system:sessions", "system:cron"],
 	},
 	{
 		id: "social",
@@ -797,7 +768,7 @@ export function matchTelegramControlCommand(
 			}
 
 			// No subcommand matched but args present — if domain has an "ask" subcommand,
-			// route unrecognized tokens to it (e.g. "/system who am i?" → system:ask).
+			// route unrecognized tokens to it (e.g. "/social what did you post?" → social:ask).
 			const askSubcommand = domainCommands.find((cmd) => cmd.subcommand === "ask");
 			if (askSubcommand) {
 				return {
@@ -808,6 +779,23 @@ export function matchTelegramControlCommand(
 					args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
 				};
 			}
+
+			// If the domain default accepts freeform args (e.g. /help [topic]),
+			// route to it with the full rawArgs. Otherwise, unknown subcommand.
+			const domainDefaultForArgs = DOMAIN_DEFAULTS.get(commandToken);
+			if (domainDefaultForArgs?.acceptsFreeformArgs) {
+				return {
+					command: domainDefaultForArgs,
+					commandToken,
+					raw: trimmed,
+					rawArgs,
+					args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
+				};
+			}
+
+			// Unknown subcommand with no ask/freeform fallback — return null so
+			// dispatch can show usage instead of silently resolving to the default.
+			return null;
 		}
 
 		// No args — use domain default (bare "/system")
@@ -817,8 +805,8 @@ export function matchTelegramControlCommand(
 				command: domainDefault,
 				commandToken,
 				raw: trimmed,
-				rawArgs,
-				args: rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [],
+				rawArgs: "",
+				args: [],
 			};
 		}
 	}
@@ -846,6 +834,20 @@ export function hasTelegramControlCommand(
 	return matchTelegramControlCommand(body, options) !== null;
 }
 
+/**
+ * Check if a message starts with a known domain command token.
+ * Used to detect unknown subcommands (e.g. "/system crno") where
+ * matchTelegramControlCommand returns null but the user clearly
+ * intended a control command.
+ */
+export function isKnownDomainCommand(body: string): boolean {
+	const trimmed = body.trim();
+	if (!trimmed.startsWith("/")) return false;
+	const token = trimmed.slice(1).split(/[\s@]/)[0]?.toLowerCase();
+	if (!token) return false;
+	return DOMAIN_COMMANDS.has(token);
+}
+
 export function isTelegramAuthExemptCommand(
 	body: string,
 	options?: { botUsername?: string },
@@ -860,21 +862,18 @@ export function isTelegramAuthExemptCommand(
 
 export function formatTelegramHelpOverview(): string {
 	const lines = [
-		"Telclaude help",
+		"Chat normally — anything not starting with / goes to your AI agent.",
 		"",
-		"Start with:",
-		"- /help approvals",
-		"- /help reset session",
-		"- /help 2fa",
-		"- /system ask what's the current status?",
+		"Control plane:",
+		"  /system — Status, sessions, cron",
+		"  /me — Identity, link/unlink",
+		"  /auth — 2FA setup and management",
+		"  /social — Social persona, queue, posting",
+		"  /skills — Skill drafts and management",
+		"  /new — Reset conversation",
 		"",
-		"Common commands:",
-		`- ${formatCommandLine(getTelegramControlCommand("help"))}`,
-		`- ${formatCommandLine(getTelegramControlCommand("system"))}`,
-		`- ${formatCommandLine(getTelegramControlCommand("me"))}`,
-		`- ${formatCommandLine(getTelegramControlCommand("new"))}`,
-		"",
-		"Use /help commands for the full catalog.",
+		"/help <topic> — Learn about approvals, 2fa, sessions, etc.",
+		"/help commands — Full command catalog",
 	];
 
 	return lines.join("\n");
@@ -1009,60 +1008,4 @@ export function getTelegramMenuCommands(
 		{ command: "approve", description: "Approve a pending request" },
 		{ command: "new", description: "Start a fresh session" },
 	];
-}
-
-export function resolveTelegramSystemIntent(query: string): TelegramSystemIntent {
-	const normalized = normalizeLookup(query);
-	if (!normalized) {
-		return { kind: "unknown" };
-	}
-
-	const whoamiScore = scoreLookup(normalized, [
-		"whoami",
-		"who am i",
-		"identity",
-		"linked user",
-		"linked chat",
-		"who is this chat",
-	]);
-	const statusScore = scoreLookup(normalized, [
-		"status",
-		"health",
-		"runtime",
-		"security",
-		"audit",
-		"config",
-		"environment",
-		"version",
-		"running",
-	]);
-	const sessionsScore = scoreLookup(normalized, [
-		"sessions",
-		"session state",
-		"active sessions",
-		"conversation context",
-		"session age",
-	]);
-	const cronScore = scoreLookup(normalized, [
-		"cron",
-		"schedule",
-		"scheduled jobs",
-		"heartbeat schedule",
-		"next heartbeat",
-		"next run",
-		"jobs",
-	]);
-
-	const bestCommand = [
-		{ commandId: "me" as const, score: whoamiScore },
-		{ commandId: "system" as const, score: statusScore },
-		{ commandId: "system:sessions" as const, score: sessionsScore },
-		{ commandId: "system:cron" as const, score: cronScore },
-	].sort((a, b) => b.score - a.score)[0];
-
-	if (bestCommand && bestCommand.score >= 20) {
-		return { kind: "command", commandId: bestCommand.commandId };
-	}
-
-	return { kind: "help", query };
 }
