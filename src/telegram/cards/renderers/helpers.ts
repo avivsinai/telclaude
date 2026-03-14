@@ -46,6 +46,20 @@ export function renderTerminalState<K extends CardKind>(
 }
 
 /**
+ * Format a timestamp as a human-readable relative age string.
+ */
+export function formatAge(ts: number): string {
+	const seconds = Math.floor((Date.now() - ts) / 1000);
+	if (seconds < 60) return `${seconds}s ago`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	const days = Math.floor(hours / 24);
+	return `${days}d ago`;
+}
+
+/**
  * Create a new InlineKeyboard. Convenience re-export so renderers
  * don't all need to import grammy directly.
  */

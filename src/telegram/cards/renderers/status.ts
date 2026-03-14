@@ -14,18 +14,9 @@ import type {
 	StatusCardAction,
 	StatusCardState,
 } from "../types.js";
-import { btn, esc, keyboard, renderTerminalState } from "./helpers.js";
+import { btn, esc, formatAge, keyboard, renderTerminalState } from "./helpers.js";
 
 type K = typeof CardKind.Status;
-
-function formatAge(ts: number): string {
-	const seconds = Math.floor((Date.now() - ts) / 1000);
-	if (seconds < 60) return `${seconds}s ago`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ago`;
-	const hours = Math.floor(minutes / 60);
-	return `${hours}h ago`;
-}
 
 function renderOverviewView(card: CardInstance<K>, s: StatusCardState): CardRenderResult {
 	let text = `\uD83D\uDCCA *${esc(s.title)}*\n\n${esc(s.summary)}`;

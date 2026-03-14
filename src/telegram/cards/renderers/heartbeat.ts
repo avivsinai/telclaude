@@ -8,18 +8,9 @@ import type {
 	HeartbeatCardAction,
 	HeartbeatCardState,
 } from "../types.js";
-import { btn, esc, keyboard, renderTerminalState } from "./helpers.js";
+import { btn, esc, formatAge, keyboard, renderTerminalState } from "./helpers.js";
 
 type K = typeof CardKind.Heartbeat;
-
-function formatAge(ts: number): string {
-	const seconds = Math.floor((Date.now() - ts) / 1000);
-	if (seconds < 60) return `${seconds}s ago`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ago`;
-	const hours = Math.floor(minutes / 60);
-	return `${hours}h ago`;
-}
 
 export const heartbeatRenderer: CardRenderer<K> = {
 	render(card: CardInstance<K>): CardRenderResult {

@@ -7,6 +7,8 @@ export enum CardKind {
 	Auth = "Auth",
 	Heartbeat = "Heartbeat",
 	SkillDraft = "SkillDraft",
+	SkillsMenu = "SkillsMenu",
+	SocialMenu = "SocialMenu",
 	Session = "Session",
 }
 
@@ -73,6 +75,25 @@ export type SkillDraftCardState = {
 	selectedDraftName?: string;
 };
 
+export type SkillsMenuCardState = {
+	kind: CardKind.SkillsMenu;
+	title: string;
+	activeSkills: CardListEntry[];
+	draftCount: number;
+	adminControlsEnabled: boolean;
+	sessionKey?: string;
+	lastRefreshedAt?: number;
+};
+
+export type SocialMenuCardState = {
+	kind: CardKind.SocialMenu;
+	title: string;
+	services: CardListEntry[];
+	queueCount?: number;
+	adminControlsEnabled: boolean;
+	lastRefreshedAt?: number;
+};
+
 export type SessionCardState = {
 	kind: CardKind.Session;
 	title: string;
@@ -88,6 +109,8 @@ export type CardStateMap = {
 	[CardKind.Auth]: AuthCardState;
 	[CardKind.Heartbeat]: HeartbeatCardState;
 	[CardKind.SkillDraft]: SkillDraftCardState;
+	[CardKind.SkillsMenu]: SkillsMenuCardState;
+	[CardKind.SocialMenu]: SocialMenuCardState;
 	[CardKind.Session]: SessionCardState;
 };
 
@@ -129,6 +152,20 @@ export type HeartbeatCardAction =
 
 export type SkillDraftCardAction = { type: "promote" } | { type: "reject" } | { type: "refresh" };
 
+export type SkillsMenuCardAction =
+	| { type: "open-drafts" }
+	| { type: "promote" }
+	| { type: "reload" }
+	| { type: "refresh" };
+
+export type SocialMenuCardAction =
+	| { type: "queue" }
+	| { type: "promote" }
+	| { type: "run" }
+	| { type: "log" }
+	| { type: "ask" }
+	| { type: "refresh" };
+
 export type SessionCardAction = { type: "reset" } | { type: "view-history" } | { type: "refresh" };
 
 export type CardActionMap = {
@@ -138,6 +175,8 @@ export type CardActionMap = {
 	[CardKind.Auth]: AuthCardAction;
 	[CardKind.Heartbeat]: HeartbeatCardAction;
 	[CardKind.SkillDraft]: SkillDraftCardAction;
+	[CardKind.SkillsMenu]: SkillsMenuCardAction;
+	[CardKind.SocialMenu]: SocialMenuCardAction;
 	[CardKind.Session]: SessionCardAction;
 };
 
@@ -158,6 +197,8 @@ const CARD_ACTIONS_BY_KIND = {
 	[CardKind.Auth]: ["setup-2fa", "verify", "skip", "logout", "disable"],
 	[CardKind.Heartbeat]: ["run-service", "run-all", "view-log", "refresh"],
 	[CardKind.SkillDraft]: ["promote", "reject", "refresh"],
+	[CardKind.SkillsMenu]: ["open-drafts", "promote", "reload", "refresh"],
+	[CardKind.SocialMenu]: ["queue", "promote", "run", "log", "ask", "refresh"],
 	[CardKind.Session]: ["reset", "view-history", "refresh"],
 } as const satisfies { [K in CardKind]: readonly CardActionType<K>[] };
 

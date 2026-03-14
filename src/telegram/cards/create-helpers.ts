@@ -14,6 +14,7 @@
 import type { Api } from "grammy";
 import { getChildLogger } from "../../logging.js";
 import { createOrSupersedeCard } from "./lifecycle.js";
+import { buildSkillsMenuState, buildSocialMenuState } from "./menu-state.js";
 import { cardRegistry } from "./registry.js";
 import { updateCard } from "./store.js";
 import type {
@@ -27,6 +28,8 @@ import type {
 	PendingQueueCardState,
 	SessionCardState,
 	SkillDraftCardState,
+	SkillsMenuCardState,
+	SocialMenuCardState,
 	StatusCardState,
 } from "./types.js";
 import { CardKind as CK } from "./types.js";
@@ -256,6 +259,39 @@ export async function sendSkillDraftCard(
 		actorScope: opts.actorScope,
 		threadId: opts.threadId,
 		entityRef: "skill-drafts",
+	});
+}
+
+export async function sendSkillsMenuCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		actorScope: CardActorScope;
+		threadId?: number;
+		sessionKey?: string;
+	},
+): Promise<CardInstance<typeof CK.SkillsMenu>> {
+	const state: SkillsMenuCardState = buildSkillsMenuState(chatId, opts.sessionKey);
+	return createAndSendCard(api, chatId, CK.SkillsMenu, state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		entityRef: "skills-menu",
+	});
+}
+
+export async function sendSocialMenuCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		actorScope: CardActorScope;
+		threadId?: number;
+	},
+): Promise<CardInstance<typeof CK.SocialMenu>> {
+	const state: SocialMenuCardState = buildSocialMenuState(chatId);
+	return createAndSendCard(api, chatId, CK.SocialMenu, state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		entityRef: "social-menu",
 	});
 }
 

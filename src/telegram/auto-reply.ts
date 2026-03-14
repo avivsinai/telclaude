@@ -4,7 +4,7 @@ import type { Api, Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
-import { listActiveSkills, listDraftSkills, promoteSkill } from "../commands/skills-promote.js";
+import { promoteSkill } from "../commands/skills-promote.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
@@ -60,13 +60,16 @@ import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
-import {
-	sendPendingQueueCard,
-	sendSkillDraftCard,
-	sendStatusCard,
-} from "./cards/create-helpers.js";
-import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
+import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/create-helpers.js";
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
+import {
+	openSkillDraftCard,
+	openSocialQueueCard,
+	reloadSkillsSession,
+	runSocialHeartbeatCommand,
+	sendSocialActivityLogCommand,
+	sendSocialAskResponse,
+} from "./control-command-actions.js";
 import {
 	formatTelegramCommandCatalog,
 	formatTelegramHelp,
@@ -512,31 +515,14 @@ async function dispatchTelegramControlCommand(
 			return true;
 		// ── /social domain ─────────────────────────────────────────────
 		case "social":
-			await msg.reply(
-				[
-					"/social - Social persona management",
-					"",
-					"Subcommands:",
-					"- /social queue - List pending posts",
-					"- /social promote <id> - Promote a post idea",
-					"- /social run [svc] - Run heartbeat now",
-					"- /social log [svc] [hours] - Activity summary",
-					"- /social ask [svc] <question> - Query public persona",
-				].join("\n"),
-			);
+			await sendSocialMenuCard(bot.api, msg.chatId, {
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+			});
 			return true;
 		case "social:queue": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can view pending entries.");
-				return true;
-			}
-			const cardEntries = loadPendingQueueEntries(String(msg.chatId));
-			if (cardEntries.length === 0) {
-				await msg.reply("No pending posts.");
-				return true;
-			}
-			await sendPendingQueueCard(bot.api, msg.chatId, {
-				entries: cardEntries,
+			await openSocialQueueCard(bot.api, {
+				chatId: msg.chatId,
 				actorScope: `user:${msg.senderId ?? msg.chatId}`,
 				threadId: msg.messageThreadId,
 			});
@@ -579,60 +565,22 @@ async function dispatchTelegramControlCommand(
 			return true;
 		}
 		case "social:run": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can trigger heartbeats.");
-				return true;
-			}
-			const serviceIdArg = match.args[0]?.trim() || undefined;
-			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
-			if (enabledServices.length === 0) {
-				await msg.reply("No social services are enabled.");
-				return true;
-			}
-			const targets = serviceIdArg
-				? enabledServices.filter((service) => service.id === serviceIdArg)
-				: enabledServices;
-			if (targets.length === 0) {
-				const ids = enabledServices.map((service) => service.id).join(", ");
-				await msg.reply(`Unknown service. Available: ${ids}`);
-				return true;
-			}
-			const { createSocialClient, handleSocialHeartbeat } = await import("../social/index.js");
-			const label = targets.map((service) => service.id).join(", ");
-			await msg.reply(`Running heartbeat: ${label}...`);
-			await msg.sendComposing();
-			const results = await Promise.allSettled(
-				targets.map(async (service) => {
-					const client = await createSocialClient(service);
-					if (!client) {
-						return { serviceId: service.id, ok: false, message: "client not configured" };
-					}
-					const result = await handleSocialHeartbeat(service.id, client, service);
-					return { serviceId: service.id, ...result };
-				}),
-			);
-			const lines = results.map((result, index) => {
-				const serviceId = targets[index].id;
-				if (result.status === "rejected") {
-					return `${serviceId}: failed — ${String(result.reason).slice(0, 80)}`;
-				}
-				const { ok, message } = result.value;
-				return `${serviceId}: ${ok ? message || "done" : `failed — ${message}`}`;
+			await runSocialHeartbeatCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				cfg,
+				serviceId: match.args[0]?.trim() || undefined,
 			});
-			await msg.reply(lines.join("\n"));
 			return true;
 		}
 		case "social:log": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can view public activity.");
-				return true;
-			}
-			const serviceIdArg = match.args[0]?.trim() || undefined;
 			const hoursArg = match.args[1] ? Number.parseInt(match.args[1], 10) : 4;
-			const hours = Number.isNaN(hoursArg) ? 4 : hoursArg;
-			const { formatActivityLog, getActivitySummary } = await import("../social/activity-log.js");
-			const summary = getActivitySummary(serviceIdArg, hours);
-			await msg.reply(formatActivityLog(summary, hours));
+			await sendSocialActivityLogCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				serviceId: match.args[0]?.trim() || undefined,
+				hours: Number.isNaN(hoursArg) ? 4 : hoursArg,
+			});
 			return true;
 		}
 		case "social:ask": {
@@ -661,52 +609,26 @@ async function dispatchTelegramControlCommand(
 				);
 				return true;
 			}
-			const typing = createTypingControllerFromCallback(() => {
-				msg.sendComposing().catch(() => {});
+			await sendSocialAskResponse(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				service,
+				question,
 			});
-			typing.start();
-			try {
-				const { queryPublicPersona } = await import("../social/handler.js");
-				const response = await queryPublicPersona(question, service.id, service);
-				await msg.reply(response || "No response from public persona.");
-			} catch (err) {
-				logger.warn({ error: String(err), serviceId: service.id }, "/social ask query failed");
-				await msg.reply("Failed to reach public persona. Check logs.");
-			} finally {
-				typing.stop();
-			}
 			return true;
 		}
 		// ── /skills domain ─────────────────────────────────────────────
 		case "skills": {
-			const active = listActiveSkills();
-			const draftCount = listDraftSkills().length;
-			const lines = [`${active.length} active skill(s):`, ...active.map((name) => `  ${name}`)];
-			if (draftCount > 0) {
-				lines.push("", `${draftCount} draft(s) awaiting promotion — /skills drafts`);
-			}
-			lines.push(
-				"",
-				"Commands:",
-				"  /skills drafts — list drafts",
-				"  /skills promote <name> — promote a draft",
-				"  /skills reload — reload for next session",
-			);
-			await msg.reply(lines.join("\n"));
+			await sendSkillsMenuCard(bot.api, msg.chatId, {
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+				sessionKey: msg.from,
+			});
 			return true;
 		}
 		case "skills:drafts": {
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can list drafts.");
-				return true;
-			}
-			const drafts = listDraftSkills();
-			if (drafts.length === 0) {
-				await msg.reply("No draft skills awaiting promotion.");
-				return true;
-			}
-			await sendSkillDraftCard(bot.api, msg.chatId, {
-				drafts: drafts.map((name) => ({ id: name, label: name })),
+			await openSkillDraftCard(bot.api, {
+				chatId: msg.chatId,
 				actorScope: `user:${msg.senderId ?? msg.chatId}`,
 				threadId: msg.messageThreadId,
 			});
@@ -735,12 +657,8 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("Only admin can reload skills.");
 				return true;
 			}
-			const sessionKey = msg.from;
-			deleteSession(sessionKey);
-			getSessionManager().clearSession(sessionKey);
-			await msg.reply(
-				"Skills reloaded. Next message will start a fresh session with updated skills.",
-			);
+			const result = reloadSkillsSession(msg.from);
+			await msg.reply(result.callbackText);
 			return true;
 		}
 		// ── Fast-path shortcuts ────────────────────────────────────────
