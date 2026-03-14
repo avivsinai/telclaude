@@ -40,10 +40,7 @@ export const skillsMenuRenderer: CardRenderer<K> = {
 
 		const kb = keyboard();
 		if (s.adminControlsEnabled) {
-			kb.text("📄 Drafts", btn(card, "open-drafts"))
-				.text("🚀 Promote", btn(card, "promote"))
-				.row()
-				.text("🔄 Reload", btn(card, "reload"));
+			kb.text("📄 Drafts", btn(card, "open-drafts")).text("🔄 Reload", btn(card, "reload")).row();
 		}
 		kb.text("↻ Refresh", btn(card, "refresh"));
 
@@ -58,8 +55,7 @@ export const skillsMenuRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "open-drafts":
-			case "promote": {
+			case "open-drafts": {
 				if (!card.state.adminControlsEnabled) {
 					return {
 						callbackText: "Only admin can manage skill drafts.",
@@ -75,8 +71,7 @@ export const skillsMenuRenderer: CardRenderer<K> = {
 					};
 				}
 				return {
-					callbackText:
-						action.type === "promote" ? "Select a draft to promote" : "Opening skill drafts",
+					callbackText: "Opening skill drafts",
 					rerender: false,
 					afterCommit: async () => {
 						await openSkillDraftCard(context.ctx.api, {

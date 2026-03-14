@@ -90,8 +90,10 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 		if (visible.length === 0) {
 			text += `\n_No pending entries_`;
 		} else {
-			for (const entry of visible) {
-				text += `\n\u2022 *${esc(entry.label)}*`;
+			for (let i = 0; i < visible.length; i++) {
+				const entry = visible[i];
+				const marker = i === 0 ? "\u25B6" : "\u2022";
+				text += `\n${marker} *${esc(entry.label)}*`;
 				if (entry.summary) {
 					text += `\n  ${esc(entry.summary)}`;
 				}
@@ -104,10 +106,10 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 
 		const kb = keyboard();
 
-		// Action buttons (only if there are entries)
+		// Action buttons act on ▶ marked entry (first on page)
 		if (visible.length > 0) {
-			kb.text("\u2B06 Promote", btn(card, "promote")).text(
-				"\uD83D\uDDD1 Dismiss",
+			kb.text("\u2B06 Promote \u25B6", btn(card, "promote")).text(
+				"\uD83D\uDDD1 Dismiss \u25B6",
 				btn(card, "dismiss"),
 			);
 			kb.row();
