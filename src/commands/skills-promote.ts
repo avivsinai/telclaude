@@ -18,6 +18,7 @@ import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { scanSkill } from "../security/skill-scanner.js";
 import { copyDirRecursive } from "./cli-utils.js";
+import { getSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "cmd-skills-promote" });
 
@@ -138,6 +139,32 @@ export function promoteSkill(
 
 	logger.info({ skillName }, "skill promoted from draft to active");
 	return { success: true, skillName };
+}
+
+/**
+ * List all active (loaded) skills from all configured skill roots.
+ * Only includes directories that contain a SKILL.md file.
+ */
+export function listActiveSkills(): string[] {
+	const roots = getSkillRoots();
+	const seen = new Set<string>();
+	for (const root of roots) {
+		try {
+			const entries = fs.readdirSync(root, { withFileTypes: true });
+			for (const entry of entries) {
+				if (
+					entry.isDirectory() &&
+					!entry.name.startsWith(".") &&
+					fs.existsSync(path.join(root, entry.name, "SKILL.md"))
+				) {
+					seen.add(entry.name);
+				}
+			}
+		} catch {
+			// Directory doesn't exist or not readable
+		}
+	}
+	return Array.from(seen).sort();
 }
 
 /**

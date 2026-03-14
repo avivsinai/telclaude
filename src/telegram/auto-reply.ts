@@ -4,7 +4,7 @@ import type { Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
-import { listDraftSkills, promoteSkill } from "../commands/skills-promote.js";
+import { listActiveSkills, listDraftSkills, promoteSkill } from "../commands/skills-promote.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import {
@@ -58,9 +58,10 @@ import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/tot
 import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
-import { parseSocialQuoteProposalMetadata } from "../social/proposal-metadata.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
+import { sendPendingQueueCard, sendSkillDraftCard } from "./cards/create-helpers.js";
+import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	formatTelegramCommandCatalog,
@@ -555,48 +556,16 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("Only admin can view pending entries.");
 				return true;
 			}
-			const telegramPending = getEntries({
-				categories: ["posts"],
-				trust: ["quarantined"],
-				sources: ["telegram"],
-				chatId: String(msg.chatId),
-				limit: 20,
-				order: "desc",
-			});
-			const socialPending = getEntries({
-				categories: ["posts"],
-				trust: ["untrusted"],
-				sources: ["social"],
-				limit: 20,
-				order: "desc",
-			});
-			const pending = [...telegramPending, ...socialPending]
-				.sort((a, b) => b._provenance.createdAt - a._provenance.createdAt)
-				.slice(0, 20);
-			if (pending.length === 0) {
+			const cardEntries = loadPendingQueueEntries(String(msg.chatId));
+			if (cardEntries.length === 0) {
 				await msg.reply("No pending posts.");
 				return true;
 			}
-			const lines = pending.map((entry) => {
-				const age = Math.round((Date.now() - entry._provenance.createdAt) / 60000);
-				const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
-				const preview =
-					entry.content.length > 60 ? `${entry.content.slice(0, 60)}...` : entry.content;
-				const quoteMetadata = parseSocialQuoteProposalMetadata(entry.metadata);
-				const contextLine = quoteMetadata
-					? `\n  quote ${quoteMetadata.targetPostId}${
-							quoteMetadata.targetAuthor ? ` (${quoteMetadata.targetAuthor})` : ""
-						}${
-							quoteMetadata.targetExcerpt
-								? `: "${quoteMetadata.targetExcerpt.slice(0, 60)}${
-										quoteMetadata.targetExcerpt.length > 60 ? "..." : ""
-									}"`
-								: ""
-						}`
-					: "";
-				return `\`${entry.id}\` "${preview}" — ${ageStr}${contextLine}\n  /social promote ${entry.id}`;
+			await sendPendingQueueCard(bot.api, msg.chatId, {
+				entries: cardEntries,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
 			});
-			await msg.reply(`${pending.length} pending post(s):\n\n${lines.join("\n\n")}`);
 			return true;
 		}
 		case "social:promote": {
@@ -735,18 +704,23 @@ async function dispatchTelegramControlCommand(
 			return true;
 		}
 		// ── /skills domain ─────────────────────────────────────────────
-		case "skills":
-			await msg.reply(
-				[
-					"/skills - Skill management",
-					"",
-					"Subcommands:",
-					"- /skills drafts - List draft skills",
-					"- /skills promote <name> - Promote a draft skill",
-					"- /skills reload - Reload skills for next session",
-				].join("\n"),
+		case "skills": {
+			const active = listActiveSkills();
+			const draftCount = listDraftSkills().length;
+			const lines = [`${active.length} active skill(s):`, ...active.map((name) => `  ${name}`)];
+			if (draftCount > 0) {
+				lines.push("", `${draftCount} draft(s) awaiting promotion — /skills drafts`);
+			}
+			lines.push(
+				"",
+				"Commands:",
+				"  /skills drafts — list drafts",
+				"  /skills promote <name> — promote a draft",
+				"  /skills reload — reload for next session",
 			);
+			await msg.reply(lines.join("\n"));
 			return true;
+		}
 		case "skills:drafts": {
 			if (!isAdmin(msg.chatId)) {
 				await msg.reply("Only admin can list drafts.");
@@ -757,8 +731,11 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("No draft skills awaiting promotion.");
 				return true;
 			}
-			const lines = drafts.map((name) => `  /skills promote ${name}`);
-			await msg.reply(`${drafts.length} draft skill(s):\n${lines.join("\n")}`);
+			await sendSkillDraftCard(bot.api, msg.chatId, {
+				drafts: drafts.map((name) => ({ id: name, label: name })),
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+			});
 			return true;
 		}
 		case "skills:promote": {
