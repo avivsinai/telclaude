@@ -24,7 +24,11 @@ export async function collectProviderHealthIssues(): Promise<HealthCheckResult[]
 		providers.map((provider) => checkProviderHealth(provider.id, provider.baseUrl)),
 	);
 
-	return results.filter((result) => !result.reachable || result.response?.status !== "healthy");
+	return results.filter(
+		(result) =>
+			!result.reachable ||
+			(result.response?.status !== "healthy" && result.response?.status !== "ok"),
+	);
 }
 
 export async function collectStatusOverview(
