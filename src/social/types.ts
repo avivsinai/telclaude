@@ -61,6 +61,25 @@ export type SocialHandlerResult = {
 	message?: string;
 };
 
+export type SocialUserLookupResult = {
+	ok: boolean;
+	status: number;
+	userId?: string;
+	displayName?: string;
+	handle?: string;
+	error?: string;
+	rateLimited?: boolean;
+};
+
+export type SocialFollowResult = {
+	ok: boolean;
+	status: number;
+	following?: boolean;
+	pending?: boolean;
+	error?: string;
+	rateLimited?: boolean;
+};
+
 export type SocialPromptBundle = {
 	prompt: string;
 	systemPromptAppend: string;

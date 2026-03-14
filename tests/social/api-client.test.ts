@@ -121,4 +121,106 @@ describe("moltbook api client", () => {
 		expect(result.status).toBe(400);
 		expect(result.error).toContain("bad request");
 	});
+
+	it("lookupUser resolves an account by canonical handle", async () => {
+		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+			expect(url).toBe(`${baseUrl}/accounts/lookup?acct=Alice%40Example.com`);
+			expect(init?.method).toBe("GET");
+			return jsonResponse({
+				id: "acct-42",
+				display_name: "Alice Example",
+				acct: "Alice@Example.com",
+			});
+		});
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.lookupUser("@Alice@Example.com");
+
+		expect(result).toEqual({
+			ok: true,
+			status: 200,
+			userId: "acct-42",
+			displayName: "Alice Example",
+			handle: "Alice@Example.com",
+		});
+	});
+
+	it("lookupUser returns error details for missing accounts", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "Account not found" }, 404));
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.lookupUser("missing");
+
+		expect(result.ok).toBe(false);
+		expect(result.status).toBe(404);
+		expect(result.error).toBe("Account not found");
+	});
+
+	it("lookupUser marks rate limits explicitly", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "rate limit" }, 429));
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.lookupUser("writer");
+
+		expect(result.ok).toBe(false);
+		expect(result.status).toBe(429);
+		expect(result.rateLimited).toBe(true);
+	});
+
+	it("follow returns pending when the account is locked", async () => {
+		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+			expect(url).toBe(`${baseUrl}/accounts/acct-42/follow`);
+			expect(init?.method).toBe("POST");
+			return jsonResponse({ requested: true, following: false }, 200);
+		});
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.follow("acct-42");
+
+		expect(result).toEqual({
+			ok: true,
+			status: 200,
+			following: false,
+			pending: true,
+		});
+	});
+
+	it("follow marks rate limits explicitly", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "rate limit" }, 429));
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.follow("acct-42");
+
+		expect(result.ok).toBe(false);
+		expect(result.status).toBe(429);
+		expect(result.rateLimited).toBe(true);
+	});
+
+	it("unfollow returns following false on success", async () => {
+		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+			expect(url).toBe(`${baseUrl}/accounts/acct-42/unfollow`);
+			expect(init?.method).toBe("POST");
+			return jsonResponse({ following: false }, 200);
+		});
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.unfollow("acct-42");
+
+		expect(result).toEqual({
+			ok: true,
+			status: 200,
+			following: false,
+		});
+	});
+
+	it("unfollow marks rate limits explicitly", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({ error: "rate limit" }, 429));
+		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
+
+		const result = await client.unfollow("acct-42");
+
+		expect(result.ok).toBe(false);
+		expect(result.status).toBe(429);
+		expect(result.rateLimited).toBe(true);
+	});
 });

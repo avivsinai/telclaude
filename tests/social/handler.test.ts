@@ -248,6 +248,160 @@ describe("social handler", () => {
 		expect(client.postReply).not.toHaveBeenCalled();
 	});
 
+	it("heartbeat executes autonomous follow for a visible timeline author using canonical handle lookup", async () => {
+		const lookupUserMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			userId: "acct-42",
+			handle: "Alice@Example.com",
+		});
+		const followMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			following: true,
+		});
+		const client = mockClient({
+			fetchTimeline: vi.fn().mockResolvedValue([
+				{
+					id: "post-42",
+					text: "Thoughtful fediverse notes.",
+					authorHandle: "Alice@Example.com",
+				},
+			]),
+			lookupUser: lookupUserMock,
+			follow: followMock,
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream(
+				'{"action":"follow","handle":"@alice@example.com","rationale":"worth following"}',
+			),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("autonomous: followed @Alice@Example.com");
+		expect(lookupUserMock).toHaveBeenCalledWith("Alice@Example.com");
+		expect(followMock).toHaveBeenCalledWith("acct-42");
+		expect(consumeMock).toHaveBeenCalledWith(
+			"moltbook_follow",
+			"social:moltbook:autonomous-follow",
+		);
+		expect(consumeMock).toHaveBeenCalledWith(
+			"moltbook_follow_target",
+			"social:moltbook:follow-target:alice@example.com",
+		);
+	});
+
+	it("heartbeat executes autonomous unfollow for a visible timeline author", async () => {
+		const lookupUserMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			userId: "acct-77",
+			handle: "oldfriend",
+		});
+		const unfollowMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			following: false,
+		});
+		const client = mockClient({
+			fetchTimeline: vi.fn().mockResolvedValue([
+				{
+					id: "post-77",
+					text: "Completely off-topic promo blast",
+					authorHandle: "oldfriend",
+				},
+			]),
+			lookupUser: lookupUserMock,
+			unfollow: unfollowMock,
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"unfollow","handle":"@oldfriend","rationale":"spammy"}'),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("autonomous: unfollowed @oldfriend");
+		expect(lookupUserMock).toHaveBeenCalledWith("oldfriend");
+		expect(unfollowMock).toHaveBeenCalledWith("acct-77");
+		expect(consumeMock).toHaveBeenCalledWith(
+			"moltbook_unfollow",
+			"social:moltbook:autonomous-unfollow",
+		);
+		expect(consumeMock).toHaveBeenCalledWith(
+			"moltbook_unfollow_target",
+			"social:moltbook:unfollow-target:oldfriend",
+		);
+	});
+
+	it("heartbeat skips autonomous follow when handle is not in the visible timeline", async () => {
+		const lookupUserMock = vi.fn();
+		const followMock = vi.fn();
+		const client = mockClient({
+			fetchTimeline: vi.fn().mockResolvedValue([
+				{ id: "post-11", text: "Only Alice is visible", authorHandle: "alice" },
+			]),
+			lookupUser: lookupUserMock,
+			follow: followMock,
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"follow","handle":"@bob","rationale":"hallucinated target"}'),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("no activity");
+		expect(lookupUserMock).not.toHaveBeenCalled();
+		expect(followMock).not.toHaveBeenCalled();
+	});
+
+	it("heartbeat checks follow budgets before user lookup", async () => {
+		const lookupUserMock = vi.fn();
+		const followMock = vi.fn();
+		checkLimitMock.mockImplementation((feature: string) =>
+			feature === "moltbook_follow"
+				? {
+						allowed: false,
+						remaining: { hour: 0, day: 0 },
+						resetMs: { hour: 1000, day: 10000 },
+						reason: "follow budget exhausted",
+					}
+				: {
+						allowed: true,
+						remaining: { hour: 1, day: 9 },
+						resetMs: { hour: 1000, day: 10000 },
+					},
+		);
+		const client = mockClient({
+			fetchTimeline: vi.fn().mockResolvedValue([
+				{ id: "post-12", text: "Worth following", authorHandle: "alice" },
+			]),
+			lookupUser: lookupUserMock,
+			follow: followMock,
+		});
+		getEntriesMock.mockReturnValueOnce([]).mockReturnValue(sampleEntries);
+		executeRemoteQueryMock.mockReturnValueOnce(
+			mockStream('{"action":"follow","handle":"@alice","rationale":"worth following"}'),
+		);
+
+		const res = await handleSocialHeartbeat(SERVICE_ID, client);
+
+		expect(res.ok).toBe(true);
+		expect(res.message).toContain("no activity");
+		expect(lookupUserMock).not.toHaveBeenCalled();
+		expect(followMock).not.toHaveBeenCalled();
+		expect(consumeMock).not.toHaveBeenCalledWith(
+			"moltbook_follow",
+			"social:moltbook:autonomous-follow",
+		);
+	});
+
 	it("handleSocialNotification posts reply with trimmed structured response", async () => {
 		const client = mockClient();
 		executeRemoteQueryMock.mockReturnValueOnce(

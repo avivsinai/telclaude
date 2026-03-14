@@ -2,7 +2,13 @@ import type { SocialServiceConfig } from "../../config/config.js";
 import { getChildLogger } from "../../logging.js";
 import { getSecret, SECRET_KEYS } from "../../secrets/index.js";
 import type { SocialServiceClient } from "../client.js";
-import type { SocialNotification, SocialPostResult, SocialReplyResult } from "../types.js";
+import type {
+	SocialFollowResult,
+	SocialNotification,
+	SocialPostResult,
+	SocialReplyResult,
+	SocialUserLookupResult,
+} from "../types.js";
 import { type ApiResult, socialApiRequest } from "./shared.js";
 
 const logger = getChildLogger({ module: "moltbook-backend" });
@@ -203,6 +209,82 @@ export class MoltbookClient implements SocialServiceClient {
 
 		const id = result.data?.id ?? result.data?.post_id;
 		return { ok: true, status: result.status, postId: id ? String(id) : undefined };
+	}
+
+	async lookupUser(handle: string): Promise<SocialUserLookupResult> {
+		const normalized = handle.replace(/^@/, "").trim();
+		const result = await this.request<{
+			id?: string;
+			display_name?: string;
+			acct?: string;
+			username?: string;
+		}>(`/accounts/lookup?acct=${encodeURIComponent(normalized)}`, {
+			method: "GET",
+		});
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("moltbook user lookup rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			userId: result.data?.id ? String(result.data.id) : undefined,
+			displayName: result.data?.display_name,
+			handle: result.data?.acct ?? result.data?.username,
+		};
+	}
+
+	async follow(userId: string): Promise<SocialFollowResult> {
+		const result = await this.request<{
+			following?: boolean;
+			requested?: boolean;
+		}>(`/accounts/${encodeURIComponent(userId)}/follow`, {
+			method: "POST",
+			body: JSON.stringify({}),
+		});
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("moltbook follow rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			following: result.data?.requested ? false : (result.data?.following ?? true),
+			pending: result.data?.requested ?? false,
+		};
+	}
+
+	async unfollow(userId: string): Promise<SocialFollowResult> {
+		const result = await this.request<{
+			following?: boolean;
+		}>(`/accounts/${encodeURIComponent(userId)}/unfollow`, {
+			method: "POST",
+			body: JSON.stringify({}),
+		});
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("moltbook unfollow rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			following: false,
+		};
 	}
 }
 

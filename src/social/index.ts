@@ -7,12 +7,14 @@ export type { SocialServiceClient } from "./client.js";
 export { handleSocialHeartbeat, handleSocialNotification, queryPublicPersona } from "./handler.js";
 export { type SocialScheduler, startSocialScheduler } from "./scheduler.js";
 export type {
+	SocialFollowResult,
 	SocialHandlerResult,
 	SocialHeartbeatPayload,
 	SocialNotification,
 	SocialPostResult,
 	SocialPromptBundle,
 	SocialReplyResult,
+	SocialUserLookupResult,
 } from "./types.js";
 
 /**
