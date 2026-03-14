@@ -176,7 +176,7 @@ services:
       - relay-google-net
       - relay-egress
       - social-relay-net
-      - israel-services-net
+      - relay-israel-net
 
     restart: unless-stopped
 
@@ -793,6 +793,9 @@ networks:
     name: telclaude-vault-egress
     driver: bridge
 
-  israel-services-net:
-    name: israel-services_default
-    external: true
+  # Dedicated relay↔israel-services network. NOT internal — must be joinable
+  # by the israel-services container from its own compose project.
+  # After deploy: docker network connect telclaude-relay-israel israel-services
+  relay-israel-net:
+    name: telclaude-relay-israel
+    driver: bridge

@@ -65,9 +65,9 @@ export async function collectStatusOverview(
 	const summary = options.includeProviderHealth
 		? providerIssues.length === 0
 			? "Health check passed."
-			: `Health check found ${providerIssues.length} provider issue${
-					providerIssues.length === 1 ? "" : "s"
-				}.`
+			: providerIssues.length === 1
+				? `Provider issue: ${providerIssues[0].providerId} — ${providerIssues[0].response?.status ?? providerIssues[0].error ?? "unreachable"}`
+				: `${providerIssues.length} provider issues: ${providerIssues.map((r) => r.providerId).join(", ")}`
 		: options.localUserId
 			? `Linked as ${options.localUserId}. System overview ready.`
 			: "System overview ready.";
