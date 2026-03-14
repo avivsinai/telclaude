@@ -16,7 +16,7 @@ import { getChildLogger } from "../../logging.js";
 import { createOrSupersedeCard } from "./lifecycle.js";
 import { buildSkillsMenuState, buildSocialMenuState } from "./menu-state.js";
 import { cardRegistry } from "./registry.js";
-import { updateCard } from "./store.js";
+import { getCard, updateCard } from "./store.js";
 import type {
 	ApprovalCardState,
 	AuthCardState,
@@ -38,6 +38,27 @@ const logger = getChildLogger({ module: "telegram-card-helpers" });
 
 /** Default card expiry: 30 minutes. */
 const DEFAULT_EXPIRY_MS = 30 * 60 * 1000;
+
+/**
+ * Re-render a terminal card (superseded/expired) to remove stale buttons.
+ * Re-fetches the card from DB to get the post-update status so
+ * `renderTerminalState` sees the correct terminal state.
+ * Best-effort — ignores failures since the message may have been deleted.
+ */
+export async function rerenderTerminalCard(api: Api, card: CardInstance): Promise<void> {
+	try {
+		// Re-fetch to get post-update status (the passed card may be a pre-update snapshot)
+		const current = getCard(card.cardId) ?? card;
+		const renderer = cardRegistry.get(current.kind);
+		const render = renderer.render(current);
+		await api.editMessageText(current.chatId, current.messageId, render.text, {
+			parse_mode: render.parseMode,
+			reply_markup: render.keyboard ?? undefined,
+		});
+	} catch {
+		// Best effort — message may have been deleted or already modified
+	}
+}
 
 /** Approval card expiry: 5 minutes (matches approval TTL). */
 const APPROVAL_EXPIRY_MS = 5 * 60 * 1000;
@@ -63,7 +84,7 @@ async function createAndSendCard<K extends CardKind>(
 	const entityRef = options.entityRef ?? kind;
 
 	// Create the card (supersedes any existing active card of same kind/entity)
-	const { card } = createOrSupersedeCard<K>({
+	const { card, supersededCards } = createOrSupersedeCard<K>({
 		kind,
 		chatId,
 		messageId: 0, // placeholder until we send
@@ -73,6 +94,18 @@ async function createAndSendCard<K extends CardKind>(
 		state,
 		expiresAt: Date.now() + expiryMs,
 	});
+
+	// Re-render superseded cards to remove stale buttons
+	for (const old of supersededCards) {
+		if (old.messageId > 0) {
+			rerenderTerminalCard(api, old).catch((err) => {
+				logger.debug(
+					{ cardId: old.cardId, error: String(err) },
+					"failed to re-render superseded card",
+				);
+			});
+		}
+	}
 
 	// Render
 	const renderer = cardRegistry.get(kind);
@@ -175,6 +208,7 @@ export async function sendStatusCard(
 		threadId?: number;
 		entityRef?: string;
 		view?: StatusCardState["view"];
+		sessionKey?: string;
 	},
 ): Promise<CardInstance<typeof CK.Status>> {
 	const state: StatusCardState = {
@@ -184,6 +218,7 @@ export async function sendStatusCard(
 		details: opts.details,
 		lastRefreshedAt: Date.now(),
 		view: opts.view,
+		sessionKey: opts.sessionKey,
 	};
 	return createAndSendCard(api, chatId, CK.Status, state, {
 		actorScope: opts.actorScope,

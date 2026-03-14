@@ -1,3 +1,4 @@
+import { sendSocialActivityLogCommand } from "../../control-command-actions.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -49,40 +50,25 @@ export const heartbeatRenderer: CardRenderer<K> = {
 		return { text, parseMode: "MarkdownV2", keyboard: kb };
 	},
 
-	reduce(card: CardInstance<K>, action: HeartbeatCardAction): HeartbeatCardState {
-		const s = { ...card.state };
-		switch (action.type) {
-			case "run-service":
-				return { ...s, selectedServiceId: s.services[0]?.id };
-			case "run-all":
-				return { ...s, selectedServiceId: undefined };
-			case "view-log":
-				return s;
-			case "refresh":
-				return s;
-		}
+	reduce(card: CardInstance<K>, _action: HeartbeatCardAction): HeartbeatCardState {
+		return card.state;
 	},
 
 	async execute(context: CardExecutionContext<K>): Promise<CardExecutionResult<K>> {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "run-service":
-				return {
-					callbackText: "Use /social run <service> to trigger a heartbeat",
-					callbackAlert: true,
-				};
-
-			case "run-all":
-				return {
-					callbackText: "Use /social run to trigger all heartbeats",
-					callbackAlert: true,
-				};
-
 			case "view-log":
 				return {
-					callbackText: "Use /social log to view heartbeat history",
-					callbackAlert: true,
+					callbackText: "Sending activity log",
+					rerender: false,
+					afterCommit: async () => {
+						await sendSocialActivityLogCommand(context.ctx.api, {
+							chatId: card.chatId,
+							threadId: card.threadId,
+							hours: 4,
+						});
+					},
 				};
 
 			case "refresh":

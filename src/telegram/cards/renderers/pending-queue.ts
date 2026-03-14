@@ -1,4 +1,4 @@
-import { getEntries, promoteEntryTrust } from "../../../memory/store.js";
+import { deleteEntry, getEntries, promoteEntryTrust } from "../../../memory/store.js";
 import { parseSocialQuoteProposalMetadata } from "../../../social/proposal-metadata.js";
 import type {
 	CardExecutionContext,
@@ -190,7 +190,7 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 				if (!targetId) {
 					return { callbackText: "No entry to dismiss", callbackAlert: true };
 				}
-				// Dismiss is UI-only — just remove from the displayed list
+				deleteEntry(targetId);
 				const remaining = s.entries.filter((e) => e.id !== targetId);
 				const newTotal = (s.total ?? s.entries.length) - 1;
 				return {

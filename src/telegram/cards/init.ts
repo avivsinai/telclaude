@@ -7,7 +7,9 @@
  * 3. Starts a periodic expiry sweep to garbage-collect stale cards.
  */
 
+import type { Api } from "grammy";
 import { getChildLogger } from "../../logging.js";
+import { rerenderTerminalCard } from "./create-helpers.js";
 import { sweepExpiredCards } from "./lifecycle.js";
 import { registerAllCardRenderers } from "./renderers/index.js";
 
@@ -23,33 +25,44 @@ let sweepTimer: NodeJS.Timeout | null = null;
  *
  * The card_instances table is created by the main schema in `src/storage/db.ts`,
  * so we don't need to create it here. This function:
- * 1. Registers all 7 card renderers.
- * 2. Starts the background expiry sweep.
+ * 1. Registers all 9 card renderers.
+ * 2. Starts the background expiry sweep (re-renders expired cards to remove stale buttons).
  */
 export function initCardSystem(): void {
-	// 1. Register all card renderers
 	registerAllCardRenderers();
 	logger.info("card renderers registered");
+}
 
-	// 2. Start the expiry sweep interval
+/**
+ * Start the expiry sweep with bot API access for re-rendering expired cards.
+ * Call after the bot connects. Safe to call multiple times (restarts the timer).
+ */
+export function startCardSweep(api: Api): void {
 	if (sweepTimer) {
 		clearInterval(sweepTimer);
 	}
 	sweepTimer = setInterval(() => {
 		try {
-			const expired = sweepExpiredCards();
-			if (expired > 0) {
-				logger.debug({ expired }, "card expiry sweep completed");
+			const { count, cards } = sweepExpiredCards();
+			if (count > 0) {
+				logger.debug({ expired: count }, "card expiry sweep completed");
+				for (const card of cards) {
+					if (card.messageId > 0) {
+						rerenderTerminalCard(api, card).catch((err) => {
+							logger.debug(
+								{ cardId: card.cardId, error: String(err) },
+								"failed to re-render expired card",
+							);
+						});
+					}
+				}
 			}
 		} catch (err) {
 			logger.error({ error: String(err) }, "card expiry sweep failed");
 		}
 	}, SWEEP_INTERVAL_MS);
-
-	// Ensure the timer does not prevent process exit
 	sweepTimer.unref();
-
-	logger.info("card system initialized");
+	logger.debug("card expiry sweep started with API access");
 }
 
 /**
