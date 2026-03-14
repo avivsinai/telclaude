@@ -69,53 +69,115 @@ export const socialMenuRenderer: CardRenderer<K> = {
 		switch (action.type) {
 			case "queue":
 			case "promote": {
-				const result = await openSocialQueueCard(context.ctx.api, {
-					chatId: card.chatId,
-					actorScope: card.actorScope,
-					threadId: card.threadId,
-				});
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can manage social actions.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
+				if ((card.state.queueCount ?? 0) === 0) {
+					return {
+						callbackText: "No pending posts.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				return {
 					callbackText:
-						action.type === "promote" && result.callbackText === "Opened pending queue"
+						action.type === "promote"
 							? "Open the queue to promote a post"
-							: result.callbackText,
-					callbackAlert: result.callbackAlert,
+							: "Opening pending queue",
+					rerender: false,
+					afterCommit: async () => {
+						await openSocialQueueCard(context.ctx.api, {
+							chatId: card.chatId,
+							actorScope: card.actorScope,
+							threadId: card.threadId,
+						});
+					},
 				};
 			}
 
 			case "run": {
-				const result = await runSocialHeartbeatCommand(context.ctx.api, {
-					chatId: card.chatId,
-					threadId: card.threadId,
-				});
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can trigger heartbeats.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
+				if (card.state.services.length === 0) {
+					return {
+						callbackText: "No social services are enabled.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				return {
-					state: buildSocialMenuState(card.chatId),
-					callbackText: result.callbackText,
-					callbackAlert: result.callbackAlert,
-					rerender: true,
+					callbackText:
+						card.state.services.length === 1
+							? `Starting heartbeat for ${card.state.services[0].label}`
+							: `Starting heartbeat for ${card.state.services.length} services`,
+					rerender: false,
+					afterCommit: async () => {
+						await runSocialHeartbeatCommand(context.ctx.api, {
+							chatId: card.chatId,
+							threadId: card.threadId,
+						});
+					},
 				};
 			}
 
 			case "log": {
-				const result = await sendSocialActivityLogCommand(context.ctx.api, {
-					chatId: card.chatId,
-					threadId: card.threadId,
-					hours: 4,
-				});
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can view public activity.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				return {
-					callbackText: result.callbackText,
-					callbackAlert: result.callbackAlert,
+					callbackText: "Sending activity log",
+					rerender: false,
+					afterCommit: async () => {
+						await sendSocialActivityLogCommand(context.ctx.api, {
+							chatId: card.chatId,
+							threadId: card.threadId,
+							hours: 4,
+						});
+					},
 				};
 			}
 
 			case "ask": {
-				const result = startSocialAskWizard(context.ctx.api, {
-					chatId: card.chatId,
-					threadId: card.threadId,
-				});
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can query the public persona.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
+				if (card.state.services.length === 0) {
+					return {
+						callbackText: "No social services are enabled.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				return {
-					callbackText: result.callbackText,
-					callbackAlert: result.callbackAlert,
+					callbackText:
+						card.state.services.length === 1
+							? `Reply with a question for ${card.state.services[0].label}`
+							: "Choose a service, then reply with your question",
+					rerender: false,
+					afterCommit: () => {
+						startSocialAskWizard(context.ctx.api, {
+							actorId: context.ctx.from.id,
+							chatId: card.chatId,
+							threadId: card.threadId,
+						});
+					},
 				};
 			}
 

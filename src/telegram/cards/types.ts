@@ -233,6 +233,7 @@ export type CardExecutionResult<K extends CardKind> = {
 	callbackText?: string;
 	callbackAlert?: boolean;
 	rerender?: boolean;
+	afterCommit?: () => Promise<void> | void;
 };
 
 export type CardExecutionContext<K extends CardKind> = {

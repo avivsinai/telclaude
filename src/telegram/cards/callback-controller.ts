@@ -342,6 +342,20 @@ export async function handleCallback(
 			username: ctx.from.username,
 			outcome: "success",
 		});
+
+		if (execution.afterCommit) {
+			void Promise.resolve(execution.afterCommit()).catch((afterCommitError) => {
+				logger.error(
+					{
+						cardId: updatedCard.cardId,
+						kind: updatedCard.kind,
+						action: token.action,
+						error: String(afterCommitError),
+					},
+					"card post-commit action failed",
+				);
+			});
+		}
 	} catch (error) {
 		logger.error(
 			{ cardId: card.cardId, kind: card.kind, action: token.action, error: String(error) },

@@ -60,21 +60,42 @@ export const skillsMenuRenderer: CardRenderer<K> = {
 		switch (action.type) {
 			case "open-drafts":
 			case "promote": {
-				const result = await openSkillDraftCard(context.ctx.api, {
-					chatId: card.chatId,
-					actorScope: card.actorScope,
-					threadId: card.threadId,
-				});
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can manage skill drafts.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
+				if (card.state.draftCount === 0) {
+					return {
+						callbackText: "No draft skills awaiting promotion.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				return {
 					callbackText:
-						action.type === "promote" && result.callbackText === "Opened skill drafts"
-							? "Select a draft to promote"
-							: result.callbackText,
-					callbackAlert: result.callbackAlert,
+						action.type === "promote" ? "Select a draft to promote" : "Opening skill drafts",
+					rerender: false,
+					afterCommit: async () => {
+						await openSkillDraftCard(context.ctx.api, {
+							chatId: card.chatId,
+							actorScope: card.actorScope,
+							threadId: card.threadId,
+						});
+					},
 				};
 			}
 
 			case "reload": {
+				if (!card.state.adminControlsEnabled) {
+					return {
+						callbackText: "Only admin can reload skills.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
 				const result = reloadSkillsSession(card.state.sessionKey);
 				return {
 					state: buildSkillsMenuState(card.chatId, card.state.sessionKey),

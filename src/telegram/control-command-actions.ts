@@ -250,6 +250,7 @@ export async function sendSocialAskResponse(
 export function startSocialAskWizard(
 	api: Api,
 	opts: {
+		actorId: number;
 		chatId: number;
 		threadId?: number;
 		cfg?: TelclaudeConfig;
@@ -267,6 +268,7 @@ export function startSocialAskWizard(
 	void (async () => {
 		const wizard = createWizardPrompter({
 			api,
+			actorId: opts.actorId,
 			chatId: opts.chatId,
 			threadId: opts.threadId,
 		});

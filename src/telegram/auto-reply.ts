@@ -1725,7 +1725,12 @@ async function handleInboundMessage(
 	// WIZARD TEXT ROUTING - Intercept text messages for active wizard prompts
 	// ══════════════════════════════════════════════════════════════════════════
 
-	if (routeWizardTextMessage(msg.chatId, trimmedBody)) {
+	if (
+		routeWizardTextMessage(msg.chatId, trimmedBody, {
+			actorId: msg.senderId,
+			threadId: msg.messageThreadId,
+		})
+	) {
 		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
 		return;
 	}
