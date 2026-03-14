@@ -47,6 +47,10 @@ vi.mock("../../src/memory/telegram-context.js", () => ({
 	buildTelegramMemoryContext: () => null,
 }));
 
+vi.mock("../../src/telegram/system-context.js", () => ({
+	buildSystemInfoContext: () => null,
+}));
+
 vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => ({
 		info: vi.fn(),

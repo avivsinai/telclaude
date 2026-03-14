@@ -60,9 +60,9 @@ NL / Command Input
 | Root | Subcommands | Purpose |
 |------|-------------|---------|
 | `/help [topic]` | — | Contextual help, topic list |
-| `/me [show\|link\|unlink]` | show (default), link `<code>`, unlink | Identity management |
+| `/me [link\|unlink]` | link `<code>`, unlink | Identity management |
 | `/auth [setup\|verify\|logout\|disable\|skip]` | Maps to current 2FA commands | Authentication |
-| `/system [status\|sessions\|cron\|ask]` | status (default), sessions, cron, ask `<question>` | System introspection |
+| `/system [sessions\|cron]` | sessions, cron | System introspection |
 | `/social [queue\|promote\|run\|log\|ask]` | queue (pending), promote `<id>`, run `[svc]`, log `[svc] [hours]`, ask `[svc] <q>` | Social persona |
 | `/skills [drafts\|promote\|reload]` | drafts, promote `<name>`, reload | Skill management |
 | `/approve <code>` | — | Fast-path approval (also available as button) |

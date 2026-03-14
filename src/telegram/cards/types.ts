@@ -38,12 +38,15 @@ export type PendingQueueCardState = {
 	selectedEntryId?: string;
 };
 
+export type StatusCardView = "overview" | "sessions" | "cron";
+
 export type StatusCardState = {
 	kind: CardKind.Status;
 	title: string;
 	summary: string;
 	details?: string[];
 	lastRefreshedAt?: number;
+	view?: StatusCardView;
 };
 
 export type AuthCardState = {
@@ -106,7 +109,10 @@ export type PendingQueueCardAction =
 export type StatusCardAction =
 	| { type: "refresh" }
 	| { type: "run-health-check" }
-	| { type: "reset-session" };
+	| { type: "reset-session" }
+	| { type: "view-sessions" }
+	| { type: "view-cron" }
+	| { type: "view-overview" };
 
 export type AuthCardAction =
 	| { type: "setup-2fa" }
@@ -141,7 +147,14 @@ export type CardActionType<K extends CardKind = CardKind> = CardAction<K>["type"
 const CARD_ACTIONS_BY_KIND = {
 	[CardKind.Approval]: ["approve", "deny", "explain", "refresh"],
 	[CardKind.PendingQueue]: ["promote", "dismiss", "next", "prev", "refresh"],
-	[CardKind.Status]: ["refresh", "run-health-check", "reset-session"],
+	[CardKind.Status]: [
+		"refresh",
+		"run-health-check",
+		"reset-session",
+		"view-sessions",
+		"view-cron",
+		"view-overview",
+	],
 	[CardKind.Auth]: ["setup-2fa", "verify", "skip", "logout", "disable"],
 	[CardKind.Heartbeat]: ["run-service", "run-all", "view-log", "refresh"],
 	[CardKind.SkillDraft]: ["promote", "reject", "refresh"],

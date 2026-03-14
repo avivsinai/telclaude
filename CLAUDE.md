@@ -117,9 +117,9 @@
 | Command | Description |
 |---------|-------------|
 | `/help [topic]` | Contextual help, topic list |
-| `/me [show\|link\|unlink]` | Identity management |
+| `/me [link\|unlink]` | Identity management |
 | `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
-| `/system [status\|sessions\|cron\|ask <question>]` | System introspection |
+| `/system [sessions\|cron]` | System introspection |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
 | `/skills [drafts\|promote <name>\|reload]` | Skill management |
 | `/approve <code>` | Fast-path approval |

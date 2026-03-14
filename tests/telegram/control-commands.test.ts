@@ -5,7 +5,6 @@ import {
 	getTelegramMenuCommands,
 	hasTelegramControlCommand,
 	matchTelegramControlCommand,
-	resolveTelegramSystemIntent,
 } from "../../src/telegram/control-commands.js";
 
 describe("telegram control command registry", () => {
@@ -19,9 +18,6 @@ describe("telegram control command registry", () => {
 		it("matches domain subcommands", () => {
 			expect(matchTelegramControlCommand("/system sessions")?.command.id).toBe("system:sessions");
 			expect(matchTelegramControlCommand("/system cron")?.command.id).toBe("system:cron");
-			expect(matchTelegramControlCommand("/system ask what is running?")?.command.id).toBe(
-				"system:ask",
-			);
 			expect(matchTelegramControlCommand("/me link ABCD")?.command.id).toBe("me:link");
 			expect(matchTelegramControlCommand("/me unlink")?.command.id).toBe("me:unlink");
 			expect(matchTelegramControlCommand("/auth setup")?.command.id).toBe("auth:setup");
@@ -52,10 +48,6 @@ describe("telegram control command registry", () => {
 		});
 
 		it("passes remaining args correctly for subcommands", () => {
-			const match = matchTelegramControlCommand("/system ask what is running?");
-			expect(match?.command.id).toBe("system:ask");
-			expect(match?.rawArgs).toBe("what is running?");
-
 			const linkMatch = matchTelegramControlCommand("/me link ABCD-1234");
 			expect(linkMatch?.command.id).toBe("me:link");
 			expect(linkMatch?.args).toEqual(["ABCD-1234"]);
@@ -65,10 +57,36 @@ describe("telegram control command registry", () => {
 			expect(verifyMatch?.args).toEqual(["123456"]);
 		});
 
-		it("routes unknown subcommands to ask for domains with ask subcommand", () => {
-			// "/system foobar" should route to system:ask (NL routing)
-			const match = matchTelegramControlCommand("/system foobar");
-			expect(match?.command.id).toBe("system:ask");
+		it("returns null for unknown subcommands in strict domains", () => {
+			expect(matchTelegramControlCommand("/system foobar")).toBeNull();
+			expect(matchTelegramControlCommand("/system crno")).toBeNull();
+			expect(matchTelegramControlCommand("/system status")).toBeNull();
+			expect(matchTelegramControlCommand("/auth bogus")).toBeNull();
+			expect(matchTelegramControlCommand("/me show")).toBeNull();
+			expect(matchTelegramControlCommand("/skills nope")).toBeNull();
+		});
+
+		it("routes freeform args to domain default for acceptsFreeformArgs domains", () => {
+			// "/help approvals" routes to help default with rawArgs
+			const match = matchTelegramControlCommand("/help approvals");
+			expect(match?.command.id).toBe("help");
+			expect(match?.rawArgs).toBe("approvals");
+
+			const multiWord = matchTelegramControlCommand("/help reset session");
+			expect(multiWord?.command.id).toBe("help");
+			expect(multiWord?.rawArgs).toBe("reset session");
+		});
+
+		it("routes bare domain to default", () => {
+			const match = matchTelegramControlCommand("/system");
+			expect(match?.command.id).toBe("system");
+			expect(match?.rawArgs).toBe("");
+		});
+
+		it("routes unknown /social subcommands to social:ask", () => {
+			// "/social foobar" routes to social:ask (social domain has ask subcommand)
+			const match = matchTelegramControlCommand("/social foobar");
+			expect(match?.command.id).toBe("social:ask");
 			expect(match?.rawArgs).toBe("foobar");
 		});
 	});
@@ -126,21 +144,6 @@ describe("telegram control command registry", () => {
 		expect(help).toContain("Reset Session");
 		expect(help).toContain("/new");
 		expect(help).toContain("/reset");
-	});
-
-	it("maps natural-language system questions to safe handlers", () => {
-		expect(resolveTelegramSystemIntent("who am i linked as?")).toEqual({
-			kind: "command",
-			commandId: "me",
-		});
-		expect(resolveTelegramSystemIntent("when is the next heartbeat?")).toEqual({
-			kind: "command",
-			commandId: "system:cron",
-		});
-		expect(resolveTelegramSystemIntent("how do approvals work?")).toEqual({
-			kind: "help",
-			query: "how do approvals work?",
-		});
 	});
 
 	describe("scoped menu commands", () => {
