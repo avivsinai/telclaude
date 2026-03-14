@@ -42,10 +42,14 @@ export function getSkillRoots(cwd: string = process.cwd()): string[] {
 		getBundledSkillsRoot(),
 	];
 
-	return roots.filter((root): root is string => Boolean(root)).filter((root, index, all) => {
-		const resolved = path.resolve(root);
-		return all.findIndex((candidate) => candidate && path.resolve(candidate) === resolved) === index;
-	});
+	return roots
+		.filter((root): root is string => Boolean(root))
+		.filter((root, index, all) => {
+			const resolved = path.resolve(root);
+			return (
+				all.findIndex((candidate) => candidate && path.resolve(candidate) === resolved) === index
+			);
+		});
 }
 
 export function resolveSkillAssetPath(
@@ -83,7 +87,9 @@ export function resolveSkillAssetPath(
 	}
 
 	const searchedRoots = roots.map((root) => path.join(root, skillName, relativePath)).join(", ");
-	throw new Error(`Skill asset not found: ${skillName}/${relativePath}. Searched: ${searchedRoots}`);
+	throw new Error(
+		`Skill asset not found: ${skillName}/${relativePath}. Searched: ${searchedRoots}`,
+	);
 }
 
 export function registerSkillPathCommand(program: Command): void {
