@@ -74,7 +74,7 @@ export const PROMPT_INJECTION_PATTERNS: PromptInjectionPattern[] = [
 	{
 		name: "code-execution",
 		regex:
-			/```(?:bash|sh|python|node|javascript)\s*\n[^`]*(?:curl|wget|rm|chmod|eval|exec)[^`]*```/gis,
+			/```(?:bash|sh|python|node|javascript)\s*\n[^`]*\b(?:curl|wget|rm|chmod|eval|exec)\b[^`]*```/gis,
 		severity: "high",
 	},
 
