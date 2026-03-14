@@ -46,6 +46,7 @@ export interface WizardPrompter {
 export type WizardContext = {
 	api: Api;
 	chatId: number;
+	actorId?: number;
 	messageId?: number;
 	threadId?: number;
 	timeoutMs?: number;

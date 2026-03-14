@@ -96,7 +96,14 @@ export class WizardCancelledError extends Error {
  * wizard ID. The bot's callback_query handler dispatches to the matching
  * wizard. Handlers are automatically cleaned up on completion or timeout.
  */
-const activeWizardHandlers = new Map<string, (data: string) => void>();
+type WizardCallbackHandler = {
+	actorId?: number;
+	chatId: number;
+	threadId?: number;
+	handler: (data: string) => void;
+};
+
+const activeWizardHandlers = new Map<string, WizardCallbackHandler>();
 
 /**
  * Route a callback_query to the matching wizard handler.
@@ -114,19 +121,31 @@ const activeWizardHandlers = new Map<string, (data: string) => void>();
  * });
  * ```
  */
-export function routeWizardCallback(callbackData: string): boolean {
+export function routeWizardCallback(
+	callbackData: string,
+	context?: { actorId?: number; chatId?: number; threadId?: number },
+): "handled" | "expired" | "forbidden" {
 	// Format: w:<wizardId>:<payload>
 	const parts = callbackData.split(":");
 	if (parts.length < 3 || parts[0] !== "w") {
-		return false;
+		return "expired";
 	}
 	const wizardId = parts[1];
-	const handler = activeWizardHandlers.get(wizardId);
-	if (handler) {
-		handler(callbackData);
-		return true;
+	const entry = activeWizardHandlers.get(wizardId);
+	if (!entry) {
+		return "expired";
 	}
-	return false;
+	if (entry.chatId !== context?.chatId) {
+		return "forbidden";
+	}
+	if (entry.actorId !== undefined && entry.actorId !== context?.actorId) {
+		return "forbidden";
+	}
+	if (entry.threadId !== undefined && entry.threadId !== context?.threadId) {
+		return "forbidden";
+	}
+	entry.handler(callbackData);
+	return "handled";
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -140,7 +159,13 @@ export function routeWizardCallback(callbackData: string): boolean {
  * keyed by `chatId:wizardId`. The relay routes incoming text messages
  * through `routeWizardTextMessage` before normal processing.
  */
-const activeTextHandlers = new Map<string, (text: string) => void>();
+type WizardTextHandler = {
+	actorId?: number;
+	threadId?: number;
+	handler: (text: string) => void;
+};
+
+const activeTextHandlers = new Map<string, WizardTextHandler>();
 
 /**
  * Route an incoming text message to a waiting wizard text() prompt.
@@ -157,11 +182,21 @@ const activeTextHandlers = new Map<string, (text: string) => void>();
  * // ...normal processing
  * ```
  */
-export function routeWizardTextMessage(chatId: number, text: string): boolean {
+export function routeWizardTextMessage(
+	chatId: number,
+	text: string,
+	context?: { actorId?: number; threadId?: number },
+): boolean {
 	// Check all text handlers for this chat
-	for (const [key, handler] of activeTextHandlers) {
+	for (const [key, entry] of activeTextHandlers) {
 		if (key.startsWith(`${chatId}:`)) {
-			handler(text);
+			if (entry.actorId !== undefined && entry.actorId !== context?.actorId) {
+				continue;
+			}
+			if (entry.threadId !== undefined && entry.threadId !== context?.threadId) {
+				continue;
+			}
+			entry.handler(text);
 			return true;
 		}
 	}
@@ -214,9 +249,14 @@ export function createWizardPrompter(ctx: WizardContext): WizardPrompter {
 				}
 			};
 
-			activeWizardHandlers.set(wizardId, (data: string) => {
-				cleanup();
-				resolve(data);
+			activeWizardHandlers.set(wizardId, {
+				actorId: ctx.actorId,
+				chatId: ctx.chatId,
+				threadId: ctx.threadId,
+				handler: (data: string) => {
+					cleanup();
+					resolve(data);
+				},
 			});
 
 			timer = setTimeout(() => {
@@ -242,9 +282,13 @@ export function createWizardPrompter(ctx: WizardContext): WizardPrompter {
 				}
 			};
 
-			activeTextHandlers.set(handlerKey, (text: string) => {
-				cleanup();
-				resolve(text);
+			activeTextHandlers.set(handlerKey, {
+				actorId: ctx.actorId,
+				threadId: ctx.threadId,
+				handler: (text: string) => {
+					cleanup();
+					resolve(text);
+				},
 			});
 
 			timer = setTimeout(() => {

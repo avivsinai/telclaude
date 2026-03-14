@@ -82,9 +82,21 @@ export function registerKeyboardHandlers(bot: Bot, options?: { auditLogger?: Aud
 
 	// Wizard callbacks (w:<wizardId>:<payload>)
 	bot.callbackQuery(/^w:/, async (ctx) => {
-		const handled = routeWizardCallback(ctx.callbackQuery.data);
-		if (handled) {
+		const message = ctx.callbackQuery.message;
+		const threadId =
+			message && "message_thread_id" in message ? message.message_thread_id : undefined;
+		const result = routeWizardCallback(ctx.callbackQuery.data, {
+			actorId: ctx.from.id,
+			chatId: ctx.chat?.id,
+			threadId,
+		});
+		if (result === "handled") {
 			await ctx.answerCallbackQuery();
+		} else if (result === "forbidden") {
+			await ctx.answerCallbackQuery({
+				text: "This prompt belongs to another user",
+				show_alert: true,
+			});
 		} else {
 			await ctx.answerCallbackQuery({ text: "Wizard session expired" });
 		}
