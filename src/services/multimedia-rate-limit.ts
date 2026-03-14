@@ -21,7 +21,11 @@ export type MultimediaFeature =
 	| "token_refresh"
 	| `${string}_post`
 	| `${string}_reply`
-	| `${string}_reply_target`;
+	| `${string}_reply_target`
+	| `${string}_follow`
+	| `${string}_follow_target`
+	| `${string}_unfollow`
+	| `${string}_unfollow_target`;
 
 /** Rate limit configuration for a feature */
 export type FeatureRateLimitConfig = {

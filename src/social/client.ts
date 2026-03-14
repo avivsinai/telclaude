@@ -1,8 +1,10 @@
 import type {
+	SocialFollowResult,
 	SocialNotification,
 	SocialPostResult,
 	SocialReplyResult,
 	SocialTimelinePost,
+	SocialUserLookupResult,
 } from "./types.js";
 
 /**
@@ -35,4 +37,13 @@ export interface SocialServiceClient {
 
 	/** Resolve a public post URL into structured post data (optional backend capability). */
 	fetchPostByUrl?(url: string): Promise<SocialTimelinePost | null>;
+
+	/** Look up a user by handle, returning their user ID and profile info. */
+	lookupUser?(handle: string): Promise<SocialUserLookupResult>;
+
+	/** Follow a user by their platform-specific user ID. */
+	follow?(userId: string): Promise<SocialFollowResult>;
+
+	/** Unfollow a user by their platform-specific user ID. */
+	unfollow?(userId: string): Promise<SocialFollowResult>;
 }

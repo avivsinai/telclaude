@@ -2,10 +2,12 @@ import type { SocialServiceConfig } from "../../config/config.js";
 import { getChildLogger } from "../../logging.js";
 import type { SocialServiceClient } from "../client.js";
 import type {
+	SocialFollowResult,
 	SocialNotification,
 	SocialPostResult,
 	SocialReplyResult,
 	SocialTimelinePost,
+	SocialUserLookupResult,
 } from "../types.js";
 import { type ApiResult, socialApiRequest } from "./shared.js";
 
@@ -75,6 +77,19 @@ type XSingleTweetResponse = {
 	data?: XTimelineTweet;
 	includes?: { users?: Array<{ id: string; name: string; username: string }> };
 	errors?: Array<{ message: string; type: string }>;
+};
+
+type XUserLookupResponse = {
+	data?: { id: string; name: string; username: string };
+	errors?: Array<{ message: string; type: string }>;
+};
+
+type XFollowResponse = {
+	data?: { following: boolean; pending_follow: boolean };
+};
+
+type XUnfollowResponse = {
+	data?: { following: boolean };
 };
 
 const X_STATUS_HOSTS = new Set([
@@ -440,6 +455,107 @@ export class XTwitterClient implements SocialServiceClient {
 			status: 201,
 			postId: tweetIds[0],
 			tweetIds,
+		};
+	}
+
+	async lookupUser(handle: string): Promise<SocialUserLookupResult> {
+		const normalized = handle.replace(/^@/, "").trim();
+		const result = await this.request<XUserLookupResponse>(
+			`/2/users/by/username/${encodeURIComponent(normalized)}`,
+			{ method: "GET" },
+		);
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("X user lookup rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			if (result.status === 402 || result.status === 403) {
+				logger.info({ status: result.status }, "X user lookup not available on current tier");
+				return { ok: false, status: result.status, error: "not available on current API tier" };
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		const user = result.data?.data;
+		if (!user) {
+			return { ok: false, status: 404, error: "user not found" };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			userId: user.id,
+			displayName: user.name,
+			handle: user.username,
+		};
+	}
+
+	async follow(userId: string): Promise<SocialFollowResult> {
+		const result = await this.request<XFollowResponse>(
+			`/2/users/${encodeURIComponent(this.userId)}/following`,
+			{
+				method: "POST",
+				body: JSON.stringify({ target_user_id: userId }),
+			},
+		);
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("X follow rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			if (result.status === 402 || result.status === 403) {
+				logger.info(
+					{ status: result.status },
+					"X follow not available on current tier (requires Basic)",
+				);
+				return {
+					ok: false,
+					status: result.status,
+					error: "follow not available on current API tier (requires Basic)",
+				};
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			following: result.data?.data?.following ?? true,
+			pending: result.data?.data?.pending_follow ?? false,
+		};
+	}
+
+	async unfollow(userId: string): Promise<SocialFollowResult> {
+		const result = await this.request<XUnfollowResponse>(
+			`/2/users/${encodeURIComponent(this.userId)}/following/${encodeURIComponent(userId)}`,
+			{ method: "DELETE" },
+		);
+
+		if (!result.ok) {
+			if (result.status === 429) {
+				logger.warn("X unfollow rate limited");
+				return { ok: false, status: result.status, error: result.error, rateLimited: true };
+			}
+			if (result.status === 402 || result.status === 403) {
+				logger.info(
+					{ status: result.status },
+					"X unfollow not available on current tier (requires Basic)",
+				);
+				return {
+					ok: false,
+					status: result.status,
+					error: "unfollow not available on current API tier (requires Basic)",
+				};
+			}
+			return { ok: false, status: result.status, error: result.error };
+		}
+
+		return {
+			ok: true,
+			status: result.status,
+			following: false,
 		};
 	}
 
