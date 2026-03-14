@@ -33,6 +33,14 @@ import type { Api } from "grammy";
 import type { ReactionTypeEmoji } from "grammy/types";
 
 import { getChildLogger } from "../logging.js";
+import {
+	sendApprovalCard,
+	sendHeartbeatCard,
+	sendPendingQueueCard,
+	sendSessionCard,
+	sendSkillDraftCard,
+	sendStatusCard,
+} from "./cards/create-helpers.js";
 
 const logger = getChildLogger({ module: "telegram-directives" });
 
@@ -406,6 +414,63 @@ export function parseDirectives(raw: string): ParsedOutput {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Card type name -> card create helper dispatch.
+ * Maps the string from @card(type) to the appropriate sendXCard helper.
+ */
+const CARD_TYPE_MAP: Record<
+	string,
+	(api: Api, chatId: number, params: Record<string, string>, threadId?: number) => Promise<void>
+> = {
+	status: async (api, chatId, params, threadId) => {
+		await sendStatusCard(api, chatId, {
+			title: params.title,
+			summary: params.summary ?? params.body ?? "Status",
+			details: params.details?.split(";"),
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+	approval: async (api, chatId, params, threadId) => {
+		await sendApprovalCard(api, chatId, {
+			title: params.title ?? "Approval Required",
+			body: params.body ?? "Please approve this action.",
+			nonce: params.nonce ?? `directive-${Date.now()}`,
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+	session: async (api, chatId, params, threadId) => {
+		await sendSessionCard(api, chatId, {
+			summary: params.summary ?? "Current session",
+			sessionKey: params.sessionKey,
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+	heartbeat: async (api, chatId, _params, threadId) => {
+		await sendHeartbeatCard(api, chatId, {
+			services: [],
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+	pending: async (api, chatId, _params, threadId) => {
+		await sendPendingQueueCard(api, chatId, {
+			entries: [],
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+	"skill-draft": async (api, chatId, _params, threadId) => {
+		await sendSkillDraftCard(api, chatId, {
+			drafts: [],
+			actorScope: `chat:${chatId}`,
+			threadId,
+		});
+	},
+};
+
+/**
  * Process parsed directives into execution instructions.
  *
  * The executor does NOT perform side effects directly — it returns them as
@@ -442,21 +507,15 @@ export function executeDirectives(directives: Directive[], ctx: DirectiveContext
 			case "social": {
 				const { serviceId, question } = directive;
 				result.sideEffects.push(async () => {
-					// Integration point: dispatch query to social agent via queryPublicPersona.
-					// In the streaming pipeline, the caller should:
-					//   const { queryPublicPersona } = await import("../social/handler.js");
-					//   const response = await queryPublicPersona(question, serviceId ?? firstEnabledService.id, serviceConfig);
-					//   await sendMessage(chatId, response);
-					//
-					// The relay routes the query to the social agent directly.
-					// The private Telegram agent NEVER sees the response (air gap).
-					// See: src/telegram/auto-reply.ts (case "ask-public") and src/social/handler.ts (queryPublicPersona)
+					// Requires relay routing: the social directive dispatches a query to the social
+					// agent via queryPublicPersona, which is mediated by the relay. The directive
+					// context does not have access to the relay or service config — this must be
+					// wired at the streaming pipeline level where the relay connection is available.
+					// See: src/telegram/auto-reply.ts (case "ask-public") and src/social/handler.ts
 					logger.info(
 						{ chatId: ctx.chatId, serviceId, questionLength: question.length },
-						"social directive: query public persona (stub)",
+						"social directive: requires relay integration (not available in directive context)",
 					);
-					// TODO: Wire up queryPublicPersona when integrating into streaming pipeline.
-					// The caller must resolve the service config from the loaded TelclaudeConfig.
 				});
 				break;
 			}
@@ -502,31 +561,32 @@ export function executeDirectives(directives: Directive[], ctx: DirectiveContext
 
 			case "card": {
 				const { cardType, params } = directive;
-				result.sideEffects.push(async () => {
-					// Integration point: call the appropriate card create helper.
-					// When cards/create-helpers.ts exists, the caller should:
-					//   const helper = getCardHelper(cardType);
-					//   if (helper) await helper.create(ctx.api, ctx.chatId, params);
-					//
-					// Cards are rendered as Telegram messages with inline keyboards or formatted text.
-					logger.info(
-						{ chatId: ctx.chatId, cardType, paramKeys: Object.keys(params) },
-						"card directive: render card (stub)",
-					);
-					// TODO: Wire up card rendering when cards subsystem is implemented.
-				});
+				const handler = CARD_TYPE_MAP[cardType];
+				if (handler) {
+					result.sideEffects.push(async () => {
+						try {
+							await handler(ctx.api, ctx.chatId, params, ctx.threadId);
+							logger.debug({ chatId: ctx.chatId, cardType }, "card directive: card sent");
+						} catch (err) {
+							logger.warn(
+								{ error: String(err), chatId: ctx.chatId, cardType },
+								"card directive: failed to send card",
+							);
+						}
+					});
+				} else {
+					logger.warn({ chatId: ctx.chatId, cardType }, "card directive: unknown card type");
+				}
 				break;
 			}
 
 			case "tts": {
 				const { text: ttsText } = directive;
 				result.sideEffects.push(async () => {
-					// Integration point: call TTS service to convert text to audio.
-					// The caller should:
-					//   const audioPath = await generateTTS(ttsText ?? fullResponseText);
-					//   await sendMediaToChat(ctx.api, ctx.chatId, { type: "voice", source: audioPath });
-					//
-					// TTS goes through the credential proxy (relay) to reach the OpenAI TTS API.
+					// Requires credential proxy: TTS goes through the relay's credential proxy
+					// to reach the OpenAI TTS API. The directive context does not have access to
+					// the credential proxy or TTS service — this must be wired at the streaming
+					// pipeline level where the proxy connection is available.
 					// See: src/services/ for TTS service integration.
 					logger.info(
 						{
@@ -534,9 +594,8 @@ export function executeDirectives(directives: Directive[], ctx: DirectiveContext
 							hasCustomText: ttsText !== undefined,
 							textLength: ttsText?.length,
 						},
-						"tts directive: convert to speech (stub)",
+						"tts directive: requires credential proxy (not available in directive context)",
 					);
-					// TODO: Wire up TTS service when integrating into streaming pipeline.
 				});
 				break;
 			}

@@ -1,3 +1,4 @@
+import { getEntries, promoteEntryTrust } from "../../../memory/store.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -115,8 +116,10 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 				if (!targetId) {
 					return { callbackText: "No entry to promote", callbackAlert: true };
 				}
-				// TODO: call existing promote logic (e.g., memory quarantine promote)
-				// Remove the promoted entry from the list
+				const result = promoteEntryTrust(targetId, "card");
+				if (!result.ok) {
+					return { callbackText: result.reason, callbackAlert: true };
+				}
 				const remaining = s.entries.filter((e) => e.id !== targetId);
 				return {
 					state: {
@@ -134,7 +137,7 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 				if (!targetId) {
 					return { callbackText: "No entry to dismiss", callbackAlert: true };
 				}
-				// TODO: call existing dismiss logic
+				// Dismiss is UI-only — just remove from the displayed list
 				const remaining = s.entries.filter((e) => e.id !== targetId);
 				return {
 					state: {
@@ -170,9 +173,25 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 					rerender: true,
 				};
 
-			case "refresh":
-				// TODO: re-fetch pending entries from memory quarantine
-				return { callbackText: "Refreshed", rerender: true };
+			case "refresh": {
+				const quarantined = getEntries({ trust: ["quarantined"] });
+				const refreshedEntries = quarantined.map((e) => ({
+					id: e.id,
+					label: e.content.slice(0, 60),
+					summary: e._provenance.chatId ? `from chat ${e._provenance.chatId}` : undefined,
+				}));
+				return {
+					state: {
+						...s,
+						entries: refreshedEntries,
+						total: refreshedEntries.length,
+						page: 0,
+						selectedEntryId: undefined,
+					},
+					callbackText: "Refreshed",
+					rerender: true,
+				};
+			}
 		}
 	},
 };

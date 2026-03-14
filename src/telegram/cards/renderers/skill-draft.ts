@@ -1,3 +1,4 @@
+import { listDraftSkills, promoteSkill } from "../../../commands/skills-promote.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -93,7 +94,10 @@ export const skillDraftRenderer: CardRenderer<K> = {
 				if (!targetName) {
 					return { callbackText: "No draft to promote", callbackAlert: true };
 				}
-				// TODO: promote skill draft to active skill
+				const result = promoteSkill(targetName);
+				if (!result.success) {
+					return { callbackText: result.error ?? "Promotion failed", callbackAlert: true };
+				}
 				const remaining = s.drafts.filter((d) => d.id !== targetName);
 				return {
 					state: { ...s, drafts: remaining, selectedDraftName: undefined },
@@ -106,7 +110,7 @@ export const skillDraftRenderer: CardRenderer<K> = {
 				if (!targetName) {
 					return { callbackText: "No draft to reject", callbackAlert: true };
 				}
-				// TODO: reject/dismiss skill draft
+				// Reject is UI-only — just remove from the displayed list
 				const remaining = s.drafts.filter((d) => d.id !== targetName);
 				return {
 					state: { ...s, drafts: remaining, selectedDraftName: undefined },
@@ -115,12 +119,18 @@ export const skillDraftRenderer: CardRenderer<K> = {
 				};
 			}
 
-			case "refresh":
-				// TODO: re-scan skill drafts directory
+			case "refresh": {
+				const draftNames = listDraftSkills();
+				const refreshedDrafts = draftNames.map((name) => ({
+					id: name,
+					label: name,
+				}));
 				return {
+					state: { ...s, drafts: refreshedDrafts, page: 0, selectedDraftName: undefined },
 					callbackText: "Refreshed",
 					rerender: true,
 				};
+			}
 		}
 	},
 };

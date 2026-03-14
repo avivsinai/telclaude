@@ -1,4 +1,6 @@
 import { getIdentityLink } from "../../../security/linking.js";
+import { disableTOTP } from "../../../security/totp.js";
+import { invalidateTOTPSessionForChat } from "../../../security/totp-session.js";
 import { format2FASetupInstructions, sendPostAuthStatusCard } from "../../onboarding.js";
 import type {
 	AuthCardAction,
@@ -118,16 +120,15 @@ export const authRenderer: CardRenderer<K> = {
 				};
 
 			case "logout":
-				// TODO: clear TOTP session
+				invalidateTOTPSessionForChat(card.chatId);
 				return {
 					callbackText: "TOTP session cleared",
 				};
 
 			case "disable":
-				// TODO: disable TOTP entirely
+				await disableTOTP(card.chatId);
 				return {
-					callbackText: "Use /auth disable to disable",
-					callbackAlert: true,
+					callbackText: "TOTP disabled",
 				};
 		}
 	},

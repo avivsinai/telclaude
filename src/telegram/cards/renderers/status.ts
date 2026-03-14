@@ -1,3 +1,5 @@
+import { deleteSession } from "../../../config/sessions.js";
+import { getSessionManager } from "../../../sdk/session-manager.js";
 import { collectStatusOverview } from "../../status-overview.js";
 import type {
 	CardExecutionContext,
@@ -91,11 +93,14 @@ export const statusRenderer: CardRenderer<K> = {
 				};
 			}
 
-			case "reset-session":
-				// TODO: clear current SDK session (similar to keyboard-handlers handleNewSession)
+			case "reset-session": {
+				const sessionKey = card.entityRef ?? String(card.chatId);
+				deleteSession(sessionKey);
+				getSessionManager().clearSession(sessionKey);
 				return {
 					callbackText: "Session reset",
 				};
+			}
 		}
 	},
 };
