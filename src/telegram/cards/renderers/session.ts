@@ -1,3 +1,5 @@
+import { deleteSession, getSession } from "../../../config/sessions.js";
+import { getSessionManager } from "../../../sdk/session-manager.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -70,8 +72,12 @@ export const sessionRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "reset":
-				// TODO: delete the SDK session (call deleteSession + sessionManager.clearSession)
+			case "reset": {
+				const sessionKey = card.state.sessionKey;
+				if (sessionKey) {
+					deleteSession(sessionKey);
+					getSessionManager().clearSession(sessionKey);
+				}
 				return {
 					state: {
 						...card.state,
@@ -83,24 +89,52 @@ export const sessionRenderer: CardRenderer<K> = {
 					callbackText: "Session reset",
 					rerender: true,
 				};
+			}
 
-			case "view-history":
-				// TODO: fetch recent message history for this session
+			case "view-history": {
+				const sessionKey = card.state.sessionKey;
+				if (!sessionKey) {
+					return {
+						state: { ...card.state, historyPreview: ["No active session"] },
+						callbackText: "No session",
+						rerender: true,
+					};
+				}
+				const session = getSession(sessionKey);
+				if (!session) {
+					return {
+						state: { ...card.state, historyPreview: ["Session not found"] },
+						callbackText: "Session not found",
+						rerender: true,
+					};
+				}
+				const preview = [
+					`Session ID: ${session.sessionId.slice(0, 8)}...`,
+					`Last active: ${formatAge(session.updatedAt)}`,
+					`System prompt sent: ${session.systemSent ? "yes" : "no"}`,
+				];
 				return {
-					state: {
-						...card.state,
-						historyPreview: ["(History loading not yet implemented)"],
-					},
+					state: { ...card.state, historyPreview: preview },
 					callbackText: "History loaded",
 					rerender: true,
 				};
+			}
 
-			case "refresh":
-				// TODO: re-fetch session metadata
+			case "refresh": {
+				const sessionKey = card.state.sessionKey;
+				if (!sessionKey) {
+					return { callbackText: "No session key", rerender: true };
+				}
+				const session = getSession(sessionKey);
+				const summary = session
+					? `Active session (last used ${formatAge(session.updatedAt)})`
+					: "No active session";
 				return {
+					state: { ...card.state, summary },
 					callbackText: "Refreshed",
 					rerender: true,
 				};
+			}
 		}
 	},
 };

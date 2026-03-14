@@ -101,12 +101,16 @@ export const approvalRenderer: CardRenderer<K> = {
 				};
 			}
 
-			case "explain":
-				// TODO: generate explanation for the approval request
+			case "explain": {
+				await context.ctx.api.sendMessage(card.chatId, card.state.body, {
+					message_thread_id: card.threadId,
+				});
 				return {
-					state: { ...card.state, explanation: "This action requires elevated permissions." },
-					callbackText: "Explanation shown",
+					state: { ...card.state, explanation: card.state.body },
+					callbackText: "Explanation sent",
+					rerender: true,
 				};
+			}
 
 			case "refresh":
 				return { rerender: true };

@@ -50,18 +50,7 @@ export const heartbeatRenderer: CardRenderer<K> = {
 			text += `\n\n_Last run: ${esc(formatAge(s.lastRunAt))}_`;
 		}
 
-		const kb = keyboard();
-
-		// Per-service run buttons (compact, 2 per row)
-		for (let i = 0; i < s.services.length; i++) {
-			const svc = s.services[i];
-			kb.text(`\u25B6 ${svc.label}`, btn(card, "run-service"));
-			if (i % 2 === 1 || i === s.services.length - 1) {
-				kb.row();
-			}
-		}
-
-		kb.text("\uD83D\uDE80 Run All", btn(card, "run-all"))
+		const kb = keyboard()
 			.text("\uD83D\uDCDC View Log", btn(card, "view-log"))
 			.row()
 			.text("\uD83D\uDD04 Refresh", btn(card, "refresh"));
@@ -73,8 +62,6 @@ export const heartbeatRenderer: CardRenderer<K> = {
 		const s = { ...card.state };
 		switch (action.type) {
 			case "run-service":
-				// In a full implementation, selectedServiceId would be passed via action payload.
-				// With the current flat action types, select the first service as default.
 				return { ...s, selectedServiceId: s.services[0]?.id };
 			case "run-all":
 				return { ...s, selectedServiceId: undefined };
@@ -89,37 +76,27 @@ export const heartbeatRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "run-service": {
-				const serviceId = card.state.selectedServiceId ?? card.state.services[0]?.id;
-				if (!serviceId) {
-					return { callbackText: "No service selected", callbackAlert: true };
-				}
-				// TODO: trigger heartbeat for specific service via relay
+			case "run-service":
 				return {
-					state: { ...card.state, lastRunAt: Date.now() },
-					callbackText: `Heartbeat triggered for ${serviceId}`,
-					rerender: true,
+					callbackText: "Use /social run <service> to trigger a heartbeat",
+					callbackAlert: true,
 				};
-			}
 
 			case "run-all":
-				// TODO: trigger heartbeat for all services via relay
 				return {
-					state: { ...card.state, lastRunAt: Date.now(), selectedServiceId: undefined },
-					callbackText: "All heartbeats triggered",
-					rerender: true,
+					callbackText: "Use /social run to trigger all heartbeats",
+					callbackAlert: true,
 				};
 
 			case "view-log":
-				// TODO: fetch recent heartbeat log and display
 				return {
-					callbackText: "Use /public-log for heartbeat history",
+					callbackText: "Use /social log to view heartbeat history",
 					callbackAlert: true,
 				};
 
 			case "refresh":
-				// TODO: re-fetch service statuses
 				return {
+					state: { ...card.state, lastRunAt: card.state.lastRunAt },
 					callbackText: "Refreshed",
 					rerender: true,
 				};
