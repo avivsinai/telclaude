@@ -48,12 +48,11 @@ export const socialMenuRenderer: CardRenderer<K> = {
 		const kb = keyboard();
 		if (s.adminControlsEnabled) {
 			kb.text("📥 Queue", btn(card, "queue"))
-				.text("🚀 Promote", btn(card, "promote"))
-				.row()
 				.text("💓 Run Now", btn(card, "run"))
-				.text("📜 View Log", btn(card, "log"))
 				.row()
-				.text("💬 Ask", btn(card, "ask"));
+				.text("📜 View Log", btn(card, "log"))
+				.text("💬 Ask", btn(card, "ask"))
+				.row();
 		}
 		kb.text("↻ Refresh", btn(card, "refresh"));
 
@@ -68,8 +67,7 @@ export const socialMenuRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		switch (action.type) {
-			case "queue":
-			case "promote": {
+			case "queue": {
 				if (!card.state.adminControlsEnabled) {
 					return {
 						callbackText: "Only admin can manage social actions.",
@@ -85,10 +83,7 @@ export const socialMenuRenderer: CardRenderer<K> = {
 					};
 				}
 				return {
-					callbackText:
-						action.type === "promote"
-							? "Open the queue to promote a post"
-							: "Opening pending queue",
+					callbackText: "Opening pending queue",
 					rerender: false,
 					afterCommit: async () => {
 						await openSocialQueueCard(context.ctx.api, {
