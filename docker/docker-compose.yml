@@ -176,6 +176,7 @@ services:
       - relay-google-net
       - relay-egress
       - social-relay-net
+      - israel-services-net
 
     restart: unless-stopped
 
@@ -791,3 +792,7 @@ networks:
   vault-egress:
     name: telclaude-vault-egress
     driver: bridge
+
+  israel-services-net:
+    name: israel-services_default
+    external: true
