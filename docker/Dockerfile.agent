@@ -27,9 +27,13 @@ RUN npm install -g agent-browser@latest
 
 # Install gifgrep for GIF search (Tenor/Giphy).
 # https://github.com/steipete/gifgrep
-RUN apt-get update && apt-get install -y --no-install-recommends golang-go \
-    && GOBIN=/usr/local/bin go install github.com/steipete/gifgrep/cmd/gifgrep@latest \
-    && apt-get purge -y golang-go && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /root/go
+# Bookworm ships Go 1.19 but gifgrep needs 1.21+ (toolchain directive).
+# Download official Go, build, then remove to keep image lean.
+ARG GO_VERSION=1.23.6
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz \
+    && GOBIN=/usr/local/bin /usr/local/go/bin/go install github.com/steipete/gifgrep/cmd/gifgrep@latest \
+    && rm -rf /usr/local/go /root/go
 
 # Return to non-root user
 USER node
