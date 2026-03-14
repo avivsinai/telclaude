@@ -48,7 +48,7 @@ function renderOverviewView(card: CardInstance<K>, s: StatusCardState): CardRend
 		.text("\uD83D\uDD04 Refresh", btn(card, "refresh"))
 		.row()
 		.text("\uD83E\uDE7A Health Check", btn(card, "run-health-check"))
-		.text("\uD83D\uDD04 Reset Session", btn(card, "reset-session"));
+		.text("\uD83D\uDD04 Reset", btn(card, "reset-session"));
 
 	return { text, parseMode: "MarkdownV2", keyboard: kb };
 }
