@@ -1,9 +1,11 @@
 import { getEntries, promoteEntryTrust } from "../../../memory/store.js";
+import { parseSocialQuoteProposalMetadata } from "../../../social/proposal-metadata.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
 	CardInstance,
 	CardKind,
+	CardListEntry,
 	CardRenderer,
 	CardRenderResult,
 	PendingQueueCardAction,
@@ -22,6 +24,52 @@ function pageSlice(entries: { id: string; label: string; summary?: string }[], p
 
 function totalPages(total: number): number {
 	return Math.max(1, Math.ceil(total / PAGE_SIZE));
+}
+
+/** Clamp page index to valid range after entries change. */
+function clampPage(page: number, total: number): number {
+	const maxPage = Math.max(0, totalPages(total) - 1);
+	return Math.min(page, maxPage);
+}
+
+/**
+ * Load pending queue entries from memory store.
+ * Shared between the initial `/social queue` command and the card's refresh action.
+ */
+export function loadPendingQueueEntries(chatId?: string): CardListEntry[] {
+	const telegramPending = getEntries({
+		categories: ["posts"],
+		trust: ["quarantined"],
+		sources: ["telegram"],
+		...(chatId ? { chatId } : {}),
+		limit: 20,
+		order: "desc",
+	});
+	const socialPending = getEntries({
+		categories: ["posts"],
+		trust: ["untrusted"],
+		sources: ["social"],
+		limit: 20,
+		order: "desc",
+	});
+	const merged = [...telegramPending, ...socialPending]
+		.sort((a, b) => b._provenance.createdAt - a._provenance.createdAt)
+		.slice(0, 20);
+
+	return merged.map((entry) => {
+		const age = Math.round((Date.now() - entry._provenance.createdAt) / 60000);
+		const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
+		const preview = entry.content.length > 60 ? `${entry.content.slice(0, 60)}...` : entry.content;
+		const quoteMetadata = parseSocialQuoteProposalMetadata(entry.metadata);
+		const summary = quoteMetadata
+			? `quote${quoteMetadata.targetAuthor ? ` ${quoteMetadata.targetAuthor}` : ""}${
+					quoteMetadata.targetExcerpt
+						? `: "${quoteMetadata.targetExcerpt.slice(0, 40)}${quoteMetadata.targetExcerpt.length > 40 ? "..." : ""}"`
+						: ""
+				}`
+			: undefined;
+		return { id: entry.id, label: `"${preview}" — ${ageStr}`, summary };
+	});
 }
 
 export const pendingQueueRenderer: CardRenderer<K> = {
@@ -105,27 +153,30 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 	},
 
 	async execute(context: CardExecutionContext<K>): Promise<CardExecutionResult<K>> {
-		const { action, card } = context;
+		const { action, card, ctx } = context;
 		const s = card.state;
 		const currentPage = s.page ?? 0;
 		const visible = pageSlice(s.entries, currentPage);
 		const targetId = s.selectedEntryId ?? visible[0]?.id;
+		const promotedBy = `telegram:${card.chatId}:${ctx.from.id}`;
 
 		switch (action.type) {
 			case "promote": {
 				if (!targetId) {
 					return { callbackText: "No entry to promote", callbackAlert: true };
 				}
-				const result = promoteEntryTrust(targetId, "card");
+				const result = promoteEntryTrust(targetId, promotedBy);
 				if (!result.ok) {
 					return { callbackText: result.reason, callbackAlert: true };
 				}
 				const remaining = s.entries.filter((e) => e.id !== targetId);
+				const newTotal = (s.total ?? s.entries.length) - 1;
 				return {
 					state: {
 						...s,
 						entries: remaining,
-						total: (s.total ?? s.entries.length) - 1,
+						total: newTotal,
+						page: clampPage(currentPage, newTotal),
 						selectedEntryId: undefined,
 					},
 					callbackText: "Promoted",
@@ -139,11 +190,13 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 				}
 				// Dismiss is UI-only — just remove from the displayed list
 				const remaining = s.entries.filter((e) => e.id !== targetId);
+				const newTotal = (s.total ?? s.entries.length) - 1;
 				return {
 					state: {
 						...s,
 						entries: remaining,
-						total: (s.total ?? s.entries.length) - 1,
+						total: newTotal,
+						page: clampPage(currentPage, newTotal),
 						selectedEntryId: undefined,
 					},
 					callbackText: "Dismissed",
@@ -174,12 +227,7 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 				};
 
 			case "refresh": {
-				const quarantined = getEntries({ trust: ["quarantined"] });
-				const refreshedEntries = quarantined.map((e) => ({
-					id: e.id,
-					label: e.content.slice(0, 60),
-					summary: e._provenance.chatId ? `from chat ${e._provenance.chatId}` : undefined,
-				}));
+				const refreshedEntries = loadPendingQueueEntries(String(card.chatId));
 				return {
 					state: {
 						...s,
