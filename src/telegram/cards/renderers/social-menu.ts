@@ -1,4 +1,5 @@
 import {
+	hasActiveSocialAskWizard,
 	openSocialQueueCard,
 	runSocialHeartbeatCommand,
 	sendSocialActivityLogCommand,
@@ -161,6 +162,19 @@ export const socialMenuRenderer: CardRenderer<K> = {
 				if (card.state.services.length === 0) {
 					return {
 						callbackText: "No social services are enabled.",
+						callbackAlert: true,
+						rerender: false,
+					};
+				}
+				if (
+					hasActiveSocialAskWizard({
+						actorId: context.ctx.from.id,
+						chatId: card.chatId,
+						threadId: card.threadId,
+					})
+				) {
+					return {
+						callbackText: "Already waiting for your question.",
 						callbackAlert: true,
 						rerender: false,
 					};
