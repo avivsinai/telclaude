@@ -49,6 +49,7 @@ export type StatusCardState = {
 	details?: string[];
 	lastRefreshedAt?: number;
 	view?: StatusCardView;
+	sessionKey?: string;
 };
 
 export type AuthCardState = {
@@ -63,7 +64,6 @@ export type HeartbeatCardState = {
 	kind: CardKind.Heartbeat;
 	title: string;
 	services: CardListEntry[];
-	selectedServiceId?: string;
 	lastRunAt?: number;
 };
 
@@ -144,11 +144,7 @@ export type AuthCardAction =
 	| { type: "logout" }
 	| { type: "disable" };
 
-export type HeartbeatCardAction =
-	| { type: "run-service" }
-	| { type: "run-all" }
-	| { type: "view-log" }
-	| { type: "refresh" };
+export type HeartbeatCardAction = { type: "view-log" } | { type: "refresh" };
 
 export type SkillDraftCardAction = { type: "promote" } | { type: "reject" } | { type: "refresh" };
 
@@ -193,7 +189,7 @@ const CARD_ACTIONS_BY_KIND = {
 		"view-overview",
 	],
 	[CardKind.Auth]: ["setup-2fa", "verify", "skip", "logout", "disable"],
-	[CardKind.Heartbeat]: ["run-service", "run-all", "view-log", "refresh"],
+	[CardKind.Heartbeat]: ["view-log", "refresh"],
 	[CardKind.SkillDraft]: ["promote", "reject", "refresh"],
 	[CardKind.SkillsMenu]: ["open-drafts", "reload", "refresh"],
 	[CardKind.SocialMenu]: ["queue", "run", "log", "ask", "refresh"],

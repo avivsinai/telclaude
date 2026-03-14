@@ -227,6 +227,30 @@ export function updateCard<K extends CardKind>(params: {
 	return getCard<K>(params.cardId);
 }
 
+export function getActiveCardsByEntity(params: {
+	kind: CardKind;
+	chatId: number;
+	entityRef: string;
+	excludeCardId?: string;
+}): CardInstance[] {
+	const db = getDb();
+	const query = params.excludeCardId
+		? db.prepare(
+				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active' AND card_id <> ?",
+			)
+		: db.prepare(
+				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active'",
+			);
+
+	const rows = (
+		params.excludeCardId
+			? query.all(params.kind, params.chatId, params.entityRef, params.excludeCardId)
+			: query.all(params.kind, params.chatId, params.entityRef)
+	) as (CardInstanceRow & { kind: CardKind })[];
+
+	return rows.map(rowToCard);
+}
+
 export function supersedeActiveCards(params: {
 	kind: CardKind;
 	chatId: number;
@@ -265,6 +289,14 @@ export function supersedeActiveCards(params: {
 	}
 
 	return result.changes;
+}
+
+export function getExpiredActiveCards(now = Date.now()): CardInstance[] {
+	const db = getDb();
+	const rows = db
+		.prepare("SELECT * FROM card_instances WHERE status = 'active' AND expires_at <= ?")
+		.all(now) as (CardInstanceRow & { kind: CardKind })[];
+	return rows.map(rowToCard);
 }
 
 export function expireStaleCards(now = Date.now()): number {

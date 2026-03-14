@@ -11,6 +11,7 @@ export {
 } from "./callback-tokens.js";
 // Card creation helpers
 export {
+	rerenderTerminalCard,
 	sendApprovalCard,
 	sendAuthCard,
 	sendHeartbeatCard,
@@ -22,7 +23,7 @@ export {
 	sendStatusCard,
 } from "./create-helpers.js";
 // Card initialization
-export { initCardSystem, stopCardSystem } from "./init.js";
+export { initCardSystem, startCardSweep, stopCardSystem } from "./init.js";
 // Card lifecycle
 export {
 	createActiveCard,

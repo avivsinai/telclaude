@@ -2,6 +2,8 @@ import {
 	type CreateCardInput,
 	createCard,
 	expireStaleCards,
+	getActiveCardsByEntity,
+	getExpiredActiveCards,
 	supersedeActiveCards,
 	updateCard,
 } from "./store.js";
@@ -17,17 +19,23 @@ export function createActiveCard<K extends CardKind>(input: CreateCardInput<K>):
 export function createOrSupersedeCard<K extends CardKind>(
 	input: CreateCardInput<K>,
 	options?: { supersedeExisting?: boolean },
-): { card: CardInstance<K>; supersededCount: number } {
-	const supersededCount =
-		options?.supersedeExisting === false
-			? 0
-			: supersedeActiveCards({
-					kind: input.kind,
-					chatId: input.chatId,
-					entityRef: input.entityRef,
-				});
+): { card: CardInstance<K>; supersededCount: number; supersededCards: CardInstance[] } {
+	let supersededCards: CardInstance[] = [];
+	if (options?.supersedeExisting !== false) {
+		// Collect cards that will be superseded BEFORE marking them
+		supersededCards = getActiveCardsByEntity({
+			kind: input.kind,
+			chatId: input.chatId,
+			entityRef: input.entityRef,
+		});
+		supersedeActiveCards({
+			kind: input.kind,
+			chatId: input.chatId,
+			entityRef: input.entityRef,
+		});
+	}
 	const card = createActiveCard(input);
-	return { card, supersededCount };
+	return { card, supersededCount: supersededCards.length, supersededCards };
 }
 
 export function markCardConsumed<K extends CardKind>(
@@ -72,8 +80,10 @@ export function supersedeCardsForEntity(params: {
 	return supersedeActiveCards(params);
 }
 
-export function sweepExpiredCards(now = Date.now()): number {
-	return expireStaleCards(now);
+export function sweepExpiredCards(now = Date.now()): { count: number; cards: CardInstance[] } {
+	const cards = getExpiredActiveCards(now);
+	const count = expireStaleCards(now);
+	return { count, cards };
 }
 
 export function isCardTerminal(card: CardInstance): boolean {

@@ -69,6 +69,7 @@ import {
 	runSocialHeartbeatCommand,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
+	startSocialAskWizard,
 } from "./control-command-actions.js";
 import {
 	formatTelegramCommandCatalog,
@@ -384,8 +385,8 @@ async function sendSystemStatusCard(
 			details: cardDetails,
 			actorScope: `user:${msg.senderId ?? msg.chatId}`,
 			threadId: msg.messageThreadId,
-			entityRef: "system-status",
 			view,
+			sessionKey: msg.from,
 		});
 	} catch (err) {
 		logger.warn({ error: String(err), chatId: msg.chatId }, "status command failed");
@@ -574,12 +575,26 @@ async function dispatchTelegramControlCommand(
 			return true;
 		}
 		case "social:log": {
-			const hoursArg = match.args[1] ? Number.parseInt(match.args[1], 10) : 4;
+			// Support: /social log, /social log 12, /social log xtwitter, /social log xtwitter 12
+			const firstArg = match.args[0]?.trim();
+			const secondArg = match.args[1]?.trim();
+			let serviceId: string | undefined;
+			let hours = 4;
+			if (firstArg && /^\d+$/.test(firstArg)) {
+				// First arg is numeric — treat as hours, no serviceId filter
+				hours = Math.max(1, Math.min(Number.parseInt(firstArg, 10), 168));
+			} else if (firstArg) {
+				serviceId = firstArg;
+				if (secondArg) {
+					const parsed = Number.parseInt(secondArg, 10);
+					if (!Number.isNaN(parsed)) hours = Math.max(1, Math.min(parsed, 168));
+				}
+			}
 			await sendSocialActivityLogCommand(bot.api, {
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
-				serviceId: match.args[0]?.trim() || undefined,
-				hours: Number.isNaN(hoursArg) ? 4 : hoursArg,
+				serviceId,
+				hours,
 			});
 			return true;
 		}
@@ -590,7 +605,13 @@ async function dispatchTelegramControlCommand(
 			}
 			const payload = match.rawArgs.trim();
 			if (!payload) {
-				await msg.reply("Usage: `/social ask [serviceId] <question>`");
+				// No args — start interactive wizard (matches card "Ask" button behavior)
+				startSocialAskWizard(bot.api, {
+					actorId: msg.senderId ?? msg.chatId,
+					chatId: msg.chatId,
+					threadId: msg.messageThreadId,
+					cfg,
+				});
 				return true;
 			}
 			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
@@ -1319,7 +1340,7 @@ export async function monitorTelegramProvider(
 		}, OPENAI_RECHECK_INTERVAL_MS);
 	}
 
-	// Initialize the card system (registers renderers, starts expiry sweep)
+	// Register card renderers early (sweep starts later with bot API)
 	const { initCardSystem } = await import("./cards/init.js");
 	initCardSystem();
 
@@ -1405,6 +1426,10 @@ export async function monitorTelegramProvider(
 			console.log(`Connected as @${botInfo.username}`);
 
 			logger.info({ botId: botInfo.id, username: botInfo.username }, "connected to Telegram");
+
+			// Start card expiry sweep with bot API (re-renders expired cards to remove stale buttons)
+			const { startCardSweep } = await import("./cards/init.js");
+			startCardSweep(bot.api);
 
 			const nudgeConfig = cfg.telegram?.nudges;
 			if (nudgeConfig?.enabled) {

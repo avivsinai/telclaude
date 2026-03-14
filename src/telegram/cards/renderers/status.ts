@@ -220,7 +220,10 @@ export const statusRenderer: CardRenderer<K> = {
 			}
 
 			case "reset-session": {
-				const sessionKey = card.entityRef ?? String(card.chatId);
+				const sessionKey = card.state.sessionKey;
+				if (!sessionKey) {
+					return { callbackText: "No session to reset", callbackAlert: true };
+				}
 				deleteSession(sessionKey);
 				getSessionManager().clearSession(sessionKey);
 				return {

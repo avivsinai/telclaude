@@ -68,7 +68,8 @@ export const approvalRenderer: CardRenderer<K> = {
 
 		switch (action.type) {
 			case "approve": {
-				const nonce = card.entityRef;
+				// entityRef is stored as "approval:<nonce>" — strip the prefix for the DB lookup
+				const nonce = card.entityRef.replace(/^approval:/, "");
 				const result = consumeApproval(nonce, card.chatId);
 				if (!result.success) {
 					logger.warn({ nonce, error: result.error }, "approval card: consumeApproval failed");
@@ -85,7 +86,8 @@ export const approvalRenderer: CardRenderer<K> = {
 			}
 
 			case "deny": {
-				const nonce = card.entityRef;
+				// entityRef is stored as "approval:<nonce>" — strip the prefix for the DB lookup
+				const nonce = card.entityRef.replace(/^approval:/, "");
 				const result = denyApproval(nonce, card.chatId);
 				if (!result.success) {
 					logger.warn({ nonce, error: result.error }, "approval card: denyApproval failed");
