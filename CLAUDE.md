@@ -75,7 +75,7 @@
 - `src/auto-reply/` — auto-reply templating.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting.
+- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
 - `docs/providers.md` — provider integration guide (sidecar pattern, adding new providers).

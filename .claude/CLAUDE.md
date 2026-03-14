@@ -29,6 +29,9 @@ In Docker: relative to `/app/`. In native: relative to the project root.
 - **summarize**: Extracts and summarizes web content from URLs (articles, YouTube, podcasts)
 - **external-provider**: Queries external sidecar APIs via relay-proxied CLI
 - **social-posting**: Crafts and publishes social media posts
+- **weather**: Fetches weather forecasts via wttr.in (no API key needed)
+- **video-frames**: Extracts frames from videos via ffmpeg for visual analysis
+- **gifgrep**: Searches and downloads GIFs from Tenor/Giphy
 
 ## Tool Access by Tier
 | Tier | Available Tools |

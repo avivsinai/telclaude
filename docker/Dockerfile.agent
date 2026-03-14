@@ -25,5 +25,11 @@ RUN npx playwright install --with-deps chromium \
 # Package: https://github.com/vercel-labs/agent-browser
 RUN npm install -g agent-browser@latest
 
+# Install gifgrep for GIF search (Tenor/Giphy).
+# https://github.com/steipete/gifgrep
+RUN apt-get update && apt-get install -y --no-install-recommends golang-go \
+    && GOBIN=/usr/local/bin go install github.com/steipete/gifgrep/cmd/gifgrep@latest \
+    && apt-get purge -y golang-go && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* /root/go
+
 # Return to non-root user
 USER node
