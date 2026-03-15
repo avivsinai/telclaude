@@ -22,6 +22,9 @@ const TRANSIENT_NETWORK_CODES = new Set([
 	"UND_ERR_BODY_TIMEOUT",
 ]);
 
+/** HTTP status codes that are usually safe to retry. */
+const TRANSIENT_HTTP_STATUS_CODES = new Set([502, 503, 504]);
+
 /** Error messages (substrings) that indicate a transient network issue. */
 const TRANSIENT_MESSAGE_PATTERNS = [
 	"fetch failed",
@@ -107,12 +110,23 @@ export function isTransientNetworkError(err: unknown): boolean {
 			if (obj.name === "TimeoutError") {
 				return true;
 			}
+
+			const status = extractHttpStatusCode(obj);
+			if (status !== null && TRANSIENT_HTTP_STATUS_CODES.has(status)) {
+				return true;
+			}
 		}
 
 		// Check error message
 		const message = extractMessage(candidate);
-		if (message && matchesTransientPattern(message)) {
-			return true;
+		if (message) {
+			const status = extractHttpStatusCodeFromMessage(message);
+			if (status !== null && TRANSIENT_HTTP_STATUS_CODES.has(status)) {
+				return true;
+			}
+			if (matchesTransientPattern(message)) {
+				return true;
+			}
 		}
 	}
 
@@ -198,6 +212,29 @@ function extractMessage(val: unknown): string | null {
 function matchesTransientPattern(message: string): boolean {
 	const lower = message.toLowerCase();
 	return TRANSIENT_MESSAGE_PATTERNS.some((pattern) => lower.includes(pattern.toLowerCase()));
+}
+
+function extractHttpStatusCode(obj: Record<string, unknown>): number | null {
+	for (const key of ["statusCode", "status"] as const) {
+		const value = obj[key];
+		if (typeof value === "number" && Number.isInteger(value)) {
+			return value;
+		}
+		if (typeof value === "string" && /^\d{3}$/.test(value)) {
+			return Number.parseInt(value, 10);
+		}
+	}
+
+	return null;
+}
+
+function extractHttpStatusCodeFromMessage(message: string): number | null {
+	const match = message.match(/(?:\bstatus(?:\s*code)?\s*[:=]\s*|\()(\d{3})(?:\)|\b)/i);
+	if (!match) {
+		return null;
+	}
+
+	return Number.parseInt(match[1] ?? "", 10);
 }
 
 function redactUrls(str: string): string {

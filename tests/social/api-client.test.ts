@@ -88,7 +88,11 @@ describe("moltbook api client", () => {
 	it("fetchNotifications throws on server error", async () => {
 		const fetchImpl = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
 		const client = new MoltbookClient({ apiKey: "test-key", baseUrl, fetchImpl });
-		await expect(client.fetchNotifications()).rejects.toThrow("Moltbook notifications failed");
+		await expect(client.fetchNotifications()).rejects.toMatchObject({
+			message: expect.stringContaining("Moltbook notifications failed (500): boom"),
+			status: 500,
+			statusCode: 500,
+		});
 	});
 
 	it("postReply succeeds on 200", async () => {

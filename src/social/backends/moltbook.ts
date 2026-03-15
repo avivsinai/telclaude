@@ -9,7 +9,7 @@ import type {
 	SocialReplyResult,
 	SocialUserLookupResult,
 } from "../types.js";
-import { type ApiResult, socialApiRequest } from "./shared.js";
+import { type ApiResult, createHttpStatusError, socialApiRequest } from "./shared.js";
 
 const logger = getChildLogger({ module: "moltbook-backend" });
 
@@ -143,7 +143,10 @@ export class MoltbookClient implements SocialServiceClient {
 				logger.warn("moltbook notifications rate limited; skipping this heartbeat");
 				return [];
 			}
-			throw new Error(`Moltbook notifications failed (${result.status}): ${result.error}`);
+			throw createHttpStatusError(
+				`Moltbook notifications failed (${result.status}): ${result.error}`,
+				result.status,
+			);
 		}
 
 		const payload = result.data;
