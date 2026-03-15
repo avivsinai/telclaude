@@ -14,6 +14,18 @@ export type ApiResult<T> =
 	| { ok: true; status: number; data: T }
 	| { ok: false; status: number; error: string };
 
+export type HttpStatusError = Error & {
+	status: number;
+	statusCode: number;
+};
+
+export function createHttpStatusError(message: string, status: number): HttpStatusError {
+	const error = new Error(message) as HttpStatusError;
+	error.status = status;
+	error.statusCode = status;
+	return error;
+}
+
 /**
  * Generic social API request handler.
  * Parses JSON, handles errors, returns typed result.

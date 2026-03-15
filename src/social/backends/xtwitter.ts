@@ -9,7 +9,7 @@ import type {
 	SocialTimelinePost,
 	SocialUserLookupResult,
 } from "../types.js";
-import { type ApiResult, socialApiRequest } from "./shared.js";
+import { type ApiResult, createHttpStatusError, socialApiRequest } from "./shared.js";
 
 const logger = getChildLogger({ module: "xtwitter-backend" });
 
@@ -252,7 +252,10 @@ export class XTwitterClient implements SocialServiceClient {
 				);
 				return [];
 			}
-			throw new Error(`X mentions failed (${result.status}): ${result.error}`);
+			throw createHttpStatusError(
+				`X mentions failed (${result.status}): ${result.error}`,
+				result.status,
+			);
 		}
 
 		const mentions = result.data?.data;
@@ -350,7 +353,10 @@ export class XTwitterClient implements SocialServiceClient {
 				logger.info({ status: result.status, tweetId }, "X tweet lookup unavailable; skipping");
 				return null;
 			}
-			throw new Error(`X tweet lookup failed (${result.status}): ${result.error}`);
+			throw createHttpStatusError(
+				`X tweet lookup failed (${result.status}): ${result.error}`,
+				result.status,
+			);
 		}
 
 		const tweet = result.data?.data;
@@ -578,7 +584,10 @@ export class XTwitterClient implements SocialServiceClient {
 				logger.info({ status: result.status }, "X timeline not available; returning empty");
 				return [];
 			}
-			throw new Error(`X timeline failed (${result.status}): ${result.error}`);
+			throw createHttpStatusError(
+				`X timeline failed (${result.status}): ${result.error}`,
+				result.status,
+			);
 		}
 
 		const tweets = result.data?.data;

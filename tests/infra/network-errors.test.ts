@@ -48,6 +48,18 @@ describe("infra/network-errors", () => {
 		expect(isTransientNetworkError(new Error("validation failed"))).toBe(false);
 	});
 
+	it("detects transient HTTP status codes structurally or from legacy messages", () => {
+		expect(isTransientNetworkError({ statusCode: 502 })).toBe(true);
+		expect(isTransientNetworkError({ cause: { status: 503 } })).toBe(true);
+		expect(
+			isTransientNetworkError(new Error("X mentions failed (504): Bad gateway: upstream failed")),
+		).toBe(true);
+		expect(isTransientNetworkError({ statusCode: 500 })).toBe(false);
+		expect(isTransientNetworkError(new Error("X mentions failed (501): not implemented"))).toBe(
+			false,
+		);
+	});
+
 	it("detects abort errors by name, code, or message", () => {
 		expect(isAbortError({ name: "AbortError" })).toBe(true);
 		expect(isAbortError({ code: "ABORT_ERR" })).toBe(true);
