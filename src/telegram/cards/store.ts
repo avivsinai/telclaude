@@ -236,10 +236,10 @@ export function getActiveCardsByEntity(params: {
 	const db = getDb();
 	const query = params.excludeCardId
 		? db.prepare(
-				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active' AND card_id <> ?",
+				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active' AND card_id <> ? ORDER BY updated_at DESC",
 			)
 		: db.prepare(
-				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active'",
+				"SELECT * FROM card_instances WHERE kind = ? AND chat_id = ? AND entity_ref = ? AND status = 'active' ORDER BY updated_at DESC",
 			);
 
 	const rows = (
@@ -289,6 +289,19 @@ export function supersedeActiveCards(params: {
 	}
 
 	return result.changes;
+}
+
+/**
+ * Update only the messageId without bumping revision.
+ * Used after sending the Telegram message — this is bookkeeping,
+ * not a state change, so it must not invalidate button callback tokens.
+ */
+export function patchMessageId(cardId: string, messageId: number): boolean {
+	const db = getDb();
+	const result = db
+		.prepare("UPDATE card_instances SET message_id = ?, updated_at = ? WHERE card_id = ?")
+		.run(messageId, Date.now(), cardId);
+	return result.changes > 0;
 }
 
 export function getExpiredActiveCards(now = Date.now()): CardInstance[] {

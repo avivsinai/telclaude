@@ -47,6 +47,7 @@ export {
 	expireStaleCards,
 	getCard,
 	getCardByShortId,
+	patchMessageId,
 	supersedeActiveCards,
 	type UpdateCardPatch,
 	updateCard,
