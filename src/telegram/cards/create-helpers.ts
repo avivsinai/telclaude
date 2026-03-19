@@ -16,7 +16,13 @@ import { getChildLogger } from "../../logging.js";
 import { createOrSupersedeCard } from "./lifecycle.js";
 import { buildSkillsMenuState, buildSocialMenuState } from "./menu-state.js";
 import { cardRegistry } from "./registry.js";
-import { getCard, updateCard } from "./store.js";
+import {
+	getActiveCardsByEntity,
+	getCard,
+	patchMessageId,
+	supersedeActiveCards,
+	updateCard,
+} from "./store.js";
 import type {
 	ApprovalCardState,
 	AuthCardState,
@@ -71,7 +77,16 @@ type BaseCardOptions = {
 };
 
 /**
- * Internal: create a card, send the rendered message, update with messageId.
+ * Internal: create or update a card, then send/edit the Telegram message.
+ *
+ * Upsert behaviour: if an active card with the same kind/chatId/entityRef
+ * already exists and has a valid Telegram messageId, we update its state
+ * in-place and edit the existing message.  This avoids superseding the old
+ * card (which would orphan its buttons and cause "Card outdated" on click).
+ *
+ * For new cards we use patchMessageId (no revision bump) to record the
+ * Telegram messageId — this is bookkeeping, not a state change, so it must
+ * not invalidate the callback tokens baked into the just-sent buttons.
  */
 async function createAndSendCard<K extends CardKind>(
 	api: Api,
@@ -83,7 +98,61 @@ async function createAndSendCard<K extends CardKind>(
 	const expiryMs = options.expiryMs ?? DEFAULT_EXPIRY_MS;
 	const entityRef = options.entityRef ?? kind;
 
-	// Create the card (supersedes any existing active card of same kind/entity)
+	// ── Upsert path: edit existing card in place ──────────────────────
+	// Only reuse a card that matches thread and actor scope — otherwise a
+	// different context created it and we must not silently hijack it.
+	const activeCards = getActiveCardsByEntity({ kind, chatId, entityRef });
+	const existing = activeCards.find(
+		(c) =>
+			c.messageId > 0 &&
+			c.actorScope === options.actorScope &&
+			(c.threadId ?? undefined) === options.threadId,
+	) as CardInstance<K> | undefined;
+
+	if (existing) {
+		const updated = updateCard<K>({
+			cardId: existing.cardId,
+			expectedRevision: existing.revision,
+			patch: {
+				state,
+				expiresAt: Date.now() + expiryMs,
+			},
+		});
+
+		if (updated) {
+			// Supersede any other active duplicates to restore single-live-card invariant
+			if (activeCards.length > 1) {
+				supersedeActiveCards({ kind, chatId, entityRef, excludeCardId: updated.cardId });
+				for (const dup of activeCards) {
+					if (dup.cardId !== updated.cardId && dup.messageId > 0) {
+						rerenderTerminalCard(api, dup).catch(() => {});
+					}
+				}
+			}
+
+			const renderer = cardRegistry.get(kind);
+			const render = renderer.render(updated);
+			try {
+				await api.editMessageText(chatId, updated.messageId, render.text, {
+					parse_mode: render.parseMode,
+					reply_markup: render.keyboard ?? undefined,
+				});
+				logger.debug(
+					{ cardId: updated.cardId, kind, chatId, messageId: updated.messageId },
+					"card updated in place",
+				);
+				return updated;
+			} catch (editErr) {
+				// Edit failed (message deleted, too old, etc.) — fall through to create new
+				logger.debug(
+					{ cardId: updated.cardId, error: String(editErr) },
+					"in-place edit failed, falling through to new card",
+				);
+			}
+		}
+	}
+
+	// ── Create path: new card + new Telegram message ─────────────────
 	const { card, supersededCards } = createOrSupersedeCard<K>({
 		kind,
 		chatId,
@@ -107,11 +176,10 @@ async function createAndSendCard<K extends CardKind>(
 		}
 	}
 
-	// Render
+	// Render and send
 	const renderer = cardRegistry.get(kind);
 	const render = renderer.render(card);
 
-	// Send Telegram message
 	try {
 		const msg = await api.sendMessage(chatId, render.text, {
 			parse_mode: render.parseMode,
@@ -119,24 +187,13 @@ async function createAndSendCard<K extends CardKind>(
 			message_thread_id: options.threadId,
 		});
 
-		// Update card with the real message ID
-		const updated = updateCard<K>({
-			cardId: card.cardId,
-			expectedRevision: card.revision,
-			patch: { messageId: msg.message_id },
-		});
+		// Record the real messageId WITHOUT bumping revision —
+		// buttons already carry revision=1 and must stay valid.
+		patchMessageId(card.cardId, msg.message_id);
 
-		if (updated) {
-			logger.debug(
-				{ cardId: card.cardId, kind, chatId, messageId: msg.message_id },
-				"card sent and updated with messageId",
-			);
-			return updated;
-		}
-
-		// Revision conflict (unlikely since we just created it)
-		logger.warn({ cardId: card.cardId }, "revision conflict updating card messageId");
-		return { ...card, messageId: msg.message_id };
+		const finalCard = { ...card, messageId: msg.message_id };
+		logger.debug({ cardId: card.cardId, kind, chatId, messageId: msg.message_id }, "card sent");
+		return finalCard;
 	} catch (err) {
 		logger.error(
 			{ cardId: card.cardId, kind, chatId, error: String(err) },
