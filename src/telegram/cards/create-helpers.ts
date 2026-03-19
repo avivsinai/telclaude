@@ -99,14 +99,18 @@ async function createAndSendCard<K extends CardKind>(
 	const entityRef = options.entityRef ?? kind;
 
 	// ── Upsert path: edit existing card in place ──────────────────────
-	// Only reuse a card that matches thread and actor scope — otherwise a
-	// different context created it and we must not silently hijack it.
+	// Only reuse a card that matches thread and actor scope, AND whose
+	// message was updated recently enough to still be visible in the chat.
+	// Editing a message that's scrolled far up is invisible to the user.
+	const UPSERT_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
 	const activeCards = getActiveCardsByEntity({ kind, chatId, entityRef });
+	const now = Date.now();
 	const existing = activeCards.find(
 		(c) =>
 			c.messageId > 0 &&
 			c.actorScope === options.actorScope &&
-			(c.threadId ?? undefined) === options.threadId,
+			(c.threadId ?? undefined) === options.threadId &&
+			now - c.updatedAt < UPSERT_MAX_AGE_MS,
 	) as CardInstance<K> | undefined;
 
 	if (existing) {
