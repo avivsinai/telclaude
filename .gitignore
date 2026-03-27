@@ -40,6 +40,18 @@ package-lock.json
 # Claude Code local settings
 .claude/settings.local.json
 
+# AI agent configuration (track skills)
+.claude/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/CLAUDE.md
+!.claude/settings.json
+!.claude/.gitignore
+.codex/
+.agents/**
+!.agents/skills/
+!.agents/skills/**
+
 # Temporary files
 *.tmp
 *.temp
