@@ -5,7 +5,8 @@
  * Uses newline-delimited JSON protocol.
  *
  * Security:
- * - Socket permissions set to 0600 (owner only)
+ * - Socket permissions default to 0600 (owner only)
+ * - Socket mode can be widened explicitly for controlled shared-volume consumers
  * - Never returns raw credentials in list operations
  * - Credentials only returned via get operations
  * - No network access (Unix socket only)
@@ -174,6 +175,7 @@ function parseSessionToken(token: string):
 
 export interface ServerOptions {
 	socketPath?: string;
+	socketMode?: number | string;
 	storeOptions?: VaultStoreOptions;
 }
 
@@ -192,6 +194,7 @@ export interface ServerHandle {
  */
 export async function startServer(options: ServerOptions = {}): Promise<ServerHandle> {
 	const socketPath = options.socketPath ?? getDefaultSocketPath();
+	const socketMode = resolveSocketMode(options.socketMode);
 
 	// Initialize store (validates encryption key)
 	getVaultStore(options.storeOptions);
@@ -218,20 +221,21 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 		});
 
 		server.listen(socketPath, () => {
-			// Set socket permissions to owner only (0600)
-			// SECURITY: This MUST succeed - other users could connect otherwise
+			// Apply the configured socket mode after the Unix socket is created.
 			try {
-				fs.chmodSync(socketPath, 0o600);
+				fs.chmodSync(socketPath, socketMode);
 				// Verify the permissions were actually set
 				const stats = fs.statSync(socketPath);
 				const mode = stats.mode & 0o777;
-				if (mode !== 0o600) {
-					throw new Error(`Socket permissions are ${mode.toString(8)}, expected 600`);
+				if (mode !== socketMode) {
+					throw new Error(
+						`Socket permissions are ${mode.toString(8)}, expected ${socketMode.toString(8)}`,
+					);
 				}
 			} catch (err) {
 				logger.error(
-					{ error: String(err), socketPath },
-					"CRITICAL: failed to secure socket permissions",
+					{ error: String(err), socketPath, socketMode: socketMode.toString(8) },
+					"CRITICAL: failed to apply socket permissions",
 				);
 				server.close();
 				reject(new Error(`Failed to set socket permissions: ${String(err)}`));
@@ -241,7 +245,7 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 			// Start OAuth token cleanup timer
 			startCleanupTimer();
 
-			logger.info({ socketPath }, "vault daemon listening");
+			logger.info({ socketPath, socketMode: socketMode.toString(8) }, "vault daemon listening");
 
 			resolve({
 				isRunning: () => server.listening,
@@ -250,6 +254,29 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 			});
 		});
 	});
+}
+
+function resolveSocketMode(rawMode?: number | string): number {
+	const source = rawMode ?? process.env.TELCLAUDE_VAULT_SOCKET_MODE ?? "0600";
+
+	if (typeof source === "number") {
+		if (Number.isInteger(source) && source >= 0 && source <= 0o777) {
+			return source;
+		}
+		throw new Error(`Invalid vault socket mode: ${source}`);
+	}
+
+	const normalized = source.trim();
+	if (!/^[0-7]{3,4}$/.test(normalized)) {
+		throw new Error(`Invalid vault socket mode: ${source}`);
+	}
+
+	const parsed = Number.parseInt(normalized, 8);
+	if (!Number.isInteger(parsed) || parsed < 0 || parsed > 0o777) {
+		throw new Error(`Invalid vault socket mode: ${source}`);
+	}
+
+	return parsed;
 }
 
 /**
