@@ -139,6 +139,33 @@ describe("anthropic proxy", () => {
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("returns the vault-backed oauth token from the dedicated token endpoint", async () => {
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: true,
+			type: "get-secret",
+			value: JSON.stringify({
+				accessToken: "vault-access-token",
+				refreshToken: "refresh-123",
+				expiresAt: Date.now() + 60 * 60 * 1000,
+				scopes: ["user:inference"],
+			}),
+		});
+
+		const result = await makeRequest(baseUrl, "/v1/token/anthropic", undefined, "GET", {
+			"x-proxy-token": "proxy-token",
+		});
+		expect(result.status).toBe(200);
+		expect(result.body).toBe("vault-access-token");
+	});
+
+	it("rejects invalid proxy token on the dedicated token endpoint", async () => {
+		const result = await makeRequest(baseUrl, "/v1/token/anthropic", undefined, "GET", {
+			"x-proxy-token": "wrong-token",
+		});
+		expect(result.status).toBe(401);
+	});
+
 	it("rejects non-anthropic proxy paths", async () => {
 		const fetchSpy = vi.fn();
 		vi.stubGlobal("fetch", fetchSpy);
@@ -217,6 +244,43 @@ describe("anthropic proxy", () => {
 		});
 
 		scheduler.stop();
+	});
+
+	it("refreshes near-expiry oauth tokens through the dedicated token endpoint", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-03-29T12:00:00Z"));
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: true,
+			type: "get-secret",
+			value: JSON.stringify({
+				accessToken: "stale-access",
+				refreshToken: "refresh-123",
+				expiresAt: Date.now() + 4 * 60 * 1000,
+				scopes: ["user:inference"],
+			}),
+		});
+		vaultClientMock.store.mockResolvedValue({ type: "store", ok: true });
+
+		const fetchSpy = vi.fn(async () => {
+			return new Response(
+				JSON.stringify({
+					access_token: "fresh-access",
+					refresh_token: "fresh-refresh",
+					expires_in: 3600,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const result = await makeRequest(baseUrl, "/v1/token/anthropic", undefined, "GET", {
+			"x-proxy-token": "proxy-token",
+		});
+		expect(result.status).toBe(200);
+		expect(result.body).toBe("fresh-access");
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(vaultClientMock.store).toHaveBeenCalledTimes(1);
 	});
 
 	it("skips proactive refresh when vault oauth is still fresh", async () => {

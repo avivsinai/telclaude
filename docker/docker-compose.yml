@@ -171,6 +171,7 @@ services:
 
     networks:
       - agent-relay-net
+      - runner-relay-net
       - relay-totp-net
       - relay-vault-net
       - relay-google-net
@@ -802,4 +803,10 @@ networks:
   # After deploy: docker network connect telclaude-relay-israel israel-services
   relay-israel-net:
     name: telclaude-relay-israel
+    driver: bridge
+
+  # Dedicated relay↔runner network. NOT internal — must be joinable
+  # by the external GitHub runner compose project.
+  runner-relay-net:
+    name: telclaude-runner-relay
     driver: bridge

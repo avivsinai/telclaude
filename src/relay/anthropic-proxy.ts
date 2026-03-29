@@ -14,6 +14,7 @@ import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 const logger = getChildLogger({ module: "anthropic-proxy" });
 
 const PROXY_PREFIX = "/v1/anthropic-proxy";
+const TOKEN_ENDPOINT_PATH = "/v1/token/anthropic";
 const ANTHROPIC_ORIGIN = "https://api.anthropic.com";
 const RATE_LIMIT_PER_MINUTE = Number(process.env.TELCLAUDE_ANTHROPIC_PROXY_RPM ?? 120);
 
@@ -114,7 +115,33 @@ async function readVaultOAuthCredentials(): Promise<OAuthCredentials | null> {
 async function refreshVaultOAuthCredentials(
 	creds: OAuthCredentials,
 ): Promise<OAuthCredentials | null> {
+	const refreshed = await refreshOAuthCredentialsViaPlatform(creds);
+	if (!refreshed) {
+		return null;
+	}
+
 	const client = getVaultClient();
+	try {
+		await client.store({
+			protocol: "secret",
+			target: "anthropic-oauth",
+			credential: { type: "opaque", value: JSON.stringify(refreshed) },
+			label: "Anthropic OAuth (auto-refreshed)",
+		});
+		logger.info(
+			{ expiresAt: new Date(refreshed.expiresAt).toISOString() },
+			"OAuth token refreshed and saved to vault",
+		);
+	} catch (storeErr) {
+		logger.warn({ error: String(storeErr) }, "failed to persist refreshed OAuth to vault");
+	}
+
+	return refreshed;
+}
+
+async function refreshOAuthCredentialsViaPlatform(
+	creds: OAuthCredentials,
+): Promise<OAuthCredentials | null> {
 	const refreshResp = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -138,29 +165,12 @@ async function refreshVaultOAuthCredentials(
 		expires_in: number;
 	};
 
-	const refreshed: OAuthCredentials = {
+	return {
 		accessToken: data.access_token,
 		refreshToken: data.refresh_token ?? creds.refreshToken,
 		expiresAt: Date.now() + data.expires_in * 1000,
 		scopes: creds.scopes,
 	};
-
-	try {
-		await client.store({
-			protocol: "secret",
-			target: "anthropic-oauth",
-			credential: { type: "opaque", value: JSON.stringify(refreshed) },
-			label: "Anthropic OAuth (auto-refreshed)",
-		});
-		logger.info(
-			{ expiresAt: new Date(refreshed.expiresAt).toISOString() },
-			"OAuth token refreshed and saved to vault",
-		);
-	} catch (storeErr) {
-		logger.warn({ error: String(storeErr) }, "failed to persist refreshed OAuth to vault");
-	}
-
-	return refreshed;
 }
 
 async function getVaultOAuthCredentials(options: {
@@ -220,6 +230,66 @@ async function getVaultOAuthCredentials(options: {
 	return refreshed;
 }
 
+async function getFileOAuthCredentials(): Promise<OAuthCredentials | null> {
+	const authDir = process.env.TELCLAUDE_AUTH_DIR;
+	const credentialsCandidates = [
+		process.env.CLAUDE_CODE_CREDENTIALS_PATH,
+		authDir ? path.join(authDir, ".credentials.json") : null,
+		authDir ? path.join(authDir, ".claude", ".credentials.json") : null,
+		path.join(process.env.HOME ?? os.homedir(), ".claude", ".credentials.json"),
+	].filter((candidate): candidate is string => Boolean(candidate));
+
+	for (const credentialsPath of credentialsCandidates) {
+		try {
+			const raw = fs.readFileSync(credentialsPath, "utf8");
+			const parsed = JSON.parse(raw) as Record<string, unknown>;
+			const creds = findOAuthCredentials(parsed);
+			if (!creds) continue;
+
+			const now = Date.now();
+			if (creds.expiresAt > now + TOKEN_REFRESH_MARGIN_MS) {
+				return creds;
+			}
+
+			const refreshed = await refreshOAuthCredentialsViaPlatform(creds);
+			if (!refreshed) {
+				return creds;
+			}
+
+			const fileObj = parsed.claudeAiOauth
+				? { ...parsed, claudeAiOauth: refreshed }
+				: { ...parsed, ...refreshed };
+			fs.writeFileSync(credentialsPath, JSON.stringify(fileObj), {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			logger.info("OAuth token refreshed (file fallback)");
+			return refreshed;
+		} catch {
+			// Ignore missing/invalid credentials file
+		}
+	}
+
+	return null;
+}
+
+export async function getAnthropicOauthAccessToken(): Promise<string | null> {
+	if (await isVaultAvailable({ timeout: 2000 })) {
+		const vaultCreds = await getVaultOAuthCredentials({ allowExpiredFallback: true });
+		if (vaultCreds?.accessToken) {
+			return vaultCreds.accessToken;
+		}
+	}
+
+	const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+	if (envToken) {
+		return envToken;
+	}
+
+	const fileCreds = await getFileOAuthCredentials();
+	return fileCreds?.accessToken ?? null;
+}
+
 /**
  * Read OAuth credentials from vault, refresh if expired, and return as Bearer header.
  * The access token is sent directly as `Authorization: Bearer` (user:inference scope).
@@ -227,16 +297,9 @@ async function getVaultOAuthCredentials(options: {
  */
 async function tryVaultOAuth(): Promise<AuthHeader | null> {
 	try {
-		if (!(await isVaultAvailable({ timeout: 2000 }))) return null;
-
-		const creds = await getVaultOAuthCredentials({ allowExpiredFallback: true });
-		if (!creds) return null;
-
-		const source =
-			creds.expiresAt > Date.now() + TOKEN_REFRESH_MARGIN_MS
-				? "vault-oauth-cached"
-				: "vault-oauth-expired";
-		return oauthAuthHeader(creds.accessToken, source);
+		const accessToken = await getAnthropicOauthAccessToken();
+		if (!accessToken) return null;
+		return oauthAuthHeader(accessToken, "vault-oauth");
 	} catch (err) {
 		logger.debug({ error: String(err) }, "vault OAuth lookup failed");
 		return null;
@@ -509,6 +572,61 @@ function constantTimeEqual(a: string, b: string): boolean {
 
 export function isAnthropicProxyRequest(url: string): boolean {
 	return url === PROXY_PREFIX || url.startsWith(`${PROXY_PREFIX}/`);
+}
+
+export function isAnthropicTokenRequest(url: string): boolean {
+	return url === TOKEN_ENDPOINT_PATH;
+}
+
+function extractRelayProxyToken(req: http.IncomingMessage): string | null {
+	const proxyToken = req.headers["x-proxy-token"];
+	if (Array.isArray(proxyToken)) {
+		return proxyToken[0]?.trim() ?? null;
+	}
+	return proxyToken?.trim() ?? null;
+}
+
+export async function handleAnthropicTokenRequest(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+): Promise<void> {
+	const remoteAddress = normalizeRemoteAddress(req.socket.remoteAddress ?? null);
+	if (!isPrivateIp(remoteAddress)) {
+		logger.warn({ remoteAddress }, "[anthropic-token] blocked non-private client");
+		res.writeHead(403, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Forbidden." }));
+		return;
+	}
+
+	const proxyToken = process.env.ANTHROPIC_PROXY_TOKEN;
+	if (!proxyToken) {
+		logger.warn("[anthropic-token] missing ANTHROPIC_PROXY_TOKEN");
+		res.writeHead(500, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Proxy token not configured." }));
+		return;
+	}
+
+	const incomingToken = extractRelayProxyToken(req);
+	if (!incomingToken || !constantTimeEqual(incomingToken, proxyToken)) {
+		logger.warn(
+			{ remoteAddress, method: req.method, url: req.url },
+			"[anthropic-token] invalid proxy token",
+		);
+		res.writeHead(401, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Unauthorized." }));
+		return;
+	}
+
+	const accessToken = await getAnthropicOauthAccessToken();
+	if (!accessToken) {
+		logger.warn("[anthropic-token] missing Anthropic OAuth access token");
+		res.writeHead(500, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: "Anthropic OAuth token not configured." }));
+		return;
+	}
+
+	res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+	res.end(accessToken);
 }
 
 export async function handleAnthropicProxyRequest(
