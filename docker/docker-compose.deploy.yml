@@ -23,8 +23,9 @@
 #   totp             — TOTP sidecar (encrypted 2FA)
 #   vault            — Vault sidecar (encrypted credentials)
 #
-# 8 networks (segmented):
+# 9 networks (segmented):
 #   agent-relay-net    (internal) — agent ↔ relay
+#   runner-relay-net   (bridge)   — runner ↔ relay
 #   relay-totp-net     (internal) — relay ↔ totp
 #   relay-vault-net    (internal) — relay ↔ vault
 #   agent-egress       (bridge)   — agent → providers/internet
@@ -153,6 +154,7 @@ services:
 
     networks:
       - agent-relay-net
+      - runner-relay-net
       - relay-totp-net
       - relay-vault-net
       - relay-egress
@@ -573,6 +575,10 @@ networks:
     name: telclaude-agent-relay
     driver: bridge
     internal: true
+
+  runner-relay-net:
+    name: telclaude-runner-relay
+    driver: bridge
 
   relay-totp-net:
     name: telclaude-relay-totp
