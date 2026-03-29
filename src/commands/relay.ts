@@ -19,6 +19,7 @@ import {
 	logProviderHealthResults,
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
+import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
@@ -179,6 +180,17 @@ export function registerRelayCommand(program: Command): void {
 					startCapabilityServer();
 					console.log("  Capabilities: enabled (relay broker)");
 
+					const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
+					const vaultAvailable = await isVaultAvailable(
+						vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+					);
+					if (vaultAvailable) {
+						schedulerHandles.push(startAnthropicOauthRefreshScheduler());
+						console.log("  Anthropic OAuth refresh: enabled (proactive vault refresh)");
+					} else {
+						console.log("  Anthropic OAuth refresh: disabled (vault daemon not running)");
+					}
+
 					// Start git proxy if in Docker mode with remote agent
 					// This allows secure git operations without exposing tokens to the agent
 					if (process.env.TELCLAUDE_AGENT_URL) {
@@ -187,10 +199,6 @@ export function registerRelayCommand(program: Command): void {
 
 						// Start HTTP credential proxy if vault daemon is available
 						// This allows agents to call HTTP APIs without seeing credentials
-						const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
-						const vaultAvailable = await isVaultAvailable(
-							vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
-						);
 						if (vaultAvailable) {
 							startHttpCredentialProxy({ vaultSocketPath });
 							console.log("  HTTP proxy: enabled (credential injection via vault)");
