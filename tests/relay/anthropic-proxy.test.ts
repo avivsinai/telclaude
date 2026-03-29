@@ -1,8 +1,14 @@
-import http from "node:http";
 import { once } from "node:events";
+import http from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const vaultClientMock = vi.hoisted(() => ({
+	getSecret: vi.fn(),
+	store: vi.fn(),
+}));
+const isVaultAvailableMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => ({
@@ -13,6 +19,15 @@ vi.mock("../../src/logging.js", () => ({
 	}),
 }));
 
+vi.mock("../../src/vault-daemon/client.js", () => ({
+	getVaultClient: () => vaultClientMock,
+	isVaultAvailable: isVaultAvailableMock,
+}));
+
+import {
+	resetAnthropicOauthState,
+	startAnthropicOauthRefreshScheduler,
+} from "../../src/relay/anthropic-proxy.js";
 import { startCapabilityServer } from "../../src/relay/capabilities.js";
 
 const ORIGINAL_ENV = {
@@ -70,6 +85,9 @@ describe("anthropic proxy", () => {
 		process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-token";
 		delete process.env.ANTHROPIC_API_KEY;
 		process.env.ANTHROPIC_PROXY_TOKEN = "proxy-token";
+		isVaultAvailableMock.mockReset().mockResolvedValue(false);
+		vaultClientMock.getSecret.mockReset();
+		vaultClientMock.store.mockReset();
 
 		server = startCapabilityServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
@@ -97,6 +115,8 @@ describe("anthropic proxy", () => {
 		} else {
 			process.env.ANTHROPIC_PROXY_TOKEN = ORIGINAL_ENV.ANTHROPIC_PROXY_TOKEN;
 		}
+		resetAnthropicOauthState();
+		vi.useRealTimers();
 		vi.unstubAllGlobals();
 	});
 
@@ -138,14 +158,92 @@ describe("anthropic proxy", () => {
 		const fetchSpy = vi.fn();
 		vi.stubGlobal("fetch", fetchSpy);
 
-		const result = await makeRequest(
-			baseUrl,
-			"/v1/anthropic-proxy/v1/../models",
-			"{}",
-			"POST",
-			{ Authorization: "Bearer proxy-token" },
-		);
+		const result = await makeRequest(baseUrl, "/v1/anthropic-proxy/v1/../models", "{}", "POST", {
+			Authorization: "Bearer proxy-token",
+		});
 		expect(result.status).toBe(400);
 		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("proactively refreshes near-expiry vault oauth tokens", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-03-29T12:00:00Z"));
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: true,
+			type: "get-secret",
+			value: JSON.stringify({
+				accessToken: "stale-access",
+				refreshToken: "refresh-123",
+				expiresAt: Date.now() + 4 * 60 * 1000,
+				scopes: ["user:inference"],
+			}),
+		});
+		vaultClientMock.store.mockResolvedValue({ type: "store", ok: true });
+
+		const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			expect(String(input)).toBe("https://platform.claude.com/v1/oauth/token");
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				grant_type: "refresh_token",
+				refresh_token: "refresh-123",
+			});
+			return new Response(
+				JSON.stringify({
+					access_token: "fresh-access",
+					refresh_token: "fresh-refresh",
+					expires_in: 3600,
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const scheduler = startAnthropicOauthRefreshScheduler({ intervalMs: 60_000 });
+		await vi.advanceTimersByTimeAsync(0);
+
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(vaultClientMock.store).toHaveBeenCalledTimes(1);
+		expect(vaultClientMock.store).toHaveBeenCalledWith(
+			expect.objectContaining({
+				protocol: "secret",
+				target: "anthropic-oauth",
+				label: "Anthropic OAuth (auto-refreshed)",
+			}),
+		);
+		const storedValue = vaultClientMock.store.mock.calls[0]?.[0]?.credential?.value;
+		expect(JSON.parse(String(storedValue))).toMatchObject({
+			accessToken: "fresh-access",
+			refreshToken: "fresh-refresh",
+		});
+
+		scheduler.stop();
+	});
+
+	it("skips proactive refresh when vault oauth is still fresh", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-03-29T12:00:00Z"));
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: true,
+			type: "get-secret",
+			value: JSON.stringify({
+				accessToken: "fresh-access",
+				refreshToken: "refresh-123",
+				expiresAt: Date.now() + 60 * 60 * 1000,
+				scopes: ["user:inference"],
+			}),
+		});
+
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const scheduler = startAnthropicOauthRefreshScheduler({ intervalMs: 60_000 });
+		await vi.advanceTimersByTimeAsync(0);
+		await vi.advanceTimersByTimeAsync(60_000);
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(vaultClientMock.store).not.toHaveBeenCalled();
+
+		scheduler.stop();
 	});
 });
