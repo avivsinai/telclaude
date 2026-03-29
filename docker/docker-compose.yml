@@ -598,6 +598,10 @@ services:
 
       # Socket path (shared with relay via volume)
       - TELCLAUDE_VAULT_SOCKET=/run/vault/vault.sock
+      # Temporary compatibility mode for the external GitHub runner container.
+      # Follow-up should tighten this to 0660 with a shared group or replace the
+      # shared socket with a dedicated token endpoint.
+      - TELCLAUDE_VAULT_SOCKET_MODE=${TELCLAUDE_VAULT_SOCKET_MODE:-0666}
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
 
