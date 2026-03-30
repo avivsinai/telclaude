@@ -649,6 +649,44 @@ export function registerVaultCommand(program: Command): void {
 					process.exit(1);
 				}
 
+				// Immediately refresh to get our own refresh token, diverging from the
+				// source session. Without this, the source (e.g. Mac) would consume the
+				// shared refresh token on its next refresh, invalidating our copy.
+				const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+				const DEFAULT_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+				const DEFAULT_SCOPES = "user:inference user:profile user:sessions:claude_code";
+
+				console.log("  Refreshing to diverge session...");
+				const refreshResp = await fetch(TOKEN_URL, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						grant_type: "refresh_token",
+						refresh_token: oauthCreds.refreshToken,
+						client_id: process.env.CLAUDE_CODE_OAUTH_CLIENT_ID ?? DEFAULT_CLIENT_ID,
+						scope: oauthCreds.scopes?.join(" ") ?? DEFAULT_SCOPES,
+					}),
+				});
+
+				if (refreshResp.ok) {
+					const data = (await refreshResp.json()) as {
+						access_token: string;
+						refresh_token?: string;
+						expires_in: number;
+					};
+					oauthCreds = {
+						accessToken: data.access_token,
+						refreshToken: data.refresh_token ?? oauthCreds.refreshToken,
+						expiresAt: Date.now() + data.expires_in * 1000,
+						scopes: oauthCreds.scopes,
+					};
+					console.log("  Session diverged (own refresh token obtained)");
+				} else {
+					const errText = await refreshResp.text();
+					console.warn(`  WARNING: Could not diverge session (${refreshResp.status}): ${errText}`);
+					console.warn("  Imported as-is — shared refresh token may be consumed by source");
+				}
+
 				const client = getVaultClient();
 				await client.store({
 					protocol: "secret",
