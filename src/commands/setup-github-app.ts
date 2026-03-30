@@ -230,7 +230,7 @@ async function setupWithOptions(
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
-		privateKey: resolvedPath, // Store path, not content
+		privateKey, // Store inline PEM content (works in Docker where path isn't available)
 		appSlug,
 		botUserId,
 	};
