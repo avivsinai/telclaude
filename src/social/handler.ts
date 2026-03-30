@@ -1241,6 +1241,8 @@ async function handleProactivePosting(
 					},
 					"failed to create quote post",
 				);
+				// Mark as posted to prevent infinite retry on permanent failures (e.g. 403)
+				markEntryPosted(idea.id);
 				continue;
 			}
 
@@ -1346,6 +1348,7 @@ async function handleProactivePosting(
 					{ ideaId: idea.id, status: postResult.status, error: postResult.error, serviceId },
 					"failed to create thread",
 				);
+				markEntryPosted(idea.id);
 				continue;
 			}
 
@@ -1403,6 +1406,7 @@ async function handleProactivePosting(
 				{ ideaId: idea.id, status: postResult.status, error: postResult.error, serviceId },
 				"failed to create social post",
 			);
+			markEntryPosted(idea.id);
 			continue;
 		}
 

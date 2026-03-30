@@ -35,16 +35,9 @@ NETWORK_MODE="${TELCLAUDE_NETWORK_MODE:-restricted}"
 ALLOWED_DOMAINS=(
     # ═══════════════════════════════════════════════════════════════════════════
     # Anthropic API + Claude Code
-    # (domains.ts wildcards: *.claude.ai, *.code.anthropic.com)
     # ═══════════════════════════════════════════════════════════════════════════
     "api.anthropic.com"
     "claude.ai"
-    "code.anthropic.com"
-    # Expanded from *.claude.ai
-    "api.claude.ai"
-    "platform.claude.ai"
-    # Expanded from *.code.anthropic.com
-    "api.code.anthropic.com"
 
     # ═══════════════════════════════════════════════════════════════════════════
     # OpenAI API (for image generation, TTS)
