@@ -17,6 +17,9 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -28,3 +31,6 @@ updates:
     labels:
       - "ci"
       - "dependencies"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
