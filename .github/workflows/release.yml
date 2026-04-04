@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 # Prevent race conditions: only one release per tag, cancel stale runs
 concurrency:
@@ -17,17 +17,20 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1  # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6
         with:
           node-version: 25
           cache: 'pnpm'
@@ -56,7 +59,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
         with:
           body: ${{ steps.extract-release-notes.outputs.notes }}
           draft: false
