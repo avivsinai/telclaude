@@ -48,7 +48,7 @@ export function registerQuickstartCommand(program: Command): void {
 					token = (await promptLine("Bot token: ")) ?? "";
 				}
 
-				if (!token || !token.includes(":")) {
+				if (!token?.includes(":")) {
 					console.error("\n❌ Invalid token format. Expected format: 123456789:ABC-DEF...");
 					process.exit(1);
 				}

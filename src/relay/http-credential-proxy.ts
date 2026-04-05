@@ -582,4 +582,4 @@ export function startHttpCredentialProxy(
 	};
 }
 
-export { parseProxyUrl, buildAuthHeaders, isPathAllowed };
+export { buildAuthHeaders, isPathAllowed, parseProxyUrl };
