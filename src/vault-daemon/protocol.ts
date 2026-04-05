@@ -173,6 +173,7 @@ export const CredentialEntrySchema = z.object({
 	target: z.string().min(1), // host or host:port
 	label: z.string().optional(),
 	credential: CredentialSchema,
+	scheme: z.enum(["http", "https"]).optional(), // For HTTP: upstream scheme override
 	allowedPaths: z.array(z.string()).optional(), // For HTTP: path regex allowlist
 	rateLimitPerMinute: z.number().positive().optional(),
 	createdAt: z.string().datetime(),
@@ -212,6 +213,7 @@ export const StoreRequestSchema = z.object({
 	target: z.string().min(1),
 	label: z.string().optional(),
 	credential: CredentialSchema,
+	scheme: z.enum(["http", "https"]).optional(),
 	allowedPaths: z.array(z.string()).optional(),
 	rateLimitPerMinute: z.number().positive().optional(),
 	expiresAt: z.string().datetime().optional(),
