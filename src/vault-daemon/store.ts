@@ -145,6 +145,7 @@ export class VaultStore {
 		credential: Credential,
 		options: {
 			label?: string;
+			scheme?: "http" | "https";
 			allowedPaths?: string[];
 			rateLimitPerMinute?: number;
 			expiresAt?: string;
@@ -155,6 +156,7 @@ export class VaultStore {
 			target,
 			credential,
 			label: options.label,
+			scheme: options.scheme,
 			allowedPaths: options.allowedPaths,
 			rateLimitPerMinute: options.rateLimitPerMinute,
 			createdAt: new Date().toISOString(),

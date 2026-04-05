@@ -402,6 +402,7 @@ async function persistRotatedRefreshToken(
 			{ ...currentEntry.credential, refreshToken: newRefreshToken },
 			{
 				label: currentEntry.label,
+				scheme: currentEntry.scheme,
 				allowedPaths: currentEntry.allowedPaths,
 				rateLimitPerMinute: currentEntry.rateLimitPerMinute,
 				expiresAt: currentEntry.expiresAt,
@@ -475,6 +476,7 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 		case "store": {
 			await store.store(request.protocol, request.target, request.credential, {
 				label: request.label,
+				scheme: request.scheme,
 				allowedPaths: request.allowedPaths,
 				rateLimitPerMinute: request.rateLimitPerMinute,
 				expiresAt: request.expiresAt,
