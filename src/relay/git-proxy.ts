@@ -337,4 +337,4 @@ export function startGitProxyServer(config: Partial<GitProxyConfig> = {}): http.
 	return server;
 }
 
-export { parseGitUrl, getGitOperation };
+export { getGitOperation, parseGitUrl };

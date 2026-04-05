@@ -378,5 +378,5 @@ export async function buildSecurityPipeline(config: PipelineConfig): Promise<Sec
 	);
 }
 
-export { calculateEntropy, detectHighEntropyBlobs };
 export type { SecretFilterConfig };
+export { calculateEntropy, detectHighEntropyBlobs };
