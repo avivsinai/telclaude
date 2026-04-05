@@ -33,9 +33,10 @@ import {
 	type HttpCredential,
 	type OAuth2Credential,
 } from "../vault-daemon/index.js";
-import { type SessionTokenPayload, validateSessionToken } from "./git-proxy-auth.js";
+import { type SessionTokenPayload, validateSessionTokenV3 } from "./git-proxy-auth.js";
 import { forwardResponseHeaders } from "./proxy-headers.js";
 import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
+import { getPublicKey } from "./token-manager.js";
 
 const logger = getChildLogger({ module: "http-credential-proxy" });
 
@@ -464,7 +465,7 @@ export function startHttpCredentialProxy(
 				return;
 			}
 
-			const validated = validateSessionToken(sessionHeader);
+			const validated = validateSessionTokenV3(sessionHeader, getPublicKey());
 			if (!validated) {
 				logger.warn({ url }, "http proxy request with invalid session token");
 				res.writeHead(401, { "Content-Type": "text/plain" });
