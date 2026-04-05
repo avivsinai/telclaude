@@ -8,7 +8,8 @@
  * - Agent calls: http://relay:8792/{host}/{path}
  * - Proxy looks up credential for {host} from vault
  * - Injects authentication (bearer, api-key, basic, oauth2)
- * - Forwards request to https://{host}/{path}
+ * - Forwards request to {scheme}://{host}/{path} (defaults to https unless the
+ *   stored credential overrides it)
  * - Streams response back to agent
  *
  * Examples:
@@ -253,7 +254,8 @@ async function proxyRequest(
 
 	// Build upstream URL
 	const finalQuery = credential.type === "query" ? queryAddition : parsed.query;
-	const upstreamUrl = `https://${parsed.host}${parsed.path}${finalQuery}`;
+	const upstreamScheme = entry.scheme ?? "https";
+	const upstreamUrl = `${upstreamScheme}://${parsed.host}${parsed.path}${finalQuery}`;
 
 	// Build headers for upstream request
 	const upstreamHeaders: Record<string, string> = {

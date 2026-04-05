@@ -129,6 +129,7 @@ export function registerVaultCommand(program: Command): void {
 		.option("--header <header>", "Header name for api-key type (e.g., X-API-Key)")
 		.option("--username <username>", "Username for basic/db/ssh auth")
 		.option("--param <param>", "Query parameter name for query type")
+		.option("--scheme <scheme>", "Upstream URL scheme for HTTP targets (http or https)")
 		.option("--client-id <clientId>", "OAuth2 client ID")
 		.option("--client-secret <clientSecret>", "OAuth2 client secret (will prompt if not provided)")
 		.option("--refresh-token <refreshToken>", "OAuth2 refresh token (will prompt if not provided)")
@@ -150,6 +151,7 @@ export function registerVaultCommand(program: Command): void {
 					header?: string;
 					username?: string;
 					param?: string;
+					scheme?: string;
 					clientId?: string;
 					clientSecret?: string;
 					refreshToken?: string;
@@ -323,6 +325,16 @@ export function registerVaultCommand(program: Command): void {
 
 					// Parse allowed paths
 					const allowedPaths = opts.allowedPaths?.split(",").map((p) => p.trim());
+					const scheme =
+						opts.scheme === undefined
+							? undefined
+							: opts.scheme === "http" || opts.scheme === "https"
+								? opts.scheme
+								: null;
+					if (scheme === null) {
+						console.error("Invalid --scheme value. Valid values: http, https");
+						process.exit(1);
+					}
 
 					// Store the credential
 					const client = getVaultClient();
@@ -331,6 +343,7 @@ export function registerVaultCommand(program: Command): void {
 						target,
 						credential,
 						label: opts.label,
+						scheme: scheme ?? undefined,
 						allowedPaths,
 						rateLimitPerMinute: opts.rateLimit,
 					});

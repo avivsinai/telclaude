@@ -273,4 +273,21 @@ describe("VaultStore", () => {
 		expect(entry?.allowedPaths).toEqual(["^/v1/safe/.*", "^/v2/also-safe/.*"]);
 		expect(entry?.rateLimitPerMinute).toBe(60);
 	});
+
+	it("should round-trip the optional scheme override", async () => {
+		const store = new VaultStore({
+			filePath: TEST_FILE,
+			encryptionKey: TEST_KEY,
+		});
+
+		await store.store(
+			"http",
+			"local-service.lan:8080",
+			{ type: "query", param: "apikey", token: "test-token" },
+			{ scheme: "http" },
+		);
+
+		const entry = await store.get("http", "local-service.lan:8080");
+		expect(entry?.scheme).toBe("http");
+	});
 });
