@@ -4,6 +4,7 @@ import { withTimeout } from "../infra/timeout.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
+import { isDockerEnvironment } from "../sandbox/mode.js";
 import type { ExposedCredentials, PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 import { getGitCredentials } from "../services/git-credentials.js";
 import { getOpenAIKey } from "../services/openai-client.js";
@@ -62,14 +63,14 @@ export async function* executeRemoteQuery(
 				// Best-effort; agent falls back to static auth if available
 			}
 		}
-		// Resolve credentials on the relay side for FULL_ACCESS tier (private scopes only).
-		// The agent container has no vault access, so the relay must provide these.
+		// Native/dev fallback only: Docker deployments must keep raw credentials inside
+		// the relay and route via the git proxy / HTTP credential proxy instead.
 		// Gate on scope to prevent credential leakage to social agents — the agent server
 		// downgrades non-telegram scopes to SOCIAL tier, but that happens AFTER this payload
 		// is serialized. Credentials must never enter a social agent container.
 		const effectiveScope = options.scope ?? "telegram";
 		let exposedCredentials: ExposedCredentials | undefined;
-		if (options.tier === "FULL_ACCESS" && effectiveScope === "telegram") {
+		if (!isDockerEnvironment() && options.tier === "FULL_ACCESS" && effectiveScope === "telegram") {
 			const creds: ExposedCredentials = {};
 			try {
 				const gitCreds = await getGitCredentials();
