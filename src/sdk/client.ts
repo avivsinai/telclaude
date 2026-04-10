@@ -41,8 +41,6 @@ import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
-import { getGitCredentials } from "../services/git-credentials.js";
-import { getCachedOpenAIKey } from "../services/openai-client.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -66,26 +64,12 @@ import { executeWithSession, getSessionManager } from "./session-manager.js";
 import { getUrlPortNumber, validateToolPath } from "./tool-validation.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
-let keysExposedLogged = false;
 
 /**
  * Timeout for PreToolUse hooks in seconds.
  * Set to 10s to allow for DNS lookups (3s timeout) + validation overhead.
  */
 const HOOK_TIMEOUT_SECONDS = 10;
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Tier-Based Key Exposure
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Check if keys should be exposed to sandbox based on tier.
- * Only FULL_ACCESS tier gets configured keys exposed.
- * READ_ONLY tier never gets keys (no Bash access anyway).
- */
-function shouldExposeKeys(tier: PermissionTier): boolean {
-	return tier === "FULL_ACCESS";
-}
 
 function isSocialContext(actorUserId?: string): boolean {
 	return actorUserId?.startsWith("social:") ?? false;
@@ -176,15 +160,14 @@ export type TelclaudeQueryOptions = {
 	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
 	outputFormat?: OutputFormat;
 
-	/** Relay-resolved credentials for Docker mode.
-	 * In Docker, buildSdkOptions() runs in the agent container which has no vault access.
-	 * The relay resolves credentials and passes them here so the agent can inject them
-	 * into the SDK subprocess environment for FULL_ACCESS tier. */
+	/** Native/dev fallback credentials.
+	 * Docker deployments must keep raw credentials inside the relay and use
+	 * the git proxy / HTTP credential proxy instead of sandbox env injection. */
 	exposedCredentials?: ExposedCredentials;
 };
 
 /**
- * Credentials resolved by the relay for tier-based key exposure.
+ * Native/dev fallback credentials.
  * Narrow type — avoids turning the relay→agent payload into arbitrary env injection.
  */
 export type ExposedCredentials = {
@@ -920,37 +903,6 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		}
 		if (process.env.ANTHROPIC_AUTH_TOKEN) {
 			sandboxEnv.ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
-		}
-
-		// Tier-based key exposure: FULL_ACCESS gets configured keys.
-		// In Docker mode, the relay resolves credentials (it has vault access) and passes
-		// them via opts.exposedCredentials. In native mode, resolve locally as fallback.
-		if (shouldExposeKeys(opts.tier)) {
-			const exposedKeys: string[] = [];
-
-			// OpenAI key — prefer relay-provided, fall back to local cache
-			const openaiKey = opts.exposedCredentials?.openaiApiKey ?? getCachedOpenAIKey();
-			if (openaiKey) {
-				sandboxEnv.OPENAI_API_KEY = openaiKey;
-				exposedKeys.push("OPENAI_API_KEY");
-			}
-
-			// GitHub token — prefer relay-provided, fall back to local resolution
-			const githubToken =
-				opts.exposedCredentials?.githubToken ||
-				(await getGitCredentials())?.token ||
-				process.env.GITHUB_TOKEN ||
-				process.env.GH_TOKEN;
-			if (githubToken) {
-				sandboxEnv.GITHUB_TOKEN = githubToken;
-				sandboxEnv.GH_TOKEN = githubToken; // gh CLI uses this
-				exposedKeys.push("GITHUB_TOKEN");
-			}
-
-			if (exposedKeys.length > 0 && !keysExposedLogged) {
-				keysExposedLogged = true;
-				logger.info({ tier: opts.tier, keys: exposedKeys }, "API keys exposed to sandbox");
-			}
 		}
 	}
 
