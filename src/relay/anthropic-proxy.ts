@@ -273,15 +273,30 @@ async function getFileOAuthCredentials(): Promise<OAuthCredentials | null> {
 	return null;
 }
 
-export async function getAnthropicOauthAccessToken(): Promise<string | null> {
-	if (await isVaultAvailable({ timeout: 2000 })) {
-		const vaultCreds = await getVaultOAuthCredentials({ allowExpiredFallback: true });
-		if (vaultCreds?.accessToken) {
-			return vaultCreds.accessToken;
-		}
+function getEnvOauthAccessToken(): string | null {
+	return process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN || null;
+}
+
+async function getVaultAnthropicOauthAccessToken(options: {
+	allowExpiredFallback: boolean;
+}): Promise<string | null> {
+	if (!(await isVaultAvailable({ timeout: 2000 }))) {
+		return null;
 	}
 
-	const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+	const vaultCreds = await getVaultOAuthCredentials(options);
+	return vaultCreds?.accessToken ?? null;
+}
+
+export async function getAnthropicOauthAccessToken(): Promise<string | null> {
+	const vaultAccessToken = await getVaultAnthropicOauthAccessToken({
+		allowExpiredFallback: true,
+	});
+	if (vaultAccessToken) {
+		return vaultAccessToken;
+	}
+
+	const envToken = getEnvOauthAccessToken();
 	if (envToken) {
 		return envToken;
 	}
@@ -297,7 +312,9 @@ export async function getAnthropicOauthAccessToken(): Promise<string | null> {
  */
 async function tryVaultOAuth(): Promise<AuthHeader | null> {
 	try {
-		const accessToken = await getAnthropicOauthAccessToken();
+		const accessToken = await getVaultAnthropicOauthAccessToken({
+			allowExpiredFallback: true,
+		});
 		if (!accessToken) return null;
 		return oauthAuthHeader(accessToken, "vault-oauth");
 	} catch (err) {
@@ -385,9 +402,9 @@ async function buildAuthHeader(): Promise<AuthHeader | null> {
 	if (vaultOAuth) return vaultOAuth;
 
 	// 3. Environment variables
-	const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN || process.env.ANTHROPIC_AUTH_TOKEN;
+	const oauthToken = getEnvOauthAccessToken();
 	if (oauthToken) {
-		return { name: "Authorization", value: `Bearer ${oauthToken}`, source: "env" };
+		return oauthAuthHeader(oauthToken, "env-oauth");
 	}
 
 	const apiKey = process.env.ANTHROPIC_API_KEY;

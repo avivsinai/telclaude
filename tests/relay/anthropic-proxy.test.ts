@@ -9,14 +9,15 @@ const vaultClientMock = vi.hoisted(() => ({
 	store: vi.fn(),
 }));
 const isVaultAvailableMock = vi.hoisted(() => vi.fn());
+const loggerMock = vi.hoisted(() => ({
+	info: vi.fn(),
+	warn: vi.fn(),
+	error: vi.fn(),
+	debug: vi.fn(),
+}));
 
 vi.mock("../../src/logging.js", () => ({
-	getChildLogger: () => ({
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-	}),
+	getChildLogger: () => loggerMock,
 }));
 
 vi.mock("../../src/vault-daemon/client.js", () => ({
@@ -88,6 +89,10 @@ describe("anthropic proxy", () => {
 		isVaultAvailableMock.mockReset().mockResolvedValue(false);
 		vaultClientMock.getSecret.mockReset();
 		vaultClientMock.store.mockReset();
+		loggerMock.info.mockReset();
+		loggerMock.warn.mockReset();
+		loggerMock.error.mockReset();
+		loggerMock.debug.mockReset();
 
 		server = startCapabilityServer({ port: 0, host: "127.0.0.1" });
 		await once(server, "listening");
@@ -125,6 +130,7 @@ describe("anthropic proxy", () => {
 			expect(String(input)).toBe("https://api.anthropic.com/v1/messages");
 			const headers = new Headers(init?.headers);
 			expect(headers.get("authorization")).toBe("Bearer oauth-token");
+			expect(headers.get("anthropic-beta")).toBe("oauth-2025-04-20");
 			return new Response(JSON.stringify({ ok: true }), {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
@@ -137,6 +143,37 @@ describe("anthropic proxy", () => {
 		});
 		expect(result.status).toBe(200);
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("falls back to env oauth when the vault secret is missing", async () => {
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: false,
+			type: "get-secret",
+			error: "not_found",
+		});
+
+		const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			expect(String(input)).toBe("https://api.anthropic.com/v1/messages");
+			const headers = new Headers(init?.headers);
+			expect(headers.get("authorization")).toBe("Bearer oauth-token");
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const result = await makeRequest(baseUrl, "/v1/anthropic-proxy/v1/messages", "{}", "POST", {
+			Authorization: "Bearer proxy-token",
+		});
+		expect(result.status).toBe(200);
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(
+			loggerMock.info.mock.calls.find((call) => call[1] === "proxying to Anthropic")?.[0],
+		).toMatchObject({
+			authSource: "env-oauth",
+		});
 	});
 
 	it("returns the vault-backed oauth token from the dedicated token endpoint", async () => {
@@ -157,6 +194,21 @@ describe("anthropic proxy", () => {
 		});
 		expect(result.status).toBe(200);
 		expect(result.body).toBe("vault-access-token");
+	});
+
+	it("returns the env oauth token when the vault secret is missing", async () => {
+		isVaultAvailableMock.mockResolvedValue(true);
+		vaultClientMock.getSecret.mockResolvedValue({
+			ok: false,
+			type: "get-secret",
+			error: "not_found",
+		});
+
+		const result = await makeRequest(baseUrl, "/v1/token/anthropic", undefined, "GET", {
+			"x-proxy-token": "proxy-token",
+		});
+		expect(result.status).toBe(200);
+		expect(result.body).toBe("oauth-token");
 	});
 
 	it("rejects invalid proxy token on the dedicated token endpoint", async () => {
