@@ -10,7 +10,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 > **Alpha** — Security-first defaults; expect breaking changes until 1.0.
 
 ## Highlights
-- Mandatory isolation boundary: SDK sandbox (Seatbelt/bubblewrap) in native mode, relay+agent containers + firewall in Docker mode.
+- Mandatory isolation boundary: relay+agent containers + firewall in Docker mode.
 - Credential vault: sidecar daemon stores API keys and injects them into requests — agents never see raw credentials.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
@@ -18,7 +18,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - External provider sidecars: Google Services (Gmail, Calendar, Drive, Contacts) with approval-gated actions; extensible pattern for adding new providers.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
-- Runs locally on macOS/Linux or via the Docker Compose stack (Windows through WSL2).
+- Runs via the Docker Compose stack (Windows through WSL2).
 - No telemetry or analytics; only audit logs you enable in your own environment.
 
 ## Documentation map
@@ -37,7 +37,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Support & cadence
 - Status: alpha — breaking changes possible until 1.0.
-- Platforms: native mode on macOS 14+ or Linux (bubblewrap+socat+rg); Docker/WSL recommended for prod.
+- Platforms: Docker Compose on Linux/macOS (Windows through WSL2). Native/non-Docker deployment is retired.
 - Issues/PR triage: weekly; security reports acknowledged within 48h.
 - Releases: ad-hoc during alpha; aim for monthly.
 - Security contact: project maintainer(s) via GitHub security advisory.
@@ -73,9 +73,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│            Isolation Boundary (mode-dependent)                   │
-│   Docker: relay+agent + firewall  │  Native: SDK sandbox         │
-│          (SDK sandbox off)        │  (Seatbelt/bwrap)            │
+│                Isolation Boundary                               │
+│     Docker: relay+agent + firewall (SDK sandbox off)           │
 └──────────────────────────────────────────────────────────────────┘
                                │
                                ▼
@@ -92,8 +91,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Node 20+, pnpm 9.x
 - Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
 - Telegram bot token from @BotFather
-- Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
-- Docker/WSL: Docker + Compose (no host bubblewrap required)
+- Docker/WSL: Docker + Compose
 - Optional but recommended: TOTP daemon uses the OS keychain (keytar)
 
 ## Third-party terms
@@ -114,58 +112,7 @@ This starts 6 containers: `telclaude` (relay), `telclaude-agent` (private person
 
 Note: Docker uses a shared **skills** profile (`/home/telclaude-skills`) and a relay-only **auth** profile (`/home/telclaude-auth`). Agents access Anthropic through the relay proxy; credentials never mount in agent containers.
 
-## Quick start (local)
-1) Clone and install
-```bash
-git clone https://github.com/avivsinai/telclaude.git
-cd telclaude
-pnpm install
-```
-2) Create config (JSON5) at `~/.telclaude/telclaude.json` — allowlist is required or the bot will ignore all chats (fail-closed).
-```json
-{
-  "telegram": {
-    "botToken": "123456:ABC-DEF",
-    "allowedChats": [123456789]      // your Telegram numeric chat ID
-  },
-  "security": {
-    "profile": "strict",             // simple | strict | test
-    "permissions": {
-      "users": {
-        "tg:123456789": { "tier": "FULL_ACCESS" }
-      }
-    }
-  }
-}
-```
-Notes: `defaultTier=FULL_ACCESS` is intentionally rejected at runtime. Prefer putting `botToken` in the config for native installs; `TELEGRAM_BOT_TOKEN` is accepted (mainly for Docker).
-
-3) Authenticate Claude
-```bash
-claude login             # API key is not forwarded into sandboxed agent
-```
-
-4) (Recommended) Start TOTP daemon in another terminal
-```bash
-pnpm dev totp-daemon
-```
-
-5) Health check
-```bash
-pnpm dev doctor --network --secrets
-```
-
-6) Run the relay
-```bash
-# Development (native: SDK sandbox via @anthropic-ai/sandbox-runtime; if unavailable, use Docker below)
-pnpm dev relay --profile simple
-
-# Recommended / Production: Docker or WSL with container boundary + firewall
-docker compose up -d --build
-docker compose exec telclaude pnpm start relay --profile strict
-```
-
-7) First admin claim
+## First admin claim
 - DM your bot from the allowed chat; it replies with `/approve <code>`.
 - Send that command back to link the chat as admin (FULL_ACCESS with per-request approvals).
 - In the same chat, run `/auth setup` to bind TOTP for periodic identity verification (daemon must be running). `/auth skip` is allowed but not recommended.
@@ -192,11 +139,10 @@ docker compose exec telclaude pnpm start relay --profile strict
   - Set per-user under `security.permissions.users`; `defaultTier` stays `READ_ONLY`.
 - Optional group guardrail:
   - `telegram.groupChat.requireMention: true` to ignore group/supergroup messages unless they mention the bot or reply to it.
-- OpenAI/GitHub key exposure (tier-based):
-  - FULL_ACCESS tier automatically gets configured API keys (OpenAI, GitHub) exposed to sandbox.
-  - READ_ONLY and WRITE_LOCAL tiers never get keys.
-  - Configure keys via `telclaude setup-openai` / `telclaude setup-git` or env vars.
-  - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
+- OpenAI/GitHub access:
+  - Supported Docker deployments do not inject raw OpenAI or GitHub keys into the agent sandbox.
+  - FULL_ACCESS reaches external services through relay-managed proxies and session-scoped relay auth.
+  - Configure provider credentials on the relay side via `telclaude setup-openai` / `telclaude setup-git`, env vars, or the vault daemon.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
 ## Credential vault
@@ -209,7 +155,7 @@ The vault daemon stores API credentials and injects them into HTTP requests tran
 3. Proxy looks up credentials by host, injects auth headers, forwards to upstream
 4. Agent receives response without ever seeing the API key
 
-**Note:** The HTTP credential proxy is only started when a remote agent is configured (`TELCLAUDE_AGENT_URL`). Native mode uses direct key exposure for FULL_ACCESS tier instead (see Configuration section).
+**Note:** The HTTP credential proxy is only started when a remote agent is configured (`TELCLAUDE_AGENT_URL`). Native/non-Docker deployment is unsupported.
 
 **Supported auth types:** `bearer`, `api-key`, `basic`, `query`, `oauth2` (with automatic token refresh)
 
@@ -352,18 +298,17 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 ## Usage example
 Run strict profile with approvals and TOTP:
 ```bash
-pnpm dev totp-daemon &
-pnpm dev relay --profile strict
+docker compose up -d --build
 # In Telegram (allowed chat):
 # 1) bot replies with /approve CODE for admin claim
 # 2) run /auth setup to bind TOTP
 ```
 
-Use `pnpm dev <command>` during development (tsx). For production: `pnpm build && pnpm start <command>` (runs from `dist/`).
+Use `docker compose exec telclaude pnpm start <command>` for runtime commands inside the supported deployment. Host-side `pnpm dev <command>` remains useful for lint/test/build tooling, not for running the service stack natively.
 
 ## Deployment
 - **Production (mandatory): Docker/WSL Compose stack** (`docker/README.md`). Relay+agent containers + firewall; SDK sandbox disabled in Docker mode. Use this on shared or multi-tenant hosts.
-- **Development:** Native macOS/Linux with SDK sandbox (Seatbelt/bubblewrap). SDK sandbox provides OS-level isolation for Bash; WebFetch/WebSearch are filtered by hooks/allowlists. Keep `~/.telclaude/telclaude.json` chmod 600.
+- **Development/runtime:** Docker/WSL Compose stack only. Native/non-Docker runtime is retired.
 
 ## Development
 - Lint/format: `pnpm lint`, `pnpm format`
@@ -375,7 +320,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 
 ## Security & reporting
 - Default stance is fail-closed (empty `allowedChats` denies all; `defaultTier=FULL_ACCESS` is rejected).
-- Native mode requires the SDK sandbox; relay exits if Seatbelt/bubblewrap (or socat on Linux) is unavailable. Docker mode requires the firewall (containers enforce it).
+- Docker mode requires the firewall (containers enforce it). Native/non-Docker runtime is unsupported.
 - Vulnerabilities: please follow `SECURITY.md` for coordinated disclosure.
 - Security contact: project maintainer(s) via GitHub security advisory.
 
@@ -383,7 +328,7 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
-| Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see Requirements section above) |
+| Sandbox unavailable | Service started outside the supported Docker runtime | Run telclaude inside the Docker Compose stack |
 | TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
 | Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |

@@ -24,7 +24,7 @@
 - **PreToolUse hooks**: PRIMARY enforcement; run unconditionally, even in acceptEdits mode.
 - **canUseTool**: FALLBACK only; runs only when a permission prompt would appear (so not for auto-approved calls in acceptEdits mode).
 - **Skill allowlisting**: SOCIAL tier requires explicit `allowedSkills` when `enableSkills` is true; omitting fail-closes (denies all Skill calls). Non-SOCIAL tiers are unaffected. Enforced by PreToolUse hook (primary) + canUseTool (fallback).
-- Network: PreToolUse hook blocks RFC1918/metadata (including CGNAT 100.64.0.0/10 for Tailscale); Bash uses SDK sandbox (native) or Docker firewall; WebSearch not filtered (server-side). `TELCLAUDE_NETWORK_MODE=open|permissive` broadens WebFetch egress.
+- Network: PreToolUse hook blocks RFC1918/metadata (including CGNAT 100.64.0.0/10 for Tailscale); supported runtime uses the Docker firewall as the network boundary; WebSearch not filtered (server-side). `TELCLAUDE_NETWORK_MODE=open|permissive` broadens WebFetch egress.
 - Profiles: simple (default, rate limits + audit), strict (+observer + approvals + tier enforcement), test (all disabled, requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`).
 
 ## SDK References (authoritative)
@@ -36,7 +36,7 @@
   - Deprecated: `decision: "block"` (maps to `permissionDecision: "deny"`)
 - **Sandboxing**: https://www.anthropic.com/engineering/claude-code-sandboxing
   - "Effective sandboxing requires both filesystem and network isolation"
-  - ONE isolation boundary recommended (Docker container OR SDK sandbox, not both)
+  - ONE isolation boundary recommended. Telclaude's supported runtime uses Docker container isolation; native/non-Docker deployment is retired.
 
 ## Workflow
 1) Plan → propose files to touch.
