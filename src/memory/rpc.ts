@@ -1,5 +1,4 @@
 import { getChildLogger } from "../logging.js";
-import { filterOutput } from "../security/output-filter.js";
 import {
 	createEntries,
 	createQuarantinedEntry,
@@ -8,6 +7,12 @@ import {
 	promoteEntryTrust,
 } from "./store.js";
 import type { MemoryCategory, MemoryEntry, MemorySource, TrustLevel } from "./types.js";
+import {
+	isValidCategory,
+	isValidSource,
+	isValidTrust,
+	validateMemoryEntryInput,
+} from "./validation.js";
 
 const logger = getChildLogger({ module: "memory-rpc" });
 
@@ -46,29 +51,11 @@ export type MemoryRpcResult<T> =
 	| { ok: false; status: number; error: string };
 
 const MAX_UPDATES_PER_REQUEST = 5;
-const MAX_STRING_LENGTH = 500;
 const MAX_ID_LENGTH = 128;
 const MAX_CHAT_ID_LENGTH = 64;
-const MAX_METADATA_LENGTH = 1_000;
 const MAX_QUERY_LIMIT = 500;
 const DEFAULT_QUERY_LIMIT = 200;
 const HOUR_MS = 60 * 60 * 1000;
-
-const FORBIDDEN_PATTERNS: RegExp[] = [
-	/^(system|assistant|developer|user)\s*:/i,
-	/\bignore\s+(all\s+)?previous\s+instructions?\b/i,
-	/\bdisregard\s+(all\s+)?previous\s+instructions?\b/i,
-	/\boverride\s+(the\s+)?(system|previous)\s+instructions?\b/i,
-	/\{\{[^}]{1,200}\}\}/,
-	/<script/i,
-	/javascript:/i,
-];
-
-const VALID_CATEGORIES: MemoryCategory[] = ["profile", "interests", "threads", "posts", "meta"];
-const VALID_TRUST: TrustLevel[] = ["trusted", "quarantined", "untrusted"];
-// Source IDs are validated by pattern (not a fixed list) to support
-// arbitrary social service IDs configured in socialServices[].
-const VALID_SOURCE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const rateBuckets = new Map<string, { windowStart: number; count: number }>();
 
@@ -78,18 +65,6 @@ function ok<T>(value: T): MemoryRpcResult<T> {
 
 function fail(status: number, error: string): MemoryRpcResult<never> {
 	return { ok: false, status, error };
-}
-
-function isValidCategory(value: unknown): value is MemoryCategory {
-	return typeof value === "string" && VALID_CATEGORIES.includes(value as MemoryCategory);
-}
-
-function isValidTrust(value: unknown): value is TrustLevel {
-	return typeof value === "string" && VALID_TRUST.includes(value as TrustLevel);
-}
-
-function isValidSource(value: unknown): value is MemorySource {
-	return typeof value === "string" && VALID_SOURCE_PATTERN.test(value);
 }
 
 function normalizeList<T extends string>(value?: T[] | T): T[] | undefined {
@@ -102,64 +77,8 @@ function normalizeLimit(limit?: number): number {
 	return Math.min(Math.max(Math.trunc(limit), 1), MAX_QUERY_LIMIT);
 }
 
-function checkForbiddenPatterns(value: string): string | null {
-	const trimmed = value.trim();
-	for (const pattern of FORBIDDEN_PATTERNS) {
-		if (pattern.test(trimmed)) {
-			return `Forbidden pattern detected (${pattern.source}).`;
-		}
-	}
-	// Block XML-like injection attempts (defense-in-depth against tag breakout)
-	if (/<\/?[a-z][^>]*>/i.test(value)) {
-		return "HTML/XML tags not allowed in memory entries.";
-	}
-	return null;
-}
-
 function validateEntry(entry: MemoryEntryInput): string | null {
-	if (!entry || typeof entry !== "object") {
-		return "Invalid memory entry.";
-	}
-	if (typeof entry.id !== "string" || entry.id.trim().length === 0) {
-		return "Entry id is required.";
-	}
-	const trimmedId = entry.id.trim();
-	if (trimmedId.length > MAX_ID_LENGTH) {
-		return "Entry id too long.";
-	}
-	if (!isValidCategory(entry.category)) {
-		return "Invalid memory category.";
-	}
-	if (typeof entry.content !== "string" || entry.content.trim().length === 0) {
-		return "Entry content is required.";
-	}
-	if (entry.content.length > MAX_STRING_LENGTH) {
-		return "Entry content too long.";
-	}
-	const forbidden = checkForbiddenPatterns(entry.content);
-	if (forbidden) {
-		return forbidden;
-	}
-	// M4: Reject content that looks like secrets/tokens
-	const secretResult = filterOutput(entry.content);
-	if (secretResult.blocked) {
-		const names = secretResult.matches.map((m) => m.pattern).join(", ");
-		return `Content rejected: potential secret detected (${names}).`;
-	}
-	if (entry.metadata !== undefined) {
-		if (!entry.metadata || typeof entry.metadata !== "object" || Array.isArray(entry.metadata)) {
-			return "Entry metadata must be an object.";
-		}
-		try {
-			const serialized = JSON.stringify(entry.metadata);
-			if (serialized.length > MAX_METADATA_LENGTH) {
-				return "Entry metadata too long.";
-			}
-		} catch {
-			return "Entry metadata must be JSON-serializable.";
-		}
-	}
-	return null;
+	return validateMemoryEntryInput(entry);
 }
 
 let lastRateBucketPrune = 0;

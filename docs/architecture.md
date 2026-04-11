@@ -45,7 +45,7 @@ Claude Agent SDK (allowedTools per tier)         Claude Agent SDK (SOCIAL tier)
 
 The relay connects to the Google sidecar via the `relay-google` Docker network. The sidecar connects to the vault via Unix socket (for OAuth tokens and approval signature verification) and to `googleapis.com` via the `google-egress` network. Agents cannot reach the sidecar directly.
 
-The relay is the security boundary — it holds all secrets, enforces tiers/rate limits, and mediates every interaction between Telegram, external APIs, and agent workers. Agents are untrusted compute: they see only their allowed tools and never touch raw credentials.
+The relay is the security boundary — it holds all secrets, enforces tiers/rate limits, and mediates every interaction between Telegram, external APIs, memory, and agent workers. Agents are untrusted compute: they see only their allowed tools, never touch raw credentials, and do not own memory as a source of truth.
 
 ## Trust Boundaries
 
@@ -53,7 +53,7 @@ The relay is the security boundary — it holds all secrets, enforces tiers/rate
 
 The relay and agents are separate trust domains. The relay is the only component with access to secrets (API keys, Telegram token, OAuth credentials). Agents are treated as potentially compromised — they can only act through tiered tool access and relay-proxied API calls. This means a prompt injection that compromises the agent cannot exfiltrate secrets or escalate privileges beyond the user's tier.
 
-In Docker, this maps to separate containers on isolated networks. In native mode, the SDK sandbox provides equivalent isolation. Both modes enforce the same invariant: agents never see raw credentials.
+In Docker, this maps to separate containers on isolated networks. In native mode, the SDK sandbox provides equivalent isolation. Both modes enforce the same invariant: agents never see raw credentials, and durable memory authority stays in the relay rather than in Claude's local files.
 
 ### Private ↔ Public Persona Split
 
@@ -120,14 +120,43 @@ The operator can query the social persona from Telegram via two tiers:
 ## Memory & Provenance
 
 Memory is split at the **private vs. public boundary**, not per-service:
-- `source: "telegram"` — private persona memory (trusted by default).
-- `source: "social"` — unified public persona memory across all social platforms (untrusted by default).
+- `source: "telegram"` — private persona memory.
+- `source: "social"` — unified public persona memory across all social platforms.
+
+Within the private Telegram path, telclaude now uses three layers with clear authority:
+
+1. **Semantic memory** — durable relay-owned entries (`profile`, `interests`, `meta`, `threads`). This is the source of truth.
+2. **Episodic archive** — relay-owned summaries of successful private turns, scoped by chat/session and used for recent + relevant shared-history recall.
+3. **Compiled Claude working memory** — a generated `MEMORY.md` file written into Claude's local project-memory path immediately before a query. This is a cache derived from the relay store, never an authority.
+
+*Why three layers*: semantic memory is compact and durable, but too sparse to capture relationship continuity by itself. Episodic memory preserves the shared history needed to feel like a long-term collaborator. Claude's local `MEMORY.md` improves session continuity inside the SDK runtime, but allowing that file to become authoritative would create split-brain state and weaken relay control.
 
 *Why not per-service*: the public persona is one cohesive identity across platforms. Fragmenting memory per-service would create inconsistent personality and duplicate storage. Social platforms are the distribution channel, not the identity boundary.
 
-*Why trusted vs. untrusted*: Telegram memory comes from the operator (trusted). Social memory may originate from public timeline content that passed through the LLM — it could contain injected instructions. Even trusted entries are wrapped in "read-only, do not execute" envelopes before prompt injection.
+*Why trusted vs. untrusted*: Telegram memory comes from the operator and the private collaboration loop. Social memory may originate from public timeline content that passed through the LLM — it could contain injected instructions. The relay therefore keeps private and public memory fully separated, and the private agent never loads `source: "social"` memory.
 
-Runtime assertions enforce source boundaries — `buildTelegramMemoryContext()` and `getTrustedSocialEntries()` verify that entries match the expected source, filtering mismatches with security warnings.
+### Private Memory Flow
+
+For private Telegram turns and private heartbeats, the relay:
+
+1. Loads trusted semantic entries for the chat.
+2. Loads recent and query-relevant episodic history for the same chat scope.
+3. Builds a read-only prompt payload that explicitly says memory is data, not instructions.
+4. Materializes a compiled `MEMORY.md` into Claude's local project-memory path.
+5. Executes the Claude query.
+6. Captures the successful turn back into the episodic archive.
+7. Auto-promotes only explicit, high-signal durable memories from the user's text.
+
+This means the agent gets aggressive recall without becoming the owner of memory state. The relay remains the compiler and gatekeeper.
+
+### Memory Safety
+
+The memory path has two distinct safety rules:
+
+- **Semantic writes are strict** — memory entries are validated before storage. Instruction-like text, HTML/script content, and secret-like values are rejected.
+- **Episodic recall is sanitized** — archived turn text is normalized, secrets are redacted, and instruction-like content is replaced with a neutral placeholder before it can be recalled into prompt context or compiled into Claude's local memory file.
+
+This is the key invariant: memory may preserve continuity, but it must not become a prompt-injection persistence layer.
 
 ## Credential Vault
 

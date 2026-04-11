@@ -208,8 +208,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
-| `telclaude-agent` | `/home/telclaude-skills` | Claude skills (telegram agent) | Named volume |
-| `agent-social` | `/home/telclaude-skills` | Claude skills (social agent) | Named volume |
+| `telclaude-agent` | `/home/telclaude-skills` | Claude skills + compiled private working-memory cache | Named volume |
+| `agent-social` | `/home/telclaude-skills` | Claude skills for social persona (no private Telegram memory) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
 | `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
@@ -252,6 +252,17 @@ Telclaude uses a two-file config split to keep secrets out of agent containers:
 | `telclaude-private.json` | Relay only | Relay-only: allowedChats, permissions, deprecated secret fields |
 
 The relay deep-merges private on top of policy (`TELCLAUDE_PRIVATE_CONFIG` env var). Agents only read the policy file.
+
+### Relay-Compiled Claude Memory
+
+The private Telegram agent does not own durable memory. The relay stores the authoritative memory state in SQLite and compiles a working-memory file for Claude only when needed.
+
+- Semantic memory entries and episodic shared-history summaries live in the relay database.
+- Before a private query starts, the relay writes a derived `MEMORY.md` file into `/home/telclaude-skills/projects/<project-slug>/memory/MEMORY.md`.
+- That file is a cache for Claude's local memory mechanism. It is safe to delete; the relay will regenerate it.
+- The file must not be treated as a secret store or as an independent source of truth.
+
+This keeps the "good friend" continuity benefits of Claude's local memory system without weakening the relay boundary.
 
 **Policy config** (`telclaude.json` — safe for all containers):
 ```json

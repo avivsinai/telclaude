@@ -12,6 +12,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 ## Highlights
 - Mandatory isolation boundary: SDK sandbox (Seatbelt/bubblewrap) in native mode, relay+agent containers + firewall in Docker mode.
 - Credential vault: sidecar daemon stores API keys and injects them into requests — agents never see raw credentials.
+- Relay-authoritative memory: trusted semantic memory + episodic shared history archive + compiled Claude `MEMORY.md` working set. Private recall is aggressive, but source boundaries remain hard.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
 - Four permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
@@ -114,6 +115,8 @@ This starts 6 containers: `telclaude` (relay), `telclaude-agent` (private person
 
 Note: Docker uses a shared **skills** profile (`/home/telclaude-skills`) and a relay-only **auth** profile (`/home/telclaude-auth`). Agents access Anthropic through the relay proxy; credentials never mount in agent containers.
 
+The relay also compiles private Telegram memory into the agent's Claude project-memory path under `/home/telclaude-skills/projects/<project-slug>/memory/MEMORY.md`. That file is a working-set cache, not the source of truth.
+
 ## Quick start (local)
 1) Clone and install
 ```bash
@@ -177,6 +180,23 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `/system` — system status, sessions, cron (card-based with inline buttons).
 - `/me`, `/auth`, `/social`, `/skills` — identity, 2FA, social persona, skill management.
 - `/approve`, `/new` — fast-path shortcuts for approvals and session reset.
+
+## Memory model
+
+Telclaude uses three memory layers for the private persona:
+
+1. **Semantic memory** — durable entries in the relay database (`profile`, `interests`, `meta`, `threads`). This is the authoritative store.
+2. **Episodic archive** — relay-owned summaries of private turns used for recent and query-relevant shared-history recall.
+3. **Compiled Claude working memory** — a generated `MEMORY.md` file materialized into Claude's local project-memory path before a query starts.
+
+The agent never owns the source of truth. The relay assembles a scoped memory bundle, injects it into the prompt as read-only data, materializes the compiled `MEMORY.md`, and then captures successful turns back into the episodic archive. Automatic memory extraction is conservative: explicit durable facts are promoted automatically, while secrets and instruction-like content are rejected or sanitized.
+
+Inspect the current private memory bundle with:
+
+```bash
+pnpm dev memory context --chat-id <telegram-chat-id> --query "oauth vault refresh"
+pnpm dev memory context --chat-id <telegram-chat-id> --markdown
+```
 
 ## Configuration
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).

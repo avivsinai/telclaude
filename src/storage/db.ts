@@ -274,6 +274,28 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_trust ON memory_entries(trust);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_created ON memory_entries(created_at);
 		CREATE INDEX IF NOT EXISTS idx_memory_entries_posted ON memory_entries(posted_at);
+		CREATE INDEX IF NOT EXISTS idx_memory_entries_chat ON memory_entries(chat_id);
+
+		-- Episodic memory archive (relay-owned conversation history)
+		CREATE TABLE IF NOT EXISTS memory_episodes (
+			id TEXT PRIMARY KEY,
+			source TEXT NOT NULL,
+			scope_key TEXT NOT NULL,
+			chat_id TEXT,
+			session_key TEXT,
+			session_id TEXT,
+			user_text TEXT NOT NULL,
+			assistant_text TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			metadata TEXT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_memory_episodes_scope_created
+			ON memory_episodes(scope_key, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_memory_episodes_source_created
+			ON memory_episodes(source, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_memory_episodes_chat_created
+			ON memory_episodes(chat_id, created_at DESC);
 
 		-- Cron jobs (local scheduler state)
 		CREATE TABLE IF NOT EXISTS cron_jobs (

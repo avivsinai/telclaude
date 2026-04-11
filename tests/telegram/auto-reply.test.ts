@@ -47,6 +47,21 @@ vi.mock("../../src/memory/telegram-context.js", () => ({
 	buildTelegramMemoryContext: () => null,
 }));
 
+vi.mock("../../src/memory/telegram-memory.js", () => ({
+	buildTelegramMemoryBundle: () => ({
+		stableEntries: [],
+		recentEpisodes: [],
+		relevantEpisodes: [],
+		promptContext: null,
+		compiledMemoryMd: "# Compiled Memory\n",
+	}),
+	buildTelegramMemoryPolicyPrompt: () => "<memory-policy />",
+}));
+
+vi.mock("../../src/memory/telegram-capture.js", () => ({
+	captureTelegramTurnMemory: vi.fn(),
+}));
+
 vi.mock("../../src/telegram/system-context.js", () => ({
 	buildSystemInfoContext: () => null,
 }));

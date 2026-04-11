@@ -35,6 +35,7 @@ import {
 } from "../config/config.js";
 import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
+import { materializeClaudeProjectMemory } from "../memory/materialize.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
@@ -164,6 +165,9 @@ export type TelclaudeQueryOptions = {
 	 * Docker deployments must keep raw credentials inside the relay and use
 	 * the git proxy / HTTP credential proxy instead of sandbox env injection. */
 	exposedCredentials?: ExposedCredentials;
+
+	/** Relay-compiled memory snapshot for Claude's local working-memory file. */
+	compiledMemoryMd?: string;
 };
 
 /**
@@ -793,6 +797,14 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
  * - Native: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
  */
 export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKOptions> {
+	if (opts.compiledMemoryMd) {
+		try {
+			materializeClaudeProjectMemory(opts.cwd, opts.compiledMemoryMd);
+		} catch (error) {
+			logger.warn({ error: String(error) }, "failed to materialize compiled Claude memory");
+		}
+	}
+
 	// Create abort controller with timeout if specified
 	let abortController = opts.abortController;
 	if (opts.timeoutMs && !abortController) {

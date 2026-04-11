@@ -43,6 +43,8 @@ type QueryRequest = {
 	outputFormat?: OutputFormat;
 	/** Relay-resolved credentials for tier-based key exposure (Docker mode). */
 	exposedCredentials?: ExposedCredentials;
+	/** Relay-compiled Claude working memory snapshot. */
+	compiledMemoryMd?: string;
 };
 
 type AgentServerOptions = {
@@ -171,6 +173,7 @@ async function streamQuery(
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
 			exposedCredentials: req.exposedCredentials,
+			compiledMemoryMd: req.compiledMemoryMd,
 		})) {
 			if (!firstChunkReceived) {
 				firstChunkReceived = true;
@@ -271,6 +274,10 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				}
 				if (parsed.cwd !== undefined && typeof parsed.cwd !== "string") {
 					writeJson(res, 400, { error: "Invalid cwd." });
+					return;
+				}
+				if (parsed.compiledMemoryMd !== undefined && typeof parsed.compiledMemoryMd !== "string") {
+					writeJson(res, 400, { error: "Invalid compiledMemoryMd." });
 					return;
 				}
 
