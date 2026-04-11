@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-04-11
+
+### Added
+
+- **Relay-owned episodic private memory** - Successful Telegram turns are now captured into a scoped episodic archive and recalled as recent or query-relevant shared history.
+- **Compiled Claude working memory** - The relay now materializes a derived `MEMORY.md` working set into Claude's local project-memory path before private queries and heartbeats.
+- **Memory context inspection** - Added `telclaude memory context` to inspect the private prompt bundle or the compiled markdown view for a chat.
+
+### Changed
+
+- **Private memory recall** - Telegram queries and private heartbeats now use the same relay-built memory bundle, combining trusted semantic memory with sanitized episodic recall and an explicit memory policy prompt.
+- **Memory skill guidance** - The memory skill now pushes harder on preserving durable details about life, work, preferences, shared history, and collaboration patterns.
+
+### Fixed
+
+- **Anthropic OAuth env fallback** - The relay now preserves the required Anthropic OAuth beta header when falling back from vault OAuth to env-provided OAuth tokens.
+
+### Security
+
+- **Docker FULL_ACCESS credential boundary** - Docker FULL_ACCESS runs now keep provider credentials inside relay/vault/proxy paths instead of exposing raw provider keys to the agent runtime.
+- **Memory write validation unified** - Automatic private-memory extraction now uses the same validation rules as relay memory RPC, preventing instruction-like or secret-bearing content from being promoted as durable memory.
+- **Episodic recall sanitization** - Archived turn text is now normalized, secret-redacted, and stripped of instruction-like content before it can be re-injected into prompt context or compiled into Claude's local memory file.
+
 ## [0.6.1] - 2026-03-12
 
 ### Added
@@ -280,7 +303,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Credential isolation via TOTP daemon
 - Rate limiting fails closed
 
-[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/avivsinai/telclaude/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/avivsinai/telclaude/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/avivsinai/telclaude/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/avivsinai/telclaude/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/avivsinai/telclaude/compare/v0.5.4...v0.5.5
