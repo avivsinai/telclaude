@@ -389,11 +389,11 @@ This bypass is logged to the audit log.
 
 ## Troubleshooting
 
-### "Sandbox unavailable" (native mode only)
+### "Sandbox unavailable"
 
-Docker mode disables the SDK sandbox, so this error should not appear inside the container.
-If you see it, you are likely running native mode outside Docker. On Linux, install
-`bubblewrap` and `socat` and retry.
+The supported runtime is Docker-only, and Docker mode disables the SDK sandbox.
+If you see this error, you are likely starting telclaude outside the Compose stack.
+Run it inside Docker instead of trying to repair a native setup.
 
 ### "Permission denied" on workspace
 

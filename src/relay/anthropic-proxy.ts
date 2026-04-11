@@ -412,7 +412,7 @@ async function buildAuthHeader(): Promise<AuthHeader | null> {
 		return { name: "x-api-key", value: apiKey, source: "env" };
 	}
 
-	// 4. Credentials file fallback (dev/native mode, before vault import)
+	// 4. Credentials file fallback (legacy/local auth files, before vault import)
 	const authDir = process.env.TELCLAUDE_AUTH_DIR;
 	const credentialsCandidates = [
 		process.env.CLAUDE_CODE_CREDENTIALS_PATH,

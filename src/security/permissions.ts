@@ -133,9 +133,8 @@ export function getUserPermissionTier(
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
 
-	// Note: In native mode, SDK sandbox provides isolation.
-	// In Docker mode, the container provides isolation.
-	// FULL_ACCESS is safe in both cases since there's always a security boundary.
+	// Supported runtime is Docker-only. FULL_ACCESS still relies on the
+	// container boundary plus relay-mediated credential access.
 	if (tier === "FULL_ACCESS" && !shouldEnableSdkSandbox()) {
 		logger.debug(
 			{ userId: normalizedId, tier },

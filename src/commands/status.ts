@@ -192,6 +192,9 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 }
 
 export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false): string {
+	const sandboxModeLabel =
+		status.runtime.sandboxMode === "docker" ? "docker" : "native (unsupported)";
+
 	if (telegram) {
 		const lines: string[] = [
 			"=== Telclaude Status ===",
@@ -199,7 +202,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 			"Runtime:",
 			`  Version: ${status.runtime.version}`,
 			`  Revision: ${status.runtime.revision}`,
-			`  Mode: ${status.runtime.sandboxMode}`,
+			`  Mode: ${sandboxModeLabel}`,
 			`  CLI Started: ${status.runtime.startedAt}`,
 			`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`,
 			"",
@@ -249,7 +252,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push("Runtime:");
 	lines.push(`  Version: ${status.runtime.version}`);
 	lines.push(`  Revision: ${status.runtime.revision}`);
-	lines.push(`  Mode: ${status.runtime.sandboxMode}`);
+	lines.push(`  Mode: ${sandboxModeLabel}`);
 	lines.push(`  CLI Started: ${status.runtime.startedAt}`);
 	lines.push(`  CLI Uptime: ${formatUptime(status.runtime.uptimeSeconds)}`);
 	lines.push("");

@@ -1,4 +1,3 @@
-import { execSync } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -25,12 +24,11 @@ import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import {
+	assertDockerRuntime,
 	buildAllowedDomainNames,
 	buildAllowedDomains,
 	DEFAULT_NETWORK_CONFIG,
 	getNetworkIsolationSummary,
-	getSandboxMode,
-	getSandboxRuntimeVersion,
 } from "../sandbox/index.js";
 import { destroySessionManager } from "../sdk/session-manager.js";
 import { isTOTPDaemonAvailable } from "../security/totp.js";
@@ -47,50 +45,6 @@ import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
-
-/**
- * Check if a binary is available on PATH.
- */
-function isBinaryAvailable(name: string): boolean {
-	try {
-		execSync(`which ${name}`, { stdio: "ignore" });
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Check host dependencies for native sandbox mode.
- * Returns list of missing dependencies.
- */
-interface SandboxDepsCheck {
-	criticalMissing: string[]; // Security-critical, hard fail
-	optionalMissing: string[]; // Nice-to-have, warn only
-}
-
-function checkNativeSandboxDeps(): SandboxDepsCheck {
-	const criticalMissing: string[] = [];
-	const optionalMissing: string[] = [];
-	const platform = os.platform();
-
-	if (platform === "linux") {
-		// Linux REQUIRES bubblewrap for sandbox (security-critical)
-		if (!isBinaryAvailable("bwrap")) {
-			criticalMissing.push("bubblewrap (bwrap)");
-		}
-		// socat needed for network proxy (security-critical for network isolation)
-		if (!isBinaryAvailable("socat")) {
-			criticalMissing.push("socat");
-		}
-	}
-	// ripgrep is nice-to-have for Grep tool but not security-critical
-	if (!isBinaryAvailable("rg")) {
-		optionalMissing.push("ripgrep (rg)");
-	}
-
-	return { criticalMissing, optionalMissing };
-}
 
 export type RelayOptions = {
 	verbose?: boolean;
@@ -114,6 +68,8 @@ export function registerRelayCommand(program: Command): void {
 			}
 
 			try {
+				assertDockerRuntime("telclaude relay");
+
 				const cfg = loadConfig();
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
@@ -307,109 +263,55 @@ export function registerRelayCommand(program: Command): void {
 					}
 				}
 
-				// Detect sandbox mode and verify sandbox availability
-				const sandboxMode = getSandboxMode();
 				const usesRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
-				if (sandboxMode === "docker") {
-					if (usesRemoteAgent) {
-						console.log("Sandbox: Docker mode (relay-only, SDK runs in agent container)");
-					} else {
-						console.log(
-							"Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)",
+				if (usesRemoteAgent) {
+					console.log("Sandbox: Docker mode (relay-only, SDK runs in agent container)");
+				} else {
+					console.log("Sandbox: Docker mode (SDK sandbox disabled, container provides isolation)");
+				}
+				// SECURITY: Docker mode REQUIRES firewall for network isolation
+				if (process.env.TELCLAUDE_FIREWALL !== "1") {
+					if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
+						console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - network isolation is OFF");
+						console.warn("     Running anyway due to TELCLAUDE_ACCEPT_NO_FIREWALL=1");
+						console.warn("     THIS IS A SECURITY RISK - use only for testing");
+						// AUDIT: Log the security bypass
+						logger.warn(
+							{ bypass: "TELCLAUDE_ACCEPT_NO_FIREWALL" },
+							"SECURITY BYPASS: Running Docker mode without network firewall",
 						);
-					}
-					// SECURITY: Docker mode REQUIRES firewall for network isolation
-					if (process.env.TELCLAUDE_FIREWALL !== "1") {
-						if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
-							console.warn("  ⚠️  TELCLAUDE_FIREWALL not enabled - network isolation is OFF");
-							console.warn("     Running anyway due to TELCLAUDE_ACCEPT_NO_FIREWALL=1");
-							console.warn("     THIS IS A SECURITY RISK - use only for testing");
-							// AUDIT: Log the security bypass
-							logger.warn(
-								{ bypass: "TELCLAUDE_ACCEPT_NO_FIREWALL" },
-								"SECURITY BYPASS: Running Docker mode without network firewall",
-							);
-						} else {
-							console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
-							console.error("In Docker mode, the SDK sandbox is disabled.");
-							console.error("Without TELCLAUDE_FIREWALL=1, container egress is not isolated");
-							console.error("and can reach arbitrary endpoints (including cloud metadata).\n");
-							console.error("To fix:");
-							console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
-							console.error("  - Ensure init-firewall.sh runs (requires NET_ADMIN capability)\n");
-							console.error("To bypass (TESTING ONLY - NOT FOR PRODUCTION):");
-							console.error("  - Set TELCLAUDE_ACCEPT_NO_FIREWALL=1\n");
-							process.exit(1);
-						}
 					} else {
-						// TELCLAUDE_FIREWALL=1 - verify firewall is actually applied via sentinel file
-						const sentinelPath = "/run/telclaude/firewall-active";
-						if (!fsSync.existsSync(sentinelPath)) {
-							console.error("\n❌ SECURITY ERROR: Firewall enabled but not verified.\n");
-							console.error(
-								"TELCLAUDE_FIREWALL=1 is set, but the firewall sentinel file is missing.",
-							);
-							console.error(`Expected: ${sentinelPath}\n`);
-							console.error("This means init-firewall.sh failed or didn't run.");
-							console.error("Possible causes:");
-							console.error("  - Container missing --cap-add=NET_ADMIN capability");
-							console.error("  - iptables not available in container");
-							console.error("  - init-firewall.sh not executed at container start\n");
-							console.error("To fix:");
-							console.error("  - Ensure docker-compose.yml has cap_add: [NET_ADMIN]");
-							console.error("  - Check container logs for firewall setup errors\n");
-							process.exit(1);
-						}
-						console.log("  Firewall: verified (sentinel file present)");
+						console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
+						console.error("In Docker mode, the SDK sandbox is disabled.");
+						console.error("Without TELCLAUDE_FIREWALL=1, container egress is not isolated");
+						console.error("and can reach arbitrary endpoints (including cloud metadata).\n");
+						console.error("To fix:");
+						console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
+						console.error("  - Ensure init-firewall.sh runs (requires NET_ADMIN capability)\n");
+						console.error("To bypass (TESTING ONLY - NOT FOR PRODUCTION):");
+						console.error("  - Set TELCLAUDE_ACCEPT_NO_FIREWALL=1\n");
+						process.exit(1);
 					}
 				} else {
-					// Native mode: verify SDK sandbox runtime is available
-					const sandboxVersion = getSandboxRuntimeVersion();
-					if (!sandboxVersion) {
-						console.error("\n❌ SECURITY ERROR: Sandbox runtime not available.\n");
+					// TELCLAUDE_FIREWALL=1 - verify firewall is actually applied via sentinel file
+					const sentinelPath = "/run/telclaude/firewall-active";
+					if (!fsSync.existsSync(sentinelPath)) {
+						console.error("\n❌ SECURITY ERROR: Firewall enabled but not verified.\n");
 						console.error(
-							"In native mode, the SDK sandbox (@anthropic-ai/sandbox-runtime) is required.",
+							"TELCLAUDE_FIREWALL=1 is set, but the firewall sentinel file is missing.",
 						);
-						console.error(
-							"This provides filesystem and network isolation via bubblewrap (Linux) or Seatbelt (macOS).\n",
-						);
+						console.error(`Expected: ${sentinelPath}\n`);
+						console.error("This means init-firewall.sh failed or didn't run.");
+						console.error("Possible causes:");
+						console.error("  - Container missing --cap-add=NET_ADMIN capability");
+						console.error("  - iptables not available in container");
+						console.error("  - init-firewall.sh not executed at container start\n");
 						console.error("To fix:");
-						console.error(
-							"  - Run: pnpm install (sandbox-runtime should be installed as a dependency)",
-						);
-						console.error("  - On Linux: ensure bubblewrap is installed (apt install bubblewrap)");
-						console.error("  - Alternatively, run in Docker mode for container-based isolation\n");
+						console.error("  - Ensure docker-compose.yml has cap_add: [NET_ADMIN]");
+						console.error("  - Check container logs for firewall setup errors\n");
 						process.exit(1);
 					}
-					console.log(`Sandbox: Native mode (SDK sandbox v${sandboxVersion})`);
-
-					// Check for host dependencies (bwrap, socat, rg)
-					const { criticalMissing, optionalMissing } = checkNativeSandboxDeps();
-
-					// Security-critical deps are a hard fail
-					if (criticalMissing.length > 0) {
-						console.error(
-							`\n❌ SECURITY ERROR: Missing critical sandbox dependencies: ${criticalMissing.join(", ")}\n`,
-						);
-						console.error("These are required for secure sandbox operation on Linux.");
-						console.error(
-							"Without them, the sandbox cannot provide filesystem/network isolation.\n",
-						);
-						console.error("To fix:");
-						console.error("  - Install: apt install bubblewrap socat");
-						console.error("  - Or run in Docker mode for container-based isolation\n");
-						process.exit(1);
-					}
-
-					// Optional deps are just a warning
-					if (optionalMissing.length > 0) {
-						console.warn(`  ⚠️  Missing optional: ${optionalMissing.join(", ")}`);
-						if (os.platform() === "linux") {
-							console.warn("     Install: apt install ripgrep");
-						} else {
-							console.warn("     Install: brew install ripgrep");
-						}
-					}
+					console.log("  Firewall: verified (sentinel file present)");
 				}
 
 				// Network policy - default is strict allowlist

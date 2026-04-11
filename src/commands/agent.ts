@@ -10,7 +10,7 @@ import {
 	writeProviderSchemaFromRelay,
 } from "../providers/provider-skill.js";
 import { relayGetProviders } from "../relay/capabilities-client.js";
-import { getSandboxMode } from "../sandbox/index.js";
+import { assertDockerRuntime } from "../sandbox/index.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { runDaemon } from "./cli-utils.js";
 
@@ -24,6 +24,7 @@ export function registerAgentCommand(program: Command): void {
 		.option("--host <host>", "Host to bind the agent server")
 		.action(async (opts: { port?: string; host?: string }) => {
 			installUnhandledRejectionHandler("agent");
+			assertDockerRuntime("telclaude agent");
 
 			const port = opts.port ? Number.parseInt(opts.port, 10) : undefined;
 			const host = opts.host;
@@ -31,47 +32,43 @@ export function registerAgentCommand(program: Command): void {
 				process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY || process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY,
 			);
 
-			if (getSandboxMode() === "docker") {
-				if (process.env.TELCLAUDE_FIREWALL !== "1") {
-					if (isSocialAgent) {
-						console.error("\n❌ SECURITY ERROR: Social agent requires firewall.\n");
-						console.error("Social agents run untrusted inputs and must be isolated.");
-						console.error("Set TELCLAUDE_FIREWALL=1 and ensure init-firewall.sh succeeds.\n");
-						process.exit(1);
-					}
-					if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
-						logger.warn("TELCLAUDE_FIREWALL not enabled - agent tools have NO network isolation");
-					} else {
-						console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
-						console.error("The agent runs tools without the SDK sandbox in Docker mode.");
-						console.error("Without TELCLAUDE_FIREWALL=1, Bash can reach arbitrary endpoints.\n");
-						console.error("To fix:");
-						console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
-						console.error("  - Ensure init-firewall.sh runs (requires NET_ADMIN capability)\n");
-						console.error("To bypass (TESTING ONLY - NOT FOR PRODUCTION):");
-						console.error("  - Set TELCLAUDE_ACCEPT_NO_FIREWALL=1\n");
-						process.exit(1);
-					}
-				} else {
-					const sentinelPath = "/run/telclaude/firewall-active";
-					if (!fsSync.existsSync(sentinelPath)) {
-						console.error("\n❌ SECURITY ERROR: Firewall enabled but not verified.\n");
-						console.error(
-							"TELCLAUDE_FIREWALL=1 is set, but the firewall sentinel file is missing.",
-						);
-						console.error(`Expected: ${sentinelPath}\n`);
-						console.error("This means init-firewall.sh failed or didn't run.");
-						console.error("Possible causes:");
-						console.error("  - Container missing --cap-add=NET_ADMIN capability");
-						console.error("  - iptables not available in container");
-						console.error("  - init-firewall.sh not executed at container start\n");
-						console.error("To fix:");
-						console.error("  - Ensure docker-compose.yml has cap_add: [NET_ADMIN]");
-						console.error("  - Check container logs for firewall setup errors\n");
-						process.exit(1);
-					}
-					logger.info("Firewall: verified (sentinel file present)");
+			if (process.env.TELCLAUDE_FIREWALL !== "1") {
+				if (isSocialAgent) {
+					console.error("\n❌ SECURITY ERROR: Social agent requires firewall.\n");
+					console.error("Social agents run untrusted inputs and must be isolated.");
+					console.error("Set TELCLAUDE_FIREWALL=1 and ensure init-firewall.sh succeeds.\n");
+					process.exit(1);
 				}
+				if (process.env.TELCLAUDE_ACCEPT_NO_FIREWALL === "1") {
+					logger.warn("TELCLAUDE_FIREWALL not enabled - agent tools have NO network isolation");
+				} else {
+					console.error("\n❌ SECURITY ERROR: Docker mode requires network firewall.\n");
+					console.error("The agent runs tools without the SDK sandbox in Docker mode.");
+					console.error("Without TELCLAUDE_FIREWALL=1, Bash can reach arbitrary endpoints.\n");
+					console.error("To fix:");
+					console.error("  - Set TELCLAUDE_FIREWALL=1 in your docker/.env file");
+					console.error("  - Ensure init-firewall.sh runs (requires NET_ADMIN capability)\n");
+					console.error("To bypass (TESTING ONLY - NOT FOR PRODUCTION):");
+					console.error("  - Set TELCLAUDE_ACCEPT_NO_FIREWALL=1\n");
+					process.exit(1);
+				}
+			} else {
+				const sentinelPath = "/run/telclaude/firewall-active";
+				if (!fsSync.existsSync(sentinelPath)) {
+					console.error("\n❌ SECURITY ERROR: Firewall enabled but not verified.\n");
+					console.error("TELCLAUDE_FIREWALL=1 is set, but the firewall sentinel file is missing.");
+					console.error(`Expected: ${sentinelPath}\n`);
+					console.error("This means init-firewall.sh failed or didn't run.");
+					console.error("Possible causes:");
+					console.error("  - Container missing --cap-add=NET_ADMIN capability");
+					console.error("  - iptables not available in container");
+					console.error("  - init-firewall.sh not executed at container start\n");
+					console.error("To fix:");
+					console.error("  - Ensure docker-compose.yml has cap_add: [NET_ADMIN]");
+					console.error("  - Check container logs for firewall setup errors\n");
+					process.exit(1);
+				}
+				logger.info("Firewall: verified (sentinel file present)");
 			}
 
 			startAgentServer({
