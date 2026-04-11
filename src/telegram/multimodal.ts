@@ -247,6 +247,33 @@ export function buildMultimodalPrompt(ctx: MultimodalContext): string {
 }
 
 /**
+ * Build a compact, path-free version of the user input for durable memory capture.
+ * This intentionally omits local file paths while preserving the human meaning of the turn.
+ */
+export function buildMemoryCaptureText(ctx: MultimodalContext): string {
+	const { body, mediaType, mimeType, transcript, framePaths } = ctx;
+	const trimmedBody = body.trim();
+
+	if (!mediaType) {
+		return trimmedBody || "User sent a short empty message.";
+	}
+
+	const mediaDescription = getMediaDescription(mediaType, mimeType);
+	const parts: string[] = [];
+	if (trimmedBody) {
+		parts.push(trimmedBody);
+	}
+	parts.push(`[Attached: ${mediaDescription}]`);
+	if (transcript) {
+		parts.push(`[Transcript] ${transcript}`);
+	}
+	if (framePaths && framePaths.length > 0) {
+		parts.push(`[Video frames extracted: ${framePaths.length}]`);
+	}
+	return parts.join("\n");
+}
+
+/**
  * Get a human-readable description of the media type.
  */
 function getMediaDescription(mediaType: TelegramMediaType, mimeType?: string): string {

@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Command } from "commander";
+import { buildTelegramMemoryBundle } from "../memory/telegram-memory.js";
 import type { MemoryCategory, TrustLevel } from "../memory/types.js";
 import { quarantineIdea, readMemory, writeMemory } from "../services/memory.js";
 
@@ -54,6 +55,40 @@ export function registerMemoryCommands(program: Command): void {
 				}
 			},
 		);
+
+	memory
+		.command("context")
+		.description("Render the compiled Telegram memory bundle for a chat")
+		.option("--chat-id <id>", "Chat ID for scoping", process.env.TELCLAUDE_CHAT_ID)
+		.option("--query <text>", "Current query for relevant shared-history recall")
+		.option("--markdown", "Print the compiled Claude MEMORY.md view")
+		.action(async (opts: { chatId?: string; query?: string; markdown?: boolean }) => {
+			try {
+				const bundle = buildTelegramMemoryBundle({
+					chatId: opts.chatId,
+					query: opts.query,
+					includeRecentHistory: true,
+				});
+				if (opts.markdown) {
+					console.log(bundle.compiledMemoryMd);
+					return;
+				}
+				console.log(
+					JSON.stringify(
+						{
+							stableEntries: bundle.stableEntries,
+							recentEpisodes: bundle.recentEpisodes,
+							relevantEpisodes: bundle.relevantEpisodes,
+							promptContext: bundle.promptContext,
+						},
+						null,
+						2,
+					),
+				);
+			} catch (err) {
+				handleCommandError(err);
+			}
+		});
 
 	memory
 		.command("write")
