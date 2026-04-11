@@ -1,14 +1,10 @@
 /**
- * Sandbox mode detection.
+ * Runtime environment detection.
  *
- * Determines whether to use Docker-provided isolation or SDK's native sandbox.
- *
- * Architecture:
- * - Docker mode: SDK sandbox DISABLED. Docker container provides isolation.
- * - Native mode: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
- *
- * This follows Anthropic's recommended pattern: use ONE isolation boundary,
- * not layered sandboxes which cause complexity and compatibility issues.
+ * Telclaude's supported runtime is Docker-only. We still expose mode detection
+ * helpers because diagnostics and unit tests need to distinguish Docker from
+ * non-Docker environments, but service/runtime entrypoints must fail closed
+ * outside Docker.
  */
 
 import fs from "node:fs";
@@ -17,6 +13,10 @@ import { getChildLogger } from "../logging.js";
 const logger = getChildLogger({ module: "sandbox-mode" });
 
 export type SandboxMode = "docker" | "native";
+
+export function getDockerRuntimeRequirementMessage(context = "Telclaude runtime"): string {
+	return `${context} requires Docker. Native/non-Docker deployment is retired and unsupported. Run it inside the Docker Compose stack.`;
+}
 
 /**
  * Detect if running inside Docker container.
@@ -51,12 +51,19 @@ export function isDockerEnvironment(): boolean {
  */
 export function getSandboxMode(): SandboxMode {
 	if (isDockerEnvironment()) {
-		logger.debug("detected Docker environment - SDK sandbox will be disabled");
+		logger.debug("detected Docker environment");
 		return "docker";
 	}
 
-	logger.debug("detected native environment - SDK sandbox will be enabled");
+	logger.debug("detected non-Docker environment");
 	return "native";
+}
+
+export function assertDockerRuntime(context = "Telclaude runtime"): void {
+	if (isDockerEnvironment()) {
+		return;
+	}
+	throw new Error(getDockerRuntimeRequirementMessage(context));
 }
 
 /**

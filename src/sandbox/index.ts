@@ -32,6 +32,8 @@ export {
 } from "./fetch-guard.js";
 // Mode detection
 export {
+	assertDockerRuntime,
+	getDockerRuntimeRequirementMessage,
 	getSandboxMode,
 	isDockerEnvironment,
 	type SandboxMode,

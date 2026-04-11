@@ -17,9 +17,16 @@ vi.mock("../../src/logging.js", () => ({
 
 import { executePooledQuery } from "../../src/sdk/client.js";
 
+const ORIGINAL_DOCKER_ENV = process.env.TELCLAUDE_DOCKER;
+
 afterEach(() => {
 	queryMock.mockReset();
 	vi.resetModules();
+	if (ORIGINAL_DOCKER_ENV === undefined) {
+		delete process.env.TELCLAUDE_DOCKER;
+	} else {
+		process.env.TELCLAUDE_DOCKER = ORIGINAL_DOCKER_ENV;
+	}
 });
 
 function collectChunks<T>(iterable: AsyncIterable<T>): Promise<T[]> {
@@ -32,6 +39,7 @@ function collectChunks<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 
 describe("executePooledQuery streaming", () => {
 	it("emits text -> tool_use -> done with streamed response", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
 		queryMock.mockReturnValueOnce(
 			(async function* () {
 				yield {
@@ -68,6 +76,7 @@ describe("executePooledQuery streaming", () => {
 	});
 
 	it("accumulates tool input from input_json_delta events", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
 		queryMock.mockReturnValueOnce(
 			(async function* () {
 				yield {
@@ -108,6 +117,7 @@ describe("executePooledQuery streaming", () => {
 	});
 
 	it("falls back to assistant message text when no stream events", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
 		queryMock.mockReturnValueOnce(
 			(async function* () {
 				yield {
@@ -135,5 +145,19 @@ describe("executePooledQuery streaming", () => {
 		expect(chunks.map((c: any) => c.type)).toEqual(["text", "done"]);
 		expect((chunks[0] as any).content).toBe("Fallback text");
 		expect((chunks[1] as any).result.response).toBe("Fallback text");
+	});
+
+	it("fails closed outside Docker", async () => {
+		delete process.env.TELCLAUDE_DOCKER;
+
+		await expect(
+			collectChunks(
+				executePooledQuery("prompt", {
+					cwd: "/tmp",
+					tier: "READ_ONLY",
+					poolKey: "chat-4",
+				}),
+			),
+		).rejects.toThrow(/requires Docker/);
 	});
 });

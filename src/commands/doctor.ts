@@ -9,11 +9,9 @@ import {
 	buildAllowedDomainNames,
 	buildAllowedDomains,
 	DEFAULT_NETWORK_CONFIG,
+	getDockerRuntimeRequirementMessage,
 	getNetworkIsolationSummary,
 	getSandboxMode,
-	getSandboxRuntimeVersion,
-	isSandboxRuntimeAtLeast,
-	MIN_SANDBOX_RUNTIME_VERSION,
 	runNetworkSelfTest,
 } from "../sandbox/index.js";
 import { CORE_SECRET_PATTERNS, filterOutput, redactSecrets } from "../security/index.js";
@@ -114,10 +112,6 @@ export function registerDoctorCommand(program: Command): void {
 					// TOTP daemon check
 					const totpDaemonAvailable = await isTOTPDaemonAvailable();
 
-					// Sandbox runtime version (CVE guardrail)
-					const sandboxRuntimeVersion = getSandboxRuntimeVersion();
-					const sandboxRuntimePatched = isSandboxRuntimeAtLeast();
-
 					// Load config for profile info
 					const cfg = loadConfig();
 					const profile = cfg.security?.profile ?? "simple";
@@ -160,7 +154,7 @@ export function registerDoctorCommand(program: Command): void {
 					const sandboxDesc =
 						sandboxMode === "docker"
 							? "Docker container (SDK sandbox disabled)"
-							: "SDK sandbox (bubblewrap/Seatbelt)";
+							: "unsupported non-Docker runtime";
 					console.log(`   1. Filesystem isolation: ✓ ${sandboxDesc}`);
 					console.log("   2. Environment isolation: ✓ minimal env vars passed to sandbox");
 
@@ -194,21 +188,11 @@ export function registerDoctorCommand(program: Command): void {
 
 					// Sandbox details
 					console.log("\n📦 Sandbox");
-					console.log(`   Mode: ${sandboxMode === "docker" ? "Docker" : "Native"}`);
+					console.log(`   Mode: ${sandboxMode === "docker" ? "Docker" : "Native (unsupported)"}`);
 					if (sandboxMode === "docker") {
 						console.log("   SDK sandbox: disabled (container provides isolation)");
 					} else {
-						console.log("   SDK sandbox: enabled (bubblewrap/Seatbelt)");
-						console.log(
-							`   Runtime: ${sandboxRuntimeVersion ?? "not found"}${
-								sandboxRuntimeVersion ? "" : " (install via package manager)"
-							}`,
-						);
-						if (sandboxRuntimeVersion && !sandboxRuntimePatched) {
-							console.log(
-								`   ⚠️  Upgrade @anthropic-ai/sandbox-runtime to >= ${MIN_SANDBOX_RUNTIME_VERSION} (fixes CVE-2025-66479)`,
-							);
-						}
+						console.log(`   ${getDockerRuntimeRequirementMessage("Telclaude")}`);
 					}
 
 					// TOTP details
@@ -223,9 +207,8 @@ export function registerDoctorCommand(program: Command): void {
 					const issues: string[] = [];
 					if (!loggedIn) issues.push("Claude not logged in");
 					if (!totpDaemonAvailable) issues.push("TOTP daemon not running");
-					// In native mode, missing sandbox runtime is a critical issue
-					if (sandboxMode === "native" && !sandboxRuntimeVersion) {
-						issues.push("SDK sandbox runtime not found (required for native mode)");
+					if (sandboxMode !== "docker") {
+						issues.push("Native/non-Docker runtime is unsupported");
 					}
 
 					if (issues.length === 0) {
@@ -240,8 +223,7 @@ export function registerDoctorCommand(program: Command): void {
 					if (!loggedIn) {
 						process.exitCode = 1;
 					}
-					// Missing sandbox runtime in native mode should also set exit code
-					if (sandboxMode === "native" && !sandboxRuntimeVersion) {
+					if (sandboxMode !== "docker") {
 						process.exitCode = 1;
 					}
 

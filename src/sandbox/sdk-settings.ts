@@ -34,9 +34,9 @@ function withGlobVariants(p: string): string[] {
 /**
  * Build Claude Code permission rules for @anthropic-ai/claude-agent-sdk.
  *
- * Filesystem isolation is handled by:
- * - Docker mode: Container filesystem isolation
- * - Native mode: SDK sandbox (bubblewrap/Seatbelt)
+ * Filesystem isolation is handled by the supported Docker container runtime.
+ * The non-Docker SDK-sandbox path still exists in tests, but is not a
+ * supported deployment mode.
  *
  * These permission rules provide defense-in-depth via canUseTool callback.
  *

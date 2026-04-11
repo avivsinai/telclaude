@@ -53,7 +53,7 @@ The relay is the security boundary — it holds all secrets, enforces tiers/rate
 
 The relay and agents are separate trust domains. The relay is the only component with access to secrets (API keys, Telegram token, OAuth credentials). Agents are treated as potentially compromised — they can only act through tiered tool access and relay-proxied API calls. This means a prompt injection that compromises the agent cannot exfiltrate secrets or escalate privileges beyond the user's tier.
 
-In Docker, this maps to separate containers on isolated networks. In native mode, the SDK sandbox provides equivalent isolation. Both modes enforce the same invariant: agents never see raw credentials.
+In the supported runtime, this maps to separate containers on isolated networks. Native/non-Docker deployment is retired. The invariant stays the same: agents never see raw credentials.
 
 ### Private ↔ Public Persona Split
 

@@ -1,9 +1,10 @@
 /**
  * Integration test command for testing the full SDK path.
  *
- * This command runs queries through the actual Claude SDK, testing:
- * - SDK sandbox initialization (native mode)
- * - Network proxy setup by SDK
+ * This command runs queries through the actual Claude SDK inside the supported
+ * Docker runtime, testing:
+ * - Agent/relay SDK execution
+ * - Docker runtime wiring
  * - Skill execution (image-generator, etc.)
  *
  * This allows testing without Telegram/auth overhead.
@@ -17,6 +18,7 @@ import type { Command } from "commander";
 import { executeRemoteQuery } from "../agent/client.js";
 import type { PermissionTier } from "../config/config.js";
 import { getMediaOutboxDirSync } from "../media/store.js";
+import { assertDockerRuntime } from "../sandbox/index.js";
 import { executeQueryStream } from "../sdk/client.js";
 import { getOpenAIKey } from "../services/openai-client.js";
 
@@ -32,20 +34,25 @@ type IntegrationTestOptions = {
 	timeout?: string;
 };
 
+const LOCAL_INTEGRATION_CWD = "/tmp/telclaude-integration";
+let integrationQueryCounter = 0;
+
 export function registerIntegrationTestCommand(program: Command): void {
 	program
 		.command("integration-test")
-		.description("Test full SDK path (sandbox, network proxy, skills)")
+		.description("Test the supported Docker SDK path (agent, relay, and skills)")
 		.option("--image", "Test image generation through SDK")
 		.option("--echo", "Test simple echo command through SDK")
-		.option("--env", "Test environment variable passing through SDK")
-		.option("--network", "Test sandbox network proxy configuration")
+		.option("--env", "Test Docker runtime env contract through SDK")
+		.option("--network", "Test Docker runtime wiring through SDK")
 		.option("--voice", "Test voice message response (TTS skill)")
 		.option("--agents", "Test direct agent transport (real agent, no Telegram)")
 		.option("--all", "Run all integration tests")
 		.option("-v, --verbose", "Show detailed output")
 		.option("--timeout <ms>", "Query timeout in ms", "120000")
 		.action(async (opts: IntegrationTestOptions) => {
+			assertDockerRuntime("telclaude integration-test");
+
 			const verbose = program.opts().verbose || opts.verbose;
 			const timeoutMs = Number.parseInt(opts.timeout ?? "120000", 10);
 
@@ -61,9 +68,6 @@ export function registerIntegrationTestCommand(program: Command): void {
 
 			console.log(chalk.bold("\n🔬 Telclaude Integration Test\n"));
 			console.log("This tests the full SDK path (not just sandbox config).\n");
-
-			// SDK handles sandbox initialization internally when sandbox.enabled=true
-			// No need to pre-check - SDK will fail with clear error if unavailable
 
 			const results: { name: string; passed: boolean; message: string; duration?: number }[] = [];
 
@@ -83,7 +87,7 @@ export function registerIntegrationTestCommand(program: Command): void {
 			}
 
 			if (runNetwork) {
-				console.log(chalk.bold("── Network Proxy Test ──"));
+				console.log(chalk.bold("── Runtime Wiring Test ──"));
 				const result = await testNetworkProxy(verbose, timeoutMs);
 				results.push(result);
 				console.log();
@@ -93,23 +97,16 @@ export function registerIntegrationTestCommand(program: Command): void {
 				console.log(chalk.bold("── Image Generation Test ──"));
 				const hasKey = await getOpenAIKey();
 				if (!hasKey) {
-					console.log(chalk.yellow("  ○ Skipped (OPENAI_API_KEY not configured)"));
+					console.log(chalk.yellow("  ○ Skipped (OpenAI/image generation not configured)"));
 					results.push({
 						name: "Image generation",
 						passed: true,
-						message: "Skipped (no API key)",
+						message: "Skipped (image generation not configured)",
 					});
 				} else {
-					// Note: Image generation through SDK sandbox may fail locally because:
-					// - The telclaude CLI inside sandbox can't access ~/.telclaude (blocked)
-					// - However, OPENAI_API_KEY is injected via env var by buildSdkOptions() (FULL_ACCESS tier)
-					// - In Docker, this works because the key comes from env var, not keychain
 					if (verbose) {
-						console.log(chalk.gray("  Note: Testing image generation through SDK sandbox..."));
 						console.log(
-							chalk.gray(
-								"  The SDK should inject OPENAI_API_KEY into the environment (FULL_ACCESS).",
-							),
+							chalk.gray("  Note: Testing the supported telclaude image-generation path..."),
 						);
 					}
 					const result = await testImageGeneration(verbose, timeoutMs);
@@ -122,11 +119,11 @@ export function registerIntegrationTestCommand(program: Command): void {
 				console.log(chalk.bold("── Voice Message Response Test ──"));
 				const hasKey = await getOpenAIKey();
 				if (!hasKey) {
-					console.log(chalk.yellow("  ○ Skipped (OPENAI_API_KEY not configured)"));
+					console.log(chalk.yellow("  ○ Skipped (OpenAI/TTS not configured)"));
 					results.push({
 						name: "Voice message response",
 						passed: true,
-						message: "Skipped (no API key)",
+						message: "Skipped (TTS not configured)",
 					});
 				} else {
 					const result = await testVoiceMessageResponse(verbose, timeoutMs);
@@ -186,18 +183,33 @@ async function runSdkQuery(
 	let output = "";
 	let querySuccess = false;
 	let error: string | undefined;
+	const agentUrl = process.env.TELCLAUDE_AGENT_URL;
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
 
 	try {
-		const stream = executeQueryStream(prompt, {
-			tier: opts.tier ?? "WRITE_LOCAL",
-			enableSkills: opts.enableSkills,
-			permissionMode: "acceptEdits",
-			cwd: process.cwd(),
-			abortController: controller,
-		});
+		fs.mkdirSync(LOCAL_INTEGRATION_CWD, { recursive: true });
+
+		const stream = agentUrl
+			? executeRemoteQuery(prompt, {
+					agentUrl,
+					scope: "telegram",
+					cwd: ".",
+					tier: opts.tier ?? "WRITE_LOCAL",
+					poolKey: `integration-test:sdk:${++integrationQueryCounter}`,
+					userId: "integration:sdk",
+					enableSkills: opts.enableSkills,
+					timeoutMs: opts.timeoutMs,
+					abortController: controller,
+				})
+			: executeQueryStream(prompt, {
+					tier: opts.tier ?? "WRITE_LOCAL",
+					enableSkills: opts.enableSkills,
+					permissionMode: "acceptEdits",
+					cwd: LOCAL_INTEGRATION_CWD,
+					abortController: controller,
+				});
 
 		for await (const chunk of stream) {
 			if (controller.signal.aborted) {
@@ -237,7 +249,7 @@ async function testAgentTransport(
 		const stream = executeRemoteQuery(`Reply only with this exact text: ${expected}`, {
 			agentUrl,
 			scope: "telegram",
-			cwd: process.cwd(),
+			cwd: ".",
 			tier: "READ_ONLY",
 			poolKey: "integration-test:agent",
 			userId: "integration:agent",
@@ -363,25 +375,29 @@ async function testEcho(
 }
 
 /**
- * Test environment variable passing through SDK.
- * Verifies that the SDK properly injects env vars (like OPENAI_API_KEY) into the sandbox
- * when running in FULL_ACCESS tier.
+ * Test the supported Docker runtime env contract.
+ * In the agent container we expect a writable cwd, HOME, proxy wiring, and no raw OpenAI key.
  */
 async function testEnvPassing(
 	verbose: boolean,
 	timeoutMs: number,
 	expectOpenAIKey: boolean,
 ): Promise<{ name: string; passed: boolean; message: string; duration?: number }> {
-	const name = "Env vars via SDK";
+	const name = "Docker runtime env via SDK";
+	const usesRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 
 	try {
 		console.log("  Running environment variable test via SDK...");
 		const startTime = Date.now();
 
-		// Ask the SDK to check if OPENAI_API_KEY is in the environment
-		const checkVar = expectOpenAIKey ? "OPENAI_API_KEY" : "HOME";
 		const { output, error } = await runSdkQuery(
-			`Run this bash command and tell me if the environment variable is set: test -n "$${checkVar}" && echo "ENV_VAR_SET" || echo "ENV_VAR_EMPTY"`,
+			`Run these bash checks and report the exact markers you see:
+
+pwd
+test -w . && echo "CWD_WRITABLE" || echo "CWD_READONLY"
+test -n "$HOME" && echo "HOME_SET" || echo "HOME_EMPTY"
+test -n "$TELCLAUDE_CREDENTIAL_PROXY_URL" && echo "CRED_PROXY_SET" || echo "CRED_PROXY_EMPTY"
+test -z "$OPENAI_API_KEY" && echo "RAW_OPENAI_KEY_ABSENT" || echo "RAW_OPENAI_KEY_PRESENT"`,
 			{
 				enableSkills: false,
 				timeoutMs,
@@ -395,48 +411,39 @@ async function testEnvPassing(
 		);
 
 		const duration = Date.now() - startTime;
+		const cwdWritable = output.includes("CWD_WRITABLE");
+		const homeSet = output.includes("HOME_SET");
+		const credentialProxySet = output.includes("CRED_PROXY_SET");
+		const rawOpenAIKeyAbsent = output.includes("RAW_OPENAI_KEY_ABSENT");
 
-		// Check for various ways the model might respond
-		const outputLower = output.toLowerCase();
-		const isSet =
-			output.includes("ENV_VAR_SET") ||
-			outputLower.includes("is set") ||
-			outputLower.includes("is defined") ||
-			outputLower.includes("exists") ||
-			outputLower.includes("has a value") ||
-			outputLower.includes("non-empty");
-		const isEmpty =
-			output.includes("ENV_VAR_EMPTY") ||
-			outputLower.includes("is not set") ||
-			outputLower.includes("is empty") ||
-			outputLower.includes("not defined") ||
-			outputLower.includes("does not exist");
+		const passed = usesRemoteAgent
+			? cwdWritable && homeSet && credentialProxySet && rawOpenAIKeyAbsent
+			: cwdWritable && homeSet;
 
-		if (isSet && !isEmpty) {
+		if (passed) {
 			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
 			if (verbose) {
-				console.log(chalk.gray(`    Checked: ${checkVar} is set in sandbox environment`));
+				console.log(chalk.gray(`    CWD writable: ${cwdWritable}`));
+				console.log(chalk.gray(`    HOME set: ${homeSet}`));
+				if (usesRemoteAgent) {
+					console.log(chalk.gray(`    Credential proxy set: ${credentialProxySet}`));
+					console.log(chalk.gray(`    Raw OpenAI key absent: ${rawOpenAIKeyAbsent}`));
+				}
 			}
 			return { name, passed: true, message: "OK", duration };
-		}
-		if (isEmpty) {
-			// This is expected if we're checking OPENAI_API_KEY and it wasn't injected
-			if (expectOpenAIKey) {
-				console.log(chalk.red(`  ✗ ${name}: OPENAI_API_KEY not passed to sandbox`));
-				return { name, passed: false, message: "OPENAI_API_KEY not in sandbox env" };
-			}
-			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
-			return { name, passed: true, message: "OK (no key expected)", duration };
 		}
 		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
 		}
-		console.log(chalk.red(`  ✗ ${name}: Unexpected output`));
+		const details = usesRemoteAgent
+			? `cwdWritable=${cwdWritable}, homeSet=${homeSet}, credProxySet=${credentialProxySet}, rawOpenAIKeyAbsent=${rawOpenAIKeyAbsent}`
+			: `cwdWritable=${cwdWritable}, homeSet=${homeSet}`;
+		console.log(chalk.red(`  ✗ ${name}: ${details}`));
 		if (verbose) {
 			console.log(chalk.gray(`    Output: ${output.substring(0, 300)}`));
 		}
-		return { name, passed: false, message: "Unexpected output" };
+		return { name, passed: false, message: details };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));
@@ -445,13 +452,8 @@ async function testEnvPassing(
 }
 
 /**
- * Test image generation through SDK.
- * This tests the full path: SDK → sandbox → OpenAI API
- *
- * Note: This test verifies the SDK can make OpenAI API calls from within the sandbox.
- * The `telclaude generate-image` CLI won't work inside the sandbox because it needs
- * access to ~/.telclaude for config. Instead, we test that the API is reachable and
- * that the OPENAI_API_KEY is properly passed (FULL_ACCESS tier).
+ * Test image generation through the supported telclaude path.
+ * In Docker this should use relay-backed credentials/capabilities, not raw key injection.
  */
 async function testImageGeneration(
 	verbose: boolean,
@@ -465,22 +467,14 @@ async function testImageGeneration(
 
 		let imagePath = "";
 
-		// Use curl to call OpenAI API directly (CLI can't access ~/.telclaude in sandbox)
-		// Uses gpt-image-1.5 with b64_json output to match prod (image-generation.ts)
 		const { output, error } = await runSdkQuery(
-			`Generate a simple test image using the OpenAI API. The OPENAI_API_KEY env var is available.
+			`Run this exact bash command to generate a tiny test image through telclaude and then print the saved absolute PNG path:
 
-Run this curl command to generate an image and save it:
-curl -s https://api.openai.com/v1/images/generations \\
-  -H "Authorization: Bearer $OPENAI_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"model":"gpt-image-1.5","prompt":"red circle on white background","size":"1024x1024","output_format":"png"}' \\
-  | jq -r '.data[0].b64_json' | base64 -d > ./test-image.png
+telclaude generate-image "red circle on white background" --size 1024x1024 --quality low
 
-Verify the file was created with: ls -la ./test-image.png
-Tell me the absolute path to the saved PNG file.`,
+After it completes, verify the file exists with ls -la on that exact path and print the path again.`,
 			{
-				enableSkills: true,
+				enableSkills: false,
 				timeoutMs,
 				tier: "FULL_ACCESS",
 				onText: (text) => {
@@ -552,32 +546,36 @@ Tell me the absolute path to the saved PNG file.`,
 }
 
 /**
- * Test network proxy configuration through SDK.
- * Runs diagnostic commands inside the sandbox to verify the proxy chain.
- * Tests actual HTTP requests through the proxy to verify end-to-end connectivity.
+ * Test Docker runtime wiring through the supported agent path.
+ * Verifies relay health and credential-proxy health instead of retired SDK sandbox HTTP_PROXY behavior.
  */
 async function testNetworkProxy(
 	verbose: boolean,
 	timeoutMs: number,
 ): Promise<{ name: string; passed: boolean; message: string; duration?: number }> {
-	const name = "Network proxy via SDK";
+	const name = "Docker runtime wiring via SDK";
+	const usesRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 
 	try {
-		console.log("  Running network proxy diagnostic via SDK...");
+		console.log("  Running Docker runtime wiring diagnostic via SDK...");
 		const startTime = Date.now();
 
-		// Test actual HTTP request through the proxy (this is what matters)
 		const { output, error } = await runSdkQuery(
-			`Test the sandbox network proxy by running these commands and reporting results:
+			usesRemoteAgent
+				? `Run these exact checks and report the markers:
 
-1. Show proxy environment:
-   echo "HTTP_PROXY=$HTTP_PROXY"
-   echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME"
+echo "CAPABILITIES=$TELCLAUDE_CAPABILITIES_URL"
+echo "CRED_PROXY=$TELCLAUDE_CREDENTIAL_PROXY_URL"
+curl -sf "$TELCLAUDE_CAPABILITIES_URL/health" && echo "CAP_HEALTH_OK" || echo "CAP_HEALTH_FAIL"
+curl -sf "$TELCLAUDE_CREDENTIAL_PROXY_URL/health" && echo "HTTP_PROXY_HEALTH_OK" || echo "HTTP_PROXY_HEALTH_FAIL"
 
-2. Test HTTPS fetch through proxy (this is the real test):
-   curl -s --max-time 10 https://api.openai.com/v1/models 2>&1 | head -c 200
+Report the exact markers only.`
+				: `Run these exact checks and report the markers:
 
-Report results clearly. Mark "FETCH_SUCCESS" if curl returns any JSON (even 401), "FETCH_FAIL" if it times out or errors.`,
+test -w . && echo "CWD_WRITABLE" || echo "CWD_READONLY"
+curl -sf http://localhost:8790/health && echo "CAP_HEALTH_OK" || echo "CAP_HEALTH_FAIL"
+
+Report the exact markers only.`,
 			{
 				enableSkills: false,
 				timeoutMs,
@@ -590,69 +588,37 @@ Report results clearly. Mark "FETCH_SUCCESS" if curl returns any JSON (even 401)
 		);
 
 		const duration = Date.now() - startTime;
-
-		// Check for proxy environment (port is dynamic, just check for localhost)
-		const hasProxy =
-			output.includes("HTTP_PROXY=http://localhost:") || output.includes("http://localhost:");
-
-		// Check for sandbox runtime
-		const inSandbox = output.includes("SANDBOX_RUNTIME=1");
-
-		// Check for successful fetch (any JSON response, including 401 auth error)
-		const fetchSuccess =
-			output.includes("FETCH_SUCCESS") ||
-			output.includes('"error"') || // OpenAI error response
-			output.includes('"data"') || // OpenAI success response
-			output.includes("invalid_api_key") || // Auth error = network worked
-			output.includes("401"); // Unauthorized = network worked
-
-		// Check for network failure
-		const fetchFail =
-			output.includes("FETCH_FAIL") ||
-			output.includes("Could not resolve host") ||
-			output.includes("Connection refused") ||
-			output.includes("Operation timed out") ||
-			output.includes("EAI_AGAIN");
+		const cwdWritable = output.includes("CWD_WRITABLE");
+		const capabilityHealthOk = output.includes("CAP_HEALTH_OK");
+		const httpProxyHealthOk = output.includes("HTTP_PROXY_HEALTH_OK");
 
 		if (verbose) {
-			console.log(chalk.gray(`\n    Proxy env detected: ${hasProxy}`));
-			console.log(chalk.gray(`    Running in sandbox: ${inSandbox}`));
-			console.log(chalk.gray(`    Fetch succeeded: ${fetchSuccess}`));
-			console.log(chalk.gray(`    Fetch failed: ${fetchFail}`));
+			console.log(chalk.gray(`\n    CWD writable: ${cwdWritable}`));
+			console.log(chalk.gray(`    Capabilities health OK: ${capabilityHealthOk}`));
+			if (usesRemoteAgent) {
+				console.log(chalk.gray(`    Credential proxy health OK: ${httpProxyHealthOk}`));
+			}
 		}
 
-		if (fetchSuccess && !fetchFail) {
+		if (
+			(usesRemoteAgent && capabilityHealthOk && httpProxyHealthOk) ||
+			(!usesRemoteAgent && cwdWritable && capabilityHealthOk)
+		) {
 			console.log(chalk.green(`  ✓ ${name} (${duration}ms)`));
-			return { name, passed: true, message: "Proxy working - HTTPS fetch succeeded", duration };
-		}
-		if (fetchFail) {
-			// This is the actual failure case we're investigating
-			const reason = output.includes("EAI_AGAIN")
-				? "DNS resolution failed (EAI_AGAIN)"
-				: output.includes("Connection refused")
-					? "Proxy connection refused"
-					: output.includes("Operation timed out")
-						? "Request timed out"
-						: "Network request failed";
-			console.log(chalk.red(`  ✗ ${name}: ${reason}`));
-			if (verbose) {
-				console.log(chalk.gray(`    Full output: ${output.substring(0, 800)}`));
-			}
-			return { name, passed: false, message: reason };
-		}
-		if (!hasProxy) {
-			console.log(chalk.red(`  ✗ ${name}: No proxy environment vars`));
-			return { name, passed: false, message: "HTTP_PROXY not set in sandbox" };
+			return { name, passed: true, message: "OK", duration };
 		}
 		if (error) {
 			console.log(chalk.red(`  ✗ ${name}: ${error}`));
 			return { name, passed: false, message: error };
 		}
-		console.log(chalk.yellow(`  ? ${name}: Unexpected output`));
+		const details = usesRemoteAgent
+			? `capabilityHealthOk=${capabilityHealthOk}, httpProxyHealthOk=${httpProxyHealthOk}`
+			: `cwdWritable=${cwdWritable}, capabilityHealthOk=${capabilityHealthOk}`;
+		console.log(chalk.red(`  ✗ ${name}: ${details}`));
 		if (verbose) {
-			console.log(chalk.gray(`    Output: ${output.substring(0, 500)}`));
+			console.log(chalk.gray(`    Output: ${output.substring(0, 800)}`));
 		}
-		return { name, passed: false, message: "Unexpected output" };
+		return { name, passed: false, message: details };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.log(chalk.red(`  ✗ ${name}: ${message}`));

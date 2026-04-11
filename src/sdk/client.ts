@@ -36,7 +36,7 @@ import {
 import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domains.js";
-import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
+import { assertDockerRuntime, shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
@@ -159,20 +159,6 @@ export type TelclaudeQueryOptions = {
 
 	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
 	outputFormat?: OutputFormat;
-
-	/** Native/dev fallback credentials.
-	 * Docker deployments must keep raw credentials inside the relay and use
-	 * the git proxy / HTTP credential proxy instead of sandbox env injection. */
-	exposedCredentials?: ExposedCredentials;
-};
-
-/**
- * Native/dev fallback credentials.
- * Narrow type — avoids turning the relay→agent payload into arbitrary env injection.
- */
-export type ExposedCredentials = {
-	githubToken?: string;
-	openaiApiKey?: string;
 };
 
 /**
@@ -788,9 +774,9 @@ function createSensitivePathHook(tier: PermissionTier): HookCallbackMatcher {
 /**
  * Build SDK options based on tier and configuration.
  *
- * Sandbox mode detection:
- * - Docker: SDK sandbox DISABLED. Docker container provides isolation.
- * - Native: SDK sandbox ENABLED. bubblewrap (Linux) or Seatbelt (macOS).
+ * Runtime execution is Docker-only. This builder still computes SDK options
+ * from the current environment so unit tests can exercise hook and settings
+ * behavior without depending on the Docker container.
  */
 export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKOptions> {
 	// Create abort controller with timeout if specified
@@ -818,22 +804,22 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// a custom env causes the spawn process to hang. Instead, set variables in
 	// process.env before calling the SDK - the sandbox inherits from process.env.
 	//
-	// In Docker mode (sandbox disabled), pass explicit env to control what
-	// variables the spawned process sees.
+	// In the supported Docker runtime (sandbox disabled), pass explicit env to
+	// control what variables the spawned process sees.
 	let sandboxEnv: Record<string, string> | undefined;
 
 	if (sandboxEnabled) {
-		// Native mode: Don't pass custom env (causes hang with sandbox.enabled).
+		// Non-Docker/test path: don't pass custom env (causes hang with sandbox.enabled).
 		// User ID for rate limiting is passed via system prompt below instead of
 		// env var to avoid race conditions with concurrent requests.
 		// OPENAI_API_KEY and GITHUB_TOKEN should already be in process.env.
 		//
-		// Session token: In native mode we must use process.env since there's no
+		// Session token: on this path we must use process.env since there's no
 		// sandboxEnv to inject into (SDK hangs with custom env + sandbox.enabled).
-		// KNOWN LIMITATION: Under concurrent requests in native mode, there is a
+		// KNOWN LIMITATION: Under concurrent requests on this path, there is a
 		// race window between this set and the SDK subprocess spawn. This is an
-		// inherent SDK constraint — the production Docker path uses per-request
-		// sandboxEnv and is fully race-free. Native mode is dev/test only.
+		// inherent SDK constraint — the supported Docker path uses per-request
+		// sandboxEnv and is fully race-free. This branch is for tests only.
 		// Always set-or-delete to prevent stale tokens from prior requests.
 		if (opts.sessionToken) {
 			process.env.TELCLAUDE_SESSION_TOKEN = opts.sessionToken;
@@ -841,7 +827,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			delete process.env.TELCLAUDE_SESSION_TOKEN;
 		}
 	} else {
-		// Docker mode: Pass explicit env since container provides isolation
+		// Docker mode: pass explicit env since the container provides isolation
 		// Use cwd as HOME when actual HOME is read-only (e.g., social agent's HOME=/social)
 		// This ensures tools like agent-browser can create temp files
 		const effectiveHome = isWritableDir(process.env.HOME ?? "")
@@ -914,7 +900,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		abortController,
 		resume: opts.resumeSessionId,
 		// Only pass env in Docker mode (when sandboxEnv is defined)
-		// In native mode, let SDK use process.env and handle sandbox env internally
+		// On the non-Docker/test path, let SDK use process.env and handle sandbox env internally
 		...(sandboxEnv && { env: sandboxEnv }),
 		...(opts.outputFormat && { outputFormat: opts.outputFormat }),
 	};
@@ -940,9 +926,9 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	// Sandbox configuration based on environment:
 	// - Docker: SDK sandbox DISABLED (container provides isolation)
-	// - Native: SDK sandbox ENABLED (bubblewrap/Seatbelt)
+	// - Non-Docker/test path: SDK sandbox ENABLED
 	if (sandboxEnabled) {
-		logger.debug("native mode: enabling SDK sandbox");
+		logger.debug("non-Docker path: enabling SDK sandbox (unsupported at runtime)");
 		sdkOpts.sandbox = {
 			enabled: true,
 			allowUnsandboxedCommands: false,
@@ -1370,6 +1356,7 @@ export async function* executeQueryStream(
 	prompt: string,
 	inputOpts: TelclaudeQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
+	assertDockerRuntime("Claude SDK execution");
 	const startTime = Date.now();
 
 	const sdkOpts = await buildSdkOptions({
@@ -1410,6 +1397,7 @@ export async function* executePooledQuery(
 	prompt: string,
 	inputOpts: PooledQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
+	assertDockerRuntime("Claude SDK execution");
 	const startTime = Date.now();
 
 	const sdkOpts = await buildSdkOptions({
