@@ -121,6 +121,46 @@ describe("agent server social userId normalization", () => {
 		const [, options] = executePooledQueryImpl.mock.calls[0] as [string, { userId?: string }];
 		expect(options.userId).toBe("social:user-1");
 	});
+
+	it("passes compiled relay memory through to pooled queries", async () => {
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "ok",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 0,
+						durationMs: 1,
+					},
+				};
+			})(),
+		);
+
+		const body = JSON.stringify({
+			prompt: "hi",
+			tier: "READ_ONLY",
+			poolKey: "pool-1",
+			userId: "user-1",
+			compiledMemoryMd: "# Memory\nhello",
+		});
+		const headers = buildInternalAuthHeaders("POST", "/v1/query", body, { scope: "social" });
+
+		const res = await fetch(`${baseUrl}/v1/query`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body,
+		});
+		await res.text();
+
+		const [, options] = executePooledQueryImpl.mock.calls[0] as [
+			string,
+			{ compiledMemoryMd?: string },
+		];
+		expect(options.compiledMemoryMd).toBe("# Memory\nhello");
+	});
 });
 
 describe("agent server soul + social contract prompt assembly", () => {
