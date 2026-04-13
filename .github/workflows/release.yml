@@ -2,39 +2,304 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release (e.g. v0.6.2)"
+        required: true
+        type: string
+      publish-to-npm:
+        description: "Publish to npm via trusted publishing after the GitHub release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Prevent race conditions: only one release per tag, cancel stale runs
 concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release
+  prepare:
+    if: "${{ github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore(release): v') }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      release_ref: ${{ steps.prepare.outputs.release_ref }}
+      release_sha: ${{ steps.prepare.outputs.release_sha }}
+      prerelease: ${{ steps.prepare.outputs.prerelease }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320  # v5.0.0
+      - name: Resolve release metadata
+        id: prepare
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Setup Node.js
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6
+          validate_tag() {
+            local tag="$1"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+              echo "::error::Release identifiers must use vX.Y.Z style tags."
+              exit 1
+            fi
+          }
+
+          tag_commit_sha() {
+            git rev-parse "refs/tags/${1}^{commit}" 2>/dev/null || git rev-parse "refs/tags/${1}"
+          }
+
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              tag="$INPUT_TAG"
+              validate_tag "$tag"
+              git fetch --force --tags origin
+              if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+                echo "::error::Tag ${tag} does not exist. workflow_dispatch is only for rerunning an existing release."
+                exit 1
+              fi
+              git checkout --detach "$tag"
+              version="${tag#v}"
+              ./scripts/check-release-version.sh "$version"
+              release_ref="$tag"
+              release_sha="$(tag_commit_sha "$tag")"
+              ;;
+            push)
+              commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+              tag="${commit_subject#chore(release): }"
+              tag="${tag%% \(#*}"
+              validate_tag "$tag"
+
+              version="${tag#v}"
+              ./scripts/check-release-version.sh "$version"
+
+              release_sha="${GITHUB_SHA}"
+              if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+                existing_sha="$(tag_commit_sha "$tag")"
+                if [[ "$existing_sha" != "$release_sha" ]]; then
+                  echo "::error::Tag ${tag} already exists but points to ${existing_sha}, not ${release_sha}."
+                  exit 1
+                fi
+              fi
+              release_ref="${release_sha}"
+              ;;
+            *)
+              echo "::error::Unsupported event: ${EVENT_NAME}"
+              exit 1
+              ;;
+          esac
+
+          prerelease=false
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+          fi
+
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "release_ref=${release_ref}"
+            echo "release_sha=${release_sha}"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          node-version: 25
-          cache: 'pnpm'
-          registry-url: 'https://registry.npmjs.org'
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify release metadata
+        run: ./scripts/check-release-version.sh "${{ needs.prepare.outputs.version }}"
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Verify build artifacts
+        run: |
+          test -f dist/index.js
+          test -f dist/index.d.ts
+
+  release:
+    needs: [prepare, verify]
+    if: needs.prepare.result == 'success' && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Create release tag after verification
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          tag_commit_sha() {
+            git rev-parse "refs/tags/${1}^{commit}" 2>/dev/null || git rev-parse "refs/tags/${1}"
+          }
+
+          git fetch --force --tags origin
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            existing_sha="$(tag_commit_sha "$TAG")"
+            if [[ "$existing_sha" != "$RELEASE_SHA" ]]; then
+              echo "::error::Tag ${TAG} already exists but points to ${existing_sha}, not ${RELEASE_SHA}."
+              exit 1
+            fi
+          else
+            git tag "$TAG" "$RELEASE_SHA"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Build package artifacts
+        run: |
+          rm -rf dist-release
+          pnpm run build
+          mkdir -p dist-release
+          pnpm pack --pack-destination dist-release
+          (
+            cd dist-release
+            sha256sum *.tgz > SHA256SUMS.txt
+          )
+
+      - name: Extract release notes
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          python3 - "$VERSION" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(
+              rf"(?ms)^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}\n.*?(?=^## \[|\Z)"
+          )
+          match = pattern.search(text)
+          if not match:
+            raise SystemExit(f"missing changelog section for {version}")
+          pathlib.Path("RELEASE_NOTES.md").write_text(match.group(0).strip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Collect attestation subjects
+        id: attestation_subjects
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t subjects < <(find dist-release -maxdepth 1 -type f | sort)
+          if ((${#subjects[@]} == 0)); then
+            echo "::error::No release artifacts found to attest."
+            exit 1
+          fi
+          {
+            echo "subjects<<EOF"
+            printf '%s\n' "${subjects[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate artifact attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+        with:
+          subject-path: ${{ steps.attestation_subjects.outputs.subjects }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.release_sha }}
+          name: ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          overwrite_files: true
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist-release/*.tgz
+            dist-release/SHA256SUMS.txt
+
+  npm-publish:
+    needs: [prepare, release]
+    if: >-
+      needs.release.result == 'success' &&
+      (
+        inputs.publish-to-npm == true ||
+        (github.event_name == 'push' && vars.TELCLAUDE_PUBLISH_NPM == 'true')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_ref }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -42,31 +307,5 @@ jobs:
       - name: Build
         run: pnpm run build
 
-      - name: Test
-        run: pnpm test
-
-      - name: Extract release notes
-        id: extract-release-notes
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          NOTES=$(awk "/^## \[${VERSION}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md)
-          if [ -z "$NOTES" ]; then
-            echo "::error::No release notes found for version $VERSION in CHANGELOG.md"
-            exit 1
-          fi
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo "$NOTES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2
-        with:
-          body: ${{ steps.extract-release-notes.outputs.notes }}
-          draft: false
-          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
-
-      # Uncomment to publish to npm
-      # - name: Publish to npm
-      #   run: pnpm publish --access public --no-git-checks
-      #   env:
-      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public
