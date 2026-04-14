@@ -31,5 +31,9 @@ updates:
     labels:
       - "ci"
       - "dependencies"
+    ignore:
+      - dependency-name: "pnpm/action-setup"
+        update-types:
+          - "version-update:semver-major"
     cooldown:
       default-days: 7
