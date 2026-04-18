@@ -198,9 +198,12 @@ async function refreshToken(credential: OAuth2Credential): Promise<TokenResponse
 	const body = new URLSearchParams({
 		grant_type: "refresh_token",
 		client_id: credential.clientId,
-		client_secret: credential.clientSecret,
 		refresh_token: credential.refreshToken,
 	});
+
+	if (credential.clientSecret) {
+		body.set("client_secret", credential.clientSecret);
+	}
 
 	if (credential.scope) {
 		body.set("scope", credential.scope);
