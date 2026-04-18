@@ -44,6 +44,7 @@ import { registerSkillsScaffoldSubcommand } from "./commands/skill-scaffold.js";
 import { registerSkillsDoctorSubcommand } from "./commands/skills-doctor.js";
 import { registerSkillsImportSubcommands } from "./commands/skills-import.js";
 import { registerSkillsPromoteSubcommands } from "./commands/skills-promote.js";
+import { registerSkillsSignSubcommands } from "./commands/skills-sign.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerSummarizeCommand } from "./commands/summarize.js";
 import { registerTextToSpeechCommand } from "./commands/text-to-speech.js";
@@ -99,6 +100,7 @@ registerSkillsImportSubcommands(skills);
 registerSkillsPromoteSubcommands(skills);
 registerSkillsScaffoldSubcommand(skills);
 registerSkillsDoctorSubcommand(skills);
+registerSkillsSignSubcommands(skills);
 
 // --- pairing ---
 registerPairingCommand(program);
