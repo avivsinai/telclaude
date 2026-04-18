@@ -2,6 +2,7 @@ import { cardRegistry } from "../registry.js";
 import { CardKind } from "../types.js";
 import { approvalRenderer } from "./approval.js";
 import { authRenderer } from "./auth.js";
+import { backgroundJobListRenderer, backgroundJobRenderer } from "./background-job.js";
 import { heartbeatRenderer } from "./heartbeat.js";
 import { pendingQueueRenderer } from "./pending-queue.js";
 import { sessionRenderer } from "./session.js";
@@ -20,11 +21,15 @@ export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.SkillsMenu, skillsMenuRenderer);
 	cardRegistry.register(CardKind.SocialMenu, socialMenuRenderer);
 	cardRegistry.register(CardKind.Session, sessionRenderer);
+	cardRegistry.register(CardKind.BackgroundJob, backgroundJobRenderer);
+	cardRegistry.register(CardKind.BackgroundJobList, backgroundJobListRenderer);
 }
 
 export {
 	approvalRenderer,
 	authRenderer,
+	backgroundJobListRenderer,
+	backgroundJobRenderer,
 	heartbeatRenderer,
 	pendingQueueRenderer,
 	sessionRenderer,

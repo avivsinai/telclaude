@@ -67,10 +67,13 @@ import { formatReactionContext, getRecentReactions } from "../storage/reactions.
 import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/create-helpers.js";
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
+	cancelBackgroundJobCommand,
 	openSkillDraftCard,
 	openSocialQueueCard,
 	reloadSkillsSession,
 	runSocialHeartbeatCommand,
+	sendBackgroundJobDetail,
+	sendBackgroundJobList,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
 	startSocialAskWizard,
@@ -688,6 +691,43 @@ async function dispatchTelegramControlCommand(
 			}
 			const result = reloadSkillsSession(msg.from);
 			await msg.reply(result.callbackText);
+			return true;
+		}
+		// ── /background domain ─────────────────────────────────────────
+		case "background":
+		case "background:list": {
+			await sendBackgroundJobList(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+			});
+			return true;
+		}
+		case "background:show": {
+			const shortId = match.args[0]?.trim();
+			if (!shortId) {
+				await msg.reply("Usage: `/background show <id>`");
+				return true;
+			}
+			await sendBackgroundJobDetail(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				shortId,
+			});
+			return true;
+		}
+		case "background:cancel": {
+			const shortId = match.args[0]?.trim();
+			if (!shortId) {
+				await msg.reply("Usage: `/background cancel <id>`");
+				return true;
+			}
+			await cancelBackgroundJobCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				shortId,
+			});
 			return true;
 		}
 		// ── Fast-path shortcuts ────────────────────────────────────────
@@ -1462,6 +1502,18 @@ export async function monitorTelegramProvider(
 			const { startCardSweep } = await import("./cards/init.js");
 			startCardSweep(bot.api);
 
+			// Background job runner: flip leftover running jobs to interrupted,
+			// then start the poller with the bot Api so completion cards route here.
+			const { handleStartupInterruptions, startHostedBackgroundRunner } = await import(
+				"../background/index.js"
+			);
+			await handleStartupInterruptions(bot.api);
+			const backgroundRunnerHandle = startHostedBackgroundRunner({
+				api: bot.api,
+				pollIntervalMs: 2_000,
+			});
+			logger.info("background job runner started");
+
 			const nudgeConfig = cfg.telegram?.nudges;
 			if (nudgeConfig?.enabled) {
 				const { createNudgeCoordinator } = await import("./nudges.js");
@@ -1553,6 +1605,7 @@ export async function monitorTelegramProvider(
 
 			clearInterval(cleanupInterval);
 			runner.stop();
+			backgroundRunnerHandle.stop();
 			await close();
 			stopNudges?.();
 			stopNudges = null;
