@@ -16,12 +16,14 @@ import {
 	type ListResponse,
 	type Protocol,
 	type SignPayloadResponse,
+	type SignSkillResponse,
 	type SignTokenResponse,
 	type StoreRequest,
 	type VaultRequest,
 	type VaultResponse,
 	VaultResponseSchema,
 	type VerifyPayloadResponse,
+	type VerifySkillResponse,
 	type VerifyTokenResponse,
 } from "./protocol.js";
 
@@ -173,6 +175,28 @@ export class VaultClient {
 			{ type: "verify-payload", payload, signature, prefix },
 			options?.timeout,
 		)) as VerifyPayloadResponse;
+	}
+
+	/**
+	 * Sign a SKILL.md SHA-256 digest under the `skill-v1` domain. The digest
+	 * must be the lowercase-hex SHA-256 of the exact bytes of SKILL.md.
+	 */
+	async signSkill(digest: string, options?: { timeout?: number }): Promise<SignSkillResponse> {
+		return (await this.send({ type: "sign-skill", digest }, options?.timeout)) as SignSkillResponse;
+	}
+
+	/**
+	 * Verify a signature produced by `signSkill`.
+	 */
+	async verifySkill(
+		digest: string,
+		signature: string,
+		options?: { timeout?: number },
+	): Promise<VerifySkillResponse> {
+		return (await this.send(
+			{ type: "verify-skill", digest, signature },
+			options?.timeout,
+		)) as VerifySkillResponse;
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════

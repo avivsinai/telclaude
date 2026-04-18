@@ -38,6 +38,16 @@ const logger = getChildLogger({ module: "vault-server" });
 const SIGNING_KEY_TARGET = "rpc-master";
 const TOKEN_VERSION = "v3";
 
+/**
+ * Domain-separation prefix for SKILL.md signatures.
+ *
+ * Distinct from `approval-v1` (Google approval tokens), `session-v1` (relay
+ * session tokens), and `pairing-v1` (identity link codes). Ensures a
+ * signature generated for one domain cannot verify in another, even though
+ * all four domains share the vault's master Ed25519 keypair.
+ */
+const SKILL_SIGNING_PREFIX = "skill-v1";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Ed25519 Token Signing
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -569,6 +579,21 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 			const message = `${request.prefix}\n${request.payload}`;
 			const valid = verifyTokenSignature(keys.publicKey, message, request.signature);
 			return { type: "verify-payload" as const, valid };
+		}
+
+		case "sign-skill": {
+			const keys = await getOrCreateSigningKeys();
+			const message = `${SKILL_SIGNING_PREFIX}\n${request.digest}`;
+			const signature = signTokenPayload(keys.privateKey, message);
+			logger.info({ digestPrefix: request.digest.slice(0, 12) }, "signed skill digest");
+			return { type: "sign-skill" as const, signature };
+		}
+
+		case "verify-skill": {
+			const keys = await getOrCreateSigningKeys();
+			const message = `${SKILL_SIGNING_PREFIX}\n${request.digest}`;
+			const valid = verifyTokenSignature(keys.publicKey, message, request.signature);
+			return { type: "verify-skill" as const, valid };
 		}
 	}
 }
