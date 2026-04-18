@@ -232,7 +232,7 @@ Approval tokens use Ed25519 signatures with the format `v1.<claims_b64url>.<sig_
 The signing uses domain separation: the Ed25519 signature covers `approval-v1\n<claims_b64url>`, not the raw claims. This ensures approval signatures cannot be confused with session token signatures using the same vault keypair.
 
 **Token flow:**
-1. Agent requests an action-type operation via `provider-query`
+1. Agent requests an action-type operation via `providers query`
 2. Relay detects action type, generates an approval nonce, and sends Telegram prompt
 3. User approves via `/approve <nonce>` (or inline ApprovalCard button)
 4. Relay builds claims (including SHA-256 canonical hash of request params), calls `vault.signPayload`
@@ -253,7 +253,7 @@ The signing uses domain separation: the Ed25519 signature covers `approval-v1\n<
 
 ### Health State Machine
 
-Per-service health tracking: `ok` ↔ `degraded` (after 3+ consecutive failures), `ok` → `auth_expired` (sticky until re-auth via `setup-google`). The `auth_expired` state is sticky because it indicates a permanent credential problem (revoked refresh token) that cannot self-heal.
+Per-service health tracking: `ok` ↔ `degraded` (after 3+ consecutive failures), `ok` → `auth_expired` (sticky until re-auth via `providers setup google`). The `auth_expired` state is sticky because it indicates a permanent credential problem (revoked refresh token) that cannot self-heal.
 
 ## Message Flow (strict profile)
 
