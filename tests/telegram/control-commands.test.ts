@@ -102,6 +102,9 @@ describe("telegram control command registry", () => {
 
 	describe("fast-path shortcuts", () => {
 		it("matches shortcuts", () => {
+			const sethomeMatch = matchTelegramControlCommand("/sethome");
+			expect(sethomeMatch?.command.id).toBe("sethome");
+
 			const approveMatch = matchTelegramControlCommand("/approve 123456");
 			expect(approveMatch?.command.id).toBe("approve");
 
@@ -164,6 +167,7 @@ describe("telegram control command registry", () => {
 				"me",
 				"auth",
 				"system",
+				"sethome",
 				"social",
 				"skills",
 				"background",

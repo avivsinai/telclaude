@@ -6,7 +6,7 @@
  * Kept small to avoid bloating the context window.
  */
 
-import { getAllSessions } from "../config/sessions.js";
+import { formatHomeTarget, getAllSessions, getHomeTargetForChat } from "../config/sessions.js";
 import { getCronStatusSummary } from "../cron/store.js";
 import { getIdentityLink, isAdmin } from "../security/linking.js";
 
@@ -29,6 +29,7 @@ export function buildSystemInfoContext(chatId: number): string | null {
 		// Identity (per-chat, always safe)
 		const link = getIdentityLink(chatId);
 		lines.push(link ? `identity: ${link.localUserId} (linked)` : "identity: not linked");
+		lines.push(`home target: ${formatHomeTarget(getHomeTargetForChat(chatId))}`);
 
 		// Uptime (non-sensitive)
 		const uptimeMs = Date.now() - RELAY_STARTED_AT;
