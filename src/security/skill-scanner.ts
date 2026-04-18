@@ -15,10 +15,14 @@
  * and as part of `telclaude doctor --skills`.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { getChildLogger } from "../logging.js";
 import { PROMPT_INJECTION_PATTERNS } from "./shared-patterns.js";
+
+/** Filename used for the detached Ed25519 signature over SKILL.md. */
+export const SKILL_SIGNATURE_FILENAME = "SKILL.md.sig";
 
 const logger = getChildLogger({ module: "skill-scanner" });
 
@@ -43,6 +47,32 @@ export type ScanFinding = {
 	match?: string;
 };
 
+/**
+ * Signature state of a skill, derived from the presence and contents of
+ * `SKILL.md.sig`. This is informational only — unsigned skills are NOT
+ * blocked; they surface as "community" in pickers and the review card.
+ *
+ * - "signed": `SKILL.md.sig` exists and contains a signature string. The
+ *   scanner does not verify the signature itself (that requires the vault
+ *   via `verifySkill` in `src/commands/skills-sign.ts`), it only captures
+ *   the on-disk signal so the review card can render a badge without an
+ *   async hop.
+ * - "unsigned": no `.sig` file is present. Treated as a "community" skill
+ *   in UI surfaces.
+ * - "invalid": `.sig` exists but is empty or unreadable.
+ */
+export type SkillSignatureState = "signed" | "unsigned" | "invalid";
+
+export type SkillSignatureInfo = {
+	state: SkillSignatureState;
+	/** Path to the `.sig` file if present (whether valid or not). */
+	sigPath?: string;
+	/** SHA-256 hex digest of the on-disk SKILL.md content. */
+	digest?: string;
+	/** base64url signature value as stored on disk (present when state === "signed"). */
+	signature?: string;
+};
+
 export type ScanResult = {
 	/** Skill name (directory name). */
 	skillName: string;
@@ -54,6 +84,8 @@ export type ScanResult = {
 	blocked: boolean;
 	/** Summary counts by severity. */
 	counts: Record<ScanSeverity, number>;
+	/** Informational signature status (never blocks). */
+	signature: SkillSignatureInfo;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -537,6 +569,19 @@ function safeRealpath(p: string): string {
 }
 
 /**
+ * Compute the SHA-256 hex digest of a SKILL.md file, used as the payload
+ * for skill signatures. Returns undefined if the file cannot be read.
+ */
+export function computeSkillDigest(skillMdPath: string): string | undefined {
+	try {
+		const content = fs.readFileSync(skillMdPath);
+		return crypto.createHash("sha256").update(content).digest("hex");
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Infer a reasonable repo root from a skill directory. Skills are typically
  * stored at `<repo>/.claude/skills/<name>`, so three parents above the skill
  * dir is the repo root in the common case. Callers should pass an explicit
@@ -590,6 +635,36 @@ function countFindings(findings: readonly ScanFinding[]): Record<ScanSeverity, n
 	const counts: Record<ScanSeverity, number> = { critical: 0, high: 0, medium: 0, info: 0 };
 	for (const f of findings) counts[f.severity]++;
 	return counts;
+}
+
+/**
+ * Inspect a skill directory for an on-disk signature. Does NOT call the
+ * vault to verify the signature; that is a separate async step. The
+ * scanner only surfaces the on-disk signal so the review card can render
+ * synchronously.
+ */
+export function inspectSkillSignature(skillDir: string): SkillSignatureInfo {
+	const sigPath = path.join(skillDir, SKILL_SIGNATURE_FILENAME);
+	const skillMdPath = path.join(skillDir, "SKILL.md");
+	const digest = computeSkillDigest(skillMdPath);
+
+	if (!fs.existsSync(sigPath)) {
+		return { state: "unsigned", digest };
+	}
+
+	let raw: string;
+	try {
+		raw = fs.readFileSync(sigPath, "utf8");
+	} catch {
+		return { state: "invalid", sigPath, digest };
+	}
+
+	const signature = raw.trim();
+	if (signature.length === 0) {
+		return { state: "invalid", sigPath, digest };
+	}
+
+	return { state: "signed", sigPath, digest, signature };
 }
 
 /**
@@ -658,11 +733,13 @@ export function scanSkill(skillDir: string, options?: ScanSkillOptions): ScanRes
 			findings,
 			blocked: counts.critical > 0 || counts.high > 0,
 			counts,
+			signature: { state: "unsigned" },
 		};
 	}
 
-	// Collect and scan all files
-	const files = collectFiles(skillDir);
+	// Collect and scan all files (excluding the detached signature file, which
+	// is data-about-data and not part of the skill payload itself).
+	const files = collectFiles(skillDir).filter((f) => path.basename(f) !== SKILL_SIGNATURE_FILENAME);
 	for (const filePath of files) {
 		const relative = path.relative(skillDir, filePath);
 		findings.push(...scanFile(filePath, relative));
@@ -678,12 +755,15 @@ export function scanSkill(skillDir: string, options?: ScanSkillOptions): ScanRes
 		);
 	}
 
+	const signature = inspectSkillSignature(skillDir);
+
 	return {
 		skillName,
 		skillPath: skillDir,
 		findings,
 		blocked,
 		counts,
+		signature,
 	};
 }
 

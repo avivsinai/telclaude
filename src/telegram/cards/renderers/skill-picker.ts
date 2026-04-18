@@ -1,3 +1,9 @@
+import fs from "node:fs";
+import path from "node:path";
+import {
+	getAllSkillRoots,
+	getWritableDraftSkillRootCandidates,
+} from "../../../commands/skill-path.js";
 import {
 	listActiveSkills,
 	listDraftSkills,
@@ -5,6 +11,7 @@ import {
 } from "../../../commands/skills-promote.js";
 import { deleteSession } from "../../../config/sessions.js";
 import { getSessionManager } from "../../../sdk/session-manager.js";
+import { inspectSkillSignature } from "../../../security/skill-scanner.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -35,17 +42,49 @@ function clampPage(page: number, count: number): number {
 	return Math.max(0, Math.min(page, totalPages(count) - 1));
 }
 
+/**
+ * Locate the on-disk directory for a skill so we can check its signature.
+ * Draft roots win over active roots — matches the precedence in
+ * `skills-sign.ts` / `skills-promote.ts`.
+ */
+function findSkillDir(skillName: string, status: "draft" | "active"): string | null {
+	const roots = status === "draft" ? getWritableDraftSkillRootCandidates() : getAllSkillRoots();
+	for (const root of roots) {
+		const candidate = path.join(root, skillName);
+		if (fs.existsSync(path.join(candidate, "SKILL.md"))) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * Derive the picker "trust" badge from the scanner's on-disk signature
+ * info — "trusted" if a signature is present on disk, "community" when
+ * unsigned. The picker never verifies against the vault (would add an
+ * async hop per entry); verification happens in the SkillReviewCard or
+ * `telclaude skills verify`.
+ */
+function resolveTrustBadge(skillName: string, status: "draft" | "active"): "trusted" | "community" {
+	const dir = findSkillDir(skillName, status);
+	if (!dir) return "community";
+	const info = inspectSkillSignature(dir);
+	return info.state === "signed" ? "trusted" : "community";
+}
+
 export function loadSkillPickerEntries(): SkillPickerEntry[] {
 	const drafts = listDraftSkills().map<SkillPickerEntry>((name) => ({
 		id: name,
 		label: name,
 		status: "draft",
 		summary: "Draft — tap to promote",
+		trust: resolveTrustBadge(name, "draft"),
 	}));
 	const active = listActiveSkills().map<SkillPickerEntry>((name) => ({
 		id: name,
 		label: name,
 		status: "active",
+		trust: resolveTrustBadge(name, "active"),
 	}));
 	// Drafts first so one-tap promote is prominent.
 	return [...drafts, ...active];
@@ -79,7 +118,11 @@ export const skillPickerRenderer: CardRenderer<K> = {
 		}
 
 		for (const entry of visible) {
-			lines.push(`\n${skillIcon(entry)} *${esc(entry.label)}* _(${esc(entry.status)})_`);
+			const trust = entry.trust ?? "community";
+			const badge = trust === "trusted" ? "\uD83D\uDD12 trusted" : "\uD83C\uDF10 community";
+			lines.push(
+				`\n${skillIcon(entry)} *${esc(entry.label)}* _(${esc(entry.status)} \u00B7 ${esc(badge)})_`,
+			);
 			if (entry.summary) {
 				lines.push(`  ${esc(entry.summary)}`);
 			}
@@ -260,6 +303,7 @@ function executePromote(card: CardInstance<K>, entry: SkillPickerEntry): CardExe
 		id: entry.id,
 		label: entry.label,
 		status: "active",
+		trust: entry.trust,
 	});
 	// Re-sort: drafts first, then active.
 	remaining.sort((a, b) => {

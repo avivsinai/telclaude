@@ -11,6 +11,7 @@ import { providerListRenderer } from "./provider-list.js";
 import { sessionRenderer } from "./session.js";
 import { skillDraftRenderer } from "./skill-draft.js";
 import { skillPickerRenderer } from "./skill-picker.js";
+import { skillReviewRenderer } from "./skill-review.js";
 import { skillsMenuRenderer } from "./skills-menu.js";
 import { socialMenuRenderer } from "./social-menu.js";
 import { statusRenderer } from "./status.js";
@@ -33,6 +34,7 @@ export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.ModelPicker, modelPickerRenderer);
 	cardRegistry.register(CardKind.ProviderList, providerListRenderer);
 	cardRegistry.register(CardKind.SkillPicker, skillPickerRenderer);
+	cardRegistry.register(CardKind.SkillReview, skillReviewRenderer);
 }
 
 export {
@@ -48,6 +50,7 @@ export {
 	sessionRenderer,
 	skillDraftRenderer,
 	skillPickerRenderer,
+	skillReviewRenderer,
 	skillsMenuRenderer,
 	socialMenuRenderer,
 	statusRenderer,

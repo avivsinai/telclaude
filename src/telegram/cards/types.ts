@@ -17,6 +17,7 @@ export enum CardKind {
 	ModelPicker = "ModelPicker",
 	ProviderList = "ProviderList",
 	SkillPicker = "SkillPicker",
+	SkillReview = "SkillReview",
 }
 
 export type CardStatus = "active" | "consumed" | "expired" | "superseded";
@@ -279,6 +280,55 @@ export type SkillPickerEntry = {
 	/** Draft skills are one-tap promotable; active skills only reloadable. */
 	status: "active" | "draft";
 	summary?: string;
+	/**
+	 * Signature badge — "trusted" when the skill ships with a verified
+	 * `SKILL.md.sig`, "community" when no signature is present. The picker
+	 * surfaces this as a text badge so the operator knows whether a skill
+	 * is vault-signed before a tap.
+	 */
+	trust?: "trusted" | "community";
+};
+
+/**
+ * W9 — Skill review card. Shown before promote so the operator sees the
+ * scanner findings, signature state, and auto-install pattern hits all
+ * in one surface. Operator taps Promote / Reject. Reject is UI-only; the
+ * draft file is left in place for further editing.
+ */
+export type SkillReviewTrust = "trusted" | "community" | "unknown";
+
+export type SkillReviewFindingSummary = {
+	severity: "critical" | "high" | "medium" | "info";
+	count: number;
+};
+
+export type SkillReviewCardState = {
+	kind: CardKind.SkillReview;
+	title: string;
+	skillName: string;
+	/** Short description extracted from frontmatter. */
+	description?: string;
+	/** Pre-aggregated severity counts so the renderer stays sync. */
+	findingSummary: SkillReviewFindingSummary[];
+	/** Total findings (sum of all severities), rendered inline in the header. */
+	totalFindings: number;
+	/** Blocked means critical/high findings — Promote is disabled. */
+	scannerBlocked: boolean;
+	/** First few finding messages, for at-a-glance review. */
+	topFindings: Array<{ severity: string; message: string; file?: string }>;
+	/** Signature trust badge. "unknown" means vault verification wasn't attempted. */
+	trust: SkillReviewTrust;
+	/** Optional detail text for the trust badge (e.g. "sha256:abcd…"). */
+	trustDetail?: string;
+	/** Auto-install patterns matched (brew/npm/pip/etc). */
+	autoInstallPatterns: string[];
+	/** True when operator (admin) can promote; false disables Promote button. */
+	adminControlsEnabled: boolean;
+	/** Diff summary vs prior active version (one-line counts). */
+	diffSummary?: string;
+	/** Promote outcome for terminal render. */
+	decision?: "promoted" | "rejected";
+	decisionError?: string;
 };
 
 export type SkillPickerView = "list";
@@ -311,6 +361,7 @@ export type CardStateMap = {
 	[CardKind.ModelPicker]: ModelPickerCardState;
 	[CardKind.ProviderList]: ProviderListCardState;
 	[CardKind.SkillPicker]: SkillPickerCardState;
+	[CardKind.SkillReview]: SkillReviewCardState;
 };
 
 export type CardState<K extends CardKind = CardKind> = CardStateMap[K];
@@ -439,6 +490,8 @@ export type SkillPickerCardAction =
 	| { type: "cancel" }
 	| { type: "refresh" };
 
+export type SkillReviewCardAction = { type: "promote" } | { type: "reject" } | { type: "refresh" };
+
 export type CardActionMap = {
 	[CardKind.Approval]: ApprovalCardAction;
 	[CardKind.ApprovalScope]: ApprovalScopeCardAction;
@@ -456,6 +509,7 @@ export type CardActionMap = {
 	[CardKind.ModelPicker]: ModelPickerCardAction;
 	[CardKind.ProviderList]: ProviderListCardAction;
 	[CardKind.SkillPicker]: SkillPickerCardAction;
+	[CardKind.SkillReview]: SkillReviewCardAction;
 };
 
 export type CardAction<K extends CardKind = CardKind> = CardActionMap[K];
@@ -537,6 +591,7 @@ const CARD_ACTIONS_BY_KIND = {
 		"cancel",
 		"refresh",
 	],
+	[CardKind.SkillReview]: ["promote", "reject", "refresh"],
 } as const satisfies { [K in CardKind]: readonly CardActionType<K>[] };
 
 export interface CardInstance<K extends CardKind = CardKind> {
