@@ -18,7 +18,7 @@ import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { scanSkill } from "../security/skill-scanner.js";
 import { copyDirRecursive } from "./cli-utils.js";
-import { getSkillRoots } from "./skill-path.js";
+import { getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "cmd-skills-promote" });
 
@@ -146,7 +146,7 @@ export function promoteSkill(
  * Only includes directories that contain a SKILL.md file.
  */
 export function listActiveSkills(): string[] {
-	const roots = getSkillRoots();
+	const roots = getAllSkillRoots();
 	const seen = new Set<string>();
 	for (const root of roots) {
 		try {
