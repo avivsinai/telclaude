@@ -1,10 +1,19 @@
+import fs from "node:fs";
 import type { Command } from "commander";
-import { type ExternalProviderConfig, loadConfig } from "../config/config.js";
+import JSON5 from "json5";
+import {
+	type ExternalProviderConfig,
+	getConfigPath,
+	loadConfig,
+	type PrivateEndpoint,
+	resetConfigCache,
+} from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import {
 	getCatalogOAuthService,
 	getProviderCatalogEntry,
 	listProviderCatalogEntries,
+	type ProviderCatalogEntry,
 } from "../providers/catalog.js";
 import { checkProviderHealth } from "../providers/provider-health.js";
 import { buildSchemaMarkdown, fetchProviderSchema } from "../providers/provider-skill.js";
@@ -12,7 +21,9 @@ import { validateProviderBaseUrl } from "../providers/provider-validation.js";
 import { relayProviderProxy } from "../relay/capabilities-client.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/index.js";
 import { requireRelay } from "./cli-guards.js";
+import { promptLine } from "./cli-prompt.js";
 import type { ProviderQueryOptions } from "./provider-query.js";
+import { GOOGLE_SCOPE_BUNDLES, runGoogleOAuthSetup } from "./setup-google.js";
 
 const logger = getChildLogger({ module: "cmd-providers" });
 
@@ -29,6 +40,100 @@ export type ProviderDoctorResult = {
 	baseUrl: string;
 	checks: ProviderDoctorCheck[];
 };
+
+function readConfigFile(): Record<string, unknown> {
+	const configPath = getConfigPath();
+	try {
+		const content = fs.readFileSync(configPath, "utf8");
+		return JSON5.parse(content);
+	} catch {
+		return {};
+	}
+}
+
+function writeConfigFile(config: Record<string, unknown>): void {
+	const configPath = getConfigPath();
+	const tmpPath = `${configPath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf8");
+	fs.renameSync(tmpPath, configPath);
+	resetConfigCache();
+}
+
+function ensureProviderConfigArray(rawConfig: Record<string, unknown>): ExternalProviderConfig[] {
+	if (!Array.isArray(rawConfig.providers)) {
+		rawConfig.providers = [];
+	}
+	return rawConfig.providers as ExternalProviderConfig[];
+}
+
+function ensurePrivateEndpointsArray(rawConfig: Record<string, unknown>): PrivateEndpoint[] {
+	if (!rawConfig.security || typeof rawConfig.security !== "object") {
+		rawConfig.security = {};
+	}
+	const security = rawConfig.security as Record<string, unknown>;
+	if (!security.network || typeof security.network !== "object") {
+		security.network = {};
+	}
+	const network = security.network as Record<string, unknown>;
+	if (!Array.isArray(network.privateEndpoints)) {
+		network.privateEndpoints = [];
+	}
+	return network.privateEndpoints as PrivateEndpoint[];
+}
+
+function defaultPortForUrl(url: URL): number {
+	if (url.port) {
+		return Number.parseInt(url.port, 10);
+	}
+	return url.protocol === "https:" ? 443 : 80;
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+	const parsed = new URL(baseUrl);
+	return parsed.toString().replace(/\/$/, "");
+}
+
+export function upsertConfiguredProvider(
+	rawConfig: Record<string, unknown>,
+	entry: ProviderCatalogEntry,
+	baseUrl: string,
+): void {
+	const providers = ensureProviderConfigArray(rawConfig);
+	const next: ExternalProviderConfig = {
+		id: entry.id,
+		baseUrl: normalizeBaseUrl(baseUrl),
+		services: [...entry.services],
+		description: entry.description,
+	};
+	const existingIndex = providers.findIndex((provider) => provider.id === entry.id);
+	if (existingIndex === -1) {
+		providers.push(next);
+	} else {
+		providers[existingIndex] = next;
+	}
+}
+
+export function upsertProviderPrivateEndpoint(
+	rawConfig: Record<string, unknown>,
+	entry: ProviderCatalogEntry,
+	baseUrl: string,
+): void {
+	const parsed = new URL(baseUrl);
+	const endpoints = ensurePrivateEndpointsArray(rawConfig);
+	const label = `provider-${entry.id}`;
+	const next: PrivateEndpoint = {
+		label,
+		host: parsed.hostname,
+		ports: [defaultPortForUrl(parsed)],
+		description: `${entry.displayName} provider sidecar`,
+	};
+	const existingIndex = endpoints.findIndex((endpoint) => endpoint.label === label);
+	if (existingIndex === -1) {
+		endpoints.push(next);
+	} else {
+		endpoints[existingIndex] = next;
+	}
+}
 
 function formatProvidersList(providers: ExternalProviderConfig[]): string {
 	if (providers.length === 0) {
@@ -228,6 +333,79 @@ async function runProvidersQuery(
 	console.log(JSON.stringify(result.data, null, 2));
 }
 
+async function resolveProviderSetupBaseUrl(
+	entry: ProviderCatalogEntry,
+	explicit?: string,
+): Promise<string> {
+	if (explicit?.trim()) {
+		return normalizeBaseUrl(explicit.trim());
+	}
+
+	const promptLabel = entry.defaultBaseUrl
+		? `Provider base URL [${entry.defaultBaseUrl}]: `
+		: "Provider base URL: ";
+	const provided = (await promptLine(promptLabel))?.trim();
+	return normalizeBaseUrl(provided || entry.defaultBaseUrl || "");
+}
+
+async function runProviderSetup(
+	providerId: string,
+	options: {
+		baseUrl?: string;
+		skipOauth?: boolean;
+		scopes: string;
+		port: string;
+		browser: boolean;
+	},
+): Promise<void> {
+	const entry = getProviderCatalogEntry(providerId);
+	if (!entry) {
+		const known = listProviderCatalogEntries()
+			.map((provider) => provider.id)
+			.join(", ");
+		console.error(`Unknown provider: ${providerId}`);
+		console.error(`Known providers: ${known || "(none)"}`);
+		process.exitCode = 1;
+		return;
+	}
+
+	if (!options.skipOauth && entry.oauthServiceId === "google") {
+		console.log("Google OAuth2 Setup");
+		console.log("===================");
+		console.log(
+			`Scope bundle: ${options.scopes} (${GOOGLE_SCOPE_BUNDLES[options.scopes]?.length ?? 0} scopes)`,
+		);
+		console.log();
+		await runGoogleOAuthSetup({
+			scopes: options.scopes,
+			port: options.port,
+			browser: options.browser,
+		});
+		console.log("Google credentials stored in vault.");
+		console.log();
+	}
+
+	const baseUrl = await resolveProviderSetupBaseUrl(entry, options.baseUrl);
+	if (!baseUrl) {
+		console.error("Provider base URL is required.");
+		process.exitCode = 1;
+		return;
+	}
+
+	const rawConfig = readConfigFile();
+	upsertConfiguredProvider(rawConfig, entry, baseUrl);
+	upsertProviderPrivateEndpoint(rawConfig, entry, baseUrl);
+	writeConfigFile(rawConfig);
+
+	console.log(`Configured provider '${entry.id}' at ${baseUrl}.`);
+	console.log(`Added/updated private endpoint allowlist: provider-${entry.id}`);
+	console.log();
+
+	const results = await collectProviderDoctorResults(entry.id);
+	console.log(formatProviderDoctor(results));
+	process.exitCode = computeDoctorExitCode(results);
+}
+
 export function registerProvidersCommandGroup(parent: Command): void {
 	parent
 		.command("list")
@@ -338,4 +516,38 @@ export function registerProvidersCommandGroup(parent: Command): void {
 			}
 			process.exitCode = computeDoctorExitCode(results);
 		});
+
+	parent
+		.command("setup")
+		.description("Configure a provider end-to-end (OAuth, config, network allowlist, doctor)")
+		.argument("<provider-id>", "Known provider catalog ID")
+		.option("--base-url <url>", "Provider base URL to register in config")
+		.option("--skip-oauth", "Skip the OAuth step and only update config/network")
+		.option(
+			"--scopes <bundle>",
+			`Google scope bundle: ${Object.keys(GOOGLE_SCOPE_BUNDLES).join(", ")}`,
+			"read_core",
+		)
+		.option("--port <port>", "Callback server port", "3000")
+		.option("--no-browser", "Print authorization URL instead of opening browser")
+		.action(
+			async (
+				providerId: string,
+				options: {
+					baseUrl?: string;
+					skipOauth?: boolean;
+					scopes: string;
+					port: string;
+					browser: boolean;
+				},
+			) => {
+				try {
+					await runProviderSetup(providerId, options);
+				} catch (err) {
+					logger.error({ error: String(err), providerId }, "providers setup failed");
+					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					process.exit(1);
+				}
+			},
+		);
 }

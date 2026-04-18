@@ -48,7 +48,7 @@
 			"description": "Google Services sidecar for Gmail, Calendar, Drive, and Contacts.",
 			"services": ["gmail", "calendar", "drive", "contacts"],
 			"oauthServiceId": "google",
-			"setupCommand": "setup-google",
+			"setupCommand": "providers setup google",
 			"defaultBaseUrl": "http://google-services:3001"
 		}
 	]
