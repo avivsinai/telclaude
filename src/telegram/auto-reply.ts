@@ -7,6 +7,7 @@ import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
 import { promoteSkill } from "../commands/skills-promote.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
+import { resolveModelHint } from "../config/model-catalog.js";
 import {
 	DEFAULT_IDLE_MINUTES,
 	deleteSession,
@@ -69,7 +70,10 @@ import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	cancelBackgroundJobCommand,
+	openModelPicker,
+	openProviderList,
 	openSkillDraftCard,
+	openSkillPicker,
 	openSocialQueueCard,
 	openSystemHealthCard,
 	reloadSkillsSession,
@@ -94,6 +98,7 @@ import {
 	type TelegramCommandMatch,
 } from "./control-commands.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
+import { resolveTelegramIntent } from "./intent-router.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import {
 	buildMemoryCaptureText,
@@ -757,6 +762,15 @@ async function dispatchTelegramControlCommand(
 			await msg.reply(result.callbackText);
 			return true;
 		}
+		case "skills:picker": {
+			await openSkillPicker(bot.api, {
+				chatId: msg.chatId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+				sessionKey: msg.from,
+			});
+			return true;
+		}
 		// ── /background domain ─────────────────────────────────────────
 		case "background":
 		case "background:list": {
@@ -791,6 +805,30 @@ async function dispatchTelegramControlCommand(
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
 				shortId,
+			});
+			return true;
+		}
+		// ── /model domain ──────────────────────────────────────────────
+		case "model": {
+			const hintText = match.rawArgs.trim();
+			const hint = hintText ? resolveModelHint(hintText) : null;
+			await openModelPicker(bot.api, {
+				chatId: msg.chatId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+				providerHint: hint?.providerId,
+				modelHint: hint?.modelId,
+				cfg,
+			});
+			return true;
+		}
+		// ── /providers domain ──────────────────────────────────────────
+		case "providers": {
+			await openProviderList(bot.api, {
+				chatId: msg.chatId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				threadId: msg.messageThreadId,
+				cfg,
 			});
 			return true;
 		}
@@ -1907,6 +1945,46 @@ async function handleInboundMessage(
 	) {
 		logger.debug({ chatId: msg.chatId }, "message consumed by active wizard text prompt");
 		return;
+	}
+
+	// ══════════════════════════════════════════════════════════════════════════
+	// NL INTENT ROUTING (W2) - Map free-form phrases to picker openers
+	// ══════════════════════════════════════════════════════════════════════════
+
+	const intent = resolveTelegramIntent(trimmedBody);
+	if (intent) {
+		logger.debug({ chatId: msg.chatId, intent: intent.kind }, "telegram NL intent matched");
+		switch (intent.kind) {
+			case "open-model-picker": {
+				await openModelPicker(_bot.api, {
+					chatId: msg.chatId,
+					actorScope: `user:${msg.senderId ?? msg.chatId}`,
+					threadId: msg.messageThreadId,
+					providerHint: intent.providerHint,
+					modelHint: intent.modelHint,
+					cfg,
+				});
+				return;
+			}
+			case "open-provider-list": {
+				await openProviderList(_bot.api, {
+					chatId: msg.chatId,
+					actorScope: `user:${msg.senderId ?? msg.chatId}`,
+					threadId: msg.messageThreadId,
+					cfg,
+				});
+				return;
+			}
+			case "open-skill-picker": {
+				await openSkillPicker(_bot.api, {
+					chatId: msg.chatId,
+					actorScope: `user:${msg.senderId ?? msg.chatId}`,
+					threadId: msg.messageThreadId,
+					sessionKey: msg.from,
+				});
+				return;
+			}
+		}
 	}
 
 	// ══════════════════════════════════════════════════════════════════════════

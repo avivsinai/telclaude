@@ -469,6 +469,14 @@ function initializeSchema(database: Database.Database): void {
 			ON approval_allowlist(session_key);
 		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_expires
 			ON approval_allowlist(expires_at);
+
+		-- Per-chat model preference (W2 model picker)
+		CREATE TABLE IF NOT EXISTS model_preferences (
+			chat_id INTEGER PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
 	`);
 
 	ensureApprovalsColumns(database);
