@@ -63,14 +63,30 @@ export async function* executeRemoteQuery(
 				// Best-effort; agent falls back to static auth if available
 			}
 		}
-		// Native/dev fallback only: Docker deployments must keep raw credentials inside
-		// the relay and route via the git proxy / HTTP credential proxy instead.
-		// Gate on scope to prevent credential leakage to social agents — the agent server
-		// downgrades non-telegram scopes to SOCIAL tier, but that happens AFTER this payload
-		// is serialized. Credentials must never enter a social agent container.
+		// Native/dev escape hatch: gated behind TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS=1.
+		// Violates the "agents never see raw credentials" invariant (architecture.md), so default
+		// is OFF. Docker keeps raw credentials inside the relay and routes via the git proxy /
+		// HTTP credential proxy; native mode should do the same unless the operator explicitly
+		// opts in here.
+		// Scope gate still applies: credentials never enter a social agent container — the agent
+		// server downgrades non-telegram scopes to SOCIAL tier, but that happens AFTER this
+		// payload is serialized, so we enforce telegram-only here too.
 		const effectiveScope = options.scope ?? "telegram";
+		const insecureExposeOptIn = process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS === "1";
 		let exposedCredentials: ExposedCredentials | undefined;
-		if (!isDockerEnvironment() && options.tier === "FULL_ACCESS" && effectiveScope === "telegram") {
+		if (
+			insecureExposeOptIn &&
+			!isDockerEnvironment() &&
+			options.tier === "FULL_ACCESS" &&
+			effectiveScope === "telegram"
+		) {
+			logger.warn(
+				{
+					tier: options.tier,
+					scope: effectiveScope,
+				},
+				"INSECURE: exposing native credentials to agent subprocess (TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS=1). This violates the 'agents never see raw credentials' invariant.",
+			);
 			const creds: ExposedCredentials = {};
 			try {
 				const gitCreds = await getGitCredentials();
