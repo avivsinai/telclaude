@@ -4,7 +4,13 @@ import {
 	getJobByShortId as getBackgroundJobByShortId,
 	listJobs as listBackgroundJobs,
 } from "../background/index.js";
-import { listDraftSkills } from "../commands/skills-promote.js";
+import { SkillRootUnavailableError } from "../commands/skill-path.js";
+import { type SkillTemplate, scaffoldSkill } from "../commands/skill-scaffold.js";
+import {
+	formatReportForTelegram as formatDoctorReport,
+	runSkillsDoctor,
+} from "../commands/skills-doctor.js";
+import { listActiveSkills, listDraftSkills } from "../commands/skills-promote.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { deleteSession } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
@@ -45,6 +51,18 @@ type SocialAskWizardScope = {
 };
 
 const activeSocialAskWizardScopes = new Set<string>();
+
+type SkillNewWizardScope = {
+	actorId: number;
+	chatId: number;
+	threadId?: number;
+};
+
+const activeSkillNewWizardScopes = new Set<string>();
+
+function skillNewWizardScopeKey(scope: SkillNewWizardScope): string {
+	return `${scope.chatId}:${scope.threadId ?? "root"}:${scope.actorId}`;
+}
 
 function threadOptions(threadId?: number): ThreadOptions {
 	return threadId === undefined ? {} : { message_thread_id: threadId };
@@ -128,6 +146,246 @@ export function reloadSkillsSession(sessionKey: string | undefined): CommandUiRe
 	getSessionManager().clearSession(sessionKey);
 	return {
 		callbackText: "Skills reloaded. Next message starts a fresh session.",
+	};
+}
+
+export async function sendSkillsListCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number },
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(opts.chatId, "Only admin can list skills.", threadOptions(opts.threadId));
+		return { callbackText: "Only admin can list skills.", callbackAlert: true };
+	}
+
+	const active = listActiveSkills();
+	const drafts = listDraftSkills();
+	const lines: string[] = [];
+	lines.push(`Skills: ${active.length} active, ${drafts.length} draft`);
+	lines.push("");
+	if (active.length > 0) {
+		lines.push("Active:");
+		for (const name of active) {
+			lines.push(`  - ${name}`);
+		}
+		lines.push("");
+	}
+	if (drafts.length > 0) {
+		lines.push("Drafts (awaiting promotion):");
+		for (const name of drafts) {
+			lines.push(`  - ${name}`);
+		}
+	}
+	if (active.length === 0 && drafts.length === 0) {
+		lines.push("No skills found.");
+	}
+
+	await api.sendMessage(opts.chatId, lines.join("\n"), threadOptions(opts.threadId));
+	return { callbackText: "Sent skills list" };
+}
+
+export async function sendSkillsDoctorCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number },
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can run skills doctor.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin.", callbackAlert: true };
+	}
+	const report = runSkillsDoctor();
+	const text = formatDoctorReport(report);
+	await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+	return {
+		callbackText: `Doctor: ${report.passCount} pass, ${report.warnCount} warn, ${report.failCount} fail`,
+	};
+}
+
+export async function sendSkillsScanCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number },
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(opts.chatId, "Only admin can scan skills.", threadOptions(opts.threadId));
+		return { callbackText: "Only admin.", callbackAlert: true };
+	}
+
+	const report = runSkillsDoctor();
+	const lines: string[] = [];
+	let blocked = 0;
+	let findings = 0;
+	for (const entry of report.entries) {
+		const total = entry.counts.critical + entry.counts.high + entry.counts.medium;
+		findings += total + entry.counts.info;
+		const block = entry.counts.critical > 0 || entry.counts.high > 0;
+		if (block) blocked++;
+		const icon = block ? "BLOCK" : total > 0 ? "WARN" : "OK";
+		lines.push(
+			`[${icon}] ${entry.kind} ${entry.name} (c=${entry.counts.critical} h=${entry.counts.high} m=${entry.counts.medium})`,
+		);
+	}
+	const header = `Scanned ${report.entries.length} skills: ${blocked} blocked, ${findings} findings`;
+	const body = [header, "", ...lines].join("\n");
+	await api.sendMessage(opts.chatId, body, threadOptions(opts.threadId));
+	return { callbackText: `Scanned ${report.entries.length} skills` };
+}
+
+export async function sendSkillsImportCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number },
+): Promise<CommandUiResult> {
+	const message = [
+		"`/skills import` runs from the CLI (requires filesystem source path):",
+		"",
+		"  telclaude skills import-openclaw <source>",
+		"",
+		"Imports land in `.claude/skills-draft/` and can be promoted via /skills promote.",
+	].join("\n");
+	await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
+	return { callbackText: "Run `telclaude skills import-openclaw` from the CLI." };
+}
+
+const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+export function startSkillsNewWizard(
+	api: Api,
+	opts: {
+		actorId: number;
+		chatId: number;
+		threadId?: number;
+		initialName?: string;
+	},
+): CommandUiResult {
+	if (!isAdmin(opts.chatId)) {
+		return { callbackText: "Only admin can scaffold skills.", callbackAlert: true };
+	}
+
+	const scopeKey = skillNewWizardScopeKey(opts);
+	if (activeSkillNewWizardScopes.has(scopeKey)) {
+		return {
+			callbackText: "Already running a scaffold wizard in this chat.",
+			callbackAlert: true,
+		};
+	}
+
+	activeSkillNewWizardScopes.add(scopeKey);
+	void (async () => {
+		const wizard = createWizardPrompter({
+			api,
+			actorId: opts.actorId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+		});
+
+		try {
+			let name = opts.initialName?.trim();
+			if (!name) {
+				name = (
+					await wizard.text({
+						message: "Name the new skill:",
+						placeholder: "lowercase-with-hyphens",
+						validate: (value) => {
+							const trimmed = value.trim();
+							if (!trimmed) return "Name cannot be empty.";
+							if (!SKILL_NAME_PATTERN.test(trimmed)) {
+								return "Use lowercase letters, digits, and hyphens only (e.g. my-skill).";
+							}
+							return undefined;
+						},
+					})
+				).trim();
+			} else if (!SKILL_NAME_PATTERN.test(name)) {
+				await api.sendMessage(
+					opts.chatId,
+					`Invalid skill name "${name}". Use lowercase-with-hyphens.`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+
+			const template = await wizard.select<SkillTemplate>({
+				message: "Pick a template:",
+				options: [
+					{ value: "basic", label: "basic", hint: "Read/Grep/Glob only", emoji: "📝" },
+					{
+						value: "api-client",
+						label: "api-client",
+						hint: "Calls `telclaude provider-query`",
+						emoji: "🔌",
+					},
+					{
+						value: "telegram-render",
+						label: "telegram-render",
+						hint: "Telegram-friendly formatting",
+						emoji: "💬",
+					},
+				],
+			});
+
+			const description = (
+				await wizard.text({
+					message: `Describe WHEN to invoke "${name}":`,
+					placeholder: "Use when users ask ...",
+					validate: (value) => {
+						const trimmed = value.trim();
+						if (trimmed.length < 10) return "Description must be at least 10 characters.";
+						return undefined;
+					},
+				})
+			).trim();
+
+			const result = scaffoldSkill({ name, template, description });
+			if (!result.success) {
+				await api.sendMessage(
+					opts.chatId,
+					`Scaffold failed: ${result.error}`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+
+			const reply = [
+				`Draft skill "${name}" scaffolded (template: ${template}).`,
+				`  SKILL.md:   ${result.skillMdPath}`,
+				`  PREVIEW.md: ${result.previewPath}`,
+				"",
+				"Next steps:",
+				"  1. Edit SKILL.md to match the skill's actual behaviour.",
+				"  2. /skills doctor  (verifies frontmatter + scanner)",
+				`  3. /skills promote ${name}`,
+			].join("\n");
+			await api.sendMessage(opts.chatId, reply, threadOptions(opts.threadId));
+		} catch (err) {
+			if (err instanceof WizardTimeoutError || err instanceof WizardCancelledError) {
+				return;
+			}
+			if (err instanceof SkillRootUnavailableError) {
+				await api.sendMessage(
+					opts.chatId,
+					`Cannot scaffold skill: no writable skill root.\n\n${err.message}`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+			logger.warn({ error: String(err) }, "skills scaffold wizard failed");
+			await api.sendMessage(
+				opts.chatId,
+				"Failed to scaffold skill. Check logs.",
+				threadOptions(opts.threadId),
+			);
+		} finally {
+			await wizard.dismiss().catch(() => {});
+			activeSkillNewWizardScopes.delete(scopeKey);
+		}
+	})();
+
+	return {
+		callbackText: opts.initialName
+			? `Scaffolding ${opts.initialName}. Answer the prompts above.`
+			: "Answer the prompts to scaffold a new skill.",
 	};
 }
 

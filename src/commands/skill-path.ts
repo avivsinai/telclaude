@@ -5,6 +5,18 @@ import type { Command } from "commander";
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+export class SkillRootUnavailableError extends Error {
+	readonly searched: string[];
+	constructor(searched: string[]) {
+		super(
+			`No writable skill root found. Searched:\n${searched.map((p) => `  - ${p}`).join("\n")}\n\n` +
+				`Fix by creating one of these directories with write access, or set CLAUDE_CONFIG_DIR / TELCLAUDE_CLAUDE_HOME to a writable absolute path.`,
+		);
+		this.name = "SkillRootUnavailableError";
+		this.searched = searched;
+	}
+}
+
 function getConfiguredClaudeHome(): string | null {
 	const raw = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
 	if (!raw || raw.startsWith("~") || !path.isAbsolute(raw)) {
@@ -34,22 +46,102 @@ function normalizeRelativeSkillPath(relativePath: string): string[] {
 	return normalized.split("/").filter(Boolean);
 }
 
-export function getSkillRoots(cwd: string = process.cwd()): string[] {
-	const configuredClaudeHome = getConfiguredClaudeHome();
-	const roots = [
-		path.join(cwd, ".claude", "skills"),
-		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
-		getBundledSkillsRoot(),
-	];
-
-	return roots
-		.filter((root): root is string => Boolean(root))
-		.filter((root, index, all) => {
-			const resolved = path.resolve(root);
+function dedupePaths(paths: readonly (string | null | undefined)[]): string[] {
+	return paths
+		.filter((p): p is string => Boolean(p))
+		.filter((p, index, all) => {
+			const resolved = path.resolve(p);
 			return (
 				all.findIndex((candidate) => candidate && path.resolve(candidate) === resolved) === index
 			);
 		});
+}
+
+/**
+ * Build the ordered list of candidate skill roots (writable or not),
+ * used for READING bundled assets. Order: project-local, configured Claude home,
+ * bundled distribution root.
+ */
+export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
+	const configuredClaudeHome = getConfiguredClaudeHome();
+	return dedupePaths([
+		path.join(cwd, ".claude", "skills"),
+		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
+		getBundledSkillsRoot(),
+	]);
+}
+
+/**
+ * Build the ordered list of candidate WRITABLE skill roots. Same order
+ * as getAllSkillRoots(), minus the bundled-distribution root (which lives
+ * in node_modules/ and must not be mutated).
+ */
+export function getWritableSkillRootCandidates(cwd: string = process.cwd()): string[] {
+	const configuredClaudeHome = getConfiguredClaudeHome();
+	return dedupePaths([
+		path.join(cwd, ".claude", "skills"),
+		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
+	]);
+}
+
+/**
+ * Build the ordered list of candidate WRITABLE draft-skill roots.
+ */
+export function getWritableDraftSkillRootCandidates(cwd: string = process.cwd()): string[] {
+	const configuredClaudeHome = getConfiguredClaudeHome();
+	return dedupePaths([
+		path.join(cwd, ".claude", "skills-draft"),
+		configuredClaudeHome ? path.join(configuredClaudeHome, "skills-draft") : null,
+	]);
+}
+
+function isWritableDir(dir: string): boolean {
+	try {
+		fs.mkdirSync(dir, { recursive: true });
+		fs.accessSync(dir, fs.constants.W_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Return the single canonical writable skill root for telclaude, creating
+ * the directory if needed. Throws SkillRootUnavailableError if no candidate
+ * is writable.
+ */
+export function getSkillRoot(cwd: string = process.cwd()): string {
+	const candidates = getWritableSkillRootCandidates(cwd);
+	for (const candidate of candidates) {
+		if (isWritableDir(candidate)) {
+			return candidate;
+		}
+	}
+	throw new SkillRootUnavailableError(candidates);
+}
+
+/**
+ * Return the single canonical writable draft-skill root, creating the
+ * directory if needed. Throws SkillRootUnavailableError if no candidate
+ * is writable.
+ */
+export function getDraftSkillRoot(cwd: string = process.cwd()): string {
+	const candidates = getWritableDraftSkillRootCandidates(cwd);
+	for (const candidate of candidates) {
+		if (isWritableDir(candidate)) {
+			return candidate;
+		}
+	}
+	throw new SkillRootUnavailableError(candidates);
+}
+
+/**
+ * @deprecated Use getAllSkillRoots() for read search paths or getSkillRoot()
+ * for the canonical writable root. Kept as an alias for existing callers that
+ * only read and enumerate skills.
+ */
+export function getSkillRoots(cwd: string = process.cwd()): string[] {
+	return getAllSkillRoots(cwd);
 }
 
 export function resolveSkillAssetPath(
@@ -64,7 +156,7 @@ export function resolveSkillAssetPath(
 	}
 
 	const pathParts = normalizeRelativeSkillPath(relativePath);
-	const roots = getSkillRoots(options?.cwd);
+	const roots = getAllSkillRoots(options?.cwd);
 
 	for (const root of roots) {
 		const skillRoot = path.resolve(root, skillName);

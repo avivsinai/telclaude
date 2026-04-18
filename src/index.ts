@@ -37,6 +37,8 @@ import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupGoogleCommand } from "./commands/setup-google.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
 import { registerSkillPathCommand } from "./commands/skill-path.js";
+import { registerSkillsScaffoldSubcommand } from "./commands/skill-scaffold.js";
+import { registerSkillsDoctorSubcommand } from "./commands/skills-doctor.js";
 import { registerSkillsImportSubcommands } from "./commands/skills-import.js";
 import { registerSkillsPromoteSubcommands } from "./commands/skills-promote.js";
 import { registerStatusCommand } from "./commands/status.js";
@@ -91,6 +93,8 @@ registerSetupGoogleCommand(secrets);
 const skills = program.command("skills").description("Manage telclaude skills");
 registerSkillsImportSubcommands(skills);
 registerSkillsPromoteSubcommands(skills);
+registerSkillsScaffoldSubcommand(skills);
+registerSkillsDoctorSubcommand(skills);
 
 // --- pairing ---
 registerPairingCommand(program);

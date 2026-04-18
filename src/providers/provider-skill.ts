@@ -1,7 +1,6 @@
-import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { getSkillRoot, SkillRootUnavailableError } from "../commands/skill-path.js";
 import type { ExternalProviderConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
@@ -368,36 +367,19 @@ type SkillLocation = {
 	referencePath: string;
 };
 
-async function resolveSkillLocation(): Promise<SkillLocation | null> {
-	const candidates = [
-		path.join(process.cwd(), ".claude", "skills", SKILL_DIR),
-		path.join("/workspace", ".claude", "skills", SKILL_DIR),
-		path.join(os.homedir(), ".claude", "skills", SKILL_DIR),
-		path.join("/app", ".claude", "skills", SKILL_DIR),
-	];
-
-	// In Docker, entrypoint installs skills to $TELCLAUDE_CLAUDE_HOME/skills/ (no .claude prefix)
-	const claudeHome = process.env.TELCLAUDE_CLAUDE_HOME ?? process.env.CLAUDE_CONFIG_DIR;
-	if (claudeHome) {
-		candidates.unshift(path.join(claudeHome, "skills", SKILL_DIR));
-	}
-
-	for (const rootDir of candidates) {
-		const skillPath = path.join(rootDir, SKILL_FILE);
-		try {
-			await fs.access(skillPath, fsConstants.R_OK);
-			await fs.access(rootDir, fsConstants.W_OK);
-			return {
-				rootDir,
-				skillPath,
-				referencePath: path.join(rootDir, SCHEMA_REFERENCE_FILE),
-			};
-		} catch {
-			// skip
-		}
-	}
-
-	return null;
+/**
+ * Resolve the external-provider skill directory using the canonical
+ * writable skill root (see `getSkillRoot`). Throws if no writable root
+ * is available — there is no silent fallback to prompt injection.
+ */
+function resolveSkillLocation(): SkillLocation {
+	const root = getSkillRoot();
+	const rootDir = path.join(root, SKILL_DIR);
+	return {
+		rootDir,
+		skillPath: path.join(rootDir, SKILL_FILE),
+		referencePath: path.join(rootDir, SCHEMA_REFERENCE_FILE),
+	};
 }
 
 // Cached provider summary for injection into system prompts (SDK queries).
@@ -465,21 +447,21 @@ export async function refreshExternalProviderSkill(
 		return;
 	}
 
-	const skillLocation = await resolveSkillLocation();
-	if (!skillLocation) {
-		logger.debug("external-provider skill directory not found; using system prompt injection only");
-		return;
+	let skillLocation: SkillLocation;
+	try {
+		skillLocation = resolveSkillLocation();
+	} catch (err) {
+		if (err instanceof SkillRootUnavailableError) {
+			logger.error(
+				{ searched: err.searched },
+				"external-provider skill root unavailable; refusing silent degrade to prompt-injection-only mode",
+			);
+		}
+		throw err;
 	}
 
-	try {
-		await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
-		await fs.writeFile(skillLocation.referencePath, section, "utf8");
-	} catch (err) {
-		logger.warn(
-			{ error: String(err), path: skillLocation.referencePath },
-			"failed to update external provider schema reference",
-		);
-	}
+	await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
+	await fs.writeFile(skillLocation.referencePath, section, "utf8");
 }
 
 /**
@@ -493,20 +475,20 @@ export async function writeProviderSchemaFromRelay(
 	cachedProviderSummary = buildProviderSummary(providers);
 	cachedSchemaMarkdown = schemaMarkdown;
 
-	const skillLocation = await resolveSkillLocation();
-	if (!skillLocation) {
-		logger.debug("external-provider skill directory not found; using system prompt injection only");
-		return;
+	let skillLocation: SkillLocation;
+	try {
+		skillLocation = resolveSkillLocation();
+	} catch (err) {
+		if (err instanceof SkillRootUnavailableError) {
+			logger.error(
+				{ searched: err.searched },
+				"external-provider skill root unavailable; refusing silent degrade to prompt-injection-only mode",
+			);
+		}
+		throw err;
 	}
 
-	try {
-		await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
-		await fs.writeFile(skillLocation.referencePath, schemaMarkdown, "utf8");
-		logger.info({ path: skillLocation.referencePath }, "wrote provider schema from relay");
-	} catch (err) {
-		logger.warn(
-			{ error: String(err), path: skillLocation.referencePath },
-			"failed to write provider schema from relay",
-		);
-	}
+	await fs.mkdir(path.dirname(skillLocation.referencePath), { recursive: true });
+	await fs.writeFile(skillLocation.referencePath, schemaMarkdown, "utf8");
+	logger.info({ path: skillLocation.referencePath }, "wrote provider schema from relay");
 }
