@@ -1,8 +1,6 @@
 import { execSync } from "node:child_process";
 import fsSync from "node:fs";
-import fs from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { executeCronAction } from "../cron/actions.js";
@@ -45,6 +43,7 @@ import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
+import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
 
@@ -464,36 +463,16 @@ export function registerRelayCommand(program: Command): void {
 					console.log("TOTP daemon: connected");
 				} else {
 					console.log("TOTP daemon: not running (2FA will be unavailable)");
-					console.log("  Start with: telclaude totp-daemon");
+					console.log("  Start with: telclaude maintenance totp-daemon");
 				}
 
-				// Check skills availability (project-level and user-level)
-				const skillsDirs = [
-					path.join(process.cwd(), ".claude", "skills"), // project-level
-					path.join(os.homedir(), ".claude", "skills"), // user-level
-				];
-				const allSkills = new Set<string>();
-				let foundDir: string | null = null;
+				// Check skills availability via the canonical doctor helper.
+				// This covers project-local, CLAUDE_CONFIG_DIR, and bundled roots,
+				// and treats symlinked skill directories as real skills
+				// (required for Docker profiles that symlink individual skills).
+				const skillList = findInstalledSkills().map((s) => s.name);
 
-				for (const skillsDir of skillsDirs) {
-					try {
-						const skillDirs = await fs.readdir(skillsDir, { withFileTypes: true });
-						const skills = skillDirs
-							.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-							.map((entry) => entry.name);
-						for (const skill of skills) {
-							allSkills.add(skill);
-						}
-						if (skills.length > 0 && !foundDir) {
-							foundDir = skillsDir;
-						}
-					} catch {
-						// Directory doesn't exist or not readable, try next
-					}
-				}
-
-				if (allSkills.size > 0) {
-					const skillList = Array.from(allSkills).sort();
+				if (skillList.length > 0) {
 					console.log(`Skills: ${skillList.length} available (${skillList.join(", ")})`);
 				} else {
 					console.log("Skills: none found");

@@ -12,7 +12,7 @@ export function registerTOTPDisableCommand(program: Command): void {
 			const available = await client.isAvailable();
 			if (!available) {
 				console.error("\n❌ TOTP daemon is not running.");
-				console.error("Start it with: telclaude totp-daemon\n");
+				console.error("Start it with: telclaude maintenance totp-daemon\n");
 				process.exit(1);
 			}
 

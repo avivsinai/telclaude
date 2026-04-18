@@ -106,7 +106,7 @@ export function registerSetupGitHubAppCommand(program: Command): void {
 							console.log(`GitHub App is configured (stored in ${providerName}).`);
 						} else {
 							console.log("No GitHub App configured.");
-							console.log("Run: telclaude setup-github-app");
+							console.log("Run: telclaude secrets setup-github-app");
 						}
 						return;
 					}
@@ -385,7 +385,9 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 		} else {
 			console.warn(`✗ ${result.message}`);
 			console.log("");
-			console.log("Credentials saved. You can test again with: telclaude setup-github-app --test");
+			console.log(
+				"Credentials saved. You can test again with: telclaude secrets setup-github-app --test",
+			);
 		}
 	}
 
@@ -417,9 +419,9 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	console.log(`Setup complete! Telclaude can now authenticate as ${appSlug}[bot].`);
 	console.log("");
 	console.log("Usage:");
-	console.log("  telclaude setup-github-app --show   # View stored config");
-	console.log("  telclaude setup-github-app --test   # Test connectivity");
-	console.log("  telclaude setup-github-app --repos  # List accessible repos");
+	console.log("  telclaude secrets setup-github-app --show   # View stored config");
+	console.log("  telclaude secrets setup-github-app --test   # Test connectivity");
+	console.log("  telclaude secrets setup-github-app --repos  # List accessible repos");
 
 	logger.info(
 		{ appId, installationId, appSlug, provider: providerName },

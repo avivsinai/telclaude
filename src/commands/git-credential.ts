@@ -40,13 +40,13 @@ export function registerGitCredentialCommand(program: Command): void {
 						break;
 					case "store":
 						// We don't store credentials via the helper protocol
-						// Users should use `telclaude setup-git` instead
-						logger.debug("git-credential store called (ignored - use setup-git)");
+						// Users should use `telclaude secrets setup-git` instead
+						logger.debug("git-credential store called (ignored - use secrets setup-git)");
 						break;
 					case "erase":
 						// We don't erase via the helper protocol
-						// Users should use `telclaude setup-git --delete` instead
-						logger.debug("git-credential erase called (ignored - use setup-git --delete)");
+						// Users should use `telclaude secrets setup-git --delete` instead
+						logger.debug("git-credential erase called (ignored - use secrets setup-git --delete)");
 						break;
 					default:
 						logger.warn({ operation }, "unknown git-credential operation");

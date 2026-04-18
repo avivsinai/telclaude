@@ -371,7 +371,7 @@ export function formatAdminClaimSuccess(hasExistingTOTP: boolean): string {
 		return (
 			"✅ *Chat relinked as admin*\n\n" +
 			"Existing 2FA is already active for this admin user.\n\n" +
-			"If you need to reset it, reply `/disable-2fa` then `/setup-2fa`."
+			"If you need to reset it, reply `/auth disable` then `/auth setup`."
 		);
 	}
 
@@ -380,8 +380,8 @@ export function formatAdminClaimSuccess(hasExistingTOTP: boolean): string {
 		"This chat now has FULL_ACCESS permissions.\n\n" +
 		"⚠️ *TOTP is recommended* to protect against Telegram account hijacking.\n\n" +
 		"Set up now? Reply:\n" +
-		"• `/setup-2fa` - Set up two-factor authentication\n" +
-		"• `/skip-totp` - Skip for now (not recommended)"
+		"• `/auth setup` - Set up two-factor authentication\n" +
+		"• `/auth skip` - Skip for now (not recommended)"
 	);
 }
 
