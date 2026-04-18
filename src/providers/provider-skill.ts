@@ -47,7 +47,7 @@ type ServiceDoc = {
 	actions: ActionDoc[];
 };
 
-type ProviderSchemaResult = {
+export type ProviderSchemaResult = {
 	provider: ExternalProviderConfig;
 	schema?: unknown;
 	error?: string;
@@ -224,7 +224,7 @@ function extractServiceDocs(schema: unknown): ServiceDoc[] {
 	return services;
 }
 
-async function fetchProviderSchema(
+export async function fetchProviderSchema(
 	provider: ExternalProviderConfig,
 	retries = 2,
 ): Promise<ProviderSchemaResult> {
@@ -314,7 +314,7 @@ function formatServiceDoc(service: ServiceDoc): string[] {
 	return lines;
 }
 
-function buildSchemaMarkdown(results: ProviderSchemaResult[]): string {
+export function buildSchemaMarkdown(results: ProviderSchemaResult[]): string {
 	const lines: string[] = [];
 	lines.push("# Provider Schemas (auto-generated)");
 	lines.push("");
