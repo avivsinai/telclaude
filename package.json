@@ -18,6 +18,7 @@
     "dist",
     "bin",
     ".claude",
+    "assets/skill-templates",
     "examples"
   ],
   "scripts": {

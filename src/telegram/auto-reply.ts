@@ -74,8 +74,13 @@ import {
 	runSocialHeartbeatCommand,
 	sendBackgroundJobDetail,
 	sendBackgroundJobList,
+	sendSkillsDoctorCommand,
+	sendSkillsImportCommand,
+	sendSkillsListCommand,
+	sendSkillsScanCommand,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
+	startSkillsNewWizard,
 	startSocialAskWizard,
 } from "./control-command-actions.js";
 import {
@@ -655,6 +660,46 @@ async function dispatchTelegramControlCommand(
 				actorScope: `user:${msg.senderId ?? msg.chatId}`,
 				threadId: msg.messageThreadId,
 				sessionKey: msg.from,
+			});
+			return true;
+		}
+		case "skills:list": {
+			await sendSkillsListCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "skills:new": {
+			const result = startSkillsNewWizard(bot.api, {
+				actorId: msg.senderId ?? msg.chatId,
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				initialName: match.args[0]?.trim(),
+			});
+			if (result.callbackAlert) {
+				await msg.reply(result.callbackText);
+			}
+			return true;
+		}
+		case "skills:import": {
+			await sendSkillsImportCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "skills:scan": {
+			await sendSkillsScanCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "skills:doctor": {
+			await sendSkillsDoctorCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
 			});
 			return true;
 		}
