@@ -61,7 +61,7 @@ export function registerGenerateImageCommand(program: Command): void {
 				if (!isImageGenerationAvailable()) {
 					console.error(
 						"Error: Image generation not available.\n" +
-							"Run: telclaude setup-openai\n" +
+							"Run: telclaude secrets setup-openai\n" +
 							"Or set OPENAI_API_KEY environment variable.",
 					);
 					process.exit(1);

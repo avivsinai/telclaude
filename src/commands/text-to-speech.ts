@@ -67,7 +67,7 @@ export function registerTextToSpeechCommand(program: Command): void {
 				if (!isTTSAvailable()) {
 					console.error(
 						"Error: Text-to-speech not available.\n" +
-							"Run: telclaude setup-openai\n" +
+							"Run: telclaude secrets setup-openai\n" +
 							"Or set OPENAI_API_KEY environment variable.",
 					);
 					process.exit(1);

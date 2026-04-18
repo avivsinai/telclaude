@@ -76,7 +76,7 @@ export function registerSetupGitCommand(program: Command): void {
 								console.log("Git credentials are configured via environment variables.");
 							} else {
 								console.log("No git credentials configured.");
-								console.log("Run: telclaude setup-git");
+								console.log("Run: telclaude secrets setup-git");
 							}
 						}
 						return;
@@ -241,7 +241,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 			console.log("Git identity configured.");
 		} else {
 			console.warn(
-				"Failed to apply git identity. You can try later with: telclaude setup-git --apply",
+				"Failed to apply git identity. You can try later with: telclaude secrets setup-git --apply",
 			);
 		}
 	}
@@ -256,7 +256,9 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 		} else {
 			console.warn(`✗ ${result.message}`);
 			console.log("");
-			console.log("Credentials are saved. You can test again with: telclaude setup-git --test");
+			console.log(
+				"Credentials are saved. You can test again with: telclaude secrets setup-git --test",
+			);
 		}
 	}
 
@@ -264,9 +266,9 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	console.log("Setup complete. Your bot can now perform git operations.");
 	console.log("");
 	console.log("Usage:");
-	console.log("  telclaude setup-git --show   # View stored credentials");
-	console.log("  telclaude setup-git --test   # Test connectivity");
-	console.log("  telclaude setup-git --apply  # Apply git identity");
+	console.log("  telclaude secrets setup-git --show   # View stored credentials");
+	console.log("  telclaude secrets setup-git --test   # Test connectivity");
+	console.log("  telclaude secrets setup-git --apply  # Apply git identity");
 
 	logger.info({ username, email, provider: providerName }, "Git credentials stored");
 }

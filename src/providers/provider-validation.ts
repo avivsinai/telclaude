@@ -25,7 +25,8 @@ export async function validateProviderBaseUrl(
 	const endpoints = cfg.security?.network?.privateEndpoints ?? [];
 	if (!endpoints.length) {
 		throw new Error(
-			"No private endpoints configured. Add a provider endpoint via `telclaude network add`.",
+			"No private endpoints configured. Configure a provider via `telclaude providers setup <id>`. " +
+				"For non-provider private services, use `telclaude dev network add` as an escape hatch.",
 		);
 	}
 

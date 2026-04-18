@@ -5,10 +5,10 @@
  * Home Assistant, Plex, NAS, etc.
  *
  * Commands:
- * - telclaude network list - List configured private endpoints
- * - telclaude network add <label> - Add a new private endpoint
- * - telclaude network remove <label> - Remove a private endpoint
- * - telclaude network test <url> - Test if a URL would be allowed
+ * - telclaude dev network list - List configured private endpoints
+ * - telclaude dev network add <label> - Add a new private endpoint
+ * - telclaude dev network remove <label> - Remove a private endpoint
+ * - telclaude dev network test <url> - Test if a URL would be allowed
  */
 
 import fs from "node:fs";

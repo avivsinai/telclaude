@@ -3,7 +3,7 @@
  * Used for Whisper transcription, GPT Image generation, and TTS.
  *
  * API key resolution order:
- * 1. Keychain (via `telclaude setup-openai`)
+ * 1. Keychain (via `telclaude secrets setup-openai`)
  * 2. OPENAI_API_KEY environment variable
  * 3. openai.apiKey in config file
  * 4. Credential proxy (TELCLAUDE_CREDENTIAL_PROXY_URL — no direct key needed)
@@ -127,7 +127,7 @@ export async function getOpenAIClient(): Promise<OpenAI> {
 	if (!apiKey) {
 		throw new Error(
 			"OpenAI API key not configured.\n" +
-				"Run: telclaude setup-openai\n" +
+				"Run: telclaude secrets setup-openai\n" +
 				"Or set OPENAI_API_KEY environment variable.",
 		);
 	}

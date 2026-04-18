@@ -86,7 +86,7 @@ export async function getTranscriptionAvailability(): Promise<TranscriptionAvail
 						available: false,
 						provider: "openai",
 						reason:
-							"OpenAI API key not configured. Run `telclaude setup-openai` or set OPENAI_API_KEY.",
+							"OpenAI API key not configured. Run `telclaude secrets setup-openai` or set OPENAI_API_KEY.",
 					};
 		}
 		case "command": {

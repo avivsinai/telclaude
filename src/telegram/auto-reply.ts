@@ -1769,7 +1769,7 @@ async function handleInboundMessage(
 
 	// ══════════════════════════════════════════════════════════════════════════
 	// TOTP AUTH GATE - Verify identity before processing any message
-	// Exempt: /setup-2fa and /verify-2fa (needed for initial TOTP setup)
+	// Exempt: /auth setup and /auth verify (needed for initial TOTP setup)
 	// ══════════════════════════════════════════════════════════════════════════
 
 	const trimmedBody = resolveCommandBody(msg).trim();

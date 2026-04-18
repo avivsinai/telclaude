@@ -6,7 +6,7 @@
  * access (except for OAuth token refresh).
  *
  * Usage:
- *   telclaude vault-daemon [--socket <path>]
+ *   telclaude maintenance vault-daemon [--socket <path>]
  */
 
 import type { Command } from "commander";

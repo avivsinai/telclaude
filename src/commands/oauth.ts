@@ -73,7 +73,7 @@ export function registerOAuthCommand(program: Command): void {
 					// Check vault availability (unless skipping)
 					if (!opts.skipVault && !(await isVaultAvailable())) {
 						console.error("Error: Vault daemon is not running.");
-						console.error("Start it with: telclaude vault-daemon");
+						console.error("Start it with: telclaude maintenance vault-daemon");
 						console.error("Or use --skip-vault to print tokens instead.");
 						process.exit(1);
 					}
