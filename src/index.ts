@@ -20,6 +20,7 @@ import { registerIdentitySubcommands } from "./commands/link.js";
 import { registerMemoryCommands } from "./commands/memory.js";
 import { registerNetworkCommand } from "./commands/network.js";
 import { registerOAuthCommand } from "./commands/oauth.js";
+import { registerPairingCommand } from "./commands/pairing.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
 import { registerQuickstartCommand } from "./commands/quickstart.js";
@@ -89,6 +90,9 @@ registerSetupGoogleCommand(secrets);
 const skills = program.command("skills").description("Manage telclaude skills");
 registerSkillsImportSubcommands(skills);
 registerSkillsPromoteSubcommands(skills);
+
+// --- pairing ---
+registerPairingCommand(program);
 
 // --- admin ---
 const admin = program.command("admin").description("Access control and moderation");
