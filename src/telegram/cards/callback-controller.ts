@@ -13,6 +13,7 @@ const logger = getChildLogger({ module: "telegram-card-callbacks" });
 
 const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	Approval: "FULL_ACCESS",
+	ApprovalScope: "FULL_ACCESS",
 	PendingQueue: "SOCIAL",
 	Status: "READ_ONLY",
 	Auth: "WRITE_LOCAL",

@@ -6,6 +6,7 @@ import {
 	registerForceReauthSubcommand,
 } from "./commands/access-control.js";
 import { registerAgentCommand } from "./commands/agent.js";
+import { registerApprovalsCommand } from "./commands/approvals.js";
 import { registerBackgroundCommand } from "./commands/background.js";
 import { registerCronCommand } from "./commands/cron.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
@@ -126,6 +127,9 @@ registerVaultDaemonCommand(maintenance);
 registerTOTPDaemonCommand(maintenance);
 registerCronCommand(maintenance);
 registerVaultCommand(maintenance);
+
+// --- approvals (graduated approval allowlist, Workstream W1) ---
+registerApprovalsCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal commands (used by agent skills, not in the public hierarchy)
