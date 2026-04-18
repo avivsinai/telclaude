@@ -43,6 +43,33 @@ describe("cron store", () => {
 		expect(jobs).toHaveLength(1);
 		expect(jobs[0].name).toBe("every minute");
 		expect(jobs[0].nextRunAtMs).toBe(now + 60_000);
+		expect(jobs[0].deliveryTarget).toEqual({ kind: "origin" });
+	});
+
+	it("persists delivery targets and agent prompts", async () => {
+		const { addCronJob, getCronJob } = await import("../../src/cron/store.js");
+		const now = Date.parse("2026-02-21T10:00:00.000Z");
+
+		const created = addCronJob(
+			{
+				id: "cron-hn",
+				name: "weekday hn",
+				ownerId: "alice",
+				deliveryTarget: { kind: "home" },
+				schedule: { kind: "cron", expr: "0 9 * * 1-5" },
+				action: { kind: "agent-prompt", prompt: "check HN and post here" },
+			},
+			now,
+		);
+
+		expect(created.ownerId).toBe("alice");
+		expect(created.deliveryTarget).toEqual({ kind: "home" });
+		expect(created.action).toEqual({ kind: "agent-prompt", prompt: "check HN and post here" });
+		expect(getCronJob("cron-hn")).toMatchObject({
+			ownerId: "alice",
+			deliveryTarget: { kind: "home" },
+			action: { kind: "agent-prompt", prompt: "check HN and post here" },
+		});
 	});
 
 	it("claims and completes due jobs", async () => {
