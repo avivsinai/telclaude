@@ -71,6 +71,7 @@ import {
 	cancelBackgroundJobCommand,
 	openSkillDraftCard,
 	openSocialQueueCard,
+	openSystemHealthCard,
 	reloadSkillsSession,
 	runSocialHeartbeatCommand,
 	sendBackgroundJobDetail,
@@ -423,6 +424,15 @@ async function handleCronCommand(api: Api, msg: TelegramInboundMessage): Promise
 	await sendSystemStatusCard(api, msg, "cron");
 }
 
+async function handleSystemHealthCommand(api: Api, msg: TelegramInboundMessage): Promise<void> {
+	await msg.sendComposing();
+	await openSystemHealthCard(api, {
+		chatId: msg.chatId,
+		threadId: msg.messageThreadId,
+		actorScope: `user:${msg.senderId ?? msg.chatId}`,
+	});
+}
+
 async function handleWhoAmICommand(msg: TelegramInboundMessage): Promise<void> {
 	const link = getIdentityLink(msg.chatId);
 	if (link) {
@@ -535,6 +545,9 @@ async function dispatchTelegramControlCommand(
 			return true;
 		case "system:cron":
 			await handleCronCommand(bot.api, msg);
+			return true;
+		case "system:health":
+			await handleSystemHealthCommand(bot.api, msg);
 			return true;
 		// ── /social domain ─────────────────────────────────────────────
 		case "social":

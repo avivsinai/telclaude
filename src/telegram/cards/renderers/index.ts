@@ -11,6 +11,7 @@ import { skillDraftRenderer } from "./skill-draft.js";
 import { skillsMenuRenderer } from "./skills-menu.js";
 import { socialMenuRenderer } from "./social-menu.js";
 import { statusRenderer } from "./status.js";
+import { systemHealthRenderer } from "./system-health.js";
 
 export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.Approval, approvalRenderer);
@@ -25,6 +26,7 @@ export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.Session, sessionRenderer);
 	cardRegistry.register(CardKind.BackgroundJob, backgroundJobRenderer);
 	cardRegistry.register(CardKind.BackgroundJobList, backgroundJobListRenderer);
+	cardRegistry.register(CardKind.SystemHealth, systemHealthRenderer);
 }
 
 export {
@@ -40,4 +42,5 @@ export {
 	skillsMenuRenderer,
 	socialMenuRenderer,
 	statusRenderer,
+	systemHealthRenderer,
 };
