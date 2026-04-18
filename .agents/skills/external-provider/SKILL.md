@@ -19,23 +19,23 @@ Check the provider schema to see which services are available. The authoritative
 
 ## How to Use
 
-**IMPORTANT: Use the `telclaude` CLI commands for all provider operations.**
+**IMPORTANT: Use the `telclaude providers ...` CLI commands for all provider operations.**
 - Do NOT use WebFetch or curl to call provider endpoints directly
-- Use Bash only to run `telclaude` CLI commands (provider-query, send-attachment, etc.)
+- Use Bash only to run `telclaude` CLI commands (`providers query`, `providers schema`, `send-attachment`, etc.)
 - The CLI handles authentication through the relay (mechanism is provider-dependent)
 - Direct HTTP calls will fail with "Missing internal auth headers"
 - The relay sanitizes responses (strips inline base64, stores attachments)
 
-### User ID (REQUIRED)
+### User ID
 
-**You MUST extract the user ID from `<request-context>` and pass it to ALL provider commands.**
+**Extract the user ID from `<request-context>` for provider queries.**
 
 Look for this tag in your system context:
 ```
 <request-context user-id="admin" />
 ```
 
-Extract the `user-id` value and pass it via `--user-id` flag. Without this, requests will fail with 401.
+`telclaude providers query` falls back to `TELCLAUDE_REQUEST_USER_ID` when the relay exports it, but pass `--user-id` explicitly whenever you have the value or when running outside the relay context.
 
 ### 1. Read the schema file
 
@@ -48,24 +48,24 @@ This shows the provider ID and available services/actions.
 ### 2. Query the provider via CLI
 
 ```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId>
+telclaude providers query <providerId> <service> <action> --user-id <userId>
 ```
 
 With parameters:
 ```bash
-telclaude provider-query --provider <providerId> --service <service> --action <action> --user-id <userId> --params '{"key": "value"}'
+telclaude providers query <providerId> <service> <action> --user-id <userId> --params '{"key": "value"}'
 ```
 
 Examples (assuming `<request-context user-id="admin" />`):
 ```bash
 # Get appointments
-telclaude provider-query --provider my-provider --service health-api --action appointments --user-id admin
+	telclaude providers query my-provider health-api appointments --user-id admin
 
 # Get bank transactions with date range
-telclaude provider-query --provider my-provider --service bank-api --action transactions --user-id admin --params '{"startDate": "2024-01-01"}'
+	telclaude providers query my-provider bank-api transactions --user-id admin --params '{"startDate": "2024-01-01"}'
 
 # Get document status
-telclaude provider-query --provider my-provider --service gov-api --action status --user-id admin
+	telclaude providers query my-provider gov-api status --user-id admin
 ```
 
 ### 3. Parse the response
@@ -154,7 +154,7 @@ You MUST include the exact path in your response. The relay watches for this pat
 #### Example workflow
 
 1. User asks for data or a document
-2. Call provider via `telclaude provider-query`
+2. Call provider via `telclaude providers query`
 3. Response includes `data` and optionally `attachments` with `ref` and `textContent`
 4. Present the data to the user
 5. If attachments exist, use `textContent` to summarize the document
@@ -165,9 +165,9 @@ You MUST include the exact path in your response. The relay watches for this pat
 
 ## Important Rules
 
-1. **ALWAYS extract user-id** - Look for `<request-context user-id="..." />` in your context and pass it via `--user-id`. Requests without this will fail with 401.
-2. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude provider-query` to fetch fresh data from the provider.
-3. **Use CLI for provider queries** - Use `telclaude provider-query`, not WebFetch or curl
+1. **ALWAYS extract user-id for provider queries** - Look for `<request-context user-id="..." />` in your context. Pass it via `--user-id` when available, or rely on `TELCLAUDE_REQUEST_USER_ID` only when the relay already exports it.
+2. **ALWAYS use the provider** - NEVER search for local files in the workspace when the user asks for health, banking, or government data. Always use `telclaude providers query` to fetch fresh data from the provider.
+3. **Use CLI for provider queries** - Use `telclaude providers query`, not WebFetch or curl
 4. **Never ask for credentials** - The provider handles authentication separately
 5. **Show confidence levels** - If confidence < 1.0, mention data may be incomplete
 6. **Show freshness** - Always tell user when data was last updated
@@ -195,11 +195,11 @@ You MUST include the exact path in your response. The relay watches for this pat
 
 | Command | Description |
 |---------|-------------|
-| `telclaude provider-query --provider <id> --service <svc> --action <act> --user-id <uid>` | Query provider data |
+| `telclaude providers query <id> <svc> <act> [--user-id <uid>]` | Query provider data |
 | `telclaude send-attachment --ref <ref>` | Send stored attachment to user |
 | `telclaude fetch-attachment --provider <id> --id <att-id> ...` | Fetch and send large attachment |
 
-**Note:** `--user-id` is REQUIRED for `provider-query`. Extract it from `<request-context user-id="..." />`.
+**Note:** Extract `user-id` from `<request-context user-id="..." />`. Pass `--user-id` when available; otherwise `providers query` can use `TELCLAUDE_REQUEST_USER_ID` if the relay injected it.
 
 ## Provider Schemas (auto-generated)
 
