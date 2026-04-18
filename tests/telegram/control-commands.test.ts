@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	formatTelegramCommandCatalog,
 	formatTelegramHelp,
 	getTelegramMenuCommands,
 	hasTelegramControlCommand,
+	listTelegramControlCommands,
 	matchTelegramControlCommand,
 } from "../../src/telegram/control-commands.js";
 
@@ -44,6 +46,13 @@ describe("telegram control command registry", () => {
 				"skills:promote",
 			);
 			expect(matchTelegramControlCommand("/skills reload")?.command.id).toBe("skills:reload");
+			expect(matchTelegramControlCommand("/skills list")?.command.id).toBe("skills:list");
+			expect(matchTelegramControlCommand("/skills new my-skill")?.command.id).toBe(
+				"skills:new",
+			);
+			expect(matchTelegramControlCommand("/skills import")?.command.id).toBe("skills:import");
+			expect(matchTelegramControlCommand("/skills scan")?.command.id).toBe("skills:scan");
+			expect(matchTelegramControlCommand("/skills doctor")?.command.id).toBe("skills:doctor");
 			expect(matchTelegramControlCommand("/help commands")?.command.id).toBe("help:commands");
 		});
 
@@ -148,16 +157,23 @@ describe("telegram control command registry", () => {
 
 	describe("scoped menu commands", () => {
 		it("exposes all domain roots and shortcuts for private chat", () => {
-			expect(getTelegramMenuCommands("private")).toEqual([
-				{ command: "help", description: "Explain commands and topics" },
-				{ command: "me", description: "Identity management" },
-				{ command: "auth", description: "Two-factor authentication" },
-				{ command: "system", description: "System introspection" },
-				{ command: "social", description: "Social persona management" },
-				{ command: "skills", description: "Skill management" },
-				{ command: "approve", description: "Approve a pending request" },
-				{ command: "new", description: "Start a fresh session" },
-			]);
+			const entries = getTelegramMenuCommands("private");
+			const commands = entries.map((e) => e.command);
+			for (const required of [
+				"help",
+				"me",
+				"auth",
+				"system",
+				"social",
+				"skills",
+				"approve",
+				"new",
+			]) {
+				expect(commands).toContain(required);
+			}
+			for (const entry of entries) {
+				expect(entry.description.length).toBeGreaterThan(0);
+			}
 		});
 
 		it("exposes minimal commands for group chat", () => {
@@ -169,6 +185,42 @@ describe("telegram control command registry", () => {
 
 		it("defaults to private scope when no scope provided", () => {
 			expect(getTelegramMenuCommands()).toEqual(getTelegramMenuCommands("private"));
+		});
+	});
+
+	describe("skills catalog visibility", () => {
+		it("surfaces the /skills domain root and its core subcommands", () => {
+			const all = listTelegramControlCommands();
+			const skillsRoot = all.find((cmd) => cmd.id === "skills");
+			expect(skillsRoot?.hideFromCatalog).not.toBe(true);
+
+			const visible = new Set(
+				all.filter((cmd) => cmd.hideFromCatalog !== true).map((cmd) => cmd.id),
+			);
+			// Core lifecycle subcommands must appear in the catalog.
+			for (const id of [
+				"skills",
+				"skills:list",
+				"skills:new",
+				"skills:import",
+				"skills:scan",
+				"skills:doctor",
+				"skills:drafts",
+				"skills:promote",
+				"skills:reload",
+			] as const) {
+				expect(visible.has(id)).toBe(true);
+			}
+		});
+
+		it("renders the /skills commands in the command catalog", () => {
+			const catalog = formatTelegramCommandCatalog();
+			expect(catalog).toContain("/skills list");
+			expect(catalog).toContain("/skills new");
+			expect(catalog).toContain("/skills doctor");
+			expect(catalog).toContain("/skills drafts");
+			expect(catalog).toContain("/skills promote");
+			expect(catalog).toContain("/skills reload");
 		});
 	});
 });

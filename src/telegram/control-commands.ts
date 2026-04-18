@@ -36,6 +36,11 @@ export type TelegramCommandId =
 	| "social:log"
 	| "social:ask"
 	| "skills"
+	| "skills:list"
+	| "skills:new"
+	| "skills:import"
+	| "skills:scan"
+	| "skills:doctor"
 	| "skills:drafts"
 	| "skills:promote"
 	| "skills:reload"
@@ -393,12 +398,77 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "Skills",
 		description: "Skill management.",
-		usage: "/skills [drafts|promote <name>|reload]",
-		examples: ["/skills drafts", "/skills promote my-skill", "/skills reload"],
+		usage: "/skills [list|new|import|scan|doctor|drafts|promote|reload]",
+		examples: [
+			"/skills list",
+			"/skills new my-helper",
+			"/skills doctor",
+			"/skills promote my-skill",
+		],
 		keywords: ["skills", "draft skills", "skill management"],
 		readOnly: true,
 		menuDescription: "Skill management",
-		hideFromCatalog: true,
+	},
+	{
+		id: "skills:list",
+		name: "skills",
+		domain: "skills",
+		subcommand: "list",
+		category: "Skills",
+		description: "List active and draft skills with status.",
+		usage: "/skills list",
+		examples: ["/skills list"],
+		keywords: ["list skills", "skills status", "active skills"],
+		readOnly: true,
+		rateLimited: true,
+	},
+	{
+		id: "skills:new",
+		name: "skills",
+		domain: "skills",
+		subcommand: "new",
+		category: "Skills",
+		description: "Scaffold a new draft skill (guided wizard).",
+		usage: "/skills new [name]",
+		examples: ["/skills new my-helper"],
+		keywords: ["scaffold skill", "new skill", "create skill"],
+		rateLimited: true,
+	},
+	{
+		id: "skills:import",
+		name: "skills",
+		domain: "skills",
+		subcommand: "import",
+		category: "Skills",
+		description: "Import OpenClaw-format skills into the draft quarantine (CLI).",
+		usage: "/skills import <source-path>",
+		examples: ["/skills import /tmp/openclaw-skills"],
+		keywords: ["import skills", "openclaw", "import openclaw"],
+		rateLimited: true,
+	},
+	{
+		id: "skills:scan",
+		name: "skills",
+		domain: "skills",
+		subcommand: "scan",
+		category: "Skills",
+		description: "Run the skill scanner over every active and draft skill.",
+		usage: "/skills scan",
+		examples: ["/skills scan"],
+		keywords: ["scan skills", "skill scanner"],
+		rateLimited: true,
+	},
+	{
+		id: "skills:doctor",
+		name: "skills",
+		domain: "skills",
+		subcommand: "doctor",
+		category: "Skills",
+		description: "Validate every skill's frontmatter, scanner, and duplicates.",
+		usage: "/skills doctor",
+		examples: ["/skills doctor"],
+		keywords: ["doctor", "skills doctor", "validate skills", "skill health"],
+		rateLimited: true,
 	},
 	{
 		id: "skills:drafts",
@@ -423,7 +493,6 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/skills promote my-skill"],
 		keywords: ["promote skill", "publish skill"],
 		rateLimited: true,
-		hideFromCatalog: true,
 	},
 	{
 		id: "skills:reload",
@@ -436,7 +505,6 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/skills reload"],
 		keywords: ["reload skills", "refresh skills"],
 		rateLimited: true,
-		hideFromCatalog: true,
 	},
 	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
@@ -539,9 +607,25 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "skills",
 		title: "Skills",
 		summary:
-			"Skills are promoted intentionally. /skills drafts shows candidates, /skills promote activates one, and /skills reload resets the next session so the refreshed set is loaded.",
-		keywords: ["skills", "draft skills", "promote skill", "reload skills"],
-		commands: ["skills:drafts", "skills:promote", "skills:reload"],
+			"Skills are promoted intentionally. /skills list shows everything, /skills new scaffolds a draft, /skills doctor validates, /skills drafts shows candidates, /skills promote activates one, /skills reload resets the next session so the refreshed set is loaded.",
+		keywords: [
+			"skills",
+			"skill scaffold",
+			"new skill",
+			"skill doctor",
+			"draft skills",
+			"promote skill",
+			"reload skills",
+		],
+		commands: [
+			"skills:list",
+			"skills:new",
+			"skills:scan",
+			"skills:doctor",
+			"skills:drafts",
+			"skills:promote",
+			"skills:reload",
+		],
 	},
 	{
 		id: "reset-session",
