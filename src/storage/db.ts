@@ -356,6 +356,29 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_plan_approvals_chat_id ON plan_approvals(chat_id);
 		CREATE INDEX IF NOT EXISTS idx_plan_approvals_expires_at ON plan_approvals(expires_at);
 
+		-- Background jobs (Workstream W12 — long-running agent/operator-spawned tasks)
+		CREATE TABLE IF NOT EXISTS background_jobs (
+			id TEXT PRIMARY KEY,
+			short_id TEXT NOT NULL UNIQUE,
+			user_id TEXT NOT NULL,
+			chat_id INTEGER,
+			thread_id INTEGER,
+			tier TEXT NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT,
+			status TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			result_json TEXT,
+			error TEXT,
+			created_at INTEGER NOT NULL,
+			started_at INTEGER,
+			completed_at INTEGER,
+			cancelled_at INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_background_jobs_status ON background_jobs(status, created_at);
+		CREATE INDEX IF NOT EXISTS idx_background_jobs_chat ON background_jobs(chat_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_background_jobs_short ON background_jobs(short_id);
+
 		-- Relay-owned Telegram cards for typed control-plane UI
 		CREATE TABLE IF NOT EXISTS card_instances (
 			card_id TEXT PRIMARY KEY,
@@ -467,6 +490,7 @@ export function cleanupExpired(): {
 	attachmentRefs: number;
 	cronRuns: number;
 	cardInstances: number;
+	backgroundJobs: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -519,6 +543,15 @@ export function cleanupExpired(): {
 			)
 			.run(now, now);
 
+		// Background jobs: prune terminal rows older than 30 days.
+		const backgroundJobsResult = database
+			.prepare(
+				`DELETE FROM background_jobs
+				 WHERE status IN ('completed', 'failed', 'cancelled', 'interrupted')
+				   AND COALESCE(completed_at, cancelled_at, created_at) < ?`,
+			)
+			.run(thirtyDaysAgo);
+
 		return {
 			approvals: approvalsResult.changes,
 			planApprovals: planApprovalsResult.changes,
@@ -532,6 +565,7 @@ export function cleanupExpired(): {
 			attachmentRefs: attachmentRefsResult.changes,
 			cronRuns: cronRunsResult.changes,
 			cardInstances: cardInstancesResult.changes,
+			backgroundJobs: backgroundJobsResult.changes,
 		};
 	});
 
