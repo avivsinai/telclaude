@@ -3,6 +3,7 @@ import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import type { MediaType } from "../types/media.js";
+import { resolveTelegramIdentity } from "./linking.js";
 import {
 	APPROVAL_SCOPES,
 	type ApprovalScope,
@@ -26,6 +27,20 @@ const ALLOWLIST_ALWAYS_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
  */
 export type { ApprovalScope, RiskTier };
 export { APPROVAL_SCOPES, isApprovalScope, scopeAllowedForRisk };
+
+export type PendingToolApprovalResolution =
+	| {
+			status: "approved";
+			scope: ApprovalScope;
+			source: "card" | "command";
+	  }
+	| {
+			status: "denied";
+			source: "card" | "command" | "timeout" | "abort";
+			reason?: string;
+	  };
+
+const pendingToolApprovals = new Map<string, (resolution: PendingToolApprovalResolution) => void>();
 
 /**
  * A pending approval request.
@@ -234,6 +249,34 @@ export type CreateApprovalResult = {
 	expiresAt: number;
 };
 
+export function registerPendingToolApprovalWait(
+	nonce: string,
+	resolve: (resolution: PendingToolApprovalResolution) => void,
+): void {
+	const existing = pendingToolApprovals.get(nonce);
+	if (existing) {
+		logger.warn({ nonce }, "replacing existing pending tool approval waiter");
+	}
+	pendingToolApprovals.set(nonce, resolve);
+}
+
+export function unregisterPendingToolApprovalWait(nonce: string): void {
+	pendingToolApprovals.delete(nonce);
+}
+
+export function resolvePendingToolApproval(
+	nonce: string,
+	resolution: PendingToolApprovalResolution,
+): boolean {
+	const pending = pendingToolApprovals.get(nonce);
+	if (!pending) {
+		return false;
+	}
+	pendingToolApprovals.delete(nonce);
+	pending(resolution);
+	return true;
+}
+
 /**
  * Create a new pending approval and return the nonce with timing info.
  *
@@ -358,6 +401,25 @@ export function getPendingApprovalsForChat(chatId: number): PendingApproval[] {
 		.all(chatId, now) as ApprovalRow[];
 
 	return rows.map(rowToApproval);
+}
+
+export function isToolScopedApproval(approval: PendingApproval): boolean {
+	return Boolean(approval.toolKey && approval.riskTier);
+}
+
+export function grantAllowlistForApproval(
+	approval: PendingApproval,
+	scope: ApprovalScope,
+): AllowlistEntry {
+	const toolKey = approval.toolKey ?? "legacy:unknown";
+	return grantAllowlist({
+		userId: resolveTelegramIdentity(approval.chatId),
+		tier: approval.tier,
+		toolKey,
+		scope,
+		sessionKey: scope === "session" ? (approval.sessionKey ?? null) : null,
+		chatId: approval.chatId,
+	});
 }
 
 /**

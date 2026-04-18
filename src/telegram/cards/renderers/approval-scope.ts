@@ -2,8 +2,8 @@ import { getChildLogger } from "../../../logging.js";
 import {
 	consumeApproval,
 	denyApproval,
-	grantAllowlist,
-	type PendingApproval,
+	grantAllowlistForApproval,
+	resolvePendingToolApproval,
 } from "../../../security/approvals.js";
 import { type ApprovalScope, scopeAllowedForRisk } from "../../../security/risk-tiers.js";
 import type {
@@ -121,7 +121,6 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 
 	async execute(context: CardExecutionContext<K>): Promise<CardExecutionResult<K>> {
 		const { action, card } = context;
-		const actorId = context.ctx.from.id;
 		const nonce = card.entityRef.replace(/^approval:/, "");
 
 		if (action.type === "deny") {
@@ -133,6 +132,11 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 					callbackAlert: true,
 				};
 			}
+			resolvePendingToolApproval(nonce, {
+				status: "denied",
+				source: "card",
+				reason: "Tool approval denied.",
+			});
 			return {
 				state: { ...card.state, denied: true, scopeChosen: undefined },
 				status: "consumed",
@@ -178,8 +182,13 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 
 		// Persist the grant (session/always) or a one-shot marker (once).
 		try {
-			grantAllowlistForApproval(consume.data, scope, actorId);
+			grantAllowlistForApproval(consume.data, scope);
 		} catch (err) {
+			resolvePendingToolApproval(nonce, {
+				status: "denied",
+				source: "card",
+				reason: "Tool approval grant failed.",
+			});
 			logger.error(
 				{ err: String(err), toolKey: card.state.toolKey, scope },
 				"approval-scope card: grantAllowlist failed",
@@ -197,6 +206,8 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 					? "Approved for this session"
 					: "Approved (always)";
 
+		resolvePendingToolApproval(nonce, { status: "approved", scope, source: "card" });
+
 		return {
 			state: { ...card.state, scopeChosen: scope, denied: false },
 			status: "consumed",
@@ -204,25 +215,3 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 		};
 	},
 };
-
-/**
- * Internal: write the grant into the allowlist. Only called when the scope
- * is not "once" (we still record "once" so an immediately-following tool
- * call of the same (user, tool) pair auto-approves).
- */
-function grantAllowlistForApproval(
-	approval: PendingApproval,
-	scope: ApprovalScope,
-	actorId: number,
-): void {
-	const toolKey = approval.toolKey ?? "legacy:unknown";
-	const userId = String(actorId);
-	grantAllowlist({
-		userId,
-		tier: approval.tier,
-		toolKey,
-		scope,
-		sessionKey: scope === "session" ? (approval.sessionKey ?? null) : null,
-		chatId: approval.chatId,
-	});
-}

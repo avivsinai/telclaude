@@ -4,7 +4,10 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+import { type Api, Bot } from "grammy";
+
 import { loadConfig } from "../config/config.js";
+import { readEnv } from "../env.js";
 import { isInternalAuthScope, verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
@@ -36,6 +39,8 @@ import { validateAttachmentRef } from "../storage/attachment-refs.js";
 import type { RuntimeSnapshot } from "../system-metadata.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { sendAdminAlert } from "../telegram/admin-alert.js";
+import { sendApprovalScopeCard } from "../telegram/cards/create-helpers.js";
+import { initCardSystem } from "../telegram/cards/init.js";
 import {
 	handleAnthropicProxyRequest,
 	handleAnthropicTokenRequest,
@@ -150,6 +155,7 @@ const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
 type CapabilityServerOptions = {
 	port?: number;
 	host?: string;
+	telegramApi?: Api;
 };
 
 type ImageRequest = {
@@ -203,6 +209,19 @@ type AttachmentDeliverRequest = {
 	filename?: string;
 	mimeType?: string;
 	userId?: string;
+};
+
+type ApprovalScopeCardRequest = {
+	chatId: number;
+	actorId: number;
+	threadId?: number;
+	title: string;
+	body: string;
+	nonce: string;
+	toolKey: string;
+	riskTier: "low" | "medium" | "high";
+	scopesEnabled?: Array<"once" | "session" | "always">;
+	explanation?: string;
 };
 
 function writeJson(res: http.ServerResponse, status: number, payload: unknown): void {
@@ -563,6 +582,41 @@ async function notifyMemoryActivity(
 	);
 }
 
+let cachedTelegramApi: Promise<Api> | null = null;
+
+async function getRelayTelegramApi(overrideApi?: Api): Promise<Api> {
+	if (overrideApi) {
+		return overrideApi;
+	}
+	if (!cachedTelegramApi) {
+		cachedTelegramApi = readEnv().then(({ telegramBotToken }) => {
+			initCardSystem();
+			return new Bot(telegramBotToken).api;
+		});
+	}
+	return cachedTelegramApi;
+}
+
+async function sendRelayApprovalScopeCard(
+	request: ApprovalScopeCardRequest,
+	overrideApi?: Api,
+): Promise<{ cardId: string; messageId: number }> {
+	initCardSystem();
+	const api = await getRelayTelegramApi(overrideApi);
+	const card = await sendApprovalScopeCard(api, request.chatId, {
+		title: request.title,
+		body: request.body,
+		nonce: request.nonce,
+		toolKey: request.toolKey,
+		riskTier: request.riskTier,
+		scopesEnabled: request.scopesEnabled,
+		explanation: request.explanation,
+		actorScope: `user:${request.actorId}`,
+		threadId: request.threadId,
+	});
+	return { cardId: card.cardId, messageId: card.messageId };
+}
+
 export function startCapabilityServer(options: CapabilityServerOptions = {}): http.Server {
 	const port = options.port ?? Number(process.env.TELCLAUDE_CAPABILITIES_PORT ?? 8790);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
@@ -693,6 +747,41 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				logger.info({ scope: agentScope, version: agentVersion }, "agent announced readiness");
 				bufferStartupReady({ label, version: agentVersion, revision: agentRevision });
 				writeJson(res, 200, { ok: true });
+				return;
+			}
+
+			if (requestPath === "/v1/telegram.approval-scope") {
+				let parsed: ApprovalScopeCardRequest;
+				try {
+					parsed = JSON.parse(body) as ApprovalScopeCardRequest;
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+
+				if (
+					!Number.isInteger(parsed.chatId) ||
+					!Number.isInteger(parsed.actorId) ||
+					typeof parsed.title !== "string" ||
+					typeof parsed.body !== "string" ||
+					typeof parsed.nonce !== "string" ||
+					typeof parsed.toolKey !== "string" ||
+					(parsed.riskTier !== "low" && parsed.riskTier !== "medium" && parsed.riskTier !== "high")
+				) {
+					writeJson(res, 400, { error: "Invalid approval card request." });
+					return;
+				}
+
+				try {
+					const sent = await sendRelayApprovalScopeCard(parsed, options.telegramApi);
+					writeJson(res, 200, { ok: true, ...sent });
+				} catch (error) {
+					logger.error(
+						{ chatId: parsed.chatId, actorId: parsed.actorId, error: String(error) },
+						"failed to send approval scope card",
+					);
+					writeJson(res, 500, { error: "Failed to send approval card." });
+				}
 				return;
 			}
 
