@@ -50,7 +50,8 @@ vi.mock("../../src/storage/db.js", () => {
 						observer_reason TEXT,
 						risk_tier TEXT,
 						tool_key TEXT,
-						session_key TEXT
+						session_key TEXT,
+						bash_command TEXT
 					);
 					CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
 					CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);

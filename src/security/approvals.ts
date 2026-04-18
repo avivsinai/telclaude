@@ -75,6 +75,11 @@ export type PendingApproval = {
 	toolKey?: string;
 	/** W1: session key at creation time; used to scope "session" grants. */
 	sessionKey?: string;
+	/** W1↔W8: the exact Bash command the operator is approving. Forwarded into
+	 * `recordAlwaysFromAllowlist` when an "always" scope is granted so the
+	 * matching exec-policy glob is persisted. Non-Bash tool approvals leave
+	 * this undefined. */
+	bashCommand?: string;
 };
 
 /**
@@ -102,6 +107,7 @@ type ApprovalRow = {
 	risk_tier: string | null;
 	tool_key: string | null;
 	session_key: string | null;
+	bash_command: string | null;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -238,6 +244,7 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 		riskTier,
 		toolKey: row.tool_key ?? undefined,
 		sessionKey: row.session_key ?? undefined,
+		bashCommand: row.bash_command ?? undefined,
 	};
 }
 
@@ -319,8 +326,8 @@ export function createApproval(
 				media_path, media_type, media_file_path, media_file_id,
 				username, from_user, to_user,
 				message_id, observer_classification, observer_confidence, observer_reason,
-				risk_tier, tool_key, session_key
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				risk_tier, tool_key, session_key, bash_command
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			nonce,
 			entry.requestId,
@@ -343,6 +350,7 @@ export function createApproval(
 			entry.riskTier ?? null,
 			entry.toolKey ?? null,
 			entry.sessionKey ?? null,
+			entry.bashCommand ?? null,
 		);
 	})();
 
@@ -420,6 +428,10 @@ export function grantAllowlistForApproval(
 		scope,
 		sessionKey: scope === "session" ? (approval.sessionKey ?? null) : null,
 		chatId: approval.chatId,
+		// Forward the persisted Bash command so `grantAllowlist` can
+		// persist a matching exec-policy glob on "always" grants. Non-Bash
+		// approvals leave this undefined and the integration is a no-op.
+		bashCommand: approval.bashCommand,
 	});
 }
 
