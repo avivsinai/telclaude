@@ -12,22 +12,40 @@ import {
 } from "../commands/skills-doctor.js";
 import { listActiveSkills, listDraftSkills } from "../commands/skills-promote.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
+import { cloneModelCatalog } from "../config/model-catalog.js";
+import { getChatModelPreference } from "../config/model-preferences.js";
 import { deleteSession } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
+import { listProviderCatalogEntries, type ProviderCatalogEntry } from "../providers/catalog.js";
+import {
+	checkProviderHealth,
+	type HealthCheckResult,
+	type ProviderHealthResponse,
+} from "../providers/provider-health.js";
 import { getSessionManager } from "../sdk/session-manager.js";
 import { isAdmin } from "../security/linking.js";
+import { getUserPermissionTier } from "../security/permissions.js";
 import {
 	sendBackgroundJobCard,
 	sendBackgroundJobListCard,
+	sendModelPickerCard,
 	sendPendingQueueCard,
+	sendProviderListCard,
 	sendSkillDraftCard,
+	sendSkillPickerCard,
 } from "./cards/create-helpers.js";
 import { getEnabledSocialServices, type SocialServiceConfig } from "./cards/menu-state.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
+import { loadSkillPickerEntries } from "./cards/renderers/skill-picker.js";
 import type {
 	BackgroundJobCardState,
 	BackgroundJobListCardState,
 	CardActorScope,
+	ModelPickerCardState,
+	ProviderHealthIcon,
+	ProviderListCardState,
+	ProviderListEntry,
+	SkillPickerCardState,
 } from "./cards/types.js";
 import { CardKind } from "./cards/types.js";
 import { createTypingControllerFromCallback } from "./typing.js";
@@ -714,4 +732,229 @@ export async function cancelBackgroundJobCommand(
 		: `No-op: job ${job.shortId} is ${updated?.status ?? "unknown"}.`;
 	await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
 	return { callbackText: transitioned ? "Cancelled" : `No-op (${updated?.status})` };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Interactive pickers (W2)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Determine whether the viewer may mutate state (WRITE_LOCAL+). */
+function canActorMutate(chatId: number, cfg?: TelclaudeConfig): boolean {
+	if (isAdmin(chatId)) return true;
+	const tier = getUserPermissionTier(String(chatId), (cfg ?? loadConfig()).security);
+	return tier === "WRITE_LOCAL" || tier === "FULL_ACCESS" || tier === "SOCIAL";
+}
+
+/**
+ * Open the model picker card.
+ *
+ * Pass `providerHint` to jump straight into the models view for a specific
+ * provider (used by NL intent router for "switch to sonnet" → anthropic).
+ */
+export async function openModelPicker(
+	api: Api,
+	opts: {
+		chatId: number;
+		actorScope: CardActorScope;
+		threadId?: number;
+		providerHint?: string;
+		modelHint?: string;
+		cfg?: TelclaudeConfig;
+	},
+): Promise<CommandUiResult> {
+	const cfg = opts.cfg ?? loadConfig();
+	const providers = cloneModelCatalog();
+	const pref = getChatModelPreference(opts.chatId);
+	const tier = getUserPermissionTier(String(opts.chatId), cfg.security);
+	const canMutate = canActorMutate(opts.chatId, cfg);
+
+	const hintProvider = opts.providerHint
+		? providers.find((provider) => provider.id === opts.providerHint)
+		: undefined;
+
+	const state: ModelPickerCardState = {
+		kind: CardKind.ModelPicker,
+		title: "Model",
+		providers,
+		selectedProviderId: hintProvider?.id,
+		page: 0,
+		view: hintProvider ? "models" : "providers",
+		currentModelId: pref?.modelId,
+		currentProviderId: pref?.providerId,
+		viewerTier: tier,
+		canMutate,
+		fallbackState: pref ? "override" : "default",
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendModelPickerCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+
+	if (opts.modelHint) {
+		return { callbackText: `Opened ${opts.modelHint}` };
+	}
+	return {
+		callbackText: hintProvider ? `Browsing ${hintProvider.label} models` : "Choose a provider",
+	};
+}
+
+function classifyHealth(response?: ProviderHealthResponse): ProviderHealthIcon {
+	if (!response) return "unknown";
+	const status = response.status;
+	if (status === "healthy" || status === "ok") return "ok";
+	if (status === "degraded") return "degraded";
+	if (status === "unhealthy") return "degraded";
+	// Per-connector auth expiry
+	const hasAuthExpired = Object.values(response.connectors ?? {}).some(
+		(connector) => connector.status === "auth_expired",
+	);
+	if (hasAuthExpired) return "auth_expired";
+	return "unknown";
+}
+
+function summarizeHealthDetail(result: HealthCheckResult): string | undefined {
+	if (!result.reachable) {
+		return result.error ?? "unreachable";
+	}
+	const alerts = result.response?.alerts ?? [];
+	if (alerts.length > 0) {
+		return alerts
+			.slice(0, 2)
+			.map((alert) => `${alert.level}: ${alert.connector} — ${alert.message}`)
+			.join("; ");
+	}
+	const connectors = Object.entries(result.response?.connectors ?? {});
+	if (connectors.length > 0) {
+		const authExpired = connectors
+			.filter(([, info]) => info.status === "auth_expired")
+			.map(([name]) => name);
+		if (authExpired.length > 0) {
+			return `auth expired: ${authExpired.join(", ")}`;
+		}
+	}
+	return undefined;
+}
+
+async function buildProviderListEntries(cfg: TelclaudeConfig): Promise<ProviderListEntry[]> {
+	// Use the cfg.providers declared list — that's the live deployment shape.
+	// Merge catalog metadata so descriptions and setup commands are richer.
+	const catalog = listProviderCatalogEntries();
+	const catalogById = new Map<string, ProviderCatalogEntry>(
+		catalog.map((entry) => [entry.id, entry]),
+	);
+
+	const live = cfg.providers ?? [];
+	const results = await Promise.allSettled(
+		live.map(async (provider) => {
+			const check = await checkProviderHealth(provider.id, provider.baseUrl);
+			const meta = catalogById.get(provider.id);
+			const entry: ProviderListEntry = {
+				id: provider.id,
+				label: meta?.displayName ?? provider.id,
+				description: meta?.description ?? provider.description,
+				health: classifyHealth(check.response),
+				detail: summarizeHealthDetail(check),
+				oauthServiceId: meta?.oauthServiceId,
+				setupCommand: meta?.setupCommand,
+				baseUrl: provider.baseUrl,
+			};
+			return entry;
+		}),
+	);
+
+	return results.map((settled, idx) => {
+		if (settled.status === "fulfilled") return settled.value;
+		const provider = live[idx];
+		const meta = catalogById.get(provider.id);
+		return {
+			id: provider.id,
+			label: meta?.displayName ?? provider.id,
+			description: meta?.description ?? provider.description,
+			health: "unknown",
+			detail: String(settled.reason).slice(0, 120),
+			oauthServiceId: meta?.oauthServiceId,
+			setupCommand: meta?.setupCommand,
+			baseUrl: provider.baseUrl,
+		} satisfies ProviderListEntry;
+	});
+}
+
+/**
+ * Open the provider list card (W7 catalog + W2 picker).
+ *
+ * Live provider health is fetched in-line; on failure we still render the
+ * catalog with `health: "unknown"` so operators see something actionable.
+ */
+export async function openProviderList(
+	api: Api,
+	opts: {
+		chatId: number;
+		actorScope: CardActorScope;
+		threadId?: number;
+		cfg?: TelclaudeConfig;
+	},
+): Promise<CommandUiResult> {
+	const cfg = opts.cfg ?? loadConfig();
+	const entries = await buildProviderListEntries(cfg);
+	const canMutate = canActorMutate(opts.chatId, cfg);
+
+	const state: ProviderListCardState = {
+		kind: CardKind.ProviderList,
+		title: "Providers",
+		providers: entries,
+		page: 0,
+		view: "list",
+		canMutate,
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendProviderListCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+	return {
+		callbackText: entries.length === 0 ? "No providers configured" : `Providers: ${entries.length}`,
+	};
+}
+
+/**
+ * Open the skills picker card (W2 enhancement of W6 drafts surface).
+ */
+export async function openSkillPicker(
+	api: Api,
+	opts: {
+		chatId: number;
+		actorScope: CardActorScope;
+		threadId?: number;
+		sessionKey?: string;
+	},
+): Promise<CommandUiResult> {
+	const entries = loadSkillPickerEntries();
+	const adminControlsEnabled = isAdmin(opts.chatId);
+	const state: SkillPickerCardState = {
+		kind: CardKind.SkillPicker,
+		title: "Skills",
+		entries,
+		page: 0,
+		view: "list",
+		adminControlsEnabled,
+		sessionKey: opts.sessionKey,
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendSkillPickerCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+	return {
+		callbackText:
+			entries.length === 0
+				? "No skills found"
+				: `${entries.filter((e) => e.status === "draft").length} draft, ${entries.filter((e) => e.status === "active").length} active`,
+	};
 }

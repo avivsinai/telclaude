@@ -7,7 +7,9 @@ type TelegramCommandCategory =
 	| "Security"
 	| "Social"
 	| "Skills"
-	| "Background";
+	| "Background"
+	| "Model"
+	| "Providers";
 
 /**
  * Hierarchical command IDs: "domain:subcommand" for routed commands,
@@ -45,10 +47,13 @@ export type TelegramCommandId =
 	| "skills:drafts"
 	| "skills:promote"
 	| "skills:reload"
+	| "skills:picker"
 	| "background"
 	| "background:list"
 	| "background:show"
 	| "background:cancel"
+	| "model"
+	| "providers"
 	// Fast-path shortcuts (no domain prefix)
 	| "approve"
 	| "deny"
@@ -511,6 +516,18 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		keywords: ["reload skills", "refresh skills"],
 		rateLimited: true,
 	},
+	{
+		id: "skills:picker",
+		name: "skills",
+		domain: "skills",
+		subcommand: "picker",
+		category: "Skills",
+		description: "Open the inline skill picker with one-tap promote and reload.",
+		usage: "/skills picker",
+		examples: ["/skills picker"],
+		keywords: ["skill picker", "pick skill", "skills picker", "promote skill", "drafts picker"],
+		rateLimited: true,
+	},
 	// ── /background domain ────────────────────────────────────────────
 	{
 		id: "background",
@@ -562,6 +579,45 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/background cancel a1b2c3d4"],
 		keywords: ["cancel background", "abort job", "kill job"],
 		rateLimited: true,
+	},
+	// ── /model domain ─────────────────────────────────────────────────
+	{
+		id: "model",
+		name: "model",
+		domain: "model",
+		domainDefault: true,
+		category: "Model",
+		description: "Open the model picker: browse providers and switch models.",
+		usage: "/model",
+		examples: ["/model"],
+		keywords: [
+			"model",
+			"switch model",
+			"change model",
+			"sonnet",
+			"opus",
+			"haiku",
+			"gpt",
+			"pick model",
+		],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "Pick a model",
+	},
+	// ── /providers domain ────────────────────────────────────────────
+	{
+		id: "providers",
+		name: "providers",
+		domain: "providers",
+		domainDefault: true,
+		category: "Providers",
+		description: "List configured external providers with live health status.",
+		usage: "/providers",
+		examples: ["/providers"],
+		keywords: ["providers", "provider list", "provider status", "provider health", "sidecars"],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "External providers",
 	},
 	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
@@ -751,6 +807,8 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Social",
 	"Skills",
 	"Background",
+	"Model",
+	"Providers",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1021,6 +1079,8 @@ export function formatTelegramHelpOverview(): string {
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
+		"  /model — Pick a model",
+		"  /providers — External provider health",
 		"  /new — Reset conversation",
 		"",
 		"/help <topic> — Learn about approvals, 2fa, sessions, etc.",
@@ -1157,6 +1217,8 @@ export function getTelegramMenuCommands(
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
+		{ command: "model", description: "Pick a model" },
+		{ command: "providers", description: "External providers" },
 		{ command: "approve", description: "Approve a pending request" },
 		{ command: "new", description: "Start a fresh session" },
 	];
