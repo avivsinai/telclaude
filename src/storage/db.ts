@@ -632,6 +632,9 @@ function ensureApprovalsColumns(database: Database.Database): void {
 		"risk_tier",
 		"tool_key",
 		"session_key",
+		// W1↔W8 integration: persist the exact Bash command so "always" grants
+		// can derive an exec-policy glob.
+		"bash_command",
 	]);
 
 	const rows = database.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
@@ -646,20 +649,17 @@ function ensureApprovalsColumns(database: Database.Database): void {
 	}
 
 	// Additive migration path — if the existing table is missing only the
-	// new W1 columns, ALTER them in instead of dropping. Older schemas that
-	// are missing *other* columns still hit the drop-and-recreate fallback
-	// (unchanged behaviour).
+	// new W1 columns (risk_tier/tool_key/session_key + the W1↔W8 bash_command
+	// column), ALTER them in instead of dropping. Older schemas that are
+	// missing *other* columns still hit the drop-and-recreate fallback.
 	if (rows.length > 0) {
+		const additiveColumns = ["risk_tier", "tool_key", "session_key", "bash_command"];
 		const legacyExpected = new Set(
-			[...requiredColumns].filter(
-				(name) => !["risk_tier", "tool_key", "session_key"].includes(name),
-			),
+			[...requiredColumns].filter((name) => !additiveColumns.includes(name)),
 		);
 		const hasLegacyColumns =
-			rows.every(
-				(r) =>
-					legacyExpected.has(r.name) || ["risk_tier", "tool_key", "session_key"].includes(r.name),
-			) && [...legacyExpected].every((name) => existing.has(name));
+			rows.every((r) => legacyExpected.has(r.name) || additiveColumns.includes(r.name)) &&
+			[...legacyExpected].every((name) => existing.has(name));
 
 		if (hasLegacyColumns) {
 			if (!existing.has("risk_tier")) {
@@ -673,6 +673,10 @@ function ensureApprovalsColumns(database: Database.Database): void {
 			if (!existing.has("session_key")) {
 				logger.info("adding session_key column to approvals table");
 				database.exec("ALTER TABLE approvals ADD COLUMN session_key TEXT");
+			}
+			if (!existing.has("bash_command")) {
+				logger.info("adding bash_command column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN bash_command TEXT");
 			}
 			return;
 		}
@@ -703,7 +707,8 @@ function ensureApprovalsColumns(database: Database.Database): void {
 			observer_reason TEXT,
 			risk_tier TEXT,
 			tool_key TEXT,
-			session_key TEXT
+			session_key TEXT,
+			bash_command TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
 		CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);

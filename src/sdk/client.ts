@@ -44,7 +44,7 @@ import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { waitForToolApproval } from "../security/approval-wait.js";
 import { createApproval } from "../security/approvals.js";
-import { resolveTelegramIdentity } from "../security/linking.js";
+import { isAdmin as isAdminChat, resolveTelegramIdentity } from "../security/linking.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { decideToolApproval } from "../security/pipeline.js";
@@ -850,12 +850,19 @@ function createGraduatedApprovalHook(opts: {
 		const approvalUserId =
 			typeof opts.chatId === "number" ? resolveTelegramIdentity(opts.chatId) : actorUserId;
 		const bashCommand = isBashInput(toolInput) ? toolInput.command : undefined;
+		// Admin bypass: linked-chat admins skip the per-tool approval loop
+		// entirely, matching the bypass in `decideToolApproval` itself. Check
+		// at hook time rather than at buildSdkOptions time so admin status
+		// stays fresh across the session (admin can be claimed/revoked while
+		// the session is live).
+		const adminBypass = typeof opts.chatId === "number" ? isAdminChat(opts.chatId) : false;
 		const decision = decideToolApproval({
 			userId: approvalUserId ?? actorUserId,
 			tier: opts.tier,
 			toolName,
 			bashCommand,
 			sessionKey,
+			isAdmin: adminBypass,
 		});
 		if (decision.decision === "allow") {
 			logger.debug(
@@ -926,6 +933,10 @@ function createGraduatedApprovalHook(opts: {
 				riskTier: decision.risk,
 				toolKey: decision.toolKey,
 				sessionKey: sessionKey ?? undefined,
+				// Persist the exact Bash command so `grantAllowlistForApproval`
+				// can forward it into `recordAlwaysFromAllowlist` on "always"
+				// grants (W1↔W8 integration).
+				bashCommand,
 			},
 			approvalTimeoutMs,
 		);
