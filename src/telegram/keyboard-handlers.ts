@@ -153,7 +153,7 @@ async function handleTTS(ctx: CallbackQueryContext<Context>, chatId: number): Pr
 	const apiKey = await getOpenAIKey();
 	if (!apiKey) {
 		await ctx.answerCallbackQuery({
-			text: "TTS not configured. Run: telclaude setup-openai",
+			text: "TTS not configured. Run: telclaude secrets setup-openai",
 			show_alert: true,
 		});
 		return;

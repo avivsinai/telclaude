@@ -21,6 +21,7 @@ import { registerIdentitySubcommands } from "./commands/link.js";
 import { registerMemoryCommands } from "./commands/memory.js";
 import { registerNetworkCommand } from "./commands/network.js";
 import { registerOAuthCommand } from "./commands/oauth.js";
+import { registerOnboardCommand } from "./commands/onboard.js";
 import { registerPairingCommand } from "./commands/pairing.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
@@ -62,6 +63,7 @@ const program = createProgram();
 // Top-level commands (frequently used, kept at root)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+registerOnboardCommand(program);
 registerRelayCommand(program);
 registerAgentCommand(program);
 registerStatusCommand(program);

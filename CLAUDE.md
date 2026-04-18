@@ -86,8 +86,10 @@
 | Command | Description |
 |---------|-------------|
 | `pnpm install` | Install dependencies |
+| `pnpm dev onboard` | Interactive first-run wizard (relay bootstrap, bot token, admin claim, OAuth) |
 | `pnpm dev relay --profile simple` | Start relay (dev mode) |
-| `pnpm dev doctor --network --secrets` | Health check |
+| `pnpm dev dev doctor` | Full health check (pass/warn/fail across every subsystem) |
+| `pnpm dev dev doctor --json` | Same, structured JSON for CI |
 | `pnpm lint` / `pnpm format` | Lint and format |
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |
@@ -110,7 +112,7 @@
 
 - `allowedChats` must include the chat before first DM.
 - First admin claim (private chat): bot replies with `/approve CODE`; send it back to become admin.
-- Emergency controls (CLI-only): `telclaude ban`, `telclaude unban`, `telclaude force-reauth`.
+- Emergency controls (CLI-only): `telclaude admin ban`, `telclaude admin unban`, `telclaude auth force-reauth`.
 
 ### Telegram commands
 
@@ -130,7 +132,7 @@
 - Cron scheduler: `cron.enabled` (default true), `pollIntervalSeconds` (default 15), `timeoutSeconds` (default 900). Cron jobs and interval heartbeats are mutually exclusive per target.
 
 ## Tier-based key exposure
-API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `setup-openai`/`setup-git` or env vars.
+API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and WRITE_LOCAL never get keys. Configure via `telclaude secrets setup-openai` / `telclaude secrets setup-git` or env vars.
 
 ## Troubleshooting
 - Bot silent: confirm `allowedChats`, rate limits, and observer not blocking.
@@ -141,7 +143,7 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
 - **Node version**: Docker images use `node:22-bookworm-slim`.
 - **5 images**: `telclaude:latest` (relay), `telclaude-agent:latest` (agents + Chromium), `telclaude-google-services:latest` (Google sidecar), `telclaude-totp:latest`, `telclaude-vault:latest`.
 - **6 containers**: `telclaude` (relay), `telclaude-agent` (private persona), `agent-social` (social persona), `google-services`, `totp`, `vault`.
-- **Secrets storage**: `telclaude setup-openai`, `telclaude setup-git`; encrypted in volume.
+- **Secrets storage**: `telclaude secrets setup-openai`, `telclaude secrets setup-git`; encrypted in volume.
 - **Workspace path**: `WORKSPACE_PATH` in `docker/.env` must point to valid host path.
 - **Claude profiles**: Docker uses a shared skills profile (`/home/telclaude-skills`) and a relay-only auth profile (`/home/telclaude-auth`). Anthropic access goes through the relay proxy; credentials never mount in agent containers.
 - **Remote deployment**: Build locally and transfer images to the deployment target:

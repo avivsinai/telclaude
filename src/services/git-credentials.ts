@@ -3,9 +3,9 @@
  * Provides secure credential retrieval for git operations.
  *
  * Credential resolution order:
- * 1. Keychain/encrypted storage (via `telclaude setup-git`)
+ * 1. Keychain/encrypted storage (via `telclaude secrets setup-git`)
  * 2. Environment variables (GIT_USERNAME, GIT_EMAIL, GITHUB_TOKEN)
- * 3. GitHub App installation token (via `telclaude setup-github-app`)
+ * 3. GitHub App installation token (via `telclaude secrets setup-github-app`)
  *
  * Note: In Docker mode, credentials are handled by the git proxy (relay)
  * and never exposed to the agent container. See src/relay/git-proxy.ts.

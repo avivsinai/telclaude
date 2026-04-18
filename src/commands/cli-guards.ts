@@ -30,7 +30,7 @@ export function requireRelay(): string {
 export async function requireVault(): Promise<VaultClient> {
 	if (!(await isVaultAvailable())) {
 		console.error("Error: Vault daemon is not running.");
-		console.error("Start it with: telclaude vault-daemon");
+		console.error("Start it with: telclaude maintenance vault-daemon");
 		process.exit(1);
 	}
 	return getVaultClient();
