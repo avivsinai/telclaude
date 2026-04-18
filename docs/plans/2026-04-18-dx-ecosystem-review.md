@@ -414,9 +414,9 @@ Any additional bugs surfaced during execution → fix in-flight under the owning
 |---|---|---|---|---|
 | Bug fixes (round 1) | P0 | claude | main | ✅ committed `532bbc0`, `c7dc242` |
 | W4 DM pairing codes | P0 | subagent A | worktree (writes to main tree ⚠) | in flight |
-| W6 skill lifecycle | P1 | subagent B | worktree (writes to main tree ⚠) | in flight |
+| W6 skill lifecycle | P1 | subagent B | branch `w6-skill-lifecycle` | ✅ complete (19 tests, 2 commits); symlink scanner issue surfaced (out of scope); awaiting merge |
 | W12 `/background` jobs | P1 | subagent C | worktree (writes to main tree ⚠) | in flight |
-| W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | branch `codex/w7-providers-json` | dispatched |
+| W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | branch `codex/w7-providers-json` | ✅ implementation + tests done; committing now |
 | W13 onboard + doctor + command-surface sweep (bugs #5–#11) | P0 | pending | own branch | queued (after W4/W6/W12 land) |
 | W1 graduated approvals | P0 | pending | worktree | Wave 2 |
 | W2 interactive pickers | P0 | pending | worktree | Wave 2 (needs W12) |
