@@ -22,6 +22,7 @@ import {
 	sendBackgroundJobListCard,
 	sendPendingQueueCard,
 	sendSkillDraftCard,
+	sendSystemHealthCard,
 } from "./cards/create-helpers.js";
 import { getEnabledSocialServices, type SocialServiceConfig } from "./cards/menu-state.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
@@ -29,8 +30,12 @@ import type {
 	BackgroundJobCardState,
 	BackgroundJobListCardState,
 	CardActorScope,
+	SystemHealthCardItem,
+	SystemHealthCardState,
+	SystemHealthStatus,
 } from "./cards/types.js";
 import { CardKind } from "./cards/types.js";
+import { collectSystemHealth } from "./status-overview.js";
 import { createTypingControllerFromCallback } from "./typing.js";
 import { createWizardPrompter, WizardCancelledError, WizardTimeoutError } from "./wizard/index.js";
 
@@ -717,4 +722,70 @@ export async function cancelBackgroundJobCommand(
 		: `No-op: job ${job.shortId} is ${updated?.status ?? "unknown"}.`;
 	await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
 	return { callbackText: transitioned ? "Cancelled" : `No-op (${updated?.status})` };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// System health (W10)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Open (or refresh) the `/system health` card. Admin-gated — non-admins see
+ * a plain reply explaining the restriction.
+ */
+export async function openSystemHealthCard(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+	},
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can view system health.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin can view system health.", callbackAlert: true };
+	}
+
+	try {
+		const snapshot = await collectSystemHealth();
+		const items: SystemHealthCardItem[] = snapshot.items.map((item) => ({
+			id: item.id,
+			label: item.label,
+			status: item.status as SystemHealthStatus,
+			detail: item.detail,
+			remediationKey: item.remediation,
+			observedAtMs: item.observedAtMs,
+		}));
+		const state: SystemHealthCardState = {
+			kind: CardKind.SystemHealth,
+			title: "System Health",
+			view: "list",
+			overallStatus: snapshot.overallStatus as SystemHealthStatus,
+			items,
+			issueCount: snapshot.issueCount,
+			collectedAtMs: snapshot.collectedAtMs,
+		};
+		await sendSystemHealthCard(api, opts.chatId, {
+			state,
+			actorScope: opts.actorScope,
+			threadId: opts.threadId,
+		});
+		return {
+			callbackText:
+				snapshot.issueCount === 0
+					? "System healthy"
+					: `${snapshot.issueCount} issue${snapshot.issueCount === 1 ? "" : "s"}`,
+		};
+	} catch (err) {
+		logger.warn({ error: String(err), chatId: opts.chatId }, "system health probe failed");
+		await api.sendMessage(
+			opts.chatId,
+			"Failed to collect system health. Check logs.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Health probe failed", callbackAlert: true };
+	}
 }
