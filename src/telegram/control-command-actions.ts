@@ -15,6 +15,7 @@ import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { deleteSession } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
+import { revokeSessionAllowlist } from "../security/approvals.js";
 import { isAdmin } from "../security/linking.js";
 import {
 	sendBackgroundJobCard,
@@ -144,6 +145,8 @@ export function reloadSkillsSession(sessionKey: string | undefined): CommandUiRe
 	}
 	deleteSession(sessionKey);
 	getSessionManager().clearSession(sessionKey);
+	// W1 — skill reload rotates the session; drop session-scoped allowlist grants too.
+	revokeSessionAllowlist(sessionKey);
 	return {
 		callbackText: "Skills reloaded. Next message starts a fresh session.",
 	};

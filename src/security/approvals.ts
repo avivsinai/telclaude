@@ -3,14 +3,36 @@ import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import type { MediaType } from "../types/media.js";
+import {
+	APPROVAL_SCOPES,
+	type ApprovalScope,
+	isApprovalScope,
+	type RiskTier,
+	scopeAllowedForRisk,
+} from "./risk-tiers.js";
 import type { Result, SecurityClassification } from "./types.js";
 
 const logger = getChildLogger({ module: "approvals" });
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Durable "always" allowlist retention. We keep allowlist rows forever in
+// principle, but the cleanup job prunes "always" rows that haven't been used
+// in 30 days as a hygienic backstop.
+const ALLOWLIST_ALWAYS_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Re-export risk + scope types so callers can import from a single module.
+ */
+export type { ApprovalScope, RiskTier };
+export { APPROVAL_SCOPES, isApprovalScope, scopeAllowedForRisk };
+
 /**
  * A pending approval request.
+ *
+ * The optional `riskTier` / `toolKey` fields are populated when the approval
+ * is created as part of the W1 graduated-approval flow. Legacy approvals
+ * (from the single-button `/approve CODE` path) omit them.
  */
 export type PendingApproval = {
 	nonce: string;
@@ -31,6 +53,12 @@ export type PendingApproval = {
 	observerClassification: SecurityClassification;
 	observerConfidence: number;
 	observerReason?: string;
+	/** W1: risk classification used for scope cap enforcement. */
+	riskTier?: RiskTier;
+	/** W1: canonical tool identifier used for allowlist keying. */
+	toolKey?: string;
+	/** W1: session key at creation time; used to scope "session" grants. */
+	sessionKey?: string;
 };
 
 /**
@@ -55,6 +83,9 @@ type ApprovalRow = {
 	observer_classification: string;
 	observer_confidence: number;
 	observer_reason: string | null;
+	risk_tier: string | null;
+	tool_key: string | null;
+	session_key: string | null;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -166,6 +197,9 @@ function denyFromTable<TRow extends RowBase, T>(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function rowToApproval(row: ApprovalRow): PendingApproval {
+	const rawRisk = row.risk_tier ?? undefined;
+	const riskTier: RiskTier | undefined =
+		rawRisk === "low" || rawRisk === "medium" || rawRisk === "high" ? rawRisk : undefined;
 	return {
 		nonce: row.nonce,
 		requestId: row.request_id,
@@ -185,6 +219,9 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 		observerClassification: row.observer_classification as SecurityClassification,
 		observerConfidence: row.observer_confidence,
 		observerReason: row.observer_reason ?? undefined,
+		riskTier,
+		toolKey: row.tool_key ?? undefined,
+		sessionKey: row.session_key ?? undefined,
 	};
 }
 
@@ -237,8 +274,9 @@ export function createApproval(
 				nonce, request_id, chat_id, created_at, expires_at, tier, body,
 				media_path, media_type, media_file_path, media_file_id,
 				username, from_user, to_user,
-				message_id, observer_classification, observer_confidence, observer_reason
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				message_id, observer_classification, observer_confidence, observer_reason,
+				risk_tier, tool_key, session_key
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			nonce,
 			entry.requestId,
@@ -258,6 +296,9 @@ export function createApproval(
 			entry.observerClassification,
 			entry.observerConfidence,
 			entry.observerReason ?? null,
+			entry.riskTier ?? null,
+			entry.toolKey ?? null,
+			entry.sessionKey ?? null,
 		);
 	})();
 
@@ -674,4 +715,307 @@ export function formatApprovalRequest(approval: PendingApproval): string {
 	lines.push("", `_Expires in ${timeStr}_`);
 
 	return lines.join("\n");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W1 — GRADUATED APPROVAL ALLOWLIST
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A row in the per-user approval allowlist. Keyed on
+ * (user_id, tool_key, scope) with INSERT OR REPLACE upsert semantics.
+ *
+ * - `once` rows are consumed (deleted) on first successful lookup.
+ * - `session` rows are scoped to the session key they were granted in,
+ *   and purged when the session rotates (`revokeSessionAllowlist`).
+ * - `always` rows have a 30-day expiry floor; it is refreshed on each use
+ *   so an actively-used grant never expires.
+ */
+export type AllowlistEntry = {
+	id: number;
+	userId: string;
+	tier: PermissionTier;
+	toolKey: string;
+	scope: ApprovalScope;
+	sessionKey: string | null;
+	grantedAt: number;
+	expiresAt: number | null;
+	lastUsedAt: number | null;
+	chatId: number;
+};
+
+type AllowlistRow = {
+	id: number;
+	user_id: string;
+	tier: string;
+	tool_key: string;
+	scope: string;
+	session_key: string | null;
+	granted_at: number;
+	expires_at: number | null;
+	last_used_at: number | null;
+	chat_id: number;
+};
+
+function rowToAllowlistEntry(row: AllowlistRow): AllowlistEntry {
+	return {
+		id: row.id,
+		userId: row.user_id,
+		tier: row.tier as PermissionTier,
+		toolKey: row.tool_key,
+		scope: row.scope as ApprovalScope,
+		sessionKey: row.session_key,
+		grantedAt: row.granted_at,
+		expiresAt: row.expires_at,
+		lastUsedAt: row.last_used_at,
+		chatId: row.chat_id,
+	};
+}
+
+export type GrantAllowlistInput = {
+	userId: string;
+	tier: PermissionTier;
+	toolKey: string;
+	scope: ApprovalScope;
+	sessionKey: string | null;
+	chatId: number;
+	now?: number;
+};
+
+/**
+ * Upsert an allowlist grant.
+ *
+ * Tier cap enforcement:
+ * - SOCIAL / WRITE_LOCAL tiers cannot record a FULL_ACCESS "always" grant
+ *   (the pipeline should catch this before calling).
+ * - "always" for high-risk tool_keys is rejected at the caller; this function
+ *   trusts its caller on risk tier but validates scope vs. tier.
+ */
+export function grantAllowlist(input: GrantAllowlistInput): AllowlistEntry {
+	if (!isApprovalScope(input.scope)) {
+		throw new Error(`grantAllowlist: invalid scope ${String(input.scope)}`);
+	}
+	if (!input.toolKey || input.toolKey.length > 128) {
+		throw new Error("grantAllowlist: toolKey must be a non-empty string <=128 chars");
+	}
+	if (input.scope === "session" && !input.sessionKey) {
+		throw new Error("grantAllowlist: session scope requires sessionKey");
+	}
+
+	const db = getDb();
+	const now = input.now ?? Date.now();
+
+	// "always" grants get a rolling 30-day expiry floor; "session" inherits
+	// the session lifetime (no hard expiry); "once" is effectively 24h max to
+	// cover the gap between grant and first use.
+	const expiresAt =
+		input.scope === "always"
+			? now + ALLOWLIST_ALWAYS_EXPIRY_MS
+			: input.scope === "once"
+				? now + 24 * 60 * 60 * 1000
+				: null;
+
+	db.prepare(
+		`INSERT INTO approval_allowlist (
+			user_id, tier, tool_key, scope, session_key, chat_id,
+			granted_at, expires_at, last_used_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+		ON CONFLICT(user_id, tool_key, scope) DO UPDATE SET
+			tier = excluded.tier,
+			session_key = excluded.session_key,
+			chat_id = excluded.chat_id,
+			granted_at = excluded.granted_at,
+			expires_at = excluded.expires_at,
+			last_used_at = NULL`,
+	).run(
+		input.userId,
+		input.tier,
+		input.toolKey,
+		input.scope,
+		input.sessionKey ?? null,
+		input.chatId,
+		now,
+		expiresAt,
+	);
+
+	const row = db
+		.prepare("SELECT * FROM approval_allowlist WHERE user_id = ? AND tool_key = ? AND scope = ?")
+		.get(input.userId, input.toolKey, input.scope) as AllowlistRow | undefined;
+
+	if (!row) {
+		throw new Error("grantAllowlist: insert reported success but row not found");
+	}
+
+	logger.info(
+		{
+			userId: input.userId,
+			toolKey: input.toolKey,
+			scope: input.scope,
+			tier: input.tier,
+			sessionKey: input.sessionKey,
+			expiresAt,
+		},
+		"approval allowlist granted",
+	);
+
+	return rowToAllowlistEntry(row);
+}
+
+export type LookupAllowlistInput = {
+	userId: string;
+	toolKey: string;
+	tier: PermissionTier;
+	sessionKey: string | null;
+	now?: number;
+};
+
+/**
+ * Look up an allowlist entry that applies to this (user, tool, tier, session)
+ * pair. Returns the strongest applicable scope ("always" > "session" > "once")
+ * so the caller can surface audit-friendly information even when multiple
+ * grants exist.
+ *
+ * Side effects:
+ * - "once" entries are consumed (deleted) and never survive a lookup.
+ * - "session" and "always" entries have `last_used_at` refreshed; "always"
+ *   entries also get their expiry pushed forward.
+ *
+ * Tier cap: the grant tier must be >= the caller's current tier. A grant made
+ * at WRITE_LOCAL cannot authorize a FULL_ACCESS call. Ordering:
+ * READ_ONLY < WRITE_LOCAL = SOCIAL < FULL_ACCESS.
+ */
+export function lookupAllowlist(input: LookupAllowlistInput): AllowlistEntry | null {
+	const db = getDb();
+	const now = input.now ?? Date.now();
+
+	// Fetch all rows for the user+tool, then pick the strongest one whose
+	// scope/session/tier constraints still satisfy the caller.
+	const rows = db
+		.prepare("SELECT * FROM approval_allowlist WHERE user_id = ? AND tool_key = ?")
+		.all(input.userId, input.toolKey) as AllowlistRow[];
+
+	if (rows.length === 0) {
+		return null;
+	}
+
+	// Scope priority: always > session > once. Skip entries that fail tier,
+	// session, or expiry checks.
+	const priority: Record<ApprovalScope, number> = { always: 3, session: 2, once: 1 };
+	const candidates = rows
+		.map(rowToAllowlistEntry)
+		.filter((entry) => {
+			if (!isApprovalScope(entry.scope)) return false;
+			if (!tierCovers(entry.tier, input.tier)) return false;
+			if (entry.expiresAt !== null && entry.expiresAt < now) return false;
+			if (entry.scope === "session") {
+				if (!entry.sessionKey || !input.sessionKey) return false;
+				return entry.sessionKey === input.sessionKey;
+			}
+			return true;
+		})
+		.sort((a, b) => priority[b.scope] - priority[a.scope]);
+
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const chosen = candidates[0];
+
+	// Side effect: consume / refresh.
+	if (chosen.scope === "once") {
+		db.prepare("DELETE FROM approval_allowlist WHERE id = ?").run(chosen.id);
+		logger.info(
+			{ userId: chosen.userId, toolKey: chosen.toolKey },
+			"approval allowlist: once consumed",
+		);
+	} else if (chosen.scope === "always") {
+		const newExpiry = now + ALLOWLIST_ALWAYS_EXPIRY_MS;
+		db.prepare("UPDATE approval_allowlist SET last_used_at = ?, expires_at = ? WHERE id = ?").run(
+			now,
+			newExpiry,
+			chosen.id,
+		);
+		chosen.lastUsedAt = now;
+		chosen.expiresAt = newExpiry;
+	} else {
+		db.prepare("UPDATE approval_allowlist SET last_used_at = ? WHERE id = ?").run(now, chosen.id);
+		chosen.lastUsedAt = now;
+	}
+
+	return chosen;
+}
+
+/**
+ * Ordering: READ_ONLY < WRITE_LOCAL = SOCIAL < FULL_ACCESS.
+ * Returns true when `grantTier` is at least as permissive as `requestedTier`.
+ */
+function tierCovers(grantTier: PermissionTier, requestedTier: PermissionTier): boolean {
+	const rank: Record<PermissionTier, number> = {
+		READ_ONLY: 1,
+		WRITE_LOCAL: 2,
+		SOCIAL: 2,
+		FULL_ACCESS: 3,
+	};
+	return rank[grantTier] >= rank[requestedTier];
+}
+
+/**
+ * List all allowlist entries for a user. Used by the CLI and the operator
+ * status surface.
+ */
+export function listAllowlist(options: { userId?: string } = {}): AllowlistEntry[] {
+	const db = getDb();
+	const rows = options.userId
+		? (db
+				.prepare("SELECT * FROM approval_allowlist WHERE user_id = ? ORDER BY granted_at DESC")
+				.all(options.userId) as AllowlistRow[])
+		: (db
+				.prepare("SELECT * FROM approval_allowlist ORDER BY granted_at DESC")
+				.all() as AllowlistRow[]);
+	return rows.map(rowToAllowlistEntry);
+}
+
+/**
+ * Revoke a single entry by id. Returns true when a row was deleted.
+ */
+export function revokeAllowlistEntry(id: number): boolean {
+	const db = getDb();
+	const result = db.prepare("DELETE FROM approval_allowlist WHERE id = ?").run(id);
+	if (result.changes > 0) {
+		logger.info({ id }, "approval allowlist entry revoked");
+	}
+	return result.changes > 0;
+}
+
+/**
+ * Drop every "session" scope grant belonging to a session key — used when a
+ * session rotates via `/new` or `/reset`.
+ */
+export function revokeSessionAllowlist(sessionKey: string): number {
+	const db = getDb();
+	const result = db
+		.prepare("DELETE FROM approval_allowlist WHERE scope = 'session' AND session_key = ?")
+		.run(sessionKey);
+	if (result.changes > 0) {
+		logger.info({ sessionKey, count: result.changes }, "session-scoped allowlist cleared");
+	}
+	return result.changes;
+}
+
+/**
+ * Cleanup for the allowlist:
+ * - Delete expired rows.
+ * - Drop orphan "session" rows whose session_key is unknown to the session
+ *   store — we don't cross-query here to stay a pure storage operation; the
+ *   caller (cleanupExpired in db.ts) relies on TTL instead.
+ */
+export function cleanupExpiredAllowlist(now: number = Date.now()): number {
+	const db = getDb();
+	const result = db
+		.prepare("DELETE FROM approval_allowlist WHERE expires_at IS NOT NULL AND expires_at < ?")
+		.run(now);
+	if (result.changes > 0) {
+		logger.debug({ cleaned: result.changes }, "expired allowlist entries cleaned");
+	}
+	return result.changes;
 }

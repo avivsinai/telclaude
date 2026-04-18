@@ -45,6 +45,19 @@ vi.mock("../../src/storage/db.js", () => {
 						telegram_username TEXT,
 						linked_at INTEGER NOT NULL
 					);
+					CREATE TABLE IF NOT EXISTS approval_allowlist (
+						id INTEGER PRIMARY KEY AUTOINCREMENT,
+						user_id TEXT NOT NULL,
+						tier TEXT NOT NULL,
+						tool_key TEXT NOT NULL,
+						scope TEXT NOT NULL,
+						session_key TEXT,
+						chat_id INTEGER NOT NULL,
+						granted_at INTEGER NOT NULL,
+						expires_at INTEGER,
+						last_used_at INTEGER,
+						UNIQUE(user_id, tool_key, scope)
+					);
 				`);
 			}
 			return mockDb;
@@ -499,6 +512,167 @@ const token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcde12";
 			// Even if infra check was bypassed, fast path would catch it
 			const fastPath = fastPathClassify(attack);
 			expect(fastPath?.classification).toBe("BLOCK");
+		});
+	});
+
+	// ═══════════════════════════════════════════════════════════════════════════════
+	// W1 — Graduated tool approvals (decideToolApproval)
+	// ═══════════════════════════════════════════════════════════════════════════════
+
+	describe("Graduated tool approvals (W1)", () => {
+		it("low-risk tools allow without an allowlist hit", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const d = decideToolApproval({
+				userId: "tg:100",
+				tier: "WRITE_LOCAL",
+				toolName: "Read",
+				sessionKey: "tg:100",
+			});
+			expect(d.risk).toBe("low");
+			expect(d.decision).toBe("allow");
+		});
+
+		it("medium-risk tools prompt when the allowlist is empty", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const d = decideToolApproval({
+				userId: "tg:101",
+				tier: "WRITE_LOCAL",
+				toolName: "Write",
+				sessionKey: "tg:101",
+			});
+			expect(d.risk).toBe("medium");
+			expect(d.decision).toBe("prompt");
+		});
+
+		it("high-risk destructive Bash always prompts once, even with 'always' grant", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const { grantAllowlist } = await import("../../src/security/approvals.js");
+
+			grantAllowlist({
+				userId: "tg:102",
+				tier: "WRITE_LOCAL",
+				toolKey: "Bash",
+				scope: "always",
+				sessionKey: null,
+				chatId: 102,
+			});
+
+			const d = decideToolApproval({
+				userId: "tg:102",
+				tier: "WRITE_LOCAL",
+				toolName: "Bash",
+				bashCommand: "rm -rf /tmp/data",
+				sessionKey: "tg:102",
+			});
+			expect(d.risk).toBe("high");
+			expect(d.decision).toBe("prompt-once");
+		});
+
+		it("'always' grant lets subsequent calls auto-approve", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const { grantAllowlist } = await import("../../src/security/approvals.js");
+
+			grantAllowlist({
+				userId: "tg:103",
+				tier: "WRITE_LOCAL",
+				toolKey: "Edit",
+				scope: "always",
+				sessionKey: null,
+				chatId: 103,
+			});
+
+			for (let i = 0; i < 5; i++) {
+				const d = decideToolApproval({
+					userId: "tg:103",
+					tier: "WRITE_LOCAL",
+					toolName: "Edit",
+					sessionKey: "tg:103",
+				});
+				expect(d.decision).toBe("allow");
+				expect(d.allowlistScope).toBe("always");
+			}
+		});
+
+		it("admin bypass skips approvals entirely", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const d = decideToolApproval({
+				userId: "tg:104",
+				tier: "FULL_ACCESS",
+				toolName: "Bash",
+				bashCommand: "rm -rf /",
+				sessionKey: "tg:104",
+				isAdmin: true,
+			});
+			expect(d.decision).toBe("allow");
+		});
+
+		it("session-scoped grant covers calls in the same session and nothing else", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const { grantAllowlist } = await import("../../src/security/approvals.js");
+
+			grantAllowlist({
+				userId: "tg:105",
+				tier: "WRITE_LOCAL",
+				toolKey: "Write",
+				scope: "session",
+				sessionKey: "tg:105",
+				chatId: 105,
+			});
+
+			const sameSession = decideToolApproval({
+				userId: "tg:105",
+				tier: "WRITE_LOCAL",
+				toolName: "Write",
+				sessionKey: "tg:105",
+			});
+			expect(sameSession.decision).toBe("allow");
+
+			const otherSession = decideToolApproval({
+				userId: "tg:105",
+				tier: "WRITE_LOCAL",
+				toolName: "Write",
+				sessionKey: "tg:different-session",
+			});
+			expect(otherSession.decision).toBe("prompt");
+		});
+
+		it("10-step session with one 'always' grant on low-risk tool → zero further prompts", async () => {
+			const { decideToolApproval } = await import("../../src/security/pipeline.js");
+			const { grantAllowlist } = await import("../../src/security/approvals.js");
+
+			// Grant "always" on the one medium-risk tool we'll use below.
+			grantAllowlist({
+				userId: "tg:200",
+				tier: "WRITE_LOCAL",
+				toolKey: "Write",
+				scope: "always",
+				sessionKey: null,
+				chatId: 200,
+			});
+
+			const tools = [
+				"Read",
+				"Glob",
+				"Grep",
+				"Write",
+				"Read",
+				"Write",
+				"Grep",
+				"WebSearch",
+				"Write",
+				"Read",
+			];
+			let prompts = 0;
+			for (const toolName of tools) {
+				const d = decideToolApproval({
+					userId: "tg:200",
+					tier: "WRITE_LOCAL",
+					toolName,
+					sessionKey: "tg:200",
+				});
+				if (d.decision !== "allow") prompts += 1;
+			}
+			expect(prompts).toBe(0);
 		});
 	});
 });

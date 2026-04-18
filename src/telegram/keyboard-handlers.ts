@@ -9,6 +9,7 @@ import type { Bot, CallbackQueryContext, Context } from "grammy";
 import { deleteSession, deriveSessionKey } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
+import { revokeSessionAllowlist } from "../security/approvals.js";
 import type { AuditLogger } from "../security/audit.js";
 import { handleCallback as handleCardCallback } from "./cards/callback-controller.js";
 import { formatTelegramHelpOverview } from "./control-commands.js";
@@ -122,6 +123,9 @@ async function handleNewSession(ctx: CallbackQueryContext<Context>, chatId: numb
 
 	// Clear the session from SDK session manager (in-memory)
 	getSessionManager().clearSession(sessionKey);
+
+	// W1 — drop session-scoped approval allowlist grants along with the session.
+	revokeSessionAllowlist(sessionKey);
 
 	logger.info({ chatId, sessionKey }, "session reset via keyboard button");
 
