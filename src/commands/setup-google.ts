@@ -18,7 +18,7 @@ const logger = getChildLogger({ module: "cmd-setup-google" });
 // Scope Bundles
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const SCOPE_BUNDLES: Record<string, string[]> = {
+export const GOOGLE_SCOPE_BUNDLES: Record<string, string[]> = {
 	read_core: [
 		"https://www.googleapis.com/auth/gmail.readonly",
 		"https://www.googleapis.com/auth/calendar.events.readonly",
@@ -48,6 +48,81 @@ const SCOPE_BUNDLES: Record<string, string[]> = {
 		"https://www.googleapis.com/auth/contacts.readonly",
 	],
 };
+
+export async function runGoogleOAuthSetup(options: {
+	scopes: string;
+	port: string;
+	browser: boolean;
+}): Promise<{ userId?: string }> {
+	const service = getService("google");
+	if (!service) {
+		throw new Error("Google service not found in OAuth registry.");
+	}
+
+	if (!(await isVaultAvailable())) {
+		throw new Error("Vault daemon is not running.");
+	}
+
+	const scopes = GOOGLE_SCOPE_BUNDLES[options.scopes];
+	if (!scopes) {
+		throw new Error(`Unknown scope bundle: ${options.scopes}`);
+	}
+
+	const port = Number.parseInt(options.port, 10);
+	if (Number.isNaN(port) || port < 1 || port > 65535) {
+		throw new Error("Invalid port.");
+	}
+
+	const clientId = (await promptSecret("Google Client ID: ")) ?? "";
+	if (!clientId) {
+		throw new Error("Client ID is required.");
+	}
+
+	let clientSecret = "";
+	if (service.confidentialClient) {
+		clientSecret = (await promptSecret("Google Client Secret: ")) ?? "";
+		if (!clientSecret) {
+			throw new Error("Client Secret is required.");
+		}
+	}
+
+	const result = await authorize({
+		service,
+		clientId,
+		clientSecret,
+		scopes,
+		port,
+		timeout: 120,
+		noBrowser: !options.browser,
+		onAuthUrl: !options.browser
+			? (url) => {
+					console.log("Open this URL in your browser:");
+					console.log(`  ${url}`);
+					console.log();
+				}
+			: undefined,
+	});
+
+	const credential = {
+		type: "oauth2" as const,
+		clientId,
+		refreshToken: result.refreshToken,
+		tokenEndpoint: service.tokenEndpoint,
+		scope: result.scope,
+		...(clientSecret ? { clientSecret } : {}),
+	};
+
+	const client = getVaultClient();
+	await client.store({
+		protocol: "http",
+		target: service.vaultTarget,
+		label: service.vaultLabel,
+		credential,
+	});
+
+	logger.info({ scopes: options.scopes, userId: result.userId }, "Google OAuth2 setup complete");
+	return { userId: result.userId };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Command
@@ -136,23 +211,16 @@ export function registerSetupGoogleCommand(program: Command): void {
 							console.log(`  Created: ${entry.entry.createdAt}`);
 						} else {
 							console.log("No Google credentials configured.");
-							console.log("Run: telclaude setup-google");
+							console.log("Run: telclaude providers setup google");
 						}
 						return;
 					}
 
 					// Interactive setup
-					if (!(await isVaultAvailable())) {
-						console.error("Error: Vault daemon is not running.");
-						console.error("Start it with: telclaude vault-daemon");
-						process.exit(1);
-					}
-
-					// Resolve scope bundle
-					const scopes = SCOPE_BUNDLES[opts.scopes];
+					const scopes = GOOGLE_SCOPE_BUNDLES[opts.scopes];
 					if (!scopes) {
 						console.error(`Unknown scope bundle: ${opts.scopes}`);
-						console.error(`Available: ${Object.keys(SCOPE_BUNDLES).join(", ")}`);
+						console.error(`Available: ${Object.keys(GOOGLE_SCOPE_BUNDLES).join(", ")}`);
 						process.exit(1);
 					}
 
@@ -167,55 +235,16 @@ export function registerSetupGoogleCommand(program: Command): void {
 					console.log(`Scope bundle: ${opts.scopes} (${scopes.length} scopes)`);
 					console.log();
 
-					const clientId = (await promptSecret("Google Client ID: ")) ?? "";
-					if (!clientId) {
-						console.error("Client ID is required.");
-						process.exit(1);
-					}
-
-					const clientSecret = (await promptSecret("Google Client Secret: ")) ?? "";
-					if (!clientSecret) {
-						console.error("Client Secret is required.");
-						process.exit(1);
-					}
-
 					const callbackUrl = getCallbackUrl(port);
 					console.log();
 					console.log(`Callback URL (register in Google Cloud Console):`);
 					console.log(`  ${callbackUrl}`);
 					console.log();
 
-					const result = await authorize({
-						service,
-						clientId,
-						clientSecret,
-						scopes,
-						port,
-						timeout: 120,
-						noBrowser: !opts.browser,
-						onAuthUrl: !opts.browser
-							? (url) => {
-									console.log("Open this URL in your browser:");
-									console.log(`  ${url}`);
-									console.log();
-								}
-							: undefined,
-					});
-
-					// Store in vault
-					const client = getVaultClient();
-					await client.store({
-						protocol: "http",
-						target: service.vaultTarget,
-						label: service.vaultLabel,
-						credential: {
-							type: "oauth2",
-							clientId,
-							clientSecret,
-							refreshToken: result.refreshToken,
-							tokenEndpoint: service.tokenEndpoint,
-							scope: result.scope,
-						},
+					const result = await runGoogleOAuthSetup({
+						scopes: opts.scopes,
+						port: opts.port,
+						browser: opts.browser,
 					});
 
 					console.log();
@@ -225,16 +254,17 @@ export function registerSetupGoogleCommand(program: Command): void {
 					}
 					console.log();
 					console.log("Next steps:");
-					console.log("  1. Deploy google-services sidecar");
-					console.log("  2. Add google provider to telclaude.json");
-
-					logger.info(
-						{ scopes: opts.scopes, userId: result.userId },
-						"Google OAuth2 setup complete",
+					console.log("  1. Run: telclaude providers setup google");
+					console.log(
+						"  2. Or add the google provider + network allowlist manually if you prefer.",
 					);
 				} catch (err) {
 					logger.error({ error: String(err) }, "setup-google failed");
-					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					const message = err instanceof Error ? err.message : String(err);
+					console.error(`Error: ${message}`);
+					if (message === "Vault daemon is not running.") {
+						console.error("Start it with: telclaude maintenance vault-daemon");
+					}
 					process.exit(1);
 				}
 			},

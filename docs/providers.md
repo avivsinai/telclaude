@@ -12,8 +12,8 @@ Providers are separate containers that expose REST APIs for domain-specific serv
 ┌─────────────────────────────────────────────────────────────────┐
 │ Agent Container                                                 │
 │                                                                 │
-│  telclaude provider-query --provider google                     │
-│    --service gmail --action search --user-id tg:123             │
+│  telclaude providers query google gmail search                  │
+│    --user-id tg:123                                             │
 │                                                                 │
 │  (Bash CLI command — routed to relay via HTTP)                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -57,7 +57,7 @@ Every provider sidecar must implement these three endpoints:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/health` | GET | Health check. Returns `{ status: "ok" }` or `{ status: "degraded", services: {...} }`. Used by `telclaude provider-health`. |
+| `/v1/health` | GET | Health check. Returns `{ status: "ok" }` or `{ status: "degraded", services: {...} }`. Used by `telclaude providers doctor`. |
 | `/v1/schema` | GET | Action catalog. Returns services array with actions, types, params. Used by the external-provider skill for LLM discovery. |
 | `/v1/fetch` | POST | Dispatch a service action. Body: `{ service, action, params }`. Header: `x-actor-user-id`. |
 
@@ -105,7 +105,7 @@ Each action specifies:
 
 Action-type requests require an Ed25519-signed approval token:
 
-1. Agent calls `telclaude provider-query` for an action-type operation.
+1. Agent calls `telclaude providers query` for an action-type operation.
 2. Relay detects `type: "action"` and returns `{ status: "error", errorCode: "APPROVAL_REQUIRED", approvalNonce: "<nonce>" }`.
 3. Relay sends approval request to operator via Telegram (`/approve <nonce>` or `/deny <nonce>`).
 4. On approval, relay mints a signed token binding: service, action, params hash, actor, expiry.
@@ -152,6 +152,20 @@ Network isolation:
 
 ### 5. Relay configuration
 
+For built-in setups, prefer the CLI:
+
+```bash
+telclaude providers setup google --base-url http://google-services:3001
+```
+
+That command:
+- stores OAuth credentials in the vault
+- registers the provider in `telclaude.json`
+- adds the matching private-endpoint allowlist entry
+- runs `telclaude providers doctor google`
+
+If you are wiring a provider manually, treat the raw config and private-endpoint steps below as the escape hatch.
+
 Add the provider to `telclaude.json`:
 
 **Allowlist the provider host as a private endpoint first.** `validateProviderBaseUrl` (`src/providers/provider-validation.ts`) refuses any provider whose `baseUrl` is not matched by `security.network.privateEndpoints`. Run:
@@ -181,12 +195,31 @@ Then add the provider entry itself:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | yes | Unique provider identifier (used in CLI `--provider` flag) |
+| `id` | string | yes | Unique provider identifier (used by `telclaude providers ...` commands) |
 | `baseUrl` | string | yes | Internal URL (`http://<container-name>:<port>`) |
 | `services` | string[] | yes | List of service identifiers this provider handles |
 | `description` | string | yes | Human/agent-readable description |
 
 The PreToolUse hook automatically blocks direct WebFetch to provider base URLs, and `TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1` on agent containers excludes provider hosts from the firewall allowlist.
+
+The provider host must also be allowlisted under `security.network.privateEndpoints`. Example:
+
+```json
+{
+  "security": {
+    "network": {
+      "privateEndpoints": [
+        {
+          "label": "provider-your-provider",
+          "host": "your-provider",
+          "ports": [3003],
+          "description": "Your Provider sidecar"
+        }
+      ]
+    }
+  }
+}
+```
 
 ### 6. Skill injection
 
@@ -196,7 +229,7 @@ The external-provider skill auto-discovers providers:
 2. A minimal summary (IDs + URLs + service lists) is cached and injected into agent system prompts via `<available-providers>` tags.
 3. Full schema is written to the skill's `references/provider-schema.md` for detailed LLM tool generation.
 
-When the agent sees `<available-providers>`, it uses the external-provider skill to query providers via `telclaude provider-query`.
+When the agent sees `<available-providers>`, it uses the external-provider skill to query providers via `telclaude providers query`.
 
 ## Reference Implementation: Google Services
 
@@ -218,12 +251,14 @@ The Google Services sidecar (`src/google-services/`) demonstrates the full patte
 - `src/google-services/token-manager.ts` — OAuth token retrieval from vault socket
 - `src/google-services/handlers/` — Per-service dispatch (gmail.ts, calendar.ts, drive.ts, contacts.ts)
 
-**Setup:** `telclaude setup-google` configures Google OAuth credentials in the vault.
+**Setup:** `telclaude providers setup google --base-url http://google-services:3001` configures Google OAuth, provider config, and the network allowlist in one flow.
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `telclaude provider-query --provider <id> --service <svc> --action <act> --user-id <uid>` | Query a provider action |
-| `telclaude provider-health [provider-id]` | Check provider health status |
-| `telclaude setup-google` | Configure Google OAuth credentials |
+| `telclaude providers list` | List configured providers |
+| `telclaude providers schema [id]` | Fetch provider schema for one provider or all configured providers |
+| `telclaude providers query <id> <svc> <act> [--user-id <uid>]` | Query a provider action |
+| `telclaude providers doctor [id]` | Run provider health, schema, network, and OAuth checks |
+| `telclaude providers setup google --base-url <url>` | Configure Google OAuth credentials and finish integration |

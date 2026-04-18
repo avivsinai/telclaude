@@ -1,7 +1,11 @@
 /**
  * CLI command for checking external provider health status.
  *
- * Commands:
+ * Preferred commands:
+ * - telclaude providers doctor - Check all providers
+ * - telclaude providers doctor <provider-id> - Check a specific provider
+ *
+ * Legacy compatibility:
  * - telclaude provider-health - Check all providers
  * - telclaude provider-health <provider-id> - Check specific provider
  * - telclaude provider-health --json - Output as JSON
@@ -89,7 +93,7 @@ function formatHealthOutput(results: HealthCheckResult[], json: boolean): string
 export function registerProviderHealthCommand(program: Command): void {
 	program
 		.command("provider-health")
-		.description("Check health status of configured external providers")
+		.description("Deprecated internal provider health command (use 'telclaude providers doctor')")
 		.argument("[provider-id]", "Specific provider to check (default: all)")
 		.option("--json", "Output as JSON")
 		.option("--alert-telegram", "Send Telegram alert if any provider is degraded/unhealthy")
@@ -98,6 +102,7 @@ export function registerProviderHealthCommand(program: Command): void {
 				providerId: string | undefined,
 				options: { json?: boolean; alertTelegram?: boolean },
 			) => {
+				console.error("Deprecated: use `telclaude providers doctor [provider-id]`.");
 				const cfg = loadConfig();
 				const providers = cfg.providers ?? [];
 

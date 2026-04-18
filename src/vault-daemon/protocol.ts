@@ -81,7 +81,7 @@ export type HttpCredential = z.infer<typeof HttpCredentialSchema>;
 export const OAuth2CredentialSchema = z.object({
 	type: z.literal("oauth2"),
 	clientId: z.string().min(1),
-	clientSecret: z.string().min(1),
+	clientSecret: z.string().min(1).optional(),
 	refreshToken: z.string().min(1),
 	tokenEndpoint: z
 		.string()

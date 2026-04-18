@@ -421,14 +421,14 @@ function createNetworkSecurityHook(
 			}
 
 			// Block direct WebFetch to configured provider endpoints (public or private).
-			// Providers must be queried via `telclaude provider-query` CLI which routes through the relay.
+			// Providers must be queried via `telclaude providers query` which routes through the relay.
 			if (providerMatch) {
 				logger.warn(
 					{ provider: providerMatch.id, url: url.pathname },
 					"[hook] blocked direct WebFetch to provider endpoint",
 				);
 				return denyHookResponse(
-					`Provider endpoints must be queried via \`telclaude provider-query\` (Bash), not WebFetch. Use: telclaude provider-query --provider ${providerMatch.id} --service <svc> --action <act>. If Bash is unavailable in your tier, ask the operator to run the query.`,
+					`Provider endpoints must be queried via \`telclaude providers query\` (Bash), not WebFetch. Use: telclaude providers query ${providerMatch.id} <svc> <act>. If Bash is unavailable in your tier, ask the operator to run the query.`,
 				);
 			}
 

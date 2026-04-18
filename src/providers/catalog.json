@@ -1,0 +1,55 @@
+{
+	"oauthServices": [
+		{
+			"id": "google",
+			"displayName": "Google",
+			"authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+			"tokenEndpoint": "https://oauth2.googleapis.com/token",
+			"defaultScopes": [
+				"https://www.googleapis.com/auth/gmail.readonly",
+				"https://www.googleapis.com/auth/calendar.events.readonly",
+				"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+				"https://www.googleapis.com/auth/calendar.freebusy",
+				"https://www.googleapis.com/auth/drive.metadata.readonly",
+				"https://www.googleapis.com/auth/contacts.readonly"
+			],
+			"confidentialClient": false,
+			"vaultTarget": "googleapis.com",
+			"vaultLabel": "Google OAuth2",
+			"userIdEndpoint": "https://www.googleapis.com/oauth2/v2/userinfo",
+			"userIdJsonPath": "email",
+			"userIdEnvVar": "GOOGLE_USER_EMAIL"
+		},
+		{
+			"id": "xtwitter",
+			"displayName": "X/Twitter",
+			"authorizationUrl": "https://twitter.com/i/oauth2/authorize",
+			"tokenEndpoint": "https://api.x.com/2/oauth2/token",
+			"defaultScopes": [
+				"tweet.read",
+				"tweet.write",
+				"users.read",
+				"follows.write",
+				"offline.access"
+			],
+			"confidentialClient": false,
+			"vaultTarget": "api.x.com",
+			"vaultLabel": "X/Twitter OAuth2",
+			"vaultAllowedPaths": ["/2/.*"],
+			"userIdEndpoint": "https://api.x.com/2/users/me",
+			"userIdJsonPath": "data.id",
+			"userIdEnvVar": "X_USER_ID"
+		}
+	],
+	"providers": [
+		{
+			"id": "google",
+			"displayName": "Google Services",
+			"description": "Google Services sidecar for Gmail, Calendar, Drive, and Contacts.",
+			"services": ["gmail", "calendar", "drive", "contacts"],
+			"oauthServiceId": "google",
+			"setupCommand": "providers setup google",
+			"defaultBaseUrl": "http://google-services:3001"
+		}
+	]
+}

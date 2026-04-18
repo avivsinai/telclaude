@@ -24,6 +24,7 @@ import { registerOAuthCommand } from "./commands/oauth.js";
 import { registerPairingCommand } from "./commands/pairing.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
+import { registerProvidersCommandGroup } from "./commands/providers.js";
 import { registerQuickstartCommand } from "./commands/quickstart.js";
 import { registerRelayCommand } from "./commands/relay.js";
 import { registerResetAuthCommand } from "./commands/reset-auth.js";
@@ -102,6 +103,10 @@ registerPairingCommand(program);
 // --- admin ---
 const admin = program.command("admin").description("Access control and moderation");
 registerAdminSubcommands(admin);
+
+// --- providers ---
+const providers = program.command("providers").description("Manage external providers");
+registerProvidersCommandGroup(providers);
 
 // --- dev ---
 const dev = program.command("dev").description("Development and diagnostic tools");

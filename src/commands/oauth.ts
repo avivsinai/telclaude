@@ -167,6 +167,15 @@ export function registerOAuthCommand(program: Command): void {
 						console.log(`User ID: ${display}`);
 					}
 
+					const credential = {
+						type: "oauth2" as const,
+						clientId,
+						refreshToken: result.refreshToken,
+						tokenEndpoint: service.tokenEndpoint,
+						scope: result.scope,
+						...(clientSecret ? { clientSecret } : {}),
+					};
+
 					// Store in vault
 					if (!opts.skipVault) {
 						const client = getVaultClient();
@@ -174,14 +183,7 @@ export function registerOAuthCommand(program: Command): void {
 							protocol: "http",
 							target: service.vaultTarget,
 							label: service.vaultLabel,
-							credential: {
-								type: "oauth2",
-								clientId,
-								clientSecret,
-								refreshToken: result.refreshToken,
-								tokenEndpoint: service.tokenEndpoint,
-								scope: result.scope,
-							},
+							credential,
 							allowedPaths: service.vaultAllowedPaths,
 						});
 						console.log(`Credentials stored in vault: http:${service.vaultTarget}`);
