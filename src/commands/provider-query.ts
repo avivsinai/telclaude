@@ -6,7 +6,11 @@
  * HMAC authentication, response sanitization (strips inline base64),
  * and attachment storage.
  *
- * Usage:
+ * Preferred usage:
+ *   telclaude providers query my-provider health-api appointments
+ *   telclaude providers query my-provider bank-api transactions --params '{"startDate":"2024-01-01"}'
+ *
+ * Legacy compatibility:
  *   telclaude provider-query --provider my-provider --service health-api --action appointments
  *   telclaude provider-query --provider my-provider --service bank-api --action transactions --params '{"startDate":"2024-01-01"}'
  */
@@ -32,7 +36,7 @@ export type ProviderQueryOptions = {
 export function registerProviderQueryCommand(program: Command): void {
 	program
 		.command("provider-query")
-		.description("Query an external provider via the relay proxy")
+		.description("Deprecated internal provider query command (use 'telclaude providers query')")
 		.option("--provider <id>", "Provider ID (from telclaude.json)")
 		.option("--service <id>", "Service ID (e.g., health-api, bank-api)")
 		.option("--action <name>", "Action name (e.g., appointments, scrape)")
@@ -43,6 +47,9 @@ export function registerProviderQueryCommand(program: Command): void {
 		.option("--approval-token <token>", "Signed approval token for action-type requests")
 		.action(async (opts: ProviderQueryOptions) => {
 			try {
+				console.error(
+					"Deprecated: use `telclaude providers query <provider-id> <service> <action>`.",
+				);
 				requireRelay();
 
 				const providerId = opts.provider?.trim();
@@ -51,16 +58,18 @@ export function registerProviderQueryCommand(program: Command): void {
 
 				if (!providerId) {
 					console.error("Error: --provider is required.");
+					console.error("Preferred: telclaude providers query <provider-id> <service> <action>");
 					console.error(
-						"Usage: telclaude provider-query --provider <id> --service <id> --action <name>",
+						"Legacy:    telclaude provider-query --provider <id> --service <id> --action <name>",
 					);
 					process.exit(1);
 				}
 
 				if (!service || !action) {
 					console.error("Error: --service and --action are required.");
+					console.error("Preferred: telclaude providers query <provider-id> <service> <action>");
 					console.error(
-						"Usage: telclaude provider-query --provider <id> --service <id> --action <name>",
+						"Legacy:    telclaude provider-query --provider <id> --service <id> --action <name>",
 					);
 					process.exit(1);
 				}

@@ -238,22 +238,22 @@ export function registerVaultCommand(program: Command): void {
 									process.exit(1);
 								}
 								const clientSecret =
-									opts.clientSecret ?? (await promptSecret("Client Secret: ")) ?? "";
+									opts.clientSecret ?? (await promptSecret("Client Secret (optional): ")) ?? "";
 								const refreshToken =
 									opts.refreshToken ?? (await promptSecret("Refresh Token: ")) ?? "";
 
-								if (!clientSecret || !refreshToken) {
-									console.error("Client secret and refresh token are required for oauth2");
+								if (!refreshToken) {
+									console.error("Refresh token is required for oauth2");
 									process.exit(1);
 								}
 
 								credential = {
 									type: "oauth2",
 									clientId: opts.clientId,
-									clientSecret,
 									refreshToken,
 									tokenEndpoint: opts.tokenEndpoint,
 									scope: opts.scope,
+									...(clientSecret ? { clientSecret } : {}),
 								};
 								break;
 							}
