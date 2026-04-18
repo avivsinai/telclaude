@@ -353,6 +353,15 @@ const SecurityConfigSchema = z.object({
 			planApprovalTtlSeconds: z.number().int().positive().default(600),
 		})
 		.optional(),
+	/** DM pairing code configuration (Workstream W4). */
+	pairing: z
+		.object({
+			/** Emit pairing codes to unknown private chats. Default: true. */
+			enabled: z.boolean().default(true),
+			/** Tier granted when a paired chat is approved. Default: READ_ONLY. */
+			defaultTier: PermissionTierSchema.default("READ_ONLY"),
+		})
+		.optional(),
 });
 
 // Telegram configuration schema
