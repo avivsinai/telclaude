@@ -21,6 +21,8 @@ const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	SkillsMenu: "READ_ONLY",
 	SocialMenu: "SOCIAL",
 	Session: "WRITE_LOCAL",
+	BackgroundJob: "WRITE_LOCAL",
+	BackgroundJobList: "READ_ONLY",
 };
 
 type CallbackHandlerOptions = {
