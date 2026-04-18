@@ -3,7 +3,7 @@ import { collectSessionRows, formatSessionRows } from "../../../commands/session
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../../../commands/status.js";
 import { deleteSession } from "../../../config/sessions.js";
 import { getSessionManager } from "../../../sdk/session-manager.js";
-import { collectStatusOverview } from "../../status-overview.js";
+import { openSystemHealthCard } from "../../control-command-actions.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -202,20 +202,19 @@ export const statusRenderer: CardRenderer<K> = {
 			}
 
 			case "run-health-check": {
-				const overview = await collectStatusOverview({ includeProviderHealth: true });
+				// W10: open the dedicated SystemHealthCard with per-service
+				// status + tap-through remediation. Keep this status card
+				// unchanged so the user can switch back via /system.
 				return {
-					state: {
-						...card.state,
-						view: "overview",
-						summary: overview.summary,
-						details: overview.details,
-						lastRefreshedAt: Date.now(),
+					callbackText: "Opening system health",
+					rerender: false,
+					afterCommit: async () => {
+						await openSystemHealthCard(context.ctx.api, {
+							chatId: card.chatId,
+							threadId: card.threadId,
+							actorScope: card.actorScope,
+						});
 					},
-					callbackText:
-						overview.providerIssues.length === 0
-							? "Health check passed"
-							: `Health check found ${overview.providerIssues.length} issue(s)`,
-					rerender: true,
 				};
 			}
 

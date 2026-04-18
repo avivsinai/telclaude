@@ -23,6 +23,7 @@ const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	Session: "WRITE_LOCAL",
 	BackgroundJob: "WRITE_LOCAL",
 	BackgroundJobList: "READ_ONLY",
+	SystemHealth: "READ_ONLY",
 };
 
 type CallbackHandlerOptions = {

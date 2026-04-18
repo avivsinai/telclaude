@@ -39,6 +39,7 @@ import type {
 	SkillsMenuCardState,
 	SocialMenuCardState,
 	StatusCardState,
+	SystemHealthCardState,
 } from "./types.js";
 import { CardKind as CK } from "./types.js";
 
@@ -452,5 +453,30 @@ export async function sendSessionCard(
 		actorScope: opts.actorScope,
 		threadId: opts.threadId,
 		entityRef: `session:${opts.sessionKey ?? chatId}`,
+	});
+}
+
+/**
+ * W10 — Send the `/system health` snapshot card.
+ *
+ * The caller builds a `SystemHealthCardState` (typically from
+ * `collectSystemHealth()`) and this helper enforces a single live health
+ * card per chat via the `system-health` entityRef.
+ */
+export async function sendSystemHealthCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: SystemHealthCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.SystemHealth>> {
+	return createAndSendCard(api, chatId, CK.SystemHealth, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 15 * 60 * 1000,
+		entityRef: "system-health",
 	});
 }
