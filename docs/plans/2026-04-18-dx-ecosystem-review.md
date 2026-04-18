@@ -413,15 +413,23 @@ Any additional bugs surfaced during execution → fix in-flight under the owning
 | Workstream | Priority | Owner | Isolation | Status |
 |---|---|---|---|---|
 | Bug fixes (round 1) | P0 | claude | main | ✅ committed `532bbc0`, `c7dc242` |
-| W4 DM pairing codes | P0 | subagent A | merged `6286bcd` → origin `9dbc66d` | ✅ shipped (44 tests) |
+| W4 DM pairing codes | P0 | subagent A | origin `9dbc66d` | ✅ shipped (44 tests) |
+| W1 graduated approval scopes | P0 | subagent | origin `11a3209` | ✅ shipped (24 tests); interim pass-through in PreToolUse hook — Wave 3 flips to deny + Telegram approval loop |
+| W2 interactive pickers (`/model`, `/providers`, `/skills`) | P0 | subagent | origin `11a3209` | ✅ shipped (29 tests); model-preference SDK wiring deferred |
+| W10 `/system` health card | P0 | subagent | origin `11a3209` | ✅ shipped (10 tests); tap-through remediation |
+| W13 onboard + doctor + command-surface sweep | P0 | subagent | origin `11a3209` | ✅ shipped (25 tests); bugs #5–#11 + #12-leftover swept |
+| W3 `/sethome` + conversational cron | P1 | codex | origin `11a3209` | ✅ shipped (10 tests); cron-manager skill added |
 | W6 skill lifecycle | P1 | subagent B | merged `0bbdccd` → origin `9dbc66d` | ✅ shipped (19 tests + round-2 fixes); bug #13 (symlink scanner) surfaced as follow-up |
 | W12 `/background` jobs | P1 | subagent C | merged `9430404` → origin `9dbc66d` | ✅ shipped (17 tests); CLI command design chosen over directive |
 | W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | merged `222bdd4` → origin `9dbc66d` | ✅ shipped (7 atomic commits, 60+ test updates) |
 | W13 onboard + doctor + command-surface sweep (bugs #5–#11) | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
-| W1 graduated approvals | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
-| W2 interactive pickers | P0 | subagent | worktree | 🔄 Wave 2 dispatched (W12 dep satisfied) |
-| W10 `/system` health card | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
-| W3 `/sethome` + cron | P1 | codex (AMQ) | branch `codex/w3-sethome` | 🔄 Wave 2 dispatched |
+| W8 exec-policy + safe bins | P2 | pending | worktree | Wave 3 dispatching |
+| W9 skill signing + review card | P2 | pending | worktree | Wave 3 dispatching |
+| W14 gateway lifecycle (`install\|start\|stop\|status`) | P2 | pending | worktree | Wave 3 dispatching |
+| W15 local dashboard | P2 | pending | worktree | Wave 3 dispatching |
+| Bug #13 — skill scanner symlink rule | P1 follow-up | pending | branch | Wave 3 dispatching |
+| W1 dynamic approval loop (prompt → ApprovalScopeCard → tap → allowlist → retry) | P1 follow-up | pending | branch | Wave 3 dispatching |
+| Wave 3 approval-scope identity-key fix (chat id vs linked local user id at `src/telegram/cards/renderers/approval-scope.ts:218-227`) | P1 follow-up | pending | branch | Bundle with W1 dynamic loop |
 | W8 exec-policy | P2 | pending | worktree | Wave 3 (integrates with W1) |
 | W9 skill signing | P2 | pending | worktree | Wave 3 (after W6) |
 | W14 gateway lifecycle | P2 | pending | worktree | Wave 3 |
