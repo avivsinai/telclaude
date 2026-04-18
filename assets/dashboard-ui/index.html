@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self';" />
+		<title>telclaude dashboard</title>
+		<link rel="stylesheet" href="/styles.css" />
+	</head>
+	<body>
+		<header>
+			<h1>telclaude</h1>
+			<span id="session-indicator" class="pill pill-muted">not signed in</span>
+			<button id="logout-btn" type="button" class="btn-link" hidden>sign out</button>
+		</header>
+
+		<main>
+			<section id="login-card" class="card">
+				<h2>Sign in</h2>
+				<p class="muted">This dashboard is localhost-only. Enter your linked identity and a TOTP code.</p>
+				<form id="login-form">
+					<label for="localUserId">Local user id</label>
+					<input id="localUserId" name="localUserId" type="text" autocomplete="username" required />
+					<label for="code">TOTP code</label>
+					<input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]{6,8}" minlength="6" maxlength="8" autocomplete="one-time-code" required />
+					<button type="submit" id="login-submit">Verify</button>
+					<p id="login-error" class="error" role="alert" aria-live="polite" hidden></p>
+				</form>
+			</section>
+
+			<section id="main-panels" hidden>
+				<section class="card">
+					<div class="card-head">
+						<h2>System health</h2>
+						<button id="refresh-btn" type="button">Refresh</button>
+					</div>
+					<div id="overall-health" class="pill">loading…</div>
+					<ul id="health-items" class="stack"></ul>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Providers</h2>
+					</div>
+					<p class="muted" id="providers-summary">loading…</p>
+					<ul id="providers-list" class="stack"></ul>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Skills</h2>
+					</div>
+					<h3>Active</h3>
+					<ul id="skills-active" class="chips"></ul>
+					<h3>Drafts</h3>
+					<ul id="skills-drafts" class="chips"></ul>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Approval allowlist</h2>
+					</div>
+					<table id="approvals-table">
+						<thead>
+							<tr>
+								<th scope="col">User</th>
+								<th scope="col">Tier</th>
+								<th scope="col">Tool</th>
+								<th scope="col">Scope</th>
+								<th scope="col">Granted</th>
+								<th scope="col">Expires</th>
+							</tr>
+						</thead>
+						<tbody></tbody>
+					</table>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Audit tail</h2>
+					</div>
+					<ul id="audit-list" class="stack"></ul>
+				</section>
+
+				<section class="card">
+					<div class="card-head">
+						<h2>Doctor</h2>
+						<button id="doctor-run-btn" type="button">Run doctor</button>
+					</div>
+					<pre id="doctor-output" class="preblock"></pre>
+				</section>
+			</section>
+		</main>
+
+		<footer>
+			<span class="muted">telclaude · localhost dashboard</span>
+		</footer>
+
+		<script src="/app.js" type="module"></script>
+	</body>
+</html>

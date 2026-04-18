@@ -19,6 +19,7 @@
     "bin",
     ".claude",
     "assets/skill-templates",
+    "assets/dashboard-ui",
     "examples"
   ],
   "scripts": {
