@@ -42,6 +42,7 @@ import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
+import { decideToolApproval } from "../security/pipeline.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -681,6 +682,89 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
  * FAIL-CLOSED: If tool_input shape is unexpected or skill name can't be extracted, DENY.
  * Empty allowedSkills [] = deny ALL skills (not allow all).
  */
+/**
+ * W1 — PreToolUse hook that consults `decideToolApproval` (the graduated-
+ * approval decision helper in `src/security/pipeline.ts`) before each tool
+ * call. This is the live runtime wiring that Wave 2 review called out as
+ * missing.
+ *
+ * Current integration shape (Wave 2 — interim):
+ *   - Always calls `decideToolApproval` so the allowlist is consulted on
+ *     every tool call. CLI-granted grants (`telclaude approvals grant`)
+ *     now fast-path through the live SDK runtime.
+ *   - On allowlist hit: returns allow. The decision is logged so audits can
+ *     see the fast-path fired.
+ *   - On non-hit (prompt / prompt-once / block): passes through to later
+ *     hooks rather than denying. The existing message-level approval gate
+ *     in `src/security/pipeline.ts:buildSecurityPipeline` continues to
+ *     enforce medium/high-risk approvals as it did before Wave 2.
+ *
+ * Wave 3 will flip the non-hit branch to deny + Telegram
+ * ApprovalScopeCard approval loop so per-tool grants replace per-message
+ * approvals. Keeping pass-through now preserves the existing UX for
+ * trusted SOCIAL actors (operator/autonomous/proactive) whose Bash access
+ * is already gated by `createSocialToolRestrictionHook`.
+ */
+function createGraduatedApprovalHook(opts: {
+	userId?: string;
+	tier: PermissionTier;
+	sessionKey?: string;
+}): HookCallbackMatcher {
+	const sessionKey = opts.sessionKey ?? null;
+	const actorUserId = opts.userId;
+	const hookCallback: HookCallback = async (input: HookInput) => {
+		if (input.hook_event_name !== "PreToolUse") {
+			return allowHookResponse();
+		}
+		if (!actorUserId) {
+			return allowHookResponse();
+		}
+		const toolName = input.tool_name;
+		const toolInput = input.tool_input as Record<string, unknown>;
+		// Skill invocations are gated by the allowlist hook below; don't double-consult.
+		if (toolName === "Skill") {
+			return allowHookResponse();
+		}
+		const bashCommand = isBashInput(toolInput) ? toolInput.command : undefined;
+		const decision = decideToolApproval({
+			userId: actorUserId,
+			tier: opts.tier,
+			toolName,
+			bashCommand,
+			sessionKey,
+		});
+		if (decision.decision === "allow") {
+			logger.debug(
+				{
+					tool: toolName,
+					risk: decision.risk,
+					toolKey: decision.toolKey,
+					reason: decision.reason,
+					allowlistScope: decision.allowlistScope,
+				},
+				"[hook] W1 graduated-approval: allow",
+			);
+		} else {
+			logger.debug(
+				{
+					tool: toolName,
+					risk: decision.risk,
+					toolKey: decision.toolKey,
+					decision: decision.decision,
+					reason: decision.reason,
+				},
+				"[hook] W1 graduated-approval: pass-through (Wave 3 will gate here)",
+			);
+		}
+		return allowHookResponse();
+	};
+
+	return {
+		hooks: [hookCallback],
+		timeout: HOOK_TIMEOUT_SECONDS,
+	};
+}
+
 function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher {
 	const allowSet = new Set(allowedSkills);
 
@@ -970,6 +1054,19 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		createSocialToolRestrictionHook(opts.userId),
 		createSensitivePathHook(opts.tier),
 		createSkillWriteProtectionHook(),
+		// W1 — graduated per-tool approval gate. Admin bypass and low-risk
+		// auto-allow keep the common path non-interactive; medium-risk tools
+		// consult the allowlist and deny with a CLI-grant pointer when no
+		// grant exists. The dynamic Telegram approval loop lands in Wave 3.
+		createGraduatedApprovalHook({
+			userId: opts.userId,
+			tier: opts.tier,
+			// Pool key is only present on pooled calls; the non-pooled path
+			// (single-shot query) has no session continuity so any grant is
+			// effectively "once". Pass undefined to opt out of session-scoped
+			// lookups in that path.
+			sessionKey: (opts as TelclaudeQueryOptions & { poolKey?: string }).poolKey,
+		}),
 	];
 
 	// Skill allowlist enforcement:

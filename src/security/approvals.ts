@@ -815,32 +815,52 @@ export function grantAllowlist(input: GrantAllowlistInput): AllowlistEntry {
 				? now + 24 * 60 * 60 * 1000
 				: null;
 
-	db.prepare(
-		`INSERT INTO approval_allowlist (
-			user_id, tier, tool_key, scope, session_key, chat_id,
-			granted_at, expires_at, last_used_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-		ON CONFLICT(user_id, tool_key, scope) DO UPDATE SET
-			tier = excluded.tier,
-			session_key = excluded.session_key,
-			chat_id = excluded.chat_id,
-			granted_at = excluded.granted_at,
-			expires_at = excluded.expires_at,
-			last_used_at = NULL`,
-	).run(
-		input.userId,
-		input.tier,
-		input.toolKey,
-		input.scope,
-		input.sessionKey ?? null,
-		input.chatId,
-		now,
-		expiresAt,
-	);
+	// Partial unique indexes collapse non-session scopes to one row per
+	// (user, tool, scope) and session-scoped rows to one row per
+	// (user, tool, session_key). Branch the upsert so concurrent sessions
+	// don't overwrite each other's session grants (Wave 2 review fix).
+	const upsertTx = db.transaction(() => {
+		if (input.scope === "session") {
+			db.prepare(
+				`DELETE FROM approval_allowlist
+				 WHERE user_id = ? AND tool_key = ? AND scope = 'session' AND session_key = ?`,
+			).run(input.userId, input.toolKey, input.sessionKey ?? "");
+		} else {
+			db.prepare(
+				`DELETE FROM approval_allowlist
+				 WHERE user_id = ? AND tool_key = ? AND scope = ?`,
+			).run(input.userId, input.toolKey, input.scope);
+		}
+		db.prepare(
+			`INSERT INTO approval_allowlist (
+				user_id, tier, tool_key, scope, session_key, chat_id,
+				granted_at, expires_at, last_used_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+		).run(
+			input.userId,
+			input.tier,
+			input.toolKey,
+			input.scope,
+			input.sessionKey ?? null,
+			input.chatId,
+			now,
+			expiresAt,
+		);
+	});
+	upsertTx();
 
-	const row = db
-		.prepare("SELECT * FROM approval_allowlist WHERE user_id = ? AND tool_key = ? AND scope = ?")
-		.get(input.userId, input.toolKey, input.scope) as AllowlistRow | undefined;
+	const row =
+		input.scope === "session"
+			? (db
+					.prepare(
+						"SELECT * FROM approval_allowlist WHERE user_id = ? AND tool_key = ? AND scope = 'session' AND session_key = ?",
+					)
+					.get(input.userId, input.toolKey, input.sessionKey ?? "") as AllowlistRow | undefined)
+			: (db
+					.prepare(
+						"SELECT * FROM approval_allowlist WHERE user_id = ? AND tool_key = ? AND scope = ?",
+					)
+					.get(input.userId, input.toolKey, input.scope) as AllowlistRow | undefined);
 
 	if (!row) {
 		throw new Error("grantAllowlist: insert reported success but row not found");
