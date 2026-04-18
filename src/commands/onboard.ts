@@ -94,7 +94,7 @@ export function registerOnboardCommand(program: Command): void {
 			"Interactive first-run wizard (bot token, admin claim, optional OAuth, health check)",
 		)
 		.option("-t, --token <token>", "Telegram bot token (from @BotFather)")
-		.option("-c, --chat-id <chatId>", "Your Telegram chat ID (numeric)")
+		.option("--chat-id <chatId>", "Your Telegram chat ID (numeric)")
 		.option("-y, --yes", "Non-interactive (skip optional prompts, accept safe defaults)")
 		.option("--skip-doctor", "Skip the final doctor run (for CI smoke tests)")
 		.action(async (opts: OnboardOptions) => {
