@@ -66,6 +66,7 @@ const TELEGRAM_NUDGES_DEFAULTS = {
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
 const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
+const DASHBOARD_DEFAULTS = { enabled: false, port: 3005 } as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -461,6 +462,15 @@ const CronConfigSchema = z.object({
 	timeoutSeconds: z.number().int().positive().default(CRON_DEFAULTS.timeoutSeconds),
 });
 
+/**
+ * Local-only web dashboard (W15). Binds to 127.0.0.1 exclusively; TOTP-gated.
+ * Disabled by default — opt-in via config.
+ */
+const DashboardConfigSchema = z.object({
+	enabled: z.boolean().default(DASHBOARD_DEFAULTS.enabled),
+	port: z.number().int().positive().default(DASHBOARD_DEFAULTS.port),
+});
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -481,6 +491,7 @@ const TelclaudeConfigSchema = z.object({
 	// Generic social services (replaces per-service top-level keys)
 	socialServices: z.array(SocialServiceConfigSchema).default([]),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
+	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -493,6 +504,7 @@ export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type CronConfig = z.infer<typeof CronConfigSchema>;
+export type DashboardConfig = z.infer<typeof DashboardConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
