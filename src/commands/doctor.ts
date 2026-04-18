@@ -97,7 +97,7 @@ export async function runDoctor(cwd: string = process.cwd()): Promise<DoctorRepo
 	checks.push(...(await checkProviders(cfg)));
 	checks.push(...(await checkSkills(cwd)));
 	checks.push(...(await checkSandbox()));
-	checks.push(...checkDockerContainers());
+	checks.push(...(await checkDockerContainers()));
 
 	return buildReport(checks);
 }

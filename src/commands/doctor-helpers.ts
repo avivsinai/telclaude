@@ -664,10 +664,16 @@ export async function checkSandbox(): Promise<CheckResult[]> {
 /**
  * Docker container health check.
  *
- * Only runs when we can see a `docker` binary on PATH; otherwise we
- * skip — the user may be running natively.
+ * Three states:
+ * - docker CLI not on PATH → skip (probably running natively on a host
+ *   without Docker installed).
+ * - docker available but none of the telclaude containers exist and
+ *   runtime mode is native → skip (operator is running natively; the
+ *   container list is noise).
+ * - docker available AND mode=docker OR at least one telclaude
+ *   container was seen → full per-container report.
  */
-export function checkDockerContainers(): CheckResult[] {
+export async function checkDockerContainers(): Promise<CheckResult[]> {
 	const checks: CheckResult[] = [];
 
 	// Is docker available at all?
@@ -719,15 +725,31 @@ export function checkDockerContainers(): CheckResult[] {
 		containerMap.set(name, { state: state ?? "", status: status.join("\t") });
 	}
 
+	// If we're running natively and there's no telclaude container
+	// running at all, there's nothing meaningful to report here.
+	const { getSandboxMode } = await import("../sandbox/index.js");
+	const mode = getSandboxMode();
+	const anyPresent = expected.some((name) => containerMap.has(name));
+	if (mode === "native" && !anyPresent) {
+		return [
+			skip("docker.containers", "Docker", "no telclaude containers present; native mode detected"),
+		];
+	}
+
 	for (const name of expected) {
 		const entry = containerMap.get(name);
 		if (!entry) {
+			// In docker mode we expect every container; in native mode we
+			// warn only if some (but not all) are up, which is a partial
+			// deployment worth flagging.
 			checks.push(
 				warn(
 					`docker.${name}`,
 					"Docker",
 					`container '${name}' not running`,
-					"Expected when running in native mode; if you're running via docker compose, start the stack.",
+					mode === "docker"
+						? "Expected to be running in docker mode."
+						: "Partial deployment detected (other telclaude containers are up).",
 					"cd docker && docker compose up -d",
 				),
 			);
