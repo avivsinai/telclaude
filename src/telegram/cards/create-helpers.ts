@@ -26,6 +26,8 @@ import {
 import type {
 	ApprovalCardState,
 	AuthCardState,
+	BackgroundJobCardState,
+	BackgroundJobListCardState,
 	CardActorScope,
 	CardInstance,
 	CardKind,
@@ -388,6 +390,43 @@ export async function sendSocialMenuCard(
 		actorScope: opts.actorScope,
 		threadId: opts.threadId,
 		entityRef: "social-menu",
+	});
+}
+
+export async function sendBackgroundJobCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: BackgroundJobCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		/** Default 24h so terminal cards stay around for review. */
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.BackgroundJob>> {
+	return createAndSendCard(api, chatId, CK.BackgroundJob, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 24 * 60 * 60 * 1000,
+		entityRef: `bg:${opts.state.shortId}`,
+	});
+}
+
+export async function sendBackgroundJobListCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: BackgroundJobListCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.BackgroundJobList>> {
+	return createAndSendCard(api, chatId, CK.BackgroundJobList, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 30 * 60 * 1000,
+		entityRef: "background-job-list",
 	});
 }
 
