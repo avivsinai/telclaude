@@ -12,6 +12,7 @@ import { registerCronCommand } from "./commands/cron.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerFetchAttachmentCommand } from "./commands/fetch-attachment.js";
+import { registerGatewayCommand } from "./commands/gateway.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
 import { registerGitProxyInitCommand } from "./commands/git-proxy-init.js";
@@ -99,6 +100,9 @@ registerSkillsImportSubcommands(skills);
 registerSkillsPromoteSubcommands(skills);
 registerSkillsScaffoldSubcommand(skills);
 registerSkillsDoctorSubcommand(skills);
+
+// --- gateway (docker-compose stack lifecycle) ---
+registerGatewayCommand(program);
 
 // --- pairing ---
 registerPairingCommand(program);
