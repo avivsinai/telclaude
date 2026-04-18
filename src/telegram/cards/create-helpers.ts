@@ -40,6 +40,7 @@ import type {
 	SessionCardState,
 	SkillDraftCardState,
 	SkillPickerCardState,
+	SkillReviewCardState,
 	SkillsMenuCardState,
 	SocialMenuCardState,
 	StatusCardState,
@@ -577,5 +578,30 @@ export async function sendSkillPickerCard(
 		threadId: opts.threadId,
 		expiryMs: opts.expiryMs ?? 10 * 60 * 1000,
 		entityRef: "skill-picker",
+	});
+}
+
+/**
+ * W9 — Send the skill draft-review card. The caller assembles
+ * `SkillReviewCardState` via `buildSkillReviewState` (see
+ * `src/commands/skills-promote.ts`). `entityRef` includes the skill name so
+ * per-skill reviews don't supersede each other when multiple drafts are
+ * being triaged in sequence.
+ */
+export async function sendSkillReviewCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: SkillReviewCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.SkillReview>> {
+	return createAndSendCard(api, chatId, CK.SkillReview, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 15 * 60 * 1000,
+		entityRef: `skill-review:${opts.state.skillName}`,
 	});
 }

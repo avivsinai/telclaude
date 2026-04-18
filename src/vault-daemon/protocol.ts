@@ -291,6 +291,27 @@ export const VerifyPayloadRequestSchema = z.object({
 });
 
 /**
+ * Sign a SKILL.md file digest with the vault's Ed25519 key under the
+ * dedicated "skill-v1" domain. Input is the SHA-256 hex digest of the
+ * SKILL.md content; the signature covers `skill-v1\n<digest>` so skill
+ * signatures cannot be confused with approval or session signatures.
+ */
+export const SignSkillRequestSchema = z.object({
+	type: z.literal("sign-skill"),
+	/** SHA-256 hex digest of SKILL.md content. */
+	digest: z.string().regex(/^[a-f0-9]{64}$/, "digest must be 64-char lowercase hex SHA-256"),
+});
+
+/**
+ * Verify a skill digest signature produced by `sign-skill`.
+ */
+export const VerifySkillRequestSchema = z.object({
+	type: z.literal("verify-skill"),
+	digest: z.string().regex(/^[a-f0-9]{64}$/, "digest must be 64-char lowercase hex SHA-256"),
+	signature: z.string().min(1),
+});
+
+/**
  * Ping (health check)
  */
 export const PingRequestSchema = z.object({
@@ -309,6 +330,8 @@ export const VaultRequestSchema = z.discriminatedUnion("type", [
 	GetSecretRequestSchema,
 	SignPayloadRequestSchema,
 	VerifyPayloadRequestSchema,
+	SignSkillRequestSchema,
+	VerifySkillRequestSchema,
 	PingRequestSchema,
 ]);
 
@@ -324,6 +347,8 @@ export type GetPublicKeyRequest = z.infer<typeof GetPublicKeyRequestSchema>;
 export type GetSecretRequest = z.infer<typeof GetSecretRequestSchema>;
 export type SignPayloadRequest = z.infer<typeof SignPayloadRequestSchema>;
 export type VerifyPayloadRequest = z.infer<typeof VerifyPayloadRequestSchema>;
+export type SignSkillRequest = z.infer<typeof SignSkillRequestSchema>;
+export type VerifySkillRequest = z.infer<typeof VerifySkillRequestSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Response Types
@@ -520,6 +545,27 @@ export const VerifyPayloadResponseSchema = z.object({
 export type VerifyPayloadResponse = z.infer<typeof VerifyPayloadResponseSchema>;
 
 /**
+ * Sign-skill response — base64url Ed25519 signature over
+ * `skill-v1\n<digest>`.
+ */
+export const SignSkillResponseSchema = z.object({
+	type: z.literal("sign-skill"),
+	signature: z.string().min(1),
+});
+
+export type SignSkillResponse = z.infer<typeof SignSkillResponseSchema>;
+
+/**
+ * Verify-skill response.
+ */
+export const VerifySkillResponseSchema = z.object({
+	type: z.literal("verify-skill"),
+	valid: z.boolean(),
+});
+
+export type VerifySkillResponse = z.infer<typeof VerifySkillResponseSchema>;
+
+/**
  * Pong response
  */
 export const PongResponseSchema = z.object({
@@ -553,6 +599,8 @@ export const VaultResponseSchema = z.union([
 	GetSecretResponseSchema,
 	SignPayloadResponseSchema,
 	VerifyPayloadResponseSchema,
+	SignSkillResponseSchema,
+	VerifySkillResponseSchema,
 	PongResponseSchema,
 	ErrorResponseSchema,
 ]);
