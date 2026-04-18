@@ -95,6 +95,7 @@ function buildStreamingResponse() {
 
 describe("executeRemoteQuery credential forwarding", () => {
 	const originalFetch = globalThis.fetch;
+	const originalExposeOptIn = process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS;
 	let capturedBody: Record<string, unknown> | undefined;
 
 	beforeEach(() => {
@@ -107,6 +108,11 @@ describe("executeRemoteQuery credential forwarding", () => {
 
 	afterEach(() => {
 		globalThis.fetch = originalFetch;
+		if (originalExposeOptIn === undefined) {
+			delete process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS;
+		} else {
+			process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS = originalExposeOptIn;
+		}
 		vi.clearAllMocks();
 	});
 
@@ -134,8 +140,31 @@ describe("executeRemoteQuery credential forwarding", () => {
 		expect(getOpenAIKeyImpl).not.toHaveBeenCalled();
 	});
 
-	it("keeps native fallback credential forwarding for non-Docker environments", async () => {
+	it("does not forward credentials in native mode by default (secure invariant)", async () => {
 		isDockerEnvironmentImpl.mockReturnValue(false);
+		delete process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS;
+
+		for await (const _chunk of executeRemoteQuery("hi", {
+			agentUrl: "http://agent",
+			cwd: "/workspace",
+			tier: "FULL_ACCESS",
+			poolKey: "pool",
+			userId: "user-1",
+			scope: "telegram",
+			enableSkills: false,
+			timeoutMs: 1000,
+		})) {
+			// drain stream
+		}
+
+		expect(capturedBody?.exposedCredentials).toBeUndefined();
+		expect(getGitCredentialsImpl).not.toHaveBeenCalled();
+		expect(getOpenAIKeyImpl).not.toHaveBeenCalled();
+	});
+
+	it("forwards credentials in native FULL_ACCESS telegram only when insecure opt-in is set", async () => {
+		isDockerEnvironmentImpl.mockReturnValue(false);
+		process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS = "1";
 
 		for await (const _chunk of executeRemoteQuery("hi", {
 			agentUrl: "http://agent",
@@ -154,5 +183,45 @@ describe("executeRemoteQuery credential forwarding", () => {
 			githubToken: "github-secret",
 			openaiApiKey: "openai-secret",
 		});
+	});
+
+	it("does not forward credentials even with opt-in when scope is not telegram", async () => {
+		isDockerEnvironmentImpl.mockReturnValue(false);
+		process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS = "1";
+
+		for await (const _chunk of executeRemoteQuery("hi", {
+			agentUrl: "http://agent",
+			cwd: "/workspace",
+			tier: "FULL_ACCESS",
+			poolKey: "pool",
+			userId: "user-1",
+			scope: "social",
+			enableSkills: false,
+			timeoutMs: 1000,
+		})) {
+			// drain stream
+		}
+
+		expect(capturedBody?.exposedCredentials).toBeUndefined();
+	});
+
+	it("does not forward credentials even with opt-in for non-FULL_ACCESS tiers", async () => {
+		isDockerEnvironmentImpl.mockReturnValue(false);
+		process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS = "1";
+
+		for await (const _chunk of executeRemoteQuery("hi", {
+			agentUrl: "http://agent",
+			cwd: "/workspace",
+			tier: "WRITE_LOCAL",
+			poolKey: "pool",
+			userId: "user-1",
+			scope: "telegram",
+			enableSkills: false,
+			timeoutMs: 1000,
+		})) {
+			// drain stream
+		}
+
+		expect(capturedBody?.exposedCredentials).toBeUndefined();
 	});
 });
