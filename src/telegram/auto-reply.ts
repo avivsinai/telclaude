@@ -47,6 +47,7 @@ import {
 	type PendingApproval,
 	type PlanApproval,
 	requiresApproval,
+	revokeSessionAllowlist,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
 import { isChatBanned } from "../security/banned-chats.js";
@@ -442,8 +443,13 @@ async function handleSessionResetCommand(msg: TelegramInboundMessage): Promise<v
 	const sessionKey = msg.from;
 	deleteSession(sessionKey);
 	getSessionManager().clearSession(sessionKey);
+	// W1: session-scoped approvals must not survive a session rotation.
+	const cleared = revokeSessionAllowlist(sessionKey);
 
-	logger.info({ chatId: msg.chatId, sessionKey }, "session reset via control command");
+	logger.info(
+		{ chatId: msg.chatId, sessionKey, allowlistCleared: cleared },
+		"session reset via control command",
+	);
 	await msg.reply("Session reset. Starting fresh conversation.");
 }
 

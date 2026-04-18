@@ -3,6 +3,7 @@ import { collectSessionRows, formatSessionRows } from "../../../commands/session
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../../../commands/status.js";
 import { deleteSession } from "../../../config/sessions.js";
 import { getSessionManager } from "../../../sdk/session-manager.js";
+import { revokeSessionAllowlist } from "../../../security/approvals.js";
 import { collectStatusOverview } from "../../status-overview.js";
 import type {
 	CardExecutionContext,
@@ -226,6 +227,8 @@ export const statusRenderer: CardRenderer<K> = {
 				}
 				deleteSession(sessionKey);
 				getSessionManager().clearSession(sessionKey);
+				// W1 — drop session-scoped approval grants alongside the session.
+				revokeSessionAllowlist(sessionKey);
 				return {
 					callbackText: "Session reset",
 				};

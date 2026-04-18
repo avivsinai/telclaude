@@ -2,6 +2,7 @@ import type { CallbackQueryContext, Context, InlineKeyboard } from "grammy";
 
 export enum CardKind {
 	Approval = "Approval",
+	ApprovalScope = "ApprovalScope",
 	PendingQueue = "PendingQueue",
 	Status = "Status",
 	Auth = "Auth",
@@ -31,6 +32,23 @@ export type ApprovalCardState = {
 	explanation?: string;
 	approved?: boolean;
 	denied?: boolean;
+};
+
+/**
+ * W1 — Graduated approval card. Four buttons: once / session / always / deny.
+ * The chosen scope is reflected back to the UI before the card enters the
+ * terminal (consumed) state.
+ */
+export type ApprovalScopeCardState = {
+	kind: CardKind.ApprovalScope;
+	title: string;
+	body: string;
+	toolKey: string;
+	riskTier: "low" | "medium" | "high";
+	scopesEnabled: Array<"once" | "session" | "always">;
+	scopeChosen?: "once" | "session" | "always";
+	denied?: boolean;
+	explanation?: string;
 };
 
 export type PendingQueueCardState = {
@@ -138,6 +156,7 @@ export type BackgroundJobListCardState = {
 
 export type CardStateMap = {
 	[CardKind.Approval]: ApprovalCardState;
+	[CardKind.ApprovalScope]: ApprovalScopeCardState;
 	[CardKind.PendingQueue]: PendingQueueCardState;
 	[CardKind.Status]: StatusCardState;
 	[CardKind.Auth]: AuthCardState;
@@ -156,6 +175,13 @@ export type ApprovalCardAction =
 	| { type: "approve" }
 	| { type: "deny" }
 	| { type: "explain" }
+	| { type: "refresh" };
+
+export type ApprovalScopeCardAction =
+	| { type: "approve-once" }
+	| { type: "approve-session" }
+	| { type: "approve-always" }
+	| { type: "deny" }
 	| { type: "refresh" };
 
 export type PendingQueueCardAction =
@@ -204,6 +230,7 @@ export type BackgroundJobListCardAction = { type: "refresh" };
 
 export type CardActionMap = {
 	[CardKind.Approval]: ApprovalCardAction;
+	[CardKind.ApprovalScope]: ApprovalScopeCardAction;
 	[CardKind.PendingQueue]: PendingQueueCardAction;
 	[CardKind.Status]: StatusCardAction;
 	[CardKind.Auth]: AuthCardAction;
@@ -221,6 +248,13 @@ export type CardActionType<K extends CardKind = CardKind> = CardAction<K>["type"
 
 const CARD_ACTIONS_BY_KIND = {
 	[CardKind.Approval]: ["approve", "deny", "explain", "refresh"],
+	[CardKind.ApprovalScope]: [
+		"approve-once",
+		"approve-session",
+		"approve-always",
+		"deny",
+		"refresh",
+	],
 	[CardKind.PendingQueue]: ["promote", "dismiss", "next", "prev", "refresh"],
 	[CardKind.Status]: [
 		"refresh",
