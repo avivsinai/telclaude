@@ -1,3 +1,4 @@
+import { getChildLogger } from "../logging.js";
 import { normalizeTelegramId } from "../utils.js";
 import {
 	findRelevantEpisodes,
@@ -7,6 +8,28 @@ import {
 } from "./archive.js";
 import { getEntries } from "./store.js";
 import type { MemoryEntry } from "./types.js";
+
+const logger = getChildLogger({ module: "telegram-memory" });
+
+/**
+ * Runtime assertion: no social entries should ever leak into telegram memory queries.
+ * Mirrors the social-side assertion in src/social/handler.ts:230-244.
+ * Enforces invariant #8 in docs/architecture.md ("Memory source boundaries are enforced at runtime").
+ */
+function assertNoSocialLeak<T extends MemoryEntry>(entries: T[], context: string): T[] {
+	const leaked = entries.filter((e) => e._provenance.source === "social");
+	if (leaked.length === 0) return entries;
+	if (process.env.NODE_ENV !== "production") {
+		throw new Error(
+			`SECURITY: ${leaked.length} social entries leaked into telegram query (${context})`,
+		);
+	}
+	logger.warn(
+		{ count: leaked.length, context },
+		"SECURITY: social entries leaked into telegram query — filtering out",
+	);
+	return entries.filter((e) => e._provenance.source !== "social");
+}
 
 const TELEGRAM_MEMORY_CATEGORIES: Array<MemoryEntry["category"]> = [
 	"profile",
@@ -152,14 +175,17 @@ export function buildTelegramMemoryBundle(options: {
 	query?: string;
 	includeRecentHistory?: boolean;
 }): TelegramMemoryBundle {
-	const stableEntries = getEntries({
-		sources: ["telegram"],
-		trust: ["trusted"],
-		categories: TELEGRAM_MEMORY_CATEGORIES,
-		chatId: options.chatId,
-		limit: MAX_STABLE_ENTRIES,
-		order: "desc",
-	});
+	const stableEntries = assertNoSocialLeak(
+		getEntries({
+			sources: ["telegram"],
+			trust: ["trusted"],
+			categories: TELEGRAM_MEMORY_CATEGORIES,
+			chatId: options.chatId,
+			limit: MAX_STABLE_ENTRIES,
+			order: "desc",
+		}),
+		"telegram-stable-entries",
+	);
 
 	const scopeKey = resolveTelegramScopeKey(options.chatId);
 	const relevantEpisodes = scopeKey
