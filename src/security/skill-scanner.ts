@@ -510,44 +510,155 @@ function collectFiles(dir: string, base: string = dir): string[] {
 }
 
 /**
+ * Options controlling skill scan behaviour.
+ *
+ * `repoRoot` is used by the symlink-root rule to distinguish between
+ * in-repo symlinks (benign — e.g., `.claude/skills/X` → `.agents/skills/X`,
+ * our canonical layout) and out-of-repo symlinks (critical — potential
+ * traversal or exfiltration vector). When omitted, we default to three
+ * levels above the skill directory, which matches the typical
+ * `<repo>/.claude/skills/<name>` layout.
+ */
+export type ScanSkillOptions = {
+	repoRoot?: string;
+};
+
+/**
+ * Return the canonical (realpath) form of `p`, or the original string if
+ * resolution fails (e.g., the path doesn't exist). Symlink chains are
+ * followed so we can compare against the real repo root.
+ */
+function safeRealpath(p: string): string {
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p);
+	}
+}
+
+/**
+ * Infer a reasonable repo root from a skill directory. Skills are typically
+ * stored at `<repo>/.claude/skills/<name>`, so three parents above the skill
+ * dir is the repo root in the common case. Callers should pass an explicit
+ * `repoRoot` when that heuristic does not apply.
+ */
+function defaultRepoRootFor(skillDir: string): string {
+	return path.resolve(skillDir, "..", "..", "..");
+}
+
+/**
+ * Resolve a symlink at `linkPath` to its absolute target, even if the
+ * target does not currently exist (so `fs.realpathSync` would throw).
+ *
+ * We first try `realpathSync` to follow symlink chains to their canonical
+ * form. If that fails (broken symlink), we fall back to reading the raw
+ * link target and resolving it relative to the link's parent directory.
+ * This lets us classify broken-but-attempting-to-escape symlinks as
+ * out-of-repo rather than treating them as in-repo by default.
+ */
+function resolveSymlinkTarget(linkPath: string): string {
+	try {
+		return fs.realpathSync(linkPath);
+	} catch {
+		// realpath failed — the symlink target probably does not exist.
+		// Fall back to the link's raw target resolved against its parent.
+		try {
+			const rawTarget = fs.readlinkSync(linkPath);
+			if (path.isAbsolute(rawTarget)) return path.resolve(rawTarget);
+			return path.resolve(path.dirname(linkPath), rawTarget);
+		} catch {
+			return path.resolve(linkPath);
+		}
+	}
+}
+
+/**
+ * Return true if `resolvedCandidate` sits inside `root` (or equals it),
+ * comparing their real paths. `resolvedCandidate` is assumed to already
+ * be fully resolved (e.g., via `resolveSymlinkTarget`); `root` is
+ * canonicalised here so broken or missing roots still compare correctly.
+ */
+function isResolvedPathInside(resolvedCandidate: string, root: string): boolean {
+	const realRoot = safeRealpath(root);
+	if (resolvedCandidate === realRoot) return true;
+	const prefix = realRoot.endsWith(path.sep) ? realRoot : `${realRoot}${path.sep}`;
+	return resolvedCandidate.startsWith(prefix);
+}
+
+/** Tally findings by severity. */
+function countFindings(findings: readonly ScanFinding[]): Record<ScanSeverity, number> {
+	const counts: Record<ScanSeverity, number> = { critical: 0, high: 0, medium: 0, info: 0 };
+	for (const f of findings) counts[f.severity]++;
+	return counts;
+}
+
+/**
  * Scan a single skill directory.
  */
-export function scanSkill(skillDir: string): ScanResult {
+export function scanSkill(skillDir: string, options?: ScanSkillOptions): ScanResult {
 	const skillName = path.basename(skillDir);
 	const findings: ScanFinding[] = [];
 
-	// Check directory exists
+	// Check for symlink at the skill root level BEFORE existence checks so
+	// broken traversal symlinks (whose target does not resolve) are still
+	// flagged. `fs.existsSync` follows symlinks and returns false for a
+	// dangling link, which would otherwise short-circuit the whole scan.
+	//
+	// A symlink alone is not inherently malicious — this repo uses
+	// `.claude/skills/<name>` → `.agents/skills/<name>` as the canonical
+	// layout so skills can be authored once and surfaced to the SDK via a
+	// mount point. The concern is a symlink whose realpath escapes the
+	// repo root (e.g., `../../../../etc/passwd`): that indicates either a
+	// malicious skill bundle or an accidental misconfiguration, and still
+	// warrants a critical finding. We resolve the target even when the
+	// symlink is broken, so a traversal attempt pointing at a non-existent
+	// file is still caught rather than treated as in-repo by default.
+	let lstat: fs.Stats | null = null;
+	try {
+		lstat = fs.lstatSync(skillDir);
+	} catch {
+		lstat = null;
+	}
+	if (lstat?.isSymbolicLink()) {
+		const repoRoot = options?.repoRoot ?? defaultRepoRootFor(skillDir);
+		try {
+			const target = fs.readlinkSync(skillDir);
+			const resolvedTarget = resolveSymlinkTarget(skillDir);
+			if (!isResolvedPathInside(resolvedTarget, repoRoot)) {
+				findings.push({
+					rule: "symlink-root",
+					message:
+						"Skill root is a symlink whose realpath is outside the repo — potential path traversal",
+					severity: "critical",
+					file: ".",
+					match: target,
+				});
+			}
+		} catch {
+			// readlink/resolve failed — ignore; outer scan continues.
+		}
+	}
+
+	// Check directory exists (following symlinks). A broken symlink returns
+	// false here, which is fine: if we flagged it above we still surface
+	// the finding; otherwise there is nothing further to scan.
 	if (!fs.existsSync(skillDir)) {
+		if (findings.length === 0) {
+			findings.push({
+				rule: "not-found",
+				message: "Skill directory does not exist",
+				severity: "info",
+				file: ".",
+			});
+		}
+		const counts = countFindings(findings);
 		return {
 			skillName,
 			skillPath: skillDir,
-			findings: [
-				{
-					rule: "not-found",
-					message: "Skill directory does not exist",
-					severity: "info",
-					file: ".",
-				},
-			],
-			blocked: false,
-			counts: { critical: 0, high: 0, medium: 0, info: 1 },
+			findings,
+			blocked: counts.critical > 0 || counts.high > 0,
+			counts,
 		};
-	}
-
-	// Check for symlink at the skill root level
-	try {
-		const lstat = fs.lstatSync(skillDir);
-		if (lstat.isSymbolicLink()) {
-			findings.push({
-				rule: "symlink-root",
-				message: "Skill root is a symlink — potential path traversal",
-				severity: "critical",
-				file: ".",
-				match: fs.readlinkSync(skillDir),
-			});
-		}
-	} catch {
-		// Ignore stat errors
 	}
 
 	// Collect and scan all files
@@ -557,12 +668,7 @@ export function scanSkill(skillDir: string): ScanResult {
 		findings.push(...scanFile(filePath, relative));
 	}
 
-	// Compute counts
-	const counts: Record<ScanSeverity, number> = { critical: 0, high: 0, medium: 0, info: 0 };
-	for (const finding of findings) {
-		counts[finding.severity]++;
-	}
-
+	const counts = countFindings(findings);
 	const blocked = counts.critical > 0 || counts.high > 0;
 
 	if (blocked) {
@@ -583,13 +689,21 @@ export function scanSkill(skillDir: string): ScanResult {
 
 /**
  * Scan all skills in a directory (each subdirectory is a skill).
+ *
+ * When `options.repoRoot` is omitted, we default to the parent of
+ * `skillsRoot` (e.g., for `<repo>/.claude/skills`, the repo root is
+ * `<repo>/.claude`'s parent — i.e., two levels up). This lets in-repo
+ * symlinks (such as the canonical `.claude/skills/<name>` →
+ * `.agents/skills/<name>` layout) pass the symlink-root rule.
  */
-export function scanAllSkills(skillsRoot: string): ScanResult[] {
+export function scanAllSkills(skillsRoot: string, options?: ScanSkillOptions): ScanResult[] {
 	const results: ScanResult[] = [];
 
 	if (!fs.existsSync(skillsRoot)) {
 		return results;
 	}
+
+	const repoRoot = options?.repoRoot ?? path.resolve(skillsRoot, "..", "..");
 
 	let entries: fs.Dirent[];
 	try {
@@ -599,10 +713,21 @@ export function scanAllSkills(skillsRoot: string): ScanResult[] {
 	}
 
 	for (const entry of entries) {
-		if (entry.isDirectory()) {
-			const skillDir = path.join(skillsRoot, entry.name);
-			results.push(scanSkill(skillDir));
+		// Accept either a real directory or a symlink pointing to a
+		// directory. Dirent.isDirectory() returns false for symlinks even
+		// when they resolve to directories, so we fall back to statSync()
+		// which follows the link.
+		let isDirLike = entry.isDirectory();
+		if (!isDirLike && entry.isSymbolicLink()) {
+			try {
+				isDirLike = fs.statSync(path.join(skillsRoot, entry.name)).isDirectory();
+			} catch {
+				isDirLike = false;
+			}
 		}
+		if (!isDirLike) continue;
+		const skillDir = path.join(skillsRoot, entry.name);
+		results.push(scanSkill(skillDir, { repoRoot }));
 	}
 
 	return results;
