@@ -14,7 +14,7 @@ import { listActiveSkills, listDraftSkills } from "../commands/skills-promote.js
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
 import { getChatModelPreference } from "../config/model-preferences.js";
-import { deleteSession } from "../config/sessions.js";
+import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { listProviderCatalogEntries, type ProviderCatalogEntry } from "../providers/catalog.js";
 import {
@@ -98,6 +98,18 @@ function socialAskWizardScopeKey(scope: SocialAskWizardScope): string {
 
 export function hasActiveSocialAskWizard(scope: SocialAskWizardScope): boolean {
 	return activeSocialAskWizardScopes.has(socialAskWizardScopeKey(scope));
+}
+
+export async function setHomeTargetCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number },
+): Promise<CommandUiResult> {
+	const homeTarget = setHomeTargetForChat(opts.chatId, opts.threadId);
+	const reply = `Home target set to ${formatHomeTarget(homeTarget)}. Future scheduled replies that target home will land here.`;
+	await api.sendMessage(opts.chatId, reply, threadOptions(opts.threadId));
+	return {
+		callbackText: reply,
+	};
 }
 
 export async function openSocialQueueCard(
