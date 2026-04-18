@@ -3,6 +3,7 @@ import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
 import type { MediaType } from "../types/media.js";
+import { recordAlwaysFromAllowlist } from "./exec-policy.js";
 import { resolveTelegramIdentity } from "./linking.js";
 import {
 	APPROVAL_SCOPES,
@@ -842,6 +843,14 @@ export type GrantAllowlistInput = {
 	sessionKey: string | null;
 	chatId: number;
 	now?: number;
+	/**
+	 * Optional: the exact Bash command string the operator approved. Used
+	 * only when toolKey is Bash and scope is 'always' to persist a matching
+	 * exec-policy glob so future identical commands skip the per-tool prompt.
+	 * See `src/security/exec-policy.ts:recordAlwaysFromAllowlist` for the
+	 * derivation rules (destructive commands are refused there).
+	 */
+	bashCommand?: string;
 };
 
 /**
@@ -939,6 +948,23 @@ export function grantAllowlist(input: GrantAllowlistInput): AllowlistEntry {
 		},
 		"approval allowlist granted",
 	);
+
+	// W1↔W8 integration: for an "always" Bash grant, persist a matching
+	// exec-policy glob so subsequent identical commands shortcut past the
+	// per-tool prompt. Non-Bash or non-"always" grants are no-ops.
+	if (input.scope === "always" && input.bashCommand && input.toolKey.startsWith("Bash")) {
+		try {
+			recordAlwaysFromAllowlist({
+				chatId: input.chatId,
+				bashCommand: input.bashCommand,
+			});
+		} catch (err) {
+			logger.warn(
+				{ err: String(err), chatId: input.chatId, toolKey: input.toolKey },
+				"grantAllowlist: recordAlwaysFromAllowlist failed (non-fatal)",
+			);
+		}
+	}
 
 	return rowToAllowlistEntry(row);
 }
