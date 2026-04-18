@@ -4,10 +4,7 @@ import { withTimeout } from "../infra/timeout.js";
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { issueToken, isTokenManagerActive } from "../relay/token-manager.js";
-import { isDockerEnvironment } from "../sandbox/mode.js";
-import type { ExposedCredentials, PooledQueryOptions, StreamChunk } from "../sdk/client.js";
-import { getGitCredentials } from "../services/git-credentials.js";
-import { getOpenAIKey } from "../services/openai-client.js";
+import type { PooledQueryOptions, StreamChunk } from "../sdk/client.js";
 import { stripTrailingSlash } from "../utils.js";
 
 const logger = getChildLogger({ module: "agent-client" });
@@ -63,53 +60,10 @@ export async function* executeRemoteQuery(
 				// Best-effort; agent falls back to static auth if available
 			}
 		}
-		// Native/dev escape hatch: gated behind TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS=1.
-		// Violates the "agents never see raw credentials" invariant (architecture.md), so default
-		// is OFF. Docker keeps raw credentials inside the relay and routes via the git proxy /
-		// HTTP credential proxy; native mode should do the same unless the operator explicitly
-		// opts in here.
-		// Scope gate still applies: credentials never enter a social agent container — the agent
-		// server downgrades non-telegram scopes to SOCIAL tier, but that happens AFTER this
-		// payload is serialized, so we enforce telegram-only here too.
-		const effectiveScope = options.scope ?? "telegram";
-		const insecureExposeOptIn = process.env.TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS === "1";
-		let exposedCredentials: ExposedCredentials | undefined;
-		if (
-			insecureExposeOptIn &&
-			!isDockerEnvironment() &&
-			options.tier === "FULL_ACCESS" &&
-			effectiveScope === "telegram"
-		) {
-			logger.warn(
-				{
-					tier: options.tier,
-					scope: effectiveScope,
-				},
-				"INSECURE: exposing native credentials to agent subprocess (TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS=1). This violates the 'agents never see raw credentials' invariant.",
-			);
-			const creds: ExposedCredentials = {};
-			try {
-				const gitCreds = await getGitCredentials();
-				if (gitCreds?.token) {
-					creds.githubToken = gitCreds.token;
-				}
-			} catch {
-				// Best-effort; agent falls back to env vars
-			}
-			try {
-				const openaiKey = await getOpenAIKey();
-				// Don't inject the credential-proxy sentinel — only real keys
-				if (openaiKey && openaiKey !== "credential-proxy") {
-					creds.openaiApiKey = openaiKey;
-				}
-			} catch {
-				// Best-effort; agent uses credential proxy for OpenAI
-			}
-			if (creds.githubToken || creds.openaiApiKey) {
-				exposedCredentials = creds;
-			}
-		}
-
+		// Invariant: agents never see raw credentials (docs/architecture.md).
+		// Both Docker and native modes route external API auth through the credential
+		// proxy (TELCLAUDE_CREDENTIAL_PROXY_URL) — agents only carry the relay-minted
+		// session token and never the raw OAuth / OpenAI / GitHub credentials.
 		const payload = JSON.stringify({
 			prompt,
 			cwd: options.cwd,
@@ -124,7 +78,6 @@ export async function* executeRemoteQuery(
 			systemPromptAppend: options.systemPromptAppend,
 			sessionToken,
 			outputFormat: options.outputFormat,
-			exposedCredentials,
 			compiledMemoryMd: options.compiledMemoryMd,
 		});
 		const endpoint = `${stripTrailingSlash(agentUrl)}${path}`;

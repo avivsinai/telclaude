@@ -18,7 +18,12 @@ import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { scanSkill } from "../security/skill-scanner.js";
 import { copyDirRecursive } from "./cli-utils.js";
-import { getAllSkillRoots } from "./skill-path.js";
+import {
+	getAllSkillRoots,
+	getDraftSkillRoot,
+	getSkillRoot,
+	getWritableDraftSkillRootCandidates,
+} from "./skill-path.js";
 
 const logger = getChildLogger({ module: "cmd-skills-promote" });
 
@@ -55,9 +60,10 @@ export function promoteSkill(
 		};
 	}
 
-	const cwd = process.cwd();
-	const effectiveDraftRoot = draftRoot ?? path.join(cwd, ".claude", "skills-draft");
-	const effectiveActiveRoot = activeRoot ?? path.join(cwd, ".claude", "skills");
+	// Use canonical root helpers so scaffold → promote → list share the same directories.
+	// Explicit overrides (used in tests) still win.
+	const effectiveDraftRoot = draftRoot ?? findExistingDraftRootFor(skillName) ?? getDraftSkillRoot();
+	const effectiveActiveRoot = activeRoot ?? getSkillRoot();
 	const draftDir = path.join(effectiveDraftRoot, skillName);
 	const activeDir = path.join(effectiveActiveRoot, skillName);
 
@@ -142,8 +148,25 @@ export function promoteSkill(
 }
 
 /**
+ * Resolve whether a directory entry is a directory, following symlinks.
+ * Dirent.isDirectory() returns false for symlinks-to-directories; we resolve
+ * the target so symlinked skill layouts (common in this repo where
+ * .claude/skills/* → .agents/skills/*) are treated as real skills.
+ */
+function isSkillDirEntry(root: string, entry: fs.Dirent): boolean {
+	if (entry.name.startsWith(".")) return false;
+	if (entry.isDirectory()) return true;
+	if (!entry.isSymbolicLink()) return false;
+	try {
+		return fs.statSync(path.join(root, entry.name)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
  * List all active (loaded) skills from all configured skill roots.
- * Only includes directories that contain a SKILL.md file.
+ * Only includes directories (or symlinks to directories) that contain a SKILL.md file.
  */
 export function listActiveSkills(): string[] {
 	const roots = getAllSkillRoots();
@@ -153,8 +176,7 @@ export function listActiveSkills(): string[] {
 			const entries = fs.readdirSync(root, { withFileTypes: true });
 			for (const entry of entries) {
 				if (
-					entry.isDirectory() &&
-					!entry.name.startsWith(".") &&
+					isSkillDirEntry(root, entry) &&
 					fs.existsSync(path.join(root, entry.name, "SKILL.md"))
 				) {
 					seen.add(entry.name);
@@ -168,17 +190,44 @@ export function listActiveSkills(): string[] {
 }
 
 /**
- * List all draft skills awaiting promotion.
+ * Find the first writable draft root that contains <skillName>. Used by
+ * promoteSkill() so a draft created via the canonical root helper is
+ * located even if the active cwd isn't writable.
+ */
+function findExistingDraftRootFor(skillName: string): string | null {
+	for (const candidate of getWritableDraftSkillRootCandidates()) {
+		if (fs.existsSync(path.join(candidate, skillName, "SKILL.md"))) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * List all draft skills awaiting promotion. Walks every writable draft-root
+ * candidate so scaffolds created outside process.cwd() (e.g., CLAUDE_CONFIG_DIR
+ * when cwd isn't writable) are still surfaced.
  */
 export function listDraftSkills(draftRoot?: string): string[] {
-	const effectiveDraftRoot = draftRoot ?? path.join(process.cwd(), ".claude", "skills-draft");
-	if (!fs.existsSync(effectiveDraftRoot)) return [];
-
-	return fs
-		.readdirSync(effectiveDraftRoot, { withFileTypes: true })
-		.filter((e) => e.isDirectory())
-		.filter((e) => fs.existsSync(path.join(effectiveDraftRoot, e.name, "SKILL.md")))
-		.map((e) => e.name);
+	const roots = draftRoot ? [draftRoot] : getWritableDraftSkillRootCandidates();
+	const seen = new Set<string>();
+	for (const root of roots) {
+		if (!fs.existsSync(root)) continue;
+		try {
+			const entries = fs.readdirSync(root, { withFileTypes: true });
+			for (const entry of entries) {
+				if (
+					isSkillDirEntry(root, entry) &&
+					fs.existsSync(path.join(root, entry.name, "SKILL.md"))
+				) {
+					seen.add(entry.name);
+				}
+			}
+		} catch {
+			// Directory doesn't exist or not readable
+		}
+	}
+	return Array.from(seen).sort();
 }
 
 /**
