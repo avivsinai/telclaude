@@ -445,6 +445,30 @@ function initializeSchema(database: Database.Database): void {
 			username TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_paired_chats_user ON paired_chats(user_id);
+
+		-- Graduated approval allowlist (Workstream W1).
+		-- Upsert on (user_id, tool_key, scope). "once" is consumed on first
+		-- lookup; "session" is scoped to session_key; "always" gets a rolling
+		-- 30-day expiry refreshed on use.
+		CREATE TABLE IF NOT EXISTS approval_allowlist (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id TEXT NOT NULL,
+			tier TEXT NOT NULL,
+			tool_key TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			session_key TEXT,
+			chat_id INTEGER NOT NULL,
+			granted_at INTEGER NOT NULL,
+			expires_at INTEGER,
+			last_used_at INTEGER,
+			UNIQUE(user_id, tool_key, scope)
+		);
+		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_user
+			ON approval_allowlist(user_id, tool_key);
+		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_session
+			ON approval_allowlist(session_key);
+		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_expires
+			ON approval_allowlist(expires_at);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -474,9 +498,14 @@ function ensureApprovalsColumns(database: Database.Database): void {
 		"observer_classification",
 		"observer_confidence",
 		"observer_reason",
+		// W1 graduated approvals
+		"risk_tier",
+		"tool_key",
+		"session_key",
 	]);
 
 	const rows = database.prepare("PRAGMA table_info(approvals)").all() as Array<{ name: string }>;
+	const existing = new Set(rows.map((r) => r.name));
 	const hasAll =
 		rows.length > 0 &&
 		rows.every((r) => requiredColumns.has(r.name)) &&
@@ -486,7 +515,38 @@ function ensureApprovalsColumns(database: Database.Database): void {
 		return;
 	}
 
-	if (rows.length > 0 && !hasAll) {
+	// Additive migration path — if the existing table is missing only the
+	// new W1 columns, ALTER them in instead of dropping. Older schemas that
+	// are missing *other* columns still hit the drop-and-recreate fallback
+	// (unchanged behaviour).
+	if (rows.length > 0) {
+		const legacyExpected = new Set(
+			[...requiredColumns].filter(
+				(name) => !["risk_tier", "tool_key", "session_key"].includes(name),
+			),
+		);
+		const hasLegacyColumns =
+			rows.every(
+				(r) =>
+					legacyExpected.has(r.name) || ["risk_tier", "tool_key", "session_key"].includes(r.name),
+			) && [...legacyExpected].every((name) => existing.has(name));
+
+		if (hasLegacyColumns) {
+			if (!existing.has("risk_tier")) {
+				logger.info("adding risk_tier column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN risk_tier TEXT");
+			}
+			if (!existing.has("tool_key")) {
+				logger.info("adding tool_key column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN tool_key TEXT");
+			}
+			if (!existing.has("session_key")) {
+				logger.info("adding session_key column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN session_key TEXT");
+			}
+			return;
+		}
+
 		logger.warn("approvals table schema mismatch detected; dropping and recreating");
 		database.exec("DROP TABLE IF EXISTS approvals");
 	}
@@ -510,7 +570,10 @@ function ensureApprovalsColumns(database: Database.Database): void {
 			message_id TEXT NOT NULL,
 			observer_classification TEXT NOT NULL,
 			observer_confidence REAL NOT NULL,
-			observer_reason TEXT
+			observer_reason TEXT,
+			risk_tier TEXT,
+			tool_key TEXT,
+			session_key TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
 		CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);
@@ -537,6 +600,7 @@ export function cleanupExpired(): {
 	pairingRequests: number;
 	pairingLockouts: number;
 	backgroundJobs: number;
+	approvalAllowlist: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -616,6 +680,25 @@ export function cleanupExpired(): {
 			)
 			.run(thirtyDaysAgo);
 
+		// W1 graduated approval allowlist:
+		//   - delete anything past its expiry
+		//   - prune "once" grants older than 24h that never fired
+		//   - prune "always" grants whose last use is older than 30d
+		const allowlistExpiredResult = database
+			.prepare("DELETE FROM approval_allowlist WHERE expires_at IS NOT NULL AND expires_at < ?")
+			.run(now);
+		const allowlistStaleOnceResult = database
+			.prepare("DELETE FROM approval_allowlist WHERE scope = 'once' AND granted_at < ?")
+			.run(oneDayAgo);
+		const allowlistStaleAlwaysResult = database
+			.prepare(
+				`DELETE FROM approval_allowlist
+				 WHERE scope = 'always'
+				   AND last_used_at IS NOT NULL
+				   AND last_used_at < ?`,
+			)
+			.run(thirtyDaysAgo);
+
 		return {
 			approvals: approvalsResult.changes,
 			planApprovals: planApprovalsResult.changes,
@@ -632,6 +715,10 @@ export function cleanupExpired(): {
 			pairingRequests: pairingMarked.changes + pairingPruned.changes,
 			pairingLockouts: pairingLockoutsResult.changes,
 			backgroundJobs: backgroundJobsResult.changes,
+			approvalAllowlist:
+				allowlistExpiredResult.changes +
+				allowlistStaleOnceResult.changes +
+				allowlistStaleAlwaysResult.changes,
 		};
 	});
 

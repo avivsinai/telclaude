@@ -21,6 +21,7 @@
 
 import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { lookupAllowlist } from "./approvals.js";
 import type { AuditLogger } from "./audit.js";
 import { checkInfrastructureSecrets } from "./fast-path.js";
 import { isAdmin } from "./linking.js";
@@ -33,6 +34,7 @@ import {
 } from "./output-filter.js";
 import { getUserPermissionTier } from "./permissions.js";
 import type { RateLimiter } from "./rate-limit.js";
+import { classifyRisk, type RiskTier } from "./risk-tiers.js";
 import type { ObserverResult, SecurityClassification } from "./types.js";
 
 const logger = getChildLogger({ module: "security-pipeline" });
@@ -380,3 +382,124 @@ export async function buildSecurityPipeline(config: PipelineConfig): Promise<Sec
 
 export type { SecretFilterConfig };
 export { calculateEntropy, detectHighEntropyBlobs };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// W1 — Per-tool-call approval decision
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type ToolApprovalInput = {
+	userId: string;
+	tier: PermissionTier;
+	toolName: string;
+	toolKey?: string;
+	bashCommand?: string;
+	sessionKey: string | null;
+	isAdmin?: boolean;
+	actionKind?: "read" | "action";
+};
+
+export type ToolApprovalDecision = {
+	/**
+	 * "allow"           → no approval needed (low risk default or allowlist hit).
+	 * "prompt"          → show ApprovalScopeCard with the listed scopes enabled.
+	 * "prompt-once"     → show ApprovalScopeCard but only `once` is available
+	 *                     (high-risk actions cannot upgrade to always).
+	 * "block"           → hard deny (not used in W1, reserved).
+	 */
+	decision: "allow" | "prompt" | "prompt-once" | "block";
+	risk: RiskTier;
+	toolKey: string;
+	reason: string;
+	allowlistScope?: "once" | "session" | "always";
+};
+
+/**
+ * Decide whether a specific tool call needs an approval prompt.
+ *
+ * Order:
+ * 1. Classify risk.
+ * 2. If HIGH: always prompt once (never honor allowlist "always").
+ * 3. Consult allowlist for (user, toolKey). A match returns "allow".
+ * 4. If LOW and no allowlist hit: still allow (read-only default).
+ * 5. If MEDIUM and no allowlist hit: prompt with all three scopes.
+ */
+export function decideToolApproval(input: ToolApprovalInput): ToolApprovalDecision {
+	const toolKey = canonicalToolKey(input);
+	const risk = classifyRisk({
+		toolName: input.toolName,
+		bashCommand: input.bashCommand,
+		permissionTier: input.tier,
+		actionKind: input.actionKind,
+	});
+
+	// Admins bypass approvals entirely (parity with requiresApproval()).
+	if (input.isAdmin) {
+		return {
+			decision: "allow",
+			risk,
+			toolKey,
+			reason: "admin bypass",
+		};
+	}
+
+	// Step 2 — HIGH always prompts; "always" is forbidden.
+	if (risk === "high") {
+		return {
+			decision: "prompt-once",
+			risk,
+			toolKey,
+			reason: "high-risk action always prompts",
+		};
+	}
+
+	// Step 3 — consult allowlist for non-high risks.
+	const hit = lookupAllowlist({
+		userId: input.userId,
+		toolKey,
+		tier: input.tier,
+		sessionKey: input.sessionKey,
+	});
+	if (hit) {
+		return {
+			decision: "allow",
+			risk,
+			toolKey,
+			reason: `allowlist hit (${hit.scope})`,
+			allowlistScope: hit.scope,
+		};
+	}
+
+	// Step 4 — LOW default allow (no allowlist needed).
+	if (risk === "low") {
+		return {
+			decision: "allow",
+			risk,
+			toolKey,
+			reason: "low-risk default allow",
+		};
+	}
+
+	// Step 5 — MEDIUM default prompt.
+	return {
+		decision: "prompt",
+		risk,
+		toolKey,
+		reason: "medium-risk requires approval",
+	};
+}
+
+/**
+ * Build a canonical key used to match allowlist rows to tool calls.
+ * Shape: `<toolName>[:<subkey>]`, e.g. "Bash:npm-test" or just "Read".
+ *
+ * Callers can pass a pre-built `toolKey`; otherwise we default to the tool
+ * name. Bash calls with identifiable commands could be more specific, but
+ * we deliberately keep the default broad so that "always for Bash" actually
+ * eliminates subsequent Bash prompts rather than fragmenting per-command.
+ */
+export function canonicalToolKey(input: { toolName: string; toolKey?: string }): string {
+	if (input.toolKey && input.toolKey.trim().length > 0) {
+		return input.toolKey.trim().slice(0, 128);
+	}
+	return input.toolName.slice(0, 128);
+}

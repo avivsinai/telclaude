@@ -1,5 +1,6 @@
 import { deleteSession, getSession } from "../../../config/sessions.js";
 import { getSessionManager } from "../../../sdk/session-manager.js";
+import { revokeSessionAllowlist } from "../../../security/approvals.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -66,6 +67,8 @@ export const sessionRenderer: CardRenderer<K> = {
 				if (sessionKey) {
 					deleteSession(sessionKey);
 					getSessionManager().clearSession(sessionKey);
+					// W1 — session-scoped approvals must not outlive the session.
+					revokeSessionAllowlist(sessionKey);
 				}
 				return {
 					state: {

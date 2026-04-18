@@ -13,6 +13,7 @@ export {
 export {
 	rerenderTerminalCard,
 	sendApprovalCard,
+	sendApprovalScopeCard,
 	sendAuthCard,
 	sendHeartbeatCard,
 	sendPendingQueueCard,

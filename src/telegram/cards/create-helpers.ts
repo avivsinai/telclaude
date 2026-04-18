@@ -25,6 +25,7 @@ import {
 } from "./store.js";
 import type {
 	ApprovalCardState,
+	ApprovalScopeCardState,
 	AuthCardState,
 	BackgroundJobCardState,
 	BackgroundJobListCardState,
@@ -230,6 +231,46 @@ export async function sendApprovalCard(
 		body: opts.body,
 	};
 	return createAndSendCard(api, chatId, CK.Approval, state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: APPROVAL_EXPIRY_MS,
+		entityRef: `approval:${opts.nonce}`,
+	});
+}
+
+/**
+ * W1 — Graduated approval card. Offers once / session / always / deny buttons.
+ *
+ * `scopesEnabled` defaults to all three approve scopes; callers should trim
+ * it to match the risk cap ("high" → ["once"] only).
+ */
+export async function sendApprovalScopeCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		title: string;
+		body: string;
+		nonce: string;
+		toolKey: string;
+		riskTier: ApprovalScopeCardState["riskTier"];
+		scopesEnabled?: ApprovalScopeCardState["scopesEnabled"];
+		explanation?: string;
+		actorScope: CardActorScope;
+		threadId?: number;
+	},
+): Promise<CardInstance<typeof CK.ApprovalScope>> {
+	const defaultScopes: ApprovalScopeCardState["scopesEnabled"] =
+		opts.riskTier === "high" ? ["once"] : ["once", "session", "always"];
+	const state: ApprovalScopeCardState = {
+		kind: CK.ApprovalScope,
+		title: opts.title,
+		body: opts.body,
+		toolKey: opts.toolKey,
+		riskTier: opts.riskTier,
+		scopesEnabled: opts.scopesEnabled ?? defaultScopes,
+		explanation: opts.explanation,
+	};
+	return createAndSendCard(api, chatId, CK.ApprovalScope, state, {
 		actorScope: opts.actorScope,
 		threadId: opts.threadId,
 		expiryMs: APPROVAL_EXPIRY_MS,

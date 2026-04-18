@@ -1,6 +1,7 @@
 import { cardRegistry } from "../registry.js";
 import { CardKind } from "../types.js";
 import { approvalRenderer } from "./approval.js";
+import { approvalScopeRenderer } from "./approval-scope.js";
 import { authRenderer } from "./auth.js";
 import { backgroundJobListRenderer, backgroundJobRenderer } from "./background-job.js";
 import { heartbeatRenderer } from "./heartbeat.js";
@@ -13,6 +14,7 @@ import { statusRenderer } from "./status.js";
 
 export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.Approval, approvalRenderer);
+	cardRegistry.register(CardKind.ApprovalScope, approvalScopeRenderer);
 	cardRegistry.register(CardKind.PendingQueue, pendingQueueRenderer);
 	cardRegistry.register(CardKind.Status, statusRenderer);
 	cardRegistry.register(CardKind.Auth, authRenderer);
@@ -27,6 +29,7 @@ export function registerAllCardRenderers(): void {
 
 export {
 	approvalRenderer,
+	approvalScopeRenderer,
 	authRenderer,
 	backgroundJobListRenderer,
 	backgroundJobRenderer,

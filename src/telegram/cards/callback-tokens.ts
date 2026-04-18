@@ -10,6 +10,30 @@ export type CardCallbackToken = {
 	revision: number;
 };
 
+/**
+ * W1 — Approval scopes encoded as callback actions. The token format itself
+ * stays `c:<shortId>:<action>:<revision>`; the scope rides inside the action
+ * name so existing parsing and revision-pinning apply unchanged.
+ */
+export const APPROVAL_SCOPE_ACTION_PREFIX = "approve-";
+export const APPROVAL_SCOPE_ACTIONS = [
+	"approve-once",
+	"approve-session",
+	"approve-always",
+] as const;
+export type ApprovalScopeAction = (typeof APPROVAL_SCOPE_ACTIONS)[number];
+
+export function scopeActionToScope(action: string): "once" | "session" | "always" | null {
+	if (!action.startsWith(APPROVAL_SCOPE_ACTION_PREFIX)) return null;
+	const raw = action.slice(APPROVAL_SCOPE_ACTION_PREFIX.length);
+	if (raw === "once" || raw === "session" || raw === "always") return raw;
+	return null;
+}
+
+export function scopeToScopeAction(scope: "once" | "session" | "always"): ApprovalScopeAction {
+	return `approve-${scope}` as ApprovalScopeAction;
+}
+
 export function buildCallbackToken(params: CardCallbackToken): string {
 	const shortId = params.shortId.toLowerCase();
 	if (!SHORT_ID_PATTERN.test(shortId)) {
