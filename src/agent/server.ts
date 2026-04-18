@@ -35,6 +35,9 @@ type QueryRequest = {
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
 	userId?: string;
+	chatId?: number;
+	actorId?: number;
+	threadId?: number;
 	systemPromptAppend?: string;
 	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
 	sessionToken?: string;
@@ -170,6 +173,9 @@ async function streamQuery(
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
 			compiledMemoryMd: req.compiledMemoryMd,
+			chatId: req.chatId,
+			actorId: req.actorId,
+			threadId: req.threadId,
 		})) {
 			if (!firstChunkReceived) {
 				firstChunkReceived = true;

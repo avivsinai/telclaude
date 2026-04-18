@@ -185,7 +185,7 @@ describe("ApprovalScopeCard (W1)", () => {
 		const stored = getCard(card.cardId);
 		expect(stored?.status).toBe("consumed");
 
-		const grants = listAllowlist({ userId: String(actorId) });
+		const grants = listAllowlist({ userId: `tg:${chatId}` });
 		expect(grants).toHaveLength(1);
 		expect(grants[0]?.scope).toBe("always");
 		expect(grants[0]?.toolKey).toBe("Read");
@@ -226,7 +226,7 @@ describe("ApprovalScopeCard (W1)", () => {
 
 		const stored = getCard(card.cardId);
 		expect(stored?.status).toBe("consumed");
-		const grants = listAllowlist({ userId: String(actorId) });
+		const grants = listAllowlist({ userId: `tg:${chatId}` });
 		expect(grants).toHaveLength(0);
 	});
 });
