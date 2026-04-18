@@ -11,6 +11,7 @@ import { registerBackgroundCommand } from "./commands/background.js";
 import { registerCronCommand } from "./commands/cron.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerExecPolicyCommand } from "./commands/exec-policy.js";
 import { registerFetchAttachmentCommand } from "./commands/fetch-attachment.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
 import { registerGitCredentialCommand } from "./commands/git-credential.js";
@@ -132,6 +133,9 @@ registerVaultCommand(maintenance);
 
 // --- approvals (graduated approval allowlist, Workstream W1) ---
 registerApprovalsCommand(program);
+
+// --- exec-policy (per-chat Bash allowlists + safe-bin catalog, Workstream W8) ---
+registerExecPolicyCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal commands (used by agent skills, not in the public hierarchy)

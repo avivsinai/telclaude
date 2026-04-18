@@ -23,6 +23,7 @@ import type { PermissionTier, SecurityConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { lookupAllowlist } from "./approvals.js";
 import type { AuditLogger } from "./audit.js";
+import { checkExecPolicy } from "./exec-policy.js";
 import { checkInfrastructureSecrets } from "./fast-path.js";
 import { isAdmin } from "./linking.js";
 import {
@@ -396,6 +397,13 @@ export type ToolApprovalInput = {
 	sessionKey: string | null;
 	isAdmin?: boolean;
 	actionKind?: "read" | "action";
+	/**
+	 * W8 — optional chat id consulted by the exec-policy pre-check so that
+	 * per-chat glob allowlists apply before risk classification. When
+	 * omitted (e.g. service actors with no chat context), only the
+	 * safe-bin shortcut is available.
+	 */
+	chatId?: number | string | null;
 };
 
 export type ToolApprovalDecision = {
@@ -419,9 +427,12 @@ export type ToolApprovalDecision = {
  * Order:
  * 1. Classify risk.
  * 2. If HIGH: always prompt once (never honor allowlist "always").
- * 3. Consult allowlist for (user, toolKey). A match returns "allow".
- * 4. If LOW and no allowlist hit: still allow (read-only default).
- * 5. If MEDIUM and no allowlist hit: prompt with all three scopes.
+ * 3. W8 Bash pre-check — safe bins (stdin-only) and per-chat exec-policy
+ *    globs shortcut to `allow` at low-risk. Never runs for destructive
+ *    Bash (the exec-policy returns `prompt` there).
+ * 4. Consult allowlist for (user, toolKey). A match returns "allow".
+ * 5. If LOW and no allowlist hit: still allow (read-only default).
+ * 6. If MEDIUM and no allowlist hit: prompt with all three scopes.
  */
 export function decideToolApproval(input: ToolApprovalInput): ToolApprovalDecision {
 	const toolKey = canonicalToolKey(input);
@@ -440,6 +451,31 @@ export function decideToolApproval(input: ToolApprovalInput): ToolApprovalDecisi
 			toolKey,
 			reason: "admin bypass",
 		};
+	}
+
+	// W8 — Bash pre-check. Only consults for Bash/Shell tools with a
+	// command string, and only when the risk classifier did not already
+	// flag the command as HIGH (destructive). This guarantees destructive
+	// Bash still takes the `prompt-once` path below.
+	if (
+		(input.toolName === "Bash" || input.toolName === "Shell") &&
+		input.bashCommand &&
+		risk !== "high"
+	) {
+		const policy = checkExecPolicy({
+			chatId: input.chatId ?? null,
+			command: input.bashCommand,
+		});
+		if (policy.decision === "allow") {
+			return {
+				decision: "allow",
+				// Safe bins and allowlist hits shortcut to low-risk so the
+				// W1 hook doesn't log them as medium-risk allows.
+				risk: "low",
+				toolKey,
+				reason: policy.reason,
+			};
+		}
 	}
 
 	// Step 2 — HIGH always prompts; "always" is forbidden.
