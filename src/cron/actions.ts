@@ -2,6 +2,7 @@ import type { TelclaudeConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { createSocialClient, handleSocialHeartbeat } from "../social/index.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
+import { executeScheduledAgentPromptAction } from "./agent-action.js";
 import type { CronActionResult, CronJob } from "./types.js";
 
 const logger = getChildLogger({ module: "cron-actions" });
@@ -96,6 +97,8 @@ export async function executeCronAction(
 				message: lines.join("; "),
 			};
 		}
+		case "agent-prompt":
+			return executeScheduledAgentPromptAction(job, cfg, _signal ?? new AbortController().signal);
 		default: {
 			const exhaustiveCheck: never = job.action;
 			return {

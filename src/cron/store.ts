@@ -5,6 +5,7 @@ import type {
 	CronAction,
 	CronAddInput,
 	CronCoverage,
+	CronDeliveryTarget,
 	CronJob,
 	CronSchedule,
 	CronStatusSummary,
@@ -21,6 +22,11 @@ type CronJobRow = {
 	schedule_cron: string | null;
 	action_kind: string;
 	action_service_id: string | null;
+	action_prompt: string | null;
+	owner_id: string | null;
+	delivery_target_kind: string | null;
+	delivery_chat_id: number | null;
+	delivery_thread_id: number | null;
 	next_run_at: number | null;
 	last_run_at: number | null;
 	last_status: string | null;
@@ -63,8 +69,39 @@ function parseAction(row: CronJobRow): CronAction {
 			};
 		case "private-heartbeat":
 			return { kind: "private-heartbeat" };
+		case "agent-prompt":
+			if (!row.action_prompt) {
+				throw new Error(`cron job ${row.id} is missing action prompt`);
+			}
+			return { kind: "agent-prompt", prompt: row.action_prompt };
 		default:
 			throw new Error(`cron job ${row.id} has unsupported action kind '${row.action_kind}'`);
+	}
+}
+
+function parseDeliveryTarget(row: CronJobRow): CronDeliveryTarget {
+	switch (row.delivery_target_kind ?? "origin") {
+		case "home":
+			return { kind: "home" };
+		case "chat":
+			if (typeof row.delivery_chat_id !== "number") {
+				throw new Error(`cron job ${row.id} is missing delivery chat id`);
+			}
+			return {
+				kind: "chat",
+				chatId: row.delivery_chat_id,
+				...(row.delivery_thread_id === null ? {} : { threadId: row.delivery_thread_id }),
+			};
+		case "origin":
+			return {
+				kind: "origin",
+				...(typeof row.delivery_chat_id === "number" ? { chatId: row.delivery_chat_id } : {}),
+				...(row.delivery_thread_id === null ? {} : { threadId: row.delivery_thread_id }),
+			};
+		default:
+			throw new Error(
+				`cron job ${row.id} has unsupported delivery target '${row.delivery_target_kind}'`,
+			);
 	}
 }
 
@@ -74,6 +111,8 @@ function rowToJob(row: CronJobRow): CronJob {
 		name: row.name,
 		enabled: row.enabled === 1,
 		running: row.running === 1,
+		ownerId: row.owner_id,
+		deliveryTarget: parseDeliveryTarget(row),
 		schedule: parseSchedule(row),
 		action: parseAction(row),
 		nextRunAtMs: row.next_run_at,
@@ -126,17 +165,26 @@ function encodeSchedule(schedule: CronSchedule): {
 function encodeAction(action: CronAction): {
 	actionKind: string;
 	actionServiceId: string | null;
+	actionPrompt: string | null;
 } {
 	switch (action.kind) {
 		case "social-heartbeat":
 			return {
 				actionKind: "social-heartbeat",
 				actionServiceId: action.serviceId ?? null,
+				actionPrompt: null,
 			};
 		case "private-heartbeat":
 			return {
 				actionKind: "private-heartbeat",
 				actionServiceId: null,
+				actionPrompt: null,
+			};
+		case "agent-prompt":
+			return {
+				actionKind: "agent-prompt",
+				actionServiceId: null,
+				actionPrompt: action.prompt,
 			};
 		default: {
 			const exhaustiveCheck: never = action;
@@ -145,7 +193,52 @@ function encodeAction(action: CronAction): {
 	}
 }
 
+function encodeDeliveryTarget(target: CronDeliveryTarget | undefined): {
+	deliveryTargetKind: "home" | "origin" | "chat";
+	deliveryChatId: number | null;
+	deliveryThreadId: number | null;
+} {
+	if (!target) {
+		return {
+			deliveryTargetKind: "origin",
+			deliveryChatId: null,
+			deliveryThreadId: null,
+		};
+	}
+
+	switch (target.kind) {
+		case "home":
+			return {
+				deliveryTargetKind: "home",
+				deliveryChatId: null,
+				deliveryThreadId: null,
+			};
+		case "origin":
+			return {
+				deliveryTargetKind: "origin",
+				deliveryChatId: target.chatId ?? null,
+				deliveryThreadId: target.threadId ?? null,
+			};
+		case "chat":
+			return {
+				deliveryTargetKind: "chat",
+				deliveryChatId: target.chatId,
+				deliveryThreadId: target.threadId ?? null,
+			};
+		default: {
+			const exhaustiveCheck: never = target;
+			throw new Error(`Unsupported delivery target: ${String(exhaustiveCheck)}`);
+		}
+	}
+}
+
 function validateAddInput(input: CronAddInput, nowMs: number): number | null {
+	if (input.action.kind === "agent-prompt" && !input.action.prompt.trim()) {
+		throw new Error("agent prompt cron jobs require a prompt");
+	}
+	if (input.deliveryTarget?.kind === "home" && !input.ownerId?.trim()) {
+		throw new Error("home delivery requires ownerId");
+	}
 	const nextRunAtMs = computeNextRunAtMs(input.schedule, nowMs);
 	if (input.schedule.kind === "at" && nextRunAtMs === null) {
 		throw new Error("--at timestamp must be in the future");
@@ -186,18 +279,23 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 	const { scheduleKind, scheduleAt, scheduleEveryMs, scheduleCron } = encodeSchedule(
 		input.schedule,
 	);
-	const { actionKind, actionServiceId } = encodeAction(input.action);
+	const { actionKind, actionServiceId, actionPrompt } = encodeAction(input.action);
+	const { deliveryTargetKind, deliveryChatId, deliveryThreadId } = encodeDeliveryTarget(
+		input.deliveryTarget,
+	);
 	const enabled = input.enabled !== false;
+	const ownerId = input.ownerId?.trim() || null;
 
 	db.prepare(
 		`INSERT INTO cron_jobs (
 			id, name, enabled, running,
 			schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
-			action_kind, action_service_id,
+			action_kind, action_service_id, action_prompt,
+			owner_id, delivery_target_kind, delivery_chat_id, delivery_thread_id,
 			next_run_at, last_run_at, last_status, last_error,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+		VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
 	).run(
 		id,
 		name,
@@ -208,6 +306,11 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		scheduleCron,
 		actionKind,
 		actionServiceId,
+		actionPrompt,
+		ownerId,
+		deliveryTargetKind,
+		deliveryChatId,
+		deliveryThreadId,
 		enabled ? nextRunAtMs : null,
 		nowMs,
 		nowMs,
