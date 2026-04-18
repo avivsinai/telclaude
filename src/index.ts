@@ -12,6 +12,7 @@ import { registerCronCommand } from "./commands/cron.js";
 import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerExecPolicyCommand } from "./commands/exec-policy.js";
 import { registerFetchAttachmentCommand } from "./commands/fetch-attachment.js";
 import { registerGatewayCommand } from "./commands/gateway.js";
 import { registerGenerateImageCommand } from "./commands/generate-image.js";
@@ -140,6 +141,9 @@ registerApprovalsCommand(program);
 
 // --- dashboard (local loopback-only web UI, Workstream W15) ---
 registerDashboardCommand(program);
+
+// --- exec-policy (per-chat Bash allowlists + safe-bin catalog, Workstream W8) ---
+registerExecPolicyCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal commands (used by agent skills, not in the public hierarchy)
