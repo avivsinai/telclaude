@@ -1,8 +1,20 @@
 # Telclaude DX & Ecosystem Review — April 2026
 
-Status: APPROVED 2026-04-18 — execution in flight
-Owner: Aviv (driver), claude (integrator), codex (parallel implementation via AMQ), subagents (worktree per workstream)
+Status: ✅ SHIPPED 2026-04-18/19 — `origin/main` at `fa86ecf` — 1161 tests (+342 vs start, 819→1161), typecheck + lint clean
+Owner: Aviv (driver), claude (integrator), codex (parallel implementation + review via AMQ), subagents (worktree per workstream)
 Scope: P0 + P1 + P2 + W15 (W11 ruled out; W5 parked on radar). Hard breaks allowed (no compat shims). No backwards-compat; we are the only users.
+
+## Final delivery
+
+- **14 workstreams**: W1 + W2 + W3 + W4 + W6 + W7 + W8 + W9 + W10 + W12 + W13 + W14 + W15 + Bug #13
+- **Parked**: W5 (chat topics — on radar, not executed)
+- **Ruled out**: W11 (Composio)
+- **All 13 bug-hunt findings** resolved
+- **3 PRs merged**: #81 Wave 1, #82 Wave 2, #83 Wave 3
+- **Codex reviewed** every wave; 3 round-2 fixes landed before merge
+- **Test growth**: 819 → 914 → 1012 → 1161
+
+Arc closed.
 
 ---
 
