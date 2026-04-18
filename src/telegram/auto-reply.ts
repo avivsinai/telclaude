@@ -11,6 +11,8 @@ import {
 	DEFAULT_IDLE_MINUTES,
 	deleteSession,
 	deriveSessionKey,
+	formatHomeTarget,
+	getHomeTargetForChat,
 	getSession,
 	type SessionEntry,
 	setSession,
@@ -80,6 +82,7 @@ import {
 	sendSkillsScanCommand,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
+	setHomeTargetCommand,
 	startSkillsNewWizard,
 	startSocialAskWizard,
 } from "./control-command-actions.js";
@@ -91,6 +94,10 @@ import {
 	matchTelegramControlCommand,
 	type TelegramCommandMatch,
 } from "./control-commands.js";
+import {
+	READ_ONLY_CRON_MESSAGE,
+	tryHandleConversationalCronRequest,
+} from "./conversational-cron.js";
 import { monitorTelegramInbox, normalizeInboundBody } from "./inbound.js";
 import { extractGeneratedMediaPaths, isMediaOnlyResponse } from "./media-detection.js";
 import {
@@ -372,10 +379,11 @@ async function sendSystemStatusCard(
 		const formatted = formatTelclaudeStatus(status, true);
 		const lines = formatted.split("\n");
 		const details = lines.slice(1).filter((line) => line.trim().length > 0);
+		const homeTargetLine = `Home target: ${formatHomeTarget(getHomeTargetForChat(msg.chatId))}`;
 
 		let summary = "System overview ready.";
 		let title = "System Status";
-		let cardDetails = details;
+		let cardDetails = [...details, homeTargetLine];
 		const view = initialView ?? "overview";
 
 		if (view === "sessions") {
@@ -392,7 +400,10 @@ async function sendSystemStatusCard(
 			const cronLines = cronFormatted.split("\n");
 			title = "System Status";
 			summary = cronLines[0] ?? "Cron scheduler";
-			cardDetails = cronLines.slice(1).filter((line) => line.trim().length > 0);
+			cardDetails = [
+				...cronLines.slice(1).filter((line) => line.trim().length > 0),
+				homeTargetLine,
+			];
 		}
 
 		await sendStatusCard(api, msg.chatId, {
@@ -776,6 +787,18 @@ async function dispatchTelegramControlCommand(
 			return true;
 		}
 		// ── Fast-path shortcuts ────────────────────────────────────────
+		case "sethome": {
+			const tier = getUserPermissionTier(msg.chatId, cfg.security);
+			if (tier === "READ_ONLY") {
+				await msg.reply(READ_ONLY_CRON_MESSAGE);
+				return true;
+			}
+			await setHomeTargetCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
 		case "approve": {
 			await handleApproveCommand(msg, match.args[0]?.trim(), cfg, auditLogger, recentlySent);
 			return true;
@@ -1961,6 +1984,17 @@ async function handleInboundMessage(
 			);
 			return;
 		}
+	}
+
+	const conversationalCron = tryHandleConversationalCronRequest({
+		body: processingBody.trim(),
+		chatId: msg.chatId,
+		threadId: msg.messageThreadId,
+		tier,
+	});
+	if (conversationalCron.handled) {
+		await msg.reply(conversationalCron.replyText);
+		return;
 	}
 
 	const observerResult = await observer.analyze(processingBody, {

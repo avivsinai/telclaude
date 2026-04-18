@@ -50,6 +50,7 @@ export type TelegramCommandId =
 	| "background:show"
 	| "background:cancel"
 	// Fast-path shortcuts (no domain prefix)
+	| "sethome"
 	| "approve"
 	| "deny"
 	| "new"
@@ -563,6 +564,16 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		keywords: ["cancel background", "abort job", "kill job"],
 		rateLimited: true,
 	},
+	{
+		id: "sethome",
+		name: "sethome",
+		category: "System",
+		description: "Mark this chat or topic as the home delivery target for scheduled replies.",
+		usage: "/sethome",
+		examples: ["/sethome"],
+		keywords: ["set home", "cron home", "deliver here", "post here later"],
+		rateLimited: true,
+	},
 	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
 		id: "approve",
@@ -1016,6 +1027,7 @@ export function formatTelegramHelpOverview(): string {
 		"",
 		"Control plane:",
 		"  /system — Status, sessions, cron",
+		"  /sethome — Deliver scheduled replies here",
 		"  /me — Identity, link/unlink",
 		"  /auth — 2FA setup and management",
 		"  /social — Social persona, queue, posting",
@@ -1154,6 +1166,7 @@ export function getTelegramMenuCommands(
 		{ command: "me", description: "Identity management" },
 		{ command: "auth", description: "Two-factor authentication" },
 		{ command: "system", description: "System introspection" },
+		{ command: "sethome", description: "Home delivery target" },
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
