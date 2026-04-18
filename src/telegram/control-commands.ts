@@ -6,7 +6,8 @@ type TelegramCommandCategory =
 	| "Approvals"
 	| "Security"
 	| "Social"
-	| "Skills";
+	| "Skills"
+	| "Background";
 
 /**
  * Hierarchical command IDs: "domain:subcommand" for routed commands,
@@ -39,6 +40,10 @@ export type TelegramCommandId =
 	| "skills:drafts"
 	| "skills:promote"
 	| "skills:reload"
+	| "background"
+	| "background:list"
+	| "background:show"
+	| "background:cancel"
 	// Fast-path shortcuts (no domain prefix)
 	| "approve"
 	| "deny"
@@ -438,6 +443,58 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		rateLimited: true,
 		hideFromCatalog: true,
 	},
+	// ── /background domain ────────────────────────────────────────────
+	{
+		id: "background",
+		name: "background",
+		domain: "background",
+		domainDefault: true,
+		category: "Background",
+		description: "Inspect or cancel long-running background jobs.",
+		usage: "/background [list|show <id>|cancel <id>]",
+		examples: ["/background", "/background show a1b2c3d4", "/background cancel a1b2c3d4"],
+		keywords: ["background", "jobs", "background job", "long running task"],
+		readOnly: true,
+		menuDescription: "Background jobs",
+	},
+	{
+		id: "background:list",
+		name: "background",
+		domain: "background",
+		subcommand: "list",
+		category: "Background",
+		description: "List active and recent background jobs (last 7 days).",
+		usage: "/background list",
+		examples: ["/background list"],
+		keywords: ["list background", "background list", "jobs list"],
+		readOnly: true,
+		rateLimited: true,
+	},
+	{
+		id: "background:show",
+		name: "background",
+		domain: "background",
+		subcommand: "show",
+		category: "Background",
+		description: "Show a single background job status card by short id.",
+		usage: "/background show <id>",
+		examples: ["/background show a1b2c3d4"],
+		keywords: ["show background", "background status"],
+		readOnly: true,
+		rateLimited: true,
+	},
+	{
+		id: "background:cancel",
+		name: "background",
+		domain: "background",
+		subcommand: "cancel",
+		category: "Background",
+		description: "Cancel a queued or running background job.",
+		usage: "/background cancel <id>",
+		examples: ["/background cancel a1b2c3d4"],
+		keywords: ["cancel background", "abort job", "kill job"],
+		rateLimited: true,
+	},
 	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
 		id: "approve",
@@ -544,6 +601,14 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		commands: ["skills:drafts", "skills:promote", "skills:reload"],
 	},
 	{
+		id: "background",
+		title: "Background Jobs",
+		summary:
+			"Background jobs run long tasks asynchronously and notify on completion. /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts a queued or running job.",
+		keywords: ["background", "jobs", "long running", "async"],
+		commands: ["background", "background:list", "background:show", "background:cancel"],
+	},
+	{
 		id: "reset-session",
 		title: "Reset Session",
 		summary:
@@ -601,6 +666,7 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Security",
 	"Social",
 	"Skills",
+	"Background",
 ];
 
 // ---------------------------------------------------------------------------
@@ -870,6 +936,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /auth — 2FA setup and management",
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
+		"  /background — Long-running background jobs",
 		"  /new — Reset conversation",
 		"",
 		"/help <topic> — Learn about approvals, 2fa, sessions, etc.",
@@ -997,7 +1064,7 @@ export function getTelegramMenuCommands(
 		];
 	}
 
-	// Private chat: all 6 domain roots + 2 shortcuts
+	// Private chat: domain roots + shortcuts
 	return [
 		{ command: "help", description: "Explain commands and topics" },
 		{ command: "me", description: "Identity management" },
@@ -1005,6 +1072,7 @@ export function getTelegramMenuCommands(
 		{ command: "system", description: "System introspection" },
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
+		{ command: "background", description: "Background jobs" },
 		{ command: "approve", description: "Approve a pending request" },
 		{ command: "new", description: "Start a fresh session" },
 	];

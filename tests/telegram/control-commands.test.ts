@@ -155,6 +155,7 @@ describe("telegram control command registry", () => {
 				{ command: "system", description: "System introspection" },
 				{ command: "social", description: "Social persona management" },
 				{ command: "skills", description: "Skill management" },
+				{ command: "background", description: "Background jobs" },
 				{ command: "approve", description: "Approve a pending request" },
 				{ command: "new", description: "Start a fresh session" },
 			]);

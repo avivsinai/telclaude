@@ -6,6 +6,7 @@ import {
 	registerForceReauthSubcommand,
 } from "./commands/access-control.js";
 import { registerAgentCommand } from "./commands/agent.js";
+import { registerBackgroundCommand } from "./commands/background.js";
 import { registerCronCommand } from "./commands/cron.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
@@ -129,6 +130,7 @@ registerGitCredentialCommand(program);
 registerGitProxyInitCommand(program);
 registerMemoryCommands(program);
 registerSummarizeCommand(program);
+registerBackgroundCommand(program);
 
 // Pre-parse to extract global options before commands run
 // This ensures --config and --verbose are set before any config loading happens
