@@ -25,6 +25,9 @@ const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	BackgroundJob: "WRITE_LOCAL",
 	BackgroundJobList: "READ_ONLY",
 	SystemHealth: "READ_ONLY",
+	ModelPicker: "READ_ONLY",
+	ProviderList: "READ_ONLY",
+	SkillPicker: "WRITE_LOCAL",
 };
 
 type CallbackHandlerOptions = {

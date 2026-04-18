@@ -14,6 +14,9 @@ export enum CardKind {
 	BackgroundJob = "BackgroundJob",
 	BackgroundJobList = "BackgroundJobList",
 	SystemHealth = "SystemHealth",
+	ModelPicker = "ModelPicker",
+	ProviderList = "ProviderList",
+	SkillPicker = "SkillPicker",
 }
 
 export type CardStatus = "active" | "consumed" | "expired" | "superseded";
@@ -188,6 +191,109 @@ export type SystemHealthCardState = {
 	selectedItemId?: string;
 };
 
+/**
+ * W2 — Shared list pagination metadata for interactive pickers.
+ *
+ * Pagination cursor is kept entirely in server-side state; callback
+ * tokens only carry action verbs (page-next / page-prev / select-N).
+ */
+export type PickerListEntry = {
+	id: string;
+	label: string;
+	summary?: string;
+	icon?: string;
+};
+
+export type ModelPickerEntry = {
+	id: string;
+	label: string;
+	/** Marketing tier (e.g. "frontier", "fast"). */
+	tier?: string;
+	/** One-line description. */
+	summary?: string;
+};
+
+export type ModelPickerProvider = {
+	id: string;
+	label: string;
+	models: ModelPickerEntry[];
+};
+
+export type ModelPickerView = "providers" | "models";
+
+export type ModelPickerCardState = {
+	kind: CardKind.ModelPicker;
+	title: string;
+	providers: ModelPickerProvider[];
+	/** Active provider for the models view. */
+	selectedProviderId?: string;
+	/** View-level pagination cursor (persisted server-side). */
+	page?: number;
+	view: ModelPickerView;
+	/** Currently active model (persisted selection). */
+	currentModelId?: string;
+	currentProviderId?: string;
+	/** Permission tier for the viewer (rendered in header). */
+	viewerTier?: string;
+	/** Whether write actions are permitted (WRITE_LOCAL+). */
+	canMutate: boolean;
+	/** Human-readable fallback state (e.g. "primary"|"fallback"). */
+	fallbackState?: string;
+	lastRefreshedAtMs?: number;
+};
+
+export type ProviderHealthIcon = "ok" | "degraded" | "auth_expired" | "unknown";
+
+export type ProviderListEntry = {
+	id: string;
+	label: string;
+	description?: string;
+	/** When unknown, the icon rendering falls back to question-mark. */
+	health: ProviderHealthIcon;
+	/** Rate-limit pressure, auth expiry, or last-error summary. */
+	detail?: string;
+	/** OAuth service id (for remediation hints). */
+	oauthServiceId?: string;
+	/** Setup command path shown in detail view. */
+	setupCommand?: string;
+	/** Base URL for health tap-through. */
+	baseUrl?: string;
+};
+
+export type ProviderListView = "list" | "detail";
+
+export type ProviderListCardState = {
+	kind: CardKind.ProviderList;
+	title: string;
+	providers: ProviderListEntry[];
+	selectedProviderId?: string;
+	page?: number;
+	view: ProviderListView;
+	canMutate: boolean;
+	lastRefreshedAtMs?: number;
+};
+
+export type SkillPickerEntry = {
+	id: string;
+	label: string;
+	/** Draft skills are one-tap promotable; active skills only reloadable. */
+	status: "active" | "draft";
+	summary?: string;
+};
+
+export type SkillPickerView = "list";
+
+export type SkillPickerCardState = {
+	kind: CardKind.SkillPicker;
+	title: string;
+	entries: SkillPickerEntry[];
+	page?: number;
+	view: SkillPickerView;
+	adminControlsEnabled: boolean;
+	sessionKey?: string;
+	lastRefreshedAtMs?: number;
+};
+
 export type CardStateMap = {
 	[CardKind.Approval]: ApprovalCardState;
 	[CardKind.ApprovalScope]: ApprovalScopeCardState;
@@ -202,6 +308,9 @@ export type CardStateMap = {
 	[CardKind.BackgroundJob]: BackgroundJobCardState;
 	[CardKind.BackgroundJobList]: BackgroundJobListCardState;
 	[CardKind.SystemHealth]: SystemHealthCardState;
+	[CardKind.ModelPicker]: ModelPickerCardState;
+	[CardKind.ProviderList]: ProviderListCardState;
+	[CardKind.SkillPicker]: SkillPickerCardState;
 };
 
 export type CardState<K extends CardKind = CardKind> = CardStateMap[K];
@@ -288,6 +397,48 @@ export type SystemHealthCardAction =
 /** Max issues that get an inline "fix" button — must match `fix-N` action count. */
 export const SYSTEM_HEALTH_MAX_FIX_BUTTONS = 10;
 
+/**
+ * W2 — Picker page size is fixed at 8 so `select-0` .. `select-7` stay
+ * enumerable in CARD_ACTIONS_BY_KIND and each page fits comfortably in an
+ * inline keyboard without scrolling on mobile.
+ */
+export const PICKER_PAGE_SIZE = 8;
+
+export type PickerSelectAction =
+	| { type: "select-0" }
+	| { type: "select-1" }
+	| { type: "select-2" }
+	| { type: "select-3" }
+	| { type: "select-4" }
+	| { type: "select-5" }
+	| { type: "select-6" }
+	| { type: "select-7" };
+
+export type ModelPickerCardAction =
+	| PickerSelectAction
+	| { type: "page-next" }
+	| { type: "page-prev" }
+	| { type: "back" }
+	| { type: "cancel" }
+	| { type: "refresh" };
+
+export type ProviderListCardAction =
+	| PickerSelectAction
+	| { type: "page-next" }
+	| { type: "page-prev" }
+	| { type: "back" }
+	| { type: "cancel" }
+	| { type: "refresh" };
+
+export type SkillPickerCardAction =
+	| PickerSelectAction
+	| { type: "page-next" }
+	| { type: "page-prev" }
+	| { type: "promote" }
+	| { type: "reload" }
+	| { type: "cancel" }
+	| { type: "refresh" };
+
 export type CardActionMap = {
 	[CardKind.Approval]: ApprovalCardAction;
 	[CardKind.ApprovalScope]: ApprovalScopeCardAction;
@@ -302,10 +453,24 @@ export type CardActionMap = {
 	[CardKind.BackgroundJob]: BackgroundJobCardAction;
 	[CardKind.BackgroundJobList]: BackgroundJobListCardAction;
 	[CardKind.SystemHealth]: SystemHealthCardAction;
+	[CardKind.ModelPicker]: ModelPickerCardAction;
+	[CardKind.ProviderList]: ProviderListCardAction;
+	[CardKind.SkillPicker]: SkillPickerCardAction;
 };
 
 export type CardAction<K extends CardKind = CardKind> = CardActionMap[K];
 export type CardActionType<K extends CardKind = CardKind> = CardAction<K>["type"];
+
+const PICKER_SELECT_ACTIONS = [
+	"select-0",
+	"select-1",
+	"select-2",
+	"select-3",
+	"select-4",
+	"select-5",
+	"select-6",
+	"select-7",
+] as const;
 
 const CARD_ACTIONS_BY_KIND = {
 	[CardKind.Approval]: ["approve", "deny", "explain", "refresh"],
@@ -346,6 +511,31 @@ const CARD_ACTIONS_BY_KIND = {
 		"fix-7",
 		"fix-8",
 		"fix-9",
+	],
+	[CardKind.ModelPicker]: [
+		...PICKER_SELECT_ACTIONS,
+		"page-next",
+		"page-prev",
+		"back",
+		"cancel",
+		"refresh",
+	],
+	[CardKind.ProviderList]: [
+		...PICKER_SELECT_ACTIONS,
+		"page-next",
+		"page-prev",
+		"back",
+		"cancel",
+		"refresh",
+	],
+	[CardKind.SkillPicker]: [
+		...PICKER_SELECT_ACTIONS,
+		"page-next",
+		"page-prev",
+		"promote",
+		"reload",
+		"cancel",
+		"refresh",
 	],
 } as const satisfies { [K in CardKind]: readonly CardActionType<K>[] };
 

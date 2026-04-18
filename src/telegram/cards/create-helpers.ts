@@ -34,9 +34,12 @@ import type {
 	CardKind,
 	CardListEntry,
 	HeartbeatCardState,
+	ModelPickerCardState,
 	PendingQueueCardState,
+	ProviderListCardState,
 	SessionCardState,
 	SkillDraftCardState,
+	SkillPickerCardState,
 	SkillsMenuCardState,
 	SocialMenuCardState,
 	StatusCardState,
@@ -519,5 +522,60 @@ export async function sendSystemHealthCard(
 		threadId: opts.threadId,
 		expiryMs: opts.expiryMs ?? 15 * 60 * 1000,
 		entityRef: "system-health",
+	});
+}
+
+export async function sendModelPickerCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: ModelPickerCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.ModelPicker>> {
+	return createAndSendCard(api, chatId, CK.ModelPicker, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		// 10-minute picker lifetime per W2 spec.
+		expiryMs: opts.expiryMs ?? 10 * 60 * 1000,
+		entityRef: "model-picker",
+	});
+}
+
+export async function sendProviderListCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: ProviderListCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.ProviderList>> {
+	return createAndSendCard(api, chatId, CK.ProviderList, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 10 * 60 * 1000,
+		entityRef: "provider-list",
+	});
+}
+
+export async function sendSkillPickerCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: SkillPickerCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.SkillPicker>> {
+	return createAndSendCard(api, chatId, CK.SkillPicker, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 10 * 60 * 1000,
+		entityRef: "skill-picker",
 	});
 }
