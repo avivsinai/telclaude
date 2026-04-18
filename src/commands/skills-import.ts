@@ -5,10 +5,14 @@
  * OpenClaw skills are pure markdown (SKILL.md + frontmatter) — same family
  * as Claude skills. Most work in telclaude with a thin adapter.
  *
+ * Imports land in the draft quarantine (.claude/skills-draft/<name>/); operator
+ * runs `telclaude skills promote <name>` or `/skills promote <name>` to activate.
+ * This keeps imports on the same review path as locally authored skills.
+ *
  * Steps:
  * 1. Read OpenClaw skill dirs (skills/, .agents/skills/, extensions/&lt;ext&gt;/skills)
  * 2. Convert frontmatter: keep name, description, allowed-tools; strip OpenClaw-specific
- * 3. Copy to .claude/skills/openclaw/<skill-name>/SKILL.md
+ * 3. Copy to .claude/skills-draft/<skill-name>/SKILL.md (quarantine, not active)
  * 4. Run skill scanner before activation — block malicious patterns
  * 5. Refuse auto-install directives
  * 6. Report results
@@ -338,12 +342,14 @@ function importSkills(
 export function registerSkillsImportSubcommands(parent: Command): void {
 	parent
 		.command("import-openclaw")
-		.description("Import skills from an OpenClaw-format directory")
+		.description(
+			"Import skills from an OpenClaw-format directory into the draft quarantine (.claude/skills-draft/)",
+		)
 		.argument("<source>", "Path to OpenClaw source directory")
 		.option(
 			"--target <dir>",
-			"Target directory for imported skills",
-			path.join(process.cwd(), ".claude", "skills", "openclaw"),
+			"Target directory for imported skills (default: .claude/skills-draft/; promote with `telclaude skills promote <name>`)",
+			path.join(process.cwd(), ".claude", "skills-draft"),
 		)
 		.option("--dry-run", "Show what would be imported without copying")
 		.option(
