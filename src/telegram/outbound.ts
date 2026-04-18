@@ -629,6 +629,7 @@ export type SendTelegramMessageOptions = {
 	text?: string;
 	mediaPath?: string;
 	caption?: string;
+	messageThreadId?: number;
 	secretFilterConfig?: SecretFilterConfig;
 };
 
@@ -651,7 +652,9 @@ export async function sendTelegramMessage(
 				filterBeforeSend(options.text, options.secretFilterConfig);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
-					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
+					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE, {
+						message_thread_id: options.messageThreadId,
+					});
 					return { success: true, messageId: result.message_id };
 				}
 				throw err;
@@ -662,7 +665,9 @@ export async function sendTelegramMessage(
 				filterBeforeSend(options.caption, options.secretFilterConfig);
 			} catch (err) {
 				if (err instanceof SecretExfiltrationBlockedError) {
-					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE);
+					const result = await bot.api.sendMessage(options.chatId, SECRET_BLOCKED_MESSAGE, {
+						message_thread_id: options.messageThreadId,
+					});
 					return { success: true, messageId: result.message_id };
 				}
 				throw err;
@@ -682,6 +687,7 @@ export async function sendTelegramMessage(
 				payload,
 				undefined,
 				options.secretFilterConfig,
+				{ messageThreadId: options.messageThreadId },
 			);
 			// If caption was too long, send the text as follow-up messages
 			if (captionTooLong && captionText) {
@@ -690,6 +696,7 @@ export async function sendTelegramMessage(
 				for (const chunk of convertedChunks) {
 					await bot.api.sendMessage(options.chatId, chunk, {
 						parse_mode: "MarkdownV2",
+						message_thread_id: options.messageThreadId,
 					});
 				}
 			}
@@ -705,6 +712,7 @@ export async function sendTelegramMessage(
 			for (const chunk of convertedChunks) {
 				lastResult = await bot.api.sendMessage(options.chatId, chunk, {
 					parse_mode: "MarkdownV2",
+					message_thread_id: options.messageThreadId,
 				});
 			}
 			return { success: true, messageId: lastResult?.message_id };

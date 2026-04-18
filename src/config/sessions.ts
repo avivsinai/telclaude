@@ -3,6 +3,7 @@
  */
 
 import { getChildLogger } from "../logging.js";
+import { getIdentityLink } from "../security/linking.js";
 import { getDb } from "../storage/db.js";
 import type { MsgContext } from "../types/message.js";
 import { normalizeTelegramId } from "../utils.js";
@@ -27,11 +28,34 @@ type SessionRow = {
 	system_sent: number;
 };
 
+type HomeTargetRow = {
+	owner_id: string;
+	chat_id: number;
+	thread_id: number | null;
+	updated_at: number;
+};
+
+export type HomeTarget = {
+	ownerId: string;
+	chatId: number;
+	threadId?: number;
+	updatedAt: number;
+};
+
 function rowToEntry(row: SessionRow): SessionEntry {
 	return {
 		sessionId: row.session_id,
 		updatedAt: row.updated_at,
 		systemSent: row.system_sent === 1,
+	};
+}
+
+function rowToHomeTarget(row: HomeTargetRow): HomeTarget {
+	return {
+		ownerId: row.owner_id,
+		chatId: row.chat_id,
+		...(row.thread_id === null ? {} : { threadId: row.thread_id }),
+		updatedAt: row.updated_at,
 	};
 }
 
@@ -74,6 +98,64 @@ export function getAllSessions(): Record<string, SessionEntry> {
 		result[row.session_key] = rowToEntry(row);
 	}
 	return result;
+}
+
+export function resolveHomeTargetOwnerId(chatId: number): string {
+	const link = getIdentityLink(chatId);
+	return link?.localUserId ?? `tg:${chatId}`;
+}
+
+export function getHomeTarget(ownerId: string): HomeTarget | null {
+	const db = getDb();
+	const row = db.prepare("SELECT * FROM home_targets WHERE owner_id = ?").get(ownerId) as
+		| HomeTargetRow
+		| undefined;
+
+	if (!row) return null;
+	return rowToHomeTarget(row);
+}
+
+export function getHomeTargetForChat(chatId: number): HomeTarget | null {
+	return getHomeTarget(resolveHomeTargetOwnerId(chatId));
+}
+
+export function setHomeTarget(
+	ownerId: string,
+	target: { chatId: number; threadId?: number },
+	updatedAt = Date.now(),
+): HomeTarget {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO home_targets (owner_id, chat_id, thread_id, updated_at)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(owner_id) DO UPDATE SET
+		   chat_id = excluded.chat_id,
+		   thread_id = excluded.thread_id,
+		   updated_at = excluded.updated_at`,
+	).run(ownerId, target.chatId, target.threadId ?? null, updatedAt);
+
+	const stored = getHomeTarget(ownerId);
+	if (!stored) {
+		throw new Error(`Failed to persist home target for ${ownerId}`);
+	}
+	return stored;
+}
+
+export function setHomeTargetForChat(
+	chatId: number,
+	threadId?: number,
+	updatedAt = Date.now(),
+): HomeTarget {
+	return setHomeTarget(resolveHomeTargetOwnerId(chatId), { chatId, threadId }, updatedAt);
+}
+
+export function formatHomeTarget(target: { chatId: number; threadId?: number } | null): string {
+	if (!target) {
+		return "not set";
+	}
+	return target.threadId === undefined
+		? `chat ${target.chatId}`
+		: `chat ${target.chatId} / topic ${target.threadId}`;
 }
 
 export function cleanupIdleSessions(idleMinutes: number): number {

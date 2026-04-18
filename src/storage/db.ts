@@ -168,6 +168,14 @@ function initializeSchema(database: Database.Database): void {
 			system_sent INTEGER NOT NULL DEFAULT 0
 		);
 
+		-- Home delivery targets for conversational cron
+		CREATE TABLE IF NOT EXISTS home_targets (
+			owner_id TEXT PRIMARY KEY,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			updated_at INTEGER NOT NULL
+		);
+
 		-- Circuit breaker state
 		CREATE TABLE IF NOT EXISTS circuit_breaker (
 			name TEXT PRIMARY KEY,
@@ -309,6 +317,11 @@ function initializeSchema(database: Database.Database): void {
 			schedule_cron TEXT,
 			action_kind TEXT NOT NULL,
 			action_service_id TEXT,
+			action_prompt TEXT,
+			owner_id TEXT,
+			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
+			delivery_chat_id INTEGER,
+			delivery_thread_id INTEGER,
 			next_run_at INTEGER,
 			last_run_at INTEGER,
 			last_status TEXT,
@@ -479,11 +492,51 @@ function initializeSchema(database: Database.Database): void {
 		);
 	`);
 
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_prompt",
+		"ALTER TABLE cron_jobs ADD COLUMN action_prompt TEXT",
+	);
+	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"delivery_target_kind",
+		"ALTER TABLE cron_jobs ADD COLUMN delivery_target_kind TEXT NOT NULL DEFAULT 'origin'",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"delivery_chat_id",
+		"ALTER TABLE cron_jobs ADD COLUMN delivery_chat_id INTEGER",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"delivery_thread_id",
+		"ALTER TABLE cron_jobs ADD COLUMN delivery_thread_id INTEGER",
+	);
 	ensureApprovalsColumns(database);
 	ensureMemoryEntriesColumns(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
+}
+
+function ensureColumn(
+	database: Database.Database,
+	tableName: string,
+	columnName: string,
+	alterStatement: string,
+): void {
+	const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
+		name: string;
+	}>;
+	if (columns.some((column) => column.name === columnName)) {
+		return;
+	}
+	database.exec(alterStatement);
 }
 
 function ensureApprovalsColumns(database: Database.Database): void {

@@ -17,6 +17,7 @@ import type {
 	CronAction,
 	CronAddInput,
 	CronCoverage,
+	CronDeliveryTarget,
 	CronJob,
 	CronSchedule,
 	CronStatusSummary,
@@ -55,15 +56,36 @@ function parseSchedule(opts: { at?: string; every?: string; cron?: string }): Cr
 	return { kind: "cron", expr };
 }
 
-function parseAction(opts: { social?: string | boolean; private?: boolean }): CronAction {
+function parsePositiveInteger(raw: string | undefined, label: string): number | undefined {
+	if (!raw) return undefined;
+	const parsed = Number.parseInt(raw, 10);
+	if (Number.isNaN(parsed)) {
+		throw new Error(`${label} must be an integer`);
+	}
+	return parsed;
+}
+
+function parseAction(opts: {
+	social?: string | boolean;
+	private?: boolean;
+	prompt?: string;
+}): CronAction {
 	const hasSocial = opts.social !== undefined;
 	const hasPrivate = opts.private === true;
-	const chosen = [hasSocial, hasPrivate].filter(Boolean).length;
+	const hasPrompt = Boolean(opts.prompt?.trim());
+	const chosen = [hasSocial, hasPrivate, hasPrompt].filter(Boolean).length;
 	if (chosen !== 1) {
-		throw new Error("Choose exactly one action: --social [serviceId] or --private");
+		throw new Error("Choose exactly one action: --social [serviceId], --private, or --prompt");
 	}
 	if (hasPrivate) {
 		return { kind: "private-heartbeat" };
+	}
+	if (hasPrompt) {
+		const prompt = opts.prompt?.trim();
+		if (!prompt) {
+			throw new Error("--prompt requires text");
+		}
+		return { kind: "agent-prompt", prompt };
 	}
 	if (opts.social === true) {
 		return { kind: "social-heartbeat" };
@@ -73,6 +95,39 @@ function parseAction(opts: { social?: string | boolean; private?: boolean }): Cr
 		return { kind: "social-heartbeat" };
 	}
 	return { kind: "social-heartbeat", serviceId };
+}
+
+function parseDeliveryTarget(opts: {
+	delivery?: string;
+	chatId?: string;
+	threadId?: string;
+}): CronDeliveryTarget {
+	const delivery = opts.delivery?.trim().toLowerCase() ?? "origin";
+	if (delivery === "home") {
+		return { kind: "home" };
+	}
+
+	const chatId = parsePositiveInteger(opts.chatId, "--chat-id");
+	const threadId = parsePositiveInteger(opts.threadId, "--thread-id");
+	if (delivery === "chat") {
+		if (chatId === undefined) {
+			throw new Error("--delivery chat requires --chat-id");
+		}
+		return {
+			kind: "chat",
+			chatId,
+			...(threadId === undefined ? {} : { threadId }),
+		};
+	}
+	if (delivery === "origin") {
+		return {
+			kind: "origin",
+			...(chatId === undefined ? {} : { chatId }),
+			...(threadId === undefined ? {} : { threadId }),
+		};
+	}
+
+	throw new Error("Delivery must be one of: origin, home, chat");
 }
 
 function formatSchedule(schedule: CronSchedule): string {
@@ -94,10 +149,35 @@ function formatAction(action: CronAction): string {
 	if (action.kind === "private-heartbeat") {
 		return "private heartbeat";
 	}
+	if (action.kind === "agent-prompt") {
+		return `agent prompt (${action.prompt.slice(0, 32)})`;
+	}
 	if (action.serviceId) {
 		return `social heartbeat (${action.serviceId})`;
 	}
 	return "social heartbeat (all enabled)";
+}
+
+function formatDeliveryTarget(target: CronDeliveryTarget): string {
+	switch (target.kind) {
+		case "home":
+			return "home";
+		case "chat":
+			return target.threadId === undefined
+				? `chat:${target.chatId}`
+				: `chat:${target.chatId}/${target.threadId}`;
+		case "origin":
+			if (target.chatId === undefined) {
+				return "origin";
+			}
+			return target.threadId === undefined
+				? `origin:${target.chatId}`
+				: `origin:${target.chatId}/${target.threadId}`;
+		default: {
+			const exhaustiveCheck: never = target;
+			return String(exhaustiveCheck);
+		}
+	}
 }
 
 export type CronOverview = {
@@ -142,7 +222,7 @@ export function formatCronOverview(overview: CronOverview): string {
 		for (const job of overview.jobs) {
 			const status = job.lastStatus ? `, last=${job.lastStatus}` : "";
 			lines.push(
-				`- ${job.id}: ${job.name} (${job.enabled ? "enabled" : "disabled"}, next=${formatTimestamp(job.nextRunAtMs)}, action=${formatAction(job.action)}${status})`,
+				`- ${job.id}: ${job.name} (${job.enabled ? "enabled" : "disabled"}, next=${formatTimestamp(job.nextRunAtMs)}, delivery=${formatDeliveryTarget(job.deliveryTarget)}, action=${formatAction(job.action)}${status})`,
 			);
 		}
 	}
@@ -156,23 +236,24 @@ function printJobs(jobs: CronJob[]): void {
 		return;
 	}
 	console.log(
-		"ID           Name                 Enabled Next Run                Schedule                    Action",
+		"ID           Name                 Enabled Next Run                Delivery          Schedule                    Action",
 	);
 	for (const job of jobs) {
 		const id = job.id.padEnd(12).slice(0, 12);
 		const name = job.name.padEnd(20).slice(0, 20);
 		const enabled = (job.enabled ? "yes" : "no").padEnd(7);
 		const nextRun = formatTimestamp(job.nextRunAtMs).padEnd(23).slice(0, 23);
+		const delivery = formatDeliveryTarget(job.deliveryTarget).padEnd(16).slice(0, 16);
 		const schedule = formatSchedule(job.schedule).padEnd(27).slice(0, 27);
 		const action = formatAction(job.action);
-		console.log(`${id} ${name} ${enabled} ${nextRun} ${schedule} ${action}`);
+		console.log(`${id} ${name} ${enabled} ${nextRun} ${delivery} ${schedule} ${action}`);
 	}
 }
 
 export function registerCronCommand(program: Command): void {
 	const cron = program
 		.command("cron")
-		.description("Manage local cron jobs for heartbeat automation");
+		.description("Manage local cron jobs for scheduled automation");
 
 	cron
 		.command("status")
@@ -211,6 +292,11 @@ export function registerCronCommand(program: Command): void {
 		.option("--cron <expr>", "5-field cron expression in UTC")
 		.option("--social [serviceId]", "Run social heartbeat (optional service id)")
 		.option("--private", "Run private heartbeat")
+		.option("--prompt <text>", "Run a scheduled agent prompt")
+		.option("--delivery <target>", "Delivery target: origin, home, or chat", "origin")
+		.option("--owner <id>", "Owner id required for --delivery home")
+		.option("--chat-id <id>", "Chat id for --delivery chat or explicit origin metadata")
+		.option("--thread-id <id>", "Thread/topic id for explicit delivery metadata")
 		.option("--disabled", "Create disabled")
 		.option("--json", "Output as JSON")
 		.action(
@@ -222,16 +308,24 @@ export function registerCronCommand(program: Command): void {
 				cron?: string;
 				social?: string | boolean;
 				private?: boolean;
+				prompt?: string;
+				delivery?: string;
+				owner?: string;
+				chatId?: string;
+				threadId?: string;
 				disabled?: boolean;
 				json?: boolean;
 			}) => {
 				try {
 					const schedule = parseSchedule(opts);
 					const action = parseAction(opts);
+					const deliveryTarget = parseDeliveryTarget(opts);
 					const input: CronAddInput = {
 						...(opts.id?.trim() ? { id: opts.id.trim() } : {}),
 						name: opts.name?.trim() || `${action.kind}-${schedule.kind}`,
 						enabled: opts.disabled !== true,
+						...(opts.owner?.trim() ? { ownerId: opts.owner.trim() } : {}),
+						deliveryTarget,
 						schedule,
 						action,
 					};
@@ -243,6 +337,7 @@ export function registerCronCommand(program: Command): void {
 					console.log(`Added job ${job.id}`);
 					console.log(`  Name: ${job.name}`);
 					console.log(`  Schedule: ${formatSchedule(job.schedule)}`);
+					console.log(`  Delivery: ${formatDeliveryTarget(job.deliveryTarget)}`);
 					console.log(`  Action: ${formatAction(job.action)}`);
 					console.log(`  Next run: ${formatTimestamp(job.nextRunAtMs)}`);
 				} catch (err) {

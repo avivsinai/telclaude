@@ -19,6 +19,25 @@ export type CronAction =
 	  }
 	| {
 			kind: "private-heartbeat";
+	  }
+	| {
+			kind: "agent-prompt";
+			prompt: string;
+	  };
+
+export type CronDeliveryTarget =
+	| {
+			kind: "home";
+	  }
+	| {
+			kind: "origin";
+			chatId?: number;
+			threadId?: number;
+	  }
+	| {
+			kind: "chat";
+			chatId: number;
+			threadId?: number;
 	  };
 
 export type CronJob = {
@@ -26,6 +45,8 @@ export type CronJob = {
 	name: string;
 	enabled: boolean;
 	running: boolean;
+	ownerId: string | null;
+	deliveryTarget: CronDeliveryTarget;
 	schedule: CronSchedule;
 	action: CronAction;
 	nextRunAtMs: number | null;
@@ -40,6 +61,8 @@ export type CronAddInput = {
 	id?: string;
 	name: string;
 	enabled?: boolean;
+	ownerId?: string;
+	deliveryTarget?: CronDeliveryTarget;
 	schedule: CronSchedule;
 	action: CronAction;
 };

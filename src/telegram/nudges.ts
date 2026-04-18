@@ -235,7 +235,9 @@ export function createNudgeEngine(opts: {
 					label:
 						job.action.kind === "private-heartbeat"
 							? "Private heartbeat"
-							: (job.action.serviceId ?? "Social heartbeat"),
+							: job.action.kind === "agent-prompt"
+								? "Scheduled prompt"
+								: (job.action.serviceId ?? "Social heartbeat"),
 					summary: trimSummary(job.lastError ?? "error"),
 				})),
 				lastRunAt: Math.max(...failingJobs.map((job) => job.lastRunAtMs ?? 0)),
