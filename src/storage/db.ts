@@ -378,6 +378,50 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_card_instances_chat_message ON card_instances(chat_id, message_id);
 		CREATE INDEX IF NOT EXISTS idx_card_instances_entity ON card_instances(kind, chat_id, entity_ref, status);
 		CREATE INDEX IF NOT EXISTS idx_card_instances_expires_at ON card_instances(status, expires_at);
+
+		-- DM pairing codes (Workstream W4). Stores sha256(code) + signature only;
+		-- the plaintext code lives in the user's Telegram message and nowhere else.
+		CREATE TABLE IF NOT EXISTS pairing_requests (
+			code_hash TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			chat_id INTEGER NOT NULL,
+			username TEXT,
+			tier TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			approved_at INTEGER,
+			approved_by TEXT,
+			signature TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_pairing_requests_user ON pairing_requests(user_id, status);
+		CREATE INDEX IF NOT EXISTS idx_pairing_requests_expires ON pairing_requests(status, expires_at);
+
+		-- Per-user failed-approval counter (feeds the 5-attempts-per-user lockout).
+		CREATE TABLE IF NOT EXISTS pairing_failed_attempts (
+			user_id INTEGER PRIMARY KEY,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_attempt_at INTEGER NOT NULL
+		);
+
+		-- Active per-user lockouts (5 failures → 1h lockout).
+		CREATE TABLE IF NOT EXISTS pairing_lockouts (
+			user_id INTEGER PRIMARY KEY,
+			locked_until INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_pairing_lockouts_until ON pairing_lockouts(locked_until);
+
+		-- Durable approved (user, chat) pairs. Additive to telegram.allowedChats.
+		CREATE TABLE IF NOT EXISTS paired_chats (
+			chat_id INTEGER PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			tier TEXT NOT NULL,
+			paired_at INTEGER NOT NULL,
+			approved_by TEXT NOT NULL,
+			username TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_paired_chats_user ON paired_chats(user_id);
 	`);
 
 	ensureApprovalsColumns(database);
@@ -467,6 +511,8 @@ export function cleanupExpired(): {
 	attachmentRefs: number;
 	cronRuns: number;
 	cardInstances: number;
+	pairingRequests: number;
+	pairingLockouts: number;
 } {
 	const database = getDb();
 	const now = Date.now();
@@ -519,6 +565,24 @@ export function cleanupExpired(): {
 			)
 			.run(now, now);
 
+		// Pairing requests: pending → expired once past TTL, and prune old terminal
+		// rows after 7 days so the table doesn't accumulate forever.
+		const oneWeekAgo = now - 7 * 24 * 60 * 60 * 1000;
+		const pairingMarked = database
+			.prepare(
+				"UPDATE pairing_requests SET status = 'expired' WHERE status = 'pending' AND expires_at < ?",
+			)
+			.run(now);
+		const pairingPruned = database
+			.prepare(
+				`DELETE FROM pairing_requests
+				 WHERE status IN ('expired', 'revoked') AND expires_at < ?`,
+			)
+			.run(oneWeekAgo);
+		const pairingLockoutsResult = database
+			.prepare("DELETE FROM pairing_lockouts WHERE locked_until < ?")
+			.run(now);
+
 		return {
 			approvals: approvalsResult.changes,
 			planApprovals: planApprovalsResult.changes,
@@ -532,6 +596,8 @@ export function cleanupExpired(): {
 			attachmentRefs: attachmentRefsResult.changes,
 			cronRuns: cronRunsResult.changes,
 			cardInstances: cardInstancesResult.changes,
+			pairingRequests: pairingMarked.changes + pairingPruned.changes,
+			pairingLockouts: pairingLockoutsResult.changes,
 		};
 	});
 
