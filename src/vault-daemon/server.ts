@@ -382,7 +382,7 @@ async function processLine(line: string, clientId: string): Promise<VaultRespons
 async function persistRotatedRefreshToken(
 	protocol: "http",
 	target: string,
-	originalEntry: { credential: { type: "oauth2"; clientId: string; clientSecret: string } },
+	originalEntry: { credential: { type: "oauth2"; clientId: string; clientSecret?: string } },
 	newRefreshToken: string,
 ): Promise<void> {
 	const store = getVaultStore();
@@ -460,7 +460,7 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 				await persistRotatedRefreshToken(
 					request.protocol,
 					request.target,
-					entry as { credential: { type: "oauth2"; clientId: string; clientSecret: string } },
+					entry as { credential: { type: "oauth2"; clientId: string; clientSecret?: string } },
 					result.newRefreshToken,
 				);
 			}

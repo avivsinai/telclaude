@@ -146,6 +146,16 @@ describe("Protocol schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("should validate oauth2 without clientSecret for public clients", () => {
+			const result = OAuth2CredentialSchema.safeParse({
+				type: "oauth2",
+				clientId: "client",
+				refreshToken: "refresh",
+				tokenEndpoint: "https://oauth2.example.com/token",
+			});
+			expect(result.success).toBe(true);
+		});
+
 		it("should reject invalid token endpoint URL", () => {
 			const result = OAuth2CredentialSchema.safeParse({
 				type: "oauth2",

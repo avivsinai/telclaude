@@ -18,7 +18,7 @@ import type { OAuth2ServiceDefinition } from "./registry.js";
 export interface AuthorizeOptions {
 	service: OAuth2ServiceDefinition;
 	clientId: string;
-	clientSecret: string;
+	clientSecret?: string;
 	scopes?: string[];
 	port?: number;
 	timeout?: number;
@@ -64,7 +64,7 @@ const TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
  * 6. Optionally fetch user ID
  */
 export async function authorize(options: AuthorizeOptions): Promise<AuthorizeResult> {
-	const { service, clientId, clientSecret } = options;
+	const { service, clientId, clientSecret = "" } = options;
 	const scopes = options.scopes ?? service.defaultScopes;
 	const port = options.port ?? 3000;
 	const timeout = (options.timeout ?? 120) * 1000; // seconds → ms
@@ -193,7 +193,7 @@ async function exchangeCode(params: {
 	redirectUri: string;
 	codeVerifier: string;
 	clientId: string;
-	clientSecret: string;
+	clientSecret?: string;
 	confidentialClient: boolean;
 }): Promise<TokenEndpointResponse> {
 	const body = new URLSearchParams({
@@ -206,7 +206,7 @@ async function exchangeCode(params: {
 
 	// Confidential clients include client_secret in body
 	// (matches vault-daemon/oauth.ts token refresh approach)
-	if (params.confidentialClient) {
+	if (params.confidentialClient && params.clientSecret) {
 		body.set("client_secret", params.clientSecret);
 	}
 
