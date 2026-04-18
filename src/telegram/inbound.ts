@@ -1,5 +1,6 @@
 import type { Bot, Context } from "grammy";
 
+import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { saveMediaStream } from "../media/store.js";
 import { hasAdmin } from "../security/admin-claim.js";
@@ -7,6 +8,13 @@ import type { AuditLogger } from "../security/audit.js";
 import { isChatBanned } from "../security/banned-chats.js";
 import { containsHomoglyphs, foldHomoglyphs } from "../security/homoglyphs.js";
 import { filterOutputWithConfig, type SecretFilterConfig } from "../security/output-filter.js";
+import {
+	checkPairingRate,
+	createPairingCode,
+	formatPairingPrompt,
+	formatPairingRateNotice,
+	isChatPaired,
+} from "../security/pairing.js";
 import { isBotMessage, removeReaction, storeReaction } from "../storage/reactions.js";
 import { chatIdToString, normalizeTelegramId } from "../utils.js";
 import { resolveControlCommandGate } from "./command-gating.js";
@@ -41,6 +49,15 @@ export type InboxMonitorOptions = {
 	auditLogger?: AuditLogger;
 	/** Enable inline keyboard buttons on responses. Default: true */
 	enableKeyboards?: boolean;
+	/**
+	 * DM pairing flow (W4). When enabled, an unknown-chat private DM receives a
+	 * one-time pairing code instead of being silently dropped. Operators approve
+	 * the code via `telclaude pairing approve <code>` to grant `defaultTier`.
+	 */
+	pairing?: {
+		enabled?: boolean;
+		defaultTier?: PermissionTier;
+	};
 };
 
 export type InboxMonitorHandle = {
@@ -92,7 +109,10 @@ export async function monitorTelegramInbox(
 		secretFilterConfig,
 		auditLogger,
 		enableKeyboards = true,
+		pairing,
 	} = options;
+	const pairingEnabled = pairing?.enabled ?? true;
+	const pairingDefaultTier: PermissionTier = pairing?.defaultTier ?? "READ_ONLY";
 	const logger = getChildLogger({ module: "telegram-inbound" });
 	const seen = new Set<string>();
 
@@ -144,57 +164,130 @@ export async function monitorTelegramInbox(
 		return hasTelegramControlCommand(body, { botUsername });
 	};
 
-	// Helper to check if chat is allowed
-	// SECURITY: Fails CLOSED - if no allowedChats configured, deny ALL
-	// NOTE: allowedChats is REQUIRED even for bootstrap - this prevents random
-	// users from claiming admin by messaging the bot before it's configured.
+	// Helper to check if chat is allowed.
+	// A chat passes if it's in telegram.allowedChats OR it has been approved via
+	// the DM pairing flow (W4). Pairing-approved chats are additive — the config
+	// allowlist still works as before.
+	// SECURITY: Fails CLOSED when neither allowlist matches — if both are empty,
+	// DM pairing is still the supported onboarding path.
 	const isChatAllowed = (chatId: number, chatType: string): boolean => {
 		const normalizedChatId = normalizeTelegramId(chatId) ?? String(chatId);
 
-		// First check: ALWAYS require allowedChats to be configured
+		// 1. Check if chat is in the config allowlist (if any).
+		if (allowedChats && allowedChats.length > 0) {
+			const isInAllowlist = allowedChats.some((allowed) => {
+				const normalizedAllowed = normalizeTelegramId(allowed);
+				if (normalizedAllowed && normalizedChatId) {
+					return normalizedAllowed === normalizedChatId;
+				}
+				if (typeof allowed === "number") return allowed === chatId;
+				return String(allowed) === String(chatId);
+			});
+			if (isInAllowlist) {
+				if (!hasAdmin() && chatType === "private") {
+					logger.info(
+						{ chatId },
+						"BOOTSTRAP: Allowing private message for admin claim (chat in allowedChats)",
+					);
+				}
+				return true;
+			}
+		}
+
+		// 2. Check if chat was approved via the pairing flow.
+		if (isChatPaired(chatId)) {
+			return true;
+		}
+
+		// Not allowed — log bootstrap/hint context but fail closed.
 		if (!allowedChats || allowedChats.length === 0) {
-			// SECURITY: Empty allowedChats = deny all (fail closed)
-			// This prevents accidental exposure if config is missing
 			logger.warn(
 				{ chatId },
-				"DENIED: No allowedChats configured - denying all chats for security",
+				"DENIED: No allowedChats configured and chat not paired — denying for security",
 			);
-			return false;
-		}
-
-		// Check if chat is in the allowlist
-		const isInAllowlist = allowedChats.some((allowed) => {
-			const normalizedAllowed = normalizeTelegramId(allowed);
-			if (normalizedAllowed && normalizedChatId) {
-				return normalizedAllowed === normalizedChatId;
-			}
-			if (typeof allowed === "number") return allowed === chatId;
-			return String(allowed) === String(chatId);
-		});
-
-		if (!isInAllowlist) {
-			// Chat not in allowlist - check if this is bootstrap scenario
-			// Even during bootstrap, we require allowedChats to prevent random users
-			// from claiming admin
-			if (!hasAdmin() && chatType === "private") {
-				logger.warn(
-					{ chatId },
-					"BOOTSTRAP DENIED: Private chat not in allowedChats. " +
-						"Add your chat ID to allowedChats in config to enable admin claim.",
-				);
-			}
-			return false;
-		}
-
-		// Chat is in allowlist - log bootstrap mode if applicable
-		if (!hasAdmin() && chatType === "private") {
-			logger.info(
+		} else if (!hasAdmin() && chatType === "private") {
+			logger.warn(
 				{ chatId },
-				"BOOTSTRAP: Allowing private message for admin claim (chat in allowedChats)",
+				"BOOTSTRAP DENIED: Private chat not in allowedChats and not paired. " +
+					"Add your chat ID to allowedChats or use DM pairing to enable admin claim.",
 			);
 		}
+		return false;
+	};
 
-		return true;
+	// Emit a pairing code DM for an unknown private chat, respecting rate limits.
+	// Kept close to isChatAllowed since both gate unknown-chat access.
+	const tryEmitPairingCode = async (args: {
+		userId: number;
+		chatId: number;
+		username?: string;
+		dryRun: boolean;
+		sendReply: (text: string) => Promise<void>;
+	}): Promise<void> => {
+		try {
+			if (isChatBanned(args.chatId)) {
+				logger.debug({ chatId: args.chatId }, "skipping pairing emit for banned chat");
+				return;
+			}
+
+			const rateCheck = checkPairingRate(args.userId);
+			if (!rateCheck.allowed) {
+				if (verbose) {
+					logger.debug(
+						{ chatId: args.chatId, reason: rateCheck.reason },
+						"pairing rate-limited; sending notice",
+					);
+				}
+				const notice = formatPairingRateNotice(rateCheck);
+				if (args.dryRun) {
+					logger.info(
+						{ chatId: args.chatId, reason: rateCheck.reason },
+						"dry-run: would send pairing rate-limit notice",
+					);
+					return;
+				}
+				await args.sendReply(notice);
+				return;
+			}
+
+			const issued = await createPairingCode({
+				userId: args.userId,
+				chatId: args.chatId,
+				username: args.username,
+				tier: pairingDefaultTier,
+			});
+
+			const prompt = formatPairingPrompt(issued.code, issued.expiresAt);
+
+			if (args.dryRun) {
+				logger.info(
+					{ chatId: args.chatId, userId: args.userId },
+					"dry-run: would send pairing prompt",
+				);
+				return;
+			}
+
+			await args.sendReply(prompt);
+
+			if (auditLogger) {
+				await auditLogger.log({
+					timestamp: new Date(),
+					requestId: `pairing_${Date.now()}`,
+					telegramUserId: String(args.userId),
+					telegramUsername: args.username,
+					chatId: args.chatId,
+					messagePreview: "(pairing code issued)",
+					permissionTier: pairingDefaultTier,
+					outcome: "success",
+					errorType: "pairing_code_issued",
+				});
+			}
+		} catch (err) {
+			logger.error(
+				{ chatId: args.chatId, userId: args.userId, error: String(err) },
+				"failed to emit pairing code",
+			);
+		}
 	};
 
 	// Helper to build inbound message
@@ -221,6 +314,28 @@ export async function monitorTelegramInbox(
 				} catch (err) {
 					logger.warn({ chatId: chat.id, error: String(err) }, "failed to leave chat");
 				}
+				return null;
+			}
+
+			// DM pairing flow (W4): private unknown chat → emit a one-time pairing
+			// code (rate-limited). Skipped when admin isn't claimed yet so the
+			// admin-claim flow handled inside onMessage() still runs on first contact.
+			if (
+				pairingEnabled &&
+				chat.type === "private" &&
+				from?.id !== undefined &&
+				hasAdmin() &&
+				!isEdited
+			) {
+				await tryEmitPairingCode({
+					userId: from.id,
+					chatId: chat.id,
+					username: from.username,
+					dryRun,
+					sendReply: async (text) => {
+						await bot.api.sendMessage(chat.id, text, { parse_mode: "Markdown" });
+					},
+				});
 			}
 			return null;
 		}

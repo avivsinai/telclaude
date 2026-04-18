@@ -29,6 +29,7 @@ import {
 	VALIDATED_DATA_DIR,
 } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
+import { getPairedChat } from "./pairing.js";
 
 const logger = getChildLogger({ module: "permissions" });
 
@@ -128,7 +129,17 @@ export function getUserPermissionTier(
 		}
 	}
 
-	// 3. Fall back to default tier
+	// 3. Check pairing-flow approval (W4). A paired chat gets whatever tier the
+	// operator approved at pairing time — typically READ_ONLY. This is additive
+	// to telegram.allowedChats and only applied if nothing stronger matched.
+	if (tier === undefined && !Number.isNaN(numericId)) {
+		const paired = getPairedChat(numericId);
+		if (paired) {
+			tier = paired.tier;
+		}
+	}
+
+	// 4. Fall back to default tier
 	if (tier === undefined) {
 		tier = securityConfig?.permissions?.defaultTier ?? "READ_ONLY";
 	}
