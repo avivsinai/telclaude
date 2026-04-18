@@ -88,8 +88,8 @@
 | `pnpm install` | Install dependencies |
 | `pnpm dev onboard` | Interactive first-run wizard (relay bootstrap, bot token, admin claim, OAuth) |
 | `pnpm dev relay --profile simple` | Start relay (dev mode) |
-| `pnpm dev dev doctor` | Full health check (pass/warn/fail across every subsystem) |
-| `pnpm dev dev doctor --json` | Same, structured JSON for CI |
+| `pnpm dev doctor` | Full health check (pass/warn/fail across every subsystem) |
+| `pnpm dev doctor --json` | Same, structured JSON for CI |
 | `pnpm lint` / `pnpm format` | Lint and format |
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |

@@ -460,8 +460,8 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_paired_chats_user ON paired_chats(user_id);
 
 		-- Graduated approval allowlist (Workstream W1).
-		-- Upsert on (user_id, tool_key, scope). "once" is consumed on first
-		-- lookup; "session" is scoped to session_key; "always" gets a rolling
+		-- "once" is consumed on first lookup. "session" is scoped to session_key
+		-- and allows concurrent sessions to coexist. "always" gets a rolling
 		-- 30-day expiry refreshed on use.
 		CREATE TABLE IF NOT EXISTS approval_allowlist (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -473,9 +473,17 @@ function initializeSchema(database: Database.Database): void {
 			chat_id INTEGER NOT NULL,
 			granted_at INTEGER NOT NULL,
 			expires_at INTEGER,
-			last_used_at INTEGER,
-			UNIQUE(user_id, tool_key, scope)
+			last_used_at INTEGER
 		);
+		-- Partial unique indexes: one row per (user, tool) for non-session scopes,
+		-- and one per (user, tool, session) for session-scoped grants so that
+		-- concurrent sessions do not overwrite each other's entries (Wave 2 review fix).
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_allowlist_singleton
+			ON approval_allowlist(user_id, tool_key, scope)
+			WHERE scope != 'session';
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_allowlist_session_scope
+			ON approval_allowlist(user_id, tool_key, session_key)
+			WHERE scope = 'session';
 		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_user
 			ON approval_allowlist(user_id, tool_key);
 		CREATE INDEX IF NOT EXISTS idx_approval_allowlist_session
@@ -491,6 +499,13 @@ function initializeSchema(database: Database.Database): void {
 			updated_at INTEGER NOT NULL
 		);
 	`);
+
+	// Wave 2 review fix: migrate approval_allowlist from v1 (inline
+	// UNIQUE(user_id, tool_key, scope)) to v2 (partial unique indexes that
+	// let concurrent sessions coexist). The CREATE TABLE IF NOT EXISTS above
+	// is a no-op on existing v1 tables; this migration drops the v1 shape so
+	// the v2 shape can be recreated on the next init pass.
+	migrateApprovalAllowlistV2(database);
 
 	ensureColumn(
 		database,
@@ -522,6 +537,60 @@ function initializeSchema(database: Database.Database): void {
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
+}
+
+/**
+ * Wave 2 review fix (Bug #2): migrate approval_allowlist from the original
+ * Wave-2 schema (inline `UNIQUE(user_id, tool_key, scope)`) to partial
+ * unique indexes that allow concurrent session-scoped grants to coexist.
+ *
+ * Detects the old constraint by sniffing `sqlite_master.sql`; drops the
+ * table so the `CREATE TABLE IF NOT EXISTS` at init time can recreate it
+ * with the new shape. Runs once per process; subsequent startups on the
+ * new schema are no-ops.
+ */
+function migrateApprovalAllowlistV2(database: Database.Database): void {
+	const row = database
+		.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approval_allowlist'")
+		.get() as { sql?: string } | undefined;
+	if (!row?.sql) {
+		return;
+	}
+	// v1 inlined the UNIQUE constraint; v2 moves it to partial indexes.
+	const hasV1Constraint = /UNIQUE\s*\(\s*user_id\s*,\s*tool_key\s*,\s*scope\s*\)/i.test(row.sql);
+	if (hasV1Constraint) {
+		logger.warn(
+			"migrating approval_allowlist: dropping v1 table (incorrect UNIQUE constraint) — any existing grants will need to be re-issued",
+		);
+		database.exec("DROP TABLE approval_allowlist");
+		// Recreate with the new shape from initializeSchema's definition.
+		database.exec(`
+			CREATE TABLE approval_allowlist (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				user_id TEXT NOT NULL,
+				tier TEXT NOT NULL,
+				tool_key TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				session_key TEXT,
+				chat_id INTEGER NOT NULL,
+				granted_at INTEGER NOT NULL,
+				expires_at INTEGER,
+				last_used_at INTEGER
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_allowlist_singleton
+				ON approval_allowlist(user_id, tool_key, scope)
+				WHERE scope != 'session';
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_allowlist_session_scope
+				ON approval_allowlist(user_id, tool_key, session_key)
+				WHERE scope = 'session';
+			CREATE INDEX IF NOT EXISTS idx_approval_allowlist_user
+				ON approval_allowlist(user_id, tool_key);
+			CREATE INDEX IF NOT EXISTS idx_approval_allowlist_session
+				ON approval_allowlist(session_key);
+			CREATE INDEX IF NOT EXISTS idx_approval_allowlist_expires
+				ON approval_allowlist(expires_at);
+		`);
+	}
 }
 
 function ensureColumn(
