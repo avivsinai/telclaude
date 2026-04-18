@@ -62,7 +62,8 @@ export function promoteSkill(
 
 	// Use canonical root helpers so scaffold → promote → list share the same directories.
 	// Explicit overrides (used in tests) still win.
-	const effectiveDraftRoot = draftRoot ?? findExistingDraftRootFor(skillName) ?? getDraftSkillRoot();
+	const effectiveDraftRoot =
+		draftRoot ?? findExistingDraftRootFor(skillName) ?? getDraftSkillRoot();
 	const effectiveActiveRoot = activeRoot ?? getSkillRoot();
 	const draftDir = path.join(effectiveDraftRoot, skillName);
 	const activeDir = path.join(effectiveActiveRoot, skillName);
