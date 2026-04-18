@@ -445,6 +445,14 @@ function initializeSchema(database: Database.Database): void {
 			username TEXT
 		);
 		CREATE INDEX IF NOT EXISTS idx_paired_chats_user ON paired_chats(user_id);
+
+		-- Per-chat model preference (W2 model picker)
+		CREATE TABLE IF NOT EXISTS model_preferences (
+			chat_id INTEGER PRIMARY KEY,
+			provider_id TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
 	`);
 
 	ensureApprovalsColumns(database);
