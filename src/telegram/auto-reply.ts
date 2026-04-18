@@ -47,9 +47,12 @@ import {
 	formatPlanApprovalRequest,
 	getMostRecentPendingApproval,
 	getMostRecentPendingPlanApproval,
+	grantAllowlistForApproval,
+	isToolScopedApproval,
 	type PendingApproval,
 	type PlanApproval,
 	requiresApproval,
+	resolvePendingToolApproval,
 	revokeSessionAllowlist,
 } from "../security/approvals.js";
 import { type AuditLogger, createAuditLogger } from "../security/audit.js";
@@ -1175,6 +1178,9 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
+					chatId: msg.chatId,
+					actorId: msg.senderId ?? msg.chatId,
+					threadId: msg.messageThreadId,
 					systemPromptAppend,
 					compiledMemoryMd: memoryBundle.compiledMemoryMd,
 				})
@@ -1187,6 +1193,9 @@ async function executeWithSession(
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
+					chatId: msg.chatId,
+					actorId: msg.senderId ?? msg.chatId,
+					threadId: msg.messageThreadId,
 					systemPromptAppend,
 					compiledMemoryMd: memoryBundle.compiledMemoryMd,
 				});
@@ -2339,6 +2348,22 @@ async function handleApproveCommand(
 
 	const approval = result.data;
 
+	if (isToolScopedApproval(approval)) {
+		try {
+			grantAllowlistForApproval(approval, "once");
+		} catch (error) {
+			await msg.reply(`Tool approved, but the one-shot grant failed: ${String(error)}`);
+			return;
+		}
+		resolvePendingToolApproval(approval.nonce, {
+			status: "approved",
+			scope: "once",
+			source: "command",
+		});
+		await msg.reply("Tool approved for this request. The blocked run will retry automatically.");
+		return;
+	}
+
 	// Check if this approval should go through plan preview (Phase 1)
 	if (shouldShowPlanPreview(approval, cfg)) {
 		await msg.reply("Request approved. Generating execution plan...");
@@ -2411,9 +2436,32 @@ async function handleDenyCommand(
 		return;
 	}
 
+	const entry = result.data;
+	if (isToolScopedApproval(entry)) {
+		resolvePendingToolApproval(entry.nonce, {
+			status: "denied",
+			source: "command",
+			reason: "Tool approval denied.",
+		});
+		await msg.reply("Tool request denied.");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: entry.requestId,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: entry.body.slice(0, 100),
+			observerClassification: entry.observerClassification,
+			observerConfidence: entry.observerConfidence,
+			permissionTier: entry.tier,
+			outcome: "blocked",
+			errorType: "tool_user_denied",
+		});
+		return;
+	}
+
 	await msg.reply("Request denied.");
 
-	const entry = result.data;
 	await auditLogger.log({
 		timestamp: new Date(),
 		requestId: entry.requestId,
@@ -2562,6 +2610,9 @@ async function executePlanPhase(
 						timeoutMs: timeoutSeconds * 1000,
 						betas: cfg.sdk?.betas,
 						userId,
+						chatId: msg.chatId,
+						actorId: msg.senderId ?? msg.chatId,
+						threadId: msg.messageThreadId,
 						systemPromptAppend: planningPromptAppend,
 						compiledMemoryMd: memoryBundle.compiledMemoryMd,
 					})
@@ -2574,6 +2625,9 @@ async function executePlanPhase(
 						timeoutMs: timeoutSeconds * 1000,
 						betas: cfg.sdk?.betas,
 						userId,
+						chatId: msg.chatId,
+						actorId: msg.senderId ?? msg.chatId,
+						threadId: msg.messageThreadId,
 						systemPromptAppend: planningPromptAppend,
 						compiledMemoryMd: memoryBundle.compiledMemoryMd,
 					});
@@ -3039,6 +3093,29 @@ async function handleDenyMostRecent(
 
 	if (!result.success) {
 		await msg.reply(result.error);
+		return;
+	}
+
+	if (isToolScopedApproval(approval)) {
+		resolvePendingToolApproval(approval.nonce, {
+			status: "denied",
+			source: "command",
+			reason: "Tool approval denied.",
+		});
+		await msg.reply("Tool request denied.");
+		await auditLogger.log({
+			timestamp: new Date(),
+			requestId: approval.requestId,
+			telegramUserId: String(msg.chatId),
+			telegramUsername: msg.username,
+			chatId: msg.chatId,
+			messagePreview: approval.body.slice(0, 100),
+			observerClassification: approval.observerClassification,
+			observerConfidence: approval.observerConfidence,
+			permissionTier: approval.tier,
+			outcome: "blocked",
+			errorType: "tool_user_denied",
+		});
 		return;
 	}
 

@@ -27,12 +27,14 @@ import {
 	type Options as SDKOptions,
 	type SdkBeta,
 } from "@anthropic-ai/claude-agent-sdk";
+import { requestApprovalScopeCard } from "../agent/approval-client.js";
 import {
 	type ExternalProviderConfig,
 	loadConfig,
 	type PermissionTier,
 	type PrivateEndpoint,
 } from "../config/config.js";
+import { readEnv } from "../env.js";
 import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { materializeClaudeProjectMemory } from "../memory/materialize.js";
@@ -40,9 +42,13 @@ import { buildAllowedDomainNames, domainMatchesPattern } from "../sandbox/domain
 import { shouldEnableSdkSandbox } from "../sandbox/mode.js";
 import { checkPrivateNetworkAccess } from "../sandbox/network-proxy.js";
 import { buildSdkPermissionsForTier } from "../sandbox/sdk-settings.js";
+import { waitForToolApproval } from "../security/approval-wait.js";
+import { createApproval } from "../security/approvals.js";
+import { resolveTelegramIdentity } from "../security/linking.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { decideToolApproval } from "../security/pipeline.js";
+import type { ApprovalScope, RiskTier } from "../security/risk-tiers.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -72,9 +78,129 @@ const logger = getChildLogger({ module: "sdk-client" });
  * Set to 10s to allow for DNS lookups (3s timeout) + validation overhead.
  */
 const HOOK_TIMEOUT_SECONDS = 10;
+const DEFAULT_TOOL_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+const TOOL_APPROVAL_TIMEOUT_SLACK_MS = 5_000;
 
 function isSocialContext(actorUserId?: string): boolean {
 	return actorUserId?.startsWith("social:") ?? false;
+}
+
+type ToolApprovalPromptContext = {
+	chatId?: number;
+	actorId?: number;
+	threadId?: number;
+};
+
+type ApprovalScopeCardPayload = ToolApprovalPromptContext & {
+	title: string;
+	body: string;
+	nonce: string;
+	toolKey: string;
+	riskTier: RiskTier;
+	scopesEnabled: ApprovalScope[];
+	explanation?: string;
+};
+
+function computeToolApprovalTimeoutMs(queryTimeoutMs?: number): number {
+	if (!queryTimeoutMs || !Number.isFinite(queryTimeoutMs)) {
+		return DEFAULT_TOOL_APPROVAL_TIMEOUT_MS;
+	}
+	const budget = Math.max(15_000, queryTimeoutMs - TOOL_APPROVAL_TIMEOUT_SLACK_MS);
+	return Math.min(DEFAULT_TOOL_APPROVAL_TIMEOUT_MS, budget);
+}
+
+function computeToolApprovalHookTimeoutSeconds(queryTimeoutMs?: number): number {
+	return Math.max(
+		HOOK_TIMEOUT_SECONDS,
+		Math.ceil(computeToolApprovalTimeoutMs(queryTimeoutMs) / 1000) + 5,
+	);
+}
+
+function summarizeToolApprovalRequest(
+	toolName: string,
+	toolInput: Record<string, unknown>,
+): { title: string; body: string } {
+	if (toolName === "Bash" && isBashInput(toolInput)) {
+		return {
+			title: "Approve Bash",
+			body: `Claude wants to run this shell command:\n\n${redactForLog(toolInput.command)}`,
+		};
+	}
+
+	const filePath =
+		typeof toolInput.file_path === "string"
+			? toolInput.file_path
+			: typeof toolInput.path === "string"
+				? toolInput.path
+				: null;
+	if (filePath) {
+		return {
+			title: `Approve ${toolName}`,
+			body: `Claude wants to use \`${toolName}\` on:\n\n${filePath}`,
+		};
+	}
+
+	if (toolName === "WebFetch" && typeof toolInput.url === "string") {
+		return {
+			title: "Approve WebFetch",
+			body: `Claude wants to fetch:\n\n${toolInput.url}`,
+		};
+	}
+
+	const detail = formatToolInputForLog(toolInput, 600);
+	return {
+		title: `Approve ${toolName}`,
+		body: `Claude wants to use \`${toolName}\` with:\n\n${detail}`,
+	};
+}
+
+async function sendApprovalScopePrompt(payload: ApprovalScopeCardPayload): Promise<void> {
+	if (
+		payload.chatId === undefined ||
+		payload.actorId === undefined ||
+		!Number.isInteger(payload.chatId) ||
+		!Number.isInteger(payload.actorId)
+	) {
+		throw new Error("Missing Telegram approval context.");
+	}
+	const chatId = payload.chatId;
+	const actorId = payload.actorId;
+
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		await requestApprovalScopeCard({
+			chatId,
+			actorId,
+			threadId: payload.threadId,
+			title: payload.title,
+			body: payload.body,
+			nonce: payload.nonce,
+			toolKey: payload.toolKey,
+			riskTier: payload.riskTier,
+			scopesEnabled: payload.scopesEnabled,
+			explanation: payload.explanation,
+		});
+		return;
+	}
+
+	const [{ Bot }, { sendApprovalScopeCard }, { initCardSystem }] = await Promise.all([
+		import("grammy"),
+		import("../telegram/cards/create-helpers.js"),
+		import("../telegram/cards/init.js"),
+	]);
+	const { telegramBotToken } = await readEnv();
+	initCardSystem();
+	const api = new Bot(telegramBotToken).api;
+	await sendApprovalScopeCard(api, chatId, {
+		title: payload.title,
+		body: payload.body,
+		nonce: payload.nonce,
+		toolKey: payload.toolKey,
+		riskTier: payload.riskTier,
+		scopesEnabled: payload.scopesEnabled,
+		explanation: payload.explanation,
+		actorScope: `user:${actorId}`,
+		threadId: payload.threadId,
+	});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -119,6 +245,15 @@ export type TelclaudeQueryOptions = {
 
 	/** Request-scoped user identifier for rate limiting (e.g., Telegram chat/user ID). */
 	userId?: string;
+
+	/** Telegram chat context for interactive tool-approval cards. */
+	chatId?: number;
+
+	/** Telegram actor id allowed to tap approval cards. */
+	actorId?: number;
+
+	/** Telegram topic/thread for approval cards in forum chats. */
+	threadId?: number;
 
 	/** Resume a previous session by ID for conversation continuity. */
 	resumeSessionId?: string;
@@ -683,32 +818,19 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
  * Empty allowedSkills [] = deny ALL skills (not allow all).
  */
 /**
- * W1 — PreToolUse hook that consults `decideToolApproval` (the graduated-
- * approval decision helper in `src/security/pipeline.ts`) before each tool
- * call. This is the live runtime wiring that Wave 2 review called out as
- * missing.
- *
- * Current integration shape (Wave 2 — interim):
- *   - Always calls `decideToolApproval` so the allowlist is consulted on
- *     every tool call. CLI-granted grants (`telclaude approvals grant`)
- *     now fast-path through the live SDK runtime.
- *   - On allowlist hit: returns allow. The decision is logged so audits can
- *     see the fast-path fired.
- *   - On non-hit (prompt / prompt-once / block): passes through to later
- *     hooks rather than denying. The existing message-level approval gate
- *     in `src/security/pipeline.ts:buildSecurityPipeline` continues to
- *     enforce medium/high-risk approvals as it did before Wave 2.
- *
- * Wave 3 will flip the non-hit branch to deny + Telegram
- * ApprovalScopeCard approval loop so per-tool grants replace per-message
- * approvals. Keeping pass-through now preserves the existing UX for
- * trusted SOCIAL actors (operator/autonomous/proactive) whose Bash access
- * is already gated by `createSocialToolRestrictionHook`.
+ * W1 — Live per-tool approval loop. Non-high-risk allowlist hits still
+ * fast-path, while medium/high-risk misses now pause the tool call, emit a
+ * Telegram ApprovalScopeCard, and resume only after an approval result lands.
  */
 function createGraduatedApprovalHook(opts: {
 	userId?: string;
 	tier: PermissionTier;
 	sessionKey?: string;
+	chatId?: number;
+	actorId?: number;
+	threadId?: number;
+	timeoutMs?: number;
+	abortSignal?: AbortSignal;
 }): HookCallbackMatcher {
 	const sessionKey = opts.sessionKey ?? null;
 	const actorUserId = opts.userId;
@@ -725,9 +847,11 @@ function createGraduatedApprovalHook(opts: {
 		if (toolName === "Skill") {
 			return allowHookResponse();
 		}
+		const approvalUserId =
+			typeof opts.chatId === "number" ? resolveTelegramIdentity(opts.chatId) : actorUserId;
 		const bashCommand = isBashInput(toolInput) ? toolInput.command : undefined;
 		const decision = decideToolApproval({
-			userId: actorUserId,
+			userId: approvalUserId ?? actorUserId,
 			tier: opts.tier,
 			toolName,
 			bashCommand,
@@ -744,7 +868,29 @@ function createGraduatedApprovalHook(opts: {
 				},
 				"[hook] W1 graduated-approval: allow",
 			);
-		} else {
+			return allowHookResponse();
+		}
+
+		if (decision.decision === "block") {
+			logger.warn(
+				{
+					tool: toolName,
+					risk: decision.risk,
+					toolKey: decision.toolKey,
+					reason: decision.reason,
+				},
+				"[hook] W1 graduated-approval: blocked",
+			);
+			return denyHookResponse(`Tool blocked: ${decision.reason}`);
+		}
+
+		if (
+			!approvalUserId ||
+			opts.chatId === undefined ||
+			opts.actorId === undefined ||
+			!Number.isInteger(opts.chatId) ||
+			!Number.isInteger(opts.actorId)
+		) {
 			logger.debug(
 				{
 					tool: toolName,
@@ -753,15 +899,118 @@ function createGraduatedApprovalHook(opts: {
 					decision: decision.decision,
 					reason: decision.reason,
 				},
-				"[hook] W1 graduated-approval: pass-through (Wave 3 will gate here)",
+				"[hook] W1 graduated-approval: no Telegram context, preserving pass-through",
+			);
+			return allowHookResponse();
+		}
+		const chatId = opts.chatId;
+		const actorId = opts.actorId;
+
+		const approvalTimeoutMs = computeToolApprovalTimeoutMs(opts.timeoutMs);
+		const { title, body } = summarizeToolApprovalRequest(toolName, toolInput);
+		const scopesEnabled: ApprovalScope[] =
+			decision.decision === "prompt-once" ? ["once"] : ["once", "session", "always"];
+		const requestId = `tool_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+		const { nonce } = createApproval(
+			{
+				requestId,
+				chatId,
+				tier: opts.tier,
+				body,
+				from: sessionKey ?? `tg:${actorId}`,
+				to: "tool-approval",
+				messageId: requestId,
+				observerClassification: "ALLOW",
+				observerConfidence: 1,
+				observerReason: `tool approval required: ${decision.reason}`,
+				riskTier: decision.risk,
+				toolKey: decision.toolKey,
+				sessionKey: sessionKey ?? undefined,
+			},
+			approvalTimeoutMs,
+		);
+
+		try {
+			await sendApprovalScopePrompt({
+				chatId,
+				actorId,
+				threadId: opts.threadId,
+				title,
+				body,
+				nonce,
+				toolKey: decision.toolKey,
+				riskTier: decision.risk,
+				scopesEnabled,
+				explanation:
+					decision.decision === "prompt-once"
+						? "High-risk actions are single-use only."
+						: "Approve this tool once, for the current session, or across future sessions.",
+			});
+		} catch (error) {
+			logger.error(
+				{ tool: toolName, toolKey: decision.toolKey, chatId: opts.chatId, error: String(error) },
+				"[hook] failed to send approval scope card",
+			);
+			return denyHookResponse(
+				`Tool approval required, but the approval card could not be sent. Use /approve ${nonce} within ${Math.ceil(approvalTimeoutMs / 1000)}s.`,
 			);
 		}
+
+		const approvalResult = await waitForToolApproval({
+			nonce,
+			chatId,
+			timeoutMs: approvalTimeoutMs,
+			signal: opts.abortSignal,
+		});
+		if (approvalResult.status !== "approved") {
+			logger.info(
+				{
+					tool: toolName,
+					toolKey: decision.toolKey,
+					chatId: opts.chatId,
+					source: approvalResult.source,
+				},
+				"[hook] tool approval denied",
+			);
+			return denyHookResponse(approvalResult.reason ?? "Tool approval denied.");
+		}
+
+		const followUpDecision = decideToolApproval({
+			userId: approvalUserId,
+			tier: opts.tier,
+			toolName,
+			bashCommand,
+			sessionKey,
+		});
+		if (followUpDecision.decision !== "allow") {
+			logger.warn(
+				{
+					tool: toolName,
+					toolKey: decision.toolKey,
+					chatId: opts.chatId,
+					followUpDecision: followUpDecision.decision,
+				},
+				"[hook] approval completed but allowlist did not authorize retry",
+			);
+			return denyHookResponse("Tool approval was recorded, but the retry could not be authorized.");
+		}
+
+		logger.info(
+			{
+				tool: toolName,
+				risk: decision.risk,
+				toolKey: decision.toolKey,
+				chatId: opts.chatId,
+				scope: approvalResult.scope,
+			},
+			"[hook] W1 graduated-approval: approved via Telegram",
+		);
 		return allowHookResponse();
 	};
 
 	return {
 		hooks: [hookCallback],
-		timeout: HOOK_TIMEOUT_SECONDS,
+		timeout: computeToolApprovalHookTimeoutSeconds(opts.timeoutMs),
 	};
 }
 
@@ -1055,9 +1304,9 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		createSensitivePathHook(opts.tier),
 		createSkillWriteProtectionHook(),
 		// W1 — graduated per-tool approval gate. Admin bypass and low-risk
-		// auto-allow keep the common path non-interactive; medium-risk tools
-		// consult the allowlist and deny with a CLI-grant pointer when no
-		// grant exists. The dynamic Telegram approval loop lands in Wave 3.
+		// auto-allow keep the common path non-interactive; medium/high-risk
+		// misses now pause on a Telegram approval card, then retry through
+		// the allowlist once the operator answers.
 		createGraduatedApprovalHook({
 			userId: opts.userId,
 			tier: opts.tier,
@@ -1066,6 +1315,11 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			// effectively "once". Pass undefined to opt out of session-scoped
 			// lookups in that path.
 			sessionKey: (opts as TelclaudeQueryOptions & { poolKey?: string }).poolKey,
+			chatId: opts.chatId,
+			actorId: opts.actorId,
+			threadId: opts.threadId,
+			timeoutMs: opts.timeoutMs,
+			abortSignal: abortController?.signal,
 		}),
 	];
 
