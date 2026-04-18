@@ -30,6 +30,7 @@ export type TelegramCommandId =
 	| "system"
 	| "system:sessions"
 	| "system:cron"
+	| "system:health"
 	| "social"
 	| "social:queue"
 	| "social:promote"
@@ -270,8 +271,8 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "System",
 		description: "Show runtime, security, service, and configuration status.",
-		usage: "/system [sessions|cron]",
-		examples: ["/system", "/system sessions", "/system cron"],
+		usage: "/system [sessions|cron|health]",
+		examples: ["/system", "/system sessions", "/system cron", "/system health"],
 		keywords: [
 			"system",
 			"status",
@@ -296,6 +297,30 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		usage: "/system sessions",
 		examples: ["/system sessions"],
 		keywords: ["sessions", "session state", "active sessions", "context"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "system:health",
+		name: "system",
+		domain: "system",
+		subcommand: "health",
+		category: "System",
+		description:
+			"Show a live system-health snapshot with per-service status and tap-through remediation.",
+		usage: "/system health",
+		examples: ["/system health"],
+		keywords: [
+			"health",
+			"healthcheck",
+			"diagnostics",
+			"providers",
+			"vault",
+			"oauth",
+			"heartbeat",
+			"approvals",
+		],
 		readOnly: true,
 		rateLimited: true,
 		hideFromCatalog: true,
