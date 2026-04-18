@@ -47,10 +47,10 @@ export function registerProviderQueryCommand(program: Command): void {
 		.option("--approval-token <token>", "Signed approval token for action-type requests")
 		.action(async (opts: ProviderQueryOptions) => {
 			try {
-				requireRelay();
 				console.error(
 					"Deprecated: use `telclaude providers query <provider-id> <service> <action>`.",
 				);
+				requireRelay();
 
 				const providerId = opts.provider?.trim();
 				const service = opts.service?.trim();
