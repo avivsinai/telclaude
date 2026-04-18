@@ -161,22 +161,8 @@ export type TelclaudeQueryOptions = {
 	/** Structured output format (JSON Schema). Agent returns validated data instead of free-form text. */
 	outputFormat?: OutputFormat;
 
-	/** Native/dev fallback credentials.
-	 * Docker deployments must keep raw credentials inside the relay and use
-	 * the git proxy / HTTP credential proxy instead of sandbox env injection. */
-	exposedCredentials?: ExposedCredentials;
-
 	/** Relay-compiled memory snapshot for Claude's local working-memory file. */
 	compiledMemoryMd?: string;
-};
-
-/**
- * Native/dev fallback credentials.
- * Narrow type — avoids turning the relay→agent payload into arbitrary env injection.
- */
-export type ExposedCredentials = {
-	githubToken?: string;
-	openaiApiKey?: string;
 };
 
 /**
