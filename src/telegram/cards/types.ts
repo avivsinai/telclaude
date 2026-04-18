@@ -10,6 +10,8 @@ export enum CardKind {
 	SkillsMenu = "SkillsMenu",
 	SocialMenu = "SocialMenu",
 	Session = "Session",
+	BackgroundJob = "BackgroundJob",
+	BackgroundJobList = "BackgroundJobList",
 }
 
 export type CardStatus = "active" | "consumed" | "expired" | "superseded";
@@ -102,6 +104,38 @@ export type SessionCardState = {
 	historyPreview?: string[];
 };
 
+export type BackgroundJobCardState = {
+	kind: CardKind.BackgroundJob;
+	title: string;
+	description?: string;
+	/** Short id surfaced in Telegram text + callback entity ref. */
+	shortId: string;
+	/** Payload kind for header icon. */
+	payloadKind: string;
+	status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+	/** One-line summary of the terminal result. */
+	resultSummary?: string;
+	/** Truncated stdout/stderr preview. */
+	outputPreview?: string;
+	errorMessage?: string;
+	createdAtMs: number;
+	startedAtMs?: number;
+	completedAtMs?: number;
+	lastRefreshedAtMs?: number;
+};
+
+export type BackgroundJobListCardState = {
+	kind: CardKind.BackgroundJobList;
+	title: string;
+	entries: Array<{
+		shortId: string;
+		label: string;
+		status: BackgroundJobCardState["status"];
+		createdAtMs: number;
+	}>;
+	lastRefreshedAtMs?: number;
+};
+
 export type CardStateMap = {
 	[CardKind.Approval]: ApprovalCardState;
 	[CardKind.PendingQueue]: PendingQueueCardState;
@@ -112,6 +146,8 @@ export type CardStateMap = {
 	[CardKind.SkillsMenu]: SkillsMenuCardState;
 	[CardKind.SocialMenu]: SocialMenuCardState;
 	[CardKind.Session]: SessionCardState;
+	[CardKind.BackgroundJob]: BackgroundJobCardState;
+	[CardKind.BackgroundJobList]: BackgroundJobListCardState;
 };
 
 export type CardState<K extends CardKind = CardKind> = CardStateMap[K];
@@ -162,6 +198,10 @@ export type SocialMenuCardAction =
 
 export type SessionCardAction = { type: "reset" } | { type: "view-history" } | { type: "refresh" };
 
+export type BackgroundJobCardAction = { type: "cancel-background-job" } | { type: "refresh" };
+
+export type BackgroundJobListCardAction = { type: "refresh" };
+
 export type CardActionMap = {
 	[CardKind.Approval]: ApprovalCardAction;
 	[CardKind.PendingQueue]: PendingQueueCardAction;
@@ -172,6 +212,8 @@ export type CardActionMap = {
 	[CardKind.SkillsMenu]: SkillsMenuCardAction;
 	[CardKind.SocialMenu]: SocialMenuCardAction;
 	[CardKind.Session]: SessionCardAction;
+	[CardKind.BackgroundJob]: BackgroundJobCardAction;
+	[CardKind.BackgroundJobList]: BackgroundJobListCardAction;
 };
 
 export type CardAction<K extends CardKind = CardKind> = CardActionMap[K];
@@ -194,6 +236,8 @@ const CARD_ACTIONS_BY_KIND = {
 	[CardKind.SkillsMenu]: ["open-drafts", "reload", "refresh"],
 	[CardKind.SocialMenu]: ["queue", "run", "log", "ask", "refresh"],
 	[CardKind.Session]: ["reset", "view-history", "refresh"],
+	[CardKind.BackgroundJob]: ["cancel-background-job", "refresh"],
+	[CardKind.BackgroundJobList]: ["refresh"],
 } as const satisfies { [K in CardKind]: readonly CardActionType<K>[] };
 
 export interface CardInstance<K extends CardKind = CardKind> {

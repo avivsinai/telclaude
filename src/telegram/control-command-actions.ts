@@ -1,14 +1,29 @@
 import type { Api } from "grammy";
+import {
+	cancelJob as cancelBackgroundJob,
+	getJobByShortId as getBackgroundJobByShortId,
+	listJobs as listBackgroundJobs,
+} from "../background/index.js";
 import { listDraftSkills } from "../commands/skills-promote.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { deleteSession } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import { getSessionManager } from "../sdk/session-manager.js";
 import { isAdmin } from "../security/linking.js";
-import { sendPendingQueueCard, sendSkillDraftCard } from "./cards/create-helpers.js";
+import {
+	sendBackgroundJobCard,
+	sendBackgroundJobListCard,
+	sendPendingQueueCard,
+	sendSkillDraftCard,
+} from "./cards/create-helpers.js";
 import { getEnabledSocialServices, type SocialServiceConfig } from "./cards/menu-state.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
-import type { CardActorScope } from "./cards/types.js";
+import type {
+	BackgroundJobCardState,
+	BackgroundJobListCardState,
+	CardActorScope,
+} from "./cards/types.js";
+import { CardKind } from "./cards/types.js";
 import { createTypingControllerFromCallback } from "./typing.js";
 import { createWizardPrompter, WizardCancelledError, WizardTimeoutError } from "./wizard/index.js";
 
@@ -346,4 +361,99 @@ export function startSocialAskWizard(
 				? `Reply with a question for ${services[0].id}`
 				: "Choose a service, then reply with your question",
 	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Background jobs
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BACKGROUND_LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export async function sendBackgroundJobList(
+	api: Api,
+	opts: { chatId: number; threadId?: number; actorScope: CardActorScope },
+): Promise<CommandUiResult> {
+	const sinceMs = Date.now() - BACKGROUND_LIST_WINDOW_MS;
+	const jobs = listBackgroundJobs({ sinceMs, limit: 25 });
+	const state: BackgroundJobListCardState = {
+		kind: CardKind.BackgroundJobList,
+		title: "Background Jobs",
+		entries: jobs.map((j) => ({
+			shortId: j.shortId,
+			label: j.title,
+			status: j.status as BackgroundJobCardState["status"],
+			createdAtMs: j.createdAtMs,
+		})),
+		lastRefreshedAtMs: Date.now(),
+	};
+	await sendBackgroundJobListCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+	return { callbackText: `Background jobs: ${jobs.length}` };
+}
+
+export async function sendBackgroundJobDetail(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+		shortId: string;
+	},
+): Promise<CommandUiResult> {
+	const job = getBackgroundJobByShortId(opts.shortId);
+	if (!job) {
+		await api.sendMessage(opts.chatId, `Background job \`${opts.shortId}\` not found.`, {
+			...threadOptions(opts.threadId),
+			parse_mode: "MarkdownV2",
+		});
+		return { callbackText: "Job not found", callbackAlert: true };
+	}
+
+	const outputPreview = [job.result?.stdout, job.result?.stderr].filter(Boolean).join("\n---\n");
+
+	const state: BackgroundJobCardState = {
+		kind: CardKind.BackgroundJob,
+		title: job.title,
+		description: job.description ?? undefined,
+		shortId: job.shortId,
+		payloadKind: job.payload.kind,
+		status: job.status as BackgroundJobCardState["status"],
+		resultSummary: job.result?.message,
+		outputPreview: outputPreview || undefined,
+		errorMessage: job.error ?? undefined,
+		createdAtMs: job.createdAtMs,
+		startedAtMs: job.startedAtMs ?? undefined,
+		completedAtMs: job.completedAtMs ?? undefined,
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendBackgroundJobCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+	return { callbackText: `Status: ${job.status}` };
+}
+
+export async function cancelBackgroundJobCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number; shortId: string },
+): Promise<CommandUiResult> {
+	const job = getBackgroundJobByShortId(opts.shortId);
+	if (!job) {
+		await api.sendMessage(opts.chatId, `Background job \`${opts.shortId}\` not found.`, {
+			...threadOptions(opts.threadId),
+			parse_mode: "MarkdownV2",
+		});
+		return { callbackText: "Not found", callbackAlert: true };
+	}
+	const { transitioned, job: updated } = cancelBackgroundJob(job.id);
+	const text = transitioned
+		? `Cancelled ${job.shortId}.`
+		: `No-op: job ${job.shortId} is ${updated?.status ?? "unknown"}.`;
+	await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+	return { callbackText: transitioned ? "Cancelled" : `No-op (${updated?.status})` };
 }
