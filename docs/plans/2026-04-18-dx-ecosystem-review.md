@@ -413,15 +413,15 @@ Any additional bugs surfaced during execution → fix in-flight under the owning
 | Workstream | Priority | Owner | Isolation | Status |
 |---|---|---|---|---|
 | Bug fixes (round 1) | P0 | claude | main | ✅ committed `532bbc0`, `c7dc242` |
-| W4 DM pairing codes | P0 | subagent A | merged `6286bcd` | ✅ landed on main (44 tests) |
-| W6 skill lifecycle | P1 | subagent B | merged `0bbdccd` | ✅ landed on main (19 tests); bug #13 (symlink scanner) surfaced as follow-up |
-| W12 `/background` jobs | P1 | subagent C | merged `9430404` | ✅ landed on main (17 tests); CLI command design chosen over directive |
-| W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | merged `222bdd4` | ✅ landed on main (7 atomic commits, 60+ test updates) |
-| W13 onboard + doctor + command-surface sweep (bugs #5–#11) | P0 | pending | own branch | queued (after W4/W6/W12 land) |
-| W1 graduated approvals | P0 | pending | worktree | Wave 2 |
-| W2 interactive pickers | P0 | pending | worktree | Wave 2 (needs W12) |
-| W10 `/system` health card | P0 | pending | worktree | Wave 2 |
-| W3 `/sethome` + cron | P1 | pending | worktree | Wave 2 |
+| W4 DM pairing codes | P0 | subagent A | merged `6286bcd` → origin `9dbc66d` | ✅ shipped (44 tests) |
+| W6 skill lifecycle | P1 | subagent B | merged `0bbdccd` → origin `9dbc66d` | ✅ shipped (19 tests + round-2 fixes); bug #13 (symlink scanner) surfaced as follow-up |
+| W12 `/background` jobs | P1 | subagent C | merged `9430404` → origin `9dbc66d` | ✅ shipped (17 tests); CLI command design chosen over directive |
+| W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | merged `222bdd4` → origin `9dbc66d` | ✅ shipped (7 atomic commits, 60+ test updates) |
+| W13 onboard + doctor + command-surface sweep (bugs #5–#11) | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
+| W1 graduated approvals | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
+| W2 interactive pickers | P0 | subagent | worktree | 🔄 Wave 2 dispatched (W12 dep satisfied) |
+| W10 `/system` health card | P0 | subagent | worktree | 🔄 Wave 2 dispatched |
+| W3 `/sethome` + cron | P1 | codex (AMQ) | branch `codex/w3-sethome` | 🔄 Wave 2 dispatched |
 | W8 exec-policy | P2 | pending | worktree | Wave 3 (integrates with W1) |
 | W9 skill signing | P2 | pending | worktree | Wave 3 (after W6) |
 | W14 gateway lifecycle | P2 | pending | worktree | Wave 3 |
