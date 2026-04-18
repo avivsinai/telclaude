@@ -387,31 +387,49 @@ Total committed scope: ~35–40 engineer-days across parallel workstreams.
 7. **W11 Composio** — ruled out.
 8. **W15 local dashboard** — yes; included in P2 scope.
 
-All known bugs also in scope for this arc:
-- `src/commands/skills-import.ts:346` default target → fixed in W6
-- `docs/providers.md` missing `telclaude network add` step → fixed in W7
-- Any other bugs surfaced during execution → fix in-flight under the owning workstream
+All known bugs also in scope for this arc. Codex bug-hunt 2026-04-18 found 12:
+
+| # | Sev | Bug | Owner |
+|---|---|---|---|
+| 1 | P0 | OAuth `confidentialClient: false` inconsistent w/ vault schema + refresh emitting client_secret | W7 (codex) |
+| 2 | P0 | `src/agent/client.ts:66-95` native FULL_ACCESS leaks `githubToken`/`openaiApiKey` to agents — invariant violation | ✅ fixed on main `c7dc242` (gated behind `TELCLAUDE_INSECURE_EXPOSE_NATIVE_CREDENTIALS=1`) |
+| 3 | P1 | `docker/init-firewall.sh` vs `src/sandbox/domains.ts` allowlist drift | W7 (codex) |
+| 4 | P1 | Telegram memory never asserts social-leak at runtime (social side does); invariant #8 only half-enforced | ✅ fixed on main `c7dc242` (assertNoSocialLeak) |
+| 5 | P1 | `doctor` scans `./.claude/skills` only; misses Claude home + bundled roots | W13 (command-surface sweep) |
+| 6 | P2 | TOTP refs still use removed top-level `telclaude totp-*` | W13 sweep |
+| 7 | P2 | Vault remediation refs use removed `telclaude vault-daemon` | W13 sweep |
+| 8 | P2 | OpenAI remediation refs use removed `telclaude setup-openai` | W13 sweep |
+| 9 | P2 | Git/GitHub/Google setup refs use removed `telclaude setup-*` top-level | W13 sweep |
+| 10 | P1 | Admin-claim success copy points to removed `/disable-2fa|/setup-2fa|/skip-totp` | W13 sweep |
+| 11 | P2 | CLAUDE.md emergency runbook uses removed `telclaude ban|unban|force-reauth` | W13 sweep |
+| 12 | P1 | Provider docs miss `telclaude network add` step + stale `setup-google` refs | ✅ partial fix on main `532bbc0` (network-add step added); remainder in W7 |
+
+Status key: ✅ fixed on main | 🔄 in-flight workstream | ⏳ pending
+
+Any additional bugs surfaced during execution → fix in-flight under the owning workstream.
 
 ## Execution plan
 
 | Workstream | Priority | Owner | Isolation | Status |
 |---|---|---|---|---|
-| Bug-fixes (round 1) | P0 | claude | branch `dx/bug-fixes-round-1` | in flight |
-| W4 DM pairing codes | P0 | subagent A | worktree | in flight |
-| W6 skill lifecycle | P1 | subagent B | worktree | in flight |
-| W7 providers.json megawin | P1 | codex (AMQ) | own branch | in flight |
-| W1 graduated approvals | P0 | claude or subagent C | worktree | pending Wave 2 |
-| W2 interactive pickers | P0 | claude or subagent D | worktree | pending Wave 2 (needs W12) |
-| W10 `/system` health card | P0 | subagent E | worktree | Wave 2 |
-| W12 `/background` jobs | P1 | subagent F | worktree | Wave 2 |
-| W13 onboard + doctor | P0 | claude | worktree | Wave 3 (consumes W7, W10) |
-| W3 `/sethome` + cron | P1 | subagent | worktree | Wave 3 |
-| W8 exec-policy | P2 | subagent | worktree | Wave 3 (integrates with W1) |
-| W9 skill signing | P2 | subagent | worktree | Wave 3 (after W6) |
-| W14 gateway lifecycle | P2 | subagent | worktree | Wave 3 |
-| W15 local dashboard | P2 | subagent | worktree | Wave 4 (consumes W10, W13) |
+| Bug fixes (round 1) | P0 | claude | main | ✅ committed `532bbc0`, `c7dc242` |
+| W4 DM pairing codes | P0 | subagent A | worktree (writes to main tree ⚠) | in flight |
+| W6 skill lifecycle | P1 | subagent B | worktree (writes to main tree ⚠) | in flight |
+| W12 `/background` jobs | P1 | subagent C | worktree (writes to main tree ⚠) | in flight |
+| W7 providers.json megawin (+ bugs #1, #3, #12-rest) | P1 | codex (AMQ) | branch `codex/w7-providers-json` | dispatched |
+| W13 onboard + doctor + command-surface sweep (bugs #5–#11) | P0 | pending | own branch | queued (after W4/W6/W12 land) |
+| W1 graduated approvals | P0 | pending | worktree | Wave 2 |
+| W2 interactive pickers | P0 | pending | worktree | Wave 2 (needs W12) |
+| W10 `/system` health card | P0 | pending | worktree | Wave 2 |
+| W3 `/sethome` + cron | P1 | pending | worktree | Wave 2 |
+| W8 exec-policy | P2 | pending | worktree | Wave 3 (integrates with W1) |
+| W9 skill signing | P2 | pending | worktree | Wave 3 (after W6) |
+| W14 gateway lifecycle | P2 | pending | worktree | Wave 3 |
+| W15 local dashboard | P2 | pending | worktree | Wave 4 (consumes W10, W13) |
 
-**Merge order**: bug-fixes → W7 + W6 (foundation) → W4, W12, W10 → W1, W2, W13 → W3, W8, W9, W14 → W15. Claude integrates and resolves conflicts at each wave boundary.
+**⚠ Note on worktree isolation**: the first wave of subagents (W4/W6/W12) were launched with `isolation: "worktree"` but their changes appeared in the main working tree rather than the allocated worktree dirs under `.claude/worktrees/`. Claude will untangle into per-workstream branches at the merge boundary. Subsequent waves will use explicit branch naming in the brief to force isolation.
+
+**Merge order**: bug fixes ✅ → [W4, W6, W12 split into per-workstream branches] → W7 → W10 + W13 → W1 + W2 → W3 + W8 + W9 + W14 → W15. Claude integrates and resolves conflicts at each wave boundary.
 
 **Codex-review gate**: per `~/.claude/CLAUDE.md`, significant changes get a codex review before landing on main. Every workstream PR gets an AMQ review request.
 
