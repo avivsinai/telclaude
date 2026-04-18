@@ -57,7 +57,7 @@ export function registerVaultCommand(program: Command): void {
 			try {
 				if (!(await isVaultAvailable())) {
 					console.error("Error: Vault daemon is not running.");
-					console.error("Start it with: telclaude vault-daemon");
+					console.error("Start it with: telclaude maintenance vault-daemon");
 					process.exit(1);
 				}
 
@@ -167,7 +167,7 @@ export function registerVaultCommand(program: Command): void {
 				try {
 					if (!(await isVaultAvailable())) {
 						console.error("Error: Vault daemon is not running.");
-						console.error("Start it with: telclaude vault-daemon");
+						console.error("Start it with: telclaude maintenance vault-daemon");
 						process.exit(1);
 					}
 
@@ -370,7 +370,7 @@ export function registerVaultCommand(program: Command): void {
 			try {
 				if (!(await isVaultAvailable())) {
 					console.error("Error: Vault daemon is not running.");
-					console.error("Start it with: telclaude vault-daemon");
+					console.error("Start it with: telclaude maintenance vault-daemon");
 					process.exit(1);
 				}
 
@@ -408,7 +408,7 @@ export function registerVaultCommand(program: Command): void {
 			try {
 				if (!(await isVaultAvailable())) {
 					console.error("Error: Vault daemon is not running.");
-					console.error("Start it with: telclaude vault-daemon");
+					console.error("Start it with: telclaude maintenance vault-daemon");
 					process.exit(1);
 				}
 

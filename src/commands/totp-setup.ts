@@ -30,7 +30,7 @@ export function registerTOTPSetupCommand(program: Command): void {
 			const available = await client.isAvailable();
 			if (!available) {
 				console.error("\n❌ TOTP daemon is not running.");
-				console.error("Start it with: telclaude totp-daemon\n");
+				console.error("Start it with: telclaude maintenance totp-daemon\n");
 				process.exit(1);
 			}
 
@@ -89,14 +89,14 @@ export function registerTOTPSetupCommand(program: Command): void {
 
 			if (!/^\d{6}$/.test(code)) {
 				console.error("\n❌ Invalid code format. Please enter a 6-digit number.");
-				console.error(`Setup incomplete - you can try again with: telclaude totp-setup ${userId}`);
+				console.error(`Setup incomplete - you can try again with: telclaude auth setup ${userId}`);
 				process.exit(1);
 			}
 
 			const valid = await client.verify(userId, code);
 			if (!valid) {
 				console.error("\n❌ Invalid code. Please check your authenticator and try again.");
-				console.error(`Setup incomplete - you can try again with: telclaude totp-setup ${userId}`);
+				console.error(`Setup incomplete - you can try again with: telclaude auth setup ${userId}`);
 				process.exit(1);
 			}
 
@@ -104,6 +104,6 @@ export function registerTOTPSetupCommand(program: Command): void {
 			console.log(
 				`   User '${userId}' will be prompted to verify identity periodically via authenticator code.`,
 			);
-			console.log(`\n   To disable 2FA later: telclaude totp-disable ${userId}`);
+			console.log(`\n   To disable 2FA later: telclaude auth disable ${userId}`);
 		});
 }

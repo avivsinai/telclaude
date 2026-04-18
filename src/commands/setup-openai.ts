@@ -59,7 +59,7 @@ export function registerSetupOpenAICommand(program: Command): void {
 							console.log("OpenAI API key is configured via OPENAI_API_KEY environment variable.");
 						} else {
 							console.log("No OpenAI API key configured.");
-							console.log("Run: telclaude setup-openai");
+							console.log("Run: telclaude secrets setup-openai");
 						}
 					}
 					return;

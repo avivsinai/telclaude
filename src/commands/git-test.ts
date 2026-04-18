@@ -37,7 +37,7 @@ export function registerGitTestCommand(program: Command): void {
 					console.log(`   ✓ Credentials found in: ${source}`);
 				} else {
 					console.log("   ✗ No credentials configured");
-					console.log("     Run: telclaude setup-git");
+					console.log("     Run: telclaude secrets setup-git");
 					allPassed = false;
 				}
 				console.log("");
@@ -90,13 +90,13 @@ export function registerGitTestCommand(program: Command): void {
 						console.log("   ✓ Git identity is configured");
 					} else {
 						console.log("   ⚠ Git identity not fully configured");
-						console.log("     Run: telclaude setup-git --apply");
+						console.log("     Run: telclaude secrets setup-git --apply");
 					}
 				} catch {
 					console.log("   user.name:  (not set)");
 					console.log("   user.email: (not set)");
 					console.log("   ⚠ Git identity not configured");
-					console.log("     Run: telclaude setup-git --apply");
+					console.log("     Run: telclaude secrets setup-git --apply");
 				}
 				console.log("");
 
@@ -155,7 +155,7 @@ export function registerGitTestCommand(program: Command): void {
 					process.exit(1);
 				} else {
 					console.log("✗ Git credentials not configured");
-					console.log("  Run: telclaude setup-git");
+					console.log("  Run: telclaude secrets setup-git");
 					process.exit(1);
 				}
 			} catch (err) {
