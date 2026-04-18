@@ -9,6 +9,7 @@ import { registerAgentCommand } from "./commands/agent.js";
 import { registerApprovalsCommand } from "./commands/approvals.js";
 import { registerBackgroundCommand } from "./commands/background.js";
 import { registerCronCommand } from "./commands/cron.js";
+import { registerDashboardCommand } from "./commands/dashboard.js";
 import { registerDiagnoseSandboxNetworkCommand } from "./commands/diagnose-sandbox-network.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerFetchAttachmentCommand } from "./commands/fetch-attachment.js";
@@ -136,6 +137,9 @@ registerVaultCommand(maintenance);
 
 // --- approvals (graduated approval allowlist, Workstream W1) ---
 registerApprovalsCommand(program);
+
+// --- dashboard (local loopback-only web UI, Workstream W15) ---
+registerDashboardCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal commands (used by agent skills, not in the public hierarchy)
