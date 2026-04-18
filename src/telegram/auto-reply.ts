@@ -1493,6 +1493,7 @@ export async function monitorTelegramProvider(
 				allowedChats: cfg.telegram?.allowedChats,
 				groupChat: cfg.telegram?.groupChat,
 				secretFilterConfig: cfg.security?.secretFilter,
+				pairing: cfg.security?.pairing,
 				onMessage: async (msg) => {
 					await handleInboundMessage(
 						msg,
