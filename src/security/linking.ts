@@ -199,6 +199,16 @@ export function getIdentityLink(chatId: number): IdentityLink | null {
 }
 
 /**
+ * Resolve the stable approval/ownership identity for a Telegram chat.
+ *
+ * Linked chats use the local user id so grants survive across future chats
+ * for the same operator. Unlinked chats fall back to a chat-scoped identity.
+ */
+export function resolveTelegramIdentity(chatId: number): string {
+	return getIdentityLink(chatId)?.localUserId ?? `tg:${chatId}`;
+}
+
+/**
  * Remove an identity link for a chat.
  * Also invalidates any TOTP session for the linked user.
  */
