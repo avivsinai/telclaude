@@ -415,7 +415,23 @@ export async function handleCallback(
 				expectedRevision: currentCard.revision,
 				patch: nextExpiresAt === currentCard.expiresAt ? undefined : { expiresAt: nextExpiresAt },
 			});
-			finalCard = touched ?? currentCard;
+			if (!touched) {
+				const latestCard = getCard(card.cardId) ?? currentCard;
+				await renderCardMessage(ctx, latestCard, renderer);
+				await responder.answer({ text: "Card outdated", show_alert: true });
+				await logCallbackAudit(options.auditLogger, {
+					card: latestCard,
+					shortId: token.shortId,
+					action: token.action,
+					chatId: latestCard.chatId,
+					actorId,
+					username: ctx.from.username,
+					outcome: "blocked",
+					errorType: "revision_conflict",
+				});
+				return;
+			}
+			finalCard = touched;
 		} else {
 			const updatedCard = updateCard({
 				cardId: currentCard.cardId,

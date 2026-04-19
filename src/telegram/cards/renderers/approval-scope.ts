@@ -23,6 +23,20 @@ const logger = getChildLogger({ module: "approval-scope-card" });
 
 type K = typeof CardKind.ApprovalScope;
 
+function missingWaiterResult(card: CardInstance<K>): CardExecutionResult<K> {
+	return {
+		state: {
+			...card.state,
+			denied: true,
+			scopeChosen: undefined,
+			explanation: "Approval session reset after a relay restart. Retry the original action.",
+		},
+		status: "consumed",
+		callbackText: "Approval session reset. Retry the original action.",
+		callbackAlert: true,
+	};
+}
+
 function scopeFromAction(action: ApprovalScopeCardAction): ApprovalScope | null {
 	switch (action.type) {
 		case "approve-once":
@@ -128,6 +142,13 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 		if (action.type === "deny") {
 			const result = denyApproval(nonce, card.chatId);
 			if (!result.success) {
+				if (!hasPendingToolApprovalWait(nonce) && result.error.includes("No pending approval")) {
+					logger.warn(
+						{ nonce, toolKey: card.state.toolKey },
+						"approval-scope card: deny on stale waiter",
+					);
+					return missingWaiterResult(card);
+				}
 				logger.warn({ nonce, error: result.error }, "approval-scope card: denyApproval failed");
 				return {
 					callbackText: `Denial failed: ${result.error}`,
@@ -161,17 +182,7 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 				{ nonce, toolKey: card.state.toolKey },
 				"approval-scope card: missing live waiter",
 			);
-			return {
-				state: {
-					...card.state,
-					denied: true,
-					scopeChosen: undefined,
-					explanation: "Approval session reset after a relay restart. Retry the original action.",
-				},
-				status: "consumed",
-				callbackText: "Approval session reset. Retry the original action.",
-				callbackAlert: true,
-			};
+			return missingWaiterResult(card);
 		}
 
 		// Enforce the tier cap at execute time (defense-in-depth beyond the
