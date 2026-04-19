@@ -8,6 +8,7 @@ let buildCallbackToken: typeof import("../../../src/telegram/cards/callback-toke
 let CardRegistry: typeof import("../../../src/telegram/cards/registry.js").CardRegistry;
 let createCard: typeof import("../../../src/telegram/cards/store.js").createCard;
 let createApproval: typeof import("../../../src/security/approvals.js").createApproval;
+let denyApproval: typeof import("../../../src/security/approvals.js").denyApproval;
 let getCard: typeof import("../../../src/telegram/cards/store.js").getCard;
 let getPendingApprovalsForChat: typeof import(
 	"../../../src/security/approvals.js"
@@ -89,7 +90,9 @@ describe("card hardening", () => {
 		({ buildCallbackToken } = await import("../../../src/telegram/cards/callback-tokens.js"));
 		({ CardRegistry } = await import("../../../src/telegram/cards/registry.js"));
 		({ createCard, getCard } = await import("../../../src/telegram/cards/store.js"));
-		({ createApproval, getPendingApprovalsForChat } = await import("../../../src/security/approvals.js"));
+		({ createApproval, denyApproval, getPendingApprovalsForChat } = await import(
+			"../../../src/security/approvals.js"
+		));
 		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
 		({ registerAllCardRenderers } = await import(
 			"../../../src/telegram/cards/renderers/index.js"
@@ -402,5 +405,128 @@ describe("card hardening", () => {
 		);
 		expect(getCard(card.cardId)?.state).not.toHaveProperty("scopeChosen");
 		expect(getPendingApprovalsForChat(chatId)).toHaveLength(0);
+	});
+
+	it("fails closed on deny after restart when the approval row is already gone", async () => {
+		const chatId = 142;
+		const actorId = 142;
+		const { nonce } = createApproval({
+			requestId: "restart-deny-test",
+			chatId,
+			tier: "WRITE_LOCAL",
+			body: "Claude wants to edit README.md",
+			from: `tg:${chatId}`,
+			to: "tool-approval",
+			messageId: "restart-deny-test",
+			observerClassification: "ALLOW",
+			observerConfidence: 1,
+			riskTier: "medium",
+			toolKey: "Edit",
+			sessionKey: `tg:${chatId}`,
+		});
+
+		const sendMessage = vi.fn(async () => ({ message_id: 80 }));
+		const card = await sendApprovalScopeCard({ sendMessage } as any, chatId, {
+			title: "Approve Edit",
+			body: "Edit README.md",
+			nonce,
+			toolKey: "Edit",
+			riskTier: "medium",
+			actorScope: `user:${actorId}`,
+		});
+		expect(denyApproval(nonce, chatId).success).toBe(true);
+
+		vi.resetModules();
+		({ getCard } = await import("../../../src/telegram/cards/store.js"));
+		({ getPendingApprovalsForChat } = await import("../../../src/security/approvals.js"));
+		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
+		({ registerAllCardRenderers } = await import(
+			"../../../src/telegram/cards/renderers/index.js"
+		));
+		registerAllCardRenderers();
+
+		const denyButton = findButton(sendMessage.mock.calls[0]?.[2]?.reply_markup, "Deny");
+		const answerCallbackQuery = vi.fn(async () => {});
+		const editMessageText = vi.fn(async () => {});
+		await handleCallback({
+			callbackQuery: {
+				data: denyButton?.callback_data,
+				message: { message_id: card.messageId },
+			},
+			chat: { id: chatId },
+			from: { id: actorId, username: "tester" },
+			api: { editMessageText },
+			answerCallbackQuery,
+		} as any);
+
+		expect(answerCallbackQuery).toHaveBeenCalledWith(
+			expect.objectContaining({
+				show_alert: true,
+				text: "Approval session reset. Retry the original action.",
+			}),
+		);
+		expect(getCard(card.cardId)).toEqual(
+			expect.objectContaining({
+				status: "consumed",
+				state: expect.objectContaining({
+					denied: true,
+				}),
+			}),
+		);
+		expect(getPendingApprovalsForChat(chatId)).toHaveLength(0);
+	});
+
+	it("reports touch-path revision conflicts as outdated instead of success", async () => {
+		const card = createCard({
+			kind: CardKind.Status,
+			chatId: 777,
+			messageId: 81,
+			actorScope: "user:101",
+			entityRef: "status",
+			state: {
+				kind: CardKind.Status,
+				title: "Status",
+				summary: "healthy",
+			},
+			expiresAt: Date.now() + 60_000,
+		});
+
+		vi.resetModules();
+		vi.doMock("../../../src/telegram/cards/store.js", async () => {
+			const actual = await vi.importActual<typeof import("../../../src/telegram/cards/store.js")>(
+				"../../../src/telegram/cards/store.js",
+			);
+			return {
+				...actual,
+				touchCard: vi.fn(() => null),
+			};
+		});
+		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
+
+		const registry = new CardRegistry();
+		registry.register(CardKind.Status, {
+			render: () => ({
+				text: "Status",
+				parseMode: "MarkdownV2",
+				keyboard: null,
+			}),
+			reduce: (current) => current.state,
+			execute: async () => ({
+				callbackText: "Done",
+				rerender: false,
+			}),
+		});
+
+		const { ctx, answerCallbackQuery } = makeCallbackContext({
+			card,
+			actorId: 101,
+			action: "refresh",
+		});
+		await handleCallback(ctx, { registry });
+
+		expect(answerCallbackQuery).toHaveBeenCalledWith({
+			text: "Card outdated",
+			show_alert: true,
+		});
 	});
 });
