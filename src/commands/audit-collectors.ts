@@ -21,7 +21,6 @@ import { getSandboxMode } from "../sandbox/index.js";
 import { auditSandboxPosture } from "../sandbox/validate-config.js";
 import { TIER_TOOLS } from "../security/permissions.js";
 import { scanAllSkills } from "../security/skill-scanner.js";
-import { getAllDraftSkillRoots, getWritableSkillRootCandidates } from "./skill-path.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -308,9 +307,17 @@ export function collectFilesystemFindings(cwd: string): AuditFinding[] {
 
 export function collectSkillTrustFindings(cwd: string): AuditFinding[] {
 	const findings: AuditFinding[] = [];
-	const activeRoots = getWritableSkillRootCandidates(cwd);
-	const draftRoots = getAllDraftSkillRoots(cwd);
-	const skillRoots = [...activeRoots, ...draftRoots];
+
+	const skillRoots = [
+		path.join(cwd, ".claude", "skills"),
+		path.join(cwd, ".claude", "skills-draft"),
+	];
+
+	// Also check CLAUDE_CONFIG_DIR skills (Docker profiles)
+	const configDir = process.env.CLAUDE_CONFIG_DIR;
+	if (configDir) {
+		skillRoots.push(path.join(configDir, "skills"));
+	}
 
 	let totalSkills = 0;
 	let blockedSkills = 0;
@@ -343,8 +350,8 @@ export function collectSkillTrustFindings(cwd: string): AuditFinding[] {
 	}
 
 	// Skills-draft directory exists — draft skills are unvetted
-	for (const draftDir of draftRoots) {
-		if (!fs.existsSync(draftDir)) continue;
+	const draftDir = path.join(cwd, ".claude", "skills-draft");
+	if (fs.existsSync(draftDir)) {
 		try {
 			const entries = fs.readdirSync(draftDir, { withFileTypes: true });
 			const draftCount = entries.filter((e) => e.isDirectory()).length;

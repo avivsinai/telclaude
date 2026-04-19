@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	getAllDraftSkillRoots,
 	getAllSkillRoots,
 	getDraftSkillRoot,
 	getSkillRoot,
@@ -22,22 +21,17 @@ describe("resolveSkillAssetPath", () => {
 	let tempRoot = "";
 	let projectRoot = "";
 	let claudeHome = "";
-	let skillCatalog = "";
 	let originalClaudeConfigDir: string | undefined;
 	let originalTelclaudeClaudeHome: string | undefined;
-	let originalSkillCatalogDir: string | undefined;
 
 	beforeEach(() => {
 		tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "skill-path-test-"));
 		projectRoot = path.join(tempRoot, "project");
 		claudeHome = path.join(tempRoot, "claude-home");
-		skillCatalog = path.join(tempRoot, "skill-catalog");
 		fs.mkdirSync(projectRoot, { recursive: true });
 		fs.mkdirSync(claudeHome, { recursive: true });
-		fs.mkdirSync(skillCatalog, { recursive: true });
 		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 		originalTelclaudeClaudeHome = process.env.TELCLAUDE_CLAUDE_HOME;
-		originalSkillCatalogDir = process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 	});
 
 	afterEach(() => {
@@ -51,12 +45,6 @@ describe("resolveSkillAssetPath", () => {
 			delete process.env.TELCLAUDE_CLAUDE_HOME;
 		} else {
 			process.env.TELCLAUDE_CLAUDE_HOME = originalTelclaudeClaudeHome;
-		}
-
-		if (originalSkillCatalogDir === undefined) {
-			delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
-		} else {
-			process.env.TELCLAUDE_SKILL_CATALOG_DIR = originalSkillCatalogDir;
 		}
 
 		if (tempRoot && fs.existsSync(tempRoot)) {
@@ -113,36 +101,6 @@ describe("resolveSkillAssetPath", () => {
 		);
 	});
 
-	it("prefers TELCLAUDE_SKILL_CATALOG_DIR over CLAUDE_CONFIG_DIR for skill resolution", () => {
-		process.env.CLAUDE_CONFIG_DIR = claudeHome;
-		process.env.TELCLAUDE_SKILL_CATALOG_DIR = skillCatalog;
-		const managedFile = writeSkillFile(skillCatalog, "weather", "scripts/weather.sh", "managed");
-		writeSkillFile(claudeHome, "weather", "scripts/weather.sh", "configured");
-
-		expect(resolveSkillAssetPath("weather", "scripts/weather.sh", { cwd: projectRoot })).toBe(
-			managedFile,
-		);
-	});
-
-	it("prefers TELCLAUDE_SKILL_CATALOG_DIR over project-local skills", () => {
-		process.env.TELCLAUDE_SKILL_CATALOG_DIR = skillCatalog;
-		const projectFile = path.join(
-			projectRoot,
-			".claude",
-			"skills",
-			"weather",
-			"scripts",
-			"weather.sh",
-		);
-		fs.mkdirSync(path.dirname(projectFile), { recursive: true });
-		fs.writeFileSync(projectFile, "project", "utf8");
-		const managedFile = writeSkillFile(skillCatalog, "weather", "scripts/weather.sh", "managed");
-
-		expect(resolveSkillAssetPath("weather", "scripts/weather.sh", { cwd: projectRoot })).toBe(
-			managedFile,
-		);
-	});
-
 	it("rejects traversal attempts in relative paths", () => {
 		expect(() =>
 			resolveSkillAssetPath("weather", "../secrets.txt", { cwd: projectRoot }),
@@ -159,20 +117,15 @@ describe("resolveSkillAssetPath", () => {
 describe("getSkillRoot / getDraftSkillRoot", () => {
 	let tempRoot = "";
 	let projectRoot = "";
-	let skillCatalog = "";
 	let originalClaudeConfigDir: string | undefined;
 	let originalTelclaudeClaudeHome: string | undefined;
-	let originalSkillCatalogDir: string | undefined;
 
 	beforeEach(() => {
 		tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "skill-root-test-"));
 		projectRoot = path.join(tempRoot, "project");
-		skillCatalog = path.join(tempRoot, "skill-catalog");
 		fs.mkdirSync(projectRoot, { recursive: true });
-		fs.mkdirSync(skillCatalog, { recursive: true });
 		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 		originalTelclaudeClaudeHome = process.env.TELCLAUDE_CLAUDE_HOME;
-		originalSkillCatalogDir = process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 	});
 
 	afterEach(() => {
@@ -188,12 +141,6 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 			process.env.TELCLAUDE_CLAUDE_HOME = originalTelclaudeClaudeHome;
 		}
 
-		if (originalSkillCatalogDir === undefined) {
-			delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
-		} else {
-			process.env.TELCLAUDE_SKILL_CATALOG_DIR = originalSkillCatalogDir;
-		}
-
 		if (tempRoot && fs.existsSync(tempRoot)) {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
@@ -202,7 +149,6 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 	it("creates and returns the project-local skills root", () => {
 		delete process.env.CLAUDE_CONFIG_DIR;
 		delete process.env.TELCLAUDE_CLAUDE_HOME;
-		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 
 		const root = getSkillRoot(projectRoot);
 		expect(root).toBe(path.join(projectRoot, ".claude", "skills"));
@@ -225,19 +171,9 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 		}
 	});
 
-	it("prefers TELCLAUDE_SKILL_CATALOG_DIR over CLAUDE_CONFIG_DIR for writable roots", () => {
-		process.env.CLAUDE_CONFIG_DIR = path.join(tempRoot, "claude-home");
-		process.env.TELCLAUDE_SKILL_CATALOG_DIR = skillCatalog;
-		fs.mkdirSync(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
-
-		expect(getSkillRoot(projectRoot)).toBe(path.join(skillCatalog, "skills"));
-		expect(getDraftSkillRoot(projectRoot)).toBe(path.join(skillCatalog, "skills-draft"));
-	});
-
 	it("throws SkillRootUnavailableError when no candidate is writable", () => {
 		delete process.env.CLAUDE_CONFIG_DIR;
 		delete process.env.TELCLAUDE_CLAUDE_HOME;
-		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 		// Make the cwd's .claude parent unwritable.
 		fs.chmodSync(projectRoot, 0o500);
 		try {
@@ -250,7 +186,6 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 	it("exposes the matching draft root", () => {
 		delete process.env.CLAUDE_CONFIG_DIR;
 		delete process.env.TELCLAUDE_CLAUDE_HOME;
-		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 
 		const root = getDraftSkillRoot(projectRoot);
 		expect(root).toBe(path.join(projectRoot, ".claude", "skills-draft"));
@@ -260,21 +195,11 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 	it("returns all skill roots including the bundled fallback", () => {
 		delete process.env.CLAUDE_CONFIG_DIR;
 		delete process.env.TELCLAUDE_CLAUDE_HOME;
-		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 
 		const roots = getAllSkillRoots(projectRoot);
 		// First root should be project-local.
 		expect(roots[0]).toBe(path.join(projectRoot, ".claude", "skills"));
 		// At least one bundled root at the end (resolved inside the telclaude package).
 		expect(roots.length).toBeGreaterThanOrEqual(1);
-	});
-
-	it("returns all draft roots including the managed catalog when configured", () => {
-		process.env.TELCLAUDE_SKILL_CATALOG_DIR = skillCatalog;
-
-		const roots = getAllDraftSkillRoots(projectRoot);
-		expect(roots).toContain(path.join(projectRoot, ".claude", "skills-draft"));
-		expect(roots).toContain(path.join(skillCatalog, "skills-draft"));
-		expect(roots).not.toContain(path.join(projectRoot, ".claude", "skills"));
 	});
 });

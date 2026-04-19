@@ -1,11 +1,11 @@
 /**
  * Skill promotion command.
  *
- * Promotes agent-drafted skills from the canonical draft quarantine to the
- * canonical active skill directory after validation.
+ * Promotes agent-drafted skills from quarantine (.claude/skills-draft/)
+ * to the active skill directory (.claude/skills/) after validation.
  *
  * Flow:
- * 1. Agent writes to <draft-root>/<name>/SKILL.md (quarantine)
+ * 1. Agent writes to .claude/skills-draft/<name>/SKILL.md (quarantine)
  * 2. Operator reviews via /promote-skill <name> or CLI
  * 3. Scanner + validation runs on the draft
  * 4. On pass, skill is moved to active directory
@@ -26,7 +26,6 @@ import { CardKind } from "../telegram/cards/types.js";
 import type { VaultClient } from "../vault-daemon/client.js";
 import { copyDirRecursive } from "./cli-utils.js";
 import {
-	getAllDraftSkillRoots,
 	getAllSkillRoots,
 	getDraftSkillRoot,
 	getSkillRoot,
@@ -233,7 +232,7 @@ function findExistingDraftRootFor(skillName: string): string | null {
  * when cwd isn't writable) are still surfaced.
  */
 export function listDraftSkills(draftRoot?: string): string[] {
-	const roots = draftRoot ? [draftRoot] : getAllDraftSkillRoots();
+	const roots = draftRoot ? [draftRoot] : getWritableDraftSkillRootCandidates();
 	const seen = new Set<string>();
 	for (const root of roots) {
 		if (!fs.existsSync(root)) continue;

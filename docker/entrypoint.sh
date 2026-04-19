@@ -25,7 +25,6 @@ TELCLAUDE_UID="${TELCLAUDE_UID:-1000}"
 TELCLAUDE_GID="${TELCLAUDE_GID:-1000}"
 TELCLAUDE_CLAUDE_HOME="${TELCLAUDE_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-/home/telclaude-skills}}"
 TELCLAUDE_AUTH_DIR="${TELCLAUDE_AUTH_DIR:-/home/telclaude-auth}"
-TELCLAUDE_SKILL_CATALOG_DIR="${TELCLAUDE_SKILL_CATALOG_DIR:-}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Privileged Operations (run as root)
@@ -64,7 +63,7 @@ if [ "$(id -u)" = "0" ]; then
     touch /home/node/.telclaude/logs/telclaude.log
     chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" /home/node/.telclaude 2>/dev/null || true
 
-    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" "${TELCLAUDE_AUTH_DIR}" "${TELCLAUDE_SKILL_CATALOG_DIR}" /media/inbox /media/outbox; do
+    for dir in /data /home/node "${TELCLAUDE_CLAUDE_HOME}" "${TELCLAUDE_AUTH_DIR}" /media/inbox /media/outbox; do
         if [ -d "$dir" ]; then
             # Only chown if not already owned by the target user
             if [ "$(stat -c '%u' "$dir" 2>/dev/null || stat -f '%u' "$dir" 2>/dev/null)" != "$TELCLAUDE_UID" ]; then

@@ -5,14 +5,14 @@
  * OpenClaw skills are pure markdown (SKILL.md + frontmatter) — same family
  * as Claude skills. Most work in telclaude with a thin adapter.
  *
- * Imports land in the canonical draft quarantine (<draft-root>/<name>); operator
+ * Imports land in the draft quarantine (.claude/skills-draft/<name>/); operator
  * runs `telclaude skills promote <name>` or `/skills promote <name>` to activate.
  * This keeps imports on the same review path as locally authored skills.
  *
  * Steps:
  * 1. Read OpenClaw skill dirs (skills/, .agents/skills/, extensions/&lt;ext&gt;/skills)
  * 2. Convert frontmatter: keep name, description, allowed-tools; strip OpenClaw-specific
- * 3. Copy to <draft-root>/<skill-name>/SKILL.md (quarantine, not active)
+ * 3. Copy to .claude/skills-draft/<skill-name>/SKILL.md (quarantine, not active)
  * 4. Run skill scanner before activation — block malicious patterns
  * 5. Refuse auto-install directives
  * 6. Report results
@@ -22,12 +22,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import { scanSkill } from "../security/skill-scanner.js";
-import {
-	getAllDraftSkillRoots,
-	getAllSkillRoots,
-	getDraftSkillRoot,
-	SkillRootUnavailableError,
-} from "./skill-path.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // OpenClaw Skill Discovery
@@ -349,12 +343,13 @@ export function registerSkillsImportSubcommands(parent: Command): void {
 	parent
 		.command("import-openclaw")
 		.description(
-			"Import skills from an OpenClaw-format directory into the canonical draft quarantine",
+			"Import skills from an OpenClaw-format directory into the draft quarantine (.claude/skills-draft/)",
 		)
 		.argument("<source>", "Path to OpenClaw source directory")
 		.option(
 			"--target <dir>",
-			"Target directory for imported skills (default: the canonical draft-skill root; promote with `telclaude skills promote <name>`)",
+			"Target directory for imported skills (default: .claude/skills-draft/; promote with `telclaude skills promote <name>`)",
+			path.join(process.cwd(), ".claude", "skills-draft"),
 		)
 		.option("--dry-run", "Show what would be imported without copying")
 		.option(
@@ -364,7 +359,7 @@ export function registerSkillsImportSubcommands(parent: Command): void {
 		.action(
 			async (
 				source: string,
-				options: { target?: string; dryRun?: boolean; allowAutoInstall?: boolean },
+				options: { target: string; dryRun?: boolean; allowAutoInstall?: boolean },
 			) => {
 				const sourceDir = path.resolve(source);
 
@@ -373,20 +368,9 @@ export function registerSkillsImportSubcommands(parent: Command): void {
 					process.exit(1);
 				}
 
-				let targetRoot: string;
-				try {
-					targetRoot = options.target ? path.resolve(options.target) : getDraftSkillRoot();
-				} catch (err) {
-					if (err instanceof SkillRootUnavailableError) {
-						console.error(err.message);
-						process.exit(1);
-					}
-					throw err;
-				}
-
 				console.log(`=== OpenClaw Skill Import ===\n`);
 				console.log(`Source: ${sourceDir}`);
-				console.log(`Target: ${targetRoot}\n`);
+				console.log(`Target: ${options.target}\n`);
 
 				if (options.dryRun) {
 					console.log("(dry run — no files will be copied)\n");
@@ -402,7 +386,7 @@ export function registerSkillsImportSubcommands(parent: Command): void {
 					return;
 				}
 
-				const result = importSkills(sourceDir, targetRoot, options.allowAutoInstall);
+				const result = importSkills(sourceDir, options.target, options.allowAutoInstall);
 
 				console.log("\n=== Import Summary ===");
 				console.log(
@@ -440,10 +424,13 @@ export function registerSkillsImportSubcommands(parent: Command): void {
 			if (options.path) {
 				skillRoots.push(path.resolve(options.path));
 			} else {
-				skillRoots.push(
-					...getAllSkillRoots(process.cwd()),
-					...getAllDraftSkillRoots(process.cwd()),
-				);
+				const cwd = process.cwd();
+				skillRoots.push(path.join(cwd, ".claude", "skills"));
+				skillRoots.push(path.join(cwd, ".claude", "skills-draft"));
+				const configDir = process.env.CLAUDE_CONFIG_DIR;
+				if (configDir) {
+					skillRoots.push(path.join(configDir, "skills"));
+				}
 			}
 
 			console.log("=== Skill Scanner ===\n");

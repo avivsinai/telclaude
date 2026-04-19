@@ -139,13 +139,12 @@ RUN groupmod -g ${USER_GID} node \
     && mkdir -p /home/node/.telclaude/sandbox-tmp \
     && mkdir -p /home/telclaude-auth \
     && mkdir -p /home/telclaude-skills \
-    && mkdir -p /home/telclaude-skill-catalog \
     && mkdir -p /workspace \
     && mkdir -p /data \
     # Remove shell rc files to prevent noisy "Permission denied" errors
     # when bash tries to source them inside the sandbox (which blocks reads)
     && rm -f /home/node/.bashrc /home/node/.profile \
-    && chown -R node:node /home/node /home/telclaude-auth /home/telclaude-skills /home/telclaude-skill-catalog /workspace /data
+    && chown -R node:node /home/node /home/telclaude-auth /home/telclaude-skills /workspace /data
 
 # Copy Claude CLI from builder stage
 COPY --from=claude-cli /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@anthropic-ai

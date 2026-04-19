@@ -115,10 +115,6 @@ export const VALIDATED_CLAUDE_AUTH_DIR = resolveEnvDir(
 	process.env.TELCLAUDE_AUTH_DIR,
 	"TELCLAUDE_AUTH_DIR",
 );
-export const VALIDATED_SKILL_CATALOG_DIR = resolveEnvDir(
-	process.env.TELCLAUDE_SKILL_CATALOG_DIR,
-	"TELCLAUDE_SKILL_CATALOG_DIR",
-);
 
 // Use TELCLAUDE_DATA_DIR if set and valid (Docker), otherwise ~/.telclaude (native)
 export const CONFIG_DIR = VALIDATED_DATA_DIR || `${os.homedir()}/.telclaude`;

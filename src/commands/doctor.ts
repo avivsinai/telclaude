@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { resolveConfigPath } from "../config/path.js";
@@ -32,7 +33,7 @@ import {
 	type DoctorReport,
 	worstStatus,
 } from "./doctor-helpers.js";
-import { getAllDraftSkillRoots, getAllSkillRoots } from "./skill-path.js";
+import { getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "cmd-doctor" });
 
@@ -293,7 +294,10 @@ function runSecretsDump(stream: NodeJS.WriteStream): void {
 
 function runSkillsDump(stream: NodeJS.WriteStream): void {
 	stream.write("\n\u{1F50D} Skill Static Code Scanner\n");
-	const roots = [...getAllSkillRoots(), ...getAllDraftSkillRoots()];
+	// Canonical roots + draft staging area.
+	const roots = getAllSkillRoots();
+	const draftRoot = path.join(process.cwd(), ".claude", "skills-draft");
+	if (fs.existsSync(draftRoot)) roots.push(draftRoot);
 
 	let totalResults: ReturnType<typeof scanAllSkills> = [];
 	for (const root of roots) {

@@ -1,7 +1,7 @@
 /**
  * Skill scaffold command.
  *
- * Creates a new draft skill under the canonical draft-skill root populated
+ * Creates a new draft skill under `.claude/skills-draft/<name>/` populated
  * from a template. The scaffold fills in frontmatter, creates the expected
  * subdirectories (scripts/, references/, assets/) and drops a PREVIEW.md
  * checklist the operator walks before promotion.
@@ -79,7 +79,7 @@ function renderPreview(name: string, template: SkillTemplate): string {
 		`- [ ] Trim \`allowed-tools\` to the minimum set needed. Avoid Bash/Write/Edit/NotebookEdit unless required.`,
 		`- [ ] Delete the boilerplate sections you do not need. Keep the prose tight.`,
 		`- [ ] Add or remove bundled resources in \`scripts/\`, \`references/\`, \`assets/\` to match the skill.`,
-		`- [ ] Run \`telclaude skills scan --path <this-draft-dir>\` and fix any findings.`,
+		`- [ ] Run \`telclaude skills scan --path .claude/skills-draft/${name}\` and fix any findings.`,
 		`- [ ] Run \`telclaude skills doctor\` and confirm this skill passes.`,
 		`- [ ] When ready, promote via \`telclaude skills promote ${name}\` or \`/skills promote ${name}\`.`,
 		"",
