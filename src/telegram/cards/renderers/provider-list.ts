@@ -1,3 +1,9 @@
+import {
+	canActorManageProviders,
+	startProviderAddWizard,
+	startProviderEditWizard,
+	startProviderRemoveWizard,
+} from "../../control-command-actions.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -93,6 +99,10 @@ function renderListView(card: CardInstance<K>): CardRenderResult {
 	}
 	if (pagerRow.length > 0) kb.row();
 
+	if (s.canMutate) {
+		kb.text("\u2795 Add", btn(card, "add")).row();
+	}
+
 	kb.text("\u2716 Cancel", btn(card, "cancel")).text("\uD83D\uDD04 Refresh", btn(card, "refresh"));
 
 	return { text: lines.join("\n"), parseMode: "MarkdownV2", keyboard: kb };
@@ -130,6 +140,11 @@ function renderDetailView(card: CardInstance<K>): CardRenderResult {
 	}
 
 	const kb = keyboard();
+	if (s.canMutate) {
+		kb.text("\u270F\uFE0F Edit", btn(card, "edit"))
+			.text("\uD83D\uDDD1\uFE0F Remove", btn(card, "remove"))
+			.row();
+	}
 	kb.text("\u21A9 Back", btn(card, "back"))
 		.text("\u2716 Cancel", btn(card, "cancel"))
 		.row()
@@ -187,6 +202,67 @@ export const providerListRenderer: CardRenderer<K> = {
 					status: "consumed",
 					callbackText: "Cancelled",
 					rerender: true,
+				};
+			}
+
+			case "add": {
+				if (!s.canMutate || !canActorManageProviders(card.chatId)) {
+					return { callbackText: "Only admin can add providers.", callbackAlert: true };
+				}
+				return {
+					callbackText: "Starting provider wizard",
+					rerender: false,
+					afterCommit: () => {
+						startProviderAddWizard(context.ctx.api, {
+							actorId: context.ctx.from.id,
+							chatId: card.chatId,
+							threadId: card.threadId,
+						});
+					},
+				};
+			}
+
+			case "edit": {
+				if (!s.canMutate || !canActorManageProviders(card.chatId)) {
+					return { callbackText: "Only admin can edit providers.", callbackAlert: true };
+				}
+				const entry = resolveSelected(s);
+				if (!entry) {
+					return { callbackText: "Choose a provider first.", callbackAlert: true };
+				}
+				return {
+					callbackText: `Editing ${entry.label}`,
+					rerender: false,
+					afterCommit: () => {
+						startProviderEditWizard(context.ctx.api, {
+							actorId: context.ctx.from.id,
+							chatId: card.chatId,
+							threadId: card.threadId,
+							providerId: entry.id,
+						});
+					},
+				};
+			}
+
+			case "remove": {
+				if (!s.canMutate || !canActorManageProviders(card.chatId)) {
+					return { callbackText: "Only admin can remove providers.", callbackAlert: true };
+				}
+				const entry = resolveSelected(s);
+				if (!entry) {
+					return { callbackText: "Choose a provider first.", callbackAlert: true };
+				}
+				return {
+					callbackText: `Removing ${entry.label}`,
+					rerender: false,
+					afterCommit: () => {
+						startProviderRemoveWizard(context.ctx.api, {
+							actorId: context.ctx.from.id,
+							chatId: card.chatId,
+							threadId: card.threadId,
+							providerId: entry.id,
+						});
+					},
 				};
 			}
 

@@ -69,6 +69,27 @@ export type ProviderConfigInput = {
 
 type ProviderMutationMode = "add" | "edit" | "setup";
 
+export type ProviderMutationInput = {
+	baseUrl: string;
+	services: string[];
+	description?: string | null;
+};
+
+export type ProviderMutationResult = {
+	provider: ProviderConfigInput;
+	providers: ExternalProviderConfig[];
+	refresh: { providerCount: number; cleared: boolean };
+	doctorResults: ProviderDoctorResult[];
+};
+
+export type ProviderRemovalResult = {
+	providerId: string;
+	removedProvider: boolean;
+	removedPrivateEndpoint: boolean;
+	providers: ExternalProviderConfig[];
+	refresh: { providerCount: number; cleared: boolean };
+};
+
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 function readConfigFile(): Record<string, unknown> {
@@ -160,6 +181,14 @@ function normalizeProviderServices(services: string[]): string[] {
 	return Array.from(
 		new Set(services.map((service) => service.trim()).filter((service) => service.length > 0)),
 	);
+}
+
+function assertProviderServices(services: string[]): string[] {
+	const normalized = normalizeProviderServices(services);
+	if (normalized.length === 0) {
+		throw new Error("At least one service is required.");
+	}
+	return normalized;
 }
 
 function defaultEndpointLabel(providerId: string): string {
@@ -535,13 +564,19 @@ async function promptProviderDescription(defaultValue?: string): Promise<string 
 function buildCustomProviderInputFromExisting(
 	providerId: string,
 	existing: ExternalProviderConfig | undefined,
-	input: { baseUrl: string; services: string[]; description?: string },
+	input: { baseUrl: string; services: string[]; description?: string | null },
 ): ProviderConfigInput {
 	const catalogEntry = getProviderCatalogEntry(providerId);
+	const normalizedDescription =
+		input.description === undefined
+			? (existing?.description ?? catalogEntry?.description)
+			: input.description === null
+				? undefined
+				: input.description.trim() || undefined;
 	if (catalogEntry) {
 		return {
 			...buildCatalogProviderInput(catalogEntry, input.baseUrl),
-			description: input.description?.trim() || catalogEntry.description,
+			description: normalizedDescription,
 		};
 	}
 
@@ -549,19 +584,15 @@ function buildCustomProviderInputFromExisting(
 		id: providerId,
 		baseUrl: input.baseUrl,
 		services: input.services.length > 0 ? input.services : (existing?.services ?? []),
-		description: input.description?.trim() || existing?.description,
+		description: normalizedDescription,
 	});
 }
 
 async function configureProvider(
 	mode: ProviderMutationMode,
 	providerId: string,
-	input: { baseUrl: string; services: string[]; description?: string },
-): Promise<{
-	provider: ProviderConfigInput;
-	refresh: { providerCount: number; cleared: boolean };
-	doctorResults: ProviderDoctorResult[];
-}> {
+	input: ProviderMutationInput,
+): Promise<ProviderMutationResult> {
 	const provider = buildCustomProviderInputFromExisting(
 		providerId,
 		getConfiguredProvider(providerId),
@@ -577,6 +608,7 @@ async function configureProvider(
 		);
 		return {
 			provider,
+			providers: result.providers,
 			refresh: {
 				providerCount: result.providers.length,
 				cleared: result.providers.length === 0,
@@ -593,14 +625,15 @@ async function configureProvider(
 
 	const refreshed = await refreshConfiguredProviders();
 	const doctorResults = await collectProviderDoctorResults(provider.id);
+	const providers = loadConfig().providers ?? [];
 	logger.info({ mode, providerId: provider.id, baseUrl: provider.baseUrl }, "provider configured");
-	return { provider, refresh: refreshed, doctorResults };
+	return { provider, providers, refresh: refreshed, doctorResults };
 }
 
-async function runProviderAdd(
+export async function addConfiguredProvider(
 	providerId: string,
-	options: { baseUrl?: string; services?: string; description?: string },
-): Promise<void> {
+	input: ProviderMutationInput,
+): Promise<ProviderMutationResult> {
 	const normalizedId = validateProviderId(providerId);
 	if (getConfiguredProvider(normalizedId)) {
 		throw new Error(
@@ -614,6 +647,79 @@ async function runProviderAdd(
 		);
 	}
 
+	return configureProvider("add", normalizedId, {
+		baseUrl: normalizeBaseUrl(input.baseUrl),
+		services: assertProviderServices(input.services),
+		description: input.description,
+	});
+}
+
+export async function editConfiguredProvider(
+	providerId: string,
+	input: ProviderMutationInput,
+): Promise<ProviderMutationResult> {
+	const normalizedId = validateProviderId(providerId);
+	const existing = getConfiguredProvider(normalizedId);
+	if (!existing) {
+		throw new Error(
+			`Provider '${normalizedId}' is not configured. Use \`telclaude providers add ${normalizedId}\`.`,
+		);
+	}
+
+	return configureProvider("edit", normalizedId, {
+		baseUrl: normalizeBaseUrl(input.baseUrl),
+		services: assertProviderServices(input.services),
+		description: input.description,
+	});
+}
+
+export async function removeConfiguredProviderById(
+	providerId: string,
+): Promise<ProviderRemovalResult> {
+	const normalizedId = validateProviderId(providerId);
+	const existing = getConfiguredProvider(normalizedId);
+	if (!existing) {
+		throw new Error(`Provider '${normalizedId}' is not configured.`);
+	}
+
+	let removed: { removedProvider: boolean; removedPrivateEndpoint: boolean };
+	let refreshed: { providerCount: number; cleared: boolean };
+	let providers: ExternalProviderConfig[];
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		const result = await relayRemoveProvider({ providerId: normalizedId });
+		removed = {
+			removedProvider: result.removedProvider,
+			removedPrivateEndpoint: result.removedPrivateEndpoint,
+		};
+		providers = result.providers;
+		refreshed = {
+			providerCount: result.providers.length,
+			cleared: result.providers.length === 0,
+		};
+	} else {
+		const rawConfig = readConfigFile();
+		removed = removeConfiguredProvider(rawConfig, normalizedId);
+		writeConfigFile(rawConfig);
+		refreshed = await refreshConfiguredProviders();
+		providers = loadConfig().providers ?? [];
+	}
+
+	return {
+		providerId: normalizedId,
+		removedProvider: removed.removedProvider,
+		removedPrivateEndpoint: removed.removedPrivateEndpoint,
+		providers,
+		refresh: refreshed,
+	};
+}
+
+async function runProviderAdd(
+	providerId: string,
+	options: { baseUrl?: string; services?: string; description?: string },
+): Promise<void> {
+	const normalizedId = validateProviderId(providerId);
+	const catalogEntry = getProviderCatalogEntry(normalizedId);
+
 	const baseUrl = options.baseUrl?.trim()
 		? normalizeBaseUrl(options.baseUrl)
 		: await promptProviderBaseUrl(catalogEntry?.defaultBaseUrl);
@@ -626,7 +732,7 @@ async function runProviderAdd(
 			? options.description.trim()
 			: await promptProviderDescription(catalogEntry?.description);
 
-	const result = await configureProvider("add", normalizedId, { baseUrl, services, description });
+	const result = await addConfiguredProvider(normalizedId, { baseUrl, services, description });
 	console.log(`Configured provider '${result.provider.id}' at ${result.provider.baseUrl}.`);
 	console.log(`Added/updated private endpoint allowlist: ${result.provider.endpointLabel}`);
 	console.log();
@@ -658,7 +764,7 @@ async function runProviderEdit(
 			? options.description.trim()
 			: await promptProviderDescription(existing.description);
 
-	const result = await configureProvider("edit", normalizedId, { baseUrl, services, description });
+	const result = await editConfiguredProvider(normalizedId, { baseUrl, services, description });
 	console.log(`Updated provider '${result.provider.id}' at ${result.provider.baseUrl}.`);
 	console.log();
 	console.log(formatProviderDoctor(result.doctorResults));
@@ -682,34 +788,17 @@ async function runProviderRemove(providerId: string, options: { yes?: boolean })
 		}
 	}
 
-	let removed: { removedProvider: boolean; removedPrivateEndpoint: boolean };
-	let refreshed: { providerCount: number; cleared: boolean };
-	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
-		const result = await relayRemoveProvider({ providerId: normalizedId });
-		removed = {
-			removedProvider: result.removedProvider,
-			removedPrivateEndpoint: result.removedPrivateEndpoint,
-		};
-		refreshed = {
-			providerCount: result.providers.length,
-			cleared: result.providers.length === 0,
-		};
-	} else {
-		const rawConfig = readConfigFile();
-		removed = removeConfiguredProvider(rawConfig, normalizedId);
-		writeConfigFile(rawConfig);
-		refreshed = await refreshConfiguredProviders();
-	}
+	const result = await removeConfiguredProviderById(normalizedId);
 
 	console.log(
-		removed.removedProvider
+		result.removedProvider
 			? `Removed provider '${normalizedId}'.`
 			: `Provider '${normalizedId}' was not present in config.`,
 	);
-	if (removed.removedPrivateEndpoint) {
+	if (result.removedPrivateEndpoint) {
 		console.log(`Removed private endpoint allowlist: ${defaultEndpointLabel(normalizedId)}`);
 	}
-	if (refreshed.cleared) {
+	if (result.refresh.cleared) {
 		console.log("Provider runtime state cleared.");
 	}
 }

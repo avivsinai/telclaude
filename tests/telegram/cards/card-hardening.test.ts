@@ -10,17 +10,11 @@ let createCard: typeof import("../../../src/telegram/cards/store.js").createCard
 let createApproval: typeof import("../../../src/security/approvals.js").createApproval;
 let denyApproval: typeof import("../../../src/security/approvals.js").denyApproval;
 let getCard: typeof import("../../../src/telegram/cards/store.js").getCard;
-let getPendingApprovalsForChat: typeof import(
-	"../../../src/security/approvals.js"
-).getPendingApprovalsForChat;
+let getPendingApprovalsForChat: typeof import("../../../src/security/approvals.js").getPendingApprovalsForChat;
 let handleCallback: typeof import("../../../src/telegram/cards/callback-controller.js").handleCallback;
-let registerAllCardRenderers: typeof import(
-	"../../../src/telegram/cards/renderers/index.js"
-).registerAllCardRenderers;
+let registerAllCardRenderers: typeof import("../../../src/telegram/cards/renderers/index.js").registerAllCardRenderers;
 let resetDatabase: typeof import("../../../src/storage/db.js").resetDatabase;
-let sendApprovalScopeCard: typeof import(
-	"../../../src/telegram/cards/create-helpers.js"
-).sendApprovalScopeCard;
+let sendApprovalScopeCard: typeof import("../../../src/telegram/cards/create-helpers.js").sendApprovalScopeCard;
 let CardKind: typeof import("../../../src/telegram/cards/types.js").CardKind;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
@@ -94,9 +88,7 @@ describe("card hardening", () => {
 			"../../../src/security/approvals.js"
 		));
 		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
-		({ registerAllCardRenderers } = await import(
-			"../../../src/telegram/cards/renderers/index.js"
-		));
+		({ registerAllCardRenderers } = await import("../../../src/telegram/cards/renderers/index.js"));
 		({ sendApprovalScopeCard } = await import("../../../src/telegram/cards/create-helpers.js"));
 		({ CardKind } = await import("../../../src/telegram/cards/types.js"));
 		registerAllCardRenderers();
@@ -128,6 +120,7 @@ describe("card hardening", () => {
 				title: "Providers",
 				view: "list",
 				page: 0,
+				canMutate: false,
 				providers: [
 					{
 						id: "anthropic",
@@ -309,6 +302,7 @@ describe("card hardening", () => {
 				title: "Providers",
 				view: "list",
 				page: 0,
+				canMutate: false,
 				providers: Array.from({ length: 10 }, (_, index) => ({
 					id: `provider-${index}`,
 					label: `Provider ${index}`,
@@ -372,9 +366,7 @@ describe("card hardening", () => {
 		({ getCard } = await import("../../../src/telegram/cards/store.js"));
 		({ getPendingApprovalsForChat } = await import("../../../src/security/approvals.js"));
 		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
-		({ registerAllCardRenderers } = await import(
-			"../../../src/telegram/cards/renderers/index.js"
-		));
+		({ registerAllCardRenderers } = await import("../../../src/telegram/cards/renderers/index.js"));
 		registerAllCardRenderers();
 
 		const answerCallbackQuery = vi.fn(async () => {});
@@ -440,9 +432,7 @@ describe("card hardening", () => {
 		({ getCard } = await import("../../../src/telegram/cards/store.js"));
 		({ getPendingApprovalsForChat } = await import("../../../src/security/approvals.js"));
 		({ handleCallback } = await import("../../../src/telegram/cards/callback-controller.js"));
-		({ registerAllCardRenderers } = await import(
-			"../../../src/telegram/cards/renderers/index.js"
-		));
+		({ registerAllCardRenderers } = await import("../../../src/telegram/cards/renderers/index.js"));
 		registerAllCardRenderers();
 
 		const denyButton = findButton(sendMessage.mock.calls[0]?.[2]?.reply_markup, "Deny");
