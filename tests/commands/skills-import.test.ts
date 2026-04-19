@@ -22,6 +22,7 @@ describe("skills import-openclaw", () => {
 	let tempRoot = "";
 	let sourceRoot = "";
 	let targetRoot = "";
+	let originalClaudeConfigDir: string | undefined;
 
 	beforeEach(() => {
 		tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "skills-import-test-"));
@@ -30,6 +31,7 @@ describe("skills import-openclaw", () => {
 		fs.mkdirSync(sourceRoot, { recursive: true });
 		fs.mkdirSync(targetRoot, { recursive: true });
 		process.exitCode = undefined;
+		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(console, "error").mockImplementation(() => {});
 	});
@@ -37,6 +39,11 @@ describe("skills import-openclaw", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		process.exitCode = undefined;
+		if (originalClaudeConfigDir === undefined) {
+			delete process.env.CLAUDE_CONFIG_DIR;
+		} else {
+			process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+		}
 		if (tempRoot && fs.existsSync(tempRoot)) {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
@@ -90,5 +97,28 @@ describe("skills import-openclaw", () => {
 		expect(fs.existsSync(importedPath)).toBe(true);
 		const importedContent = fs.readFileSync(importedPath, "utf8");
 		expect(importedContent).not.toContain("auto-install:");
+	});
+
+	it("defaults to the canonical draft root when --target is omitted", async () => {
+		const claudeHome = path.join(tempRoot, "claude-home");
+		process.env.CLAUDE_CONFIG_DIR = claudeHome;
+		writeOpenClawSkill(
+			sourceRoot,
+			"hello-skill",
+			[
+				"---",
+				"name: hello-skill",
+				"description: clean import",
+				"---",
+				"",
+				"Skill body.",
+			].join("\n"),
+		);
+
+		await runSkillsCli(["skills", "import-openclaw", sourceRoot]);
+
+		expect(fs.existsSync(path.join(claudeHome, "skills-draft", "hello-skill", "SKILL.md"))).toBe(
+			true,
+		);
 	});
 });

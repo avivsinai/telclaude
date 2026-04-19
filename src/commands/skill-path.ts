@@ -10,7 +10,7 @@ export class SkillRootUnavailableError extends Error {
 	constructor(searched: string[]) {
 		super(
 			`No writable skill root found. Searched:\n${searched.map((p) => `  - ${p}`).join("\n")}\n\n` +
-				`Fix by creating one of these directories with write access, or set CLAUDE_CONFIG_DIR / TELCLAUDE_CLAUDE_HOME to a writable absolute path.`,
+				`Fix by creating one of these directories with write access, or set TELCLAUDE_SKILL_CATALOG_DIR / CLAUDE_CONFIG_DIR / TELCLAUDE_CLAUDE_HOME to a writable absolute path.`,
 		);
 		this.name = "SkillRootUnavailableError";
 		this.searched = searched;
@@ -19,6 +19,14 @@ export class SkillRootUnavailableError extends Error {
 
 function getConfiguredClaudeHome(): string | null {
 	const raw = process.env.CLAUDE_CONFIG_DIR ?? process.env.TELCLAUDE_CLAUDE_HOME;
+	if (!raw || raw.startsWith("~") || !path.isAbsolute(raw)) {
+		return null;
+	}
+	return raw.replace(/[/\\]+$/, "");
+}
+
+function getConfiguredSkillCatalog(): string | null {
+	const raw = process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 	if (!raw || raw.startsWith("~") || !path.isAbsolute(raw)) {
 		return null;
 	}
@@ -59,15 +67,43 @@ function dedupePaths(paths: readonly (string | null | undefined)[]): string[] {
 
 /**
  * Build the ordered list of candidate skill roots (writable or not),
- * used for READING bundled assets. Order: project-local, configured Claude home,
- * bundled distribution root.
+ * used for READING skill assets. In catalog mode the managed catalog wins,
+ * with project-local skills treated as external overlays. Otherwise we keep
+ * the historical project-local → configured home → bundled order.
  */
 export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
+	const configuredSkillCatalog = getConfiguredSkillCatalog();
+	if (configuredSkillCatalog) {
+		return dedupePaths([
+			path.join(configuredSkillCatalog, "skills"),
+			path.join(cwd, ".claude", "skills"),
+			getBundledSkillsRoot(),
+		]);
+	}
 	return dedupePaths([
 		path.join(cwd, ".claude", "skills"),
 		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
 		getBundledSkillsRoot(),
+	]);
+}
+
+/**
+ * Build the ordered list of candidate draft-skill roots for READING and
+ * scanning. Mirrors getAllSkillRoots() but targets the quarantine area.
+ */
+export function getAllDraftSkillRoots(cwd: string = process.cwd()): string[] {
+	const configuredClaudeHome = getConfiguredClaudeHome();
+	const configuredSkillCatalog = getConfiguredSkillCatalog();
+	if (configuredSkillCatalog) {
+		return dedupePaths([
+			path.join(configuredSkillCatalog, "skills-draft"),
+			path.join(cwd, ".claude", "skills-draft"),
+		]);
+	}
+	return dedupePaths([
+		path.join(cwd, ".claude", "skills-draft"),
+		configuredClaudeHome ? path.join(configuredClaudeHome, "skills-draft") : null,
 	]);
 }
 
@@ -78,8 +114,12 @@ export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
  */
 export function getWritableSkillRootCandidates(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
+	const configuredSkillCatalog = getConfiguredSkillCatalog();
 	return dedupePaths([
-		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
+		configuredSkillCatalog ? path.join(configuredSkillCatalog, "skills") : null,
+		!configuredSkillCatalog && configuredClaudeHome
+			? path.join(configuredClaudeHome, "skills")
+			: null,
 		path.join(cwd, ".claude", "skills"),
 	]);
 }
@@ -90,8 +130,12 @@ export function getWritableSkillRootCandidates(cwd: string = process.cwd()): str
  */
 export function getWritableDraftSkillRootCandidates(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
+	const configuredSkillCatalog = getConfiguredSkillCatalog();
 	return dedupePaths([
-		configuredClaudeHome ? path.join(configuredClaudeHome, "skills-draft") : null,
+		configuredSkillCatalog ? path.join(configuredSkillCatalog, "skills-draft") : null,
+		!configuredSkillCatalog && configuredClaudeHome
+			? path.join(configuredClaudeHome, "skills-draft")
+			: null,
 		path.join(cwd, ".claude", "skills-draft"),
 	]);
 }

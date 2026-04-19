@@ -17,7 +17,7 @@ import path from "node:path";
 import type { TelclaudeConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
-import { getAllSkillRoots } from "./skill-path.js";
+import { getAllDraftSkillRoots, getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "doctor-helpers" });
 
@@ -537,11 +537,7 @@ export async function checkProviders(cfg: TelclaudeConfig): Promise<CheckResult[
  */
 export async function checkSkills(cwd: string = process.cwd()): Promise<CheckResult[]> {
 	const { scanAllSkills } = await import("../security/skill-scanner.js");
-	const roots = getAllSkillRoots(cwd);
-	// Also include the project-local drafts root when it exists, so
-	// promotion candidates are vetted before they're flipped live.
-	const extra = path.join(cwd, ".claude", "skills-draft");
-	if (fs.existsSync(extra)) roots.push(extra);
+	const roots = [...getAllSkillRoots(cwd), ...getAllDraftSkillRoots(cwd)];
 
 	const checks: CheckResult[] = [];
 	let totalScanned = 0;
