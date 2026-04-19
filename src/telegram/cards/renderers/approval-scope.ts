@@ -3,6 +3,7 @@ import {
 	consumeApproval,
 	denyApproval,
 	grantAllowlistForApproval,
+	hasPendingToolApprovalWait,
 	resolvePendingToolApproval,
 } from "../../../security/approvals.js";
 import { type ApprovalScope, scopeAllowedForRisk } from "../../../security/risk-tiers.js";
@@ -62,8 +63,9 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 							: s.scopeChosen === "always"
 								? "\u2705 Approved (always)"
 								: "Processed";
+				const explanation = s.explanation ? `\n\n_${esc(s.explanation)}_` : "";
 				return {
-					text: `\uD83D\uDD10 *${esc(s.title)}*\n\n${esc(s.body)}\n\n_${esc(outcome)}_`,
+					text: `\uD83D\uDD10 *${esc(s.title)}*\n\n${esc(s.body)}\n\n_${esc(outcome)}_${explanation}`,
 					parseMode: "MarkdownV2",
 					keyboard: null,
 				};
@@ -151,6 +153,25 @@ export const approvalScopeRenderer: CardRenderer<K> = {
 		const scope = scopeFromAction(action);
 		if (!scope) {
 			return { callbackText: "Unknown action", callbackAlert: true };
+		}
+
+		if (!hasPendingToolApprovalWait(nonce)) {
+			denyApproval(nonce, card.chatId);
+			logger.warn(
+				{ nonce, toolKey: card.state.toolKey },
+				"approval-scope card: missing live waiter",
+			);
+			return {
+				state: {
+					...card.state,
+					denied: true,
+					scopeChosen: undefined,
+					explanation: "Approval session reset after a relay restart. Retry the original action.",
+				},
+				status: "consumed",
+				callbackText: "Approval session reset. Retry the original action.",
+				callbackAlert: true,
+			};
 		}
 
 		// Enforce the tier cap at execute time (defense-in-depth beyond the

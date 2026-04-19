@@ -6,10 +6,12 @@ import { isAdmin } from "../../security/linking.js";
 import { parseCallbackToken } from "./callback-tokens.js";
 import { markCardExpired } from "./lifecycle.js";
 import { type CardRegistry, cardRegistry } from "./registry.js";
-import { getCard, getCardByShortId, updateCard } from "./store.js";
+import { editCardMessage, renderCardSnapshot, sameCardRender } from "./rendering.js";
+import { getCard, getCardByShortId, touchCard, updateCard } from "./store.js";
 import { type CardInstance, type CardKind, type CardRenderer, parseCardAction } from "./types.js";
 
 const logger = getChildLogger({ module: "telegram-card-callbacks" });
+const CALLBACK_ACK_TIMEOUT_MS = 1_500;
 
 const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	Approval: "FULL_ACCESS",
@@ -80,18 +82,48 @@ async function renderCardMessage<K extends CardKind>(
 	card: CardInstance<K>,
 	renderer: CardRenderer<K>,
 ): Promise<void> {
-	const render = renderer.render(card);
 	try {
-		await ctx.api.editMessageText(card.chatId, card.messageId, render.text, {
-			parse_mode: render.parseMode,
-			reply_markup: render.keyboard ?? undefined,
-		});
+		const result = await editCardMessage(ctx.api, card, renderer.render(card));
+		if (result === "not_modified") {
+			return;
+		}
 	} catch (error) {
 		logger.warn(
 			{ cardId: card.cardId, chatId: card.chatId, messageId: card.messageId, error: String(error) },
 			"failed to re-render card message",
 		);
 	}
+}
+
+function createCallbackResponder(ctx: CallbackQueryContext<Context>) {
+	let answered = false;
+	const timer = setTimeout(() => {
+		if (answered) {
+			return;
+		}
+		answered = true;
+		void ctx.answerCallbackQuery().catch((error) => {
+			logger.debug({ error: String(error) }, "callback ack fallback failed");
+		});
+	}, CALLBACK_ACK_TIMEOUT_MS);
+
+	return {
+		async answer(params?: { text?: string; show_alert?: boolean }): Promise<void> {
+			clearTimeout(timer);
+			if (answered) {
+				return;
+			}
+			answered = true;
+			if (params) {
+				await ctx.answerCallbackQuery(params);
+				return;
+			}
+			await ctx.answerCallbackQuery();
+		},
+		cancel(): void {
+			clearTimeout(timer);
+		},
+	};
 }
 
 async function logCallbackAudit(
@@ -299,24 +331,30 @@ export async function handleCallback(
 		return;
 	}
 
+	const responder = createCallbackResponder(ctx);
+
 	try {
 		const execution = await renderer.execute({ ctx, card, action });
-		const nextState = execution.state ?? renderer.reduce(card, action);
-		const nextStatus = execution.status ?? card.status;
-		const updatedCard = updateCard({
-			cardId: card.cardId,
-			expectedRevision: card.revision,
-			patch: {
-				state: nextState,
-				status: nextStatus,
-				expiresAt: execution.expiresAt ?? card.expiresAt,
-			},
-		});
-
-		if (!updatedCard) {
-			const currentCard = getCard(card.cardId) ?? card;
+		const currentCard = getCard(card.cardId) ?? card;
+		if (currentCard.status === "consumed") {
 			await renderCardMessage(ctx, currentCard, renderer);
-			await ctx.answerCallbackQuery({ text: "Card outdated", show_alert: true });
+			await responder.answer({ text: "Already processed" });
+			await logCallbackAudit(options.auditLogger, {
+				card: currentCard,
+				shortId: token.shortId,
+				action: token.action,
+				chatId: currentCard.chatId,
+				actorId,
+				username: ctx.from.username,
+				outcome: "success",
+				errorType: "already_consumed",
+			});
+			return;
+		}
+
+		if (currentCard.status === "superseded" || currentCard.revision !== card.revision) {
+			await renderCardMessage(ctx, currentCard, renderer);
+			await responder.answer({ text: "Card outdated", show_alert: true });
 			await logCallbackAudit(options.auditLogger, {
 				card: currentCard,
 				shortId: token.shortId,
@@ -325,27 +363,102 @@ export async function handleCallback(
 				actorId,
 				username: ctx.from.username,
 				outcome: "blocked",
-				errorType: "revision_conflict",
+				errorType: currentCard.status === "superseded" ? "card_superseded" : "revision_conflict",
 			});
 			return;
 		}
 
-		if (execution.rerender !== false) {
+		if (currentCard.expiresAt <= Date.now() || currentCard.status === "expired") {
+			const expiredCard =
+				currentCard.status === "expired"
+					? currentCard
+					: (markCardExpired(currentCard, currentCard.revision) ??
+						getCard(currentCard.cardId) ??
+						currentCard);
+			await renderCardMessage(ctx, expiredCard, renderer);
+			await responder.answer({ text: "Card expired", show_alert: true });
+			await logCallbackAudit(options.auditLogger, {
+				card: expiredCard,
+				shortId: token.shortId,
+				action: token.action,
+				chatId: expiredCard.chatId,
+				actorId,
+				username: ctx.from.username,
+				outcome: "blocked",
+				errorType: "card_expired",
+			});
+			return;
+		}
+
+		const nextState = execution.state ?? renderer.reduce(currentCard, action);
+		const nextStatus = execution.status ?? currentCard.status;
+		const nextExpiresAt = execution.expiresAt ?? currentCard.expiresAt;
+		const comparisonCurrent = renderCardSnapshot(currentCard, renderer);
+		const comparisonCandidate = renderCardSnapshot(
+			{
+				...currentCard,
+				state: nextState,
+				status: nextStatus,
+				expiresAt: nextExpiresAt,
+			},
+			renderer,
+		);
+
+		let finalCard = currentCard;
+		const visibleChange = sameCardRender(comparisonCurrent.snapshot, comparisonCandidate.snapshot)
+			? false
+			: execution.rerender !== false;
+
+		if (!visibleChange) {
+			const touched = touchCard({
+				cardId: currentCard.cardId,
+				expectedRevision: currentCard.revision,
+				patch: nextExpiresAt === currentCard.expiresAt ? undefined : { expiresAt: nextExpiresAt },
+			});
+			finalCard = touched ?? currentCard;
+		} else {
+			const updatedCard = updateCard({
+				cardId: currentCard.cardId,
+				expectedRevision: currentCard.revision,
+				patch: {
+					state: nextState,
+					status: nextStatus,
+					expiresAt: nextExpiresAt,
+				},
+			});
+
+			if (!updatedCard) {
+				const latestCard = getCard(card.cardId) ?? currentCard;
+				await renderCardMessage(ctx, latestCard, renderer);
+				await responder.answer({ text: "Card outdated", show_alert: true });
+				await logCallbackAudit(options.auditLogger, {
+					card: latestCard,
+					shortId: token.shortId,
+					action: token.action,
+					chatId: latestCard.chatId,
+					actorId,
+					username: ctx.from.username,
+					outcome: "blocked",
+					errorType: "revision_conflict",
+				});
+				return;
+			}
+
+			finalCard = updatedCard;
 			await renderCardMessage(ctx, updatedCard, renderer);
 		}
 
-		await ctx.answerCallbackQuery({
+		await responder.answer({
 			text:
-				execution.callbackText ??
-				(updatedCard.status === "consumed" ? "Processed" : "Card updated"),
+				execution.callbackText ?? (finalCard.status === "consumed" ? "Processed" : "Card updated"),
 			show_alert: execution.callbackAlert ?? false,
 		});
 
 		await logCallbackAudit(options.auditLogger, {
-			card: updatedCard,
+			card: finalCard,
 			shortId: token.shortId,
 			action: token.action,
-			chatId: updatedCard.chatId,
+			chatId: finalCard.chatId,
 			actorId,
 			username: ctx.from.username,
 			outcome: "success",
@@ -355,8 +468,8 @@ export async function handleCallback(
 			void Promise.resolve(execution.afterCommit()).catch((afterCommitError) => {
 				logger.error(
 					{
-						cardId: updatedCard.cardId,
-						kind: updatedCard.kind,
+						cardId: finalCard.cardId,
+						kind: finalCard.kind,
 						action: token.action,
 						error: String(afterCommitError),
 					},
@@ -369,7 +482,7 @@ export async function handleCallback(
 			{ cardId: card.cardId, kind: card.kind, action: token.action, error: String(error) },
 			"card callback execution failed",
 		);
-		await ctx.answerCallbackQuery({ text: "Card action failed", show_alert: true });
+		await responder.answer({ text: "Card action failed", show_alert: true });
 		await logCallbackAudit(options.auditLogger, {
 			card,
 			shortId: token.shortId,
@@ -380,5 +493,7 @@ export async function handleCallback(
 			outcome: "error",
 			errorType: "callback_execute_failed",
 		});
+	} finally {
+		responder.cancel();
 	}
 }

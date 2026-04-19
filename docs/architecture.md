@@ -158,6 +158,15 @@ The memory path has two distinct safety rules:
 
 This is the key invariant: memory may preserve continuity, but it must not become a prompt-injection persistence layer.
 
+## Telegram Cards
+
+Inline-keyboard cards are durable SQLite rows, but Telegram is still the visible source of truth for the operator. The cards subsystem therefore treats the card `revision` as a **message-sync counter**, not as a generic state-mutation counter.
+
+- **Revision only advances when the visible Telegram render changes.** Invisible metadata updates (for example, a refresh that would produce the same text + keyboard) must not invalidate the buttons the user still sees.
+- **Callback taps are ACKed quickly.** The handler sends a fallback `answerCallbackQuery` within about 1.5 seconds if the action is still running, so Telegram does not leave the client spinner hanging on slow paths.
+- **Execution re-checks liveness before commit.** A callback can start on an active card and finish after the card expires or is superseded; the handler re-reads the row after execution and fails closed rather than committing stale state.
+- **Approval-scope cards require a live waiter.** If the relay restarted and the in-memory tool-approval waiter is gone, the card must fail closed and instruct the operator to retry the original action instead of silently recording an approval that no running request can consume.
+
 ## Credential Vault
 
 ```
