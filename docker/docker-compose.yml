@@ -67,10 +67,11 @@ services:
       - TELCLAUDE_PRIVATE_CONFIG=/data/telclaude-private.json
       - TELCLAUDE_DATA_DIR=/data
       - TELCLAUDE_LOG_LEVEL=${TELCLAUDE_LOG_LEVEL:-info}
-      # Claude config dir = auth volume (relay-only).
+      # Relay keeps its own auth/profile state, but skills live in the shared catalog.
       - CLAUDE_CONFIG_DIR=/home/telclaude-auth
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-auth
       - TELCLAUDE_AUTH_DIR=/home/telclaude-auth
+      - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
       - TELCLAUDE_AGENT_URL=http://telclaude-agent:8788
       - TELCLAUDE_SOCIAL_AGENT_URL=http://agent-social:8789
       # X/Twitter — relay routes through its own credential proxy
@@ -115,8 +116,10 @@ services:
       - ./telclaude.json:/data/telclaude.json:ro
       - ./telclaude-private.json:/data/telclaude-private.json:ro
 
-      # Claude config (auth + skills installed at runtime) — relay-only
+      # Claude auth/profile state (OAuth tokens + settings) — relay-only
       - telclaude-claude-auth:/home/telclaude-auth:rw
+      # Shared skill catalog (active + draft) across relay, private, and social.
+      - telclaude-skill-catalog:/home/telclaude-skill-catalog:rw
 
       # Shared socket for TOTP daemon communication
       - totp-socket:/run/totp:rw
@@ -241,9 +244,10 @@ services:
       # Data dir override (agent is stateless; uses tmpfs instead of /data volume)
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
 
-      # Claude skills profile (shared with relay)
+      # Private profile state stays local; installed skills come from the shared catalog.
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
 
       # SECURITY: Network firewall for tool egress control (Docker mode)
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
@@ -267,8 +271,10 @@ services:
       # Policy config (no secrets — providers, network rules, etc.)
       - ./telclaude.json:/data/telclaude.json:ro
 
-      # Claude skills profile (per-agent isolation — no shared state with social agent)
+      # Private profile state (settings/cache) stays isolated.
       - telclaude-skills-telegram:/home/telclaude-skills:rw
+      # Shared operator-managed skill catalog.
+      - telclaude-skill-catalog:/home/telclaude-skill-catalog:rw
 
       # Shared media volumes (inbox/outbox split)
       - media-inbox:/media/inbox:ro
@@ -340,6 +346,7 @@ services:
       - HOME=/social
       - CLAUDE_CONFIG_DIR=/home/telclaude-skills
       - TELCLAUDE_CLAUDE_HOME=/home/telclaude-skills
+      - TELCLAUDE_SKILL_CATALOG_DIR=/home/telclaude-skill-catalog
       # Social auth — agent holds AGENT PRIVATE key (signs agent→relay) + RELAY PUBLIC key (verifies relay→agent)
       - SOCIAL_RPC_AGENT_PRIVATE_KEY=${SOCIAL_RPC_AGENT_PRIVATE_KEY:-}
       - SOCIAL_RPC_RELAY_PUBLIC_KEY=${SOCIAL_RPC_RELAY_PUBLIC_KEY:-}
@@ -361,6 +368,7 @@ services:
       - ./telclaude.json:/data/telclaude.json:ro
       - social-memory:/social/memory:ro
       - telclaude-skills-social:/home/telclaude-skills:rw
+      - telclaude-skill-catalog:/home/telclaude-skill-catalog:ro
 
     user: "0:0"
 
@@ -743,12 +751,17 @@ volumes:
   social-memory:
     name: telclaude-social-memory
 
-  # Claude skills profiles (per-agent isolation — no shared state between personas)
+  # Per-agent Claude profile state (settings/cache). Skills live in the shared catalog below.
   telclaude-skills-telegram:
     name: telclaude-skills-telegram
 
   telclaude-skills-social:
     name: telclaude-skills-social
+
+  # Shared operator-managed skill catalog (active + draft) across all personas.
+  telclaude-skill-catalog:
+    name: telclaude-skill-catalog
+    external: true
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Networks

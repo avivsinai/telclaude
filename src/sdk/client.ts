@@ -629,7 +629,15 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 
 	// Paths where writes are blocked via Write/Edit tools (all actors, trusted or not)
 	const writeProtectedPaths = [
-		/\/home\/telclaude-skills(?:\/|$)/i, // skill poisoning: write skill → trusted loads it
+		/\/home\/telclaude-skills(?:\/|$)/i, // profile-local skill path (symlinked into catalog in Docker)
+		...(process.env.TELCLAUDE_SKILL_CATALOG_DIR
+			? [
+					new RegExp(
+						`^${process.env.TELCLAUDE_SKILL_CATALOG_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\\\]|$)`,
+						"i",
+					),
+				]
+			: []), // shared operator-managed skill catalog
 		/\/home\/telclaude-auth(?:\/|$)/i, // auth tokens (not mounted, but explicit)
 		/\/social\/memory(?:\/|$)/i, // memory integrity (container has :ro, belt-and-suspenders)
 	];
@@ -696,19 +704,29 @@ function createSocialToolRestrictionHook(actorUserId?: string): HookCallbackMatc
 
 /**
  * Patterns matching active skill directories (Write/Edit blocked).
- * Agent can write to .claude/skills-draft/ but NOT .claude/skills/.
+ * Agent can write to draft skill directories but NOT active skill directories.
  */
-const ACTIVE_SKILL_WRITE_PATTERNS: RegExp[] = [
-	/(?:^|[/\\])\.claude[/\\]skills[/\\]/i,
-	...(process.env.CLAUDE_CONFIG_DIR
-		? [
-				new RegExp(
-					`^${process.env.CLAUDE_CONFIG_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\\\])skills(?:[/\\\\])`,
-					"i",
-				),
-			]
-		: []),
-];
+function getActiveSkillWritePatterns(): RegExp[] {
+	return [
+		/(?:^|[/\\])\.claude[/\\]skills[/\\]/i,
+		...(process.env.CLAUDE_CONFIG_DIR
+			? [
+					new RegExp(
+						`^${process.env.CLAUDE_CONFIG_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\\\])skills(?:[/\\\\])`,
+						"i",
+					),
+				]
+			: []),
+		...(process.env.TELCLAUDE_SKILL_CATALOG_DIR
+			? [
+					new RegExp(
+						`^${process.env.TELCLAUDE_SKILL_CATALOG_DIR.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[/\\\\])skills(?:[/\\\\])`,
+						"i",
+					),
+				]
+			: []),
+	];
+}
 
 /**
  * Check if a path is an active skill directory (NOT skills-draft).
@@ -728,13 +746,20 @@ function isActiveSkillPath(filePath: string): boolean {
 		normalized.startsWith(`${process.env.CLAUDE_CONFIG_DIR.replace(/\\/g, "/")}/skills-draft/`)
 	)
 		return false;
+	if (
+		process.env.TELCLAUDE_SKILL_CATALOG_DIR &&
+		normalized.startsWith(
+			`${process.env.TELCLAUDE_SKILL_CATALOG_DIR.replace(/\\/g, "/")}/skills-draft/`,
+		)
+	)
+		return false;
 
-	return ACTIVE_SKILL_WRITE_PATTERNS.some((p) => p.test(filePath));
+	return getActiveSkillWritePatterns().some((p) => p.test(filePath));
 }
 
 /**
  * Create a PreToolUse hook that blocks writes to active skill directories.
- * Agents can only write to .claude/skills-draft/<name>/; promotion is operator-only.
+ * Agents can only write to draft skill directories; promotion is operator-only.
  */
 function createSkillWriteProtectionHook(): HookCallbackMatcher {
 	const hookCallback: HookCallback = async (input: HookInput) => {
@@ -753,7 +778,7 @@ function createSkillWriteProtectionHook(): HookCallbackMatcher {
 					"[hook] blocked write to active skill directory",
 				);
 				return denyHookResponse(
-					"Cannot write to active skill directory. Use .claude/skills-draft/<name>/ instead, then ask the operator to promote with /promote-skill.",
+					"Cannot write to an active skill directory. Draft changes under the canonical skills-draft root instead, then ask the operator to promote with /promote-skill.",
 				);
 			}
 		}
@@ -762,7 +787,7 @@ function createSkillWriteProtectionHook(): HookCallbackMatcher {
 			if (isActiveSkillPath(toolInput.file_path)) {
 				logger.warn({ path: toolInput.file_path }, "[hook] blocked edit of active skill file");
 				return denyHookResponse(
-					"Cannot edit active skill files. Draft changes to .claude/skills-draft/<name>/ instead.",
+					"Cannot edit active skill files. Draft changes under the canonical skills-draft root instead.",
 				);
 			}
 		}

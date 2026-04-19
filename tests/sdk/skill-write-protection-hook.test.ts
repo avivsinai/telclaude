@@ -47,6 +47,10 @@ async function runPreToolUse(
 }
 
 describe("createSkillWriteProtectionHook (PreToolUse)", () => {
+	afterEach(() => {
+		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
+	});
+
 	it("denies writes to active skills even when path contains skills-draft substring", async () => {
 		const sdkOpts = await buildSdkOptions({
 			cwd: "/tmp",
@@ -58,6 +62,25 @@ describe("createSkillWriteProtectionHook (PreToolUse)", () => {
 
 		const res = await runPreToolUse(sdkOpts, "Write", {
 			file_path: ".claude/skills/skills-draft-evil/SKILL.md",
+			content: "malicious override",
+		});
+
+		expect(res.permissionDecision).toBe("deny");
+		expect(res.permissionDecisionReason).toContain("active skill directory");
+	});
+
+	it("denies direct writes to the shared skill catalog active root", async () => {
+		process.env.TELCLAUDE_SKILL_CATALOG_DIR = "/home/telclaude-skill-catalog";
+		const sdkOpts = await buildSdkOptions({
+			cwd: "/tmp",
+			tier: "WRITE_LOCAL",
+			poolKey: "skill-write-guard",
+			userId: "tg:123",
+			enableSkills: true,
+		});
+
+		const res = await runPreToolUse(sdkOpts, "Write", {
+			file_path: "/home/telclaude-skill-catalog/skills/my-skill/SKILL.md",
 			content: "malicious override",
 		});
 
