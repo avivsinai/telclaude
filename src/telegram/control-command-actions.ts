@@ -4,6 +4,16 @@ import {
 	getJobByShortId as getBackgroundJobByShortId,
 	listJobs as listBackgroundJobs,
 } from "../background/index.js";
+import {
+	addConfiguredProvider,
+	editConfiguredProvider,
+	type ProviderDoctorResult,
+	type ProviderMutationInput,
+	type ProviderMutationResult,
+	type ProviderRemovalResult,
+	removeConfiguredProviderById,
+	validateProviderId,
+} from "../commands/providers.js";
 import { SkillRootUnavailableError } from "../commands/skill-path.js";
 import { type SkillTemplate, scaffoldSkill } from "../commands/skill-scaffold.js";
 import {
@@ -16,7 +26,11 @@ import { cloneModelCatalog } from "../config/model-catalog.js";
 import { getChatModelPreference } from "../config/model-preferences.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
-import { listProviderCatalogEntries, type ProviderCatalogEntry } from "../providers/catalog.js";
+import {
+	getProviderCatalogEntry,
+	listProviderCatalogEntries,
+	type ProviderCatalogEntry,
+} from "../providers/catalog.js";
 import {
 	checkProviderHealth,
 	type HealthCheckResult,
@@ -82,9 +96,20 @@ type SkillNewWizardScope = {
 	threadId?: number;
 };
 
+type ProviderWizardScope = {
+	actorId: number;
+	chatId: number;
+	threadId?: number;
+};
+
 const activeSkillNewWizardScopes = new Set<string>();
+const activeProviderWizardScopes = new Set<string>();
 
 function skillNewWizardScopeKey(scope: SkillNewWizardScope): string {
+	return `${scope.chatId}:${scope.threadId ?? "root"}:${scope.actorId}`;
+}
+
+function providerWizardScopeKey(scope: ProviderWizardScope): string {
 	return `${scope.chatId}:${scope.threadId ?? "root"}:${scope.actorId}`;
 }
 
@@ -98,6 +123,95 @@ function socialAskWizardScopeKey(scope: SocialAskWizardScope): string {
 
 export function hasActiveSocialAskWizard(scope: SocialAskWizardScope): boolean {
 	return activeSocialAskWizardScopes.has(socialAskWizardScopeKey(scope));
+}
+
+export function hasActiveProviderWizard(scope: ProviderWizardScope): boolean {
+	return activeProviderWizardScopes.has(providerWizardScopeKey(scope));
+}
+
+export function canActorManageProviders(chatId: number): boolean {
+	return isAdmin(chatId);
+}
+
+function validateProviderBaseUrlWizardInput(value: string): string | undefined {
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return "Provider base URL is required.";
+	}
+	try {
+		const url = new URL(trimmed);
+		if (url.protocol !== "http:" && url.protocol !== "https:") {
+			return "Use an http or https URL.";
+		}
+		return undefined;
+	} catch {
+		return "Enter a valid absolute URL.";
+	}
+}
+
+function parseProviderServicesWizardInput(value: string): string[] {
+	return Array.from(
+		new Set(
+			value
+				.split(",")
+				.map((service) => service.trim())
+				.filter((service) => service.length > 0),
+		),
+	);
+}
+
+function validateProviderServicesWizardInput(value: string): string | undefined {
+	return parseProviderServicesWizardInput(value).length > 0
+		? undefined
+		: "Enter at least one comma-separated service.";
+}
+
+function normalizeProviderDescriptionWizardInput(value: string): string | null {
+	const trimmed = value.trim();
+	if (!trimmed || trimmed === "-") {
+		return null;
+	}
+	return trimmed;
+}
+
+function formatProviderDoctorSummary(doctorResults: ProviderDoctorResult[]): string {
+	const checks = doctorResults.flatMap((result) => result.checks);
+	const failCount = checks.filter((check) => check.status === "fail").length;
+	const warnCount = checks.filter((check) => check.status === "warn").length;
+	if (failCount === 0 && warnCount === 0) {
+		return "Doctor: all checks passing.";
+	}
+	return `Doctor: ${failCount} fail, ${warnCount} warn.`;
+}
+
+function formatProviderMutationMessage(
+	verb: "Configured" | "Updated",
+	result: ProviderMutationResult,
+): string {
+	const lines = [
+		`${verb} provider '${result.provider.id}' at ${result.provider.baseUrl}.`,
+		`Services: ${result.provider.services.join(", ")}`,
+	];
+	if (result.provider.description) {
+		lines.push(`Description: ${result.provider.description}`);
+	}
+	lines.push(formatProviderDoctorSummary(result.doctorResults));
+	return lines.join("\n");
+}
+
+function formatProviderRemovalMessage(result: ProviderRemovalResult): string {
+	const lines = [
+		result.removedProvider
+			? `Removed provider '${result.providerId}'.`
+			: `Provider '${result.providerId}' was not present in config.`,
+	];
+	if (result.removedPrivateEndpoint) {
+		lines.push("Removed private endpoint allowlist entry.");
+	}
+	if (result.refresh.cleared) {
+		lines.push("Provider runtime state cleared.");
+	}
+	return lines.join("\n");
 }
 
 export async function setHomeTargetCommand(
@@ -424,6 +538,322 @@ export function startSkillsNewWizard(
 		callbackText: opts.initialName
 			? `Scaffolding ${opts.initialName}. Answer the prompts above.`
 			: "Answer the prompts to scaffold a new skill.",
+	};
+}
+
+export function startProviderAddWizard(api: Api, opts: ProviderWizardScope): CommandUiResult {
+	if (!canActorManageProviders(opts.chatId)) {
+		return { callbackText: "Only admin can add providers.", callbackAlert: true };
+	}
+
+	const scopeKey = providerWizardScopeKey(opts);
+	if (activeProviderWizardScopes.has(scopeKey)) {
+		return {
+			callbackText: "Already running a provider wizard in this chat.",
+			callbackAlert: true,
+		};
+	}
+
+	activeProviderWizardScopes.add(scopeKey);
+	void (async () => {
+		const wizard = createWizardPrompter({
+			api,
+			actorId: opts.actorId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+		});
+
+		try {
+			const providerId = validateProviderId(
+				(
+					await wizard.text({
+						message: "Provider id:",
+						placeholder: "lowercase-with-hyphens",
+						validate: (value) => {
+							try {
+								validateProviderId(value);
+								return undefined;
+							} catch (err) {
+								return err instanceof Error ? err.message : String(err);
+							}
+						},
+					})
+				).trim(),
+			);
+			const catalogEntry = getProviderCatalogEntry(providerId);
+			if (catalogEntry?.oauthServiceId) {
+				await api.sendMessage(
+					opts.chatId,
+					`Provider '${providerId}' is catalog-backed. Use \`${catalogEntry.setupCommand ?? `providers setup ${providerId}`}\` from the CLI for OAuth bootstrap.`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+
+			const baseUrl = (
+				await wizard.text({
+					message: `Base URL for '${providerId}':`,
+					placeholder: "https://provider.example.com",
+					validate: validateProviderBaseUrlWizardInput,
+				})
+			).trim();
+			const services = parseProviderServicesWizardInput(
+				await wizard.text({
+					message: "Services (comma-separated):",
+					placeholder: "search,documents",
+					validate: validateProviderServicesWizardInput,
+				}),
+			);
+			const descriptionInput = await wizard.text({
+				message: "Description (optional). Send `-` to leave it blank.",
+				placeholder: "Human-readable summary",
+			});
+			const description = normalizeProviderDescriptionWizardInput(descriptionInput) ?? undefined;
+			const result = await addConfiguredProvider(providerId, {
+				baseUrl,
+				services,
+				description,
+			});
+
+			await api.sendMessage(
+				opts.chatId,
+				formatProviderMutationMessage("Configured", result),
+				threadOptions(opts.threadId),
+			);
+			await openProviderList(api, {
+				chatId: opts.chatId,
+				actorScope: `user:${opts.actorId}`,
+				threadId: opts.threadId,
+				cfg: { ...loadConfig(), providers: result.providers },
+			});
+		} catch (err) {
+			if (err instanceof WizardTimeoutError || err instanceof WizardCancelledError) {
+				return;
+			}
+			logger.warn({ error: String(err) }, "provider add wizard failed");
+			await api.sendMessage(
+				opts.chatId,
+				`Failed to add provider: ${err instanceof Error ? err.message : String(err)}`,
+				threadOptions(opts.threadId),
+			);
+		} finally {
+			await wizard.dismiss().catch(() => {});
+			activeProviderWizardScopes.delete(scopeKey);
+		}
+	})();
+
+	return {
+		callbackText: "Answer the prompts to add a provider.",
+	};
+}
+
+export function startProviderEditWizard(
+	api: Api,
+	opts: ProviderWizardScope & { providerId: string },
+): CommandUiResult {
+	if (!canActorManageProviders(opts.chatId)) {
+		return { callbackText: "Only admin can edit providers.", callbackAlert: true };
+	}
+
+	const scopeKey = providerWizardScopeKey(opts);
+	if (activeProviderWizardScopes.has(scopeKey)) {
+		return {
+			callbackText: "Already running a provider wizard in this chat.",
+			callbackAlert: true,
+		};
+	}
+
+	activeProviderWizardScopes.add(scopeKey);
+	void (async () => {
+		const wizard = createWizardPrompter({
+			api,
+			actorId: opts.actorId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+		});
+
+		try {
+			const existing = (loadConfig().providers ?? []).find(
+				(provider) => provider.id === opts.providerId,
+			);
+			if (!existing) {
+				await api.sendMessage(
+					opts.chatId,
+					`Provider '${opts.providerId}' is not configured.`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+
+			let baseUrl = existing.baseUrl;
+			if (
+				await wizard.confirm({
+					message: `Change base URL?\nCurrent: \`${existing.baseUrl}\``,
+					confirmLabel: "Change",
+					denyLabel: "Keep",
+				})
+			) {
+				baseUrl = (
+					await wizard.text({
+						message: `New base URL for '${existing.id}':`,
+						placeholder: existing.baseUrl,
+						validate: validateProviderBaseUrlWizardInput,
+					})
+				).trim();
+			}
+
+			let services = [...existing.services];
+			if (
+				await wizard.confirm({
+					message: `Change services?\nCurrent: \`${existing.services.join(", ")}\``,
+					confirmLabel: "Change",
+					denyLabel: "Keep",
+				})
+			) {
+				services = parseProviderServicesWizardInput(
+					await wizard.text({
+						message: "Services (comma-separated):",
+						placeholder: existing.services.join(", "),
+						validate: validateProviderServicesWizardInput,
+					}),
+				);
+			}
+
+			let description: ProviderMutationInput["description"];
+			if (
+				await wizard.confirm({
+					message: existing.description
+						? `Change description?\nCurrent: ${existing.description}`
+						: "Add a description?",
+					confirmLabel: existing.description ? "Change" : "Add",
+					denyLabel: "Keep",
+				})
+			) {
+				description = normalizeProviderDescriptionWizardInput(
+					await wizard.text({
+						message: existing.description
+							? "New description. Send `-` to clear it."
+							: "Description. Send `-` to leave it blank.",
+						placeholder: existing.description ?? "Human-readable summary",
+					}),
+				);
+			}
+
+			const result = await editConfiguredProvider(existing.id, {
+				baseUrl,
+				services,
+				description,
+			});
+			await api.sendMessage(
+				opts.chatId,
+				formatProviderMutationMessage("Updated", result),
+				threadOptions(opts.threadId),
+			);
+			await openProviderList(api, {
+				chatId: opts.chatId,
+				actorScope: `user:${opts.actorId}`,
+				threadId: opts.threadId,
+				cfg: { ...loadConfig(), providers: result.providers },
+			});
+		} catch (err) {
+			if (err instanceof WizardTimeoutError || err instanceof WizardCancelledError) {
+				return;
+			}
+			logger.warn(
+				{ error: String(err), providerId: opts.providerId },
+				"provider edit wizard failed",
+			);
+			await api.sendMessage(
+				opts.chatId,
+				`Failed to edit provider: ${err instanceof Error ? err.message : String(err)}`,
+				threadOptions(opts.threadId),
+			);
+		} finally {
+			await wizard.dismiss().catch(() => {});
+			activeProviderWizardScopes.delete(scopeKey);
+		}
+	})();
+
+	return {
+		callbackText: `Editing ${opts.providerId}. Answer the prompts above.`,
+	};
+}
+
+export function startProviderRemoveWizard(
+	api: Api,
+	opts: ProviderWizardScope & { providerId: string },
+): CommandUiResult {
+	if (!canActorManageProviders(opts.chatId)) {
+		return { callbackText: "Only admin can remove providers.", callbackAlert: true };
+	}
+
+	const scopeKey = providerWizardScopeKey(opts);
+	if (activeProviderWizardScopes.has(scopeKey)) {
+		return {
+			callbackText: "Already running a provider wizard in this chat.",
+			callbackAlert: true,
+		};
+	}
+
+	activeProviderWizardScopes.add(scopeKey);
+	void (async () => {
+		const wizard = createWizardPrompter({
+			api,
+			actorId: opts.actorId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+		});
+
+		try {
+			const confirmed = await wizard.confirm({
+				message:
+					`Remove provider '${opts.providerId}'?\n` +
+					"This also removes its private endpoint allowlist entry and runtime schema state.",
+				confirmLabel: "Remove",
+				denyLabel: "Cancel",
+			});
+			if (!confirmed) {
+				await api.sendMessage(
+					opts.chatId,
+					`Removal cancelled for '${opts.providerId}'.`,
+					threadOptions(opts.threadId),
+				);
+				return;
+			}
+
+			const result = await removeConfiguredProviderById(opts.providerId);
+			await api.sendMessage(
+				opts.chatId,
+				formatProviderRemovalMessage(result),
+				threadOptions(opts.threadId),
+			);
+			await openProviderList(api, {
+				chatId: opts.chatId,
+				actorScope: `user:${opts.actorId}`,
+				threadId: opts.threadId,
+				cfg: { ...loadConfig(), providers: result.providers },
+			});
+		} catch (err) {
+			if (err instanceof WizardTimeoutError || err instanceof WizardCancelledError) {
+				return;
+			}
+			logger.warn(
+				{ error: String(err), providerId: opts.providerId },
+				"provider remove wizard failed",
+			);
+			await api.sendMessage(
+				opts.chatId,
+				`Failed to remove provider: ${err instanceof Error ? err.message : String(err)}`,
+				threadOptions(opts.threadId),
+			);
+		} finally {
+			await wizard.dismiss().catch(() => {});
+			activeProviderWizardScopes.delete(scopeKey);
+		}
+	})();
+
+	return {
+		callbackText: `Confirm removal for ${opts.providerId}.`,
 	};
 }
 
@@ -985,7 +1415,7 @@ export async function openProviderList(
 ): Promise<CommandUiResult> {
 	const cfg = opts.cfg ?? loadConfig();
 	const entries = await buildProviderListEntries(cfg);
-	const canMutate = canActorMutate(opts.chatId, cfg);
+	const canMutate = canActorManageProviders(opts.chatId);
 
 	const state: ProviderListCardState = {
 		kind: CardKind.ProviderList,

@@ -246,6 +246,8 @@ Generate:
 - `telclaude keygen operator` for operator-only relay mutations. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` on the host where you run the CLI; only `OPERATOR_RPC_AGENT_PUBLIC_KEY` goes into the relay container env.
 - `telclaude keygen telegram` / `telclaude keygen social` for agent scopes. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`.
 
+Telegram admin wizards for `/providers add|edit|remove` do not require `OPERATOR_RPC_AGENT_PRIVATE_KEY`. They run inside the relay process, which writes the runtime overlay locally after Telegram admin/TOTP checks. The operator keypair is still required for host-side CLI or agent-container calls that hit the relay's operator-scope RPC endpoints over HTTP.
+
 `ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
 
 ### Config Split

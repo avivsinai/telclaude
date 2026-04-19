@@ -475,6 +475,9 @@ export type ModelPickerCardAction =
 
 export type ProviderListCardAction =
 	| PickerSelectAction
+	| { type: "add" }
+	| { type: "edit" }
+	| { type: "remove" }
 	| { type: "page-next" }
 	| { type: "page-prev" }
 	| { type: "back" }
@@ -576,6 +579,9 @@ const CARD_ACTIONS_BY_KIND = {
 	],
 	[CardKind.ProviderList]: [
 		...PICKER_SELECT_ACTIONS,
+		"add",
+		"edit",
+		"remove",
 		"page-next",
 		"page-prev",
 		"back",
