@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -5,10 +6,22 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 import { type Api, Bot } from "grammy";
-
-import { loadConfig } from "../config/config.js";
+import JSON5 from "json5";
+import {
+	collectProviderDoctorResults,
+	type ProviderConfigInput,
+	removeConfiguredProvider,
+	upsertConfiguredProvider,
+	upsertProviderPrivateEndpoint,
+} from "../commands/providers.js";
+import { loadConfig, resetConfigCache } from "../config/config.js";
+import { resolveConfigPath, resolveRuntimeConfigPath } from "../config/path.js";
 import { readEnv } from "../env.js";
-import { isInternalAuthScope, verifyInternalAuth } from "../internal-auth.js";
+import {
+	type InternalAuthScope,
+	isInternalAuthScope,
+	verifyInternalAuth,
+} from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import { getMediaInboxDirSync, getMediaOutboxDirSync } from "../media/store.js";
 import {
@@ -20,8 +33,15 @@ import {
 } from "../memory/rpc.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
-import { getCachedSchemaMarkdown } from "../providers/provider-skill.js";
-import { validateProviderBaseUrl } from "../providers/provider-validation.js";
+import {
+	clearProviderSkillState,
+	getCachedSchemaMarkdown,
+	refreshExternalProviderSkill,
+} from "../providers/provider-skill.js";
+import {
+	validateProviderBaseUrl,
+	validateProviderBaseUrlInput,
+} from "../providers/provider-validation.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { cachedDNSLookup, isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
 import { filterOutput } from "../security/output-filter.js";
@@ -58,6 +78,169 @@ import {
 } from "./token-manager.js";
 
 const logger = getChildLogger({ module: "relay-capabilities" });
+const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+type RelayProvidersPayload = {
+	ok: true;
+	providers: Array<{
+		id: string;
+		baseUrl: string;
+		services: string[];
+		description?: string;
+	}>;
+	schemaMarkdown?: string;
+	providersEpoch: string;
+};
+
+function isOperatorScope(scope: InternalAuthScope): boolean {
+	return scope === "operator";
+}
+
+function validateProviderId(providerId: string): string {
+	const trimmed = providerId.trim();
+	if (!PROVIDER_ID_PATTERN.test(trimmed)) {
+		throw new Error("Provider id must use lowercase letters, digits, and hyphens only.");
+	}
+	return trimmed;
+}
+
+function readConfigFile(): Record<string, unknown> {
+	const configPath = resolveConfigPath();
+	const runtimePath = resolveRuntimeConfigPath(configPath);
+	try {
+		const policy = JSON5.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+		try {
+			const runtime = JSON5.parse(fs.readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
+			return deepMerge(policy, runtime);
+		} catch {
+			return policy;
+		}
+	} catch {
+		try {
+			return JSON5.parse(fs.readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
+		} catch {
+			return {};
+		}
+	}
+}
+
+function writeConfigFile(config: Record<string, unknown>): void {
+	const configPath = resolveRuntimeConfigPath(resolveConfigPath());
+	const tmpPath = `${configPath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf8");
+	fs.renameSync(tmpPath, configPath);
+	resetConfigCache();
+}
+
+function deepMerge(
+	target: Record<string, unknown>,
+	source: Record<string, unknown>,
+): Record<string, unknown> {
+	const result = { ...target };
+	for (const key of Object.keys(source)) {
+		const tVal = target[key];
+		const sVal = source[key];
+		if (isPlainObject(tVal) && isPlainObject(sVal)) {
+			result[key] = deepMerge(tVal as Record<string, unknown>, sVal as Record<string, unknown>);
+		} else {
+			result[key] = sVal;
+		}
+	}
+	return result;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildProvidersEpoch(
+	providers: RelayProvidersPayload["providers"],
+	schemaMarkdown?: string,
+): string {
+	return crypto
+		.createHash("sha256")
+		.update(JSON.stringify({ providers, schemaMarkdown: schemaMarkdown ?? null }))
+		.digest("hex");
+}
+
+function getConfiguredProvidersPayload(): RelayProvidersPayload {
+	const config = loadConfig();
+	const providers = (config.providers ?? []).map((provider) => ({
+		id: provider.id,
+		baseUrl: provider.baseUrl,
+		services: provider.services,
+		description: provider.description,
+	}));
+	const schemaMarkdown = getCachedSchemaMarkdown() ?? undefined;
+	return {
+		ok: true,
+		providers,
+		schemaMarkdown,
+		providersEpoch: buildProvidersEpoch(providers, schemaMarkdown),
+	};
+}
+
+async function getConfiguredProvidersPayloadForRead(
+	scope: InternalAuthScope,
+): Promise<RelayProvidersPayload> {
+	let payload = getConfiguredProvidersPayload();
+	if (isOperatorScope(scope) && payload.providers.length > 0 && !payload.schemaMarkdown) {
+		await refreshConfiguredProvidersRuntimeState();
+		payload = getConfiguredProvidersPayload();
+	}
+	return payload;
+}
+
+async function refreshConfiguredProvidersRuntimeState(): Promise<void> {
+	const providers = loadConfig().providers ?? [];
+	if (providers.length === 0) {
+		await clearProviderSkillState();
+		return;
+	}
+
+	await refreshExternalProviderSkill(providers);
+}
+
+async function upsertConfiguredProviderRuntime(input: ProviderConfigInput): Promise<{
+	payload: RelayProvidersPayload;
+	doctorResults: Awaited<ReturnType<typeof collectProviderDoctorResults>>;
+}> {
+	validateProviderId(input.id);
+	await validateProviderBaseUrlInput(input.baseUrl);
+
+	const rawConfig = readConfigFile();
+	upsertConfiguredProvider(rawConfig, input);
+	upsertProviderPrivateEndpoint(rawConfig, input);
+	writeConfigFile(rawConfig);
+
+	await refreshConfiguredProvidersRuntimeState();
+	return {
+		payload: getConfiguredProvidersPayload(),
+		doctorResults: await collectProviderDoctorResults(input.id),
+	};
+}
+
+async function removeConfiguredProviderRuntime(providerId: string): Promise<{
+	payload: RelayProvidersPayload;
+	removedProvider: boolean;
+	removedPrivateEndpoint: boolean;
+}> {
+	const normalizedId = validateProviderId(providerId);
+	const configured = loadConfig().providers ?? [];
+	if (!configured.some((provider) => provider.id === normalizedId)) {
+		throw new Error(`Provider '${normalizedId}' is not configured.`);
+	}
+
+	const rawConfig = readConfigFile();
+	const removed = removeConfiguredProvider(rawConfig, normalizedId);
+	writeConfigFile(rawConfig);
+	await refreshConfiguredProvidersRuntimeState();
+	return {
+		payload: getConfiguredProvidersPayload(),
+		removedProvider: removed.removedProvider,
+		removedPrivateEndpoint: removed.removedPrivateEndpoint,
+	};
+}
 
 // ── Startup Notification Buffer ──────────────────────────────────────────
 // Collects relay + agent readiness signals, then sends one consolidated
@@ -701,7 +884,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, authResult.status, { error: authResult.error });
 				return;
 			}
-			// Social service scopes (anything not "telegram") have restricted endpoint access
+			// Non-telegram scopes have restricted endpoint access. "operator" is
+			// trusted for a narrow mutation surface used by the local CLI.
 			if (authResult.scope !== "telegram") {
 				const allowedPaths = new Set([
 					"/v1/agent.ready",
@@ -712,6 +896,12 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					"/v1/memory.snapshot",
 					"/v1/summarize",
 				]);
+				if (isOperatorScope(authResult.scope)) {
+					allowedPaths.add("/v1/config.providers");
+					allowedPaths.add("/v1/config.providers.refresh");
+					allowedPaths.add("/v1/config.providers.upsert");
+					allowedPaths.add("/v1/config.providers.remove");
+				}
 				if (!allowedPaths.has(requestPath)) {
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
@@ -787,16 +977,75 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 			// ── Config Endpoints (sanitized, no secrets) ─────────────────────
 			if (requestPath === "/v1/config.providers") {
-				const config = loadConfig();
-				const providers = (config.providers ?? []).map((p) => ({
-					id: p.id,
-					baseUrl: p.baseUrl,
-					services: p.services,
-					description: p.description,
-				}));
-				// Include schema markdown so agents don't need to fetch from providers directly
-				const schemaMarkdown = getCachedSchemaMarkdown();
-				writeJson(res, 200, { ok: true, providers, schemaMarkdown });
+				writeJson(res, 200, await getConfiguredProvidersPayloadForRead(authResult.scope));
+				return;
+			}
+
+			if (requestPath === "/v1/config.providers.refresh") {
+				if (!isOperatorScope(authResult.scope)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				await refreshConfiguredProvidersRuntimeState();
+				writeJson(res, 200, getConfiguredProvidersPayload());
+				return;
+			}
+
+			if (requestPath === "/v1/config.providers.upsert") {
+				if (!isOperatorScope(authResult.scope)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				let typed: { provider?: ProviderConfigInput };
+				try {
+					typed = JSON.parse(body) as { provider?: ProviderConfigInput };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				if (!typed.provider || typeof typed.provider !== "object") {
+					writeJson(res, 400, { error: "Missing provider payload" });
+					return;
+				}
+
+				const { payload, doctorResults } = await upsertConfiguredProviderRuntime(typed.provider);
+				writeJson(res, 200, { ...payload, doctorResults });
+				return;
+			}
+
+			if (requestPath === "/v1/config.providers.remove") {
+				if (!isOperatorScope(authResult.scope)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				let typed: { providerId?: string };
+				try {
+					typed = JSON.parse(body) as { providerId?: string };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				const providerId = typeof typed.providerId === "string" ? typed.providerId.trim() : "";
+				if (!providerId) {
+					writeJson(res, 400, { error: "Missing providerId" });
+					return;
+				}
+
+				try {
+					const result = await removeConfiguredProviderRuntime(providerId);
+					writeJson(res, 200, {
+						...result.payload,
+						removedProvider: result.removedProvider,
+						removedPrivateEndpoint: result.removedPrivateEndpoint,
+					});
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (message.includes("is not configured")) {
+						writeJson(res, 404, { error: message });
+						return;
+					}
+					throw error;
+				}
 				return;
 			}
 

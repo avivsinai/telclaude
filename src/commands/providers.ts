@@ -8,6 +8,7 @@ import {
 	type PrivateEndpoint,
 	resetConfigCache,
 } from "../config/config.js";
+import { resolveRuntimeConfigPath } from "../config/path.js";
 import { getChildLogger } from "../logging.js";
 import {
 	getCatalogOAuthService,
@@ -16,12 +17,25 @@ import {
 	type ProviderCatalogEntry,
 } from "../providers/catalog.js";
 import { checkProviderHealth } from "../providers/provider-health.js";
-import { buildSchemaMarkdown, fetchProviderSchema } from "../providers/provider-skill.js";
-import { validateProviderBaseUrl } from "../providers/provider-validation.js";
-import { relayProviderProxy } from "../relay/capabilities-client.js";
+import {
+	buildSchemaMarkdown,
+	clearProviderSkillState,
+	fetchProviderSchema,
+	refreshExternalProviderSkill,
+} from "../providers/provider-skill.js";
+import {
+	validateProviderBaseUrl,
+	validateProviderBaseUrlInput,
+} from "../providers/provider-validation.js";
+import {
+	relayProviderProxy,
+	relayRefreshProviders,
+	relayRemoveProvider,
+	relayUpsertProvider,
+} from "../relay/capabilities-client.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/index.js";
 import { requireRelay } from "./cli-guards.js";
-import { promptLine } from "./cli-prompt.js";
+import { promptLine, promptYesNo } from "./cli-prompt.js";
 import type { ProviderQueryOptions } from "./provider-query.js";
 import { GOOGLE_SCOPE_BUNDLES, runGoogleOAuthSetup } from "./setup-google.js";
 
@@ -41,22 +55,71 @@ export type ProviderDoctorResult = {
 	checks: ProviderDoctorCheck[];
 };
 
+export type ProviderConfigInput = {
+	id: string;
+	baseUrl: string;
+	services: string[];
+	description?: string;
+	displayName?: string;
+	oauthServiceId?: string;
+	setupCommand?: string;
+	endpointLabel?: string;
+	endpointDescription?: string;
+};
+
+type ProviderMutationMode = "add" | "edit" | "setup";
+
+const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
 function readConfigFile(): Record<string, unknown> {
 	const configPath = getConfigPath();
+	const runtimePath = resolveRuntimeConfigPath(configPath);
 	try {
-		const content = fs.readFileSync(configPath, "utf8");
-		return JSON5.parse(content);
+		const policy = JSON5.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+		try {
+			const runtime = JSON5.parse(fs.readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
+			return deepMerge(policy, runtime);
+		} catch {
+			return policy;
+		}
 	} catch {
-		return {};
+		try {
+			return JSON5.parse(fs.readFileSync(runtimePath, "utf8")) as Record<string, unknown>;
+		} catch {
+			return {};
+		}
 	}
 }
 
 function writeConfigFile(config: Record<string, unknown>): void {
-	const configPath = getConfigPath();
-	const tmpPath = `${configPath}.tmp.${process.pid}`;
+	const configPath = resolveRuntimeConfigPath(getConfigPath());
+	const configDir = configPath.replace(/[/\\][^/\\]+$/, "");
+	fs.mkdirSync(configDir, { recursive: true });
+	const tmpPath = `${configPath}.tmp.${process.pid}.${Date.now()}`;
 	fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf8");
 	fs.renameSync(tmpPath, configPath);
 	resetConfigCache();
+}
+
+function deepMerge(
+	target: Record<string, unknown>,
+	source: Record<string, unknown>,
+): Record<string, unknown> {
+	const result = { ...target };
+	for (const key of Object.keys(source)) {
+		const tVal = target[key];
+		const sVal = source[key];
+		if (isPlainObject(tVal) && isPlainObject(sVal)) {
+			result[key] = deepMerge(tVal as Record<string, unknown>, sVal as Record<string, unknown>);
+		} else {
+			result[key] = sVal;
+		}
+	}
+	return result;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function ensureProviderConfigArray(rawConfig: Record<string, unknown>): ExternalProviderConfig[] {
@@ -93,19 +156,63 @@ function normalizeBaseUrl(baseUrl: string): string {
 	return parsed.toString().replace(/\/$/, "");
 }
 
-export function upsertConfiguredProvider(
-	rawConfig: Record<string, unknown>,
+function normalizeProviderServices(services: string[]): string[] {
+	return Array.from(
+		new Set(services.map((service) => service.trim()).filter((service) => service.length > 0)),
+	);
+}
+
+function defaultEndpointLabel(providerId: string): string {
+	return `provider-${providerId}`;
+}
+
+export function buildCatalogProviderInput(
 	entry: ProviderCatalogEntry,
 	baseUrl: string,
-): void {
-	const providers = ensureProviderConfigArray(rawConfig);
-	const next: ExternalProviderConfig = {
+): ProviderConfigInput {
+	return {
 		id: entry.id,
 		baseUrl: normalizeBaseUrl(baseUrl),
 		services: [...entry.services],
 		description: entry.description,
+		displayName: entry.displayName,
+		oauthServiceId: entry.oauthServiceId,
+		setupCommand: entry.setupCommand,
+		endpointLabel: defaultEndpointLabel(entry.id),
+		endpointDescription: `${entry.displayName} provider sidecar`,
 	};
-	const existingIndex = providers.findIndex((provider) => provider.id === entry.id);
+}
+
+export function buildCustomProviderInput(input: {
+	id: string;
+	baseUrl: string;
+	services: string[];
+	description?: string;
+}): ProviderConfigInput {
+	const id = input.id.trim();
+	return {
+		id,
+		baseUrl: normalizeBaseUrl(input.baseUrl),
+		services: normalizeProviderServices(input.services),
+		description: input.description?.trim() || undefined,
+		displayName: input.description?.trim() || id,
+		endpointLabel: defaultEndpointLabel(id),
+		endpointDescription: input.description?.trim() || `${id} provider sidecar`,
+	};
+}
+
+export function upsertConfiguredProvider(
+	rawConfig: Record<string, unknown>,
+	input: ProviderConfigInput,
+): void {
+	const providers = ensureProviderConfigArray(rawConfig);
+	const next: ExternalProviderConfig = {
+		id: input.id,
+		baseUrl: normalizeBaseUrl(input.baseUrl),
+		services: normalizeProviderServices(input.services),
+		description: input.description,
+	};
+	const existingIndex = providers.findIndex((provider) => provider.id === input.id);
 	if (existingIndex === -1) {
 		providers.push(next);
 	} else {
@@ -115,17 +222,17 @@ export function upsertConfiguredProvider(
 
 export function upsertProviderPrivateEndpoint(
 	rawConfig: Record<string, unknown>,
-	entry: ProviderCatalogEntry,
-	baseUrl: string,
+	input: ProviderConfigInput,
 ): void {
-	const parsed = new URL(baseUrl);
+	const parsed = new URL(input.baseUrl);
 	const endpoints = ensurePrivateEndpointsArray(rawConfig);
-	const label = `provider-${entry.id}`;
+	const label = input.endpointLabel?.trim() || defaultEndpointLabel(input.id);
 	const next: PrivateEndpoint = {
 		label,
 		host: parsed.hostname,
 		ports: [defaultPortForUrl(parsed)],
-		description: `${entry.displayName} provider sidecar`,
+		description:
+			input.endpointDescription?.trim() || input.description || `${input.id} provider sidecar`,
 	};
 	const existingIndex = endpoints.findIndex((endpoint) => endpoint.label === label);
 	if (existingIndex === -1) {
@@ -133,6 +240,27 @@ export function upsertProviderPrivateEndpoint(
 	} else {
 		endpoints[existingIndex] = next;
 	}
+}
+
+export function removeConfiguredProvider(
+	rawConfig: Record<string, unknown>,
+	providerId: string,
+): { removedProvider: boolean; removedPrivateEndpoint: boolean } {
+	const providers = ensureProviderConfigArray(rawConfig);
+	const nextProviders = providers.filter((provider) => provider.id !== providerId);
+	const removedProvider = nextProviders.length !== providers.length;
+	rawConfig.providers = nextProviders;
+
+	const endpoints = ensurePrivateEndpointsArray(rawConfig);
+	const label = defaultEndpointLabel(providerId);
+	const nextEndpoints = endpoints.filter((endpoint) => endpoint.label !== label);
+	const removedPrivateEndpoint = nextEndpoints.length !== endpoints.length;
+	(rawConfig.security as Record<string, unknown>).network = {
+		...((rawConfig.security as Record<string, unknown>).network as Record<string, unknown>),
+		privateEndpoints: nextEndpoints,
+	};
+
+	return { removedProvider, removedPrivateEndpoint };
 }
 
 function formatProvidersList(providers: ExternalProviderConfig[]): string {
@@ -333,6 +461,269 @@ async function runProvidersQuery(
 	console.log(JSON.stringify(result.data, null, 2));
 }
 
+export async function refreshConfiguredProviders(
+	providers: ExternalProviderConfig[] = loadConfig().providers ?? [],
+): Promise<{ providerCount: number; cleared: boolean }> {
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		try {
+			const result = await relayRefreshProviders();
+			return {
+				providerCount: result.providers.length,
+				cleared: result.providers.length === 0,
+			};
+		} catch (error) {
+			logger.warn({ error: String(error) }, "relay provider refresh failed; falling back locally");
+		}
+	}
+
+	if (providers.length === 0) {
+		await clearProviderSkillState();
+		return { providerCount: 0, cleared: true };
+	}
+
+	await refreshExternalProviderSkill(providers);
+	return { providerCount: providers.length, cleared: false };
+}
+
+function getConfiguredProvider(providerId: string): ExternalProviderConfig | undefined {
+	return (loadConfig().providers ?? []).find((provider) => provider.id === providerId);
+}
+
+export function validateProviderId(providerId: string): string {
+	const trimmed = providerId.trim();
+	if (!PROVIDER_ID_PATTERN.test(trimmed)) {
+		throw new Error("Provider id must use lowercase letters, digits, and hyphens only.");
+	}
+	return trimmed;
+}
+
+function parseServicesArg(value: string): string[] {
+	return normalizeProviderServices(value.split(","));
+}
+
+async function promptProviderBaseUrl(defaultValue?: string): Promise<string> {
+	const promptLabel = defaultValue
+		? `Provider base URL [${defaultValue}]: `
+		: "Provider base URL: ";
+	const provided = (await promptLine(promptLabel))?.trim();
+	const next = provided || defaultValue || "";
+	if (!next) {
+		throw new Error("Provider base URL is required.");
+	}
+	return normalizeBaseUrl(next);
+}
+
+async function promptProviderServices(defaultValue: string[]): Promise<string[]> {
+	const label =
+		defaultValue.length > 0
+			? `Services (comma-separated) [${defaultValue.join(", ")}]: `
+			: "Services (comma-separated): ";
+	const provided = (await promptLine(label))?.trim();
+	const next = provided ? parseServicesArg(provided) : defaultValue;
+	if (next.length === 0) {
+		throw new Error("At least one service is required.");
+	}
+	return next;
+}
+
+async function promptProviderDescription(defaultValue?: string): Promise<string | undefined> {
+	const label = defaultValue ? `Description [${defaultValue}]: ` : "Description (optional): ";
+	const provided = (await promptLine(label))?.trim();
+	return provided || defaultValue;
+}
+
+function buildCustomProviderInputFromExisting(
+	providerId: string,
+	existing: ExternalProviderConfig | undefined,
+	input: { baseUrl: string; services: string[]; description?: string },
+): ProviderConfigInput {
+	const catalogEntry = getProviderCatalogEntry(providerId);
+	if (catalogEntry) {
+		return {
+			...buildCatalogProviderInput(catalogEntry, input.baseUrl),
+			description: input.description?.trim() || catalogEntry.description,
+		};
+	}
+
+	return buildCustomProviderInput({
+		id: providerId,
+		baseUrl: input.baseUrl,
+		services: input.services.length > 0 ? input.services : (existing?.services ?? []),
+		description: input.description?.trim() || existing?.description,
+	});
+}
+
+async function configureProvider(
+	mode: ProviderMutationMode,
+	providerId: string,
+	input: { baseUrl: string; services: string[]; description?: string },
+): Promise<{
+	provider: ProviderConfigInput;
+	refresh: { providerCount: number; cleared: boolean };
+	doctorResults: ProviderDoctorResult[];
+}> {
+	const provider = buildCustomProviderInputFromExisting(
+		providerId,
+		getConfiguredProvider(providerId),
+		input,
+	);
+	await validateProviderBaseUrlInput(provider.baseUrl);
+
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		const result = await relayUpsertProvider({ provider });
+		logger.info(
+			{ mode, providerId: provider.id, baseUrl: provider.baseUrl },
+			"provider configured",
+		);
+		return {
+			provider,
+			refresh: {
+				providerCount: result.providers.length,
+				cleared: result.providers.length === 0,
+			},
+			doctorResults: result.doctorResults,
+		};
+	}
+
+	const rawConfig = readConfigFile();
+
+	upsertConfiguredProvider(rawConfig, provider);
+	upsertProviderPrivateEndpoint(rawConfig, provider);
+	writeConfigFile(rawConfig);
+
+	const refreshed = await refreshConfiguredProviders();
+	const doctorResults = await collectProviderDoctorResults(provider.id);
+	logger.info({ mode, providerId: provider.id, baseUrl: provider.baseUrl }, "provider configured");
+	return { provider, refresh: refreshed, doctorResults };
+}
+
+async function runProviderAdd(
+	providerId: string,
+	options: { baseUrl?: string; services?: string; description?: string },
+): Promise<void> {
+	const normalizedId = validateProviderId(providerId);
+	if (getConfiguredProvider(normalizedId)) {
+		throw new Error(
+			`Provider '${normalizedId}' already exists. Use \`telclaude providers edit ${normalizedId}\`.`,
+		);
+	}
+	const catalogEntry = getProviderCatalogEntry(normalizedId);
+	if (catalogEntry?.oauthServiceId) {
+		throw new Error(
+			`Provider '${normalizedId}' is catalog-backed with OAuth. Use \`telclaude providers setup ${normalizedId}\`.`,
+		);
+	}
+
+	const baseUrl = options.baseUrl?.trim()
+		? normalizeBaseUrl(options.baseUrl)
+		: await promptProviderBaseUrl(catalogEntry?.defaultBaseUrl);
+	const services =
+		options.services?.trim() !== undefined && options.services?.trim() !== ""
+			? parseServicesArg(options.services)
+			: await promptProviderServices(catalogEntry?.services ?? []);
+	const description =
+		options.description?.trim() !== undefined && options.description?.trim() !== ""
+			? options.description.trim()
+			: await promptProviderDescription(catalogEntry?.description);
+
+	const result = await configureProvider("add", normalizedId, { baseUrl, services, description });
+	console.log(`Configured provider '${result.provider.id}' at ${result.provider.baseUrl}.`);
+	console.log(`Added/updated private endpoint allowlist: ${result.provider.endpointLabel}`);
+	console.log();
+	console.log(formatProviderDoctor(result.doctorResults));
+	process.exitCode = computeDoctorExitCode(result.doctorResults);
+}
+
+async function runProviderEdit(
+	providerId: string,
+	options: { baseUrl?: string; services?: string; description?: string },
+): Promise<void> {
+	const normalizedId = validateProviderId(providerId);
+	const existing = getConfiguredProvider(normalizedId);
+	if (!existing) {
+		throw new Error(
+			`Provider '${normalizedId}' is not configured. Use \`telclaude providers add ${normalizedId}\`.`,
+		);
+	}
+
+	const baseUrl = options.baseUrl?.trim()
+		? normalizeBaseUrl(options.baseUrl)
+		: await promptProviderBaseUrl(existing.baseUrl);
+	const services =
+		options.services?.trim() !== undefined && options.services?.trim() !== ""
+			? parseServicesArg(options.services)
+			: await promptProviderServices(existing.services);
+	const description =
+		options.description?.trim() !== undefined && options.description?.trim() !== ""
+			? options.description.trim()
+			: await promptProviderDescription(existing.description);
+
+	const result = await configureProvider("edit", normalizedId, { baseUrl, services, description });
+	console.log(`Updated provider '${result.provider.id}' at ${result.provider.baseUrl}.`);
+	console.log();
+	console.log(formatProviderDoctor(result.doctorResults));
+	process.exitCode = computeDoctorExitCode(result.doctorResults);
+}
+
+async function runProviderRemove(providerId: string, options: { yes?: boolean }): Promise<void> {
+	const normalizedId = validateProviderId(providerId);
+	const existing = getConfiguredProvider(normalizedId);
+	if (!existing) {
+		throw new Error(`Provider '${normalizedId}' is not configured.`);
+	}
+
+	if (!options.yes) {
+		const confirmed = await promptYesNo(
+			`Remove provider '${normalizedId}' and its private endpoint allowlist entry?`,
+		);
+		if (!confirmed) {
+			console.log("Cancelled.");
+			return;
+		}
+	}
+
+	let removed: { removedProvider: boolean; removedPrivateEndpoint: boolean };
+	let refreshed: { providerCount: number; cleared: boolean };
+	if (process.env.TELCLAUDE_CAPABILITIES_URL) {
+		const result = await relayRemoveProvider({ providerId: normalizedId });
+		removed = {
+			removedProvider: result.removedProvider,
+			removedPrivateEndpoint: result.removedPrivateEndpoint,
+		};
+		refreshed = {
+			providerCount: result.providers.length,
+			cleared: result.providers.length === 0,
+		};
+	} else {
+		const rawConfig = readConfigFile();
+		removed = removeConfiguredProvider(rawConfig, normalizedId);
+		writeConfigFile(rawConfig);
+		refreshed = await refreshConfiguredProviders();
+	}
+
+	console.log(
+		removed.removedProvider
+			? `Removed provider '${normalizedId}'.`
+			: `Provider '${normalizedId}' was not present in config.`,
+	);
+	if (removed.removedPrivateEndpoint) {
+		console.log(`Removed private endpoint allowlist: ${defaultEndpointLabel(normalizedId)}`);
+	}
+	if (refreshed.cleared) {
+		console.log("Provider runtime state cleared.");
+	}
+}
+
+async function runProviderRefresh(): Promise<void> {
+	const refreshed = await refreshConfiguredProviders();
+	if (refreshed.cleared) {
+		console.log("No providers configured. Cleared cached provider schema and summary.");
+		return;
+	}
+
+	console.log(`Refreshed provider schema + summary for ${refreshed.providerCount} provider(s).`);
+}
+
 async function resolveProviderSetupBaseUrl(
 	entry: ProviderCatalogEntry,
 	explicit?: string,
@@ -392,18 +783,17 @@ async function runProviderSetup(
 		return;
 	}
 
-	const rawConfig = readConfigFile();
-	upsertConfiguredProvider(rawConfig, entry, baseUrl);
-	upsertProviderPrivateEndpoint(rawConfig, entry, baseUrl);
-	writeConfigFile(rawConfig);
+	const result = await configureProvider("setup", providerId, {
+		baseUrl,
+		services: entry.services,
+		description: entry.description,
+	});
 
-	console.log(`Configured provider '${entry.id}' at ${baseUrl}.`);
-	console.log(`Added/updated private endpoint allowlist: provider-${entry.id}`);
+	console.log(`Configured provider '${result.provider.id}' at ${result.provider.baseUrl}.`);
+	console.log(`Added/updated private endpoint allowlist: ${result.provider.endpointLabel}`);
 	console.log();
-
-	const results = await collectProviderDoctorResults(entry.id);
-	console.log(formatProviderDoctor(results));
-	process.exitCode = computeDoctorExitCode(results);
+	console.log(formatProviderDoctor(result.doctorResults));
+	process.exitCode = computeDoctorExitCode(result.doctorResults);
 }
 
 export function registerProvidersCommandGroup(parent: Command): void {
@@ -418,6 +808,78 @@ export function registerProvidersCommandGroup(parent: Command): void {
 				return;
 			}
 			console.log(formatProvidersList(providers));
+		});
+
+	parent
+		.command("add")
+		.description("Add a custom provider to config, allowlist, and runtime skill state")
+		.argument("<provider-id>", "Custom provider ID")
+		.option("--base-url <url>", "Provider base URL")
+		.option("--services <csv>", "Comma-separated service IDs")
+		.option("--description <text>", "Human-readable description")
+		.action(
+			async (
+				providerId: string,
+				options: { baseUrl?: string; services?: string; description?: string },
+			) => {
+				try {
+					await runProviderAdd(providerId, options);
+				} catch (err) {
+					logger.error({ error: String(err), providerId }, "providers add failed");
+					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					process.exit(1);
+				}
+			},
+		);
+
+	parent
+		.command("edit")
+		.description("Edit an existing provider and refresh runtime skill state")
+		.argument("<provider-id>", "Configured provider ID")
+		.option("--base-url <url>", "Provider base URL")
+		.option("--services <csv>", "Comma-separated service IDs")
+		.option("--description <text>", "Human-readable description")
+		.action(
+			async (
+				providerId: string,
+				options: { baseUrl?: string; services?: string; description?: string },
+			) => {
+				try {
+					await runProviderEdit(providerId, options);
+				} catch (err) {
+					logger.error({ error: String(err), providerId }, "providers edit failed");
+					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					process.exit(1);
+				}
+			},
+		);
+
+	parent
+		.command("remove")
+		.description("Remove a provider from config, allowlist, and runtime skill state")
+		.argument("<provider-id>", "Configured provider ID")
+		.option("-y, --yes", "Skip the confirmation prompt")
+		.action(async (providerId: string, options: { yes?: boolean }) => {
+			try {
+				await runProviderRemove(providerId, options);
+			} catch (err) {
+				logger.error({ error: String(err), providerId }, "providers remove failed");
+				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+				process.exit(1);
+			}
+		});
+
+	parent
+		.command("refresh")
+		.description("Refresh provider schema + prompt summary without restarting the relay or agent")
+		.action(async () => {
+			try {
+				await runProviderRefresh();
+			} catch (err) {
+				logger.error({ error: String(err) }, "providers refresh failed");
+				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+				process.exit(1);
+			}
 		});
 
 	parent

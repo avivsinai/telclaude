@@ -30,6 +30,12 @@ export function resolveConfigPath(): string {
 	return DEFAULT_CONFIG_PATH;
 }
 
+export function resolveRuntimeConfigPath(configPath: string = resolveConfigPath()): string {
+	const ext = path.extname(configPath) || ".json";
+	const basename = path.basename(configPath, ext);
+	return path.join(path.dirname(configPath), `${basename}.runtime${ext}`);
+}
+
 /**
  * Set the config path override. Called from CLI parsing.
  */

@@ -224,6 +224,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `ANTHROPIC_PROXY_TOKEN` | Yes | Shared token for Anthropic proxy access (all agents). Generate: `openssl rand -hex 32` |
 | `TELEGRAM_BOT_TOKEN` | Vault/env | Bot token from @BotFather (vault preferred) |
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` (vault preferred) |
+| `OPERATOR_RPC_AGENT_PRIVATE_KEY` | Host CLI only | Operator private key — signs operator-only relay mutations such as provider add/edit/remove/refresh |
+| `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator public key — relay verifies operator-only RPC mutations |
 | `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Agent private key — signs agent→relay requests. Generate with `telclaude keygen telegram` |
 | `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
 | `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
@@ -240,7 +242,11 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `TELCLAUDE_FIREWALL_RETRY_DELAY` | No | Seconds between internal host DNS retries (defaults to 2) |
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
-For each agent scope, generate key pairs with `telclaude keygen telegram` / `telclaude keygen social`. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`. `ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
+Generate:
+- `telclaude keygen operator` for operator-only relay mutations. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` on the host where you run the CLI; only `OPERATOR_RPC_AGENT_PUBLIC_KEY` goes into the relay container env.
+- `telclaude keygen telegram` / `telclaude keygen social` for agent scopes. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`.
+
+`ANTHROPIC_PROXY_TOKEN` must match between relay and agent containers.
 
 ### Config Split
 

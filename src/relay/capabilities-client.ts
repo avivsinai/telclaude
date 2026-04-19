@@ -12,13 +12,21 @@ function getCapabilitiesUrl(): string {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
+	return postJsonWithScope(path, body, "telegram");
+}
+
+async function postJsonWithScope<T>(
+	path: string,
+	body: unknown,
+	scope: "telegram" | "operator",
+): Promise<T> {
 	const baseUrl = getCapabilitiesUrl();
 	const payload = JSON.stringify(body);
 	const response = await fetch(`${baseUrl}${path}`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildRpcAuthHeaders("POST", path, payload, "telegram"),
+			...buildRpcAuthHeaders("POST", path, payload, scope),
 		},
 		body: payload,
 	});
@@ -44,7 +52,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 	return (await response.json()) as T;
 }
 
-export async function relayGetProviders(): Promise<{
+type RelayProvidersResponse = {
 	ok: boolean;
 	providers: Array<{
 		id: string;
@@ -53,8 +61,45 @@ export async function relayGetProviders(): Promise<{
 		description?: string;
 	}>;
 	schemaMarkdown?: string;
-}> {
+	providersEpoch: string;
+};
+
+export async function relayGetProviders(): Promise<RelayProvidersResponse> {
 	return postJson("/v1/config.providers", {});
+}
+
+export async function relayRefreshProviders(): Promise<RelayProvidersResponse> {
+	return postJsonWithScope("/v1/config.providers.refresh", {}, "operator");
+}
+
+export async function relayUpsertProvider(input: {
+	provider: {
+		id: string;
+		baseUrl: string;
+		services: string[];
+		description?: string;
+		endpointLabel?: string;
+		endpointDescription?: string;
+	};
+}): Promise<
+	RelayProvidersResponse & {
+		doctorResults: Array<{
+			providerId: string;
+			baseUrl: string;
+			checks: Array<{ name: string; status: "pass" | "warn" | "fail"; detail: string }>;
+		}>;
+	}
+> {
+	return postJsonWithScope("/v1/config.providers.upsert", input, "operator");
+}
+
+export async function relayRemoveProvider(input: { providerId: string }): Promise<
+	RelayProvidersResponse & {
+		removedProvider: boolean;
+		removedPrivateEndpoint: boolean;
+	}
+> {
+	return postJsonWithScope("/v1/config.providers.remove", input, "operator");
 }
 
 export async function relayGenerateImage(input: {
