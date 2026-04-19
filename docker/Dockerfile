@@ -173,6 +173,7 @@ COPY --chown=node:node assets/logo/logo-512.png ./assets/logo/logo-512.png
 # Copy firewall initialization scripts and entrypoint wrapper
 COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY --chown=node:node docker/firewall-refresh.sh /usr/local/bin/firewall-refresh.sh
+COPY --chown=node:node docker/allowed-domains.generated.sh /usr/local/bin/allowed-domains.generated.sh
 COPY --chown=node:node docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh /usr/local/bin/entrypoint.sh
 
