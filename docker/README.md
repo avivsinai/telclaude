@@ -109,7 +109,7 @@ for containers that need initial root privileges.
 ./setup-volumes.sh
 ```
 
-This creates `telclaude-claude-auth`, `telclaude-skill-catalog`, `telclaude-totp-data`, and `telclaude-vault-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
+This creates `telclaude-claude-auth`, `telclaude-totp-data`, and `telclaude-vault-data` as external volumes that **cannot be deleted** by `docker compose down -v`.
 
 **Note:** `docker compose up` will fail if these volumes don't exist. Always run `setup-volumes.sh` first.
 
@@ -140,9 +140,13 @@ docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-auth:/new \
   alpine cp -a /old/.credentials.json /new/ 2>/dev/null || true
 ```
 
-If you had custom skills in the old profile volumes, the new entrypoint will migrate
-legacy `skills/` and `skills-draft/` directories into `telclaude-skill-catalog`
-automatically on first boot.
+If you had custom skills in the old volume, copy them into the new shared skills volume:
+```bash
+docker volume create telclaude-claude-skills
+# Use your old volume name (e.g., telclaude-claude or telclaude-claude-private)
+docker run --rm -v telclaude-claude:/old:ro -v telclaude-claude-skills:/new \
+  alpine cp -a /old/skills /new/ 2>/dev/null || true
+```
 
 ## Volume Safety
 
@@ -153,13 +157,12 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 | Volume | Contains | If Deleted |
 |--------|----------|------------|
 | `telclaude-claude-auth` | Claude OAuth tokens | Must re-run `claude login` |
-| `telclaude-skill-catalog` | Shared active + draft skill catalog | Must reinstall or recreate custom skills |
 | `telclaude-totp-data` | Encrypted 2FA secrets | **UNRECOVERABLE** - must re-enroll all 2FA |
 | `telclaude-vault-data` | Encrypted credentials (API keys, OAuth tokens) | **UNRECOVERABLE** - must re-add all credentials |
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
 
-**Profile volume note:** The per-agent profile volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external. They only store profile-local state; the shared skill catalog lives in `telclaude-skill-catalog`.
+**Skills volume note:** Skills volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external and will be recreated automatically on restart.
 
 ### Safe Operations
 
@@ -205,9 +208,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `telclaude-agent` | `/workspace` | Your projects folder | Host mount |
 | `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
-| `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skill-catalog` | Shared active + draft skill catalog (`agent-social` mounts it read-only) | External volume |
-| `telclaude-agent` | `/home/telclaude-skills` | Private profile state (settings/cache, catalog symlinked in) | Named volume |
-| `agent-social` | `/home/telclaude-skills` | Social profile state (settings/cache, catalog symlinked in) | Named volume |
+| `telclaude-agent` | `/home/telclaude-skills` | Claude skills + compiled private working-memory cache | Named volume |
+| `agent-social` | `/home/telclaude-skills` | Claude skills for social persona (no private Telegram memory) | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
 | `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |
@@ -433,14 +435,14 @@ docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude l
 ### Reset session data (keeps secrets)
 
 ```bash
-# Remove containers and non-external volumes (keeps auth, shared skills, TOTP secrets, and vault creds)
+# Remove containers and non-external volumes (keeps TOTP secrets, vault creds, and Claude auth)
 docker compose down -v
 
 # Rebuild fresh
 docker compose up -d --build
 ```
 
-**Note:** External volumes (`telclaude-claude-auth`, `telclaude-skill-catalog`, `telclaude-totp-data`, `telclaude-vault-data`) are protected and will NOT be deleted by `docker compose down -v`.
+**Note:** External volumes (`telclaude-claude-auth`, `telclaude-totp-data`, `telclaude-vault-data`) are protected and will NOT be deleted by `docker compose down -v`.
 
 ## TOTP Daemon (2FA Support)
 

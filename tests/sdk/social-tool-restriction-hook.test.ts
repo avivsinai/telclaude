@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { buildSdkOptions } from "../../src/sdk/client.js";
 
@@ -50,10 +50,6 @@ async function runPreToolUse(
 }
 
 describe("createSocialToolRestrictionHook (PreToolUse)", () => {
-	afterEach(() => {
-		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
-	});
-
 	it("denies Bash for untrusted social actors (notifications)", async () => {
 		const sdkOpts = await buildSdkOptions({
 			cwd: "/tmp",
@@ -123,22 +119,5 @@ describe("createSocialToolRestrictionHook (PreToolUse)", () => {
 		expect(res.permissionDecision).toBe("deny");
 		expect(res.permissionDecisionReason).toContain("writing to this location is not permitted");
 	});
-
-	it("denies Write to the shared skill catalog for all social actors", async () => {
-		process.env.TELCLAUDE_SKILL_CATALOG_DIR = "/home/telclaude-skill-catalog";
-		const sdkOpts = await buildSdkOptions({
-			cwd: "/tmp",
-			tier: "SOCIAL",
-			poolKey: "xtwitter:social",
-			userId: "social:xtwitter:operator",
-			enableSkills: true,
-		});
-
-		const res = await runPreToolUse(sdkOpts, "Write", {
-			file_path: "/home/telclaude-skill-catalog/skills/browser-automation/SKILL.md",
-			content: "pwned",
-		});
-		expect(res.permissionDecision).toBe("deny");
-		expect(res.permissionDecisionReason).toContain("writing to this location is not permitted");
-	});
 });
+

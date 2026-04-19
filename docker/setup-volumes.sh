@@ -22,14 +22,6 @@ else
     echo "✓ Created telclaude-claude-auth"
 fi
 
-# Shared skill catalog (active + draft skills for private + social agents)
-if docker volume inspect telclaude-skill-catalog >/dev/null 2>&1; then
-    echo "✓ telclaude-skill-catalog already exists"
-else
-    docker volume create telclaude-skill-catalog
-    echo "✓ Created telclaude-skill-catalog"
-fi
-
 # TOTP secrets (encrypted 2FA seeds) - CRITICAL
 if docker volume inspect telclaude-totp-data >/dev/null 2>&1; then
     echo "✓ telclaude-totp-data already exists"
@@ -51,7 +43,6 @@ echo "Volume setup complete!"
 echo ""
 echo "⚠️  IMPORTANT: Back up these volumes regularly:"
 echo "   - telclaude-claude-auth: Claude OAuth tokens"
-echo "   - telclaude-skill-catalog: Shared installed + draft skills"
 echo "   - telclaude-totp-data: Encrypted 2FA secrets (CANNOT be recovered if lost)"
 echo "   - telclaude-vault-data: Encrypted credentials (CANNOT be recovered if lost)"
 echo ""
