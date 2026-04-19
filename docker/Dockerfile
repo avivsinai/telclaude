@@ -164,6 +164,7 @@ COPY --from=builder --chown=node:node /build/node_modules ./node_modules
 COPY --from=builder --chown=node:node /build/package.json ./
 COPY --from=builder --chown=node:node /build/bin ./bin
 COPY --from=builder --chown=node:node /build/.claude ./.claude
+COPY --from=builder --chown=node:node /build/.agents/skills ./.agents/skills
 COPY --from=builder --chown=node:node /build/src ./src
 COPY --chown=node:node docs/soul.md ./docs/soul.md
 COPY --chown=node:node docs/social-contract.md ./docs/social-contract.md
@@ -175,7 +176,8 @@ COPY --chown=node:node docker/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY --chown=node:node docker/firewall-refresh.sh /usr/local/bin/firewall-refresh.sh
 COPY --chown=node:node docker/allowed-domains.generated.sh /usr/local/bin/allowed-domains.generated.sh
 COPY --chown=node:node docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh /usr/local/bin/entrypoint.sh
+COPY --chown=node:node docker/install-claude-assets.sh /usr/local/bin/install-claude-assets.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-refresh.sh /usr/local/bin/entrypoint.sh /usr/local/bin/install-claude-assets.sh
 
 # Create symlink for telclaude command
 RUN ln -s /app/bin/telclaude.js /usr/local/bin/telclaude
