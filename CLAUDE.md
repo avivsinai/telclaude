@@ -10,6 +10,8 @@
 - Write clean TypeScript; remove dead code.
 - Use `@anthropic-ai/claude-agent-sdk` (no CLI spawning).
 - Skills live under `.claude/skills/` and auto-load from repo root.
+- Pristine implementation: no legacy cruft, compatibility shims, or deprecation layers. Delete old code when you replace it.
+- No backward compatibility until 1.0. The user base is us. Hard-break DB migrations, API surfaces, CLI commands, config shapes, cards, directives — whatever needs to change. Document the break in the commit.
 
 ## Security essentials
 - Permission tiers
