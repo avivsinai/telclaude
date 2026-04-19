@@ -6,7 +6,7 @@ import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.
 import { buildInternalAuthHeaders, type InternalAuthScope } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import {
-	refreshExternalProviderSkill,
+	clearProviderSkillState,
 	writeProviderSchemaFromRelay,
 } from "../providers/provider-skill.js";
 import { relayGetProviders } from "../relay/capabilities-client.js";
@@ -102,16 +102,25 @@ export function registerAgentCommand(program: Command): void {
 					const fetchProviders = async (attempt: number): Promise<void> => {
 						try {
 							const result = await relayGetProviders();
-							if (result.ok && result.providers.length > 0) {
+							if (result.ok) {
+								if (result.providers.length === 0) {
+									await clearProviderSkillState();
+									logger.info("provider config fetched from relay (none configured)");
+									return;
+								}
+
 								if (result.schemaMarkdown) {
-									// Use relay-provided schema (agent can't fetch from providers directly)
 									await writeProviderSchemaFromRelay(result.providers, result.schemaMarkdown);
 								} else {
-									// Fallback: fetch schema directly (may fail if firewall blocks)
-									await refreshExternalProviderSkill(result.providers);
+									logger.warn(
+										{ providersEpoch: result.providersEpoch, count: result.providers.length },
+										"relay returned providers without schema markdown during agent bootstrap",
+									);
+									return;
 								}
+
 								logger.info(
-									{ count: result.providers.length },
+									{ count: result.providers.length, providersEpoch: result.providersEpoch },
 									"provider config fetched from relay",
 								);
 							}

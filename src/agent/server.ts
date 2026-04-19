@@ -6,7 +6,12 @@ import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
-import { getCachedProviderSummary } from "../providers/provider-skill.js";
+import {
+	clearProviderSkillState,
+	getCachedProviderSummary,
+	writeProviderSchemaFromRelay,
+} from "../providers/provider-skill.js";
+import { relayGetProviders } from "../relay/capabilities-client.js";
 import { getSandboxMode } from "../sandbox/index.js";
 import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 import { loadSocialContractPrompt } from "../social-contract.js";
@@ -108,6 +113,58 @@ function resolveCwd(requested?: string): string {
 	return candidate;
 }
 
+let lastProviderEpoch: string | null = null;
+let providerSyncInFlight: Promise<void> | null = null;
+
+async function syncProviderSummaryFromRelay(scope: string): Promise<void> {
+	if (scope !== "telegram" || !process.env.TELCLAUDE_CAPABILITIES_URL) {
+		return;
+	}
+
+	if (providerSyncInFlight) {
+		await providerSyncInFlight;
+		return;
+	}
+
+	providerSyncInFlight = (async () => {
+		try {
+			const result = await relayGetProviders();
+			if (!result.ok) {
+				return;
+			}
+
+			if (result.providersEpoch === lastProviderEpoch) {
+				return;
+			}
+
+			if (result.providers.length === 0) {
+				await clearProviderSkillState();
+				lastProviderEpoch = result.providersEpoch;
+				return;
+			}
+
+			if (!result.schemaMarkdown) {
+				logger.warn(
+					{ providersEpoch: result.providersEpoch, count: result.providers.length },
+					"relay returned providers without schema markdown",
+				);
+				return;
+			}
+
+			await writeProviderSchemaFromRelay(result.providers, result.schemaMarkdown);
+			lastProviderEpoch = result.providersEpoch;
+		} catch (error) {
+			logger.warn({ error: String(error) }, "failed to refresh provider summary from relay");
+		}
+	})();
+
+	try {
+		await providerSyncInFlight;
+	} finally {
+		providerSyncInFlight = null;
+	}
+}
+
 /** Keepalive interval — write empty newlines so the relay knows we're alive. */
 const KEEPALIVE_INTERVAL_MS = 15_000;
 
@@ -201,7 +258,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 	const port = options.port ?? Number(process.env.TELCLAUDE_AGENT_PORT ?? 8788);
 	const host = options.host ?? (getSandboxMode() === "docker" ? "0.0.0.0" : "127.0.0.1");
 
-	const server = http.createServer((req, res) => {
+	const server = http.createServer(async (req, res) => {
 		if (!req.url) {
 			writeJson(res, 400, { error: "Missing request URL." });
 			return;
@@ -240,7 +297,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 			chunks.push(chunk);
 		});
 
-		req.on("end", () => {
+		req.on("end", async () => {
 			try {
 				const body = Buffer.concat(chunks).toString("utf-8");
 				const authResult = verifyInternalAuth(req, body);
@@ -325,6 +382,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				// Inject cached provider summary into system prompt if available
 				let effectiveSystemPromptAppend = parsed.systemPromptAppend;
 				if (scope === "telegram") {
+					await syncProviderSummaryFromRelay(scope);
 					const providerSummary = getCachedProviderSummary();
 					if (providerSummary) {
 						const providerBlock = `<available-providers>\n${providerSummary}\n</available-providers>`;

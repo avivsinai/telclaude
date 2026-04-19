@@ -72,26 +72,27 @@ export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
 }
 
 /**
- * Build the ordered list of candidate WRITABLE skill roots. Same order
- * as getAllSkillRoots(), minus the bundled-distribution root (which lives
- * in node_modules/ and must not be mutated).
+ * Build the ordered list of candidate WRITABLE skill roots. Prefer the
+ * configured Claude home when present so runtime-generated skill state
+ * lands in the active profile, then fall back to the project-local root.
  */
 export function getWritableSkillRootCandidates(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
 	return dedupePaths([
-		path.join(cwd, ".claude", "skills"),
 		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
+		path.join(cwd, ".claude", "skills"),
 	]);
 }
 
 /**
- * Build the ordered list of candidate WRITABLE draft-skill roots.
+ * Build the ordered list of candidate WRITABLE draft-skill roots with the
+ * same preference order as getWritableSkillRootCandidates().
  */
 export function getWritableDraftSkillRootCandidates(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
 	return dedupePaths([
-		path.join(cwd, ".claude", "skills-draft"),
 		configuredClaudeHome ? path.join(configuredClaudeHome, "skills-draft") : null,
+		path.join(cwd, ".claude", "skills-draft"),
 	]);
 }
 

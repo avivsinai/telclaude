@@ -4,7 +4,7 @@ import JSON5 from "json5";
 import { z } from "zod";
 
 import { CONFIG_DIR } from "../utils.js";
-import { resolveConfigPath } from "./path.js";
+import { resolveConfigPath, resolveRuntimeConfigPath } from "./path.js";
 
 // =============================================================================
 // Default value constants (single source of truth for Zod 4 compatibility)
@@ -514,6 +514,7 @@ export type SummarizeConfig = z.infer<typeof SummarizeConfigSchema>;
 
 let cachedConfig: TelclaudeConfig | null = null;
 let configMtime: number | null = null;
+let runtimeMtime: number | null = null;
 let privateMtime: number | null = null;
 let cachedConfigPath: string | null = null;
 
@@ -563,24 +564,42 @@ function safeStat(filePath: string): fs.Stats | null {
  */
 export function loadConfig(): TelclaudeConfig {
 	const configPath = resolveConfigPath();
+	const runtimeConfigPath = resolveRuntimeConfigPath(configPath);
 	const privateConfigPath = process.env.TELCLAUDE_PRIVATE_CONFIG;
 
 	try {
-		const stat = fs.statSync(configPath);
+		const stat = safeStat(configPath);
+		const rStat = safeStat(runtimeConfigPath);
 		const pStat = privateConfigPath ? safeStat(privateConfigPath) : null;
 
 		// Invalidate cache if any file changed
 		if (
 			cachedConfig &&
 			cachedConfigPath === configPath &&
-			configMtime === stat.mtimeMs &&
+			configMtime === (stat?.mtimeMs ?? null) &&
+			runtimeMtime === (rStat?.mtimeMs ?? null) &&
 			privateMtime === (pStat?.mtimeMs ?? null)
 		) {
 			return cachedConfig;
 		}
 
-		const raw = fs.readFileSync(configPath, "utf-8");
-		let parsed = JSON5.parse(raw) as Record<string, unknown>;
+		let parsed: Record<string, unknown> = {};
+		if (stat) {
+			const raw = fs.readFileSync(configPath, "utf-8");
+			parsed = JSON5.parse(raw) as Record<string, unknown>;
+		}
+
+		if (rStat) {
+			try {
+				const runtimeRaw = fs.readFileSync(runtimeConfigPath, "utf-8");
+				const runtimeParsed = JSON5.parse(runtimeRaw) as Record<string, unknown>;
+				parsed = deepMerge(parsed, runtimeParsed);
+			} catch {
+				if (process.env.TELCLAUDE_LOG_LEVEL === "debug") {
+					console.debug(`[config] failed to read runtime config: ${runtimeConfigPath}`);
+				}
+			}
+		}
 
 		// Deep-merge private config if available (relay-only overlay)
 		if (privateConfigPath && pStat) {
@@ -599,17 +618,14 @@ export function loadConfig(): TelclaudeConfig {
 		const validated = TelclaudeConfigSchema.parse(parsed);
 
 		cachedConfig = validated;
-		configMtime = stat.mtimeMs;
+		configMtime = stat?.mtimeMs ?? null;
+		runtimeMtime = rStat?.mtimeMs ?? null;
 		privateMtime = pStat?.mtimeMs ?? null;
 		cachedConfigPath = configPath;
 
 		return validated;
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			// No config file - use schema defaults
-			return TelclaudeConfigSchema.parse({});
-		}
 		if (code === "EACCES") {
 			// Permission denied (e.g., running in sandbox where ~/.telclaude is blocked)
 			// NOTE: Cannot use getLogger() here - would cause circular dependency with logging.ts
@@ -637,6 +653,7 @@ export function getConfigPath(): string {
 export function resetConfigCache() {
 	cachedConfig = null;
 	configMtime = null;
+	runtimeMtime = null;
 	privateMtime = null;
 	cachedConfigPath = null;
 }
