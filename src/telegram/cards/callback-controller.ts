@@ -336,6 +336,21 @@ export async function handleCallback(
 	try {
 		const execution = await renderer.execute({ ctx, card, action });
 		const currentCard = getCard(card.cardId) ?? card;
+		const handleRevisionConflict = async (latestCard: CardInstance): Promise<void> => {
+			await renderCardMessage(ctx, latestCard, renderer);
+			await responder.answer({ text: "Card outdated", show_alert: true });
+			await logCallbackAudit(options.auditLogger, {
+				card: latestCard,
+				shortId: token.shortId,
+				action: token.action,
+				chatId: latestCard.chatId,
+				actorId,
+				username: ctx.from.username,
+				outcome: "blocked",
+				errorType: "revision_conflict",
+			});
+		};
+
 		if (currentCard.status === "consumed") {
 			await renderCardMessage(ctx, currentCard, renderer);
 			await responder.answer({ text: "Already processed" });
@@ -417,18 +432,7 @@ export async function handleCallback(
 			});
 			if (!touched) {
 				const latestCard = getCard(card.cardId) ?? currentCard;
-				await renderCardMessage(ctx, latestCard, renderer);
-				await responder.answer({ text: "Card outdated", show_alert: true });
-				await logCallbackAudit(options.auditLogger, {
-					card: latestCard,
-					shortId: token.shortId,
-					action: token.action,
-					chatId: latestCard.chatId,
-					actorId,
-					username: ctx.from.username,
-					outcome: "blocked",
-					errorType: "revision_conflict",
-				});
+				await handleRevisionConflict(latestCard);
 				return;
 			}
 			finalCard = touched;
@@ -445,18 +449,7 @@ export async function handleCallback(
 
 			if (!updatedCard) {
 				const latestCard = getCard(card.cardId) ?? currentCard;
-				await renderCardMessage(ctx, latestCard, renderer);
-				await responder.answer({ text: "Card outdated", show_alert: true });
-				await logCallbackAudit(options.auditLogger, {
-					card: latestCard,
-					shortId: token.shortId,
-					action: token.action,
-					chatId: latestCard.chatId,
-					actorId,
-					username: ctx.from.username,
-					outcome: "blocked",
-					errorType: "revision_conflict",
-				});
+				await handleRevisionConflict(latestCard);
 				return;
 			}
 
