@@ -394,7 +394,7 @@ export async function sendSkillsImportCommand(
 		"",
 		"  telclaude skills import-openclaw <source>",
 		"",
-		"Imports land in `.claude/skills-draft/` and can be promoted via /skills promote.",
+		"Imports land in the canonical draft-skill catalog and can be promoted via /skills promote.",
 	].join("\n");
 	await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
 	return { callbackText: "Run `telclaude skills import-openclaw` from the CLI." };

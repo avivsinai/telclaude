@@ -49,8 +49,10 @@ profile telclaude-social flags=(attach_disconnected,mediate_deleted) {
   /social/memory/** r,
   deny /social/memory/** wklx,
 
-  # Claude skills profile (shared)
+  # Claude profile state + shared skill catalog
   /home/telclaude-skills/** rwklix,
+  /home/telclaude-skill-catalog/** rklix,
+  deny /home/telclaude-skill-catalog/** w,
 
   # Config file (read-only)
   /data/telclaude.json r,
