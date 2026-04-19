@@ -35,6 +35,7 @@ coverage/
 *.md
 !docker/README.md
 !.claude/**/*.md
+!.agents/skills/**/*.md
 docs/
 !docs/social-contract.md
 !docs/architecture.md

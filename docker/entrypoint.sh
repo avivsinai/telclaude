@@ -50,22 +50,7 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p /tmp/claude
     chmod 1777 /tmp/claude
 
-    # Install bundled skills to the configured Claude home (done at runtime so volumes don't obscure them)
-    if [ -d "/app/.claude/skills" ]; then
-        echo "[entrypoint] Installing bundled skills"
-        mkdir -p "${TELCLAUDE_CLAUDE_HOME}/skills"
-        # -r instead of -a: AppArmor may block timestamp preservation (utimensat)
-        cp -r /app/.claude/skills/. "${TELCLAUDE_CLAUDE_HOME}/skills/"
-        # chown may fail on NFS with UID squashing - that's OK, files are still accessible
-        chown -R "${TELCLAUDE_UID}:${TELCLAUDE_GID}" "${TELCLAUDE_CLAUDE_HOME}" 2>/dev/null || true
-    fi
-
-    # Install bundled CLAUDE.md (user-level playbook) if present
-    if [ -f "/app/.claude/CLAUDE.md" ]; then
-        echo "[entrypoint] Installing bundled CLAUDE.md"
-        mkdir -p "${TELCLAUDE_CLAUDE_HOME}"
-        cp /app/.claude/CLAUDE.md "${TELCLAUDE_CLAUDE_HOME}/CLAUDE.md"
-    fi
+    /usr/local/bin/install-claude-assets.sh
 
     # Ensure data directories have correct ownership
     # This handles the case where volumes are mounted from host
