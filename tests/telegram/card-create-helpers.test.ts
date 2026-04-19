@@ -136,4 +136,43 @@ describe("card create helpers", () => {
 			}),
 		);
 	});
+
+	it("does not create a replacement card when an in-place edit is not modified", async () => {
+		const sendMessage = vi.fn(async () => ({ message_id: 701 }));
+		const editMessageText = vi.fn(async () => {
+			throw new Error("400 Bad Request: message is not modified");
+		});
+		const api = { sendMessage, editMessageText } as any;
+
+		const first = await sendPendingQueueCard(api, 777, {
+			entries: makeEntries(5),
+			actorScope: "user:101",
+		});
+		const second = await sendPendingQueueCard(api, 777, {
+			entries: makeEntries(5),
+			actorScope: "user:101",
+		});
+
+		expect(sendMessage).toHaveBeenCalledTimes(1);
+		expect(editMessageText).not.toHaveBeenCalled();
+		expect(second).toEqual(
+			expect.objectContaining({
+				cardId: first.cardId,
+				messageId: first.messageId,
+				revision: first.revision,
+			}),
+		);
+		expect(getActiveCardsByEntity({
+			kind: first.kind,
+			chatId: first.chatId,
+			entityRef: first.entityRef,
+		})).toHaveLength(1);
+		expect(getCard(first.cardId)).toEqual(
+			expect.objectContaining({
+				status: "active",
+				messageId: first.messageId,
+				revision: first.revision,
+			}),
+		);
+	});
 });

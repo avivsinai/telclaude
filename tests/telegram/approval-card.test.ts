@@ -21,6 +21,7 @@ let handleCallback: typeof import("../../src/telegram/cards/callback-controller.
 let getCard: typeof import("../../src/telegram/cards/store.js").getCard;
 let createApproval: typeof import("../../src/security/approvals.js").createApproval;
 let listAllowlist: typeof import("../../src/security/approvals.js").listAllowlist;
+let waitForToolApproval: typeof import("../../src/security/approval-wait.js").waitForToolApproval;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
 
@@ -82,6 +83,7 @@ describe("ApprovalScopeCard (W1)", () => {
 		({ handleCallback } = await import("../../src/telegram/cards/callback-controller.js"));
 		({ getCard } = await import("../../src/telegram/cards/store.js"));
 		({ createApproval, listAllowlist } = await import("../../src/security/approvals.js"));
+		({ waitForToolApproval } = await import("../../src/security/approval-wait.js"));
 
 		registerAllCardRenderers();
 	});
@@ -158,6 +160,7 @@ describe("ApprovalScopeCard (W1)", () => {
 			toolKey: "Read",
 			riskTier: "medium",
 		});
+		const waiting = waitForToolApproval({ nonce, chatId, timeoutMs: 1_000 });
 		const card = await sendApprovalScopeCard({ sendMessage } as any, chatId, {
 			title: "Approve Read",
 			body: "Read file",
@@ -182,6 +185,11 @@ describe("ApprovalScopeCard (W1)", () => {
 		} as any);
 
 		expect(answerCallbackQuery).toHaveBeenCalled();
+		await expect(waiting).resolves.toMatchObject({
+			status: "approved",
+			scope: "always",
+			source: "card",
+		});
 		const stored = getCard(card.cardId);
 		expect(stored?.status).toBe("consumed");
 
