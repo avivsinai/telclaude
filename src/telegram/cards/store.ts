@@ -178,6 +178,23 @@ export function updateCard<K extends CardKind>(params: {
 	expectedRevision: number;
 	patch?: UpdateCardPatch<K>;
 }): CardInstance<K> | null {
+	return mutateCard({ ...params, bumpRevision: true });
+}
+
+export function touchCard<K extends CardKind>(params: {
+	cardId: string;
+	expectedRevision: number;
+	patch?: UpdateCardPatch<K>;
+}): CardInstance<K> | null {
+	return mutateCard({ ...params, bumpRevision: false });
+}
+
+function mutateCard<K extends CardKind>(params: {
+	cardId: string;
+	expectedRevision: number;
+	patch?: UpdateCardPatch<K>;
+	bumpRevision: boolean;
+}): CardInstance<K> | null {
 	const db = getDb();
 	const patch = params.patch ?? {};
 	const sets: string[] = [];
@@ -213,7 +230,10 @@ export function updateCard<K extends CardKind>(params: {
 	}
 
 	const now = Date.now();
-	sets.push("revision = revision + 1", "updated_at = ?");
+	if (params.bumpRevision) {
+		sets.push("revision = revision + 1");
+	}
+	sets.push("updated_at = ?");
 	values.push(now, params.cardId, params.expectedRevision);
 
 	const result = db

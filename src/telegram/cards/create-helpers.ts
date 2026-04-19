@@ -16,11 +16,13 @@ import { getChildLogger } from "../../logging.js";
 import { createOrSupersedeCard } from "./lifecycle.js";
 import { buildSkillsMenuState, buildSocialMenuState } from "./menu-state.js";
 import { cardRegistry } from "./registry.js";
+import { editCardMessage, renderCardSnapshot, sameCardRender } from "./rendering.js";
 import {
 	getActiveCardsByEntity,
 	getCard,
 	patchMessageId,
 	supersedeActiveCards,
+	touchCard,
 	updateCard,
 } from "./store.js";
 import type {
@@ -122,12 +124,38 @@ async function createAndSendCard<K extends CardKind>(
 	) as CardInstance<K> | undefined;
 
 	if (existing) {
+		const renderer = cardRegistry.get(kind);
+		const nextExpiresAt = Date.now() + expiryMs;
+		const currentRender = renderCardSnapshot(existing, renderer);
+		const comparisonCard: CardInstance<K> = {
+			...existing,
+			state,
+			expiresAt: nextExpiresAt,
+			updatedAt: Date.now(),
+		};
+		const comparisonRender = renderCardSnapshot(comparisonCard, renderer);
+
+		if (sameCardRender(currentRender.snapshot, comparisonRender.snapshot)) {
+			const touched = touchCard<K>({
+				cardId: existing.cardId,
+				expectedRevision: existing.revision,
+				patch: { expiresAt: nextExpiresAt },
+			});
+			if (touched) {
+				logger.debug(
+					{ cardId: touched.cardId, kind, chatId, messageId: touched.messageId },
+					"card reused without visible Telegram diff",
+				);
+				return touched;
+			}
+		}
+
 		const updated = updateCard<K>({
 			cardId: existing.cardId,
 			expectedRevision: existing.revision,
 			patch: {
 				state,
-				expiresAt: Date.now() + expiryMs,
+				expiresAt: nextExpiresAt,
 			},
 		});
 
@@ -142,13 +170,16 @@ async function createAndSendCard<K extends CardKind>(
 				}
 			}
 
-			const renderer = cardRegistry.get(kind);
-			const render = renderer.render(updated);
 			try {
-				await api.editMessageText(chatId, updated.messageId, render.text, {
-					parse_mode: render.parseMode,
-					reply_markup: render.keyboard ?? undefined,
-				});
+				const editResult = await editCardMessage(api, updated, renderer.render(updated));
+				if (editResult === "not_modified") {
+					logger.debug(
+						{ cardId: updated.cardId, kind, chatId, messageId: updated.messageId },
+						"in-place card edit produced no Telegram diff",
+					);
+					const current = getCard<K>(updated.cardId);
+					return current ?? updated;
+				}
 				logger.debug(
 					{ cardId: updated.cardId, kind, chatId, messageId: updated.messageId },
 					"card updated in place",

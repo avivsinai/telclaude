@@ -272,6 +272,10 @@ export function unregisterPendingToolApprovalWait(nonce: string): void {
 	pendingToolApprovals.delete(nonce);
 }
 
+export function hasPendingToolApprovalWait(nonce: string): boolean {
+	return pendingToolApprovals.has(nonce);
+}
+
 export function resolvePendingToolApproval(
 	nonce: string,
 	resolution: PendingToolApprovalResolution,
