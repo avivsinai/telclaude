@@ -27,6 +27,7 @@ import {
 	VALIDATED_CLAUDE_AUTH_DIR,
 	VALIDATED_CLAUDE_CONFIG_DIR,
 	VALIDATED_DATA_DIR,
+	VALIDATED_SKILL_CATALOG_DIR,
 } from "../utils.js";
 import { getIdentityLink } from "./linking.js";
 import { getPairedChat } from "./pairing.js";
@@ -490,6 +491,14 @@ const SENSITIVE_PATH_PATTERNS: RegExp[] = [
 		? [
 				new RegExp(
 					`^${escapeRegex(VALIDATED_CLAUDE_CONFIG_DIR)}(?:[/\\\\])skills(?:[/\\\\])security-gate(?:[/\\\\]|$)`,
+					"i",
+				),
+			]
+		: []),
+	...(VALIDATED_SKILL_CATALOG_DIR
+		? [
+				new RegExp(
+					`^${escapeRegex(VALIDATED_SKILL_CATALOG_DIR)}(?:[/\\\\])skills(?:[/\\\\])security-gate(?:[/\\\\]|$)`,
 					"i",
 				),
 			]

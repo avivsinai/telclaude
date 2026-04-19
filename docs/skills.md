@@ -1,16 +1,19 @@
 # Skills — scaffold, promote, and doctor
 
-Telclaude skills live under `.claude/skills/<name>/`. Draft skills live under
-`.claude/skills-draft/<name>/` until promoted. This document explains the
-lifecycle: scaffold → edit → doctor/scan → promote → reload.
+Telclaude has one canonical writable skill store plus optional read-only skill
+roots. Active skills live under `<skill-root>/skills/<name>/`. Draft skills
+live under `<skill-root>/skills-draft/<name>/` until promoted. This document
+explains the lifecycle: scaffold → edit → doctor/scan → promote → reload.
 
 ## The canonical skill root
 
-The writable skill root is resolved by `getSkillRoot()` in
-`src/commands/skill-path.ts`. Candidates, in priority order, are:
+The writable skill root is resolved by `getSkillRoot()` /
+`getDraftSkillRoot()` in `src/commands/skill-path.ts`. Candidates, in priority
+order, are:
 
-1. `<cwd>/.claude/skills/` (project-local)
+1. `$TELCLAUDE_SKILL_CATALOG_DIR/skills/` and `/skills-draft/` when set
 2. `$CLAUDE_CONFIG_DIR/skills/` or `$TELCLAUDE_CLAUDE_HOME/skills/`
+3. `<cwd>/.claude/skills/` and `.claude/skills-draft/`
 
 If none of these are writable, `getSkillRoot()` throws
 `SkillRootUnavailableError`. There is no silent fallback to prompt-injection
@@ -21,10 +24,16 @@ Read-only consumers (e.g. `telclaude skill-path`) additionally fall back to
 the bundled skill directory shipped inside the telclaude package. Writers
 never touch that directory.
 
+In Docker, telclaude uses the Hermes-style idiom: both private and social keep
+their own Claude profile state, but they share one operator-managed skill
+catalog. `agent-social` mounts that catalog read-only; social-specific
+restrictions are enforced at runtime policy plus the container boundary, not by
+installing skills into a different location.
+
 ## `telclaude skills scaffold <name>`
 
-Creates a new draft skill under `.claude/skills-draft/<name>/` from a
-template. The scaffold is pre-filled with:
+Creates a new draft skill under the canonical draft root from a template. The
+scaffold is pre-filled with:
 
 - `SKILL.md` — valid YAML frontmatter (`name`, `description`, `allowed-tools`).
 - `scripts/`, `references/`, `assets/` — empty subdirectories with `.gitkeep`.
@@ -45,13 +54,13 @@ telclaude skills scaffold my-helper --template api-client \
   --description "Use when the user asks about the Acme API."
 ```
 
-Collisions (existing `.claude/skills-draft/<name>/`) fail with an explicit
+Collisions (existing draft with the same name in the canonical draft root) fail with an explicit
 error — the scaffold refuses to overwrite.
 
 ## `telclaude skills doctor`
 
-Walks every active (under `.claude/skills/`) and draft (under
-`.claude/skills-draft/`) skill, and for each emits one of:
+Walks every active and draft skill discovered through the canonical root
+helpers, and for each emits one of:
 
 - `[PASS]` — frontmatter valid, scanner clean.
 - `[WARN]` — scanner saw medium-severity findings, frontmatter has
@@ -95,6 +104,6 @@ removes the draft. Rules:
 
 - `security-gate` and `telegram-reply` are **immutable core skills** — any
   attempt to promote them is rejected.
-- Imports from OpenClaw land in `.claude/skills-draft/<name>/` and must go
-  through the same `/skills promote` gate.
+- Imports from OpenClaw land in the canonical draft root and must go through
+  the same `/skills promote` gate.
 - Promotion re-runs the scanner; critical/high findings block promotion.

@@ -15,7 +15,7 @@ import path from "node:path";
 import type { Command } from "commander";
 import { getChildLogger } from "../logging.js";
 import { type ScanResult, scanSkill } from "../security/skill-scanner.js";
-import { getAllSkillRoots, getWritableDraftSkillRootCandidates } from "./skill-path.js";
+import { getAllDraftSkillRoots, getAllSkillRoots } from "./skill-path.js";
 
 const logger = getChildLogger({ module: "cmd-skills-doctor" });
 
@@ -249,7 +249,7 @@ export function runSkillsDoctor(options?: {
 	draftRoots?: string[];
 }): SkillDoctorReport {
 	const activeRoots = options?.activeRoots ?? getAllSkillRoots(options?.cwd);
-	const draftRoots = options?.draftRoots ?? getWritableDraftSkillRootCandidates(options?.cwd);
+	const draftRoots = options?.draftRoots ?? getAllDraftSkillRoots(options?.cwd);
 
 	const active = collectSkillsFromRoots(activeRoots, "active");
 	const draft = collectSkillsFromRoots(draftRoots, "draft");

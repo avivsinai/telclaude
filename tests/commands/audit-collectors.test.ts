@@ -262,12 +262,19 @@ describe("collectFilesystemFindings", () => {
 
 describe("collectSkillTrustFindings", () => {
 	let tempDir: string;
+	let originalClaudeConfigDir: string | undefined;
 
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "audit-skills-test-"));
+		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
 	});
 
 	afterEach(() => {
+		if (originalClaudeConfigDir === undefined) {
+			delete process.env.CLAUDE_CONFIG_DIR;
+		} else {
+			process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+		}
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -292,6 +299,19 @@ describe("collectSkillTrustFindings", () => {
 		const draftDir = path.join(tempDir, ".claude", "skills-draft", "unvetted-skill");
 		fs.mkdirSync(draftDir, { recursive: true });
 		fs.writeFileSync(path.join(draftDir, "SKILL.md"), "# Unvetted", "utf-8");
+
+		const findings = collectSkillTrustFindings(tempDir);
+		const finding = findByMessage(findings, "skills-draft");
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe("warning");
+	});
+
+	it("flags draft skills discovered via CLAUDE_CONFIG_DIR", () => {
+		const claudeHome = path.join(tempDir, "claude-home");
+		process.env.CLAUDE_CONFIG_DIR = claudeHome;
+		const draftDir = path.join(claudeHome, "skills-draft", "shared-draft");
+		fs.mkdirSync(draftDir, { recursive: true });
+		fs.writeFileSync(path.join(draftDir, "SKILL.md"), "# Draft", "utf-8");
 
 		const findings = collectSkillTrustFindings(tempDir);
 		const finding = findByMessage(findings, "skills-draft");

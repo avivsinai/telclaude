@@ -1,9 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-	getAllSkillRoots,
-	getWritableDraftSkillRootCandidates,
-} from "../../../commands/skill-path.js";
+import { getAllDraftSkillRoots, getAllSkillRoots } from "../../../commands/skill-path.js";
 import {
 	listActiveSkills,
 	listDraftSkills,
@@ -48,7 +45,7 @@ function clampPage(page: number, count: number): number {
  * `skills-sign.ts` / `skills-promote.ts`.
  */
 function findSkillDir(skillName: string, status: "draft" | "active"): string | null {
-	const roots = status === "draft" ? getWritableDraftSkillRootCandidates() : getAllSkillRoots();
+	const roots = status === "draft" ? getAllDraftSkillRoots() : getAllSkillRoots();
 	for (const root of roots) {
 		const candidate = path.join(root, skillName);
 		if (fs.existsSync(path.join(candidate, "SKILL.md"))) {
