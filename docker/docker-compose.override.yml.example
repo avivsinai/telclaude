@@ -13,10 +13,10 @@
 #      - telclaude-media-outbox
 #   3. Proper permissions (containers run as UID 1000)
 #
-# NOTE: telclaude-claude-auth / telclaude-claude-skills are intentionally NOT included here.
-# They stay on local storage because NFS with UID squashing can cause
-# permission issues with Claude config files. The volumes are small
-# (config only) so local storage performance is fine.
+# NOTE: telclaude-claude-auth / telclaude-skill-catalog / telclaude-skills-* are
+# intentionally NOT included here. They stay on local storage because NFS with
+# UID squashing can cause permission issues with Claude config files and the
+# shared skill catalog. The volumes are small, so local storage performance is fine.
 #
 # Usage:
 #   cp docker-compose.override.yml.example docker-compose.override.yml

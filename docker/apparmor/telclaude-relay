@@ -48,6 +48,7 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   # Auth profile (OAuth tokens, skills)
   /home/telclaude-auth/** rwklix,
   /home/telclaude-skills/** rwklix,
+  /home/telclaude-skill-catalog/** rwklix,
 
   # Sidecar sockets (TOTP + vault)
   /run/totp/** rw,
