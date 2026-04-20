@@ -390,14 +390,23 @@ export async function sendSkillsImportCommand(
 	opts: { chatId: number; threadId?: number },
 ): Promise<CommandUiResult> {
 	const message = [
-		"`/skills import` runs from the CLI (requires filesystem source path):",
+		"`/skills import` is only for standalone filesystem skills.",
+		"",
+		"Official Claude plugins use:",
+		"",
+		"  telclaude plugins install <plugin@marketplace> --persona private",
+		"",
+		"Standalone skill imports still use:",
 		"",
 		"  telclaude skills import-openclaw <source>",
 		"",
 		"Imports land in the canonical draft-skill catalog and can be promoted via /skills promote.",
 	].join("\n");
 	await api.sendMessage(opts.chatId, message, threadOptions(opts.threadId));
-	return { callbackText: "Run `telclaude skills import-openclaw` from the CLI." };
+	return {
+		callbackText:
+			"Use `telclaude plugins install` for plugins, `skills import-openclaw` for standalone skills.",
+	};
 }
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
