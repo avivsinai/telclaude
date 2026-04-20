@@ -27,6 +27,7 @@ import { registerNetworkCommand } from "./commands/network.js";
 import { registerOAuthCommand } from "./commands/oauth.js";
 import { registerOnboardCommand } from "./commands/onboard.js";
 import { registerPairingCommand } from "./commands/pairing.js";
+import { registerPluginsCommandGroup } from "./commands/plugins.js";
 import { registerProviderHealthCommand } from "./commands/provider-health.js";
 import { registerProviderQueryCommand } from "./commands/provider-query.js";
 import { registerProvidersCommandGroup } from "./commands/providers.js";
@@ -118,6 +119,12 @@ registerAdminSubcommands(admin);
 // --- providers ---
 const providers = program.command("providers").description("Manage external providers");
 registerProvidersCommandGroup(providers);
+
+// --- plugins ---
+const plugins = program
+	.command("plugins")
+	.description("Manage official Claude plugins in persona-scoped profiles");
+registerPluginsCommandGroup(plugins);
 
 // --- dev ---
 const dev = program.command("dev").description("Development and diagnostic tools");

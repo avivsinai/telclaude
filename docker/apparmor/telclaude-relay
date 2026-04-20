@@ -45,9 +45,10 @@ profile telclaude-relay flags=(attach_disconnected,mediate_deleted) {
   # Data directory (SQLite, sessions, config)
   /data/** rwklix,
 
-  # Auth profile (OAuth tokens, skills)
+  # Relay auth profile + operator-managed persona profiles
   /home/telclaude-auth/** rwklix,
-  /home/telclaude-skills/** rwklix,
+  /home/telclaude-private-profile/** rwklix,
+  /home/telclaude-social-profile/** rwklix,
   /home/telclaude-skill-catalog/** rwklix,
 
   # Sidecar sockets (TOTP + vault)
