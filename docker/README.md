@@ -159,7 +159,7 @@ Some volumes contain **critical secrets** that cannot be recovered if deleted.
 
 These are marked `external: true` in docker-compose.yml, so `docker compose down -v` **cannot delete them**.
 
-**Profile volume note:** The per-agent profile volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external. They only store profile-local state; the shared skill catalog lives in `telclaude-skill-catalog`.
+**Profile volume note:** The per-agent profile volumes (`telclaude-skills-telegram`, `telclaude-skills-social`) are **not** external. They store profile-local state plus official Claude plugins. Standalone telclaude skills still live in the shared `telclaude-skill-catalog`.
 
 ### Safe Operations
 
@@ -206,8 +206,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `telclaude` | `/data` | SQLite DB, config, sessions | Named volume |
 | `telclaude` | `/home/telclaude-auth` | Claude auth profile (OAuth tokens) | External volume |
 | `telclaude` + `telclaude-agent` + `agent-social` | `/home/telclaude-skill-catalog` | Shared active + draft skill catalog (`agent-social` mounts it read-only) | External volume |
-| `telclaude-agent` | `/home/telclaude-skills` | Private profile state (settings/cache, catalog symlinked in) | Named volume |
-| `agent-social` | `/home/telclaude-skills` | Social profile state (settings/cache, catalog symlinked in) | Named volume |
+| `telclaude` + `telclaude-agent` | `/home/telclaude-private-profile` / `/home/telclaude-skills` | Private profile state and official Claude plugins | Named volume |
+| `telclaude` + `agent-social` | `/home/telclaude-social-profile` / `/home/telclaude-skills` | Social profile state and official Claude plugins | Named volume |
 | `telclaude` + `telclaude-agent` | `/media/inbox` + `/media/outbox` | Shared media (inbox/outbox split) | Named volume |
 | `agent-social` | `/social/sandbox` | Social isolated workspace | Named volume |
 | `telclaude` + `agent-social` | `/social/memory` | Social memory (relay RW, agent RO) | Named volume |

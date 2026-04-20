@@ -476,7 +476,7 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "skills",
 		subcommand: "import",
 		category: "Skills",
-		description: "Import OpenClaw-format skills into the draft quarantine (CLI).",
+		description: "Import standalone OpenClaw-format skills into the draft quarantine (CLI).",
 		usage: "/skills import <source-path>",
 		examples: ["/skills import /tmp/openclaw-skills"],
 		keywords: ["import skills", "openclaw", "import openclaw"],

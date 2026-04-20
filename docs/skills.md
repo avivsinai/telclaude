@@ -1,5 +1,8 @@
 # Skills — scaffold, promote, and doctor
 
+This document is about standalone telclaude skills. For official Claude
+plugins and marketplaces, use [plugins.md](./plugins.md).
+
 Telclaude has one canonical writable skill store plus optional read-only skill
 roots. Active skills live under `<skill-root>/skills/<name>/`. Draft skills
 live under `<skill-root>/skills-draft/<name>/` until promoted. This document
@@ -24,11 +27,11 @@ Read-only consumers (e.g. `telclaude skill-path`) additionally fall back to
 the bundled skill directory shipped inside the telclaude package. Writers
 never touch that directory.
 
-In Docker, telclaude uses the Hermes-style idiom: both private and social keep
-their own Claude profile state, but they share one operator-managed skill
-catalog. `agent-social` mounts that catalog read-only; social-specific
-restrictions are enforced at runtime policy plus the container boundary, not by
-installing skills into a different location.
+In Docker, telclaude uses one operator-managed standalone skill catalog for
+both personas, while official Claude plugins stay profile-local. `agent-social`
+mounts the standalone skill catalog read-only; social-specific restrictions are
+enforced at runtime policy plus the container boundary, not by copying skills
+into a separate catalog.
 
 ## `telclaude skills scaffold <name>`
 
@@ -88,7 +91,7 @@ Catalog (un-hidden): `/skills list|new|import|scan|doctor|drafts|promote|reload`
 | `/skills` | Open the skills menu card (drafts + reload). |
 | `/skills list` | Active + draft skills with status. |
 | `/skills new [name]` | Scaffold a draft via a wizard (template + description prompts). |
-| `/skills import` | Prints the CLI instruction (imports require a filesystem path). |
+| `/skills import` | Prints the CLI instruction for standalone filesystem skills. |
 | `/skills scan` | Runs the scanner across active + draft roots. |
 | `/skills doctor` | Mirrors the CLI doctor output. |
 | `/skills drafts` | List draft skills awaiting promotion. |
@@ -107,3 +110,12 @@ removes the draft. Rules:
 - Imports from OpenClaw land in the canonical draft root and must go through
   the same `/skills promote` gate.
 - Promotion re-runs the scanner; critical/high findings block promotion.
+
+## Official plugins are separate
+
+Do not use `/skills import` for a real Claude plugin or marketplace package.
+Those go through the official profile-scoped lifecycle:
+
+```bash
+telclaude plugins install <plugin@marketplace> --persona private
+```
