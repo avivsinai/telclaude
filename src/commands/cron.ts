@@ -155,7 +155,7 @@ function formatAction(action: CronAction): string {
 	if (action.serviceId) {
 		return `social heartbeat (${action.serviceId})`;
 	}
-	return "social heartbeat (all enabled)";
+	return "social heartbeat (all automatic-enabled)";
 }
 
 function formatDeliveryTarget(target: CronDeliveryTarget): string {

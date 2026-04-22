@@ -1,6 +1,7 @@
 import type { TelclaudeConfig } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
 import { createSocialClient, handleSocialHeartbeat } from "../social/index.js";
+import { getAutomaticHeartbeatSocialServices } from "../social/service-config.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { executeScheduledAgentPromptAction } from "./agent-action.js";
 import type { CronActionResult, CronJob } from "./types.js";
@@ -42,20 +43,20 @@ export async function executeCronAction(
 		}
 		case "social-heartbeat": {
 			const action = job.action;
-			const enabledServices = cfg.socialServices.filter((service) => service.enabled);
-			if (enabledServices.length === 0) {
+			const automaticServices = getAutomaticHeartbeatSocialServices(cfg);
+			if (automaticServices.length === 0) {
 				return {
 					ok: false,
-					message: "no enabled social services",
+					message: "no social services have automatic heartbeat enabled",
 				};
 			}
 			const targets = action.serviceId
-				? enabledServices.filter((service) => service.id === action.serviceId)
-				: enabledServices;
+				? automaticServices.filter((service) => service.id === action.serviceId)
+				: automaticServices;
 			if (targets.length === 0) {
 				return {
 					ok: false,
-					message: `service '${action.serviceId}' is not enabled`,
+					message: `service '${action.serviceId}' does not have automatic heartbeat enabled`,
 				};
 			}
 
