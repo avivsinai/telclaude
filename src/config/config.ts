@@ -64,7 +64,11 @@ const TELEGRAM_NUDGES_DEFAULTS = {
 	digestIntervalHours: 24,
 } as const;
 const SDK_DEFAULTS = { betas: [] as "context-1m-2025-08-07"[] };
-const SOCIAL_SERVICE_DEFAULTS = { enabled: false, heartbeatIntervalHours: 4 } as const;
+const SOCIAL_SERVICE_DEFAULTS = {
+	enabled: false,
+	heartbeatEnabled: true,
+	heartbeatIntervalHours: 4,
+} as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
 const DASHBOARD_DEFAULTS = { enabled: false, port: 3005 } as const;
 
@@ -442,6 +446,8 @@ const SocialServiceConfigSchema = z.object({
 	handle: z.string().optional(),
 	/** Display name on the service (e.g. "Claude Ici") */
 	displayName: z.string().optional(),
+	/** Controls automatic heartbeats only. Manual social ask/run still work when enabled=true. */
+	heartbeatEnabled: z.boolean().default(SOCIAL_SERVICE_DEFAULTS.heartbeatEnabled),
 	heartbeatIntervalHours: z
 		.number()
 		.positive()

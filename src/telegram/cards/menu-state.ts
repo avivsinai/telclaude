@@ -1,17 +1,13 @@
 import { listActiveSkills, listDraftSkills } from "../../commands/skills-promote.js";
 import { loadConfig, type TelclaudeConfig } from "../../config/config.js";
 import { isAdmin } from "../../security/linking.js";
+import { getEnabledSocialServices } from "../../social/service-config.js";
 import { loadPendingQueueEntries } from "./renderers/pending-queue.js";
 import type { SkillsMenuCardState, SocialMenuCardState } from "./types.js";
 import { CardKind } from "./types.js";
 
-export type SocialServiceConfig = NonNullable<TelclaudeConfig["socialServices"]>[number];
-
-export function getEnabledSocialServices(
-	cfg: TelclaudeConfig = loadConfig(),
-): SocialServiceConfig[] {
-	return cfg.socialServices?.filter((service) => service.enabled) ?? [];
-}
+export type { SocialServiceConfig } from "../../social/service-config.js";
+export { getEnabledSocialServices } from "../../social/service-config.js";
 
 export function buildSkillsMenuState(chatId: number, sessionKey?: string): SkillsMenuCardState {
 	return {

@@ -69,6 +69,7 @@ import { createTOTPSession, invalidateTOTPSessionForChat } from "../security/tot
 import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
+import { getEnabledSocialServices } from "../social/service-config.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
 import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/create-helpers.js";
@@ -668,7 +669,7 @@ async function dispatchTelegramControlCommand(
 				});
 				return true;
 			}
-			const enabledServices = cfg.socialServices?.filter((service) => service.enabled) ?? [];
+			const enabledServices = getEnabledSocialServices(cfg);
 			if (enabledServices.length === 0) {
 				await msg.reply("No social services are enabled.");
 				return true;

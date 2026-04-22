@@ -99,4 +99,20 @@ describe("social ask wizard", () => {
 		).toBe(true);
 		await waitFor(() => !hasActiveSocialAskWizard({ actorId: 101, chatId: 777, threadId: 9 }));
 	});
+
+	it("allows manual ask when automatic heartbeat is disabled", () => {
+		const api = makeApi();
+		const cfg = {
+			socialServices: [{ id: "xtwitter", enabled: true, heartbeatEnabled: false }],
+		} as any;
+
+		const result = startSocialAskWizard(api as any, {
+			actorId: 101,
+			chatId: 777,
+			threadId: 9,
+			cfg,
+		});
+
+		expect(result.callbackText).toBe("Reply with a question for xtwitter");
+	});
 });

@@ -38,6 +38,7 @@ import {
 	handleSocialHeartbeat,
 	startSocialScheduler,
 } from "../social/index.js";
+import { getEnabledSocialServices, isAutomaticHeartbeatEnabled } from "../social/service-config.js";
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
@@ -243,9 +244,14 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Cron scheduler: disabled in config");
 				}
 
-				const enabledServices = cfg.socialServices.filter((s) => s.enabled);
+				const enabledServices = getEnabledSocialServices(cfg);
 				if (enabledServices.length > 0) {
 					for (const svc of enabledServices) {
+						if (!isAutomaticHeartbeatEnabled(svc)) {
+							console.log(`  Social service ${svc.id}: enabled (automatic heartbeat disabled)`);
+							continue;
+						}
+
 						const coveredByCron =
 							cronEnabled &&
 							(cronCoverage.allSocial || cronCoverage.socialServiceIds.includes(svc.id));

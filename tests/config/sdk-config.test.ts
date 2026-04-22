@@ -69,6 +69,19 @@ describe("sdk config defaults", () => {
 });
 
 describe("config split (TELCLAUDE_PRIVATE_CONFIG)", () => {
+	it("defaults social service heartbeatEnabled to true", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				socialServices: [{ id: "xtwitter", type: "xtwitter", enabled: true }],
+			}),
+		);
+
+		const cfg = loadConfig();
+		expect(cfg.socialServices[0].heartbeatEnabled).toBe(true);
+	});
+
 	it("deep-merges private config on top of policy config", () => {
 		setConfigPath(configPath());
 
