@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-04-23
+
+### Added
+
+- **Operator cockpit dashboard** - Added read-mostly dashboard views for sessions, run history, logs, background jobs, cron, provider health, social queue state, and persona status without exposing raw private content.
+- **Social draft workbench** - Added public-content draft review tooling for queue inspection, metadata review, approval actions, and safer draft boundaries.
+- **Live/replay integration harness** - Added provider, Telegram control-plane, dashboard route, and social workflow replay fixtures for repeatable integration coverage.
+
+### Changed
+
+- **Telegram gateway controls** - Polished `/stop`, pending queue, provider cards, and background-job controls so operator actions are clearer, scoped, and easier to recover from.
+- **Persona profile status** - Surfaced private/social profile state, plugin installation status, and boundary summaries through status and dashboard endpoints.
+
+### Security
+
+- **Release dependency floor** - Raised dependency overrides for Fastify, Vite, Rollup, minimatch, and picomatch to clear high-severity audit findings.
+
 ## [0.6.2] - 2026-04-11
 
 ### Added
