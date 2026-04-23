@@ -75,6 +75,7 @@ registerAgentCommand(program);
 registerStatusCommand(program);
 registerSendCommand(program);
 registerSessionsCommand(program);
+registerIntegrationTestCommand(program);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Command groups (namespaced subcommands)

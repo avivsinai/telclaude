@@ -37,6 +37,25 @@ function statusIcon(status: BackgroundJobCardState["status"]): string {
 	}
 }
 
+function statusLabel(status: BackgroundJobCardState["status"]): string {
+	switch (status) {
+		case "queued":
+			return "Queued";
+		case "running":
+			return "Running";
+		case "completed":
+			return "Done";
+		case "failed":
+			return "Failed";
+		case "cancelled":
+			return "Cancelled";
+		case "interrupted":
+			return "Interrupted";
+		default:
+			return "Unknown";
+	}
+}
+
 function isTerminalState(status: BackgroundJobCardState["status"]): boolean {
 	return (
 		status === "completed" ||
@@ -58,7 +77,7 @@ export const backgroundJobRenderer: CardRenderer<K> = {
 		const icon = statusIcon(s.status);
 		let text = `${icon} *${esc(s.title)}*`;
 
-		text += `\n\n*Status:* ${esc(s.status)}`;
+		text += `\n\n*Status:* ${esc(statusLabel(s.status))}`;
 		text += `\n*Job:* \`${esc(s.shortId)}\` \\(${esc(s.payloadKind)}\\)`;
 
 		if (s.description) {
@@ -129,7 +148,7 @@ export const backgroundJobRenderer: CardRenderer<K> = {
 						status: isTerminalState(job.status as BackgroundJobCardState["status"])
 							? "consumed"
 							: undefined,
-						callbackText: `Already ${job.status}`,
+						callbackText: `Already ${statusLabel(job.status as BackgroundJobCardState["status"])}`,
 						rerender: true,
 					};
 				}
@@ -171,7 +190,7 @@ export const backgroundJobRenderer: CardRenderer<K> = {
 				return {
 					state: nextState,
 					status: isTerminalState(nextState.status) ? "consumed" : undefined,
-					callbackText: `Status: ${latest.status}`,
+					callbackText: `Status: ${statusLabel(nextState.status)}`,
 					rerender: true,
 				};
 			}
@@ -199,7 +218,7 @@ export const backgroundJobListRenderer: CardRenderer<LK> = {
 		} else {
 			for (const entry of s.entries.slice(0, 10)) {
 				text += `\n${statusIcon(entry.status)} \`${esc(entry.shortId)}\` — ${esc(entry.label)}`;
-				text += `\n  _${esc(entry.status)} · ${esc(formatAge(entry.createdAtMs))}_`;
+				text += `\n  _${esc(statusLabel(entry.status))} · ${esc(formatAge(entry.createdAtMs))}_`;
 			}
 		}
 

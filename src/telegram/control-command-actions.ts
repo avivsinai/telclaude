@@ -1,5 +1,6 @@
 import type { Api } from "grammy";
 import {
+	type BackgroundJob,
 	cancelJob as cancelBackgroundJob,
 	getJobByShortId as getBackgroundJobByShortId,
 	listJobs as listBackgroundJobs,
@@ -1104,6 +1105,34 @@ export function startSocialAskWizard(
 
 const BACKGROUND_LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+function backgroundStatusLabel(status: BackgroundJobCardState["status"]): string {
+	switch (status) {
+		case "queued":
+			return "Queued";
+		case "running":
+			return "Running";
+		case "completed":
+			return "Done";
+		case "failed":
+			return "Failed";
+		case "cancelled":
+			return "Cancelled";
+		case "interrupted":
+			return "Interrupted";
+	}
+}
+
+function jobStatusLabel(job: BackgroundJob): string {
+	return backgroundStatusLabel(job.status as BackgroundJobCardState["status"]);
+}
+
+function jobMatchesThread(job: BackgroundJob, threadId?: number): boolean {
+	if (threadId === undefined) {
+		return job.threadId === null || job.threadId === undefined;
+	}
+	return job.threadId === threadId;
+}
+
 export async function sendBackgroundJobList(
 	api: Api,
 	opts: { chatId: number; threadId?: number; actorScope: CardActorScope },
@@ -1170,7 +1199,7 @@ export async function sendBackgroundJobDetail(
 		actorScope: opts.actorScope,
 		threadId: opts.threadId,
 	});
-	return { callbackText: `Status: ${job.status}` };
+	return { callbackText: `Status: ${jobStatusLabel(job)}` };
 }
 
 export async function cancelBackgroundJobCommand(
@@ -1187,10 +1216,86 @@ export async function cancelBackgroundJobCommand(
 	}
 	const { transitioned, job: updated } = cancelBackgroundJob(job.id);
 	const text = transitioned
-		? `Cancelled ${job.shortId}.`
-		: `No-op: job ${job.shortId} is ${updated?.status ?? "unknown"}.`;
+		? `Cancelled background job ${job.shortId}.`
+		: `No-op: job ${job.shortId} is ${updated ? jobStatusLabel(updated) : "Unknown"}.`;
 	await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
-	return { callbackText: transitioned ? "Cancelled" : `No-op (${updated?.status})` };
+	return {
+		callbackText: transitioned
+			? "Cancelled"
+			: `No-op (${updated ? jobStatusLabel(updated) : "Unknown"})`,
+	};
+}
+
+export async function stopActiveWorkCommand(
+	api: Api,
+	opts: { chatId: number; threadId?: number; shortId?: string },
+): Promise<CommandUiResult> {
+	const shortId = opts.shortId?.trim();
+	if (shortId) {
+		return cancelBackgroundJobCommand(api, {
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+			shortId,
+		});
+	}
+
+	const activeJobs = listBackgroundJobs({
+		statuses: ["queued", "running"],
+		chatId: opts.chatId,
+		limit: 25,
+	}).filter((job) => jobMatchesThread(job, opts.threadId));
+
+	if (activeJobs.length === 0) {
+		await api.sendMessage(
+			opts.chatId,
+			[
+				"No supported active work is running in this chat.",
+				"/stop currently cancels queued/running background jobs.",
+				"Note: in-flight agent replies cannot be interrupted yet; use /new after they finish to start fresh.",
+			].join("\n"),
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "No supported active work", callbackAlert: true };
+	}
+
+	const cancelled: BackgroundJob[] = [];
+	const unchanged: BackgroundJob[] = [];
+	for (const job of activeJobs) {
+		const result = cancelBackgroundJob(job.id);
+		if (result.transitioned && result.job) {
+			cancelled.push(result.job);
+		} else if (result.job) {
+			unchanged.push(result.job);
+		}
+	}
+
+	const lines: string[] = [];
+	if (cancelled.length > 0) {
+		lines.push(`Stopped ${cancelled.length} background job${cancelled.length === 1 ? "" : "s"}:`);
+		for (const job of cancelled) {
+			lines.push(`- ${job.shortId}: ${job.title} (${jobStatusLabel(job)})`);
+		}
+	}
+	if (unchanged.length > 0) {
+		if (lines.length > 0) lines.push("");
+		lines.push("Already terminal:");
+		for (const job of unchanged) {
+			lines.push(`- ${job.shortId}: ${jobStatusLabel(job)}`);
+		}
+	}
+	lines.push(
+		"",
+		"Note: in-flight agent replies are not interruptible yet; use /new after they finish.",
+	);
+
+	await api.sendMessage(opts.chatId, lines.join("\n"), threadOptions(opts.threadId));
+	return {
+		callbackText:
+			cancelled.length === 0
+				? "No active jobs stopped"
+				: `Stopped ${cancelled.length} background job${cancelled.length === 1 ? "" : "s"}`,
+		callbackAlert: cancelled.length === 0,
+	};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1328,16 +1433,23 @@ export async function openModelPicker(
 
 function classifyHealth(response?: ProviderHealthResponse): ProviderHealthIcon {
 	if (!response) return "unknown";
-	const status = response.status;
-	if (status === "healthy" || status === "ok") return "ok";
-	if (status === "degraded") return "degraded";
-	if (status === "unhealthy") return "degraded";
-	// Per-connector auth expiry
 	const hasAuthExpired = Object.values(response.connectors ?? {}).some(
 		(connector) => connector.status === "auth_expired",
 	);
 	if (hasAuthExpired) return "auth_expired";
+	const status = response.status;
+	if (status === "healthy" || status === "ok") return "ok";
+	if (status === "degraded") return "degraded";
+	if (status === "unhealthy") return "degraded";
 	return "unknown";
+}
+
+function providerRemediationKey(result: HealthCheckResult, health: ProviderHealthIcon) {
+	if (!result.reachable) return "provider_unreachable";
+	if (health === "auth_expired") return "provider_auth_expired";
+	if (result.response?.status === "degraded") return "provider_degraded";
+	if (result.response?.status === "unhealthy") return "provider_unreachable";
+	return undefined;
 }
 
 function summarizeHealthDetail(result: HealthCheckResult): string | undefined {
@@ -1376,14 +1488,16 @@ async function buildProviderListEntries(cfg: TelclaudeConfig): Promise<ProviderL
 		live.map(async (provider) => {
 			const check = await checkProviderHealth(provider.id, provider.baseUrl);
 			const meta = catalogById.get(provider.id);
+			const health = classifyHealth(check.response);
 			const entry: ProviderListEntry = {
 				id: provider.id,
 				label: meta?.displayName ?? provider.id,
 				description: meta?.description ?? provider.description,
-				health: classifyHealth(check.response),
+				health,
 				detail: summarizeHealthDetail(check),
 				oauthServiceId: meta?.oauthServiceId,
 				setupCommand: meta?.setupCommand,
+				remediationKey: providerRemediationKey(check, health),
 				baseUrl: provider.baseUrl,
 			};
 			return entry;
@@ -1402,6 +1516,7 @@ async function buildProviderListEntries(cfg: TelclaudeConfig): Promise<ProviderL
 			detail: String(settled.reason).slice(0, 120),
 			oauthServiceId: meta?.oauthServiceId,
 			setupCommand: meta?.setupCommand,
+			remediationKey: "provider_unreachable",
 			baseUrl: provider.baseUrl,
 		} satisfies ProviderListEntry;
 	});

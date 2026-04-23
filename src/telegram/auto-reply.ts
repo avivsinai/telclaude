@@ -95,6 +95,7 @@ import {
 	setHomeTargetCommand,
 	startSkillsNewWizard,
 	startSocialAskWizard,
+	stopActiveWorkCommand,
 } from "./control-command-actions.js";
 import {
 	formatTelegramCommandCatalog,
@@ -857,6 +858,14 @@ async function dispatchTelegramControlCommand(
 			await setHomeTargetCommand(bot.api, {
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "stop": {
+			await stopActiveWorkCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				shortId: match.args[0]?.trim(),
 			});
 			return true;
 		}
