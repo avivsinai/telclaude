@@ -12,7 +12,18 @@ import { getDb } from "../storage/db.js";
 const logger = getChildLogger({ module: "activity-log" });
 
 export type ActivityLogEntry = {
-	type: "notification" | "reply" | "post" | "autonomous";
+	type:
+		| "notification"
+		| "reply"
+		| "post"
+		| "autonomous"
+		| "drafted"
+		| "approved"
+		| "manual_action_needed"
+		| "posting_failed"
+		| "posted_via_api"
+		| "marked_posted"
+		| "dismissed";
 	timestamp: number;
 	serviceId: string;
 };

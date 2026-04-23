@@ -107,6 +107,33 @@ describe("provider list card", () => {
 		expect(labels.filter((l) => l.includes("Remove")).length).toBe(1);
 	});
 
+	it("renders central remediation commands for provider health failures", () => {
+		const card = {
+			...baseCard(),
+			state: {
+				kind: CardKind.ProviderList,
+				title: "Providers",
+				providers: [
+					{
+						id: "private-api",
+						label: "Private API",
+						health: "auth_expired" as const,
+						detail: "connector auth expired",
+						remediationKey: "provider_auth_expired",
+					},
+				],
+				selectedProviderId: "private-api",
+				page: 0,
+				view: "detail" as const,
+				canMutate: false,
+			},
+		} as any;
+
+		const render = providerListRenderer.render(card);
+		expect(render.text).toContain("Provider auth expired");
+		expect(render.text).toContain("telclaude providers setup");
+	});
+
 	it("paginates server-side; token carries only the action verb", async () => {
 		const providers = Array.from({ length: 20 }, (_, idx) => ({
 			id: `p-${idx}`,

@@ -26,6 +26,7 @@ import { registerAuditRoute } from "./routes/audit.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerDoctorRoute } from "./routes/doctor.js";
 import { registerHealthRoute } from "./routes/health.js";
+import { registerOperatorRoutes } from "./routes/operator.js";
 import { registerProvidersRoute } from "./routes/providers.js";
 import { registerSkillsRoute } from "./routes/skills.js";
 import { DASHBOARD_COOKIE_NAME, DashboardSessionStore } from "./sessions.js";
@@ -161,6 +162,7 @@ export async function buildDashboardServer(
 	await registerApprovalsRoute(server);
 	await registerAuditRoute(server);
 	await registerDoctorRoute(server);
+	await registerOperatorRoutes(server);
 
 	// ─── Static UI (shipped under assets/dashboard-ui/) ─────────────────────
 	const uiDir = path.resolve(__dirname, "..", "..", "assets", "dashboard-ui");

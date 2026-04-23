@@ -35,9 +35,7 @@ describe("telegram control command registry", () => {
 				"social:promote",
 			);
 			expect(matchTelegramControlCommand("/social run xtwitter")?.command.id).toBe("social:run");
-			expect(matchTelegramControlCommand("/social log xtwitter 12")?.command.id).toBe(
-				"social:log",
-			);
+			expect(matchTelegramControlCommand("/social log xtwitter 12")?.command.id).toBe("social:log");
 			expect(matchTelegramControlCommand("/social ask what did you post?")?.command.id).toBe(
 				"social:ask",
 			);
@@ -47,9 +45,7 @@ describe("telegram control command registry", () => {
 			);
 			expect(matchTelegramControlCommand("/skills reload")?.command.id).toBe("skills:reload");
 			expect(matchTelegramControlCommand("/skills list")?.command.id).toBe("skills:list");
-			expect(matchTelegramControlCommand("/skills new my-skill")?.command.id).toBe(
-				"skills:new",
-			);
+			expect(matchTelegramControlCommand("/skills new my-skill")?.command.id).toBe("skills:new");
 			expect(matchTelegramControlCommand("/skills import")?.command.id).toBe("skills:import");
 			expect(matchTelegramControlCommand("/skills scan")?.command.id).toBe("skills:scan");
 			expect(matchTelegramControlCommand("/skills doctor")?.command.id).toBe("skills:doctor");
@@ -104,6 +100,13 @@ describe("telegram control command registry", () => {
 		it("matches shortcuts", () => {
 			const sethomeMatch = matchTelegramControlCommand("/sethome");
 			expect(sethomeMatch?.command.id).toBe("sethome");
+
+			const stopMatch = matchTelegramControlCommand("/stop");
+			expect(stopMatch?.command.id).toBe("stop");
+
+			const stopJobMatch = matchTelegramControlCommand("/stop a1b2c3d4");
+			expect(stopJobMatch?.command.id).toBe("stop");
+			expect(stopJobMatch?.args).toEqual(["a1b2c3d4"]);
 
 			const approveMatch = matchTelegramControlCommand("/approve 123456");
 			expect(approveMatch?.command.id).toBe("approve");
@@ -171,6 +174,7 @@ describe("telegram control command registry", () => {
 				"social",
 				"skills",
 				"background",
+				"stop",
 				"approve",
 				"new",
 			]) {
@@ -226,6 +230,14 @@ describe("telegram control command registry", () => {
 			expect(catalog).toContain("/skills drafts");
 			expect(catalog).toContain("/skills promote");
 			expect(catalog).toContain("/skills reload");
+		});
+	});
+
+	describe("/stop command help", () => {
+		it("documents supported active-work cancellation", () => {
+			const help = formatTelegramHelp("background");
+			expect(help).toContain("/stop");
+			expect(help).toContain("background jobs");
 		});
 	});
 });

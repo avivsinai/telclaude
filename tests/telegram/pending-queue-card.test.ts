@@ -23,7 +23,9 @@ function makePendingQueueCard(options: {
 	chatId?: number;
 	actorScope?: string;
 	page?: number;
-	entries: Array<{ id: string; label: string; summary?: string }>;
+	entries: Array<Record<string, unknown> & { id: string; label: string; summary?: string }>;
+	view?: "list" | "detail";
+	selectedEntryId?: string;
 }) {
 	return createCard({
 		kind: CardKind.PendingQueue,
@@ -37,6 +39,8 @@ function makePendingQueueCard(options: {
 			entries: options.entries,
 			total: options.entries.length,
 			page: options.page ?? 0,
+			view: options.view ?? "list",
+			selectedEntryId: options.selectedEntryId,
 		},
 		expiresAt: Date.now() + 60_000,
 	});
@@ -45,10 +49,19 @@ function makePendingQueueCard(options: {
 function makeCallbackContext(options: {
 	card: ReturnType<typeof makePendingQueueCard>;
 	actorId: number;
-	action: "promote" | "dismiss";
+	action:
+		| "view"
+		| "back"
+		| "edit"
+		| "refine"
+		| "promote"
+		| "dismiss"
+		| "mark-posted"
+		| "retry-api";
 }) {
 	const answerCallbackQuery = vi.fn(async () => {});
 	const editMessageText = vi.fn(async () => {});
+	const sendMessage = vi.fn(async () => ({ message_id: 99 }));
 	return {
 		ctx: {
 			callbackQuery: {
@@ -61,22 +74,28 @@ function makeCallbackContext(options: {
 			},
 			chat: { id: options.card.chatId },
 			from: { id: options.actorId, username: `user${options.actorId}` },
-			api: { editMessageText },
+			api: { editMessageText, sendMessage },
 			answerCallbackQuery,
 		} as any,
 		answerCallbackQuery,
 		editMessageText,
+		sendMessage,
 	};
 }
 
 function makePagedEntries() {
-	return [
-		{ id: "page-5", label: "Entry 5" },
-		{ id: "page-4", label: "Entry 4" },
-		{ id: "page-3", label: "Entry 3" },
-		{ id: "page-2", label: "Entry 2" },
-		{ id: "page-1", label: "Entry 1" },
-	];
+	for (let index = 1; index <= 5; index += 1) {
+		createQuarantinedEntry(
+			{
+				id: `page-${index}`,
+				category: "posts",
+				content: `post ${index}`,
+				chatId: "777",
+			},
+			index,
+		);
+	}
+	return loadPendingQueueEntries("777");
 }
 
 describe("pending queue cards", () => {
@@ -123,7 +142,7 @@ describe("pending queue cards", () => {
 		const card = makePendingQueueCard({
 			chatId: 777,
 			actorScope: "user:101",
-			entries: [{ id: "allowed-post", label: "Allowed post" }],
+			entries: loadPendingQueueEntries("777"),
 		});
 		const { ctx, answerCallbackQuery, editMessageText } = makeCallbackContext({
 			card,
@@ -133,13 +152,18 @@ describe("pending queue cards", () => {
 
 		await handleCallback(ctx);
 
-		expect(answerCallbackQuery).toHaveBeenCalledWith({ text: "Promoted", show_alert: false });
+		expect(answerCallbackQuery).toHaveBeenCalledWith({ text: "Approved", show_alert: false });
 		expect(editMessageText).toHaveBeenCalledOnce();
 		const promoted = getEntries({ chatId: "777", order: "asc" })[0];
 		expect(promoted._provenance.trust).toBe("trusted");
 		expect(promoted._provenance.promotedBy).toBe("telegram:777:101");
+		expect(promoted.metadata).toEqual(expect.objectContaining({ draftState: "queued" }));
 		expect(getCard(card.cardId)?.state).toEqual(
-			expect.objectContaining({ entries: [], total: 0, page: 0 }),
+			expect.objectContaining({
+				entries: [expect.objectContaining({ id: "allowed-post", status: "queued" })],
+				total: 1,
+				page: 0,
+			}),
 		);
 	});
 
@@ -237,7 +261,7 @@ describe("pending queue cards", () => {
 				summary: expect.stringContaining("quote @writer"),
 			}),
 		);
-		expect(entries[0]?.summary).toContain("Quoted source text worth keeping around");
+		expect(entries[0]?.summary).toContain("Quoted source text worth");
 		expect(entries.at(-1)).toEqual(
 			expect.objectContaining({
 				id: "telegram-4",
@@ -246,15 +270,144 @@ describe("pending queue cards", () => {
 		);
 	});
 
-	it("clamps to the previous page after promote removes the last item on the final page", async () => {
-		for (let index = 1; index <= 5; index += 1) {
-			createQuarantinedEntry({
-				id: `page-${index}`,
-				category: "posts",
-				content: `post ${index}`,
-				chatId: "777",
-			});
-		}
+	it("opens a detail view with metadata and copy-ready text", async () => {
+		createEntries(
+			[
+				{
+					id: "detail-quote",
+					category: "posts",
+					content: "Copy ready quote text",
+					metadata: {
+						action: "quote",
+						draftState: "manual_action_needed",
+						draftWorkflow: "workbench",
+						serviceId: "xtwitter",
+						targetPostId: "tweet-9",
+						targetAuthor: "@writer",
+						targetExcerpt: "Original source text",
+						targetUrl: "https://x.example/post/tweet-9",
+						manualActionReason: "quote API unavailable",
+					},
+				},
+			],
+			"social",
+			Date.now(),
+		);
+		const entries = loadPendingQueueEntries("777");
+		const card = makePendingQueueCard({
+			chatId: 777,
+			actorScope: "user:101",
+			entries,
+		});
+
+		const result = await pendingQueueRenderer.execute({
+			ctx: { from: { id: 101 } } as any,
+			card,
+			action: { type: "view" },
+		});
+		const nextState = result.state;
+		expect(nextState).toEqual(
+			expect.objectContaining({
+				view: "detail",
+				selectedEntryId: "detail-quote",
+			}),
+		);
+
+		const rendered = pendingQueueRenderer.render({ ...card, state: nextState! });
+		expect(rendered.text).toContain("Manual action");
+		expect(rendered.text).toContain("xtwitter");
+		expect(rendered.text).toContain("Copy-ready text");
+		expect(rendered.text).toContain("Copy ready quote text");
+		expect(JSON.stringify(rendered.keyboard?.inline_keyboard)).toContain("Open target");
+	});
+
+	it("queues manual-action drafts for API retry", async () => {
+		createEntries(
+			[
+				{
+					id: "manual-retry",
+					category: "posts",
+					content: "Retry this draft",
+					metadata: {
+						draftState: "manual_action_needed",
+						draftWorkflow: "workbench",
+						serviceId: "xtwitter",
+						manualActionReason: "API unavailable",
+					},
+				},
+			],
+			"social",
+			Date.now(),
+		);
+		const card = makePendingQueueCard({
+			chatId: 777,
+			actorScope: "user:101",
+			entries: loadPendingQueueEntries("777"),
+			view: "detail",
+			selectedEntryId: "manual-retry",
+		});
+
+		const result = await pendingQueueRenderer.execute({
+			ctx: { from: { id: 101 } } as any,
+			card,
+			action: { type: "retry-api" },
+		});
+
+		expect(result.callbackText).toBe("Queued for API retry");
+		expect(result.state).toEqual(
+			expect.objectContaining({
+				entries: [expect.objectContaining({ id: "manual-retry", status: "queued" })],
+				selectedEntryId: "manual-retry",
+			}),
+		);
+		const stored = getEntries({ sources: ["social"], order: "asc" })[0];
+		expect(stored._provenance.trust).toBe("trusted");
+		expect(stored.metadata).toEqual(expect.objectContaining({ draftState: "queued" }));
+	});
+
+	it("starts edit and refine flows through deferred card actions", async () => {
+		createEntries(
+			[
+				{
+					id: "editable-draft",
+					category: "posts",
+					content: "Needs polish",
+					metadata: {
+						draftState: "needs_review",
+						draftWorkflow: "workbench",
+						serviceId: "moltbook",
+					},
+				},
+			],
+			"social",
+			Date.now(),
+		);
+		const card = makePendingQueueCard({
+			chatId: 777,
+			actorScope: "user:101",
+			entries: loadPendingQueueEntries("777"),
+			view: "detail",
+			selectedEntryId: "editable-draft",
+		});
+
+		const editResult = await pendingQueueRenderer.execute({
+			ctx: { from: { id: 101 } } as any,
+			card,
+			action: { type: "edit" },
+		});
+		const refineResult = await pendingQueueRenderer.execute({
+			ctx: { from: { id: 101 } } as any,
+			card,
+			action: { type: "refine" },
+		});
+
+		expect(editResult.callbackText).toBe("Reply with edited text");
+		expect(editResult.afterCommit).toBeTypeOf("function");
+		expect(refineResult.callbackText).toBe("Reply with refinement instruction");
+		expect(refineResult.afterCommit).toBeTypeOf("function");
+	});
+
+	it("clamps to the previous page after mark-posted removes the last item on the final page", async () => {
 		const card = makePendingQueueCard({
 			chatId: 777,
 			actorScope: "user:101",
@@ -265,7 +418,7 @@ describe("pending queue cards", () => {
 		const result = await pendingQueueRenderer.execute({
 			ctx: { from: { id: 101 } } as any,
 			card,
-			action: { type: "promote" },
+			action: { type: "mark-posted" },
 		});
 		const nextState = result.state;
 		expect(nextState).toEqual(
@@ -275,10 +428,14 @@ describe("pending queue cards", () => {
 			}),
 		);
 
+		const posted = getEntries({ posted: true, order: "asc" })[0];
+		expect(posted.id).toBe("page-1");
+		expect(posted.metadata).toEqual(expect.objectContaining({ draftState: "marked_posted" }));
+
 		const rendered = pendingQueueRenderer.render({ ...card, state: nextState! });
-		expect(rendered.text).toContain("Entry 5");
-		expect(rendered.text).toContain("Entry 2");
-		expect(rendered.text).not.toContain("Entry 1");
+		expect(rendered.text).toContain("post 5");
+		expect(rendered.text).toContain("post 2");
+		expect(rendered.text).not.toContain("post 1");
 		expect(rendered.text).not.toContain("_No pending entries_");
 	});
 
@@ -304,9 +461,9 @@ describe("pending queue cards", () => {
 		);
 
 		const rendered = pendingQueueRenderer.render({ ...card, state: nextState! });
-		expect(rendered.text).toContain("Entry 5");
-		expect(rendered.text).toContain("Entry 2");
-		expect(rendered.text).not.toContain("Entry 1");
+		expect(rendered.text).toContain("post 5");
+		expect(rendered.text).toContain("post 2");
+		expect(rendered.text).not.toContain("post 1");
 		expect(rendered.text).not.toContain("_No pending entries_");
 	});
 });

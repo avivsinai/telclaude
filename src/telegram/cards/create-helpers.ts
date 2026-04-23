@@ -44,6 +44,7 @@ import type {
 	SkillPickerCardState,
 	SkillReviewCardState,
 	SkillsMenuCardState,
+	SocialDraftListEntry,
 	SocialMenuCardState,
 	StatusCardState,
 	SystemHealthCardState,
@@ -318,7 +319,7 @@ export async function sendPendingQueueCard(
 	api: Api,
 	chatId: number,
 	opts: {
-		entries: CardListEntry[];
+		entries: SocialDraftListEntry[];
 		actorScope: CardActorScope;
 		threadId?: number;
 	},

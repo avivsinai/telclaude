@@ -9,9 +9,14 @@
 	</head>
 	<body>
 		<header>
-			<h1>telclaude</h1>
-			<span id="session-indicator" class="pill pill-muted">not signed in</span>
-			<button id="logout-btn" type="button" class="btn-link" hidden>sign out</button>
+			<div class="brand">
+				<h1>telclaude</h1>
+				<span id="session-indicator" class="pill pill-muted">not signed in</span>
+			</div>
+			<div class="header-actions">
+				<button id="refresh-btn" type="button" hidden>Refresh</button>
+				<button id="logout-btn" type="button" class="btn-link" hidden>sign out</button>
+			</div>
 		</header>
 
 		<main>
@@ -29,65 +34,237 @@
 			</section>
 
 			<section id="main-panels" hidden>
-				<section class="card">
-					<div class="card-head">
+				<section class="overview-band">
+					<div>
 						<h2>System health</h2>
-						<button id="refresh-btn" type="button">Refresh</button>
+						<p id="health-collected" class="muted">loading...</p>
 					</div>
-					<div id="overall-health" class="pill">loading…</div>
-					<ul id="health-items" class="stack"></ul>
+					<div id="overall-health" class="pill">loading...</div>
+					<button id="doctor-run-btn" type="button">Run doctor</button>
+				</section>
+				<ul id="health-items" class="stack health-strip"></ul>
+				<pre id="doctor-output" class="preblock compact-output"></pre>
+
+				<nav class="tabs" role="tablist" aria-label="Dashboard sections">
+					<button class="tab-btn is-active" type="button" data-tab="sessions" role="tab" aria-selected="true">Sessions/Runs</button>
+					<button class="tab-btn" type="button" data-tab="logs" role="tab" aria-selected="false">Logs</button>
+					<button class="tab-btn" type="button" data-tab="jobs" role="tab" aria-selected="false">Background Jobs</button>
+					<button class="tab-btn" type="button" data-tab="cron" role="tab" aria-selected="false">Cron</button>
+					<button class="tab-btn" type="button" data-tab="social" role="tab" aria-selected="false">Social Queue</button>
+					<button class="tab-btn" type="button" data-tab="personas" role="tab" aria-selected="false">Personas</button>
+				</nav>
+
+				<section class="tab-panel" data-panel="sessions">
+					<div class="section-head">
+						<h2>Sessions/Runs</h2>
+						<p id="sessions-summary" class="muted">loading...</p>
+					</div>
+					<div class="table-wrap">
+						<table id="sessions-table">
+							<thead>
+								<tr>
+									<th scope="col">Source</th>
+									<th scope="col">Persona</th>
+									<th scope="col">Model</th>
+									<th scope="col">Status</th>
+									<th scope="col">Updated</th>
+									<th scope="col">Session</th>
+									<th scope="col">Error</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
+					<div class="table-wrap">
+						<table id="runs-table">
+							<thead>
+								<tr>
+									<th scope="col">Run</th>
+									<th scope="col">Source</th>
+									<th scope="col">Persona</th>
+									<th scope="col">Model</th>
+									<th scope="col">Status</th>
+									<th scope="col">Started</th>
+									<th scope="col">Finished</th>
+									<th scope="col">Duration</th>
+									<th scope="col">Error</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
 				</section>
 
-				<section class="card">
-					<div class="card-head">
-						<h2>Providers</h2>
+				<section class="tab-panel" data-panel="logs" hidden>
+					<div class="section-head">
+						<h2>Logs</h2>
+						<p id="logs-summary" class="muted">loading...</p>
 					</div>
-					<p class="muted" id="providers-summary">loading…</p>
-					<ul id="providers-list" class="stack"></ul>
+					<div class="filters">
+						<label for="log-level">Level</label>
+						<select id="log-level">
+							<option value="all">all</option>
+							<option value="fatal">fatal</option>
+							<option value="error">error</option>
+							<option value="warn">warn</option>
+							<option value="info">info</option>
+							<option value="debug">debug</option>
+						</select>
+						<label for="log-component">Component</label>
+						<input id="log-component" type="text" placeholder="agent-server, cmd-gateway" />
+					</div>
+					<ul id="logs-list" class="log-list"></ul>
+					<div class="two-col">
+						<section>
+							<h3>Provider health</h3>
+							<p id="providers-summary" class="muted">loading...</p>
+							<ul id="provider-health-list" class="stack"></ul>
+						</section>
+						<section>
+							<h3>Recent provider transitions</h3>
+							<ul id="provider-transitions-list" class="stack"></ul>
+						</section>
+					</div>
 				</section>
 
-				<section class="card">
-					<div class="card-head">
-						<h2>Skills</h2>
+				<section class="tab-panel" data-panel="jobs" hidden>
+					<div class="section-head">
+						<h2>Background Jobs</h2>
+						<p id="jobs-summary" class="muted">loading...</p>
 					</div>
-					<h3>Active</h3>
-					<ul id="skills-active" class="chips"></ul>
-					<h3>Drafts</h3>
-					<ul id="skills-drafts" class="chips"></ul>
+					<div class="filters">
+						<label for="job-status">Status</label>
+						<select id="job-status">
+							<option value="all">all</option>
+							<option value="queued">queued</option>
+							<option value="running">running</option>
+							<option value="completed">completed</option>
+							<option value="failed">failed</option>
+							<option value="cancelled">cancelled</option>
+							<option value="interrupted">interrupted</option>
+						</select>
+						<span id="jobs-error" class="muted" aria-live="polite"></span>
+					</div>
+					<div class="table-wrap">
+						<table id="jobs-table">
+							<thead>
+								<tr>
+									<th scope="col">ID</th>
+									<th scope="col">Title</th>
+									<th scope="col">Status</th>
+									<th scope="col">Kind</th>
+									<th scope="col">Tier</th>
+									<th scope="col">Created</th>
+									<th scope="col">Started</th>
+									<th scope="col">Error</th>
+									<th scope="col">Action</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
 				</section>
 
-				<section class="card">
-					<div class="card-head">
-						<h2>Approval allowlist</h2>
+				<section class="tab-panel" data-panel="cron" hidden>
+					<div class="section-head">
+						<h2>Cron</h2>
+						<p id="cron-summary" class="muted">loading...</p>
 					</div>
-					<table id="approvals-table">
-						<thead>
-							<tr>
-								<th scope="col">User</th>
-								<th scope="col">Tier</th>
-								<th scope="col">Tool</th>
-								<th scope="col">Scope</th>
-								<th scope="col">Granted</th>
-								<th scope="col">Expires</th>
-							</tr>
-						</thead>
-						<tbody></tbody>
-					</table>
+					<div class="table-wrap">
+						<table id="cron-table">
+							<thead>
+								<tr>
+									<th scope="col">ID</th>
+									<th scope="col">Name</th>
+									<th scope="col">State</th>
+									<th scope="col">Schedule</th>
+									<th scope="col">Action</th>
+									<th scope="col">Delivery</th>
+									<th scope="col">Next run</th>
+									<th scope="col">Last</th>
+									<th scope="col">Error</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
 				</section>
 
-				<section class="card">
-					<div class="card-head">
-						<h2>Audit tail</h2>
+				<section class="tab-panel" data-panel="social" hidden>
+					<div class="section-head">
+						<h2>Social Queue</h2>
+						<p id="social-summary" class="muted">loading...</p>
 					</div>
-					<ul id="audit-list" class="stack"></ul>
+					<div class="table-wrap">
+						<table id="social-pending-table">
+							<thead>
+								<tr>
+									<th scope="col">ID</th>
+									<th scope="col">Source</th>
+									<th scope="col">Trust</th>
+									<th scope="col">Status</th>
+									<th scope="col">Created</th>
+									<th scope="col">Next action</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
+					<div class="table-wrap">
+						<table id="social-promoted-table">
+							<thead>
+								<tr>
+									<th scope="col">ID</th>
+									<th scope="col">Source</th>
+									<th scope="col">Status</th>
+									<th scope="col">Promoted</th>
+									<th scope="col">Next action</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
+					<h3>Services</h3>
+					<ul id="social-services-list" class="stack"></ul>
 				</section>
 
-				<section class="card">
-					<div class="card-head">
-						<h2>Doctor</h2>
-						<button id="doctor-run-btn" type="button">Run doctor</button>
+				<section class="tab-panel" data-panel="personas" hidden>
+					<div class="section-head">
+						<h2>Personas</h2>
+						<p id="personas-summary" class="muted">loading...</p>
 					</div>
-					<pre id="doctor-output" class="preblock"></pre>
+					<div class="two-col">
+						<section id="private-persona" class="persona-box"></section>
+						<section id="social-persona" class="persona-box"></section>
+					</div>
+					<div class="two-col">
+						<section>
+							<h3>Skills</h3>
+							<h4>Active</h4>
+							<ul id="skills-active" class="chips"></ul>
+							<h4>Drafts</h4>
+							<ul id="skills-drafts" class="chips"></ul>
+						</section>
+						<section>
+							<h3>Approval allowlist</h3>
+							<p id="approvals-summary" class="muted">loading...</p>
+							<div class="table-wrap">
+								<table id="approvals-table">
+									<thead>
+										<tr>
+											<th scope="col">User</th>
+											<th scope="col">Tier</th>
+											<th scope="col">Tool</th>
+											<th scope="col">Scope</th>
+											<th scope="col">Granted</th>
+											<th scope="col">Expires</th>
+										</tr>
+									</thead>
+									<tbody></tbody>
+								</table>
+							</div>
+						</section>
+					</div>
 				</section>
 			</section>
 		</main>
