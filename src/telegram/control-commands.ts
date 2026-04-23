@@ -57,6 +57,7 @@ export type TelegramCommandId =
 	| "providers"
 	// Fast-path shortcuts (no domain prefix)
 	| "sethome"
+	| "stop"
 	| "approve"
 	| "deny"
 	| "new"
@@ -561,7 +562,7 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "background",
 		domainDefault: true,
 		category: "Background",
-		description: "Inspect or cancel long-running background jobs.",
+		description: "Inspect or cancel long-running background jobs; use /stop for active jobs here.",
 		usage: "/background [list|show <id>|cancel <id>]",
 		examples: ["/background", "/background show a1b2c3d4", "/background cancel a1b2c3d4"],
 		keywords: ["background", "jobs", "background job", "long running task"],
@@ -655,6 +656,18 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/sethome"],
 		keywords: ["set home", "cron home", "deliver here", "post here later"],
 		rateLimited: true,
+	},
+	{
+		id: "stop",
+		name: "stop",
+		category: "Background",
+		description:
+			"Stop supported active work in this chat. Currently cancels queued or running background jobs.",
+		usage: "/stop [background-job-id]",
+		examples: ["/stop", "/stop a1b2c3d4"],
+		keywords: ["stop", "cancel active work", "cancel background", "abort running job"],
+		rateLimited: true,
+		menuDescription: "Stop active work",
 	},
 	// ── Fast-path shortcuts ────────────────────────────────────────────
 	{
@@ -781,9 +794,9 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "background",
 		title: "Background Jobs",
 		summary:
-			"Background jobs run long tasks asynchronously and notify on completion. /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts a queued or running job.",
+			"Background jobs run long tasks asynchronously and notify on completion. /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts one queued or running job. /stop cancels queued/running background jobs in the current chat or topic.",
 		keywords: ["background", "jobs", "long running", "async"],
-		commands: ["background", "background:list", "background:show", "background:cancel"],
+		commands: ["background", "background:list", "background:show", "background:cancel", "stop"],
 	},
 	{
 		id: "reset-session",
@@ -1117,6 +1130,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
+		"  /stop — Stop active background work here",
 		"  /model — Pick a model",
 		"  /providers — External provider health",
 		"  /new — Reset conversation",
@@ -1256,6 +1270,7 @@ export function getTelegramMenuCommands(
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
+		{ command: "stop", description: "Stop active work" },
 		{ command: "model", description: "Pick a model" },
 		{ command: "providers", description: "External providers" },
 		{ command: "approve", description: "Approve a pending request" },

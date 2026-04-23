@@ -1,4 +1,5 @@
 import type { CallbackQueryContext, Context, InlineKeyboard } from "grammy";
+import type { SocialDraftStatus } from "../../social/types.js";
 
 export enum CardKind {
 	Approval = "Approval",
@@ -30,6 +31,23 @@ export type CardListEntry = {
 	summary?: string;
 };
 
+export type SocialDraftListEntry = CardListEntry & {
+	status: SocialDraftStatus;
+	source: string;
+	ageLabel: string;
+	draftText: string;
+	serviceId?: string;
+	targetPostId?: string;
+	targetAuthor?: string;
+	targetExcerpt?: string;
+	targetUrl?: string;
+	manualActionReason?: string;
+	lastError?: string;
+	postedPostId?: string;
+	approved?: boolean;
+	canRetryApi?: boolean;
+};
+
 export type ApprovalCardState = {
 	kind: CardKind.Approval;
 	title: string;
@@ -59,7 +77,8 @@ export type ApprovalScopeCardState = {
 export type PendingQueueCardState = {
 	kind: CardKind.PendingQueue;
 	title: string;
-	entries: CardListEntry[];
+	entries: SocialDraftListEntry[];
+	view?: "list" | "detail";
 	page?: number;
 	total?: number;
 	selectedEntryId?: string;
@@ -257,6 +276,8 @@ export type ProviderListEntry = {
 	oauthServiceId?: string;
 	/** Setup command path shown in detail view. */
 	setupCommand?: string;
+	/** Central remediation key for health/config/auth failures. */
+	remediationKey?: string;
 	/** Base URL for health tap-through. */
 	baseUrl?: string;
 };
@@ -380,8 +401,14 @@ export type ApprovalScopeCardAction =
 	| { type: "refresh" };
 
 export type PendingQueueCardAction =
+	| { type: "view" }
+	| { type: "back" }
+	| { type: "edit" }
+	| { type: "refine" }
 	| { type: "promote" }
 	| { type: "dismiss" }
+	| { type: "mark-posted" }
+	| { type: "retry-api" }
 	| { type: "next" }
 	| { type: "prev" }
 	| { type: "refresh" };
@@ -538,7 +565,19 @@ const CARD_ACTIONS_BY_KIND = {
 		"deny",
 		"refresh",
 	],
-	[CardKind.PendingQueue]: ["promote", "dismiss", "next", "prev", "refresh"],
+	[CardKind.PendingQueue]: [
+		"view",
+		"back",
+		"edit",
+		"refine",
+		"promote",
+		"dismiss",
+		"mark-posted",
+		"retry-api",
+		"next",
+		"prev",
+		"refresh",
+	],
 	[CardKind.Status]: [
 		"refresh",
 		"run-health-check",

@@ -8,6 +8,11 @@ import { getChildLogger } from "../logging.js";
 import type { SandboxMode } from "../sandbox/mode.js";
 import { getSandboxMode } from "../sandbox/mode.js";
 import { createAuditLogger } from "../security/audit.js";
+import {
+	collectPersonaStatus,
+	formatPersonaStatusSnapshot,
+	type PersonaStatusSnapshot,
+} from "../status/personas.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
 import { formatDuration, formatUptime } from "./cli-utils.js";
 
@@ -52,6 +57,7 @@ export type TelclaudeStatus = {
 		socialServices: number;
 		enabledSocialServices: number;
 	};
+	personas: PersonaStatusSnapshot;
 	runtime: {
 		version: string;
 		revision: string;
@@ -120,6 +126,10 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 		socialServices: cfg?.socialServices?.length ?? 0,
 		enabledSocialServices: (cfg?.socialServices ?? []).filter((svc) => svc.enabled).length,
 	};
+	const personas = await collectPersonaStatus({
+		...(cfg ? { config: cfg } : {}),
+		cwd: process.cwd(),
+	});
 
 	const runtime = buildRuntimeSnapshot(STATUS_STARTED_AT);
 	const sessions = Object.entries(getAllSessions())
@@ -166,6 +176,7 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 			: null,
 		audit: auditStats,
 		services: serviceCounts,
+		personas,
 		runtime: {
 			version: runtime.version,
 			revision: runtime.revision,
@@ -206,6 +217,8 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 			"Services:",
 			`  External Providers: ${status.services.externalProviders}`,
 			`  Social Services: ${status.services.enabledSocialServices}/${status.services.socialServices}`,
+			"",
+			formatPersonaStatusSnapshot(status.personas, { telegram: true }),
 			"",
 			"Operations:",
 			`  Sessions: ${status.operations.sessions.total} total (${status.operations.sessions.staleOver24h} stale >24h)`,
@@ -262,6 +275,8 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push(
 		`  Social Services: ${status.services.enabledSocialServices}/${status.services.socialServices}`,
 	);
+	lines.push("");
+	lines.push(formatPersonaStatusSnapshot(status.personas));
 	lines.push("");
 	lines.push("Operations:");
 	lines.push(

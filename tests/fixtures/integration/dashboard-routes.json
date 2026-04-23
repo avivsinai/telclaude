@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "name": "dashboard-routes",
+  "capturedAt": "2026-04-23T00:00:00.000Z",
+  "mode": "replay",
+  "data": {
+    "routes": {
+      "GET /api/health": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "snapshot": {
+            "overallStatus": "ok",
+            "collectedAtMs": 1,
+            "items": [
+              {
+                "id": "test",
+                "label": "Test",
+                "status": "ok",
+                "detail": "mock"
+              }
+            ],
+            "issueCount": 0
+          }
+        }
+      },
+      "GET /api/providers": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "catalog": [
+            {
+              "id": "health-provider",
+              "displayName": "Health",
+              "description": "d",
+              "services": []
+            }
+          ],
+          "configured": [
+            {
+              "id": "health-provider",
+              "baseUrl": "https://example.test"
+            }
+          ],
+          "oauthServices": [
+            {
+              "id": "google",
+              "displayName": "Google"
+            }
+          ]
+        }
+      },
+      "GET /api/skills": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "active": [
+            "memory",
+            "summarize"
+          ],
+          "drafts": [
+            "experimental"
+          ]
+        }
+      },
+      "GET /api/approvals/allowlist": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "entries": [
+            {
+              "id": 1,
+              "userId": "[REDACTED_ID:user]",
+              "tier": "WRITE_LOCAL",
+              "toolKey": "Bash",
+              "scope": "session",
+              "sessionKey": "k",
+              "grantedAt": 1000,
+              "expiresAt": 2000,
+              "lastUsedAt": null,
+              "chatId": "[REDACTED_ID:chat]"
+            }
+          ]
+        }
+      },
+      "GET /api/audit/tail": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "enabled": true,
+          "entries": [
+            {
+              "timestamp": "2023-11-14T22:13:20.000Z",
+              "requestId": "r1",
+              "telegramUserId": "[REDACTED_ID:user]",
+              "chatId": "[REDACTED_ID:chat]",
+              "messagePreview": "[REDACTED_TEXT]",
+              "permissionTier": "READ_ONLY",
+              "outcome": "success"
+            }
+          ]
+        }
+      },
+      "POST /api/doctor/run": {
+        "statusCode": 200,
+        "body": {
+          "ok": true,
+          "report": {
+            "checks": [
+              {
+                "name": "config.loaded",
+                "category": "Config",
+                "status": "pass",
+                "summary": "ok"
+              }
+            ],
+            "summary": {
+              "pass": 1,
+              "warn": 0,
+              "fail": 0,
+              "skip": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "redactions": []
+}

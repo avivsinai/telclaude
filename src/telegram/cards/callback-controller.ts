@@ -12,6 +12,9 @@ import { type CardInstance, type CardKind, type CardRenderer, parseCardAction } 
 
 const logger = getChildLogger({ module: "telegram-card-callbacks" });
 const CALLBACK_ACK_TIMEOUT_MS = 1_500;
+const CARD_NOT_FOUND_MESSAGE = "Card not found. Run the command again.";
+const CARD_EXPIRED_MESSAGE = "Card expired. Run the command again.";
+const CARD_OUTDATED_MESSAGE = "Card outdated. Use the latest card.";
 
 const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	Approval: "FULL_ACCESS",
@@ -184,7 +187,7 @@ export async function handleCallback(
 
 	const card = getCardByShortId(token.shortId);
 	if (!card) {
-		await ctx.answerCallbackQuery({ text: "Card not found", show_alert: true });
+		await ctx.answerCallbackQuery({ text: CARD_NOT_FOUND_MESSAGE, show_alert: true });
 		await logCallbackAudit(options.auditLogger, {
 			shortId: token.shortId,
 			action: token.action,
@@ -285,7 +288,7 @@ export async function handleCallback(
 		const expiredCard =
 			card.status === "expired" ? card : (markCardExpired(card) ?? getCard(card.cardId) ?? card);
 		await renderCardMessage(ctx, expiredCard, renderer);
-		await ctx.answerCallbackQuery({ text: "Card expired", show_alert: true });
+		await ctx.answerCallbackQuery({ text: CARD_EXPIRED_MESSAGE, show_alert: true });
 		await logCallbackAudit(options.auditLogger, {
 			card: expiredCard,
 			shortId: token.shortId,
@@ -301,7 +304,7 @@ export async function handleCallback(
 
 	if (card.status === "superseded") {
 		await renderCardMessage(ctx, card, renderer);
-		await ctx.answerCallbackQuery({ text: "Card outdated", show_alert: true });
+		await ctx.answerCallbackQuery({ text: CARD_OUTDATED_MESSAGE, show_alert: true });
 		await logCallbackAudit(options.auditLogger, {
 			card,
 			shortId: token.shortId,
@@ -317,7 +320,7 @@ export async function handleCallback(
 
 	if (card.revision !== token.revision) {
 		await renderCardMessage(ctx, card, renderer);
-		await ctx.answerCallbackQuery({ text: "Card outdated", show_alert: true });
+		await ctx.answerCallbackQuery({ text: CARD_OUTDATED_MESSAGE, show_alert: true });
 		await logCallbackAudit(options.auditLogger, {
 			card,
 			shortId: token.shortId,
@@ -338,7 +341,7 @@ export async function handleCallback(
 		const currentCard = getCard(card.cardId) ?? card;
 		const handleRevisionConflict = async (latestCard: CardInstance): Promise<void> => {
 			await renderCardMessage(ctx, latestCard, renderer);
-			await responder.answer({ text: "Card outdated", show_alert: true });
+			await responder.answer({ text: CARD_OUTDATED_MESSAGE, show_alert: true });
 			await logCallbackAudit(options.auditLogger, {
 				card: latestCard,
 				shortId: token.shortId,
@@ -369,7 +372,7 @@ export async function handleCallback(
 
 		if (currentCard.status === "superseded" || currentCard.revision !== card.revision) {
 			await renderCardMessage(ctx, currentCard, renderer);
-			await responder.answer({ text: "Card outdated", show_alert: true });
+			await responder.answer({ text: CARD_OUTDATED_MESSAGE, show_alert: true });
 			await logCallbackAudit(options.auditLogger, {
 				card: currentCard,
 				shortId: token.shortId,
@@ -391,7 +394,7 @@ export async function handleCallback(
 						getCard(currentCard.cardId) ??
 						currentCard);
 			await renderCardMessage(ctx, expiredCard, renderer);
-			await responder.answer({ text: "Card expired", show_alert: true });
+			await responder.answer({ text: CARD_EXPIRED_MESSAGE, show_alert: true });
 			await logCallbackAudit(options.auditLogger, {
 				card: expiredCard,
 				shortId: token.shortId,

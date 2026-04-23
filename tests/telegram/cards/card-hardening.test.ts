@@ -280,7 +280,7 @@ describe("card hardening", () => {
 		await pending;
 
 		expect(answerCallbackQuery).toHaveBeenCalledWith({
-			text: "Card expired",
+			text: "Card expired. Run the command again.",
 			show_alert: true,
 		});
 		expect(getCard(card.cardId)).toEqual(
@@ -326,7 +326,8 @@ describe("card hardening", () => {
 		expect(
 			[first.answerCallbackQuery, second.answerCallbackQuery].some((mock) =>
 				mock.mock.calls.some(
-					(args) => args[0]?.text === "Card outdated" && args[0]?.show_alert === true,
+					(args) =>
+						args[0]?.text === "Card outdated. Use the latest card." && args[0]?.show_alert === true,
 				),
 			),
 		).toBe(true);
@@ -515,7 +516,7 @@ describe("card hardening", () => {
 		await handleCallback(ctx, { registry });
 
 		expect(answerCallbackQuery).toHaveBeenCalledWith({
-			text: "Card outdated",
+			text: "Card outdated. Use the latest card.",
 			show_alert: true,
 		});
 	});

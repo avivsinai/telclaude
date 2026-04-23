@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "name": "provider-basic",
+  "capturedAt": "2026-04-23T00:00:00.000Z",
+  "mode": "replay",
+  "data": {
+    "target": "provider",
+    "providerId": "demo-provider",
+    "baseUrl": "http://provider.local",
+    "checks": [
+      {
+        "name": "provider.health",
+        "status": "passed"
+      },
+      {
+        "name": "provider.schema",
+        "status": "passed"
+      },
+      {
+        "name": "provider.read_action",
+        "status": "passed"
+      }
+    ],
+    "health": {
+      "status": "ok",
+      "connectors": {
+        "demo": {
+          "status": "ok",
+          "lastSuccess": "2026-04-23T00:00:00.000Z"
+        }
+      }
+    },
+    "schema": {
+      "version": "1",
+      "services": [
+        {
+          "id": "demo",
+          "name": "Demo Provider",
+          "description": "Synthetic replay provider for integration harness tests.",
+          "actions": [
+            {
+              "id": "list_items",
+              "type": "read",
+              "method": "GET",
+              "requiresAuth": false,
+              "description": "List synthetic replay items.",
+              "params": {}
+            }
+          ]
+        }
+      ]
+    },
+    "readAction": {
+      "service": "demo",
+      "action": "list_items",
+      "status": 200,
+      "response": {
+        "status": "ok",
+        "items": [
+          {
+            "id": "item-1",
+            "label": "Synthetic replay item"
+          }
+        ]
+      }
+    }
+  },
+  "redactions": []
+}

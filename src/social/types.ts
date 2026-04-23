@@ -84,3 +84,13 @@ export type SocialPromptBundle = {
 	prompt: string;
 	systemPromptAppend: string;
 };
+
+export type SocialDraftStatus =
+	| "queued"
+	| "drafted"
+	| "needs_review"
+	| "manual_action_needed"
+	| "posted_via_api"
+	| "marked_posted"
+	| "dismissed"
+	| "failed";

@@ -19,7 +19,12 @@ import {
 import type { SocialServiceClient } from "./client.js";
 import { formatSocialContextForPrompt } from "./context.js";
 import { buildSocialIdentityPreamble } from "./identity.js";
-import { parseSocialQuoteProposalMetadata } from "./proposal-metadata.js";
+import {
+	getSocialDraft,
+	parseSocialQuoteProposalMetadata,
+	socialDraftMetadataForNewProposal,
+	updateSocialDraftText,
+} from "./proposal-metadata.js";
 import type {
 	SocialHandlerResult,
 	SocialNotification,
@@ -797,6 +802,95 @@ function extractJsonFromText(text: string): unknown {
 	return null;
 }
 
+function parseRefinedDraftOutput(raw: unknown): string | null {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		return null;
+	}
+	const obj = raw as Record<string, unknown>;
+	return typeof obj.content === "string" && obj.content.trim() ? obj.content.trim() : null;
+}
+
+export type RefineSocialDraftResult = { ok: true; content: string } | { ok: false; reason: string };
+
+export async function refineSocialDraftText(params: {
+	id: string;
+	instruction: string;
+	actor: string;
+	serviceId?: string;
+	allowedSkills?: string[];
+}): Promise<RefineSocialDraftResult> {
+	const draft = getSocialDraft(params.id);
+	if (!draft) {
+		return { ok: false, reason: "Draft not found" };
+	}
+	const instruction = params.instruction.trim();
+	if (!instruction) {
+		return { ok: false, reason: "Refinement instruction cannot be empty" };
+	}
+
+	const serviceId = params.serviceId ?? draft.metadata?.serviceId ?? "social";
+	let agentUrl: string;
+	try {
+		agentUrl = resolveAgentUrl(serviceId);
+	} catch (err) {
+		return { ok: false, reason: String(err) };
+	}
+
+	const bundle = buildSocialPromptBundle(
+		[
+			"[DRAFT REFINE REQUEST - TRUSTED OPERATOR]",
+			"Refine the draft below according to the operator instruction.",
+			"Return only one JSON object with a content string. Do not post publicly.",
+			"",
+			"[OPERATOR INSTRUCTION]",
+			sanitizeInlineContent(instruction),
+			"[END OPERATOR INSTRUCTION]",
+			"",
+			wrapExternalContent(draft.content, {
+				source: "social-context",
+				serviceId,
+				foldHomoglyphs: true,
+				includeRiskAssessment: true,
+			}),
+			"",
+			'Output format: {"content":"refined draft text"}',
+		].join("\n"),
+		serviceId,
+	);
+
+	const stream = executeRemoteQuery(bundle.prompt, {
+		agentUrl,
+		scope: "social",
+		cwd: resolveAgentWorkdir(serviceId),
+		tier: "SOCIAL",
+		poolKey: `${serviceId}:draft-refine:${draft.id}`,
+		userId: `social:${serviceId}:operator`,
+		enableSkills: true,
+		allowedSkills: params.allowedSkills,
+		systemPromptAppend: bundle.systemPromptAppend,
+		timeoutMs: Math.max(getDefaultTimeoutMs(serviceId), 300_000),
+	});
+	const queryResult = await collectResponseText(stream);
+	if (!queryResult.success) {
+		return { ok: false, reason: queryResult.error ?? "Draft refine query failed" };
+	}
+
+	const refined =
+		parseRefinedDraftOutput(queryResult.structuredOutput) ??
+		parseRefinedDraftOutput(extractJsonFromText(queryResult.text));
+	if (!refined) {
+		return { ok: false, reason: "Social persona did not return refined draft text" };
+	}
+
+	const updateResult = updateSocialDraftText({
+		id: draft.id,
+		text: refined,
+		actor: params.actor,
+		refined: true,
+	});
+	return updateResult.ok ? { ok: true, content: refined } : updateResult;
+}
+
 function parseAutonomousAction(structuredOutput: unknown): AutonomousAction | null {
 	if (
 		!structuredOutput ||
@@ -898,6 +992,7 @@ function truncateMetadataText(text: string, maxLength = 160): string {
 }
 
 function createSocialPostProposal(
+	serviceId: string,
 	action: "propose_post" | "quote",
 	content: string,
 	metadata?: Record<string, unknown>,
@@ -909,7 +1004,13 @@ function createSocialPostProposal(
 				id: `${prefix}-${crypto.randomUUID().slice(0, 12)}`,
 				category: "posts",
 				content,
-				...(metadata ? { metadata } : {}),
+				metadata: {
+					...socialDraftMetadataForNewProposal({
+						serviceId,
+						action: action === "quote" ? "quote" : "post",
+					}),
+					...(metadata ?? {}),
+				},
 			},
 		],
 		SOCIAL_MEMORY_SOURCE,
@@ -1496,7 +1597,7 @@ async function handleAutonomousActivity(
 	}
 
 	if (parsed.action === "propose_post") {
-		const entry = createSocialPostProposal("propose_post", parsed.content);
+		const entry = createSocialPostProposal(serviceId, "propose_post", parsed.content);
 		logger.info({ serviceId, entryId: entry.id }, "autonomous post proposal created");
 		return { acted: true, summary: `queued post proposal ${entry.id}` };
 	}
@@ -1624,7 +1725,7 @@ async function handleAutonomousActivity(
 	}
 
 	if (actionWithTarget.action === "quote") {
-		const entry = createSocialPostProposal("quote", actionWithTarget.body, {
+		const entry = createSocialPostProposal(serviceId, "quote", actionWithTarget.body, {
 			action: "quote",
 			targetPostId: target.id,
 			...(getTimelineAuthorLabel(target) ? { targetAuthor: getTimelineAuthorLabel(target) } : {}),

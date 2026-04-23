@@ -4,6 +4,7 @@ import {
 	startProviderEditWizard,
 	startProviderRemoveWizard,
 } from "../../control-command-actions.js";
+import { getRemediation, type RemediationKey } from "../../remediation-commands.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -51,6 +52,21 @@ export function healthIcon(health: ProviderHealthIcon): string {
 function resolveSelected(state: ProviderListCardState): ProviderListEntry | undefined {
 	if (!state.selectedProviderId) return undefined;
 	return state.providers.find((p) => p.id === state.selectedProviderId);
+}
+
+function resolveRemediation(
+	entry: ProviderListEntry,
+): { title: string; command: string; explanation?: string } | undefined {
+	const remediation = entry.remediationKey
+		? getRemediation(entry.remediationKey as RemediationKey)
+		: undefined;
+	const command = entry.setupCommand ?? remediation?.command;
+	if (!command) return undefined;
+	return {
+		title: remediation?.title ?? "Provider setup",
+		command,
+		explanation: remediation?.explanation,
+	};
 }
 
 function renderListView(card: CardInstance<K>): CardRenderResult {
@@ -135,8 +151,13 @@ function renderDetailView(card: CardInstance<K>): CardRenderResult {
 	if (entry.oauthServiceId) {
 		lines.push(`*OAuth:* ${esc(entry.oauthServiceId)}`);
 	}
-	if (entry.setupCommand) {
-		lines.push("", `_Remediation:_ \`${esc(entry.setupCommand)}\``);
+	const remediation = resolveRemediation(entry);
+	if (remediation) {
+		lines.push("", `*Remediation:* ${esc(remediation.title)}`);
+		lines.push(`\`${esc(remediation.command)}\``);
+		if (remediation.explanation) {
+			lines.push(esc(remediation.explanation));
+		}
 	}
 
 	const kb = keyboard();

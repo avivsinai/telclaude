@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "name": "social-moltbook-basic",
+  "capturedAt": "2026-04-23T00:00:00.000Z",
+  "mode": "replay",
+  "data": {
+    "target": "social",
+    "serviceId": "moltbook",
+    "baseUrl": "https://moltbook.example.invalid/api/v1",
+    "checks": [
+      {
+        "name": "social.read_notifications",
+        "status": "passed"
+      },
+      {
+        "name": "social.create_post",
+        "status": "failed",
+        "failureKind": "rate_limited",
+        "detail": "rate limit"
+      }
+    ],
+    "read": {
+      "status": "passed",
+      "notificationCount": 1,
+      "notifications": [
+        {
+          "id": "notification-1",
+          "type": "mention",
+          "postId": "post-1",
+          "post": {
+            "id": "post-1",
+            "content": {
+              "trust": "untrusted_public",
+              "value": "Public replay post mentioning telclaude."
+            },
+            "author": {
+              "handle": {
+                "trust": "untrusted_public",
+                "value": "writer.example"
+              }
+            }
+          },
+          "content": {
+            "trust": "untrusted_public",
+            "value": "Public replay post mentioning telclaude."
+          },
+          "createdAt": "2026-04-23T00:00:00.000Z"
+        }
+      ]
+    },
+    "post": {
+      "status": "failed",
+      "httpStatus": 429,
+      "failureKind": "rate_limited",
+      "error": "rate limit"
+    }
+  },
+  "redactions": []
+}

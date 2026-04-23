@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "telegram-control-plane",
+  "capturedAt": "2026-04-23T00:00:00.000Z",
+  "mode": "replay",
+  "data": {
+    "cardCallbacks": {
+      "providerList": {
+        "action": "select-0",
+        "callbackText": "Replay Provider",
+        "expectedView": "detail",
+        "expectedSelectedProviderId": "replay-provider",
+        "expectedRevision": 2
+      }
+    },
+    "backgroundJobs": {
+      "completion": {
+        "expectedStatus": "completed",
+        "expectedMessage": "replay ok"
+      },
+      "restartRecovery": {
+        "expectedInterruptedStatus": "interrupted",
+        "expectedRecoveredStatus": "completed"
+      }
+    }
+  },
+  "redactions": []
+}

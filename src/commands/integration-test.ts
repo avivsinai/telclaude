@@ -19,6 +19,22 @@ import type { PermissionTier } from "../config/config.js";
 import { getMediaOutboxDirSync } from "../media/store.js";
 import { executeQueryStream } from "../sdk/client.js";
 import { getOpenAIKey } from "../services/openai-client.js";
+import {
+	assertProviderReplayFixture,
+	assertSocialReplayFixture,
+	type ProviderProbeResult,
+	runMoltbookSocialProbe,
+	runProviderProbe,
+	type SocialProbeResult,
+} from "../testing/integration-harness.js";
+import {
+	buildFixtureEnvelope,
+	type IntegrationHarnessMode,
+	integrationFixturePath,
+	readFixtureFile,
+	resolveHarnessMode,
+	writeFixtureFile,
+} from "../testing/live-replay.js";
 
 type IntegrationTestOptions = {
 	image?: boolean;
@@ -27,9 +43,24 @@ type IntegrationTestOptions = {
 	network?: boolean;
 	voice?: boolean;
 	agents?: boolean;
+	harness?: boolean;
+	providers?: boolean;
+	social?: boolean;
+	controlPlane?: boolean;
+	dashboard?: boolean;
+	live?: boolean;
+	captureFixtures?: boolean;
+	fixtureDir?: string;
 	all?: boolean;
 	verbose?: boolean;
 	timeout?: string;
+};
+
+type IntegrationTestResult = {
+	name: string;
+	passed: boolean;
+	message: string;
+	duration?: number;
 };
 
 export function registerIntegrationTestCommand(program: Command): void {
@@ -42,22 +73,46 @@ export function registerIntegrationTestCommand(program: Command): void {
 		.option("--network", "Test sandbox network proxy configuration")
 		.option("--voice", "Test voice message response (TTS skill)")
 		.option("--agents", "Test direct agent transport (real agent, no Telegram)")
+		.option("--harness", "Run live/replay provider, social, and control-plane harness")
+		.option("--providers", "Run provider live/replay harness")
+		.option("--social", "Run social live/replay harness")
+		.option("--control-plane", "Check Telegram/background control-plane replay fixtures")
+		.option("--dashboard", "Check dashboard route replay fixtures")
+		.option("--live", "Run harness probes against live services (requires explicit env vars)")
+		.option("--capture-fixtures", "Capture sanitized harness fixtures from live services")
+		.option("--fixture-dir <path>", "Harness fixture directory", "tests/fixtures/integration")
 		.option("--all", "Run all integration tests")
 		.option("-v, --verbose", "Show detailed output")
 		.option("--timeout <ms>", "Query timeout in ms", "120000")
 		.action(async (opts: IntegrationTestOptions) => {
 			const verbose = program.opts().verbose || opts.verbose;
 			const timeoutMs = Number.parseInt(opts.timeout ?? "120000", 10);
+			const requestedHarness = Boolean(
+				opts.harness ||
+					opts.providers ||
+					opts.social ||
+					opts.controlPlane ||
+					opts.dashboard ||
+					opts.live ||
+					opts.captureFixtures,
+			);
 
 			const runAll =
 				opts.all ||
-				(!opts.image && !opts.echo && !opts.env && !opts.network && !opts.voice && !opts.agents);
+				(!opts.image &&
+					!opts.echo &&
+					!opts.env &&
+					!opts.network &&
+					!opts.voice &&
+					!opts.agents &&
+					!requestedHarness);
 			const runImage = opts.image || runAll;
 			const runEcho = opts.echo || runAll;
 			const runEnv = opts.env || runAll;
 			const runNetwork = opts.network || runAll;
 			const runVoice = opts.voice || runAll;
 			const runAgents = opts.agents || runAll;
+			const runHarness = requestedHarness;
 
 			console.log(chalk.bold("\n🔬 Telclaude Integration Test\n"));
 			console.log("This tests the full SDK path (not just sandbox config).\n");
@@ -65,7 +120,7 @@ export function registerIntegrationTestCommand(program: Command): void {
 			// SDK handles sandbox initialization internally when sandbox.enabled=true
 			// No need to pre-check - SDK will fail with clear error if unavailable
 
-			const results: { name: string; passed: boolean; message: string; duration?: number }[] = [];
+			const results: IntegrationTestResult[] = [];
 
 			if (runEcho) {
 				console.log(chalk.bold("── Echo Test ──"));
@@ -152,6 +207,13 @@ export function registerIntegrationTestCommand(program: Command): void {
 				console.log();
 			}
 
+			if (runHarness) {
+				console.log(chalk.bold("── Live/Replay Harness ──"));
+				const harnessResults = await runLiveReplayHarness(opts, verbose);
+				results.push(...harnessResults);
+				console.log();
+			}
+
 			// Summary
 			const passed = results.filter((r) => r.passed).length;
 			const failed = results.filter((r) => !r.passed).length;
@@ -168,6 +230,257 @@ export function registerIntegrationTestCommand(program: Command): void {
 
 			process.exit(failed > 0 ? 1 : 0);
 		});
+}
+
+function selectedHarnessTargets(opts: IntegrationTestOptions): {
+	providers: boolean;
+	social: boolean;
+	controlPlane: boolean;
+	dashboard: boolean;
+} {
+	const runAllHarness =
+		opts.harness || (!opts.providers && !opts.social && !opts.controlPlane && !opts.dashboard);
+	return {
+		providers: Boolean(opts.providers || runAllHarness),
+		social: Boolean(opts.social || runAllHarness),
+		controlPlane: Boolean(opts.controlPlane || runAllHarness),
+		dashboard: Boolean(opts.dashboard || runAllHarness),
+	};
+}
+
+function logHarnessResult(result: IntegrationTestResult): void {
+	const icon = result.passed ? chalk.green("✓") : chalk.red("✗");
+	const message = result.message === "OK" ? "" : `: ${result.message}`;
+	console.log(`  ${icon} ${result.name}${message}`);
+}
+
+function parseJsonObjectEnv(name: string): Record<string, unknown> | undefined {
+	const raw = process.env[name];
+	if (!raw) return undefined;
+	const parsed = JSON.parse(raw) as unknown;
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error(`${name} must be a JSON object.`);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+function fixtureModeLabel(mode: IntegrationHarnessMode): string {
+	switch (mode) {
+		case "capture":
+			return "capture";
+		case "live":
+			return "live";
+		case "replay":
+			return "replay";
+	}
+}
+
+async function runProviderHarness(
+	mode: IntegrationHarnessMode,
+	fixtureDir: string,
+): Promise<IntegrationTestResult> {
+	const startTime = Date.now();
+	const fixturePath = integrationFixturePath(fixtureDir, "provider-basic");
+
+	try {
+		if (mode === "replay") {
+			const fixture = await readFixtureFile<ProviderProbeResult>(fixturePath);
+			assertProviderReplayFixture(fixture.data);
+			return {
+				name: "Provider replay fixture",
+				passed: true,
+				message: "OK",
+				duration: Date.now() - startTime,
+			};
+		}
+
+		const baseUrl = process.env.TELCLAUDE_INTEGRATION_PROVIDER_URL;
+		if (!baseUrl) {
+			return {
+				name: "Provider live probe",
+				passed: false,
+				message: "Set TELCLAUDE_INTEGRATION_PROVIDER_URL before using --live.",
+			};
+		}
+
+		const providerId = process.env.TELCLAUDE_INTEGRATION_PROVIDER_ID ?? "integration-provider";
+		const service = process.env.TELCLAUDE_INTEGRATION_PROVIDER_SERVICE;
+		const action = process.env.TELCLAUDE_INTEGRATION_PROVIDER_ACTION;
+		const readAction = service && action ? { service, action } : undefined;
+		const readParams = parseJsonObjectEnv("TELCLAUDE_INTEGRATION_PROVIDER_PARAMS");
+		const result = await runProviderProbe({
+			providerId,
+			baseUrl,
+			readAction,
+			readParams,
+		});
+		assertProviderReplayFixture(result);
+
+		if (mode === "capture") {
+			await writeFixtureFile(
+				fixturePath,
+				buildFixtureEnvelope("provider-basic", result, { mode: "capture" }),
+			);
+		}
+
+		return {
+			name: `Provider ${fixtureModeLabel(mode)} probe`,
+			passed: true,
+			message: mode === "capture" ? `Captured ${fixturePath}` : "OK",
+			duration: Date.now() - startTime,
+		};
+	} catch (error) {
+		return {
+			name: `Provider ${fixtureModeLabel(mode)} probe`,
+			passed: false,
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+function liveSocialMutationEnabled(): boolean {
+	return (
+		process.env.TELCLAUDE_INTEGRATION_SOCIAL_MUTATE === "1" &&
+		process.env.TELCLAUDE_INTEGRATION_SOCIAL_TEST_ACCOUNT === "1"
+	);
+}
+
+async function runSocialHarness(
+	mode: IntegrationHarnessMode,
+	fixtureDir: string,
+): Promise<IntegrationTestResult> {
+	const startTime = Date.now();
+	const fixturePath = integrationFixturePath(fixtureDir, "social-moltbook-basic");
+
+	try {
+		if (mode === "replay") {
+			const fixture = await readFixtureFile<SocialProbeResult>(fixturePath);
+			assertSocialReplayFixture(fixture.data);
+			return {
+				name: "Social replay fixture",
+				passed: true,
+				message: "OK",
+				duration: Date.now() - startTime,
+			};
+		}
+
+		const baseUrl =
+			process.env.TELCLAUDE_INTEGRATION_SOCIAL_BASE_URL ?? process.env.MOLTBOOK_API_BASE;
+		const apiKey = process.env.TELCLAUDE_INTEGRATION_SOCIAL_API_KEY ?? process.env.MOLTBOOK_API_KEY;
+		if (!baseUrl || !apiKey) {
+			return {
+				name: "Social live probe",
+				passed: false,
+				message:
+					"Set TELCLAUDE_INTEGRATION_SOCIAL_BASE_URL and TELCLAUDE_INTEGRATION_SOCIAL_API_KEY before using --live.",
+			};
+		}
+
+		const result = await runMoltbookSocialProbe({
+			baseUrl,
+			apiKey,
+			allowPublicMutation: liveSocialMutationEnabled(),
+			postContent: process.env.TELCLAUDE_INTEGRATION_SOCIAL_POST_TEXT,
+		});
+		const failed = result.checks.filter((check) => check.status === "failed");
+		if (failed.length > 0) {
+			throw new Error(failed.map((check) => `${check.name}: ${check.failureKind}`).join(", "));
+		}
+
+		if (mode === "capture") {
+			await writeFixtureFile(
+				fixturePath,
+				buildFixtureEnvelope("social-moltbook-basic", result, { mode: "capture" }),
+			);
+		}
+
+		return {
+			name: `Social ${fixtureModeLabel(mode)} probe`,
+			passed: true,
+			message: mode === "capture" ? `Captured ${fixturePath}` : "OK",
+			duration: Date.now() - startTime,
+		};
+	} catch (error) {
+		return {
+			name: `Social ${fixtureModeLabel(mode)} probe`,
+			passed: false,
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+async function runReplayFixturePresence(
+	fixtureDir: string,
+	fixtureName: string,
+	requiredKeys: string[],
+): Promise<IntegrationTestResult> {
+	const startTime = Date.now();
+	try {
+		const fixture = await readFixtureFile<Record<string, unknown>>(
+			integrationFixturePath(fixtureDir, fixtureName),
+		);
+		for (const key of requiredKeys) {
+			if (!(key in fixture.data)) {
+				throw new Error(`Missing ${key} in ${fixtureName}.json`);
+			}
+		}
+		return {
+			name: `${fixtureName} replay fixture`,
+			passed: true,
+			message: "OK",
+			duration: Date.now() - startTime,
+		};
+	} catch (error) {
+		return {
+			name: `${fixtureName} replay fixture`,
+			passed: false,
+			message: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+async function runLiveReplayHarness(
+	opts: IntegrationTestOptions,
+	verbose: boolean,
+): Promise<IntegrationTestResult[]> {
+	const mode = resolveHarnessMode({
+		live: opts.live,
+		captureFixtures: opts.captureFixtures,
+	});
+	const fixtureDir = path.resolve(opts.fixtureDir ?? "tests/fixtures/integration");
+	const targets = selectedHarnessTargets(opts);
+	const results: IntegrationTestResult[] = [];
+
+	if (verbose) {
+		console.log(chalk.gray(`  Harness mode: ${fixtureModeLabel(mode)}`));
+		console.log(chalk.gray(`  Fixtures: ${fixtureDir}`));
+	}
+
+	if (targets.providers) {
+		const result = await runProviderHarness(mode, fixtureDir);
+		logHarnessResult(result);
+		results.push(result);
+	}
+	if (targets.social) {
+		const result = await runSocialHarness(mode, fixtureDir);
+		logHarnessResult(result);
+		results.push(result);
+	}
+	if (targets.controlPlane) {
+		const result = await runReplayFixturePresence(fixtureDir, "telegram-control-plane", [
+			"cardCallbacks",
+			"backgroundJobs",
+		]);
+		logHarnessResult(result);
+		results.push(result);
+	}
+	if (targets.dashboard) {
+		const result = await runReplayFixturePresence(fixtureDir, "dashboard-routes", ["routes"]);
+		logHarnessResult(result);
+		results.push(result);
+	}
+
+	return results;
 }
 
 /**
