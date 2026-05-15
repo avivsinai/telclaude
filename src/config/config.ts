@@ -71,6 +71,16 @@ const SOCIAL_SERVICE_DEFAULTS = {
 } as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
 const DASHBOARD_DEFAULTS = { enabled: false, port: 3005 } as const;
+const WEBHOOKS_DEFAULTS = {
+	enabled: false,
+	port: 3015,
+	maxBodyBytes: 256 * 1024,
+	globalRateLimitPerHour: 600,
+	defaultRateLimitPerHour: 60,
+	unauthenticatedRateLimitPerHour: 120,
+	trustedProxies: [] as string[],
+	allowedHosts: [] as string[],
+} as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -477,6 +487,39 @@ const DashboardConfigSchema = z.object({
 	port: z.number().int().positive().default(DASHBOARD_DEFAULTS.port),
 });
 
+/**
+ * Local-only signed webhook receiver. Binds to 127.0.0.1 exclusively; put
+ * nginx/Caddy/Cloudflare Tunnel in front for TLS/public ingress.
+ */
+const WebhooksConfigSchema = z.object({
+	enabled: z.boolean().default(WEBHOOKS_DEFAULTS.enabled),
+	port: z.number().int().positive().default(WEBHOOKS_DEFAULTS.port),
+	maxBodyBytes: z.number().int().positive().default(WEBHOOKS_DEFAULTS.maxBodyBytes),
+	globalRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.globalRateLimitPerHour),
+	defaultRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.defaultRateLimitPerHour),
+	/** Per source+slug hourly cap before secret lookup/HMAC verification. */
+	unauthenticatedRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.unauthenticatedRateLimitPerHour),
+	/**
+	 * Immediate proxy hops whose X-Forwarded-For headers Fastify may trust.
+	 * Leave empty to ignore X-Forwarded-For entirely.
+	 */
+	trustedProxies: z.array(z.string().min(1)).default(WEBHOOKS_DEFAULTS.trustedProxies),
+	/** Additional accepted Host header names for reverse proxies that preserve public Host. */
+	allowedHosts: z.array(z.string().min(1)).default(WEBHOOKS_DEFAULTS.allowedHosts),
+});
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -498,6 +541,7 @@ const TelclaudeConfigSchema = z.object({
 	socialServices: z.array(SocialServiceConfigSchema).default([]),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
+	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -511,6 +555,7 @@ export type SdkConfig = z.infer<typeof SdkConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type CronConfig = z.infer<typeof CronConfigSchema>;
 export type DashboardConfig = z.infer<typeof DashboardConfigSchema>;
+export type WebhooksConfig = z.infer<typeof WebhooksConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
@@ -742,6 +787,8 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			logging: {
 				level: "info",
 			},
+			cron: CRON_DEFAULTS,
+			webhooks: WEBHOOKS_DEFAULTS,
 		};
 
 		await fs.promises.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), {

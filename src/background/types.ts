@@ -66,6 +66,18 @@ export const BackgroundJobPayloadSchema = z.discriminatedUnion("kind", [
 		/** Force a failure (for tests). */
 		fail: z.boolean().optional(),
 	}),
+	z.object({
+		kind: z.literal("cron-run"),
+		/** Existing preconfigured cron job to trigger. */
+		jobId: z.string().min(1),
+		/** Opaque webhook provenance. Raw body is never stored here. */
+		webhook: z
+			.object({
+				slug: z.string().min(1),
+				bodyHash: z.string().length(64),
+			})
+			.optional(),
+	}),
 ]);
 
 export type BackgroundJobPayload = z.infer<typeof BackgroundJobPayloadSchema>;

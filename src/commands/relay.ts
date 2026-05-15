@@ -44,6 +44,7 @@ import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable } from "../vault-daemon/index.js";
+import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
 const logger = getChildLogger({ module: "cmd-relay" });
@@ -119,7 +120,7 @@ export function registerRelayCommand(program: Command): void {
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
 				await readEnv(); // Validates environment variables
-				const schedulerHandles: Array<{ stop: () => void }> = [];
+				const schedulerHandles: Array<{ stop: () => void | Promise<void> }> = [];
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -242,6 +243,18 @@ export function registerRelayCommand(program: Command): void {
 					);
 				} else {
 					console.log("  Cron scheduler: disabled in config");
+				}
+
+				if (cfg.webhooks.enabled) {
+					const webhookServer = await startWebhookServer({ config: cfg.webhooks });
+					schedulerHandles.push({
+						stop: () => webhookServer.close(),
+					});
+					console.log(
+						`  Webhook receiver: enabled (http://${webhookServer.host}:${webhookServer.port})`,
+					);
+				} else {
+					console.log("  Webhook receiver: disabled in config");
 				}
 
 				const enabledServices = getEnabledSocialServices(cfg);
@@ -501,7 +514,7 @@ export function registerRelayCommand(program: Command): void {
 					abortController.abort();
 
 					for (const scheduler of schedulerHandles) {
-						scheduler.stop();
+						await scheduler.stop();
 					}
 					if (schedulerHandles.length > 0) {
 						logger.info({ count: schedulerHandles.length }, "schedulers stopped");
@@ -533,7 +546,7 @@ export function registerRelayCommand(program: Command): void {
 
 				// Final cleanup after monitor exits
 				for (const scheduler of schedulerHandles) {
-					scheduler.stop();
+					await scheduler.stop();
 				}
 				await destroySessionManager();
 

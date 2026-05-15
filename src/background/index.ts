@@ -1,3 +1,4 @@
+export { cronRunExecutor } from "./cron-run-executor.js";
 export type { HostedRunnerOptions } from "./host.js";
 export {
 	handleStartupInterruptions,

@@ -4,7 +4,8 @@ import path from "node:path";
 
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-const getTempDir = () => (globalThis as Record<string, string | undefined>).__telclaudeTempConfigDir;
+const getTempDir = () =>
+	(globalThis as Record<string, string | undefined>).__telclaudeTempConfigDir;
 
 vi.mock("../../src/utils.js", async () => {
 	const actual = await vi.importActual<typeof import("../../src/utils.js")>("../../src/utils.js");
@@ -55,6 +56,13 @@ describe("sdk config defaults", () => {
 
 		const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
 		expect(cfg.sdk).toEqual({ betas: [] });
+		expect(cfg.webhooks).toMatchObject({
+			enabled: false,
+			port: 3015,
+			maxBodyBytes: 256 * 1024,
+			trustedProxies: [],
+			allowedHosts: [],
+		});
 	});
 
 	it("rejects unknown beta values in config", async () => {
@@ -65,6 +73,23 @@ describe("sdk config defaults", () => {
 		fs.writeFileSync(configPath(), JSON.stringify(badCfg));
 
 		await expect(() => loadConfig()).toThrow();
+	});
+
+	it("defaults webhooks to disabled local receiver settings", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({}));
+
+		const cfg = loadConfig();
+		expect(cfg.webhooks).toEqual({
+			enabled: false,
+			port: 3015,
+			maxBodyBytes: 256 * 1024,
+			globalRateLimitPerHour: 600,
+			defaultRateLimitPerHour: 60,
+			unauthenticatedRateLimitPerHour: 120,
+			trustedProxies: [],
+			allowedHosts: [],
+		});
 	});
 });
 
