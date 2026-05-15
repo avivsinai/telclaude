@@ -21,11 +21,16 @@ import {
 	formatReportForTelegram as formatDoctorReport,
 	runSkillsDoctor,
 } from "../commands/skills-doctor.js";
-import { listActiveSkills, listDraftSkills } from "../commands/skills-promote.js";
+import {
+	buildSkillReviewState,
+	listActiveSkills,
+	listDraftSkills,
+} from "../commands/skills-promote.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
 import { getChatModelPreference } from "../config/model-preferences.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
+import { runCuratorScan } from "../curator/actions.js";
 import { getChildLogger } from "../logging.js";
 import {
 	getProviderCatalogEntry,
@@ -44,20 +49,24 @@ import { getUserPermissionTier } from "../security/permissions.js";
 import {
 	sendBackgroundJobCard,
 	sendBackgroundJobListCard,
+	sendCuratorInboxCard,
 	sendModelPickerCard,
 	sendPendingQueueCard,
 	sendProviderListCard,
 	sendSkillDraftCard,
 	sendSkillPickerCard,
+	sendSkillReviewCard,
 	sendSystemHealthCard,
 } from "./cards/create-helpers.js";
 import { getEnabledSocialServices, type SocialServiceConfig } from "./cards/menu-state.js";
+import { loadCuratorInboxEntries } from "./cards/renderers/curator-inbox.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
 import { loadSkillPickerEntries } from "./cards/renderers/skill-picker.js";
 import type {
 	BackgroundJobCardState,
 	BackgroundJobListCardState,
 	CardActorScope,
+	CuratorInboxCardState,
 	ModelPickerCardState,
 	ProviderHealthIcon,
 	ProviderListCardState,
@@ -287,6 +296,42 @@ export async function openSkillDraftCard(
 		threadId: opts.threadId,
 	});
 	return { callbackText: "Opened skill drafts" };
+}
+
+export async function openSkillReviewCard(
+	api: Api,
+	opts: {
+		chatId: number;
+		skillName: string;
+		threadId?: number;
+	},
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can promote skills.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin can promote skills.", callbackAlert: true };
+	}
+	const review = await buildSkillReviewState({
+		skillName: opts.skillName,
+		adminControlsEnabled: true,
+	});
+	if ("error" in review) {
+		await api.sendMessage(
+			opts.chatId,
+			`Promote failed: ${review.error}`,
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: review.error, callbackAlert: true };
+	}
+	await sendSkillReviewCard(api, opts.chatId, {
+		state: review,
+		actorScope: "admin",
+		threadId: opts.threadId,
+	});
+	return { callbackText: `Opened skill review for ${opts.skillName}` };
 }
 
 export function reloadSkillsSession(sessionKey: string | undefined): CommandUiResult {
@@ -1362,6 +1407,48 @@ export async function openSystemHealthCard(
 		);
 		return { callbackText: "Health probe failed", callbackAlert: true };
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Curator inbox
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export async function openCuratorInboxCard(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+	},
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can view the Curator inbox.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin can view Curator.", callbackAlert: true };
+	}
+
+	const scan = runCuratorScan({ producerKind: "system" });
+	const entries = loadCuratorInboxEntries();
+	const state: CuratorInboxCardState = {
+		kind: CardKind.CuratorInbox,
+		title: "Curator",
+		view: "list",
+		entries,
+		page: 0,
+		lastScanSummary: `Scan updated ${scan.createdOrUpdated} item(s); ${scan.openItems} open.`,
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendCuratorInboxCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+
+	return { callbackText: `${scan.openItems} open Curator item${scan.openItems === 1 ? "" : "s"}` };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

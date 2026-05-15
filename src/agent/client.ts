@@ -78,6 +78,7 @@ export async function* executeRemoteQuery(
 			chatId: options.chatId,
 			actorId: options.actorId,
 			threadId: options.threadId,
+			model: options.model,
 			systemPromptAppend: options.systemPromptAppend,
 			sessionToken,
 			outputFormat: options.outputFormat,

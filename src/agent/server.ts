@@ -43,6 +43,7 @@ type QueryRequest = {
 	chatId?: number;
 	actorId?: number;
 	threadId?: number;
+	model?: string;
 	systemPromptAppend?: string;
 	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
 	sessionToken?: string;
@@ -227,6 +228,7 @@ async function streamQuery(
 			timeoutMs: req.timeoutMs,
 			abortController,
 			betas: req.betas,
+			model: req.model,
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
 			compiledMemoryMd: req.compiledMemoryMd,
@@ -337,6 +339,10 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				}
 				if (parsed.compiledMemoryMd !== undefined && typeof parsed.compiledMemoryMd !== "string") {
 					writeJson(res, 400, { error: "Invalid compiledMemoryMd." });
+					return;
+				}
+				if (parsed.model !== undefined && typeof parsed.model !== "string") {
+					writeJson(res, 400, { error: "Invalid model." });
 					return;
 				}
 

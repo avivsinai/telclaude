@@ -4,10 +4,10 @@ import type { Api, Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
-import { promoteSkill } from "../commands/skills-promote.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import { resolveModelHint } from "../config/model-catalog.js";
+import { getChatModelPreference } from "../config/model-preferences.js";
 import {
 	DEFAULT_IDLE_MINUTES,
 	deleteSession,
@@ -76,10 +76,12 @@ import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	cancelBackgroundJobCommand,
+	openCuratorInboxCard,
 	openModelPicker,
 	openProviderList,
 	openSkillDraftCard,
 	openSkillPicker,
+	openSkillReviewCard,
 	openSocialQueueCard,
 	openSystemHealthCard,
 	reloadSkillsSession,
@@ -130,6 +132,11 @@ import { createTypingControllerFromCallback } from "./typing.js";
 import { routeWizardTextMessage } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
+
+function resolveClaudeModelForChat(chatId: number): string | undefined {
+	const pref = getChatModelPreference(chatId);
+	return pref?.providerId === "anthropic" ? pref.modelId : undefined;
+}
 
 /**
  * Generate a key for the recentlySent set.
@@ -757,16 +764,11 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("Usage: `/skills promote <name>`");
 				return true;
 			}
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can promote skills.");
-				return true;
-			}
-			const result = promoteSkill(skillName);
-			if (result.success) {
-				await msg.reply(`Skill "${skillName}" promoted. Available next session.`);
-			} else {
-				await msg.reply(`Promote failed: ${result.error}`);
-			}
+			await openSkillReviewCard(bot.api, {
+				chatId: msg.chatId,
+				skillName,
+				threadId: msg.messageThreadId,
+			});
 			return true;
 		}
 		case "skills:reload": {
@@ -821,6 +823,15 @@ async function dispatchTelegramControlCommand(
 				chatId: msg.chatId,
 				threadId: msg.messageThreadId,
 				shortId,
+			});
+			return true;
+		}
+		// ── /curator domain ───────────────────────────────────────────
+		case "curator": {
+			await openCuratorInboxCard(bot.api, {
+				chatId: msg.chatId,
+				actorScope: "admin",
+				threadId: msg.messageThreadId,
 			});
 			return true;
 		}
@@ -1177,12 +1188,14 @@ async function executeWithSession(
 				.filter(Boolean)
 				.join("\n\n") || undefined;
 
+		const model = resolveClaudeModelForChat(msg.chatId);
 		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const queryStream = useRemoteAgent
 			? executeRemoteQuery(queryPrompt, {
 					cwd: process.cwd(),
 					tier,
 					poolKey: sessionKey,
+					model,
 					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 					enableSkills: tier !== "READ_ONLY",
 					timeoutMs: timeoutSeconds * 1000,
@@ -1198,6 +1211,7 @@ async function executeWithSession(
 					cwd: process.cwd(),
 					tier,
 					poolKey: sessionKey,
+					model,
 					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 					enableSkills: tier !== "READ_ONLY",
 					timeoutMs: timeoutSeconds * 1000,
@@ -2609,12 +2623,14 @@ async function executePlanPhase(
 				.filter(Boolean)
 				.join("\n\n");
 
+			const model = resolveClaudeModelForChat(msg.chatId);
 			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 			const queryStream = useRemoteAgent
 				? executeRemoteQuery(queryPrompt, {
 						cwd: process.cwd(),
 						tier: "READ_ONLY",
 						poolKey: sessionKey,
+						model,
 						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 						enableSkills: false,
 						timeoutMs: timeoutSeconds * 1000,
@@ -2630,6 +2646,7 @@ async function executePlanPhase(
 						cwd: process.cwd(),
 						tier: "READ_ONLY",
 						poolKey: sessionKey,
+						model,
 						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 						enableSkills: false,
 						timeoutMs: timeoutSeconds * 1000,

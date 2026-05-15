@@ -22,6 +22,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { codexWorkUnitExecutor } from "../agent-runtime/codex-work-unit.js";
 import { getChildLogger } from "../logging.js";
 import { claimQueuedJobs, completeJob, getJob } from "./jobs.js";
 import type { BackgroundJob, BackgroundJobPayload, BackgroundJobResult } from "./types.js";
@@ -220,6 +221,8 @@ function resolveExecutor(
 	const custom = overrides?.[payload.kind];
 	if (custom) return custom;
 	switch (payload.kind) {
+		case "codex-work-unit":
+			return codexWorkUnitExecutor;
 		case "command":
 			return defaultCommandExecutor;
 		case "noop":

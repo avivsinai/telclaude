@@ -1,6 +1,6 @@
 # telclaude
 
-Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, and tiered permissions.
+Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator workflows, with LLM pre-screening, approvals, and tiered permissions.
 
 [![CI](https://github.com/avivsinai/telclaude/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/telclaude/actions/workflows/ci.yml)
 [![Gitleaks](https://github.com/avivsinai/telclaude/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/avivsinai/telclaude/actions/workflows/gitleaks.yml)
@@ -15,7 +15,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Relay-authoritative memory: trusted semantic memory + episodic shared history archive + compiled Claude `MEMORY.md` working set. Private recall is aggressive, but source boundaries remain hard.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
-- Four permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
+- Four permission tiers mapped to agent runtime capabilities: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - External provider sidecars: Google Services (Gmail, Calendar, Drive, Contacts) with approval-gated actions; extensible pattern for adding new providers.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
@@ -91,7 +91,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Requirements
 - Node 20+, pnpm 9.x
-- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
+- Claude CLI (`brew install anthropic-ai/cli/claude`) — current primary runtime. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
+- Codex CLI (`codex`) — first-class peer runtime surface. For write-capable Codex work, configure a dedicated `CODEX_HOME`; `telclaude runtimes status` reports whether Codex would use controlled or global config.
 - Telegram bot token from @BotFather
 - Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
 - Docker/WSL: Docker + Compose (no host bubblewrap required)
@@ -311,6 +312,7 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 | `telclaude quickstart` | Interactive first-time setup |
 | `telclaude doctor [--network] [--secrets]` | Health check |
 | `telclaude status [--json]` | Show relay status |
+| `telclaude runtimes status [--json]` | Show Claude Code and Codex runtime readiness |
 
 ### Authentication & access control
 | Command | Description |
@@ -356,7 +358,8 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 | Command | Description |
 |---------|-------------|
 | `telclaude send <chatId> [message] [--media <path>] [--caption <text>]` | Send message/media |
-| `telclaude send-local-file --path <path> [--filename <name>]` | Send workspace file to Telegram |
+| `telclaude send-file --path <path> [--filename <name>]` | Send workspace file to Telegram |
+| `telclaude send-local-file --path <path> [--filename <name>]` | Backward-compatible alias for sending workspace files |
 | `telclaude send-attachment --ref <ref>` | Send provider attachment via ref token |
 | `telclaude fetch-attachment --provider <id> --id <attachment-id>` | Download provider attachment |
 | `telclaude generate-image <prompt> [-s <size>] [-q <quality>]` | Generate image (requires OpenAI) |

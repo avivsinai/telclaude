@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
-const sessionStore: any[] = [];
+const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
 const executePooledQueryImpl = vi.hoisted(() => vi.fn());
+const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
 
 vi.mock("../../src/sdk/client.js", () => ({
 	executePooledQuery: (...args: unknown[]) => executePooledQueryImpl(...args),
@@ -21,11 +22,19 @@ vi.mock("../../src/config/sessions.js", () => ({
 	DEFAULT_IDLE_MINUTES: 60,
 }));
 
-const redactors = vi.hoisted(() => [] as Array<{
-	processChunk: ReturnType<typeof vi.fn>;
-	flush: ReturnType<typeof vi.fn>;
-	getStats: ReturnType<typeof vi.fn>;
-}>);
+vi.mock("../../src/config/model-preferences.js", () => ({
+	getChatModelPreference: (...args: Parameters<typeof getChatModelPreferenceImpl>) =>
+		getChatModelPreferenceImpl(...args),
+}));
+
+const redactors = vi.hoisted(
+	() =>
+		[] as Array<{
+			processChunk: ReturnType<typeof vi.fn>;
+			flush: ReturnType<typeof vi.fn>;
+			getStats: ReturnType<typeof vi.fn>;
+		}>,
+);
 
 vi.mock("../../src/security/streaming-redactor.js", () => ({
 	createStreamingRedactor: () => {
@@ -127,6 +136,8 @@ describe("auto-reply executeAndReply", () => {
 		sessionStore.length = 0;
 		redactors.length = 0;
 		executePooledQueryImpl.mockReset();
+		getChatModelPreferenceImpl.mockReset();
+		getChatModelPreferenceImpl.mockReturnValue(null);
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		if (ORIGINAL_DATA_DIR === undefined) {
 			delete process.env.TELCLAUDE_DATA_DIR;
@@ -188,6 +199,37 @@ describe("auto-reply executeAndReply", () => {
 		// Second redactor (fallback) should have processed the response
 		expect(redactors[1]?.processChunk).toHaveBeenCalledWith("secret fallback");
 	});
+
+	it("passes the chat's Anthropic model preference into session execution", async () => {
+		getChatModelPreferenceImpl.mockReturnValue({
+			chatId: 123,
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-5-20250929",
+		});
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "ok",
+						success: true,
+						error: undefined,
+						costUsd: 0.2,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = baseCtx();
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({ model: "claude-sonnet-4-5-20250929" }),
+		);
+	});
 });
 
 describe("auto-reply control commands", () => {
@@ -197,9 +239,11 @@ describe("auto-reply control commands", () => {
 			chatType: "group" as const,
 			username: "group-user",
 			reply: vi.fn(async () => {}),
-		} as any;
+		} as Parameters<typeof autoReplyTest.handleLinkCommand>[0];
 
-		const auditLogger = { log: vi.fn(async () => {}) } as any;
+		const auditLogger = { log: vi.fn(async () => {}) } as Parameters<
+			typeof autoReplyTest.handleLinkCommand
+		>[2];
 
 		await autoReplyTest.handleLinkCommand(msg, "ABCD-1234", auditLogger);
 
@@ -215,7 +259,7 @@ describe("auto-reply control commands", () => {
 		const msg = {
 			body: "/approve\u200B 123456",
 			normalizedBody: "/approve 123456",
-		} as any;
+		} as Parameters<typeof autoReplyTest.resolveCommandBody>[0];
 
 		expect(autoReplyTest.resolveCommandBody(msg)).toBe("/approve\u200B 123456");
 		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");

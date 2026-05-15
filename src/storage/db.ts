@@ -318,6 +318,8 @@ function initializeSchema(database: Database.Database): void {
 			action_kind TEXT NOT NULL,
 			action_service_id TEXT,
 			action_prompt TEXT,
+			action_allowed_skills_json TEXT,
+			action_preprocess_json TEXT,
 			owner_id TEXT,
 			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
 			delivery_chat_id INTEGER,
@@ -498,6 +500,34 @@ function initializeSchema(database: Database.Database): void {
 			model_id TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		);
+
+		-- Curator triage inbox (review-only suggestions, no privileged mutation)
+		CREATE TABLE IF NOT EXISTS curator_items (
+			id TEXT PRIMARY KEY,
+			short_id TEXT NOT NULL UNIQUE,
+			fingerprint TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			source TEXT NOT NULL,
+			title TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			rationale TEXT,
+			entity_ref TEXT NOT NULL,
+			proposed_action_json TEXT NOT NULL,
+			evidence_json TEXT NOT NULL,
+			producer_kind TEXT NOT NULL,
+			producer_id TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			expires_at INTEGER,
+			decided_at INTEGER,
+			decided_by TEXT,
+			decision_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_status ON curator_items(status, updated_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_kind ON curator_items(kind, status);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_source ON curator_items(source, status);
 	`);
 
 	// Wave 2 review fix: migrate approval_allowlist from v1 (inline
@@ -512,6 +542,18 @@ function initializeSchema(database: Database.Database): void {
 		"cron_jobs",
 		"action_prompt",
 		"ALTER TABLE cron_jobs ADD COLUMN action_prompt TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_allowed_skills_json",
+		"ALTER TABLE cron_jobs ADD COLUMN action_allowed_skills_json TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_preprocess_json",
+		"ALTER TABLE cron_jobs ADD COLUMN action_preprocess_json TEXT",
 	);
 	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
 	ensureColumn(

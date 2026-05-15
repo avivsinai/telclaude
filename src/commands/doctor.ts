@@ -18,6 +18,7 @@ import {
 	buildReport,
 	type CheckResult,
 	type CheckStatus,
+	checkAgentRuntimes,
 	checkClaudeCli,
 	checkClaudeLogin,
 	checkConfigLoaded,
@@ -89,6 +90,7 @@ export async function runDoctor(cwd: string = process.cwd()): Promise<DoctorRepo
 	checks.push(...checkConfigLoaded(cfg));
 	checks.push(checkClaudeCli());
 	checks.push(checkClaudeLogin());
+	checks.push(...checkAgentRuntimes());
 	checks.push(await checkTelegramToken(cfg));
 	checks.push(await checkVaultDaemon());
 	checks.push(await checkTotpDaemon());

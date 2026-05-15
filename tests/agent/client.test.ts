@@ -1,17 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const buildInternalAuthHeadersImpl = vi.hoisted(() => vi.fn(() => ({ "x-test-auth": "ok" })));
-const retryAsyncImpl = vi.hoisted(
-	() =>
-		vi.fn(async <T>(fn: () => Promise<T>) => {
-			return await fn();
-		}),
+const retryAsyncImpl = vi.hoisted(() =>
+	vi.fn(async <T>(fn: () => Promise<T>) => {
+		return await fn();
+	}),
 );
-const withTimeoutImpl = vi.hoisted(
-	() =>
-		vi.fn(async <T>(promise: Promise<T>) => {
-			return await promise;
-		}),
+const withTimeoutImpl = vi.hoisted(() =>
+	vi.fn(async <T>(promise: Promise<T>) => {
+		return await promise;
+	}),
 );
 const issueTokenImpl = vi.hoisted(() => vi.fn(async () => ({ token: "session-token" })));
 const isTokenManagerActiveImpl = vi.hoisted(() => vi.fn(() => true));
@@ -107,6 +105,7 @@ describe("executeRemoteQuery credential invariant", () => {
 			tier: "FULL_ACCESS",
 			poolKey: "pool",
 			userId: "user-1",
+			model: "claude-sonnet-4-5-20250929",
 			scope: "telegram",
 			enableSkills: false,
 			timeoutMs: 1000,
@@ -116,6 +115,7 @@ describe("executeRemoteQuery credential invariant", () => {
 
 		expect(chunks).toHaveLength(1);
 		expect(capturedBody?.sessionToken).toBe("session-token");
+		expect(capturedBody?.model).toBe("claude-sonnet-4-5-20250929");
 		expect(capturedBody?.exposedCredentials).toBeUndefined();
 	});
 

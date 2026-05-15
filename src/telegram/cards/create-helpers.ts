@@ -35,6 +35,7 @@ import type {
 	CardInstance,
 	CardKind,
 	CardListEntry,
+	CuratorInboxCardState,
 	HeartbeatCardState,
 	ModelPickerCardState,
 	PendingQueueCardState,
@@ -555,6 +556,24 @@ export async function sendSystemHealthCard(
 		threadId: opts.threadId,
 		expiryMs: opts.expiryMs ?? 15 * 60 * 1000,
 		entityRef: "system-health",
+	});
+}
+
+export async function sendCuratorInboxCard(
+	api: Api,
+	chatId: number,
+	opts: {
+		state: CuratorInboxCardState;
+		actorScope: CardActorScope;
+		threadId?: number;
+		expiryMs?: number;
+	},
+): Promise<CardInstance<typeof CK.CuratorInbox>> {
+	return createAndSendCard(api, chatId, CK.CuratorInbox, opts.state, {
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+		expiryMs: opts.expiryMs ?? 30 * 60 * 1000,
+		entityRef: "curator-inbox",
 	});
 }
 

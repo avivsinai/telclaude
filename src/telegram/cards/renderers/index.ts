@@ -4,6 +4,7 @@ import { approvalRenderer } from "./approval.js";
 import { approvalScopeRenderer } from "./approval-scope.js";
 import { authRenderer } from "./auth.js";
 import { backgroundJobListRenderer, backgroundJobRenderer } from "./background-job.js";
+import { curatorInboxRenderer } from "./curator-inbox.js";
 import { heartbeatRenderer } from "./heartbeat.js";
 import { modelPickerRenderer } from "./model-picker.js";
 import { pendingQueueRenderer } from "./pending-queue.js";
@@ -35,6 +36,7 @@ export function registerAllCardRenderers(): void {
 	cardRegistry.register(CardKind.ProviderList, providerListRenderer);
 	cardRegistry.register(CardKind.SkillPicker, skillPickerRenderer);
 	cardRegistry.register(CardKind.SkillReview, skillReviewRenderer);
+	cardRegistry.register(CardKind.CuratorInbox, curatorInboxRenderer);
 }
 
 export {
@@ -43,6 +45,7 @@ export {
 	authRenderer,
 	backgroundJobListRenderer,
 	backgroundJobRenderer,
+	curatorInboxRenderer,
 	heartbeatRenderer,
 	modelPickerRenderer,
 	pendingQueueRenderer,

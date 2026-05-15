@@ -9,7 +9,8 @@ type TelegramCommandCategory =
 	| "Skills"
 	| "Background"
 	| "Model"
-	| "Providers";
+	| "Providers"
+	| "Curator";
 
 /**
  * Hierarchical command IDs: "domain:subcommand" for routed commands,
@@ -55,6 +56,7 @@ export type TelegramCommandId =
 	| "background:cancel"
 	| "model"
 	| "providers"
+	| "curator"
 	// Fast-path shortcuts (no domain prefix)
 	| "sethome"
 	| "stop"
@@ -607,6 +609,20 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		keywords: ["cancel background", "abort job", "kill job"],
 		rateLimited: true,
 	},
+	// ── /curator domain ───────────────────────────────────────────────
+	{
+		id: "curator",
+		name: "curator",
+		domain: "curator",
+		domainDefault: true,
+		category: "Curator",
+		description: "Open the local Curator inbox for reviewable automation suggestions.",
+		usage: "/curator",
+		examples: ["/curator"],
+		keywords: ["curator", "inbox", "suggestions", "automation review", "hardening"],
+		rateLimited: true,
+		menuDescription: "Review automation suggestions",
+	},
 	// ── /model domain ─────────────────────────────────────────────────
 	{
 		id: "model",
@@ -799,6 +815,14 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		commands: ["background", "background:list", "background:show", "background:cancel", "stop"],
 	},
 	{
+		id: "curator",
+		title: "Curator",
+		summary:
+			"Curator is a local operator inbox for reviewable automation suggestions. /curator scans local state, shows open items, and records accept/reject decisions without executing the proposed action.",
+		keywords: ["curator", "inbox", "suggestions", "automation review", "hardening"],
+		commands: ["curator"],
+	},
+	{
 		id: "reset-session",
 		title: "Reset Session",
 		summary:
@@ -857,6 +881,7 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Social",
 	"Skills",
 	"Background",
+	"Curator",
 	"Model",
 	"Providers",
 ];
@@ -1130,6 +1155,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
+		"  /curator — Review automation suggestions",
 		"  /stop — Stop active background work here",
 		"  /model — Pick a model",
 		"  /providers — External provider health",
@@ -1232,6 +1258,7 @@ export function formatTelegramHelp(query?: string): string {
 			"- /help approvals",
 			"- /help 2fa",
 			"- /help system",
+			"- /help curator",
 			"- /help reset session",
 			"",
 			"Use /help commands to browse the full catalog.",
@@ -1270,6 +1297,7 @@ export function getTelegramMenuCommands(
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
+		{ command: "curator", description: "Automation suggestions" },
 		{ command: "stop", description: "Stop active work" },
 		{ command: "model", description: "Pick a model" },
 		{ command: "providers", description: "External providers" },
