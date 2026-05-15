@@ -71,6 +71,7 @@ export async function* executeRemoteQuery(
 			poolKey: options.poolKey,
 			enableSkills: options.enableSkills,
 			allowedSkills: options.allowedSkills,
+			agentSkillsAllowed: options.agentSkillsAllowed,
 			timeoutMs: options.timeoutMs,
 			resumeSessionId: options.resumeSessionId,
 			betas: options.betas,

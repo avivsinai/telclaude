@@ -36,6 +36,8 @@ type QueryRequest = {
 	enableSkills?: boolean;
 	/** When set, only these skills can be invoked. Requires enableSkills: true. */
 	allowedSkills?: string[];
+	/** SOCIAL-only operator-curated agent-authored skills for this service. */
+	agentSkillsAllowed?: string[];
 	timeoutMs?: number;
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
@@ -226,6 +228,7 @@ async function streamQuery(
 			resumeSessionId: req.resumeSessionId,
 			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
 			allowedSkills: req.allowedSkills,
+			agentSkillsAllowed: req.agentSkillsAllowed,
 			telemetrySource: req.telemetrySource,
 			telemetryServiceId: req.telemetryServiceId,
 			sessionToken: req.sessionToken,
@@ -350,6 +353,14 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					return;
 				}
 				if (
+					parsed.agentSkillsAllowed !== undefined &&
+					(!Array.isArray(parsed.agentSkillsAllowed) ||
+						parsed.agentSkillsAllowed.some((skill) => typeof skill !== "string"))
+				) {
+					writeJson(res, 400, { error: "Invalid agentSkillsAllowed." });
+					return;
+				}
+				if (
 					parsed.telemetrySource !== undefined &&
 					parsed.telemetrySource !== "telegram" &&
 					parsed.telemetrySource !== "social"
@@ -454,6 +465,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						cwd: effectiveCwd,
 						tier: effectiveTier,
 						enableSkills: effectiveEnableSkills,
+						agentSkillsAllowed: parsed.agentSkillsAllowed,
 						userId: effectiveUserId,
 						telemetrySource: effectiveTelemetrySource,
 						telemetryServiceId: effectiveTelemetryServiceId,
