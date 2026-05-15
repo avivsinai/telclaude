@@ -468,6 +468,8 @@ const SocialServiceConfigSchema = z.object({
 	enableSkills: z.boolean().default(false),
 	/** Future: filter which skills load for this service */
 	allowedSkills: z.array(z.string()).optional(),
+	/** Operator-curated agent-authored skills under agent/social/<service>. Default: none. */
+	agentSkillsAllowed: z.array(z.string()).default([]),
 	/** When to send Telegram notifications on heartbeat. Default: "activity" */
 	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });

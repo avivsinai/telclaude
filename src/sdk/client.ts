@@ -50,6 +50,11 @@ import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { decideToolApproval } from "../security/pipeline.js";
 import type { ApprovalScope, RiskTier } from "../security/risk-tiers.js";
 import {
+	buildSkillLoadPlan,
+	resolveSkillPersonaContext,
+	type SkillLoadPlan,
+} from "../skills/persona.js";
+import {
 	recordSkillInvocation,
 	type SkillInvocationDecision,
 	type SkillInvocationSource,
@@ -119,6 +124,10 @@ function computeToolApprovalHookTimeoutSeconds(queryTimeoutMs?: number): number 
 		HOOK_TIMEOUT_SECONDS,
 		Math.ceil(computeToolApprovalTimeoutMs(queryTimeoutMs) / 1000) + 5,
 	);
+}
+
+function dedupeSkillNames(names: readonly string[]): string[] {
+	return Array.from(new Set(names));
 }
 
 function summarizeToolApprovalRequest(
@@ -289,6 +298,9 @@ export type TelclaudeQueryOptions = {
 	 * SOCIAL tier: required when enableSkills is true (fail-closed if omitted).
 	 * Other tiers: omitting allows all skills (private agents are trusted). */
 	allowedSkills?: string[];
+
+	/** SOCIAL-only operator-curated agent-authored skills for this service. Default: none. */
+	agentSkillsAllowed?: string[];
 
 	/** Pre-minted session token for relay capabilities (request-scoped, NOT from process.env). */
 	sessionToken?: string;
@@ -1110,8 +1122,10 @@ function createGraduatedApprovalHook(opts: {
 function createSkillAllowlistHook(
 	allowedSkills: string[] | null,
 	telemetryContext: SkillTelemetryContext,
+	skillLoadPlan?: SkillLoadPlan,
 ): HookCallbackMatcher {
 	const allowSet = allowedSkills ? new Set(allowedSkills) : null;
+	const loadableSet = skillLoadPlan ? new Set(skillLoadPlan.names) : null;
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -1136,6 +1150,16 @@ function createSkillAllowlistHook(
 				"[hook] denied Skill: could not extract skill name (fail-closed)",
 			);
 			recordSkillAllowlistDecision(telemetryContext, "unknown", "deny", reason);
+			return denyHookResponse(reason);
+		}
+
+		if (loadableSet && !loadableSet.has(skillName)) {
+			const reason = `Skill "${skillName}" is not loadable in this persona context.`;
+			logger.warn(
+				{ skill: skillName, context: skillLoadPlan?.context },
+				"[hook] denied Skill: persona load boundary",
+			);
+			recordSkillAllowlistDecision(telemetryContext, skillName, "deny", reason);
 			return denyHookResponse(reason);
 		}
 
@@ -1428,9 +1452,15 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	// - When allowedSkills is set: only listed skills can be invoked
 	// - SOCIAL tier with enableSkills but no allowedSkills: fail-closed (deny all)
 	// - Other tiers without allowedSkills: record only, no restriction (private agent is trusted)
+	let effectiveAllowedSkillsForCanUseTool: string[] | null = null;
+	let skillLoadPlanForCanUseTool: SkillLoadPlan | undefined;
 	if (opts.enableSkills) {
-		let effectiveAllowedSkills: string[] | null = opts.allowedSkills ?? null;
-		if (opts.tier === "SOCIAL" && !opts.allowedSkills) {
+		const socialAgentSkillsAllowed = opts.agentSkillsAllowed ?? [];
+		let effectiveAllowedSkills: string[] | null =
+			opts.tier === "SOCIAL"
+				? dedupeSkillNames([...(opts.allowedSkills ?? []), ...socialAgentSkillsAllowed])
+				: (opts.allowedSkills ?? null);
+		if (opts.tier === "SOCIAL" && !opts.allowedSkills && socialAgentSkillsAllowed.length === 0) {
 			// SOCIAL tier must explicitly declare which skills are allowed.
 			// Fail-closed: deny all skills rather than allowing everything.
 			// Keyed on tier (not userId prefix) so this fires even if userId is missing.
@@ -1440,8 +1470,30 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 			);
 			effectiveAllowedSkills = [];
 		}
+		const skillContext = resolveSkillPersonaContext({
+			tier: opts.tier,
+			userId: opts.userId,
+			telemetrySource: opts.telemetrySource,
+			telemetryServiceId: opts.telemetryServiceId,
+			agentSkillsAllowed: socialAgentSkillsAllowed,
+		});
+		const skillLoadPlan = buildSkillLoadPlan(skillContext, {
+			cwd: opts.cwd,
+			requestedSkillNames: effectiveAllowedSkills,
+		});
+		const loadableSet = new Set(skillLoadPlan.names);
+		sdkOpts.skills =
+			effectiveAllowedSkills === null
+				? skillLoadPlan.names
+				: effectiveAllowedSkills.filter((skillName) => loadableSet.has(skillName));
+		effectiveAllowedSkillsForCanUseTool = effectiveAllowedSkills;
+		skillLoadPlanForCanUseTool = skillLoadPlan;
 		preToolUseHooks.push(
-			createSkillAllowlistHook(effectiveAllowedSkills, resolveSkillTelemetryContext(opts)),
+			createSkillAllowlistHook(
+				effectiveAllowedSkills,
+				resolveSkillTelemetryContext(opts),
+				skillLoadPlan,
+			),
 		);
 	}
 
@@ -1478,10 +1530,22 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// Defense-in-depth: skill allowlist check (PRIMARY enforcement is PreToolUse hook above)
 		// SOCIAL tier without allowedSkills also fails closed here.
 		if (toolName === "Skill") {
-			const effectiveAllowedSkills =
-				opts.allowedSkills ?? (opts.tier === "SOCIAL" && opts.enableSkills ? [] : null);
+			const effectiveAllowedSkills = effectiveAllowedSkillsForCanUseTool;
+			const skillName = extractSkillName(input as Record<string, unknown>);
+			if (
+				skillLoadPlanForCanUseTool &&
+				(!skillName || !skillLoadPlanForCanUseTool.names.includes(skillName))
+			) {
+				logger.warn(
+					{ skill: skillName ?? "unknown", context: skillLoadPlanForCanUseTool.context },
+					"blocked Skill outside persona load plan (canUseTool fallback)",
+				);
+				return {
+					behavior: "deny",
+					message: `Skill "${skillName ?? "unknown"}" is not loadable in this persona context.`,
+				};
+			}
 			if (effectiveAllowedSkills !== null) {
-				const skillName = extractSkillName(input as Record<string, unknown>);
 				if (!skillName || !effectiveAllowedSkills.includes(skillName)) {
 					logger.warn(
 						{ skill: skillName ?? "unknown" },

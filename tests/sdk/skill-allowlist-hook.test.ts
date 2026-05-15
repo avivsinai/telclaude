@@ -8,6 +8,7 @@ import { closeDb, resetDatabase } from "../../src/storage/db.js";
 import { listSkillInvocations } from "../../src/storage/skill-telemetry.js";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+const ORIGINAL_SKILL_CATALOG_DIR = process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 let tempDir: string | null = null;
 
 type PreToolUseDecision = {
@@ -55,6 +56,20 @@ async function runPreToolUse(
 	return { permissionDecision: "allow", updatedInput: currentInput };
 }
 
+function writeCatalogSkill(relativeDir: string): void {
+	if (!tempDir) throw new Error("tempDir not initialized");
+	const skillDir = path.join(tempDir, "skill-catalog", "skills", relativeDir);
+	fs.mkdirSync(skillDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(skillDir, "SKILL.md"),
+		["---", `name: ${path.basename(skillDir)}`, "description: test", "---", "", "Body."].join(
+			"\n",
+		),
+		"utf8",
+	);
+	process.env.TELCLAUDE_SKILL_CATALOG_DIR = path.join(tempDir, "skill-catalog");
+}
+
 describe("createSkillAllowlistHook (PreToolUse)", () => {
 	beforeEach(() => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-skill-telemetry-"));
@@ -72,6 +87,11 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			delete process.env.TELCLAUDE_DATA_DIR;
 		} else {
 			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
+		if (ORIGINAL_SKILL_CATALOG_DIR === undefined) {
+			delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
+		} else {
+			process.env.TELCLAUDE_SKILL_CATALOG_DIR = ORIGINAL_SKILL_CATALOG_DIR;
 		}
 	});
 
@@ -233,6 +253,67 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			source: "telegram",
 			serviceId: null,
 		});
+	});
+
+	it("denies social-agent-authored skills in the telegram persona", async () => {
+		writeCatalogSkill("agent/social/xtwitter/social-owned");
+		const sdkOpts = await buildSdkOptions({
+			cwd: tempDir ?? "/tmp",
+			tier: "WRITE_LOCAL",
+			enableSkills: true,
+			userId: "tg:123",
+			poolKey: "tg:123",
+		});
+
+		expect(sdkOpts.skills).not.toContain("social-owned");
+		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "social-owned" });
+		expect(res.permissionDecision).toBe("deny");
+		expect(res.permissionDecisionReason).toContain("not loadable in this persona");
+	});
+
+	it("does not let SOCIAL allowedSkills auto-include agent-authored service skills", async () => {
+		writeCatalogSkill("memory");
+		writeCatalogSkill("agent/social/xtwitter/x-helper");
+		const sdkOpts = await buildSdkOptions({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			enableSkills: true,
+			allowedSkills: ["memory", "x-helper"],
+			userId: "social:xtwitter:proactive",
+			poolKey: "xtwitter:proactive",
+			telemetryServiceId: "xtwitter",
+		});
+
+		expect(sdkOpts.skills).toContain("memory");
+		expect(sdkOpts.skills).not.toContain("x-helper");
+		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "x-helper" });
+		expect(res.permissionDecision).toBe("deny");
+		expect(res.permissionDecisionReason).toContain("not loadable in this persona");
+	});
+
+	it("allows SOCIAL service agent skills only through agentSkillsAllowed", async () => {
+		writeCatalogSkill("memory");
+		writeCatalogSkill("agent/social/xtwitter/x-helper");
+		writeCatalogSkill("agent/social/moltbook/m-helper");
+		const sdkOpts = await buildSdkOptions({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			enableSkills: true,
+			allowedSkills: ["memory"],
+			agentSkillsAllowed: ["x-helper"],
+			userId: "social:xtwitter:proactive",
+			poolKey: "xtwitter:proactive",
+			telemetryServiceId: "xtwitter",
+		});
+
+		expect(sdkOpts.skills).toContain("memory");
+		expect(sdkOpts.skills).toContain("x-helper");
+		expect(sdkOpts.skills).not.toContain("m-helper");
+		const allowed = await runPreToolUse(sdkOpts, "Skill", { skill: "x-helper" });
+		expect(allowed.permissionDecision).toBe("allow");
+		const denied = await runPreToolUse(sdkOpts, "Skill", { skill: "m-helper" });
+		expect(denied.permissionDecision).toBe("deny");
+		expect(denied.permissionDecisionReason).toContain("not loadable in this persona");
 	});
 
 	it("denies when conflicting skill names across keys (fail-closed)", async () => {
