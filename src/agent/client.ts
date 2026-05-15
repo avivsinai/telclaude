@@ -83,6 +83,8 @@ export async function* executeRemoteQuery(
 			sessionToken,
 			outputFormat: options.outputFormat,
 			compiledMemoryMd: options.compiledMemoryMd,
+			telemetrySource: options.telemetrySource,
+			telemetryServiceId: options.telemetryServiceId,
 		});
 		const endpoint = `${stripTrailingSlash(agentUrl)}${path}`;
 		const scope = options.scope ?? "telegram";

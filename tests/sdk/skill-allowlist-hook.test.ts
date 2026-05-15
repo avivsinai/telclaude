@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { buildSdkOptions } from "../../src/sdk/client.js";
+import { closeDb, resetDatabase } from "../../src/storage/db.js";
+import { listSkillInvocations } from "../../src/storage/skill-telemetry.js";
+
+const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+let tempDir: string | null = null;
 
 type PreToolUseDecision = {
 	permissionDecision: "allow" | "deny";
@@ -48,6 +56,25 @@ async function runPreToolUse(
 }
 
 describe("createSkillAllowlistHook (PreToolUse)", () => {
+	beforeEach(() => {
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-skill-telemetry-"));
+		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		resetDatabase();
+	});
+
+	afterEach(() => {
+		closeDb();
+		if (tempDir) {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+			tempDir = null;
+		}
+		if (ORIGINAL_DATA_DIR === undefined) {
+			delete process.env.TELCLAUDE_DATA_DIR;
+		} else {
+			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
+	});
+
 	it("allows Skill when skill is in allowedSkills", async () => {
 		const sdkOpts = await buildSdkOptions({
 			cwd: "/tmp",
@@ -55,10 +82,26 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			enableSkills: true,
 			allowedSkills: ["memory", "summarize", "social-posting"],
 			userId: "social:xtwitter:proactive",
+			poolKey: "xtwitter:proactive",
 		});
 
-		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "memory" });
+		const res = await runPreToolUse(sdkOpts, "Skill", {
+			skill: "memory",
+			secret: "raw-secret-must-not-be-stored",
+		});
 		expect(res.permissionDecision).toBe("allow");
+
+		const rows = listSkillInvocations();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			sessionKey: "xtwitter:proactive",
+			skillName: "memory",
+			decision: "allow",
+			denyReason: null,
+			source: "social",
+			serviceId: "xtwitter",
+		});
+		expect(JSON.stringify(rows[0])).not.toContain("raw-secret-must-not-be-stored");
 	});
 
 	it("denies Skill when skill is NOT in allowedSkills", async () => {
@@ -68,12 +111,24 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			enableSkills: true,
 			allowedSkills: ["memory", "summarize"],
 			userId: "social:xtwitter:proactive",
+			poolKey: "xtwitter:proactive",
 		});
 
 		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "external-provider" });
 		expect(res.permissionDecision).toBe("deny");
 		expect(res.permissionDecisionReason).toContain("external-provider");
 		expect(res.permissionDecisionReason).toContain("not in the allowedSkills");
+
+		const rows = listSkillInvocations();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			sessionKey: "xtwitter:proactive",
+			skillName: "external-provider",
+			decision: "deny",
+			source: "social",
+			serviceId: "xtwitter",
+		});
+		expect(rows[0]?.denyReason).toContain("not in the allowedSkills");
 	});
 
 	it("denies ALL skills when allowedSkills is empty array", async () => {
@@ -138,11 +193,22 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			enableSkills: true,
 			// no allowedSkills — SOCIAL tier must fail-closed
 			userId: "social:xtwitter:proactive",
+			poolKey: "xtwitter:proactive",
 		});
 
 		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "memory" });
 		expect(res.permissionDecision).toBe("deny");
 		expect(res.permissionDecisionReason).toContain("not in the allowedSkills");
+
+		const rows = listSkillInvocations();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			sessionKey: "xtwitter:proactive",
+			skillName: "memory",
+			decision: "deny",
+			source: "social",
+			serviceId: "xtwitter",
+		});
 	});
 
 	it("allows all skills for non-SOCIAL tier without allowedSkills (private agent)", async () => {
@@ -152,10 +218,21 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			enableSkills: true,
 			// no allowedSkills — private agents are trusted
 			userId: "tg:123",
+			poolKey: "tg:123",
 		});
 
 		const res = await runPreToolUse(sdkOpts, "Skill", { skill: "external-provider" });
 		expect(res.permissionDecision).toBe("allow");
+
+		const rows = listSkillInvocations();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			sessionKey: "tg:123",
+			skillName: "external-provider",
+			decision: "allow",
+			source: "telegram",
+			serviceId: null,
+		});
 	});
 
 	it("denies when conflicting skill names across keys (fail-closed)", async () => {
@@ -204,6 +281,7 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 		// WebSearch is used here since it bypasses sensitive path checks (server-side requests)
 		const res = await runPreToolUse(sdkOpts, "WebSearch", { query: "hello world" });
 		expect(res.permissionDecision).toBe("allow");
+		expect(listSkillInvocations()).toHaveLength(0);
 	});
 
 	it("works alongside existing social tool restriction hook", async () => {

@@ -50,6 +50,11 @@ import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { decideToolApproval } from "../security/pipeline.js";
 import type { ApprovalScope, RiskTier } from "../security/risk-tiers.js";
 import {
+	recordSkillInvocation,
+	type SkillInvocationDecision,
+	type SkillInvocationSource,
+} from "../storage/skill-telemetry.js";
+import {
 	isAssistantMessage,
 	isBashInput,
 	isContentBlockStopEvent,
@@ -258,6 +263,9 @@ export type TelclaudeQueryOptions = {
 	/** Resume a previous session by ID for conversation continuity. */
 	resumeSessionId?: string;
 
+	/** Internal stable pool key for pooled sessions. */
+	poolKey?: string;
+
 	/** Custom system prompt to append to the default claude_code preset. */
 	systemPromptAppend?: string;
 
@@ -299,6 +307,12 @@ export type TelclaudeQueryOptions = {
 
 	/** Relay-compiled memory snapshot for Claude's local working-memory file. */
 	compiledMemoryMd?: string;
+
+	/** Metadata-only Skill telemetry source. Defaults from tier/userId when omitted. */
+	telemetrySource?: SkillInvocationSource;
+
+	/** Social service id for metadata-only Skill telemetry. */
+	telemetryServiceId?: string;
 };
 
 /**
@@ -836,6 +850,46 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
 	return found;
 }
 
+type SkillTelemetryContext = {
+	sessionKey: string;
+	source: SkillInvocationSource;
+	serviceId?: string;
+};
+
+function inferSkillTelemetrySource(opts: TelclaudeQueryOptions): SkillInvocationSource {
+	if (opts.telemetrySource) return opts.telemetrySource;
+	return opts.tier === "SOCIAL" || isSocialContext(opts.userId) ? "social" : "telegram";
+}
+
+function inferSkillTelemetryServiceId(opts: TelclaudeQueryOptions): string | undefined {
+	if (opts.telemetryServiceId) return opts.telemetryServiceId;
+	const match = /^social:([^:\s]+)/.exec(opts.userId ?? "");
+	return match?.[1];
+}
+
+function resolveSkillTelemetryContext(opts: TelclaudeQueryOptions): SkillTelemetryContext {
+	const sessionKey = opts.poolKey ?? opts.resumeSessionId ?? `single:${opts.userId ?? "anonymous"}`;
+	const source = inferSkillTelemetrySource(opts);
+	const serviceId = source === "social" ? inferSkillTelemetryServiceId(opts) : undefined;
+	return { sessionKey, source, ...(serviceId ? { serviceId } : {}) };
+}
+
+function recordSkillAllowlistDecision(
+	context: SkillTelemetryContext,
+	skillName: string,
+	decision: SkillInvocationDecision,
+	denyReason?: string,
+): void {
+	void recordSkillInvocation({
+		sessionKey: context.sessionKey,
+		skillName,
+		decision,
+		...(denyReason ? { denyReason } : {}),
+		source: context.source,
+		...(context.serviceId ? { serviceId: context.serviceId } : {}),
+	});
+}
+
 /**
  * Create a PreToolUse hook that restricts which skills can be invoked.
  *
@@ -1053,8 +1107,11 @@ function createGraduatedApprovalHook(opts: {
 	};
 }
 
-function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher {
-	const allowSet = new Set(allowedSkills);
+function createSkillAllowlistHook(
+	allowedSkills: string[] | null,
+	telemetryContext: SkillTelemetryContext,
+): HookCallbackMatcher {
+	const allowSet = allowedSkills ? new Set(allowedSkills) : null;
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -1069,25 +1126,30 @@ function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher 
 		const skillName = extractSkillName(toolInput);
 
 		if (!skillName) {
+			if (allowSet === null) {
+				recordSkillAllowlistDecision(telemetryContext, "unknown", "allow");
+				return allowHookResponse();
+			}
+			const reason = "Skill invocation denied: could not determine skill name from input.";
 			logger.warn(
 				{ toolInput: formatToolInputForLog(toolInput) },
 				"[hook] denied Skill: could not extract skill name (fail-closed)",
 			);
-			return denyHookResponse(
-				"Skill invocation denied: could not determine skill name from input.",
-			);
+			recordSkillAllowlistDecision(telemetryContext, "unknown", "deny", reason);
+			return denyHookResponse(reason);
 		}
 
-		if (!allowSet.has(skillName)) {
+		if (allowSet !== null && !allowSet.has(skillName)) {
+			const reason = `Skill "${skillName}" is not in the allowedSkills list for this service.`;
 			logger.warn(
-				{ skill: skillName, allowed: allowedSkills },
+				{ skill: skillName, allowed: allowedSkills ?? "unrestricted" },
 				"[hook] denied Skill: not in allowedSkills",
 			);
-			return denyHookResponse(
-				`Skill "${skillName}" is not in the allowedSkills list for this service.`,
-			);
+			recordSkillAllowlistDecision(telemetryContext, skillName, "deny", reason);
+			return denyHookResponse(reason);
 		}
 
+		recordSkillAllowlistDecision(telemetryContext, skillName, "allow");
 		return allowHookResponse();
 	};
 
@@ -1362,21 +1424,25 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		}),
 	];
 
-	// Skill allowlist enforcement:
+	// Skill allowlist enforcement and metadata-only telemetry:
 	// - When allowedSkills is set: only listed skills can be invoked
 	// - SOCIAL tier with enableSkills but no allowedSkills: fail-closed (deny all)
-	// - Other tiers without allowedSkills: no restriction (private agent is trusted)
-	if (opts.allowedSkills) {
-		preToolUseHooks.push(createSkillAllowlistHook(opts.allowedSkills));
-	} else if (opts.tier === "SOCIAL" && opts.enableSkills) {
-		// SOCIAL tier must explicitly declare which skills are allowed.
-		// Fail-closed: deny all skills rather than allowing everything.
-		// Keyed on tier (not userId prefix) so this fires even if userId is missing.
-		logger.warn(
-			{ userId: opts.userId },
-			"SOCIAL tier has enableSkills=true but no allowedSkills — denying all skills",
+	// - Other tiers without allowedSkills: record only, no restriction (private agent is trusted)
+	if (opts.enableSkills) {
+		let effectiveAllowedSkills: string[] | null = opts.allowedSkills ?? null;
+		if (opts.tier === "SOCIAL" && !opts.allowedSkills) {
+			// SOCIAL tier must explicitly declare which skills are allowed.
+			// Fail-closed: deny all skills rather than allowing everything.
+			// Keyed on tier (not userId prefix) so this fires even if userId is missing.
+			logger.warn(
+				{ userId: opts.userId },
+				"SOCIAL tier has enableSkills=true but no allowedSkills — denying all skills",
+			);
+			effectiveAllowedSkills = [];
+		}
+		preToolUseHooks.push(
+			createSkillAllowlistHook(effectiveAllowedSkills, resolveSkillTelemetryContext(opts)),
 		);
-		preToolUseHooks.push(createSkillAllowlistHook([]));
 	}
 
 	sdkOpts.hooks = {

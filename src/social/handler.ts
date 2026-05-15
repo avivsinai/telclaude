@@ -379,6 +379,8 @@ async function runSocialQuery(
 		tier: "SOCIAL",
 		poolKey: options?.poolKey ?? defaultPoolKey,
 		userId: options?.userId ?? defaultUserId,
+		telemetrySource: "social",
+		telemetryServiceId: serviceId,
 		// SECURITY: disable skills by default for untrusted social inputs
 		enableSkills: options?.enableSkills ?? false,
 		allowedSkills: options?.allowedSkills,
@@ -436,6 +438,8 @@ async function runProactiveQuery(
 		tier: "SOCIAL",
 		poolKey: proactivePoolKey,
 		userId: proactiveUserId,
+		telemetrySource: "social",
+		telemetryServiceId: serviceId,
 		// Proactive posts are user-promoted (trusted) — enable skills for research
 		enableSkills: true,
 		allowedSkills: options?.allowedSkills,
