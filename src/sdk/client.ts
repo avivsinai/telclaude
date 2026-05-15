@@ -1315,6 +1315,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (opts.userId) {
 			sandboxEnv.TELCLAUDE_REQUEST_USER_ID = opts.userId;
 		}
+		sandboxEnv.TELCLAUDE_REQUEST_TIER = opts.tier;
 
 		// Pass relay capability config for image/TTS/transcription commands
 		// These are needed by `telclaude generate-image` etc. when run via Bash

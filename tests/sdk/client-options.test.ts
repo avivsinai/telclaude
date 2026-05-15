@@ -96,4 +96,14 @@ describe("buildSdkOptions", () => {
 		expect(env?.GITHUB_TOKEN).toBeUndefined();
 		expect(env?.GH_TOKEN).toBeUndefined();
 	});
+
+	it("passes request tier to Docker sandbox commands", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
+
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "SOCIAL", userId: "social:xtwitter" });
+		const env = opts.env as Record<string, string> | undefined;
+
+		expect(env?.TELCLAUDE_REQUEST_USER_ID).toBe("social:xtwitter");
+		expect(env?.TELCLAUDE_REQUEST_TIER).toBe("SOCIAL");
+	});
 });
