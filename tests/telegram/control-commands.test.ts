@@ -50,6 +50,7 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/skills scan")?.command.id).toBe("skills:scan");
 			expect(matchTelegramControlCommand("/skills doctor")?.command.id).toBe("skills:doctor");
 			expect(matchTelegramControlCommand("/help commands")?.command.id).toBe("help:commands");
+			expect(matchTelegramControlCommand("/curator")?.command.id).toBe("curator");
 		});
 
 		it("passes remaining args correctly for subcommands", () => {
@@ -174,6 +175,7 @@ describe("telegram control command registry", () => {
 				"social",
 				"skills",
 				"background",
+				"curator",
 				"stop",
 				"approve",
 				"new",
@@ -238,6 +240,14 @@ describe("telegram control command registry", () => {
 			const help = formatTelegramHelp("background");
 			expect(help).toContain("/stop");
 			expect(help).toContain("background jobs");
+		});
+	});
+
+	describe("/curator command help", () => {
+		it("surfaces curator in help and catalog", () => {
+			expect(formatTelegramHelp("curator")).toContain("Curator");
+			expect(formatTelegramHelp()).toContain("/curator");
+			expect(formatTelegramCommandCatalog()).toContain("/curator");
 		});
 	});
 });

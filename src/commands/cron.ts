@@ -65,27 +65,85 @@ function parsePositiveInteger(raw: string | undefined, label: string): number | 
 	return parsed;
 }
 
+function collectRepeated(value: string, previous: string[] | undefined): string[] {
+	return [...(previous ?? []), value];
+}
+
+function parsePositiveIntegerWithDefault(
+	raw: string | undefined,
+	label: string,
+): number | undefined {
+	if (raw === undefined) return undefined;
+	const parsed = parsePositiveInteger(raw, label);
+	if (parsed === undefined || parsed <= 0) {
+		throw new Error(`${label} must be a positive integer`);
+	}
+	return parsed;
+}
+
 function parseAction(opts: {
 	social?: string | boolean;
 	private?: boolean;
+	curatorScan?: boolean;
 	prompt?: string;
+	skill?: string[];
+	preprocessCommand?: string;
+	preprocessArg?: string[];
+	preprocessCwd?: string;
+	preprocessTimeoutMs?: string;
+	preprocessMaxStdoutBytes?: string;
 }): CronAction {
 	const hasSocial = opts.social !== undefined;
 	const hasPrivate = opts.private === true;
+	const hasCuratorScan = opts.curatorScan === true;
 	const hasPrompt = Boolean(opts.prompt?.trim());
-	const chosen = [hasSocial, hasPrivate, hasPrompt].filter(Boolean).length;
+	const chosen = [hasSocial, hasPrivate, hasCuratorScan, hasPrompt].filter(Boolean).length;
 	if (chosen !== 1) {
-		throw new Error("Choose exactly one action: --social [serviceId], --private, or --prompt");
+		throw new Error(
+			"Choose exactly one action: --social [serviceId], --private, --curator-scan, or --prompt",
+		);
 	}
 	if (hasPrivate) {
 		return { kind: "private-heartbeat" };
+	}
+	if (hasCuratorScan) {
+		return { kind: "curator-scan" };
 	}
 	if (hasPrompt) {
 		const prompt = opts.prompt?.trim();
 		if (!prompt) {
 			throw new Error("--prompt requires text");
 		}
-		return { kind: "agent-prompt", prompt };
+		const allowedSkills = opts.skill?.map((skill) => skill.trim()).filter(Boolean);
+		const preprocessCommand = opts.preprocessCommand?.trim();
+		return {
+			kind: "agent-prompt",
+			prompt,
+			...(opts.skill === undefined ? {} : { allowedSkills: allowedSkills ?? [] }),
+			...(preprocessCommand
+				? {
+						preprocess: {
+							command: preprocessCommand,
+							...(opts.preprocessArg === undefined ? {} : { args: opts.preprocessArg }),
+							...(opts.preprocessCwd?.trim() ? { cwd: opts.preprocessCwd.trim() } : {}),
+							...(() => {
+								const timeoutMs = parsePositiveIntegerWithDefault(
+									opts.preprocessTimeoutMs,
+									"--preprocess-timeout-ms",
+								);
+								return timeoutMs === undefined ? {} : { timeoutMs };
+							})(),
+							...(() => {
+								const maxStdoutBytes = parsePositiveIntegerWithDefault(
+									opts.preprocessMaxStdoutBytes,
+									"--preprocess-max-stdout-bytes",
+								);
+								return maxStdoutBytes === undefined ? {} : { maxStdoutBytes };
+							})(),
+						},
+					}
+				: {}),
+		};
 	}
 	if (opts.social === true) {
 		return { kind: "social-heartbeat" };
@@ -149,8 +207,16 @@ function formatAction(action: CronAction): string {
 	if (action.kind === "private-heartbeat") {
 		return "private heartbeat";
 	}
+	if (action.kind === "curator-scan") {
+		return "curator scan";
+	}
 	if (action.kind === "agent-prompt") {
-		return `agent prompt (${action.prompt.slice(0, 32)})`;
+		const skills =
+			action.allowedSkills === undefined
+				? ""
+				: `, skills=${action.allowedSkills.length === 0 ? "none" : action.allowedSkills.length}`;
+		const preprocess = action.preprocess ? ", preprocess=yes" : "";
+		return `agent prompt (${action.prompt.slice(0, 32)}${skills}${preprocess})`;
 	}
 	if (action.serviceId) {
 		return `social heartbeat (${action.serviceId})`;
@@ -292,7 +358,18 @@ export function registerCronCommand(program: Command): void {
 		.option("--cron <expr>", "5-field cron expression in UTC")
 		.option("--social [serviceId]", "Run social heartbeat (optional service id)")
 		.option("--private", "Run private heartbeat")
+		.option("--curator-scan", "Scan local state for Curator suggestions")
 		.option("--prompt <text>", "Run a scheduled agent prompt")
+		.option("--skill <name>", "Allowed skill for scheduled prompt; repeatable", collectRepeated)
+		.option("--preprocess-command <path>", "Executable to run before the scheduled prompt")
+		.option(
+			"--preprocess-arg <value>",
+			"Argument for --preprocess-command; repeatable",
+			collectRepeated,
+		)
+		.option("--preprocess-cwd <path>", "Working directory for preprocessing, confined to cwd")
+		.option("--preprocess-timeout-ms <ms>", "Preprocess timeout in milliseconds")
+		.option("--preprocess-max-stdout-bytes <bytes>", "Maximum preprocess stdout bytes")
 		.option("--delivery <target>", "Delivery target: origin, home, or chat", "origin")
 		.option("--owner <id>", "Owner id required for --delivery home")
 		.option("--chat-id <id>", "Chat id for --delivery chat or explicit origin metadata")
@@ -308,7 +385,14 @@ export function registerCronCommand(program: Command): void {
 				cron?: string;
 				social?: string | boolean;
 				private?: boolean;
+				curatorScan?: boolean;
 				prompt?: string;
+				skill?: string[];
+				preprocessCommand?: string;
+				preprocessArg?: string[];
+				preprocessCwd?: string;
+				preprocessTimeoutMs?: string;
+				preprocessMaxStdoutBytes?: string;
 				delivery?: string;
 				owner?: string;
 				chatId?: string;

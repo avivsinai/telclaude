@@ -9,7 +9,7 @@
 ## Ground rules
 - Write clean TypeScript; remove dead code.
 - Use `@anthropic-ai/claude-agent-sdk` (no CLI spawning).
-- Skills live under `.claude/skills/` and auto-load from repo root.
+- Skills live under `.claude/skills/` for Claude Code and `.agents/skills/` for Codex-compatible agents. Keep shared operator skills mirrored across both roots unless intentionally runtime-specific.
 - Pristine implementation: no legacy cruft, compatibility shims, or deprecation layers. Delete old code when you replace it.
 - No backward compatibility until 1.0. The user base is us. Hard-break DB migrations, API surfaces, CLI commands, config shapes, cards, directives — whatever needs to change. Document the break in the commit.
 
@@ -92,6 +92,7 @@
 | `pnpm dev relay --profile simple` | Start relay (dev mode) |
 | `pnpm dev doctor` | Full health check (pass/warn/fail across every subsystem) |
 | `pnpm dev doctor --json` | Same, structured JSON for CI |
+| `pnpm dev runtimes status --json` | Check Claude Code and Codex runtime readiness |
 | `pnpm lint` / `pnpm format` | Lint and format |
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |

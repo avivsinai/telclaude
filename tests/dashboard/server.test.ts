@@ -239,6 +239,99 @@ vi.mock("../../src/cron/store.js", () => ({
 	],
 }));
 
+vi.mock("../../src/curator/store.js", () => {
+	type MockCuratorStatus = "open" | "accepted" | "rejected" | "expired" | "all";
+	type MockCuratorKind =
+		| "cron_hardening"
+		| "background_attention"
+		| "memory_queue"
+		| "skill_review";
+	type MockCuratorItem = {
+		id: string;
+		shortId: string;
+		fingerprint: string;
+		kind: MockCuratorKind;
+		status: Exclude<MockCuratorStatus, "all">;
+		severity: "info" | "low" | "medium" | "high";
+		source: string;
+		title: string;
+		summary: string;
+		rationale: string | null;
+		entityRef: string;
+		proposedAction: Record<string, unknown>;
+		evidence: Record<string, unknown>;
+		producerKind: "system" | "claude-code" | "codex";
+		producerId: string | null;
+		createdAtMs: number;
+		updatedAtMs: number;
+		expiresAtMs: number | null;
+		decidedAtMs: number | null;
+		decidedBy: string | null;
+		decisionReason: string | null;
+	};
+	const items: MockCuratorItem[] = [
+		{
+			id: "curator-id-1-should-not-leak",
+			shortId: "cur1",
+			fingerprint: "fingerprint-should-not-leak",
+			kind: "cron_hardening",
+			status: "open",
+			severity: "high",
+			source: "cron",
+			title: "Cron job needs an explicit skill allowlist",
+			summary: "Private heartbeat should declare skills",
+			rationale: "Operator visible rationale",
+			entityRef: "cron:cron-1",
+			proposedAction: { type: "manual_cron_hardening", secret: "action should-not-leak" },
+			evidence: { detail: "evidence should-not-leak" },
+			producerKind: "system",
+			producerId: "producer-should-not-leak",
+			createdAtMs: 1_700_000_000_000,
+			updatedAtMs: 1_700_000_100_000,
+			expiresAtMs: null,
+			decidedAtMs: null,
+			decidedBy: null,
+			decisionReason: null,
+		},
+		{
+			id: "curator-id-2-should-not-leak",
+			shortId: "cur2",
+			fingerprint: "fingerprint-2-should-not-leak",
+			kind: "skill_review",
+			status: "accepted",
+			severity: "medium",
+			source: "skills",
+			title: "Review drafted skill",
+			summary: "Skill needs operator approval",
+			rationale: null,
+			entityRef: "skill:telegram-reply",
+			proposedAction: { type: "review_skill", secret: "skill action should-not-leak" },
+			evidence: { detail: "skill evidence should-not-leak" },
+			producerKind: "codex",
+			producerId: "codex-peer-should-not-leak",
+			createdAtMs: 1_700_000_010_000,
+			updatedAtMs: 1_700_000_110_000,
+			expiresAtMs: null,
+			decidedAtMs: 1_700_000_120_000,
+			decidedBy: "operator should-not-leak",
+			decisionReason: "approved because should-not-leak",
+		},
+	];
+	return {
+		listCuratorItems: (filter?: {
+			status?: MockCuratorStatus;
+			kind?: MockCuratorKind;
+			limit?: number;
+		}) =>
+			items
+				.filter(
+					(item) => !filter?.status || filter.status === "all" || item.status === filter.status,
+				)
+				.filter((item) => !filter?.kind || item.kind === filter.kind)
+				.slice(0, filter?.limit ?? 50),
+	};
+});
+
 vi.mock("../../src/memory/store.js", () => ({
 	getEntries: (query: { trust?: string[]; sources?: string[]; categories?: string[] }) => {
 		if (query.categories?.includes("posts") && query.trust?.includes("quarantined")) {
@@ -406,6 +499,7 @@ describe("dashboard server", () => {
 		["GET", "/api/operator/logs"],
 		["GET", "/api/operator/background-jobs"],
 		["GET", "/api/operator/cron"],
+		["GET", "/api/operator/curator"],
 		["GET", "/api/operator/social-queue"],
 		["GET", "/api/operator/personas"],
 		["GET", "/api/operator/provider-health"],
@@ -626,6 +720,68 @@ describe("dashboard server", () => {
 			actionSummary: "agent prompt (redacted)",
 		});
 		expect(JSON.stringify(body)).not.toContain("should not leak");
+	});
+
+	it("GET /api/operator/curator returns metadata-only suggestions", async () => {
+		const cookie = await authedCookie();
+		const res = await handle.server.inject({
+			method: "GET",
+			url: "/api/operator/curator?status=all",
+			headers: { cookie },
+		});
+		expect(res.statusCode).toBe(200);
+		const body = JSON.parse(res.body);
+		expect(body.summary).toMatchObject({
+			total: 2,
+			open: 1,
+			high: 1,
+			byKind: { cron_hardening: 1, skill_review: 1 },
+		});
+		expect(body.items[0]).toMatchObject({
+			shortId: "cur1",
+			kind: "cron_hardening",
+			status: "open",
+			severity: "high",
+			title: "Cron job needs an explicit skill allowlist",
+		});
+		expect(body.items[0].id).toBeUndefined();
+		expect(body.items[0].fingerprint).toBeUndefined();
+		expect(body.items[0].proposedAction).toBeUndefined();
+		expect(body.items[0].evidence).toBeUndefined();
+		expect(body.items[1].decidedBy).toBeUndefined();
+		expect(body.items[1].decisionReason).toBeUndefined();
+		expect(JSON.stringify(body)).not.toContain("should-not-leak");
+		expect(JSON.stringify(body)).not.toContain("fingerprint");
+	});
+
+	it("GET /api/operator/curator filters by open status and kind", async () => {
+		const cookie = await authedCookie();
+		const res = await handle.server.inject({
+			method: "GET",
+			url: "/api/operator/curator?status=open&kind=cron_hardening",
+			headers: { cookie },
+		});
+		expect(res.statusCode).toBe(200);
+		const body = JSON.parse(res.body);
+		expect(body.filters).toMatchObject({ status: "open", kind: "cron_hardening" });
+		expect(body.items).toHaveLength(1);
+		expect(body.items[0].shortId).toBe("cur1");
+	});
+
+	it("GET /api/operator/curator rejects invalid filters", async () => {
+		const cookie = await authedCookie();
+		const badStatus = await handle.server.inject({
+			method: "GET",
+			url: "/api/operator/curator?status=stuck",
+			headers: { cookie },
+		});
+		expect(badStatus.statusCode).toBe(400);
+		const badKind = await handle.server.inject({
+			method: "GET",
+			url: "/api/operator/curator?kind=unknown",
+			headers: { cookie },
+		});
+		expect(badKind.statusCode).toBe(400);
 	});
 
 	it("GET /api/operator/social-queue exposes queue state without raw post content", async () => {

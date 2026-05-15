@@ -1,4 +1,5 @@
-import { listDraftSkills, promoteSkill } from "../../../commands/skills-promote.js";
+import { buildSkillReviewState, listDraftSkills } from "../../../commands/skills-promote.js";
+import { sendSkillReviewCard } from "../create-helpers.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -94,15 +95,22 @@ export const skillDraftRenderer: CardRenderer<K> = {
 				if (!targetName) {
 					return { callbackText: "No draft to promote", callbackAlert: true };
 				}
-				const result = promoteSkill(targetName);
-				if (!result.success) {
-					return { callbackText: result.error ?? "Promotion failed", callbackAlert: true };
+				const review = await buildSkillReviewState({
+					skillName: targetName,
+					adminControlsEnabled: true,
+				});
+				if ("error" in review) {
+					return { callbackText: review.error, callbackAlert: true };
 				}
-				const remaining = s.drafts.filter((d) => d.id !== targetName);
 				return {
-					state: { ...s, drafts: remaining, selectedDraftName: undefined },
-					callbackText: `Promoted: ${targetName}`,
-					rerender: true,
+					callbackText: `Reviewing: ${targetName}`,
+					afterCommit: async () => {
+						await sendSkillReviewCard(context.ctx.api, card.chatId, {
+							state: review,
+							actorScope: "admin",
+							threadId: card.threadId,
+						});
+					},
 				};
 			}
 

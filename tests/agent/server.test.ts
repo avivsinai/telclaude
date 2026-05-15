@@ -196,6 +196,43 @@ describe("agent server social userId normalization", () => {
 		];
 		expect(options.compiledMemoryMd).toBe("# Memory\nhello");
 	});
+
+	it("passes a model override through to pooled queries", async () => {
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "ok",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 0,
+						durationMs: 1,
+					},
+				};
+			})(),
+		);
+
+		const body = JSON.stringify({
+			prompt: "hi",
+			tier: "READ_ONLY",
+			poolKey: "pool-1",
+			userId: "user-1",
+			model: "claude-sonnet-4-5-20250929",
+		});
+		const headers = buildInternalAuthHeaders("POST", "/v1/query", body, { scope: "social" });
+
+		const res = await fetch(`${baseUrl}/v1/query`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body,
+		});
+		await res.text();
+
+		const [, options] = executePooledQueryImpl.mock.calls[0] as [string, { model?: string }];
+		expect(options.model).toBe("claude-sonnet-4-5-20250929");
+	});
 });
 
 describe("agent server soul + social contract prompt assembly", () => {
@@ -497,17 +534,19 @@ describe("agent server soul + social contract prompt assembly", () => {
 	});
 
 	it("coalesces concurrent telegram queries behind a single relay sync", async () => {
-		let resolveProviders: ((value: {
-			ok: boolean;
-			providers: Array<{
-				id: string;
-				baseUrl: string;
-				services: string[];
-				description: string;
-			}>;
-			schemaMarkdown: string;
-			providersEpoch: string;
-		}) => void) | null = null;
+		let resolveProviders:
+			| ((value: {
+					ok: boolean;
+					providers: Array<{
+						id: string;
+						baseUrl: string;
+						services: string[];
+						description: string;
+					}>;
+					schemaMarkdown: string;
+					providersEpoch: string;
+			  }) => void)
+			| null = null;
 		relayGetProvidersImpl.mockImplementationOnce(
 			() =>
 				new Promise((resolve) => {

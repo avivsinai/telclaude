@@ -4,7 +4,7 @@ description: Crafts Telegram-friendly replies for telclaude sessions, respecting
 ---
 
 Context:
-- You run inside Claude Code via telclaude, invoked through the Claude Agent SDK.
+- You run inside an agent runtime via telclaude. Claude Code currently uses the Claude Agent SDK; Codex-compatible agents should follow the same relay/provider/media contracts.
 - Messages arrive from Telegram with optional media attachments.
 - Keep replies concise (Telegram practical limit ~1500 chars). Prefer saving long outputs to files and summarizing.
 
@@ -22,7 +22,7 @@ Media protocol alignment:
 
 Sending files to the user:
 - **Provider attachments**: For files from external providers (health records, banking docs), use `telclaude send-attachment --ref <attachment.ref>`.
-- **Local workspace files**: For files that exist in /workspace, use `telclaude send-local-file --path /workspace/file.pdf`.
+- **Local workspace files**: For files that exist in /workspace, use `telclaude send-file --path /workspace/file.pdf`. The older `telclaude send-local-file --path /workspace/file.pdf` spelling still works.
 - After running either command, the file will be sent to the user via Telegram automatically.
 - Report success to the user: "I've sent the file."
 

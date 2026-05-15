@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { getAllDraftSkillRoots, getAllSkillRoots } from "../../../commands/skill-path.js";
 import {
+	buildSkillReviewState,
 	listActiveSkills,
 	listDraftSkills,
-	promoteSkill,
 } from "../../../commands/skills-promote.js";
 import { deleteSession } from "../../../config/sessions.js";
 import { getSessionManager } from "../../../sdk/session-manager.js";
 import { inspectSkillSignature } from "../../../security/skill-scanner.js";
+import { sendSkillReviewCard } from "../create-helpers.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -248,7 +249,7 @@ export const skillPickerRenderer: CardRenderer<K> = {
 				if (!firstDraft) {
 					return { callbackText: "No draft on this page.", callbackAlert: true };
 				}
-				return executePromote(card, firstDraft);
+				return executePromote(context, firstDraft);
 			}
 
 			case "select-0":
@@ -280,42 +281,35 @@ export const skillPickerRenderer: CardRenderer<K> = {
 					};
 				}
 
-				return executePromote(card, entry);
+				return executePromote(context, entry);
 			}
 		}
 	},
 };
 
-function executePromote(card: CardInstance<K>, entry: SkillPickerEntry): CardExecutionResult<K> {
-	const result = promoteSkill(entry.id);
-	if (!result.success) {
+async function executePromote(
+	context: CardExecutionContext<K>,
+	entry: SkillPickerEntry,
+): Promise<CardExecutionResult<K>> {
+	const { card } = context;
+	const review = await buildSkillReviewState({
+		skillName: entry.id,
+		adminControlsEnabled: true,
+	});
+	if ("error" in review) {
 		return {
-			callbackText: result.error ?? "Promotion failed",
+			callbackText: review.error,
 			callbackAlert: true,
 		};
 	}
-	// Drop the now-active entry; keep it visible in active form for confirmation.
-	const remaining = card.state.entries.filter((e) => !(e.id === entry.id && e.status === "draft"));
-	remaining.push({
-		id: entry.id,
-		label: entry.label,
-		status: "active",
-		trust: entry.trust,
-	});
-	// Re-sort: drafts first, then active.
-	remaining.sort((a, b) => {
-		if (a.status === b.status) return a.label.localeCompare(b.label);
-		return a.status === "draft" ? -1 : 1;
-	});
-	const pageCount = Math.max(1, Math.ceil(remaining.length / PICKER_PAGE_SIZE));
 	return {
-		state: {
-			...card.state,
-			entries: remaining,
-			page: Math.min(card.state.page ?? 0, pageCount - 1),
-			lastRefreshedAtMs: Date.now(),
+		callbackText: `Reviewing ${entry.label}`,
+		afterCommit: async () => {
+			await sendSkillReviewCard(context.ctx.api, card.chatId, {
+				state: review,
+				actorScope: "admin",
+				threadId: card.threadId,
+			});
 		},
-		callbackText: `Promoted ${entry.label}`,
-		rerender: true,
 	};
 }

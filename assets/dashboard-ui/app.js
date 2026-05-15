@@ -60,20 +60,43 @@ async function api(path, opts = {}) {
 }
 
 function pillClassFor(status) {
-	if (["ok", "healthy", "success", "completed", "active", "enabled"].includes(status)) {
+	if (
+		["ok", "healthy", "success", "completed", "active", "enabled", "accepted", "low"].includes(
+			status,
+		)
+	) {
 		return "pill pill-ok";
 	}
 	if (
-		["degraded", "warn", "warning", "unknown", "idle", "queued", "running", "blocked"].includes(
-			status,
-		)
+		[
+			"degraded",
+			"warn",
+			"warning",
+			"unknown",
+			"idle",
+			"queued",
+			"running",
+			"blocked",
+			"open",
+			"medium",
+			"info",
+		].includes(status)
 	) {
 		return "pill pill-warn";
 	}
 	if (
-		["unhealthy", "unreachable", "auth_expired", "error", "failed", "timeout", "stale"].includes(
-			status,
-		)
+		[
+			"unhealthy",
+			"unreachable",
+			"auth_expired",
+			"error",
+			"failed",
+			"timeout",
+			"stale",
+			"rejected",
+			"expired",
+			"high",
+		].includes(status)
 	) {
 		return "pill pill-bad";
 	}
@@ -264,7 +287,9 @@ async function renderLogs() {
 		clear(transitions);
 		for (const entry of providerRes.body?.transitions ?? []) {
 			const li = node("li", "item");
-			li.append(node("span", "item-label", `${fmtTs(entry.timestamp)} · ${entry.provider ?? "provider"}`));
+			li.append(
+				node("span", "item-label", `${fmtTs(entry.timestamp)} · ${entry.provider ?? "provider"}`),
+			);
 			const right = node("span", "item-row");
 			appendPill(right, entry.level);
 			right.append(node("span", "item-detail", entry.message));
@@ -325,7 +350,10 @@ async function cancelJob(shortId) {
 		setText("#jobs-error", res.body?.error ?? "cancel failed");
 		return;
 	}
-	setText("#jobs-error", res.body?.transitioned ? `cancelled ${shortId}` : "job was already terminal");
+	setText(
+		"#jobs-error",
+		res.body?.transitioned ? `cancelled ${shortId}` : "job was already terminal",
+	);
 	await renderJobs();
 }
 
@@ -360,6 +388,53 @@ async function renderCron() {
 		],
 		"(no cron jobs)",
 		9,
+	);
+}
+
+async function renderCurator() {
+	const status = $("#curator-status").value;
+	const kind = $("#curator-kind").value;
+	const params = new URLSearchParams({ limit: "50", status });
+	if (kind !== "all") params.set("kind", kind);
+	const res = await api(`/api/operator/curator?${params.toString()}`);
+	if (!res.ok) return;
+	const items = res.body?.items ?? [];
+	const summary = res.body?.summary;
+	setText(
+		"#curator-summary",
+		summary
+			? `${summary.open} open · ${summary.high} high · ${summary.total} shown`
+			: `${items.length} suggestions`,
+	);
+	renderTable(
+		$("#curator-table tbody"),
+		items,
+		(row) => [
+			row.shortId,
+			(() => {
+				const wrap = node("span");
+				appendPill(wrap, row.status);
+				return wrap;
+			})(),
+			(() => {
+				const wrap = node("span");
+				appendPill(wrap, row.severity);
+				return wrap;
+			})(),
+			row.kind,
+			(() => {
+				const wrap = node("span");
+				wrap.append(node("strong", null, row.title));
+				if (row.summary) {
+					wrap.append(document.createElement("br"), node("span", "item-detail", row.summary));
+				}
+				return wrap;
+			})(),
+			row.source ?? "-",
+			fmtTs(row.updatedAtMs),
+		],
+		"(no curator suggestions)",
+		7,
 	);
 }
 
@@ -535,6 +610,8 @@ async function refreshActiveTab() {
 			return renderJobs();
 		case "cron":
 			return renderCron();
+		case "curator":
+			return renderCurator();
 		case "social":
 			return renderSocial();
 		case "personas":
@@ -583,6 +660,8 @@ $("#refresh-btn").addEventListener("click", refreshAll);
 $("#log-level").addEventListener("change", renderLogs);
 $("#log-component").addEventListener("change", renderLogs);
 $("#job-status").addEventListener("change", renderJobs);
+$("#curator-status").addEventListener("change", renderCurator);
+$("#curator-kind").addEventListener("change", renderCurator);
 
 $("#jobs-table").addEventListener("click", (ev) => {
 	const target = ev.target;

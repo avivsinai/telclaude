@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import type { Command } from "commander";
+import { type AgentRuntimeStatus, collectAgentRuntimeStatuses } from "../agent-runtime/status.js";
 import { getConfigPath, loadConfig } from "../config/config.js";
 import { getAllSessions } from "../config/sessions.js";
 import { getCronStatusSummary } from "../cron/store.js";
@@ -32,6 +33,7 @@ export type TelclaudeStatus = {
 		telegramToken: string;
 		claudeCli: string;
 	};
+	agentRuntimes: AgentRuntimeStatus[];
 	security: {
 		profile: string;
 		observer: string;
@@ -109,6 +111,7 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 	} catch {
 		// best-effort check only
 	}
+	const agentRuntimes = collectAgentRuntimeStatuses();
 
 	// Get audit stats if enabled
 	let auditStats = null;
@@ -155,6 +158,7 @@ export async function collectTelclaudeStatus(): Promise<TelclaudeStatus> {
 				: "not set",
 			claudeCli,
 		},
+		agentRuntimes,
 		security: cfg
 			? {
 					profile: cfg.security?.profile ?? "simple",
@@ -237,6 +241,7 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 			"Environment:",
 			`  Telegram token: ${status.environment.telegramToken}`,
 			`  Claude CLI: ${status.environment.claudeCli}`,
+			`  Agent runtimes: ${status.agentRuntimes.map((runtime) => `${runtime.label}=${runtime.readiness}`).join(", ")}`,
 		];
 
 		if (status.telegram?.allowedChats?.length) {
@@ -297,6 +302,16 @@ export function formatTelclaudeStatus(status: TelclaudeStatus, telegram = false)
 	lines.push("Environment:");
 	lines.push(`  TELEGRAM_BOT_TOKEN: ${status.environment.telegramToken}`);
 	lines.push(`  Claude CLI: ${status.environment.claudeCli}`);
+	lines.push("  Agent runtimes:");
+	for (const runtime of status.agentRuntimes) {
+		lines.push(
+			`    ${runtime.label}: ${runtime.readiness}${runtime.version ? ` (${runtime.version})` : ""}`,
+		);
+		lines.push(`      ${runtime.detail}`);
+		if (runtime.remediation) {
+			lines.push(`      try: ${runtime.remediation}`);
+		}
+	}
 	lines.push("");
 
 	if (status.security) {

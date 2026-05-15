@@ -887,6 +887,7 @@ function createGraduatedApprovalHook(opts: {
 			toolName,
 			bashCommand,
 			sessionKey,
+			chatId: opts.chatId ?? null,
 			isAdmin: adminBypass,
 		});
 		if (decision.decision === "allow") {
@@ -1017,6 +1018,8 @@ function createGraduatedApprovalHook(opts: {
 			toolName,
 			bashCommand,
 			sessionKey,
+			chatId: opts.chatId ?? null,
+			isAdmin: adminBypass,
 		});
 		if (followUpDecision.decision !== "allow") {
 			logger.warn(

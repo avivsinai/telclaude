@@ -57,19 +57,70 @@ describe("cron store", () => {
 				ownerId: "alice",
 				deliveryTarget: { kind: "home" },
 				schedule: { kind: "cron", expr: "0 9 * * 1-5" },
-				action: { kind: "agent-prompt", prompt: "check HN and post here" },
+				action: {
+					kind: "agent-prompt",
+					prompt: "check HN and post here",
+					allowedSkills: ["summarize", "memory"],
+					preprocess: {
+						command: "node",
+						args: ["scripts/hn-context.js"],
+						cwd: "scripts",
+						timeoutMs: 5_000,
+						maxStdoutBytes: 2_048,
+					},
+				},
 			},
 			now,
 		);
 
 		expect(created.ownerId).toBe("alice");
 		expect(created.deliveryTarget).toEqual({ kind: "home" });
-		expect(created.action).toEqual({ kind: "agent-prompt", prompt: "check HN and post here" });
+		expect(created.action).toEqual({
+			kind: "agent-prompt",
+			prompt: "check HN and post here",
+			allowedSkills: ["summarize", "memory"],
+			preprocess: {
+				command: "node",
+				args: ["scripts/hn-context.js"],
+				cwd: "scripts",
+				timeoutMs: 5_000,
+				maxStdoutBytes: 2_048,
+			},
+		});
 		expect(getCronJob("cron-hn")).toMatchObject({
 			ownerId: "alice",
 			deliveryTarget: { kind: "home" },
-			action: { kind: "agent-prompt", prompt: "check HN and post here" },
+			action: {
+				kind: "agent-prompt",
+				prompt: "check HN and post here",
+				allowedSkills: ["summarize", "memory"],
+				preprocess: {
+					command: "node",
+					args: ["scripts/hn-context.js"],
+					cwd: "scripts",
+					timeoutMs: 5_000,
+					maxStdoutBytes: 2_048,
+				},
+			},
 		});
+	});
+
+	it("persists curator scan actions", async () => {
+		const { addCronJob, getCronJob } = await import("../../src/cron/store.js");
+		const now = Date.parse("2026-02-21T10:00:00.000Z");
+
+		const created = addCronJob(
+			{
+				id: "cron-curator",
+				name: "curator",
+				schedule: { kind: "every", everyMs: 21_600_000 },
+				action: { kind: "curator-scan" },
+			},
+			now,
+		);
+
+		expect(created.action).toEqual({ kind: "curator-scan" });
+		expect(getCronJob("cron-curator")?.action).toEqual({ kind: "curator-scan" });
 	});
 
 	it("claims and completes due jobs", async () => {
