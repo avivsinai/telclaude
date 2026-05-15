@@ -46,6 +46,7 @@ import { registerSetupGitCommand } from "./commands/setup-git.js";
 import { registerSetupGitHubAppCommand } from "./commands/setup-github-app.js";
 import { registerSetupGoogleCommand } from "./commands/setup-google.js";
 import { registerSetupOpenAICommand } from "./commands/setup-openai.js";
+import { registerSkillManageSubcommands } from "./commands/skill-manage.js";
 import { registerSkillPathCommand } from "./commands/skill-path.js";
 import { registerSkillsScaffoldSubcommand } from "./commands/skill-scaffold.js";
 import { registerSkillsDoctorSubcommand } from "./commands/skills-doctor.js";
@@ -153,6 +154,7 @@ registerTOTPDaemonCommand(maintenance);
 registerCronCommand(maintenance);
 registerVaultCommand(maintenance);
 registerWebhooksCommand(maintenance);
+registerSkillManageSubcommands(maintenance);
 
 // --- approvals (graduated approval allowlist, Workstream W1) ---
 registerApprovalsCommand(program);
