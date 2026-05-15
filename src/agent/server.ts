@@ -51,6 +51,8 @@ type QueryRequest = {
 	outputFormat?: OutputFormat;
 	/** Relay-compiled Claude working memory snapshot. */
 	compiledMemoryMd?: string;
+	telemetrySource?: "telegram" | "social";
+	telemetryServiceId?: string;
 };
 
 type AgentServerOptions = {
@@ -224,6 +226,8 @@ async function streamQuery(
 			resumeSessionId: req.resumeSessionId,
 			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
 			allowedSkills: req.allowedSkills,
+			telemetrySource: req.telemetrySource,
+			telemetryServiceId: req.telemetryServiceId,
 			sessionToken: req.sessionToken,
 			timeoutMs: req.timeoutMs,
 			abortController,
@@ -345,12 +349,37 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					writeJson(res, 400, { error: "Invalid model." });
 					return;
 				}
+				if (
+					parsed.telemetrySource !== undefined &&
+					parsed.telemetrySource !== "telegram" &&
+					parsed.telemetrySource !== "social"
+				) {
+					writeJson(res, 400, { error: "Invalid telemetrySource." });
+					return;
+				}
+				if (
+					parsed.telemetryServiceId !== undefined &&
+					typeof parsed.telemetryServiceId !== "string"
+				) {
+					writeJson(res, 400, { error: "Invalid telemetryServiceId." });
+					return;
+				}
 
 				const scope = authResult.scope;
 				let effectiveTier = parsed.tier;
 				const effectiveEnableSkills = parsed.enableSkills;
 				let effectiveUserId = parsed.userId;
 				const effectiveCwd = resolveCwd(parsed.cwd);
+				const effectiveTelemetrySource = scope === "telegram" ? "telegram" : "social";
+				if (parsed.telemetrySource && parsed.telemetrySource !== effectiveTelemetrySource) {
+					logger.warn(
+						{ requested: parsed.telemetrySource, effective: effectiveTelemetrySource, scope },
+						"ignored telemetrySource that did not match authenticated scope",
+					);
+				}
+				const effectiveTelemetryServiceId =
+					parsed.telemetryServiceId ??
+					(scope !== "telegram" && scope !== "social" ? scope : undefined);
 
 				// Any scope that isn't "telegram" is treated as a social service scope
 				if (scope !== "telegram") {
@@ -426,6 +455,8 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						tier: effectiveTier,
 						enableSkills: effectiveEnableSkills,
 						userId: effectiveUserId,
+						telemetrySource: effectiveTelemetrySource,
+						telemetryServiceId: effectiveTelemetryServiceId,
 						systemPromptAppend: effectiveSystemPromptAppend,
 						timeoutMs,
 					},

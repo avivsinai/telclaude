@@ -12,9 +12,16 @@ import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "storage" });
 
-const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-
 let db: Database.Database | null = null;
+let dbPath: string | null = null;
+
+function resolveDbPath(): string {
+	const dataDir = process.env.TELCLAUDE_DATA_DIR;
+	if (dataDir && path.isAbsolute(dataDir) && !dataDir.startsWith("~")) {
+		return path.join(dataDir, "telclaude.db");
+	}
+	return path.join(CONFIG_DIR, "telclaude.db");
+}
 
 /**
  * Get or create the database connection.
@@ -23,9 +30,11 @@ let db: Database.Database | null = null;
  * SECURITY: Sets restrictive file permissions on database and config directory.
  */
 export function getDb(): Database.Database {
-	if (db) return db;
+	const targetPath = resolveDbPath();
+	if (db && dbPath === targetPath) return db;
+	if (db) closeDb();
 
-	const dbDir = path.dirname(DB_PATH);
+	const dbDir = path.dirname(targetPath);
 
 	// Ensure directory exists with secure permissions (owner only)
 	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
@@ -37,13 +46,14 @@ export function getDb(): Database.Database {
 		logger.warn({ path: dbDir }, "could not set directory permissions to 0700");
 	}
 
-	db = new Database(DB_PATH);
+	db = new Database(targetPath);
+	dbPath = targetPath;
 
 	// SECURITY: Set database file to owner read/write only
 	try {
-		fs.chmodSync(DB_PATH, 0o600);
+		fs.chmodSync(targetPath, 0o600);
 	} catch {
-		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600");
+		logger.warn({ path: targetPath }, "could not set database file permissions to 0600");
 	}
 
 	// Enable WAL mode for better concurrency
@@ -52,7 +62,7 @@ export function getDb(): Database.Database {
 	// Create schema (single-version, no migrations)
 	initializeSchema(db);
 
-	logger.info({ path: DB_PATH }, "database initialized");
+	logger.info({ path: targetPath }, "database initialized");
 
 	return db;
 }
@@ -64,33 +74,38 @@ export function getDb(): Database.Database {
 export function resetDatabase(): void {
 	closeDb();
 
-	const dbDir = path.dirname(DB_PATH);
+	const targetPath = resolveDbPath();
+	const dbDir = path.dirname(targetPath);
 	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
 
 	try {
-		if (fs.existsSync(DB_PATH)) {
-			fs.unlinkSync(DB_PATH);
-			logger.warn({ path: DB_PATH }, "database file removed by resetDatabase()");
+		if (fs.existsSync(targetPath)) {
+			fs.unlinkSync(targetPath);
+			logger.warn({ path: targetPath }, "database file removed by resetDatabase()");
 		}
 	} catch (err) {
 		logger.error(
-			{ path: DB_PATH, error: String(err) },
+			{ path: targetPath, error: String(err) },
 			"failed to remove database file during reset",
 		);
 		throw err;
 	}
 
-	db = new Database(DB_PATH);
+	db = new Database(targetPath);
+	dbPath = targetPath;
 	try {
-		fs.chmodSync(DB_PATH, 0o600);
+		fs.chmodSync(targetPath, 0o600);
 	} catch {
-		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600 after reset");
+		logger.warn(
+			{ path: targetPath },
+			"could not set database file permissions to 0600 after reset",
+		);
 	}
 
 	db.pragma("journal_mode = WAL");
 	initializeSchema(db);
 
-	logger.info({ path: DB_PATH }, "database reset and reinitialized");
+	logger.info({ path: targetPath }, "database reset and reinitialized");
 }
 
 /**
@@ -100,6 +115,7 @@ export function closeDb(): void {
 	if (db) {
 		db.close();
 		db = null;
+		dbPath = null;
 		logger.debug("database closed");
 	}
 }
@@ -528,6 +544,25 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_curator_items_status ON curator_items(status, updated_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_curator_items_kind ON curator_items(kind, status);
 		CREATE INDEX IF NOT EXISTS idx_curator_items_source ON curator_items(source, status);
+
+		-- Skill invocation telemetry (metadata only; no args, outputs, or skill bodies)
+		CREATE TABLE IF NOT EXISTS skill_invocations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			turn_index INTEGER,
+			skill_name TEXT NOT NULL,
+			decision TEXT NOT NULL CHECK(decision IN ('allow', 'deny')),
+			deny_reason TEXT,
+			source TEXT NOT NULL CHECK(source IN ('telegram', 'social')),
+			service_id TEXT,
+			duration_ms INTEGER,
+			result_status TEXT CHECK(result_status IN ('success', 'error', 'unknown') OR result_status IS NULL),
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_skill_invocations_session_created
+			ON skill_invocations(session_key, created_at);
+		CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill_source_created
+			ON skill_invocations(skill_name, source, created_at);
 	`);
 
 	// Wave 2 review fix: migrate approval_allowlist from v1 (inline
