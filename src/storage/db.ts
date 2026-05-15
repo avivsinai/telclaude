@@ -563,6 +563,52 @@ function initializeSchema(database: Database.Database): void {
 			ON skill_invocations(session_key, created_at);
 		CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill_source_created
 			ON skill_invocations(skill_name, source, created_at);
+
+		-- Signed inbound webhooks (definitions only; HMAC secrets live in vault/secrets storage)
+		CREATE TABLE IF NOT EXISTS webhooks (
+			slug TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			target_cron_job_id TEXT NOT NULL,
+			vault_secret_id TEXT NOT NULL,
+			allowed_cidrs_json TEXT,
+			rate_limit_per_hour INTEGER NOT NULL DEFAULT 60,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_hit_at INTEGER,
+			hit_count INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhooks_target_cron_job
+			ON webhooks(target_cron_job_id);
+
+		-- Webhook hit audit trail. Body is represented only by SHA-256.
+		CREATE TABLE IF NOT EXISTS webhook_hits (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			slug TEXT NOT NULL,
+			source_ip TEXT,
+			signature_valid INTEGER NOT NULL,
+			timestamp_delta_seconds INTEGER,
+			action_taken TEXT NOT NULL,
+			target_cron_job_id TEXT,
+			background_job_id TEXT,
+			failure_reason TEXT,
+			body_sha256 TEXT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhook_hits_slug_created
+			ON webhook_hits(slug, created_at DESC);
+
+		-- Replay guard for accepted signed webhook deliveries. The signature digest
+		-- is SHA-256 over the signature header plus body hash; raw body is never stored.
+		CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			slug TEXT NOT NULL,
+			signature_digest TEXT NOT NULL,
+			body_sha256 TEXT NOT NULL,
+			background_job_id TEXT,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (slug, signature_digest)
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created
+			ON webhook_deliveries(created_at);
 	`);
 
 	// Wave 2 review fix: migrate approval_allowlist from v1 (inline

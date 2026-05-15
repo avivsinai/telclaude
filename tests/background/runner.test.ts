@@ -125,6 +125,44 @@ describe("background runner", () => {
 		expect(final?.result?.message).toBe("handled codex-work-unit");
 	});
 
+	it("dispatches cron-run payloads through the cron-run executor slot", async () => {
+		const { createJob, startBackgroundRunner, getJob } = await import(
+			"../../src/background/index.js"
+		);
+
+		const job = createJob({
+			title: "cron",
+			userId: "webhook:build",
+			tier: "WRITE_LOCAL",
+			payload: {
+				kind: "cron-run",
+				jobId: "cron-build",
+				webhook: {
+					slug: "build",
+					bodyHash: "a".repeat(64),
+				},
+			},
+		});
+
+		const handle = startBackgroundRunner({
+			pollIntervalMs: 10,
+			executors: {
+				"cron-run": async (job) => ({
+					ok: true,
+					result: { message: `handled ${job.payload.kind}` },
+				}),
+			},
+		});
+
+		await handle.tick();
+		await settle(50);
+		handle.stop();
+
+		const final = getJob(job.id);
+		expect(final?.status).toBe("completed");
+		expect(final?.result?.message).toBe("handled cron-run");
+	});
+
 	it("respects operator cancellation after a job is running", async () => {
 		const { cancelJob, createJob, startBackgroundRunner, getJob } = await import(
 			"../../src/background/index.js"

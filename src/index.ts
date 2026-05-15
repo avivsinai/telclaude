@@ -60,6 +60,7 @@ import { registerTOTPDisableCommand } from "./commands/totp-disable.js";
 import { registerTOTPSetupCommand } from "./commands/totp-setup.js";
 import { registerVaultCommand } from "./commands/vault.js";
 import { registerVaultDaemonCommand } from "./commands/vault-daemon.js";
+import { registerWebhooksCommand } from "./commands/webhooks.js";
 import { setConfigPath } from "./config/path.js";
 import { setVerbose } from "./globals.js";
 import { closeLogger, getLogger } from "./logging.js";
@@ -151,6 +152,7 @@ registerVaultDaemonCommand(maintenance);
 registerTOTPDaemonCommand(maintenance);
 registerCronCommand(maintenance);
 registerVaultCommand(maintenance);
+registerWebhooksCommand(maintenance);
 
 // --- approvals (graduated approval allowlist, Workstream W1) ---
 registerApprovalsCommand(program);
