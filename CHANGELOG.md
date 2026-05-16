@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-16
+
+### Added
+
+- **Curator triage inbox** — Operator-reviewable suggestions store with `cron_hardening` and `unused-skill` collectors. Telegram card, dashboard route, accept/reject decisions, signed producer envelopes via `vault.signPayload` with `curator-producer-v1` domain prefix.
+- **Skill self-evolution** — `skill_manage create | patch | archive | pin | unpin | rename` with persona-scoped paths (`agent/telegram/` and `agent/social/<service>/`), scanner-before-write, atomic temp+rename with cooperative mkdir-locks, pre-rename realpath revalidation, tar.gz snapshots (rolling 30), audit JSONL.
+- **Operator profiles (Wave 2.1 A + B)** — `profiles[]` config schema, `chat_profiles` table keyed by chat_id, `/profile list|show|switch` Telegram commands, SOUL.md stacking, per-profile `defaultModel` + `allowedSkills`, profile-scoped private memory using `telegram:<profile-id>` source with one-shot migration from bare `telegram`.
+- **Codex first-class** — `codex-work-unit` background payload kind, executor with `--ephemeral --ignore-user-config --sandbox <enum> --cd <confined>` + `sandbox_workspace_write.network_access=false`, `/codex [--model] [--cwd] [--write] <prompt>` Telegram command, shared `validateCodexModel` validator with closed `CODEX_EXECUTABLE_MODELS` allowlist.
+- **Signed cron webhooks** — Loopback-only Fastify receiver with Stripe-style HMAC (`x-telclaude-webhook-signature: t=<unix>,v1=<hex>`), replay guard via `webhook_deliveries` `(slug, signature_digest)` atomic INSERT OR IGNORE, ingress + per-webhook + global rate limits, `trustedProxies`, CIDR allowlist, body never JSON-parsed (raw buffer + SHA-256 audit).
+- **Cron preprocess + `[IDLE]`/`[SILENT]` suppression** — Subprocess sandbox with command allowlist, env-scrubbed, cwd-confined, output cap, timeout.
+- **Skill invocation telemetry** — Metadata-only `skill_invocations` table (no raw args/outputs), fire-and-forget recording from `createSkillAllowlistHook` post-decision, auth-scope-authoritative source field, 365-day TTL prune.
+- **Model fallback (TC-OC-05)** — Four-state `ModelRoute` (`default | override | profile | fallback`), executable vs catalog-only providers, two-layer SDK guards (`isExecutableModelId` at agent server, `assertExecutableModelId` at `buildSdkOptions`), `/system` surfaces `model_fallback_active`, `/model reset` clears stale chat prefs.
+- **Maintenance hygiene** — Shared `src/maintenance/log-rotation.ts` with exact-timestamp regex (preserves manual backups), audit log rotation (10 MiB / 5 retain), `webhook_deliveries` 24h TTL, `webhook_hits` 30d TTL, `skill_invocations` 365d TTL, stale lock dirs / `.SKILL.md.*.tmp/.bak` / `.telclaude-rename-*` / `os.tmpdir/telclaude-skill-manage-*` cleanup on startup + 60s timer.
+- **Provider scaffold + `/skills sign`** — `telclaude providers init <id>` generates inert sidecar boilerplate (`src/<id>-services/` + `docker/Dockerfile.<id>`). `/skills sign` Telegram bridge routes through vault-backed `signSkillByName`.
+- **Operator playbook + router profile + workflow presets** — `docs/operator-playbook.md` four-level maturity ladder; `assets/profile-templates/router/SOUL.md` reference; `docs/profiles.md` router-profile convention; `daily-brief` / `meeting-prep` / `weekly-business-report` / `humanizer` skill pairs (`.claude/` + `.agents/`).
+- **`telclaude curator sign-producer` + `submit-signed` CLI** — Sign and verify curator items from claude-code / codex producers via the vault.
+
+### Changed
+
+- **Memory source field** — Private telegram source becomes `telegram:<profile-id>`. Bare `telegram` migrates once to `telegram:default` and is rejected on new writes; legacy reads still tolerated via `isTelegramMemorySource`.
+- **Three-layer write isolation** for memory RPC — HTTP scope + `hasExplicitTelegramSourceClaim` rejection + RPC-layer `isTelegramMemorySource` guard.
+- **SDK chat-scoped exec-policy** — `createGraduatedApprovalHook` passes `chatId` + `isAdmin` into approval-policy resolver on both initial and follow-up decisions.
+
+### Security
+
+- **Producer signing for non-system curator producers** — `upsertCuratorItem` rejects non-system producers at the store boundary; non-system writes must go through `upsertSignedCuratorItem` with a vault-verified envelope.
+- **Webhook ingress rate limit before secret lookup** — `consumeWebhookIngressRateLimit` is the first call in the handler, before any signature check or audit write, to bound DoS via bad-signature flood.
+- **SOCIAL tier denied** for `skill_manage` and `codex-work-unit` at three layers each (executor entry, CLI gate, Telegram parse).
+- **Network egress confinement for Codex** — `-c sandbox_workspace_write.network_access=false` injected on every `codex exec` invocation.
+
+### Fixed
+
+- **Docker Go version pin** — Bumped `GO_VERSION` from 1.23.6 to 1.25.4 so `gifgrep@latest` (v0.3.0, requires Go ≥ 1.25.0) installs cleanly in `telclaude-agent` image build.
+
 ## [0.6.3] - 2026-04-23
 
 ### Added
