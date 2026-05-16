@@ -2,7 +2,12 @@ import crypto from "node:crypto";
 import type { Command } from "commander";
 import { buildTelegramMemoryBundle } from "../memory/telegram-memory.js";
 import type { MemoryCategory, TrustLevel } from "../memory/types.js";
-import { quarantineIdea, readMemory, writeMemory } from "../services/memory.js";
+import {
+	quarantineIdea,
+	readMemory,
+	resolveLocalTelegramMemoryProfileId,
+	writeMemory,
+} from "../services/memory.js";
 
 function handleCommandError(err: unknown): void {
 	console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -66,6 +71,7 @@ export function registerMemoryCommands(program: Command): void {
 			try {
 				const bundle = buildTelegramMemoryBundle({
 					chatId: opts.chatId,
+					profileId: resolveLocalTelegramMemoryProfileId(opts.chatId),
 					query: opts.query,
 					includeRecentHistory: true,
 				});

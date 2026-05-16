@@ -197,4 +197,24 @@ describe("codex work-unit executor", () => {
 		expect(result.error).toMatch(/codex model may only contain/);
 		expect(fs.existsSync(path.join(tempDir, "fake-codex-args.json"))).toBe(false);
 	});
+
+	it("rejects unsupported Codex model overrides before spawning", async () => {
+		const fakeCodex = writeFakeCodex(tempDir);
+		const job = makeJob({
+			kind: "codex-work-unit",
+			prompt: "inspect",
+			sandbox: "read-only",
+			cwd: ".",
+			model: "gpt-5",
+		});
+
+		const result = await codexWorkUnitExecutor(job, new AbortController().signal, {
+			rootCwd: tempDir,
+			codexCommand: fakeCodex,
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.error).toMatch(/not supported/);
+		expect(fs.existsSync(path.join(tempDir, "fake-codex-args.json"))).toBe(false);
+	});
 });

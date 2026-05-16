@@ -153,17 +153,18 @@ describe("/codex Telegram command", () => {
 
 	it("rejects invalid model values through the shared Codex validator", async () => {
 		expect(() => validateCodexModel("../bad")).toThrow(/codex model may only contain/);
+		expect(() => validateCodexModel("gpt-5")).toThrow(/not supported/);
 
 		const api = fakeApi();
 		const result = await queueCodexWorkUnitCommand(api as never, {
 			chatId: 123,
 			actorScope: "user:123",
-			rawArgs: "--model ../bad inspect",
+			rawArgs: "--model gpt-5 inspect",
 			cfg: cfgForTier("WRITE_LOCAL"),
 		});
 
 		expect(result.callbackAlert).toBe(true);
-		expect(api.sendMessage.mock.calls[0]?.[1]).toContain("codex model may only contain");
+		expect(api.sendMessage.mock.calls[0]?.[1]).toContain("not supported");
 		expect(listJobs()).toHaveLength(0);
 	});
 });

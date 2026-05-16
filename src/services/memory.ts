@@ -23,23 +23,27 @@ import { isAgentSide } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "memory-service" });
 
-function resolveLocalTelegramMemorySource(chatId?: string): MemorySource {
+export function resolveLocalTelegramMemoryProfileId(chatId?: string): string {
 	if (!chatId || !/^-?\d+$/.test(chatId.trim())) {
-		return telegramMemorySource();
+		return "default";
 	}
 	const numericChatId = Number(chatId.trim());
 	if (!Number.isSafeInteger(numericChatId)) {
-		return telegramMemorySource();
+		return "default";
 	}
 	const activeProfileId = getChatActiveProfileId(numericChatId);
 	if (!activeProfileId) {
-		return telegramMemorySource();
+		return "default";
 	}
 	const profile = getOperatorProfile(activeProfileId, loadConfig());
 	if (!profile) {
 		throw new Error(`unknown-profile-id: ${activeProfileId}`);
 	}
-	return telegramMemorySource(profile.id);
+	return profile.id;
+}
+
+function resolveLocalTelegramMemorySource(chatId?: string): MemorySource {
+	return telegramMemorySource(resolveLocalTelegramMemoryProfileId(chatId));
 }
 
 /**
@@ -51,7 +55,15 @@ export async function readMemory(query?: MemorySnapshotRequest): Promise<MemoryS
 		return fetchMemorySnapshot(query ?? {});
 	}
 
-	const result = handleMemorySnapshot(query ?? {});
+	const effectiveQuery =
+		query?.chatId && !query.sources?.length && !query.sourceFamilies?.length
+			? {
+					...query,
+					sources: [resolveLocalTelegramMemorySource(query.chatId)],
+					sourceFamilies: undefined,
+				}
+			: (query ?? {});
+	const result = handleMemorySnapshot(effectiveQuery);
 	if (!result.ok) {
 		throw new Error(result.error);
 	}

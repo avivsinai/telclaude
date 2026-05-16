@@ -11,6 +11,14 @@ const DEFAULT_OUTPUT_BYTES = 24 * 1024;
 const DEFAULT_STDERR_BYTES = 12 * 1024;
 const CODEX_MODEL_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const CODEX_WORKSPACE_WRITE_NETWORK_CONFIG = "sandbox_workspace_write.network_access=false";
+export const CODEX_EXECUTABLE_MODELS = [
+	"gpt-5.5",
+	"gpt-5.4",
+	"gpt-5.4-mini",
+	"gpt-5.3-codex",
+	"gpt-5.3-codex-spark",
+	"gpt-5.2",
+] as const;
 
 type CodexWorkUnitPayload = Extract<BackgroundJob["payload"], { kind: "codex-work-unit" }>;
 type SpawnLike = typeof spawn;
@@ -40,6 +48,11 @@ export function validateCodexModel(value: string): string {
 	if (!CODEX_MODEL_PATTERN.test(model)) {
 		throw new Error(
 			"codex model may only contain letters, numbers, dots, underscores, colons, or hyphens",
+		);
+	}
+	if (!CODEX_EXECUTABLE_MODELS.includes(model as (typeof CODEX_EXECUTABLE_MODELS)[number])) {
+		throw new Error(
+			`codex model is not supported by this runtime: ${model}. Supported models: ${CODEX_EXECUTABLE_MODELS.join(", ")}`,
 		);
 	}
 	return model;

@@ -380,13 +380,15 @@ function getMemoryEntries(query: {
 	}
 }
 
-function countIdentityEntries(
-	source: MemorySource,
-): Record<"profile" | "interests" | "meta", number> {
+function countIdentityEntries(queryScope: {
+	source?: MemorySource;
+	sourceFamily?: MemorySourceFamily;
+}): Record<"profile" | "interests" | "meta", number> {
 	const entries = getMemoryEntries({
 		categories: ["profile", "interests", "meta"],
 		trust: ["trusted"],
-		sources: [source],
+		...(queryScope.source ? { sources: [queryScope.source] } : {}),
+		...(queryScope.sourceFamily ? { sourceFamilies: [queryScope.sourceFamily] } : {}),
 		limit: 200,
 	});
 	return {
@@ -802,14 +804,14 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 				privatePersona: {
 					...summarizePersonaForDashboard(
 						personaSnapshot.personas.private,
-						countIdentityEntries("telegram"),
+						countIdentityEntries({ sourceFamily: "telegram" }),
 					),
 					heartbeatEnabled: cfg.telegram.heartbeat?.enabled ?? false,
 					heartbeatIntervalHours: cfg.telegram.heartbeat?.intervalHours ?? null,
 				},
 				socialPersona: summarizePersonaForDashboard(
 					personaSnapshot.personas.social,
-					countIdentityEntries("social"),
+					countIdentityEntries({ source: "social" }),
 					services,
 				),
 			});
