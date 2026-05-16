@@ -4,18 +4,32 @@ import type { Api, Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
-import { promoteSkill } from "../commands/skills-promote.js";
+import { cleanupManagedSkillHousekeeping } from "../commands/skill-manage.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import { resolveModelHint } from "../config/model-catalog.js";
+import { clearChatModelPreference } from "../config/model-preferences.js";
+import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
 import {
+	formatAllowedSkillsCount,
+	formatProfileSummary,
+	getOperatorProfile,
+	IMPLICIT_DEFAULT_PROFILE_ID,
+	listOperatorProfiles,
+	type ResolvedChatProfile,
+	resolveChatProfile,
+} from "../config/profiles.js";
+import {
+	clearChatActiveProfileId,
 	DEFAULT_IDLE_MINUTES,
 	deleteSession,
 	deriveSessionKey,
 	formatHomeTarget,
+	getChatActiveProfileId,
 	getHomeTargetForChat,
 	getSession,
 	type SessionEntry,
+	setChatActiveProfileId,
 	setSession,
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
@@ -70,18 +84,22 @@ import type { SecurityClassification } from "../security/types.js";
 import { initializeGitCredentials } from "../services/git-credentials.js";
 import { clearOpenAICache, initializeOpenAIKey } from "../services/openai-client.js";
 import { getEnabledSocialServices } from "../social/service-config.js";
+import { buildSoulPromptAppend } from "../soul.js";
 import { cleanupExpired, getDb } from "../storage/db.js";
 import { formatReactionContext, getRecentReactions } from "../storage/reactions.js";
 import { sendSkillsMenuCard, sendSocialMenuCard, sendStatusCard } from "./cards/create-helpers.js";
 import { createTelegramBot, syncTelegramCommandMenu } from "./client.js";
 import {
 	cancelBackgroundJobCommand,
+	openCuratorInboxCard,
 	openModelPicker,
 	openProviderList,
 	openSkillDraftCard,
 	openSkillPicker,
+	openSkillReviewCard,
 	openSocialQueueCard,
 	openSystemHealthCard,
+	queueCodexWorkUnitCommand,
 	reloadSkillsSession,
 	runSocialHeartbeatCommand,
 	sendBackgroundJobDetail,
@@ -90,6 +108,7 @@ import {
 	sendSkillsImportCommand,
 	sendSkillsListCommand,
 	sendSkillsScanCommand,
+	sendSkillsSignCommand,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
 	setHomeTargetCommand,
@@ -130,6 +149,54 @@ import { createTypingControllerFromCallback } from "./typing.js";
 import { routeWizardTextMessage } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
+
+function managedSkillHousekeepingDidWork(
+	result: ReturnType<typeof cleanupManagedSkillHousekeeping>,
+): boolean {
+	return (
+		result.staleLocks > 0 ||
+		result.staleArtifacts > 0 ||
+		result.staleTempRoots > 0 ||
+		result.auditLog.rotated ||
+		result.auditLog.pruned > 0
+	);
+}
+
+function runManagedSkillHousekeeping(stage: "startup" | "periodic"): void {
+	try {
+		const result = cleanupManagedSkillHousekeeping();
+		if (managedSkillHousekeepingDidWork(result)) {
+			logger.info({ stage, result }, "managed skill housekeeping completed");
+		} else if (result.artifactCleanupSkipped) {
+			logger.debug(
+				{ stage, reason: result.artifactCleanupSkipped },
+				"managed skill artifact cleanup skipped",
+			);
+		}
+	} catch (err) {
+		logger.warn({ stage, error: String(err) }, "managed skill housekeeping failed");
+	}
+}
+
+function resolveExecutableModelForChat(
+	chatId: number,
+	profile: ResolvedChatProfile,
+): string | undefined {
+	const route = resolveModelRoute(chatId, { profile: profile.profile });
+	if (route.fallbackState === "fallback") {
+		logger.info(
+			{
+				chatId,
+				profileId: profile.profile.id,
+				requestedProviderId: route.requestedProviderId,
+				requestedModelId: route.requestedModelId,
+				detail: route.detail,
+			},
+			"chat model preference ignored; using SDK default",
+		);
+	}
+	return route.effectiveModel;
+}
 
 /**
  * Generate a key for the recentlySent set.
@@ -392,10 +459,11 @@ async function sendSystemStatusCard(
 		const lines = formatted.split("\n");
 		const details = lines.slice(1).filter((line) => line.trim().length > 0);
 		const homeTargetLine = `Home target: ${formatHomeTarget(getHomeTargetForChat(msg.chatId))}`;
+		const profileLine = `Profile: ${formatProfileSummary(resolveChatProfile(msg.chatId, loadConfig()))}`;
 
 		let summary = "System overview ready.";
 		let title = "System Status";
-		let cardDetails = [...details, homeTargetLine];
+		let cardDetails = [...details, homeTargetLine, profileLine];
 		const view = initialView ?? "overview";
 
 		if (view === "sessions") {
@@ -415,6 +483,7 @@ async function sendSystemStatusCard(
 			cardDetails = [
 				...cronLines.slice(1).filter((line) => line.trim().length > 0),
 				homeTargetLine,
+				profileLine,
 			];
 		}
 
@@ -470,18 +539,178 @@ async function handleWhoAmICommand(msg: TelegramInboundMessage): Promise<void> {
 	);
 }
 
-async function handleSessionResetCommand(msg: TelegramInboundMessage): Promise<void> {
-	const sessionKey = msg.from;
+function resolveSessionKeyForMessage(msg: TelegramInboundMessage, cfg: TelclaudeConfig): string {
+	const scope = cfg.inbound?.reply?.session?.scope ?? "per-sender";
+	return deriveSessionKey(scope, { From: msg.from });
+}
+
+function resetSessionKey(sessionKey: string): number {
 	deleteSession(sessionKey);
 	getSessionManager().clearSession(sessionKey);
-	// W1: session-scoped approvals must not survive a session rotation.
-	const cleared = revokeSessionAllowlist(sessionKey);
+	return revokeSessionAllowlist(sessionKey);
+}
+
+async function handleSessionResetCommand(msg: TelegramInboundMessage): Promise<void> {
+	const sessionKey = msg.from;
+	const cleared = resetSessionKey(sessionKey);
 
 	logger.info(
 		{ chatId: msg.chatId, sessionKey, allowlistCleared: cleared },
 		"session reset via control command",
 	);
 	await msg.reply("Session reset. Starting fresh conversation.");
+}
+
+function canSwitchProfile(msg: TelegramInboundMessage, cfg: TelclaudeConfig): boolean {
+	if (isAdmin(msg.chatId)) return true;
+	const tier = getUserPermissionTier(msg.chatId, cfg.security);
+	return tier === "WRITE_LOCAL" || tier === "FULL_ACCESS";
+}
+
+function formatProfileDetails(
+	chatId: number,
+	resolved: ResolvedChatProfile,
+	cfg: TelclaudeConfig,
+): string {
+	const profile = resolved.profile;
+	const modelRoute = resolveModelRoute(chatId, { profile });
+	const lines = [
+		`Active profile: ${profile.label} (${profile.id})`,
+		`Skills: ${formatAllowedSkillsCount(profile)}`,
+		`Model: ${formatModelRoute(modelRoute)}`,
+	];
+	if (profile.description) {
+		lines.push(`Description: ${profile.description}`);
+	}
+	for (const warning of resolved.warnings) {
+		lines.push(`Warning: ${warning}`);
+	}
+	lines.push(
+		"",
+		"Explicit chat model preferences override profile defaults. Use /model reset to clear the chat-level model override.",
+	);
+	const configuredCount = (cfg.profiles ?? []).length;
+	lines.push(`Configured profiles: ${configuredCount}`);
+	return lines.join("\n");
+}
+
+function escXmlAttr(value: string): string {
+	return value
+		.replace(/&/g, "&amp;")
+		.replace(/"/g, "&quot;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+}
+
+function escXmlText(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function buildProfileContext(resolved: ResolvedChatProfile): string {
+	const profile = resolved.profile;
+	const attrs = [
+		`id="${escXmlAttr(profile.id)}"`,
+		`label="${escXmlAttr(profile.label)}"`,
+		`skills="${escXmlAttr(formatAllowedSkillsCount(profile))}"`,
+	];
+	const lines = [`<operator-profile ${attrs.join(" ")}>`];
+	if (profile.description)
+		lines.push(`<description>${escXmlText(profile.description)}</description>`);
+	for (const warning of resolved.warnings) lines.push(`<warning>${escXmlText(warning)}</warning>`);
+	lines.push("</operator-profile>");
+	return lines.join("\n");
+}
+
+async function handleProfileListCommand(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+): Promise<void> {
+	const active = resolveChatProfile(msg.chatId, cfg);
+	const lines = ["Profiles:"];
+	for (const profile of listOperatorProfiles(cfg)) {
+		const activeMark = profile.id === active.profile.id ? " *" : "";
+		const description = profile.description ? ` — ${profile.description}` : "";
+		lines.push(
+			`- ${profile.id}: ${profile.label}${activeMark} (${formatAllowedSkillsCount(profile)})${description}`,
+		);
+	}
+	lines.push("", "Use /profile switch <id> to change the active profile.");
+	await msg.reply(lines.join("\n"));
+}
+
+async function handleProfileShowCommand(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+): Promise<void> {
+	await msg.reply(formatProfileDetails(msg.chatId, resolveChatProfile(msg.chatId, cfg), cfg));
+}
+
+async function handleProfileSwitchCommand(
+	msg: TelegramInboundMessage,
+	profileIdRaw: string | undefined,
+	cfg: TelclaudeConfig,
+): Promise<void> {
+	if (!profileIdRaw) {
+		await msg.reply("Usage: /profile switch <id>");
+		return;
+	}
+	if (!canSwitchProfile(msg, cfg)) {
+		await msg.reply("Your tier cannot switch profiles.");
+		return;
+	}
+
+	const profileId = profileIdRaw.trim();
+	const target = getOperatorProfile(profileId, cfg);
+	if (!target) {
+		await msg.reply(`Unknown profile: ${profileId}. Use /profile list.`);
+		return;
+	}
+
+	const fromProfileId = getChatActiveProfileId(msg.chatId) ?? IMPLICIT_DEFAULT_PROFILE_ID;
+	if (target.id === IMPLICIT_DEFAULT_PROFILE_ID) {
+		clearChatActiveProfileId(msg.chatId);
+	} else {
+		setChatActiveProfileId(msg.chatId, target.id);
+	}
+
+	const sessionKey = resolveSessionKeyForMessage(msg, cfg);
+	const allowlistCleared = resetSessionKey(sessionKey);
+	const actor = getIdentityLink(msg.chatId)?.localUserId ?? String(msg.senderId ?? msg.chatId);
+	logger.info(
+		{
+			chatId: msg.chatId,
+			fromProfileId,
+			toProfileId: target.id,
+			actor,
+			sessionKey,
+			allowlistCleared,
+		},
+		"profile switched",
+	);
+
+	await msg.reply(
+		[
+			`Profile switched to ${target.label} (${target.id}).`,
+			"Session reset so the new profile soul and skill policy take effect.",
+			"Explicit chat model preferences are unchanged. Use /model reset to clear them.",
+		].join("\n"),
+	);
+}
+
+async function handleModelResetCommand(
+	msg: TelegramInboundMessage,
+	cfg: TelclaudeConfig,
+): Promise<void> {
+	if (!canSwitchProfile(msg, cfg)) {
+		await msg.reply("Your tier cannot reset the chat model preference.");
+		return;
+	}
+	const cleared = clearChatModelPreference(msg.chatId);
+	await msg.reply(
+		cleared
+			? "Chat model preference cleared. The active profile default model will apply."
+			: "No chat model preference was set.",
+	);
 }
 
 async function dispatchTelegramControlCommand(
@@ -570,6 +799,17 @@ async function dispatchTelegramControlCommand(
 		case "system:health":
 			await handleSystemHealthCommand(bot.api, msg);
 			return true;
+		// ── /profile domain ────────────────────────────────────────────
+		case "profile":
+		case "profile:show":
+			await handleProfileShowCommand(msg, cfg);
+			return true;
+		case "profile:list":
+			await handleProfileListCommand(msg, cfg);
+			return true;
+		case "profile:switch":
+			await handleProfileSwitchCommand(msg, match.args[0]?.trim(), cfg);
+			return true;
 		// ── /social domain ─────────────────────────────────────────────
 		case "social":
 			await sendSocialMenuCard(bot.api, msg.chatId, {
@@ -598,7 +838,7 @@ async function dispatchTelegramControlCommand(
 			const telegramEntries = getEntries({
 				categories: ["posts"],
 				trust: ["quarantined"],
-				sources: ["telegram"],
+				sourceFamilies: ["telegram"],
 				chatId: String(msg.chatId),
 			});
 			const socialEntries = getEntries({
@@ -757,16 +997,19 @@ async function dispatchTelegramControlCommand(
 				await msg.reply("Usage: `/skills promote <name>`");
 				return true;
 			}
-			if (!isAdmin(msg.chatId)) {
-				await msg.reply("Only admin can promote skills.");
-				return true;
-			}
-			const result = promoteSkill(skillName);
-			if (result.success) {
-				await msg.reply(`Skill "${skillName}" promoted. Available next session.`);
-			} else {
-				await msg.reply(`Promote failed: ${result.error}`);
-			}
+			await openSkillReviewCard(bot.api, {
+				chatId: msg.chatId,
+				skillName,
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "skills:sign": {
+			await sendSkillsSignCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				skillName: match.args[0]?.trim(),
+			});
 			return true;
 		}
 		case "skills:reload": {
@@ -824,6 +1067,26 @@ async function dispatchTelegramControlCommand(
 			});
 			return true;
 		}
+		case "codex": {
+			await queueCodexWorkUnitCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				actorId: msg.senderId,
+				rawArgs: match.rawArgs,
+				cfg,
+			});
+			return true;
+		}
+		// ── /curator domain ───────────────────────────────────────────
+		case "curator": {
+			await openCuratorInboxCard(bot.api, {
+				chatId: msg.chatId,
+				actorScope: "admin",
+				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
 		// ── /model domain ──────────────────────────────────────────────
 		case "model": {
 			const hintText = match.rawArgs.trim();
@@ -838,6 +1101,9 @@ async function dispatchTelegramControlCommand(
 			});
 			return true;
 		}
+		case "model:reset":
+			await handleModelResetCommand(msg, cfg);
+			return true;
 		// ── /providers domain ──────────────────────────────────────────
 		case "providers": {
 			await openProviderList(bot.api, {
@@ -1001,6 +1267,7 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 	const timeoutSeconds = replyConfig.timeoutSeconds ?? 600; // Default 10 minutes
 
 	const sessionKey = deriveSessionKey(scope, { From: ctx.from });
+	const activeProfile = resolveChatProfile(msg.chatId, config);
 
 	// Use session lock to prevent race conditions on rapid messages
 	await withSessionLock(
@@ -1012,6 +1279,7 @@ async function executeAndReply(ctx: ExecutionContext): Promise<void> {
 				idleMinutes,
 				resetTriggers,
 				timeoutSeconds,
+				activeProfile,
 			});
 		},
 		ctx.requestId,
@@ -1030,6 +1298,7 @@ async function executeWithSession(
 		idleMinutes: number;
 		resetTriggers: string[];
 		timeoutSeconds: number;
+		activeProfile: ResolvedChatProfile;
 	},
 ): Promise<void> {
 	const {
@@ -1041,7 +1310,7 @@ async function executeWithSession(
 		recentlySent,
 		auditLogger,
 	} = ctx;
-	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds } = opts;
+	const { userId, startTime, idleMinutes, resetTriggers, timeoutSeconds, activeProfile } = opts;
 	const existingSession = getSession(sessionKey);
 	const now = Date.now();
 
@@ -1149,6 +1418,7 @@ async function executeWithSession(
 
 		const memoryBundle = buildTelegramMemoryBundle({
 			chatId: String(msg.chatId),
+			profileId: activeProfile.profile.id,
 			query: queryPrompt,
 			includeRecentHistory: isNewSession,
 		});
@@ -1159,6 +1429,12 @@ async function executeWithSession(
 
 		// Build chat context for agent (skills need chat ID for memory scoping)
 		const chatContext = `<chat-context chat-id="${msg.chatId}" />`;
+		const profileContext = buildProfileContext(activeProfile);
+		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+		const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
+			includeProjectSoul: !useRemoteAgent,
+			cwd: process.cwd(),
+		});
 
 		// Build lightweight system info for agent awareness
 		const systemInfoContext = buildSystemInfoContext(msg.chatId);
@@ -1167,6 +1443,8 @@ async function executeWithSession(
 		const systemPromptAppend =
 			[
 				chatContext,
+				profileContext,
+				soulAppend,
 				systemInfoContext,
 				voiceProtocolInstruction,
 				reactionAppend,
@@ -1177,14 +1455,17 @@ async function executeWithSession(
 				.filter(Boolean)
 				.join("\n\n") || undefined;
 
-		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+		const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
+		const profileAllowedSkills = activeProfile.profile.allowedSkills;
 		const queryStream = useRemoteAgent
 			? executeRemoteQuery(queryPrompt, {
 					cwd: process.cwd(),
 					tier,
 					poolKey: sessionKey,
+					model,
 					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 					enableSkills: tier !== "READ_ONLY",
+					allowedSkills: profileAllowedSkills,
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
@@ -1198,8 +1479,10 @@ async function executeWithSession(
 					cwd: process.cwd(),
 					tier,
 					poolKey: sessionKey,
+					model,
 					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 					enableSkills: tier !== "READ_ONLY",
+					allowedSkills: profileAllowedSkills,
 					timeoutMs: timeoutSeconds * 1000,
 					betas: ctx.config.sdk?.betas,
 					userId,
@@ -1405,6 +1688,7 @@ async function executeWithSession(
 							sessionId: sessionEntry.sessionId,
 							userText: buildMemoryCaptureText(processedContext),
 							assistantText: finalResponse,
+							profileId: activeProfile.profile.id,
 							createdAt: Date.now(),
 						});
 					} catch (memoryError) {
@@ -1461,8 +1745,10 @@ async function executeWithSession(
 
 // Test-only surface
 export const __test = {
+	dispatchTelegramControlCommand,
 	executeAndReply,
 	handleLinkCommand,
+	handleProfileSwitchCommand,
 	resolveCommandBody,
 	resolveProcessingBody,
 	shouldShowPlanPreview,
@@ -1568,6 +1854,7 @@ export async function monitorTelegramProvider(
 	// - Any exception occurs before the polling loop
 	try {
 		cleanupExpired();
+		runManagedSkillHousekeeping("startup");
 		logger.debug("startup cleanup of expired security artifacts completed");
 	} catch (err) {
 		// Log but don't fail - cleanup errors shouldn't prevent startup
@@ -1732,6 +2019,7 @@ export async function monitorTelegramProvider(
 			// cleanupExpired() handles approvals, linkCodes, rateLimits, totpSessions, adminClaims
 			const cleanupInterval = setInterval(() => {
 				cleanupExpired();
+				runManagedSkillHousekeeping("periodic");
 			}, 60_000);
 
 			logger.info("Listening for Telegram messages. Ctrl+C to stop.");
@@ -2600,21 +2888,34 @@ async function executePlanPhase(
 			}
 
 			const queryPrompt = `${approval.body}\n\n(Planning mode: describe what you would do, do not execute.)`;
+			const activeProfile = resolveChatProfile(msg.chatId, cfg);
 			const memoryBundle = buildTelegramMemoryBundle({
 				chatId: String(msg.chatId),
+				profileId: activeProfile.profile.id,
 				query: approval.body,
 				includeRecentHistory: isNewSession,
 			});
-			const planningPromptAppend = [PLANNING_SYSTEM_PROMPT, memoryBundle.promptContext]
+			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+			const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
+				includeProjectSoul: !useRemoteAgent,
+				cwd: process.cwd(),
+			});
+			const planningPromptAppend = [
+				PLANNING_SYSTEM_PROMPT,
+				buildProfileContext(activeProfile),
+				soulAppend,
+				memoryBundle.promptContext,
+			]
 				.filter(Boolean)
 				.join("\n\n");
 
-			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+			const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
 			const queryStream = useRemoteAgent
 				? executeRemoteQuery(queryPrompt, {
 						cwd: process.cwd(),
 						tier: "READ_ONLY",
 						poolKey: sessionKey,
+						model,
 						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 						enableSkills: false,
 						timeoutMs: timeoutSeconds * 1000,
@@ -2630,6 +2931,7 @@ async function executePlanPhase(
 						cwd: process.cwd(),
 						tier: "READ_ONLY",
 						poolKey: sessionKey,
+						model,
 						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 						enableSkills: false,
 						timeoutMs: timeoutSeconds * 1000,

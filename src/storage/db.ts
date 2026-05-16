@@ -1,7 +1,7 @@
 /**
  * SQLite storage layer for telclaude.
  *
- * One-shot schema (no migrations). DB is treated as ephemeral operational state.
+ * One-shot schema plus small additive/data migrations for existing local DBs.
  */
 
 import fs from "node:fs";
@@ -12,9 +12,16 @@ import { CONFIG_DIR } from "../utils.js";
 
 const logger = getChildLogger({ module: "storage" });
 
-const DB_PATH = path.join(CONFIG_DIR, "telclaude.db");
-
 let db: Database.Database | null = null;
+let dbPath: string | null = null;
+
+function resolveDbPath(): string {
+	const dataDir = process.env.TELCLAUDE_DATA_DIR;
+	if (dataDir && path.isAbsolute(dataDir) && !dataDir.startsWith("~")) {
+		return path.join(dataDir, "telclaude.db");
+	}
+	return path.join(CONFIG_DIR, "telclaude.db");
+}
 
 /**
  * Get or create the database connection.
@@ -23,9 +30,11 @@ let db: Database.Database | null = null;
  * SECURITY: Sets restrictive file permissions on database and config directory.
  */
 export function getDb(): Database.Database {
-	if (db) return db;
+	const targetPath = resolveDbPath();
+	if (db && dbPath === targetPath) return db;
+	if (db) closeDb();
 
-	const dbDir = path.dirname(DB_PATH);
+	const dbDir = path.dirname(targetPath);
 
 	// Ensure directory exists with secure permissions (owner only)
 	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
@@ -37,13 +46,14 @@ export function getDb(): Database.Database {
 		logger.warn({ path: dbDir }, "could not set directory permissions to 0700");
 	}
 
-	db = new Database(DB_PATH);
+	db = new Database(targetPath);
+	dbPath = targetPath;
 
 	// SECURITY: Set database file to owner read/write only
 	try {
-		fs.chmodSync(DB_PATH, 0o600);
+		fs.chmodSync(targetPath, 0o600);
 	} catch {
-		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600");
+		logger.warn({ path: targetPath }, "could not set database file permissions to 0600");
 	}
 
 	// Enable WAL mode for better concurrency
@@ -52,7 +62,7 @@ export function getDb(): Database.Database {
 	// Create schema (single-version, no migrations)
 	initializeSchema(db);
 
-	logger.info({ path: DB_PATH }, "database initialized");
+	logger.info({ path: targetPath }, "database initialized");
 
 	return db;
 }
@@ -64,33 +74,38 @@ export function getDb(): Database.Database {
 export function resetDatabase(): void {
 	closeDb();
 
-	const dbDir = path.dirname(DB_PATH);
+	const targetPath = resolveDbPath();
+	const dbDir = path.dirname(targetPath);
 	fs.mkdirSync(dbDir, { recursive: true, mode: 0o700 });
 
 	try {
-		if (fs.existsSync(DB_PATH)) {
-			fs.unlinkSync(DB_PATH);
-			logger.warn({ path: DB_PATH }, "database file removed by resetDatabase()");
+		if (fs.existsSync(targetPath)) {
+			fs.unlinkSync(targetPath);
+			logger.warn({ path: targetPath }, "database file removed by resetDatabase()");
 		}
 	} catch (err) {
 		logger.error(
-			{ path: DB_PATH, error: String(err) },
+			{ path: targetPath, error: String(err) },
 			"failed to remove database file during reset",
 		);
 		throw err;
 	}
 
-	db = new Database(DB_PATH);
+	db = new Database(targetPath);
+	dbPath = targetPath;
 	try {
-		fs.chmodSync(DB_PATH, 0o600);
+		fs.chmodSync(targetPath, 0o600);
 	} catch {
-		logger.warn({ path: DB_PATH }, "could not set database file permissions to 0600 after reset");
+		logger.warn(
+			{ path: targetPath },
+			"could not set database file permissions to 0600 after reset",
+		);
 	}
 
 	db.pragma("journal_mode = WAL");
 	initializeSchema(db);
 
-	logger.info({ path: DB_PATH }, "database reset and reinitialized");
+	logger.info({ path: targetPath }, "database reset and reinitialized");
 }
 
 /**
@@ -100,6 +115,7 @@ export function closeDb(): void {
 	if (db) {
 		db.close();
 		db = null;
+		dbPath = null;
 		logger.debug("database closed");
 	}
 }
@@ -166,6 +182,13 @@ function initializeSchema(database: Database.Database): void {
 			session_id TEXT NOT NULL,
 			updated_at INTEGER NOT NULL,
 			system_sent INTEGER NOT NULL DEFAULT 0
+		);
+
+		-- Active private operator profile per Telegram chat.
+		CREATE TABLE IF NOT EXISTS chat_profiles (
+			chat_id INTEGER PRIMARY KEY,
+			active_profile_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
 		);
 
 		-- Home delivery targets for conversational cron
@@ -318,6 +341,8 @@ function initializeSchema(database: Database.Database): void {
 			action_kind TEXT NOT NULL,
 			action_service_id TEXT,
 			action_prompt TEXT,
+			action_allowed_skills_json TEXT,
+			action_preprocess_json TEXT,
 			owner_id TEXT,
 			delivery_target_kind TEXT NOT NULL DEFAULT 'origin',
 			delivery_chat_id INTEGER,
@@ -498,6 +523,99 @@ function initializeSchema(database: Database.Database): void {
 			model_id TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
 		);
+
+		-- Curator triage inbox (review-only suggestions, no privileged mutation)
+		CREATE TABLE IF NOT EXISTS curator_items (
+			id TEXT PRIMARY KEY,
+			short_id TEXT NOT NULL UNIQUE,
+			fingerprint TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL,
+			severity TEXT NOT NULL,
+			source TEXT NOT NULL,
+			title TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			rationale TEXT,
+			entity_ref TEXT NOT NULL,
+			proposed_action_json TEXT NOT NULL,
+			evidence_json TEXT NOT NULL,
+			producer_kind TEXT NOT NULL,
+			producer_id TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			expires_at INTEGER,
+			decided_at INTEGER,
+			decided_by TEXT,
+			decision_reason TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_status ON curator_items(status, updated_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_kind ON curator_items(kind, status);
+		CREATE INDEX IF NOT EXISTS idx_curator_items_source ON curator_items(source, status);
+
+		-- Skill invocation telemetry (metadata only; no args, outputs, or skill bodies)
+		CREATE TABLE IF NOT EXISTS skill_invocations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key TEXT NOT NULL,
+			turn_index INTEGER,
+			skill_name TEXT NOT NULL,
+			decision TEXT NOT NULL CHECK(decision IN ('allow', 'deny')),
+			deny_reason TEXT,
+			source TEXT NOT NULL CHECK(source IN ('telegram', 'social')),
+			service_id TEXT,
+			duration_ms INTEGER,
+			result_status TEXT CHECK(result_status IN ('success', 'error', 'unknown') OR result_status IS NULL),
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_skill_invocations_session_created
+			ON skill_invocations(session_key, created_at);
+		CREATE INDEX IF NOT EXISTS idx_skill_invocations_skill_source_created
+			ON skill_invocations(skill_name, source, created_at);
+
+		-- Signed inbound webhooks (definitions only; HMAC secrets live in vault/secrets storage)
+		CREATE TABLE IF NOT EXISTS webhooks (
+			slug TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			target_cron_job_id TEXT NOT NULL,
+			vault_secret_id TEXT NOT NULL,
+			allowed_cidrs_json TEXT,
+			rate_limit_per_hour INTEGER NOT NULL DEFAULT 60,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			last_hit_at INTEGER,
+			hit_count INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhooks_target_cron_job
+			ON webhooks(target_cron_job_id);
+
+		-- Webhook hit audit trail. Body is represented only by SHA-256.
+		CREATE TABLE IF NOT EXISTS webhook_hits (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			slug TEXT NOT NULL,
+			source_ip TEXT,
+			signature_valid INTEGER NOT NULL,
+			timestamp_delta_seconds INTEGER,
+			action_taken TEXT NOT NULL,
+			target_cron_job_id TEXT,
+			background_job_id TEXT,
+			failure_reason TEXT,
+			body_sha256 TEXT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhook_hits_slug_created
+			ON webhook_hits(slug, created_at DESC);
+
+		-- Replay guard for accepted signed webhook deliveries. The signature digest
+		-- is SHA-256 over the signature header plus body hash; raw body is never stored.
+		CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			slug TEXT NOT NULL,
+			signature_digest TEXT NOT NULL,
+			body_sha256 TEXT NOT NULL,
+			background_job_id TEXT,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY (slug, signature_digest)
+		);
+		CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created
+			ON webhook_deliveries(created_at);
 	`);
 
 	// Wave 2 review fix: migrate approval_allowlist from v1 (inline
@@ -512,6 +630,18 @@ function initializeSchema(database: Database.Database): void {
 		"cron_jobs",
 		"action_prompt",
 		"ALTER TABLE cron_jobs ADD COLUMN action_prompt TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_allowed_skills_json",
+		"ALTER TABLE cron_jobs ADD COLUMN action_allowed_skills_json TEXT",
+	);
+	ensureColumn(
+		database,
+		"cron_jobs",
+		"action_preprocess_json",
+		"ALTER TABLE cron_jobs ADD COLUMN action_preprocess_json TEXT",
 	);
 	ensureColumn(database, "cron_jobs", "owner_id", "ALTER TABLE cron_jobs ADD COLUMN owner_id TEXT");
 	ensureColumn(
@@ -534,6 +664,7 @@ function initializeSchema(database: Database.Database): void {
 	);
 	ensureApprovalsColumns(database);
 	ensureMemoryEntriesColumns(database);
+	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
@@ -736,12 +867,16 @@ export function cleanupExpired(): {
 	pairingLockouts: number;
 	backgroundJobs: number;
 	approvalAllowlist: number;
+	skillInvocations: number;
+	webhookHits: number;
+	webhookDeliveries: number;
 } {
 	const database = getDb();
 	const now = Date.now();
 	const oneHourAgo = now - 3600 * 1000;
 	const oneDayAgo = now - 24 * 3600 * 1000;
 	const thirtyDaysAgo = now - 30 * 24 * 3600 * 1000;
+	const oneYearAgo = now - 365 * 24 * 3600 * 1000;
 
 	const run = database.transaction(() => {
 		const approvalsResult = database.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
@@ -814,6 +949,15 @@ export function cleanupExpired(): {
 				   AND COALESCE(completed_at, cancelled_at, created_at) < ?`,
 			)
 			.run(thirtyDaysAgo);
+		const webhookDeliveriesResult = database
+			.prepare("DELETE FROM webhook_deliveries WHERE created_at < ?")
+			.run(oneDayAgo);
+		const webhookHitsResult = database
+			.prepare("DELETE FROM webhook_hits WHERE created_at < ?")
+			.run(thirtyDaysAgo);
+		const skillInvocationsResult = database
+			.prepare("DELETE FROM skill_invocations WHERE created_at < ?")
+			.run(oneYearAgo);
 
 		// W1 graduated approval allowlist:
 		//   - delete anything past its expiry
@@ -854,6 +998,9 @@ export function cleanupExpired(): {
 				allowlistExpiredResult.changes +
 				allowlistStaleOnceResult.changes +
 				allowlistStaleAlwaysResult.changes,
+			skillInvocations: skillInvocationsResult.changes,
+			webhookHits: webhookHitsResult.changes,
+			webhookDeliveries: webhookDeliveriesResult.changes,
 		};
 	});
 
@@ -894,4 +1041,18 @@ function ensureMemoryEntriesColumns(database: Database.Database): void {
 
 	// Always ensure index exists (handles both migration and fresh DB)
 	database.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_chat ON memory_entries(chat_id)");
+}
+
+function migrateDefaultTelegramMemorySource(database: Database.Database): void {
+	const migrate = database.transaction(() => {
+		const entries = database
+			.prepare("UPDATE memory_entries SET source = 'telegram:default' WHERE source = 'telegram'")
+			.run();
+		const episodes = database
+			.prepare("UPDATE memory_episodes SET source = 'telegram:default' WHERE source = 'telegram'")
+			.run();
+		return { entries: entries.changes, episodes: episodes.changes };
+	});
+	const result = migrate();
+	logger.info(result, "memory source migration checked");
 }

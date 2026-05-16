@@ -158,8 +158,9 @@ const REMEDIATION_CATALOG: Record<RemediationKey, RemediationEntry> = {
 	model_fallback_active: {
 		key: "model_fallback_active",
 		title: "Model fallback active",
-		command: "/system",
-		explanation: "Claude is running on a fallback model. Check CLI auth and network egress.",
+		command: "/model",
+		explanation:
+			"The stored model preference is not executable by this runtime. Pick an Anthropic model.",
 	},
 };
 

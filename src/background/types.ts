@@ -45,6 +45,19 @@ export const BackgroundJobPayloadSchema = z.discriminatedUnion("kind", [
 		timeoutMs: z.number().int().positive().optional(),
 	}),
 	z.object({
+		kind: z.literal("codex-work-unit"),
+		/** Prompt handed to `codex exec` over stdin. */
+		prompt: z.string().min(1).max(24_000),
+		/** Working directory, confined by the executor to the telclaude workspace root. */
+		cwd: z.string().optional(),
+		/** Codex sandbox mode. Defaults to read-only. */
+		sandbox: z.enum(["read-only", "workspace-write"]).default("read-only"),
+		/** Optional model override, passed as `--model`. */
+		model: z.string().min(1).max(120).optional(),
+		/** Max runtime before the executor is aborted (default: 30 min). */
+		timeoutMs: z.number().int().positive().optional(),
+	}),
+	z.object({
 		kind: z.literal("noop"),
 		/** Message surfaced on the completion card. */
 		message: z.string().default("noop"),
@@ -52,6 +65,18 @@ export const BackgroundJobPayloadSchema = z.discriminatedUnion("kind", [
 		delayMs: z.number().int().nonnegative().optional(),
 		/** Force a failure (for tests). */
 		fail: z.boolean().optional(),
+	}),
+	z.object({
+		kind: z.literal("cron-run"),
+		/** Existing preconfigured cron job to trigger. */
+		jobId: z.string().min(1),
+		/** Opaque webhook provenance. Raw body is never stored here. */
+		webhook: z
+			.object({
+				slug: z.string().min(1),
+				bodyHash: z.string().length(64),
+			})
+			.optional(),
 	}),
 ]);
 

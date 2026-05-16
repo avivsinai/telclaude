@@ -1,6 +1,7 @@
 import type { Api } from "grammy";
 import { collectCronOverview } from "../commands/cron.js";
 import { listCronJobs } from "../cron/store.js";
+import type { CronAction } from "../cron/types.js";
 import { getChildLogger } from "../logging.js";
 import { getEntries } from "../memory/store.js";
 import {
@@ -59,6 +60,19 @@ function trimSummary(text: string, limit = 180): string {
 
 function resolveActorScope(chatId: number): `chat:${number}` {
 	return `chat:${chatId}`;
+}
+
+function cronActionLabel(action: CronAction): string {
+	switch (action.kind) {
+		case "private-heartbeat":
+			return "Private heartbeat";
+		case "agent-prompt":
+			return "Scheduled prompt";
+		case "curator-scan":
+			return "Curator scan";
+		case "social-heartbeat":
+			return action.serviceId ?? "Social heartbeat";
+	}
 }
 
 function isWithinQuietHours(
@@ -232,12 +246,7 @@ export function createNudgeEngine(opts: {
 			await sendHeartbeatCard(opts.api, opts.chatId, {
 				services: failingJobs.map((job) => ({
 					id: job.id,
-					label:
-						job.action.kind === "private-heartbeat"
-							? "Private heartbeat"
-							: job.action.kind === "agent-prompt"
-								? "Scheduled prompt"
-								: (job.action.serviceId ?? "Social heartbeat"),
+					label: cronActionLabel(job.action),
 					summary: trimSummary(job.lastError ?? "error"),
 				})),
 				lastRunAt: Math.max(...failingJobs.map((job) => job.lastRunAtMs ?? 0)),

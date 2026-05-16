@@ -16,6 +16,8 @@ import {
 } from "../commands/providers.js";
 import { loadConfig, resetConfigCache } from "../config/config.js";
 import { resolveConfigPath, resolveRuntimeConfigPath } from "../config/path.js";
+import { getOperatorProfile } from "../config/profiles.js";
+import { getChatActiveProfileId } from "../config/sessions.js";
 import { readEnv } from "../env.js";
 import {
 	type InternalAuthScope,
@@ -31,6 +33,7 @@ import {
 	parseSnapshotBody,
 	parseSnapshotQuery,
 } from "../memory/rpc.js";
+import { isTelegramMemorySource, telegramMemorySource } from "../memory/source.js";
 import type { MemoryEntryInput } from "../memory/store.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
 import {
@@ -711,7 +714,7 @@ async function streamAttachmentToFile(response: Response, filepath: string): Pro
 /**
  * Build a scope-restricted memory snapshot request.
  * Social scopes see only "social" source with untrusted trust and a capped limit.
- * Telegram scope sees only "telegram" source with no restrictions.
+ * Telegram scope sees only the active profile's telegram source with no restrictions.
  */
 function buildScopedSnapshot(
 	baseSnapshot: import("../memory/rpc.js").MemorySnapshotRequest,
@@ -722,14 +725,61 @@ function buildScopedSnapshot(
 		return {
 			...baseSnapshot,
 			sources: [source] as MemorySource[],
+			sourceFamilies: undefined,
 			trust: ["untrusted"] as TrustLevel[],
 			limit: Math.min(baseSnapshot.limit ?? 50, 50),
 		};
 	}
 	return {
 		...baseSnapshot,
-		sources: ["telegram"] as MemorySource[],
+		sources: [source] as MemorySource[],
+		sourceFamilies: undefined,
 	};
+}
+
+function parseNumericChatId(chatId: unknown): number | null {
+	if (typeof chatId === "number" && Number.isInteger(chatId)) {
+		return chatId;
+	}
+	if (typeof chatId !== "string") {
+		return null;
+	}
+	const trimmed = chatId.trim();
+	if (!/^-?\d+$/.test(trimmed)) {
+		return null;
+	}
+	const parsed = Number(trimmed);
+	return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function resolveMemorySourceForScope(
+	scope: string,
+	chatId: unknown,
+): { ok: true; source: MemorySource } | { ok: false; status: number; error: string } {
+	if (scope !== "telegram") {
+		return { ok: true, source: "social" };
+	}
+	const numericChatId = parseNumericChatId(chatId);
+	if (numericChatId === null) {
+		return { ok: true, source: telegramMemorySource() };
+	}
+	const activeProfileId = getChatActiveProfileId(numericChatId);
+	if (!activeProfileId) {
+		return { ok: true, source: telegramMemorySource() };
+	}
+	const profile = getOperatorProfile(activeProfileId, loadConfig());
+	if (!profile) {
+		return { ok: false, status: 400, error: `unknown-profile-id: ${activeProfileId}` };
+	}
+	return { ok: true, source: telegramMemorySource(profile.id) };
+}
+
+function hasExplicitTelegramSourceClaim(input: unknown): boolean {
+	if (!input || typeof input !== "object") {
+		return false;
+	}
+	const source = (input as { source?: unknown }).source;
+	return typeof source === "string" && isTelegramMemorySource(source);
 }
 
 /**
@@ -1144,11 +1194,6 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				writeJson(res, 200, heartbeatResult);
 				return;
 			}
-			// Derive memory source: unified "social" for all social scopes.
-			// SECURITY: never allow non-telegram scope to claim "telegram" source
-			// (would let social agents write trusted memory).
-			const memorySource: MemorySource = authResult.scope === "telegram" ? "telegram" : "social";
-
 			if (isMemorySnapshotGet) {
 				const url = new URL(req.url ?? "", "http://localhost");
 				const snapshotRequest = parseSnapshotQuery(url.searchParams);
@@ -1156,10 +1201,18 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
+				const memorySource = resolveMemorySourceForScope(
+					authResult.scope,
+					snapshotRequest.value.chatId,
+				);
+				if (!memorySource.ok) {
+					writeJson(res, memorySource.status, { error: memorySource.error });
+					return;
+				}
 				const effectiveSnapshot = buildScopedSnapshot(
 					snapshotRequest.value,
 					authResult.scope,
-					memorySource,
+					memorySource.source,
 				);
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
@@ -1202,13 +1255,27 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 			const rateLimitUserId = userId ?? "agent";
 
 			if (req.url === "/v1/memory.propose") {
+				if (authResult.scope !== "telegram" && hasExplicitTelegramSourceClaim(parsed)) {
+					writeJson(res, 403, {
+						error: "social-token-cannot-write-telegram-profile-memory",
+					});
+					return;
+				}
+				const memorySource = resolveMemorySourceForScope(
+					authResult.scope,
+					(parsed as { chatId?: unknown }).chatId,
+				);
+				if (!memorySource.ok) {
+					writeJson(res, memorySource.status, { error: memorySource.error });
+					return;
+				}
 				const proposeResult = handleMemoryPropose(
 					{
 						entries: parsed.entries as MemoryEntryInput[],
 						userId,
 						chatId: (parsed as { chatId?: string }).chatId,
 					},
-					{ source: memorySource, userId },
+					{ source: memorySource.source, userId },
 				);
 				if (!proposeResult.ok) {
 					writeJson(res, proposeResult.status, { error: proposeResult.error });
@@ -1234,10 +1301,18 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, snapshotRequest.status, { error: snapshotRequest.error });
 					return;
 				}
+				const memorySource = resolveMemorySourceForScope(
+					authResult.scope,
+					snapshotRequest.value.chatId,
+				);
+				if (!memorySource.ok) {
+					writeJson(res, memorySource.status, { error: memorySource.error });
+					return;
+				}
 				const effectiveSnapshot = buildScopedSnapshot(
 					snapshotRequest.value,
 					authResult.scope,
-					memorySource,
+					memorySource.source,
 				);
 				const snapshotResult = handleMemorySnapshot(effectiveSnapshot);
 				if (!snapshotResult.ok) {
@@ -1260,13 +1335,21 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
 				}
+				const memorySource = resolveMemorySourceForScope(
+					authResult.scope,
+					(parsed as { chatId?: unknown }).chatId,
+				);
+				if (!memorySource.ok) {
+					writeJson(res, memorySource.status, { error: memorySource.error });
+					return;
+				}
 				const quarantineResult = handleMemoryQuarantine(
 					{
 						id: (parsed as { id?: string }).id ?? "",
 						content: (parsed as { content?: string }).content ?? "",
 						chatId: (parsed as { chatId?: string }).chatId,
 					},
-					{ source: memorySource, userId },
+					{ source: memorySource.source, userId },
 				);
 				if (!quarantineResult.ok) {
 					writeJson(res, quarantineResult.status, { error: quarantineResult.error });

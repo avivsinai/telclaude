@@ -5,29 +5,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let CardKind: typeof import("../../../src/telegram/cards/types.js").CardKind;
-let systemHealthRenderer: typeof import(
-	"../../../src/telegram/cards/renderers/system-health.js"
-).systemHealthRenderer;
-let resolveNthIssueIndex: typeof import(
-	"../../../src/telegram/cards/renderers/system-health.js"
-).resolveNthIssueIndex;
+let systemHealthRenderer: typeof import("../../../src/telegram/cards/renderers/system-health.js").systemHealthRenderer;
+let resolveNthIssueIndex: typeof import("../../../src/telegram/cards/renderers/system-health.js").resolveNthIssueIndex;
 let getRemediation: typeof import("../../../src/telegram/remediation-commands.js").getRemediation;
-let listRemediations: typeof import(
-	"../../../src/telegram/remediation-commands.js"
-).listRemediations;
-let REMEDIATION_KEYS: typeof import(
-	"../../../src/telegram/remediation-commands.js"
-).REMEDIATION_KEYS;
-let registerAllCardRenderers: typeof import(
-	"../../../src/telegram/cards/renderers/index.js"
-).registerAllCardRenderers;
+let listRemediations: typeof import("../../../src/telegram/remediation-commands.js").listRemediations;
+let REMEDIATION_KEYS: typeof import("../../../src/telegram/remediation-commands.js").REMEDIATION_KEYS;
+let registerAllCardRenderers: typeof import("../../../src/telegram/cards/renderers/index.js").registerAllCardRenderers;
 let resetDatabase: typeof import("../../../src/storage/db.js").resetDatabase;
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
 
-type SystemHealthCardState = import(
-	"../../../src/telegram/cards/types.js"
-).SystemHealthCardState;
+type SystemHealthCardState = import("../../../src/telegram/cards/types.js").SystemHealthCardState;
 
 function makeBaseCard(overrides: Partial<SystemHealthCardState> = {}) {
 	const state: SystemHealthCardState = {
@@ -92,9 +80,7 @@ describe("system health card", () => {
 		({ getRemediation, listRemediations, REMEDIATION_KEYS } = await import(
 			"../../../src/telegram/remediation-commands.js"
 		));
-		({ registerAllCardRenderers } = await import(
-			"../../../src/telegram/cards/renderers/index.js"
-		));
+		({ registerAllCardRenderers } = await import("../../../src/telegram/cards/renderers/index.js"));
 		registerAllCardRenderers();
 	});
 
@@ -158,9 +144,9 @@ describe("system health card", () => {
 		if (expected) {
 			// MarkdownV2 escapes `-` in the rendered text; compare by
 			// stripping leading backslashes before punctuation.
-			const unescape = (s: string) => s.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, "$1");
-			expect(unescape(render.text)).toContain(expected.command);
-			expect(unescape(render.text)).toContain(expected.title);
+			const unescapeMarkdown = (s: string) => s.replace(/\\([_*[\]()~`>#+\-=|{}.!\\])/g, "$1");
+			expect(unescapeMarkdown(render.text)).toContain(expected.command);
+			expect(unescapeMarkdown(render.text)).toContain(expected.title);
 		}
 	});
 
@@ -208,20 +194,21 @@ describe("system health card", () => {
 
 	it("execute(refresh) returns a fresh state from collectSystemHealth", async () => {
 		vi.resetModules();
+		const collectSystemHealth = vi.fn(async () => ({
+			overallStatus: "ok",
+			issueCount: 0,
+			collectedAtMs: 1_700_000_000_000,
+			items: [
+				{
+					id: "tier:default",
+					label: "Default tier",
+					status: "ok",
+					detail: "READ_ONLY",
+				},
+			],
+		}));
 		vi.doMock("../../../src/telegram/status-overview.js", () => ({
-			collectSystemHealth: async () => ({
-				overallStatus: "ok",
-				issueCount: 0,
-				collectedAtMs: 1_700_000_000_000,
-				items: [
-					{
-						id: "tier:default",
-						label: "Default tier",
-						status: "ok",
-						detail: "READ_ONLY",
-					},
-				],
-			}),
+			collectSystemHealth,
 		}));
 		const mod = await import("../../../src/telegram/cards/renderers/system-health.js");
 		const { CardKind: CK } = await import("../../../src/telegram/cards/types.js");
@@ -235,6 +222,7 @@ describe("system health card", () => {
 		expect(result.state?.overallStatus).toBe("ok");
 		expect(result.state?.issueCount).toBe(0);
 		expect(result.state?.items).toHaveLength(1);
+		expect(collectSystemHealth).toHaveBeenCalledWith({ chatId: 777 });
 		expect(result.callbackText).toBe("All systems nominal");
 	});
 
@@ -261,9 +249,7 @@ describe("system health card", () => {
 	it("execute(fix-N) warns if the issue index no longer exists", async () => {
 		const card = {
 			...makeBaseCard({
-				items: [
-					{ id: "tier:default", label: "Default tier", status: "ok", detail: "READ_ONLY" },
-				],
+				items: [{ id: "tier:default", label: "Default tier", status: "ok", detail: "READ_ONLY" }],
 				issueCount: 0,
 			}),
 			kind: CardKind.SystemHealth,

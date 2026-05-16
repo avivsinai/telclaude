@@ -50,6 +50,7 @@
 					<button class="tab-btn" type="button" data-tab="logs" role="tab" aria-selected="false">Logs</button>
 					<button class="tab-btn" type="button" data-tab="jobs" role="tab" aria-selected="false">Background Jobs</button>
 					<button class="tab-btn" type="button" data-tab="cron" role="tab" aria-selected="false">Cron</button>
+					<button class="tab-btn" type="button" data-tab="curator" role="tab" aria-selected="false">Curator</button>
 					<button class="tab-btn" type="button" data-tab="social" role="tab" aria-selected="false">Social Queue</button>
 					<button class="tab-btn" type="button" data-tab="personas" role="tab" aria-selected="false">Personas</button>
 				</nav>
@@ -183,6 +184,47 @@
 									<th scope="col">Next run</th>
 									<th scope="col">Last</th>
 									<th scope="col">Error</th>
+								</tr>
+							</thead>
+							<tbody></tbody>
+						</table>
+					</div>
+				</section>
+
+				<section class="tab-panel" data-panel="curator" hidden>
+					<div class="section-head">
+						<h2>Curator</h2>
+						<p id="curator-summary" class="muted">loading...</p>
+					</div>
+					<div class="filters">
+						<label for="curator-status">Status</label>
+						<select id="curator-status">
+							<option value="open">open</option>
+							<option value="all">all</option>
+							<option value="accepted">accepted</option>
+							<option value="rejected">rejected</option>
+							<option value="expired">expired</option>
+						</select>
+						<label for="curator-kind">Kind</label>
+						<select id="curator-kind">
+							<option value="all">all</option>
+							<option value="cron_hardening">cron hardening</option>
+							<option value="background_attention">background attention</option>
+							<option value="memory_queue">memory queue</option>
+							<option value="skill_review">skill review</option>
+						</select>
+					</div>
+					<div class="table-wrap">
+						<table id="curator-table">
+							<thead>
+								<tr>
+									<th scope="col">ID</th>
+									<th scope="col">Status</th>
+									<th scope="col">Severity</th>
+									<th scope="col">Kind</th>
+									<th scope="col">Title</th>
+									<th scope="col">Source</th>
+									<th scope="col">Updated</th>
 								</tr>
 							</thead>
 							<tbody></tbody>

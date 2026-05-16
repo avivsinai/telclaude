@@ -9,7 +9,7 @@
 ## Ground rules
 - Write clean TypeScript; remove dead code.
 - Use `@anthropic-ai/claude-agent-sdk` (no CLI spawning).
-- Skills live under `.claude/skills/` and auto-load from repo root.
+- Skills live under `.claude/skills/` for Claude Code and `.agents/skills/` for Codex-compatible agents. Keep shared operator skills mirrored across both roots unless intentionally runtime-specific.
 - Pristine implementation: no legacy cruft, compatibility shims, or deprecation layers. Delete old code when you replace it.
 - No backward compatibility until 1.0. The user base is us. Hard-break DB migrations, API surfaces, CLI commands, config shapes, cards, directives — whatever needs to change. Document the break in the commit.
 
@@ -77,7 +77,7 @@
 - `src/auto-reply/` — auto-reply templating.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
+- `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
 - `docs/providers.md` — provider integration guide (sidecar pattern, adding new providers).
@@ -92,6 +92,7 @@
 | `pnpm dev relay --profile simple` | Start relay (dev mode) |
 | `pnpm dev doctor` | Full health check (pass/warn/fail across every subsystem) |
 | `pnpm dev doctor --json` | Same, structured JSON for CI |
+| `pnpm dev runtimes status --json` | Check Claude Code and Codex runtime readiness |
 | `pnpm lint` / `pnpm format` | Lint and format |
 | `pnpm typecheck` | Type check |
 | `pnpm test` | Run tests |
@@ -106,8 +107,11 @@
 | `pnpm dev maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |
 | `pnpm dev maintenance cron run <id>` | Run cron job immediately |
 | `pnpm dev secrets setup-google` | Configure Google OAuth |
-| `pnpm dev memory read --categories profile,interests` | Read memory entries |
+| `pnpm dev memory read --chat-id <id> --categories profile,interests` | Read memory entries for the chat's active operator profile |
 | `pnpm dev memory write "fact" --category meta` | Write memory entry |
+| `pnpm dev curator scan\|list\|show\|accept\|reject` | Review local Curator suggestions |
+| `pnpm dev curator sign-producer --item item.json --producer-kind codex --producer-id codex:<id>` | Sign a Codex/Claude Curator item through the vault |
+| `pnpm dev curator submit-signed --item item.json --envelope envelope.json` | Verify and submit a signed producer Curator item |
 | `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
 
 ## Auth & control plane
@@ -124,10 +128,18 @@
 | `/me [link\|unlink]` | Identity management |
 | `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
 | `/system [sessions\|cron]` | System introspection |
+| `/profile [list\|switch <id>\|reset]` | Operator profile selection for the chat |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
 | `/skills [drafts\|promote <name>\|reload]` | Skill management |
+| `/curator` | Review automation suggestions |
+| `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` | Queue a single-shot Codex work unit as a background job |
 | `/approve <code>` | Fast-path approval |
 | `/new` | Reset conversation session |
+
+### Operator profiles
+- Top-level `profiles[]` entries define named private-agent modes with `id`, `label`, optional `description`, `soulPath`, `allowedSkills`, and `defaultModel`.
+- `soulPath` adds a profile-specific prompt overlay; `allowedSkills` narrows private skill loading; `defaultModel` applies unless the chat has an explicit `/model` preference.
+- `/profile switch <id>` binds a chat to that profile. Memory reads, normal replies, scheduled private runs, and capture use the matching `telegram:<profile-id>` source.
 
 ### Scheduler config
 - Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).

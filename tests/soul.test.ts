@@ -1,73 +1,76 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-const readFileSyncImpl = vi.hoisted(() => vi.fn());
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:fs", () => ({
-	default: { readFileSync: readFileSyncImpl },
-	readFileSync: readFileSyncImpl,
-}));
+describe("soul prompt helpers", () => {
+	let tempDir: string;
+	const originalCwd = process.cwd();
 
-describe("loadSoul", () => {
 	beforeEach(() => {
-		readFileSyncImpl.mockReset();
-		// Reset module cache so the internal `cached` variable is fresh
+		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-soul-"));
+		fs.mkdirSync(path.join(tempDir, "profiles"), { recursive: true });
+		fs.writeFileSync(path.join(tempDir, "profiles", "engineer.md"), "Engineer overlay");
 		vi.resetModules();
 	});
 
-	it("reads from /app/docs/soul.md first (Docker path)", async () => {
-		readFileSyncImpl.mockImplementation((p: string) => {
-			if (p.startsWith("/app/")) return "  docker soul content  ";
-			throw new Error("ENOENT");
-		});
-
-		const { loadSoul } = await import("../src/soul.js");
-		const result = loadSoul();
-		expect(result).toBe("docker soul content");
-		expect(readFileSyncImpl).toHaveBeenCalledWith("/app/docs/soul.md", "utf-8");
+	afterEach(() => {
+		process.chdir(originalCwd);
+		fs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
-	it("falls back to cwd when /app path fails", async () => {
-		readFileSyncImpl.mockImplementation((p: string) => {
-			if (p.startsWith("/app/")) throw new Error("ENOENT");
-			return "native soul content";
-		});
+	it("loads and trims the project soul from cwd when /app is unavailable", async () => {
+		fs.mkdirSync(path.join(tempDir, "docs"), { recursive: true });
+		fs.writeFileSync(path.join(tempDir, "docs", "soul.md"), "\n  native soul content  \n");
+		process.chdir(tempDir);
 
 		const { loadSoul } = await import("../src/soul.js");
-		const result = loadSoul();
-		expect(result).toBe("native soul content");
-		// Should have tried /app first, then cwd
-		expect(readFileSyncImpl).toHaveBeenCalledTimes(2);
+
+		expect(loadSoul()).toBe("native soul content");
 	});
 
-	it("trims whitespace from loaded content", async () => {
-		readFileSyncImpl.mockImplementation((p: string) => {
-			if (p.startsWith("/app/")) return "\n  soul with whitespace  \n\n";
-			throw new Error("ENOENT");
-		});
+	it("returns an empty string when no project soul exists", async () => {
+		process.chdir(tempDir);
 
 		const { loadSoul } = await import("../src/soul.js");
-		expect(loadSoul()).toBe("soul with whitespace");
-	});
 
-	it("returns empty string when no file is found", async () => {
-		readFileSyncImpl.mockImplementation(() => {
-			throw new Error("ENOENT");
-		});
-
-		const { loadSoul } = await import("../src/soul.js");
 		expect(loadSoul()).toBe("");
 	});
 
-	it("caches result after first read", async () => {
-		readFileSyncImpl.mockImplementation((p: string) => {
-			if (p.startsWith("/app/")) return "cached content";
-			throw new Error("ENOENT");
-		});
+	it("caches the project soul after the first read", async () => {
+		fs.mkdirSync(path.join(tempDir, "docs"), { recursive: true });
+		const soulPath = path.join(tempDir, "docs", "soul.md");
+		fs.writeFileSync(soulPath, "first soul");
+		process.chdir(tempDir);
 
 		const { loadSoul } = await import("../src/soul.js");
-		loadSoul();
-		loadSoul();
-		// readFileSync should only be called once (first load) — second call uses cache
-		expect(readFileSyncImpl).toHaveBeenCalledTimes(1);
+
+		expect(loadSoul()).toBe("first soul");
+		fs.writeFileSync(soulPath, "second soul");
+		expect(loadSoul()).toBe("first soul");
+	});
+
+	it("loads profile soul overlays from inside the project root", async () => {
+		const { buildSoulPromptAppend } = await import("../src/soul.js");
+
+		const prompt = buildSoulPromptAppend(
+			{ id: "engineer", label: "Engineer", soulPath: "profiles/engineer.md" },
+			{ includeProjectSoul: false, cwd: tempDir },
+		);
+
+		expect(prompt).toContain('<profile-soul id="engineer" label="Engineer">');
+		expect(prompt).toContain("Engineer overlay");
+	});
+
+	it("omits missing profile overlays without throwing", async () => {
+		const { buildSoulPromptAppend } = await import("../src/soul.js");
+
+		const prompt = buildSoulPromptAppend(
+			{ id: "engineer", label: "Engineer", soulPath: "profiles/missing.md" },
+			{ includeProjectSoul: false, cwd: tempDir },
+		);
+
+		expect(prompt).toBeUndefined();
 	});
 });

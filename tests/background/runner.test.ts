@@ -90,6 +90,79 @@ describe("background runner", () => {
 		expect(failures).toEqual(["intentional failure"]);
 	});
 
+	it("dispatches Codex work-unit payloads through the codex executor slot", async () => {
+		const { createJob, startBackgroundRunner, getJob } = await import(
+			"../../src/background/index.js"
+		);
+
+		const job = createJob({
+			title: "codex",
+			userId: "u",
+			tier: "WRITE_LOCAL",
+			payload: {
+				kind: "codex-work-unit",
+				prompt: "inspect",
+				sandbox: "read-only",
+			},
+		});
+
+		const handle = startBackgroundRunner({
+			pollIntervalMs: 10,
+			executors: {
+				"codex-work-unit": async (job) => ({
+					ok: true,
+					result: { message: `handled ${job.payload.kind}` },
+				}),
+			},
+		});
+
+		await handle.tick();
+		await settle(50);
+		handle.stop();
+
+		const final = getJob(job.id);
+		expect(final?.status).toBe("completed");
+		expect(final?.result?.message).toBe("handled codex-work-unit");
+	});
+
+	it("dispatches cron-run payloads through the cron-run executor slot", async () => {
+		const { createJob, startBackgroundRunner, getJob } = await import(
+			"../../src/background/index.js"
+		);
+
+		const job = createJob({
+			title: "cron",
+			userId: "webhook:build",
+			tier: "WRITE_LOCAL",
+			payload: {
+				kind: "cron-run",
+				jobId: "cron-build",
+				webhook: {
+					slug: "build",
+					bodyHash: "a".repeat(64),
+				},
+			},
+		});
+
+		const handle = startBackgroundRunner({
+			pollIntervalMs: 10,
+			executors: {
+				"cron-run": async (job) => ({
+					ok: true,
+					result: { message: `handled ${job.payload.kind}` },
+				}),
+			},
+		});
+
+		await handle.tick();
+		await settle(50);
+		handle.stop();
+
+		const final = getJob(job.id);
+		expect(final?.status).toBe("completed");
+		expect(final?.result?.message).toBe("handled cron-run");
+	});
+
 	it("respects operator cancellation after a job is running", async () => {
 		const { cancelJob, createJob, startBackgroundRunner, getJob } = await import(
 			"../../src/background/index.js"
@@ -122,13 +195,16 @@ describe("background runner", () => {
 	});
 
 	it("enforces tier gating: READ_ONLY cannot be queued via the spawn guard", async () => {
-		// The CLI `resolveTier` + `ensureCanSpawn` live in src/commands/background.ts.
-		// Exercising through require() keeps the tier check close to its shipping shape.
-		const { ensureCanSpawn } = await import("./_helpers/tier.js");
+		const { ensureCanSpawn, ensureCanSpawnCodexWorkUnit, resolveCodexSandboxForTier } =
+			await import("../../src/commands/background.js");
+
 		expect(() => ensureCanSpawn("READ_ONLY")).toThrowError(/READ_ONLY/);
 		expect(() => ensureCanSpawn("WRITE_LOCAL")).not.toThrow();
 		expect(() => ensureCanSpawn("SOCIAL")).not.toThrow();
 		expect(() => ensureCanSpawn("FULL_ACCESS")).not.toThrow();
+		expect(() => ensureCanSpawnCodexWorkUnit("SOCIAL")).toThrowError(/SOCIAL/);
+		expect(resolveCodexSandboxForTier("WRITE_LOCAL", "workspace-write")).toBe("read-only");
+		expect(resolveCodexSandboxForTier("FULL_ACCESS", "workspace-write")).toBe("workspace-write");
 	});
 });
 

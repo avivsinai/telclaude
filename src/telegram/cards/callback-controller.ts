@@ -34,6 +34,7 @@ const CARD_KIND_TO_TIER: Record<CardKind, PermissionTier> = {
 	ProviderList: "READ_ONLY",
 	SkillPicker: "WRITE_LOCAL",
 	SkillReview: "WRITE_LOCAL",
+	CuratorInbox: "WRITE_LOCAL",
 };
 
 type CallbackHandlerOptions = {

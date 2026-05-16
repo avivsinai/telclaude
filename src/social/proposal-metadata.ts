@@ -1,3 +1,4 @@
+import { isTelegramMemorySource } from "../memory/source.js";
 import type { MemorySource, TrustLevel } from "../memory/types.js";
 import { filterOutput } from "../security/output-filter.js";
 import { getDb } from "../storage/db.js";
@@ -211,7 +212,7 @@ function ensureDraftCanMutate(record: SocialDraftRecord): string | null {
 	if (record.category !== "posts") {
 		return "Only post drafts can be changed";
 	}
-	if (record.source !== "telegram" && record.source !== "social") {
+	if (!isTelegramMemorySource(record.source) && record.source !== "social") {
 		return "Only telegram or social drafts can be changed";
 	}
 	if (record.status === "posted_via_api" || record.status === "marked_posted") {

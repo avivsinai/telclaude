@@ -9,7 +9,9 @@ type TelegramCommandCategory =
 	| "Skills"
 	| "Background"
 	| "Model"
-	| "Providers";
+	| "Profile"
+	| "Providers"
+	| "Curator";
 
 /**
  * Hierarchical command IDs: "domain:subcommand" for routed commands,
@@ -33,6 +35,10 @@ export type TelegramCommandId =
 	| "system:sessions"
 	| "system:cron"
 	| "system:health"
+	| "profile"
+	| "profile:list"
+	| "profile:show"
+	| "profile:switch"
 	| "social"
 	| "social:queue"
 	| "social:promote"
@@ -47,14 +53,18 @@ export type TelegramCommandId =
 	| "skills:doctor"
 	| "skills:drafts"
 	| "skills:promote"
+	| "skills:sign"
 	| "skills:reload"
 	| "skills:picker"
 	| "background"
 	| "background:list"
 	| "background:show"
 	| "background:cancel"
+	| "codex"
 	| "model"
+	| "model:reset"
 	| "providers"
+	| "curator"
 	// Fast-path shortcuts (no domain prefix)
 	| "sethome"
 	| "stop"
@@ -346,6 +356,62 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		rateLimited: true,
 		hideFromCatalog: true,
 	},
+	// ── /profile ───────────────────────────────────────────────────────
+	{
+		id: "profile",
+		name: "profile",
+		domain: "profile",
+		domainDefault: true,
+		category: "Profile",
+		description: "Show or switch the active private operator profile.",
+		usage: "/profile [list|show|switch <id>]",
+		examples: ["/profile", "/profile list", "/profile switch engineer"],
+		keywords: ["profile", "persona", "operator profile", "switch profile"],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "Operator profile",
+	},
+	{
+		id: "profile:list",
+		name: "profile",
+		domain: "profile",
+		subcommand: "list",
+		category: "Profile",
+		description: "List configured private operator profiles.",
+		usage: "/profile list",
+		examples: ["/profile list"],
+		keywords: ["profiles", "list profiles", "personas"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "profile:show",
+		name: "profile",
+		domain: "profile",
+		subcommand: "show",
+		category: "Profile",
+		description: "Show the active private operator profile.",
+		usage: "/profile show",
+		examples: ["/profile show"],
+		keywords: ["profile show", "active profile", "persona"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "profile:switch",
+		name: "profile",
+		domain: "profile",
+		subcommand: "switch",
+		category: "Profile",
+		description: "Switch this chat to a configured private operator profile and reset session.",
+		usage: "/profile switch <id>",
+		examples: ["/profile switch engineer", "/profile switch default"],
+		keywords: ["profile switch", "switch persona", "operator profile"],
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
 	// ── /social ────────────────────────────────────────────────────────
 	{
 		id: "social",
@@ -435,12 +501,13 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "Skills",
 		description: "Skill management.",
-		usage: "/skills [list|new|import|scan|doctor|drafts|promote|reload]",
+		usage: "/skills [list|new|import|scan|doctor|drafts|promote|sign|reload]",
 		examples: [
 			"/skills list",
 			"/skills new my-helper",
 			"/skills doctor",
 			"/skills promote my-skill",
+			"/skills sign my-skill",
 		],
 		keywords: ["skills", "draft skills", "skill management"],
 		readOnly: true,
@@ -532,6 +599,18 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		rateLimited: true,
 	},
 	{
+		id: "skills:sign",
+		name: "skills",
+		domain: "skills",
+		subcommand: "sign",
+		category: "Skills",
+		description: "Sign SKILL.md through the local vault and write SKILL.md.sig.",
+		usage: "/skills sign <name>",
+		examples: ["/skills sign my-skill"],
+		keywords: ["sign skill", "skill signature", "trusted skill"],
+		rateLimited: true,
+	},
+	{
 		id: "skills:reload",
 		name: "skills",
 		domain: "skills",
@@ -562,7 +641,8 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "background",
 		domainDefault: true,
 		category: "Background",
-		description: "Inspect or cancel long-running background jobs; use /stop for active jobs here.",
+		description:
+			"Inspect or cancel long-running background jobs; use /codex to queue Codex work and /stop for active jobs here.",
 		usage: "/background [list|show <id>|cancel <id>]",
 		examples: ["/background", "/background show a1b2c3d4", "/background cancel a1b2c3d4"],
 		keywords: ["background", "jobs", "background job", "long running task"],
@@ -607,6 +687,35 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		keywords: ["cancel background", "abort job", "kill job"],
 		rateLimited: true,
 	},
+	{
+		id: "codex",
+		name: "codex",
+		category: "Background",
+		description: "Queue a single-shot Codex work unit; results return as a background job card.",
+		usage: "/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>",
+		examples: [
+			"/codex review the latest diff",
+			"/codex --model gpt-5.4 --cwd packages/api inspect the tests",
+			"/codex --write update docs for the new command",
+		],
+		keywords: ["codex", "codex work unit", "delegate", "review", "background codex"],
+		rateLimited: true,
+		menuDescription: "Queue Codex work",
+	},
+	// ── /curator domain ───────────────────────────────────────────────
+	{
+		id: "curator",
+		name: "curator",
+		domain: "curator",
+		domainDefault: true,
+		category: "Curator",
+		description: "Open the local Curator inbox for reviewable automation suggestions.",
+		usage: "/curator",
+		examples: ["/curator"],
+		keywords: ["curator", "inbox", "suggestions", "automation review", "hardening"],
+		rateLimited: true,
+		menuDescription: "Review automation suggestions",
+	},
 	// ── /model domain ─────────────────────────────────────────────────
 	{
 		id: "model",
@@ -614,9 +723,10 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "model",
 		domainDefault: true,
 		category: "Model",
-		description: "Open the model picker: browse providers and switch models.",
-		usage: "/model",
-		examples: ["/model"],
+		description:
+			"Open the model picker: explicit chat choices override profile defaults; reset clears the override.",
+		usage: "/model [reset]",
+		examples: ["/model", "/model reset"],
 		keywords: [
 			"model",
 			"switch model",
@@ -630,6 +740,20 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		readOnly: true,
 		rateLimited: true,
 		menuDescription: "Pick a model",
+	},
+	{
+		id: "model:reset",
+		name: "model",
+		domain: "model",
+		subcommand: "reset",
+		category: "Model",
+		description:
+			"Clear this chat's explicit model preference so the active profile default applies.",
+		usage: "/model reset",
+		examples: ["/model reset"],
+		keywords: ["model reset", "clear model", "profile default model"],
+		rateLimited: true,
+		hideFromCatalog: true,
 	},
 	// ── /providers domain ────────────────────────────────────────────
 	{
@@ -770,7 +894,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "skills",
 		title: "Skills",
 		summary:
-			"Skills are promoted intentionally. /skills list shows everything, /skills new scaffolds a draft, /skills doctor validates, /skills drafts shows candidates, /skills promote activates one, /skills reload resets the next session so the refreshed set is loaded.",
+			"Skills are promoted intentionally. /skills list shows everything, /skills new scaffolds a draft, /skills doctor validates, /skills drafts shows candidates, /skills promote activates one, /skills sign marks trusted skills, /skills reload resets the next session so the refreshed set is loaded.",
 		keywords: [
 			"skills",
 			"skill scaffold",
@@ -778,6 +902,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 			"skill doctor",
 			"draft skills",
 			"promote skill",
+			"sign skill",
 			"reload skills",
 		],
 		commands: [
@@ -787,6 +912,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 			"skills:doctor",
 			"skills:drafts",
 			"skills:promote",
+			"skills:sign",
 			"skills:reload",
 		],
 	},
@@ -794,9 +920,24 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "background",
 		title: "Background Jobs",
 		summary:
-			"Background jobs run long tasks asynchronously and notify on completion. /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts one queued or running job. /stop cancels queued/running background jobs in the current chat or topic.",
-		keywords: ["background", "jobs", "long running", "async"],
-		commands: ["background", "background:list", "background:show", "background:cancel", "stop"],
+			"Background jobs run long tasks asynchronously and notify on completion. /codex queues a single-shot Codex work unit; /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts one queued or running job. /stop cancels queued/running background jobs in the current chat or topic.",
+		keywords: ["background", "jobs", "long running", "async", "codex", "delegate"],
+		commands: [
+			"codex",
+			"background",
+			"background:list",
+			"background:show",
+			"background:cancel",
+			"stop",
+		],
+	},
+	{
+		id: "curator",
+		title: "Curator",
+		summary:
+			"Curator is a local operator inbox for reviewable automation suggestions. /curator scans local state, shows open items, and records accept/reject decisions without executing the proposed action.",
+		keywords: ["curator", "inbox", "suggestions", "automation review", "hardening"],
+		commands: ["curator"],
 	},
 	{
 		id: "reset-session",
@@ -857,6 +998,7 @@ const CATALOG_CATEGORY_ORDER: TelegramCommandCategory[] = [
 	"Social",
 	"Skills",
 	"Background",
+	"Curator",
 	"Model",
 	"Providers",
 ];
@@ -1130,6 +1272,8 @@ export function formatTelegramHelpOverview(): string {
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
+		"  /codex — Queue a Codex work unit",
+		"  /curator — Review automation suggestions",
 		"  /stop — Stop active background work here",
 		"  /model — Pick a model",
 		"  /providers — External provider health",
@@ -1232,6 +1376,7 @@ export function formatTelegramHelp(query?: string): string {
 			"- /help approvals",
 			"- /help 2fa",
 			"- /help system",
+			"- /help curator",
 			"- /help reset session",
 			"",
 			"Use /help commands to browse the full catalog.",
@@ -1266,10 +1411,13 @@ export function getTelegramMenuCommands(
 		{ command: "me", description: "Identity management" },
 		{ command: "auth", description: "Two-factor authentication" },
 		{ command: "system", description: "System introspection" },
+		{ command: "profile", description: "Operator profile" },
 		{ command: "sethome", description: "Home delivery target" },
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
+		{ command: "codex", description: "Queue Codex work" },
+		{ command: "curator", description: "Automation suggestions" },
 		{ command: "stop", description: "Stop active work" },
 		{ command: "model", description: "Pick a model" },
 		{ command: "providers", description: "External providers" },

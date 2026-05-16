@@ -5,6 +5,7 @@ import { isTransientNetworkError } from "../infra/network-errors.js";
 import { retryAsync } from "../infra/retry.js";
 import { withTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
+import { isTelegramMemorySource } from "../memory/source.js";
 import { createEntries, getEntries, markEntryPosted } from "../memory/store.js";
 import type { MemoryEntry, MemorySource, TrustLevel } from "../memory/types.js";
 import type { QueryResult, StreamChunk } from "../sdk/client.js";
@@ -234,18 +235,18 @@ function getTrustedSocialEntries(categories?: Array<MemoryEntry["category"]>): M
 
 	// Runtime assertion: no telegram entries should ever leak into social queries
 	if (process.env.NODE_ENV !== "production") {
-		const leaked = entries.filter((e) => e._provenance.source === "telegram");
+		const leaked = entries.filter((e) => isTelegramMemorySource(e._provenance.source));
 		if (leaked.length > 0) {
 			throw new Error(`SECURITY: ${leaked.length} telegram entries leaked into social query`);
 		}
 	} else {
-		const leaked = entries.filter((e) => e._provenance.source === "telegram");
+		const leaked = entries.filter((e) => isTelegramMemorySource(e._provenance.source));
 		if (leaked.length > 0) {
 			logger.warn(
 				{ count: leaked.length },
 				"SECURITY: telegram entries leaked into social query — filtering out",
 			);
-			return entries.filter((e) => e._provenance.source !== "telegram");
+			return entries.filter((e) => !isTelegramMemorySource(e._provenance.source));
 		}
 	}
 
@@ -365,6 +366,7 @@ async function runSocialQuery(
 		userId?: string;
 		enableSkills?: boolean;
 		allowedSkills?: string[];
+		agentSkillsAllowed?: string[];
 		timeoutMs?: number;
 	},
 ): Promise<string> {
@@ -379,9 +381,12 @@ async function runSocialQuery(
 		tier: "SOCIAL",
 		poolKey: options?.poolKey ?? defaultPoolKey,
 		userId: options?.userId ?? defaultUserId,
+		telemetrySource: "social",
+		telemetryServiceId: serviceId,
 		// SECURITY: disable skills by default for untrusted social inputs
 		enableSkills: options?.enableSkills ?? false,
 		allowedSkills: options?.allowedSkills,
+		agentSkillsAllowed: options?.agentSkillsAllowed,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
 	});
@@ -422,6 +427,7 @@ async function runProactiveQuery(
 	agentUrl: string,
 	options?: {
 		allowedSkills?: string[];
+		agentSkillsAllowed?: string[];
 	},
 ): Promise<{ text: string; structuredOutput?: unknown }> {
 	const proactivePoolKey = `${serviceId}:proactive`;
@@ -436,9 +442,12 @@ async function runProactiveQuery(
 		tier: "SOCIAL",
 		poolKey: proactivePoolKey,
 		userId: proactiveUserId,
+		telemetrySource: "social",
+		telemetryServiceId: serviceId,
 		// Proactive posts are user-promoted (trusted) — enable skills for research
 		enableSkills: true,
 		allowedSkills: options?.allowedSkills,
+		agentSkillsAllowed: options?.agentSkillsAllowed,
 		systemPromptAppend: bundle.systemPromptAppend,
 		timeoutMs,
 	});
@@ -547,6 +556,7 @@ async function runHeartbeatPhases(
 			agentUrl,
 			timeline,
 			serviceConfig?.allowedSkills,
+			serviceConfig?.agentSkillsAllowed,
 		);
 	} catch (err) {
 		proactiveError = String(err);
@@ -763,6 +773,7 @@ export async function queryPublicPersona(
 		userId: `social:${serviceId}:operator`,
 		enableSkills: true,
 		allowedSkills: serviceConfig?.allowedSkills,
+		agentSkillsAllowed: serviceConfig?.agentSkillsAllowed,
 		timeoutMs: operatorTimeoutMs,
 	});
 }
@@ -1189,7 +1200,7 @@ function parseProactivePostOutput(structuredOutput: unknown): ProactivePostOutpu
 function getPromotedIdeas(): MemoryEntry[] {
 	return getEntries({
 		categories: ["posts"],
-		sources: ["telegram", "social"],
+		sourceFamilies: ["telegram", "social"],
 		trust: ["trusted"],
 		promoted: true,
 		posted: false,
@@ -1276,6 +1287,7 @@ async function handleProactivePosting(
 	agentUrl: string,
 	timeline?: SocialTimelinePost[],
 	allowedSkills?: string[],
+	agentSkillsAllowed?: string[],
 ): Promise<{ posted: boolean; message: string }> {
 	const rateLimiter = getMultimediaRateLimiter();
 	const proactiveUserId = `social:${serviceId}:proactive`;
@@ -1378,6 +1390,7 @@ async function handleProactivePosting(
 		const bundle = buildProactivePostPrompt(idea, serviceId, timeline);
 		const queryResult = await runProactiveQuery(bundle, serviceId, agentUrl, {
 			allowedSkills,
+			agentSkillsAllowed,
 		});
 
 		// Parse structured output from text response (JSON block).
@@ -1558,6 +1571,7 @@ async function handleAutonomousActivity(
 ): Promise<{ acted: boolean; summary: string }> {
 	const enableSkills = serviceConfig?.enableSkills ?? false;
 	const allowedSkills = serviceConfig?.allowedSkills;
+	const agentSkillsAllowed = serviceConfig?.agentSkillsAllowed;
 	const timeline = prefetchedTimeline ?? (await fetchTimelineSafe(client, serviceId));
 	const bundle = buildAutonomousPrompt(serviceId, timeline, {
 		supportsQuotePost: Boolean(client?.quotePost),
@@ -1575,6 +1589,7 @@ async function handleAutonomousActivity(
 		userId: autonomousUserId,
 		enableSkills,
 		allowedSkills,
+		agentSkillsAllowed,
 		timeoutMs,
 	});
 

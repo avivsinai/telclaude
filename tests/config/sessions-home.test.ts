@@ -51,4 +51,17 @@ describe("home target storage", () => {
 		expect(getHomeTarget("alice")).toMatchObject({ chatId: 1001, threadId: 7 });
 		expect(getHomeTargetForChat(1001)).toMatchObject({ chatId: 1001, threadId: 7 });
 	});
+
+	it("stores active operator profile bindings per chat", async () => {
+		const { clearChatActiveProfileId, getChatActiveProfileId, setChatActiveProfileId } =
+			await import("../../src/config/sessions.js");
+
+		expect(getChatActiveProfileId(42)).toBeNull();
+		setChatActiveProfileId(42, "engineer", 1_234);
+		expect(getChatActiveProfileId(42)).toBe("engineer");
+		setChatActiveProfileId(42, "homeops", 2_345);
+		expect(getChatActiveProfileId(42)).toBe("homeops");
+		expect(clearChatActiveProfileId(42)).toBe(true);
+		expect(getChatActiveProfileId(42)).toBeNull();
+	});
 });

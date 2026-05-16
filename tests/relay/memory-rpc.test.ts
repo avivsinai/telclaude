@@ -20,6 +20,7 @@ const ORIGINAL_SOCIAL_AGENT_PRIVATE_KEY = process.env.SOCIAL_RPC_AGENT_PRIVATE_K
 const ORIGINAL_SOCIAL_AGENT_PUBLIC_KEY = process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY;
 const ORIGINAL_SOCIAL_RELAY_PRIVATE_KEY = process.env.SOCIAL_RPC_RELAY_PRIVATE_KEY;
 const ORIGINAL_SOCIAL_RELAY_PUBLIC_KEY = process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY;
+const ORIGINAL_TELCLAUDE_CONFIG = process.env.TELCLAUDE_CONFIG;
 
 describe("memory rpc", () => {
 	let tempDir: string;
@@ -102,6 +103,11 @@ describe("memory rpc", () => {
 		} else {
 			process.env.SOCIAL_RPC_RELAY_PUBLIC_KEY = ORIGINAL_SOCIAL_RELAY_PUBLIC_KEY;
 		}
+		if (ORIGINAL_TELCLAUDE_CONFIG === undefined) {
+			delete process.env.TELCLAUDE_CONFIG;
+		} else {
+			process.env.TELCLAUDE_CONFIG = ORIGINAL_TELCLAUDE_CONFIG;
+		}
 	});
 
 	it("returns health metadata", async () => {
@@ -144,12 +150,9 @@ describe("memory rpc", () => {
 		expect(proposeData.accepted).toBe(1);
 
 		const snapshotBody = JSON.stringify({ categories: ["profile"] });
-		const snapshotHeaders = buildInternalAuthHeaders(
-			"POST",
-			"/v1/memory.snapshot",
-			snapshotBody,
-			{ scope: "telegram" },
-		);
+		const snapshotHeaders = buildInternalAuthHeaders("POST", "/v1/memory.snapshot", snapshotBody, {
+			scope: "telegram",
+		});
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
 			headers: {
@@ -163,6 +166,96 @@ describe("memory rpc", () => {
 		const snapshot = (await snapshotRes.json()) as { entries: Array<{ id: string }> };
 		expect(snapshot.entries).toHaveLength(1);
 		expect(snapshot.entries[0].id).toBe("entry-1");
+	});
+
+	it("stores telegram memory under the active chat profile source", async () => {
+		const configPath = path.join(tempDir, "telclaude.json");
+		fs.writeFileSync(
+			configPath,
+			JSON.stringify({ profiles: [{ id: "engineer", label: "Engineer" }] }),
+		);
+		process.env.TELCLAUDE_CONFIG = configPath;
+		const { resetConfigCache } = await import("../../src/config/config.js");
+		const { setChatActiveProfileId } = await import("../../src/config/sessions.js");
+		resetConfigCache();
+		setChatActiveProfileId(123, "engineer");
+
+		const proposeBody = JSON.stringify({
+			chatId: "123",
+			entries: [{ id: "entry-engineer", category: "profile", content: "engineer memory" }],
+		});
+		const proposeHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", proposeBody, {
+			scope: "telegram",
+		});
+
+		const proposeRes = await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...proposeHeaders },
+			body: proposeBody,
+		});
+		expect(proposeRes.status).toBe(200);
+
+		const snapshotBody = JSON.stringify({ chatId: "123", categories: ["profile"] });
+		const snapshotHeaders = buildInternalAuthHeaders("POST", "/v1/memory.snapshot", snapshotBody, {
+			scope: "telegram",
+		});
+		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...snapshotHeaders },
+			body: snapshotBody,
+		});
+		const snapshot = (await snapshotRes.json()) as {
+			entries: Array<{ id: string; _provenance: { source: string } }>;
+		};
+		expect(snapshot.entries).toHaveLength(1);
+		expect(snapshot.entries[0]).toMatchObject({
+			id: "entry-engineer",
+			_provenance: { source: "telegram:engineer" },
+		});
+	});
+
+	it("rejects telegram memory writes when the chat active profile is unknown", async () => {
+		const configPath = path.join(tempDir, "telclaude.json");
+		fs.writeFileSync(configPath, JSON.stringify({ profiles: [] }));
+		process.env.TELCLAUDE_CONFIG = configPath;
+		const { resetConfigCache } = await import("../../src/config/config.js");
+		const { setChatActiveProfileId } = await import("../../src/config/sessions.js");
+		resetConfigCache();
+		setChatActiveProfileId(123, "missing-profile");
+
+		const proposeBody = JSON.stringify({
+			chatId: "123",
+			entries: [{ id: "entry-missing-profile", category: "profile", content: "hello" }],
+		});
+		const proposeHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", proposeBody, {
+			scope: "telegram",
+		});
+		const proposeRes = await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...proposeHeaders },
+			body: proposeBody,
+		});
+		const payload = (await proposeRes.json()) as { error?: string };
+		expect(proposeRes.status).toBe(400);
+		expect(payload.error).toBe("unknown-profile-id: missing-profile");
+	});
+
+	it("rejects social attempts to claim telegram profile memory source", async () => {
+		const proposeBody = JSON.stringify({
+			source: "telegram:default",
+			entries: [{ id: "entry-social-claim", category: "profile", content: "hello" }],
+		});
+		const proposeHeaders = buildInternalAuthHeaders("POST", "/v1/memory.propose", proposeBody, {
+			scope: "social",
+		});
+		const proposeRes = await fetch(`${baseUrl}/v1/memory.propose`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...proposeHeaders },
+			body: proposeBody,
+		});
+		const payload = (await proposeRes.json()) as { error?: string };
+		expect(proposeRes.status).toBe(403);
+		expect(payload.error).toBe("social-token-cannot-write-telegram-profile-memory");
 	});
 
 	it("allows benign system wording in memory content", async () => {
@@ -258,13 +351,10 @@ describe("memory rpc", () => {
 			body: socialBody,
 		});
 
-		const snapshotBody = JSON.stringify({ sources: ["telegram"] });
-		const snapshotHeaders = buildInternalAuthHeaders(
-			"POST",
-			"/v1/memory.snapshot",
-			snapshotBody,
-			{ scope: "social" },
-		);
+		const snapshotBody = JSON.stringify({ sources: ["telegram:default"] });
+		const snapshotHeaders = buildInternalAuthHeaders("POST", "/v1/memory.snapshot", snapshotBody, {
+			scope: "social",
+		});
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...snapshotHeaders },
@@ -294,12 +384,9 @@ describe("memory rpc", () => {
 
 		// M2: Use social scope to read social entries (telegram scope forces sources=["telegram"])
 		const snapshotBody = JSON.stringify({ sources: ["social"] });
-		const snapshotHeaders = buildInternalAuthHeaders(
-			"POST",
-			"/v1/memory.snapshot",
-			snapshotBody,
-			{ scope: "social" },
-		);
+		const snapshotHeaders = buildInternalAuthHeaders("POST", "/v1/memory.snapshot", snapshotBody, {
+			scope: "social",
+		});
 		const snapshotRes = await fetch(`${baseUrl}/v1/memory.snapshot`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", ...snapshotHeaders },
@@ -355,7 +442,7 @@ describe("memory rpc", () => {
 		expect(data.entry.id).toBe("idea-1");
 		expect(data.entry.category).toBe("posts");
 		expect(data.entry._provenance.trust).toBe("quarantined");
-		expect(data.entry._provenance.source).toBe("telegram");
+		expect(data.entry._provenance.source).toBe("telegram:default");
 	});
 
 	it("rejects /v1/memory.quarantine without chat id", async () => {

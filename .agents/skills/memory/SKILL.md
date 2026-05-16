@@ -55,7 +55,7 @@ telclaude memory read --categories profile,interests --chat-id <CHAT_ID>
 telclaude memory quarantine "<post idea>" --chat-id <CHAT_ID>
 ```
 
-The `--chat-id` flag scopes memory to the current conversation. Extract the chat ID from the `<chat-context chat-id="...">` tag in your system prompt.
+The `--chat-id` flag scopes memory to the current conversation and lets the relay resolve the chat's active operator profile. Always pass it when a `<chat-context chat-id="...">` tag is available; without it, Telegram memory falls back to the default profile namespace.
 
 ## Auto-Injection
 

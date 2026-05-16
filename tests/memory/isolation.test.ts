@@ -37,7 +37,7 @@ describe("memory isolation", () => {
 	it("social query never includes telegram entries", () => {
 		createEntries(
 			[{ id: "tg-1", category: "profile", content: "telegram private data" }],
-			"telegram",
+			"telegram:default",
 		);
 		createEntries(
 			[{ id: "social-1", category: "profile", content: "social public data" }],
@@ -58,12 +58,9 @@ describe("memory isolation", () => {
 	it("telegram context never includes social entries", () => {
 		createEntries(
 			[{ id: "tg-2", category: "profile", content: "telegram data" }],
-			"telegram",
+			"telegram:default",
 		);
-		createEntries(
-			[{ id: "social-2", category: "profile", content: "social data" }],
-			"social",
-		);
+		createEntries([{ id: "social-2", category: "profile", content: "social data" }], "social");
 
 		const context = buildTelegramMemoryContext();
 		expect(context).not.toBeNull();
@@ -74,7 +71,7 @@ describe("memory isolation", () => {
 	it("telegram context returns only telegram-sourced entries", () => {
 		createEntries(
 			[{ id: "tg-3", category: "interests", content: "likes coding" }],
-			"telegram",
+			"telegram:default",
 		);
 		createEntries(
 			[
@@ -85,14 +82,14 @@ describe("memory isolation", () => {
 		);
 
 		const telegramEntries = getEntries({
-			sources: ["telegram"],
+			sourceFamilies: ["telegram"],
 			trust: ["trusted"],
 			categories: ["profile", "interests", "meta"],
 		});
 
 		// All entries should be telegram-sourced
 		for (const entry of telegramEntries) {
-			expect(entry._provenance.source).toBe("telegram");
+			expect(entry._provenance.source.startsWith("telegram:")).toBe(true);
 		}
 		expect(telegramEntries).toHaveLength(1);
 		expect(telegramEntries[0].id).toBe("tg-3");
@@ -109,12 +106,12 @@ describe("memory isolation", () => {
 		);
 		createEntries(
 			[{ id: "tg-4", category: "profile", content: "private telegram data" }],
-			"telegram",
+			"telegram:default",
 		);
 
 		// Social entries should not appear in telegram queries
 		const telegramEntries = getEntries({
-			sources: ["telegram"],
+			sourceFamilies: ["telegram"],
 			trust: ["trusted"],
 		});
 		const telegramIds = telegramEntries.map((e) => e.id);
@@ -124,9 +121,7 @@ describe("memory isolation", () => {
 	});
 
 	it("quarantine and promote are telegram-only operations", async () => {
-		const { createQuarantinedEntry, promoteEntryTrust } = await import(
-			"../../src/memory/store.js"
-		);
+		const { createQuarantinedEntry, promoteEntryTrust } = await import("../../src/memory/store.js");
 
 		// Create a quarantined entry from telegram
 		const entry = createQuarantinedEntry({
@@ -135,7 +130,7 @@ describe("memory isolation", () => {
 			content: "post idea",
 			chatId: "chat-123",
 		});
-		expect(entry._provenance.source).toBe("telegram");
+		expect(entry._provenance.source).toBe("telegram:default");
 		expect(entry._provenance.trust).toBe("quarantined");
 
 		// Promote it
@@ -144,7 +139,7 @@ describe("memory isolation", () => {
 
 		// Verify it's now trusted with telegram source
 		const entries = getEntries({
-			sources: ["telegram"],
+			sourceFamilies: ["telegram"],
 			trust: ["trusted"],
 			categories: ["posts"],
 		});

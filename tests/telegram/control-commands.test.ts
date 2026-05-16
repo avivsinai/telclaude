@@ -30,6 +30,12 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/auth force-reauth")?.command.id).toBe(
 				"auth:force-reauth",
 			);
+			expect(matchTelegramControlCommand("/profile list")?.command.id).toBe("profile:list");
+			expect(matchTelegramControlCommand("/profile show")?.command.id).toBe("profile:show");
+			expect(matchTelegramControlCommand("/profile switch engineer")?.command.id).toBe(
+				"profile:switch",
+			);
+			expect(matchTelegramControlCommand("/model reset")?.command.id).toBe("model:reset");
 			expect(matchTelegramControlCommand("/social queue")?.command.id).toBe("social:queue");
 			expect(matchTelegramControlCommand("/social promote post_123")?.command.id).toBe(
 				"social:promote",
@@ -43,13 +49,16 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/skills promote my-skill")?.command.id).toBe(
 				"skills:promote",
 			);
+			expect(matchTelegramControlCommand("/skills sign my-skill")?.command.id).toBe("skills:sign");
 			expect(matchTelegramControlCommand("/skills reload")?.command.id).toBe("skills:reload");
 			expect(matchTelegramControlCommand("/skills list")?.command.id).toBe("skills:list");
 			expect(matchTelegramControlCommand("/skills new my-skill")?.command.id).toBe("skills:new");
 			expect(matchTelegramControlCommand("/skills import")?.command.id).toBe("skills:import");
 			expect(matchTelegramControlCommand("/skills scan")?.command.id).toBe("skills:scan");
 			expect(matchTelegramControlCommand("/skills doctor")?.command.id).toBe("skills:doctor");
+			expect(matchTelegramControlCommand("/codex review the diff")?.command.id).toBe("codex");
 			expect(matchTelegramControlCommand("/help commands")?.command.id).toBe("help:commands");
+			expect(matchTelegramControlCommand("/curator")?.command.id).toBe("curator");
 		});
 
 		it("passes remaining args correctly for subcommands", () => {
@@ -170,10 +179,13 @@ describe("telegram control command registry", () => {
 				"me",
 				"auth",
 				"system",
+				"profile",
 				"sethome",
 				"social",
 				"skills",
 				"background",
+				"codex",
+				"curator",
 				"stop",
 				"approve",
 				"new",
@@ -216,6 +228,7 @@ describe("telegram control command registry", () => {
 				"skills:doctor",
 				"skills:drafts",
 				"skills:promote",
+				"skills:sign",
 				"skills:reload",
 			] as const) {
 				expect(visible.has(id)).toBe(true);
@@ -229,6 +242,7 @@ describe("telegram control command registry", () => {
 			expect(catalog).toContain("/skills doctor");
 			expect(catalog).toContain("/skills drafts");
 			expect(catalog).toContain("/skills promote");
+			expect(catalog).toContain("/skills sign");
 			expect(catalog).toContain("/skills reload");
 		});
 	});
@@ -237,7 +251,24 @@ describe("telegram control command registry", () => {
 		it("documents supported active-work cancellation", () => {
 			const help = formatTelegramHelp("background");
 			expect(help).toContain("/stop");
+			expect(help).toContain("/codex");
 			expect(help).toContain("background jobs");
+		});
+	});
+
+	describe("/codex command help", () => {
+		it("surfaces Codex in help and catalog", () => {
+			expect(formatTelegramHelp("codex")).toContain("Codex");
+			expect(formatTelegramHelp()).toContain("/codex");
+			expect(formatTelegramCommandCatalog()).toContain("/codex");
+		});
+	});
+
+	describe("/curator command help", () => {
+		it("surfaces curator in help and catalog", () => {
+			expect(formatTelegramHelp("curator")).toContain("Curator");
+			expect(formatTelegramHelp()).toContain("/curator");
+			expect(formatTelegramCommandCatalog()).toContain("/curator");
 		});
 	});
 });

@@ -2,12 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import type { PermissionTier } from "../config/config.js";
 import { getChildLogger } from "../logging.js";
+import { listRotatedLogFiles, rotateLogFileIfNeeded } from "../maintenance/log-rotation.js";
 import { CONFIG_DIR } from "../utils.js";
 import { redactSecrets } from "./output-filter.js";
 import type { AuditEntry, SecurityClassification } from "./types.js";
 
 const DEFAULT_AUDIT_DIR = path.join(CONFIG_DIR, "logs");
 const DEFAULT_AUDIT_FILE = path.join(DEFAULT_AUDIT_DIR, "audit.log");
+const DEFAULT_AUDIT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_AUDIT_RETAINED_FILES = 5;
 const DEFAULT_FLAGGED_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DEFAULT_FLAGGED_HISTORY_LIMIT = 500;
 
@@ -64,6 +67,8 @@ function isValidParsedAuditEntry(
 export type AuditConfig = {
 	enabled: boolean;
 	logFile?: string;
+	maxBytes?: number;
+	retainedFiles?: number;
 };
 
 /**
@@ -178,6 +183,18 @@ export class AuditLogger {
 			};
 
 			const line = JSON.stringify(sanitizedEntry);
+
+			const rotation = rotateLogFileIfNeeded({
+				filePath: this.logFile,
+				maxBytes: this.config.maxBytes ?? DEFAULT_AUDIT_MAX_BYTES,
+				retainedFiles: this.config.retainedFiles ?? DEFAULT_AUDIT_RETAINED_FILES,
+			});
+			if (rotation.rotated) {
+				logger.info(
+					{ file: this.logFile, rotatedPath: rotation.rotatedPath, pruned: rotation.pruned },
+					"audit log rotated",
+				);
+			}
 
 			// Check if file exists to determine if we need to set permissions
 			const fileExisted = fs.existsSync(this.logFile);
@@ -294,8 +311,21 @@ export class AuditLogger {
 		if (!this.config.enabled) return [];
 
 		try {
-			const content = await fs.promises.readFile(this.logFile, "utf-8");
-			const lines = content.trim().split("\n").filter(Boolean);
+			const rotatedFiles = listRotatedLogFiles(this.logFile)
+				.sort((left, right) => {
+					const byTime = left.mtimeMs - right.mtimeMs;
+					return byTime === 0 ? left.name.localeCompare(right.name) : byTime;
+				})
+				.map((entry) => entry.path);
+			const lines: string[] = [];
+			for (const filePath of [...rotatedFiles, this.logFile]) {
+				try {
+					const content = await fs.promises.readFile(filePath, "utf-8");
+					lines.push(...content.trim().split("\n").filter(Boolean));
+				} catch {
+					// Missing or concurrently rotated files are ignored.
+				}
+			}
 			const entries = lines
 				.slice(-limit)
 				.map((line): AuditEntry | null => {

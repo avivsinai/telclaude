@@ -11,7 +11,15 @@ import {
 	listCronRuns,
 } from "../../cron/store.js";
 import type { CronAction, CronDeliveryTarget, CronJob, CronSchedule } from "../../cron/types.js";
+import { listCuratorItems } from "../../curator/store.js";
+import type {
+	CuratorItem,
+	CuratorItemKind,
+	CuratorItemStatus,
+	CuratorSeverity,
+} from "../../curator/types.js";
 import { getChildLogger, getResolvedLoggerSettings } from "../../logging.js";
+import type { MemorySourceFamily } from "../../memory/source.js";
 import { getEntries } from "../../memory/store.js";
 import type { MemoryCategory, MemoryEntry, MemorySource } from "../../memory/types.js";
 import {
@@ -40,6 +48,19 @@ const BACKGROUND_STATUSES: readonly BackgroundJobStatus[] = [
 	"cancelled",
 	"interrupted",
 ];
+const CURATOR_STATUSES: readonly CuratorItemStatus[] = ["open", "accepted", "rejected", "expired"];
+const CURATOR_KINDS: readonly CuratorItemKind[] = [
+	"cron_hardening",
+	"background_attention",
+	"memory_queue",
+	"skill_review",
+];
+const CURATOR_SEVERITY_RANK: Record<CuratorSeverity, number> = {
+	info: 0,
+	low: 1,
+	medium: 2,
+	high: 3,
+};
 
 const LOG_LEVELS = new Map<number, string>([
 	[10, "trace"],
@@ -179,6 +200,17 @@ function parseStatuses(raw: string | undefined): BackgroundJobStatus[] | undefin
 	return valid.length > 0 ? valid : undefined;
 }
 
+function parseCuratorStatus(raw: string | undefined): CuratorItemStatus | "all" | null {
+	if (!raw || raw === "open") return "open";
+	if (raw === "all") return "all";
+	return CURATOR_STATUSES.includes(raw as CuratorItemStatus) ? (raw as CuratorItemStatus) : null;
+}
+
+function parseCuratorKind(raw: string | undefined): CuratorItemKind | undefined | null {
+	if (!raw || raw === "all") return undefined;
+	return CURATOR_KINDS.includes(raw as CuratorItemKind) ? (raw as CuratorItemKind) : null;
+}
+
 function summarizeBackgroundJob(job: BackgroundJob) {
 	return {
 		id: job.id,
@@ -197,6 +229,40 @@ function summarizeBackgroundJob(job: BackgroundJob) {
 		cancelledAtMs: job.cancelledAtMs,
 		errorSummary: clampText(job.error ?? job.result?.message ?? null),
 		canCancel: job.status === "queued" || job.status === "running",
+	};
+}
+
+function summarizeCuratorItem(item: CuratorItem) {
+	return {
+		shortId: item.shortId,
+		kind: item.kind,
+		status: item.status,
+		severity: item.severity,
+		source: clampText(item.source, 80),
+		title: clampText(item.title, 160) ?? "(untitled)",
+		summary: clampText(item.summary, 260),
+		rationale: clampText(item.rationale, 260),
+		entityRef: clampText(item.entityRef, 100),
+		producerKind: item.producerKind,
+		createdAtMs: item.createdAtMs,
+		updatedAtMs: item.updatedAtMs,
+		expiresAtMs: item.expiresAtMs,
+		decidedAtMs: item.decidedAtMs,
+	};
+}
+
+function summarizeCuratorItems(items: CuratorItem[]) {
+	const byKind: Record<string, number> = {};
+	for (const item of items) {
+		byKind[item.kind] = (byKind[item.kind] ?? 0) + 1;
+	}
+	return {
+		total: items.length,
+		open: items.filter((item) => item.status === "open").length,
+		high: items.filter(
+			(item) => item.status === "open" && CURATOR_SEVERITY_RANK[item.severity] >= 3,
+		).length,
+		byKind,
 	};
 }
 
@@ -225,6 +291,8 @@ function summarizeAction(action: CronAction): {
 			};
 		case "private-heartbeat":
 			return { actionKind: action.kind, actionSummary: "private heartbeat" };
+		case "curator-scan":
+			return { actionKind: action.kind, actionSummary: "curator scan" };
 		case "agent-prompt":
 			return { actionKind: action.kind, actionSummary: "agent prompt (redacted)" };
 	}
@@ -297,7 +365,8 @@ function summarizeQueueEntry(entry: MemoryEntry) {
 function getMemoryEntries(query: {
 	categories: MemoryCategory[];
 	trust: Array<MemoryEntry["_provenance"]["trust"]>;
-	sources: MemorySource[];
+	sources?: MemorySource[];
+	sourceFamilies?: MemorySourceFamily[];
 	promoted?: boolean;
 	posted?: boolean;
 	limit?: number;
@@ -311,13 +380,15 @@ function getMemoryEntries(query: {
 	}
 }
 
-function countIdentityEntries(
-	source: MemorySource,
-): Record<"profile" | "interests" | "meta", number> {
+function countIdentityEntries(queryScope: {
+	source?: MemorySource;
+	sourceFamily?: MemorySourceFamily;
+}): Record<"profile" | "interests" | "meta", number> {
 	const entries = getMemoryEntries({
 		categories: ["profile", "interests", "meta"],
 		trust: ["trusted"],
-		sources: [source],
+		...(queryScope.source ? { sources: [queryScope.source] } : {}),
+		...(queryScope.sourceFamily ? { sourceFamilies: [queryScope.sourceFamily] } : {}),
 		limit: 200,
 	});
 	return {
@@ -632,6 +703,35 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 		}
 	});
 
+	server.get("/api/operator/curator", async (request, reply) => {
+		try {
+			const query = request.query as QueryMap;
+			const status = parseCuratorStatus(query.status);
+			if (status === null) {
+				return reply.status(400).send({ ok: false, error: "invalid curator status" });
+			}
+			const kind = parseCuratorKind(query.kind);
+			if (kind === null) {
+				return reply.status(400).send({ ok: false, error: "invalid curator kind" });
+			}
+			const limit = parseLimit(query.limit);
+			const items = listCuratorItems({ status, ...(kind ? { kind } : {}), limit });
+			return reply.send({
+				ok: true,
+				filters: {
+					status,
+					kind: kind ?? "all",
+					limit,
+				},
+				summary: summarizeCuratorItems(items),
+				items: items.map(summarizeCuratorItem),
+			});
+		} catch (err) {
+			logger.warn({ error: String(err) }, "operator curator failed");
+			return reply.status(500).send({ ok: false, error: "failed to load curator items" });
+		}
+	});
+
 	server.get("/api/operator/social-queue", async (_request, reply) => {
 		try {
 			const cfg = loadConfig();
@@ -639,7 +739,7 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 				...getMemoryEntries({
 					categories: ["posts"],
 					trust: ["quarantined"],
-					sources: ["telegram"],
+					sourceFamilies: ["telegram"],
 					posted: false,
 					limit: 20,
 					order: "desc",
@@ -659,7 +759,7 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 			const promoted = getMemoryEntries({
 				categories: ["posts"],
 				trust: ["trusted"],
-				sources: ["telegram", "social"],
+				sourceFamilies: ["telegram", "social"],
 				promoted: true,
 				posted: false,
 				limit: 20,
@@ -704,14 +804,14 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 				privatePersona: {
 					...summarizePersonaForDashboard(
 						personaSnapshot.personas.private,
-						countIdentityEntries("telegram"),
+						countIdentityEntries({ sourceFamily: "telegram" }),
 					),
 					heartbeatEnabled: cfg.telegram.heartbeat?.enabled ?? false,
 					heartbeatIntervalHours: cfg.telegram.heartbeat?.intervalHours ?? null,
 				},
 				socialPersona: summarizePersonaForDashboard(
 					personaSnapshot.personas.social,
-					countIdentityEntries("social"),
+					countIdentityEntries({ source: "social" }),
 					services,
 				),
 			});

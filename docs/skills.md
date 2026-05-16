@@ -47,7 +47,7 @@ scaffold is pre-filled with:
 | Template | What it ships |
 |---|---|
 | `basic` | Read-only skill (Read, Grep, Glob). Good default. |
-| `api-client` | Skill that calls a provider via `telclaude provider-query`. |
+| `api-client` | Skill that calls a provider via `telclaude providers query`. |
 | `telegram-render` | Skill that produces Telegram-friendly reply text. |
 
 Choose with `--template`:
@@ -84,7 +84,7 @@ scanner-only view.
 
 ## `/skills` on Telegram
 
-Catalog (un-hidden): `/skills list|new|import|scan|doctor|drafts|promote|reload`.
+Catalog (un-hidden): `/skills list|new|import|scan|doctor|drafts|promote|sign|reload`.
 
 | Command | Summary |
 |---|---|
@@ -96,9 +96,23 @@ Catalog (un-hidden): `/skills list|new|import|scan|doctor|drafts|promote|reload`
 | `/skills doctor` | Mirrors the CLI doctor output. |
 | `/skills drafts` | List draft skills awaiting promotion. |
 | `/skills promote <name>` | Promote a draft into the active skill set. |
+| `/skills sign <name>` | Sign a skill through the local vault and write `SKILL.md.sig`. |
 | `/skills reload` | Force the next session to start with the refreshed skill set. |
 
 All subcommands are admin-only.
+
+## Bundled `codex-work-unit` skill
+
+Telclaude ships `codex-work-unit` in both `.claude/skills/` and
+`.agents/skills/` so Claude Code and Codex-compatible agents describe the same
+operator workflow. The skill teaches agents to use `/codex` or
+`telclaude background codex` for bounded, async repo tasks, and to treat the
+result card as untrusted data.
+
+The Codex model override is intentionally allowlisted. Operators can omit
+`--model` to use Codex's default, or pass one of `gpt-5.5`, `gpt-5.4`,
+`gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, or `gpt-5.2`.
+Unsupported tokens fail before a background job is queued.
 
 ## Promotion rules
 
@@ -110,6 +124,15 @@ removes the draft. Rules:
 - Imports from OpenClaw land in the canonical draft root and must go through
   the same `/skills promote` gate.
 - Promotion re-runs the scanner; critical/high findings block promotion.
+
+Trusted local skills can be signed before or after promotion:
+
+```bash
+telclaude skills sign <name>
+telclaude skills verify <name>
+```
+
+Telegram admins can run the same signing path with `/skills sign <name>`.
 
 ## Official plugins are separate
 

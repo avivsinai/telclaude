@@ -64,6 +64,33 @@ describe("background job store", () => {
 		).toThrow();
 	});
 
+	it("persists cron-run payload metadata without raw webhook body", async () => {
+		const { createJob, getJob } = await import("../../src/background/index.js");
+		const job = createJob({
+			title: "webhook run",
+			userId: "webhook:build",
+			tier: "WRITE_LOCAL",
+			payload: {
+				kind: "cron-run",
+				jobId: "cron-build",
+				webhook: {
+					slug: "build",
+					bodyHash: "a".repeat(64),
+				},
+			},
+		});
+
+		const fromDb = getJob(job.id);
+		expect(fromDb?.payload).toEqual({
+			kind: "cron-run",
+			jobId: "cron-build",
+			webhook: {
+				slug: "build",
+				bodyHash: "a".repeat(64),
+			},
+		});
+	});
+
 	it("claims queued jobs atomically and transitions them to running", async () => {
 		const { claimQueuedJobs, createJob, getJob } = await import("../../src/background/index.js");
 		createJob({
