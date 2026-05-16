@@ -1,7 +1,7 @@
 /**
  * SQLite storage layer for telclaude.
  *
- * One-shot schema (no migrations). DB is treated as ephemeral operational state.
+ * One-shot schema plus small additive/data migrations for existing local DBs.
  */
 
 import fs from "node:fs";
@@ -664,6 +664,7 @@ function initializeSchema(database: Database.Database): void {
 	);
 	ensureApprovalsColumns(database);
 	ensureMemoryEntriesColumns(database);
+	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
 
 	logger.info("database schema initialized");
@@ -1040,4 +1041,18 @@ function ensureMemoryEntriesColumns(database: Database.Database): void {
 
 	// Always ensure index exists (handles both migration and fresh DB)
 	database.exec("CREATE INDEX IF NOT EXISTS idx_memory_entries_chat ON memory_entries(chat_id)");
+}
+
+function migrateDefaultTelegramMemorySource(database: Database.Database): void {
+	const migrate = database.transaction(() => {
+		const entries = database
+			.prepare("UPDATE memory_entries SET source = 'telegram:default' WHERE source = 'telegram'")
+			.run();
+		const episodes = database
+			.prepare("UPDATE memory_episodes SET source = 'telegram:default' WHERE source = 'telegram'")
+			.run();
+		return { entries: entries.changes, episodes: episodes.changes };
+	});
+	const result = migrate();
+	logger.info(result, "memory source migration checked");
 }

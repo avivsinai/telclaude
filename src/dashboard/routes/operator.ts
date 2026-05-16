@@ -19,6 +19,7 @@ import type {
 	CuratorSeverity,
 } from "../../curator/types.js";
 import { getChildLogger, getResolvedLoggerSettings } from "../../logging.js";
+import type { MemorySourceFamily } from "../../memory/source.js";
 import { getEntries } from "../../memory/store.js";
 import type { MemoryCategory, MemoryEntry, MemorySource } from "../../memory/types.js";
 import {
@@ -364,7 +365,8 @@ function summarizeQueueEntry(entry: MemoryEntry) {
 function getMemoryEntries(query: {
 	categories: MemoryCategory[];
 	trust: Array<MemoryEntry["_provenance"]["trust"]>;
-	sources: MemorySource[];
+	sources?: MemorySource[];
+	sourceFamilies?: MemorySourceFamily[];
 	promoted?: boolean;
 	posted?: boolean;
 	limit?: number;
@@ -735,7 +737,7 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 				...getMemoryEntries({
 					categories: ["posts"],
 					trust: ["quarantined"],
-					sources: ["telegram"],
+					sourceFamilies: ["telegram"],
 					posted: false,
 					limit: 20,
 					order: "desc",
@@ -755,7 +757,7 @@ export async function registerOperatorRoutes(server: FastifyInstance): Promise<v
 			const promoted = getMemoryEntries({
 				categories: ["posts"],
 				trust: ["trusted"],
-				sources: ["telegram", "social"],
+				sourceFamilies: ["telegram", "social"],
 				promoted: true,
 				posted: false,
 				limit: 20,

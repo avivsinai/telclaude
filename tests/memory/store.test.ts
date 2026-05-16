@@ -39,7 +39,7 @@ describe("memory store", () => {
 	it("assigns trust based on source", () => {
 		createEntries(
 			[{ id: "entry-telegram", category: "profile", content: "from telegram" }],
-			"telegram",
+			"telegram:default",
 			1,
 		);
 		createEntries(
@@ -56,13 +56,23 @@ describe("memory store", () => {
 		expect(socialEntry?._provenance.trust).toBe("untrusted");
 	});
 
+	it("rejects bare legacy telegram source for new writes", () => {
+		expect(() =>
+			createEntries(
+				[{ id: "entry-legacy", category: "profile", content: "legacy source" }],
+				"telegram",
+				1,
+			),
+		).toThrow(/telegram:<profile-id>/i);
+	});
+
 	it("filters entries by category/source/trust", () => {
 		createEntries(
 			[
 				{ id: "profile-1", category: "profile", content: "trusted" },
 				{ id: "threads-1", category: "threads", content: "trusted" },
 			],
-			"telegram",
+			"telegram:default",
 			10,
 		);
 		createEntries([{ id: "profile-2", category: "profile", content: "untrusted" }], "social", 11);
@@ -74,8 +84,28 @@ describe("memory store", () => {
 		expect(untrusted).toHaveLength(1);
 		expect(untrusted[0].id).toBe("profile-2");
 
-		const telegramOnly = getEntries({ sources: ["telegram"], order: "asc" });
+		const telegramOnly = getEntries({ sourceFamilies: ["telegram"], order: "asc" });
 		expect(telegramOnly).toHaveLength(2);
+	});
+
+	it("filters telegram source family across profiles", () => {
+		createEntries(
+			[{ id: "profile-default", category: "profile", content: "default profile" }],
+			"telegram:default",
+			10,
+		);
+		createEntries(
+			[{ id: "profile-engineer", category: "profile", content: "engineer profile" }],
+			"telegram:engineer",
+			11,
+		);
+		createEntries([{ id: "profile-social", category: "profile", content: "social" }], "social", 12);
+
+		const telegramEntries = getEntries({ sourceFamilies: ["telegram"], order: "asc" });
+		expect(telegramEntries.map((entry) => entry.id)).toEqual([
+			"profile-default",
+			"profile-engineer",
+		]);
 	});
 
 	it("promotes quarantined telegram posts to trusted", () => {
@@ -87,7 +117,7 @@ describe("memory store", () => {
 		});
 
 		expect(entry._provenance.trust).toBe("quarantined");
-		expect(entry._provenance.source).toBe("telegram");
+		expect(entry._provenance.source).toBe("telegram:default");
 
 		const result = promoteEntryTrust("idea-1", "user");
 		expect(result.ok).toBe(true);
@@ -150,18 +180,14 @@ describe("memory store", () => {
 		}
 	});
 
-	it("rejects promotion of non-telegram/social source entries", () => {
-		createEntries(
-			[{ id: "import-entry", category: "posts", content: "from import" }],
-			"import" as "social", // Force disallowed source via type cast
-			20,
-		);
-
-		const result = promoteEntryTrust("import-entry", "admin");
-		expect(result.ok).toBe(false);
-		if (!result.ok) {
-			expect(result.reason).toContain("telegram or social");
-		}
+	it("rejects invalid memory sources for new entries", () => {
+		expect(() =>
+			createEntries(
+				[{ id: "import-entry", category: "posts", content: "from import" }],
+				"import" as "social",
+				20,
+			),
+		).toThrow(/invalid memory source/i);
 	});
 
 	it("rejects promotion of non-posts category", () => {
@@ -169,7 +195,7 @@ describe("memory store", () => {
 		// and manually making it untrusted (legacy path)
 		createEntries(
 			[{ id: "profile-entry", category: "profile", content: "profile info" }],
-			"telegram",
+			"telegram:default",
 			21,
 		);
 
@@ -201,10 +227,14 @@ describe("memory store", () => {
 	});
 
 	it("rejects duplicate entry ids", () => {
-		createEntries([{ id: "dup-1", category: "profile", content: "first" }], "telegram", 30);
+		createEntries([{ id: "dup-1", category: "profile", content: "first" }], "telegram:default", 30);
 
 		expect(() =>
-			createEntries([{ id: "dup-1", category: "profile", content: "second" }], "telegram", 31),
+			createEntries(
+				[{ id: "dup-1", category: "profile", content: "second" }],
+				"telegram:default",
+				31,
+			),
 		).toThrow(/already exists/i);
 	});
 
@@ -218,7 +248,7 @@ describe("memory store", () => {
 
 		expect(entry.category).toBe("posts");
 		expect(entry._provenance.trust).toBe("quarantined");
-		expect(entry._provenance.source).toBe("telegram");
+		expect(entry._provenance.source).toBe("telegram:default");
 	});
 
 	it("rejects quarantined entries for non-posts category", () => {

@@ -38,10 +38,20 @@ describe("telegram memory bundle", () => {
 	it("combines trusted telegram memory with scoped shared history and excludes social data", () => {
 		createEntries(
 			[
-				{ id: "tg-profile", category: "profile", content: "Aviv is building telclaude", chatId: "1" },
-				{ id: "tg-thread", category: "threads", content: "Working on relay-owned memory overhaul", chatId: "1" },
+				{
+					id: "tg-profile",
+					category: "profile",
+					content: "Aviv is building telclaude",
+					chatId: "1",
+				},
+				{
+					id: "tg-thread",
+					category: "threads",
+					content: "Working on relay-owned memory overhaul",
+					chatId: "1",
+				},
 			],
-			"telegram",
+			"telegram:default",
 			100,
 		);
 		createEntries(
@@ -50,7 +60,7 @@ describe("telegram memory bundle", () => {
 			101,
 		);
 		recordEpisode({
-			source: "telegram",
+			source: "telegram:default",
 			scopeKey: "tg:1",
 			chatId: "1",
 			userText: "We need to fix the OAuth vault refresh problem",
@@ -79,5 +89,67 @@ describe("telegram memory bundle", () => {
 		expect(bundle.promptContext).not.toContain("Public social profile");
 		expect(bundle.compiledMemoryMd).toContain("relay-owned memory overhaul");
 		expect(bundle.compiledMemoryMd).toContain("Recent Shared History");
+	});
+
+	it("recalls only the active profile memory source", () => {
+		createEntries(
+			[
+				{
+					id: "default-profile",
+					category: "profile",
+					content: "Default profile fact",
+					chatId: "1",
+				},
+			],
+			"telegram:default",
+			100,
+		);
+		createEntries(
+			[
+				{
+					id: "engineer-profile",
+					category: "profile",
+					content: "Engineer profile fact",
+					chatId: "1",
+				},
+			],
+			"telegram:engineer",
+			101,
+		);
+		recordEpisode({
+			source: "telegram:default",
+			scopeKey: "tg:1",
+			chatId: "1",
+			userText: "Default profile history",
+			assistantText: "Default response",
+			createdAt: Date.now() - 20_000,
+		});
+		recordEpisode({
+			source: "telegram:engineer",
+			scopeKey: "tg:1",
+			chatId: "1",
+			userText: "Engineer profile history",
+			assistantText: "Engineer response",
+			createdAt: Date.now() - 10_000,
+		});
+
+		const defaultBundle = buildTelegramMemoryBundle({
+			chatId: "1",
+			query: "profile history",
+			includeRecentHistory: true,
+		});
+		const engineerBundle = buildTelegramMemoryBundle({
+			chatId: "1",
+			profileId: "engineer",
+			query: "profile history",
+			includeRecentHistory: true,
+		});
+
+		expect(defaultBundle.compiledMemoryMd).toContain("Default profile fact");
+		expect(defaultBundle.compiledMemoryMd).not.toContain("Engineer profile fact");
+		expect(defaultBundle.promptContext).toContain("telegram:default");
+		expect(engineerBundle.compiledMemoryMd).toContain("Engineer profile fact");
+		expect(engineerBundle.compiledMemoryMd).not.toContain("Default profile fact");
+		expect(engineerBundle.promptContext).toContain("telegram:engineer");
 	});
 });

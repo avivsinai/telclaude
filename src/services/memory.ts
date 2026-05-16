@@ -5,6 +5,9 @@
  */
 
 import { fetchMemorySnapshot, proposeMemory, quarantineMemory } from "../agent/memory-client.js";
+import { loadConfig } from "../config/config.js";
+import { getOperatorProfile } from "../config/profiles.js";
+import { getChatActiveProfileId } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import {
 	handleMemoryPropose,
@@ -13,11 +16,31 @@ import {
 	type MemorySnapshotRequest,
 	type MemorySnapshotResponse,
 } from "../memory/rpc.js";
+import { telegramMemorySource } from "../memory/source.js";
 import type { MemoryEntryInput } from "../memory/store.js";
-import type { MemoryEntry } from "../memory/types.js";
+import type { MemoryEntry, MemorySource } from "../memory/types.js";
 import { isAgentSide } from "./relay-routing.js";
 
 const logger = getChildLogger({ module: "memory-service" });
+
+function resolveLocalTelegramMemorySource(chatId?: string): MemorySource {
+	if (!chatId || !/^-?\d+$/.test(chatId.trim())) {
+		return telegramMemorySource();
+	}
+	const numericChatId = Number(chatId.trim());
+	if (!Number.isSafeInteger(numericChatId)) {
+		return telegramMemorySource();
+	}
+	const activeProfileId = getChatActiveProfileId(numericChatId);
+	if (!activeProfileId) {
+		return telegramMemorySource();
+	}
+	const profile = getOperatorProfile(activeProfileId, loadConfig());
+	if (!profile) {
+		throw new Error(`unknown-profile-id: ${activeProfileId}`);
+	}
+	return telegramMemorySource(profile.id);
+}
 
 /**
  * Read memory entries. Dual-mode: agent routes through relay, relay reads SQLite directly.
@@ -49,7 +72,7 @@ export async function writeMemory(
 
 	const result = handleMemoryPropose(
 		{ entries, userId: options?.userId, chatId: options?.chatId },
-		{ source: "telegram", userId: options?.userId },
+		{ source: resolveLocalTelegramMemorySource(options?.chatId), userId: options?.userId },
 	);
 	if (!result.ok) {
 		throw new Error(result.error);
@@ -72,7 +95,7 @@ export async function quarantineIdea(
 
 	const result = handleMemoryQuarantine(
 		{ id, content, userId: options?.userId, chatId: options?.chatId },
-		{ source: "telegram", userId: options?.userId },
+		{ source: resolveLocalTelegramMemorySource(options?.chatId), userId: options?.userId },
 	);
 	if (!result.ok) {
 		throw new Error(result.error);

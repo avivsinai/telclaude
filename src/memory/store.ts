@@ -1,5 +1,11 @@
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import {
+	isTelegramMemorySource,
+	type MemorySourceFamily,
+	telegramMemorySource,
+	validateMemorySource,
+} from "./source.js";
 import type { MemoryCategory, MemoryEntry, MemorySource, TrustLevel } from "./types.js";
 
 const logger = getChildLogger({ module: "memory-store" });
@@ -16,6 +22,7 @@ export type MemoryQuery = {
 	categories?: MemoryCategory[];
 	trust?: TrustLevel[];
 	sources?: MemorySource[];
+	sourceFamilies?: MemorySourceFamily[];
 	limit?: number;
 	order?: "asc" | "desc";
 	/** Filter by promotion status */
@@ -31,7 +38,7 @@ const MAX_QUERY_LIMIT = 500;
 const MAX_ENTRIES_PER_SOURCE_CHAT = 500;
 
 function trustForSource(source: MemorySource): TrustLevel {
-	return source === "telegram" ? "trusted" : "untrusted";
+	return isTelegramMemorySource(source) ? "trusted" : "untrusted";
 }
 
 type MemoryEntryRow = {
@@ -90,6 +97,10 @@ export function createEntries(
 	source: MemorySource,
 	createdAt = Date.now(),
 ): MemoryEntry[] {
+	const sourceError = validateMemorySource(source);
+	if (sourceError) {
+		throw new Error(sourceError);
+	}
 	const db = getDb();
 	const trust = trustForSource(source);
 
@@ -183,6 +194,21 @@ export function getEntries(query: MemoryQuery = {}): MemoryEntry[] {
 		where.push(`source IN (${query.sources.map(() => "?").join(", ")})`);
 		params.push(...query.sources);
 	}
+	if (query.sourceFamilies && query.sourceFamilies.length > 0) {
+		const clauses: string[] = [];
+		for (const family of query.sourceFamilies) {
+			if (family === "telegram") {
+				clauses.push("(source = ? OR source LIKE ?)");
+				params.push("telegram", "telegram:%");
+			} else if (family === "social") {
+				clauses.push("source = ?");
+				params.push("social");
+			}
+		}
+		if (clauses.length > 0) {
+			where.push(`(${clauses.join(" OR ")})`);
+		}
+	}
 	if (query.promoted === true) {
 		where.push("promoted_at IS NOT NULL");
 	} else if (query.promoted === false) {
@@ -220,7 +246,7 @@ export type PromoteEntryResult = { ok: true; entry: MemoryEntry } | { ok: false;
  *
  * Security constraints:
  * - Only allows category === "posts"
- * - Only allows source === "telegram" or "social"
+ * - Only allows telegram-family or social source
  * - Telegram entries must be quarantined (consent-based workflow)
  * - Social entries must be untrusted (agent-written post ideas)
  * - Operator explicitly approves via /promote — consent is established
@@ -260,9 +286,9 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 		return { ok: false, reason: "Only posts can be promoted" };
 	}
 
-	// Security: Only allow telegram or social source
-	const allowedSources = ["telegram", "social"];
-	if (!allowedSources.includes(existing.source)) {
+	// Security: Only allow telegram-family or social source
+	const isTelegram = isTelegramMemorySource(existing.source);
+	if (!isTelegram && existing.source !== "social") {
 		logger.warn({ id, source: existing.source }, "rejected promotion: invalid source");
 		return { ok: false, reason: "Only telegram or social entries can be promoted" };
 	}
@@ -270,7 +296,7 @@ export function promoteEntryTrust(id: string, promotedBy: string): PromoteEntryR
 	// Security: Enforce valid pre-promotion trust per source
 	// - Telegram: must be quarantined (consent-based workflow)
 	// - Social: must be untrusted (agent-written post ideas)
-	const validTrust = existing.source === "telegram" ? "quarantined" : "untrusted";
+	const validTrust = isTelegram ? "quarantined" : "untrusted";
 	if (existing.trust !== validTrust) {
 		return { ok: false, reason: `Only ${validTrust} ${existing.source} entries can be promoted` };
 	}
@@ -339,7 +365,7 @@ export function markEntryPosted(id: string): boolean {
  * Security constraints:
  * - Only creates entries with trust = "quarantined"
  * - Only allows category = "posts"
- * - Source must be "telegram"
+ * - Source must be an active telegram profile source
  *
  * This is a dedicated function to avoid widening the attack surface
  * by adding a generic trust parameter to createEntries().
@@ -347,9 +373,17 @@ export function markEntryPosted(id: string): boolean {
 export function createQuarantinedEntry(
 	entry: MemoryEntryInput,
 	createdAt = Date.now(),
+	source: MemorySource = telegramMemorySource(),
 ): MemoryEntry {
 	const db = getDb();
 	const chatId = entry.chatId?.trim();
+	const sourceError = validateMemorySource(source);
+	if (sourceError) {
+		throw new Error(sourceError);
+	}
+	if (!isTelegramMemorySource(source)) {
+		throw new Error("Quarantined entries require a telegram memory source");
+	}
 
 	// Security: Force category to posts and trust to quarantined
 	if (entry.category !== "posts") {
@@ -376,7 +410,7 @@ export function createQuarantinedEntry(
 		"posts",
 		entry.content,
 		serializeMetadata(entry.metadata),
-		"telegram",
+		source,
 		"quarantined",
 		createdAt,
 		chatId,
@@ -390,7 +424,7 @@ export function createQuarantinedEntry(
 		content: entry.content,
 		...(entry.metadata ? { metadata: entry.metadata } : {}),
 		_provenance: {
-			source: "telegram",
+			source,
 			trust: "quarantined",
 			createdAt,
 			chatId,

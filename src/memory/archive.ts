@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import { getChildLogger } from "../logging.js";
 import { getDb } from "../storage/db.js";
+import { validateMemorySource } from "./source.js";
 import type { MemorySource } from "./types.js";
 import { sanitizeEpisodeText } from "./validation.js";
 
@@ -192,6 +193,10 @@ export function summarizeEpisode(userText: string, assistantText: string): strin
 }
 
 export function recordEpisode(input: MemoryEpisodeInput): MemoryEpisode {
+	const sourceError = validateMemorySource(input.source);
+	if (sourceError) {
+		throw new Error(sourceError);
+	}
 	const db = getDb();
 	const createdAt = input.createdAt ?? Date.now();
 	const userText = clampText(input.userText, MAX_USER_TEXT_LENGTH);

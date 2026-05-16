@@ -1,4 +1,5 @@
 import { getChildLogger } from "../logging.js";
+import { isTelegramMemorySource, type MemorySourceFamily } from "./source.js";
 import {
 	createEntries,
 	createQuarantinedEntry,
@@ -26,6 +27,7 @@ export type MemorySnapshotRequest = {
 	categories?: MemoryCategory[];
 	trust?: TrustLevel[];
 	sources?: MemorySource[];
+	sourceFamilies?: MemorySourceFamily[];
 	limit?: number;
 	chatId?: string;
 };
@@ -101,7 +103,7 @@ function checkRateLimit(
 	count: number,
 ): MemoryRpcResult<void> {
 	pruneRateBuckets();
-	const limit = source === "telegram" ? 100 : 10;
+	const limit = isTelegramMemorySource(source) ? 100 : 10;
 	const now = Date.now();
 	const windowStart = Math.floor(now / HOUR_MS) * HOUR_MS;
 	// M3: Use scope-constant key to prevent userId spoofing
@@ -272,6 +274,7 @@ export function handleMemorySnapshot(
 		categories: query.categories,
 		trust: query.trust,
 		sources: query.sources,
+		sourceFamilies: query.sourceFamilies,
 		limit: query.limit,
 		chatId: query.chatId,
 		order: "desc",
@@ -287,14 +290,14 @@ export function handleMemorySnapshot(
  * Only creates entries with:
  * - category = "posts"
  * - trust = "quarantined"
- * - source = "telegram"
+ * - source = active telegram profile source
  */
 export function handleMemoryQuarantine(
 	request: MemoryQuarantineRequest,
 	context: { source: MemorySource; userId?: string },
 ): MemoryRpcResult<{ entry: MemoryEntry }> {
 	// Security: Reject if source is not telegram (enforced here as defense-in-depth)
-	if (context.source !== "telegram") {
+	if (!isTelegramMemorySource(context.source)) {
 		logger.warn({ source: context.source }, "rejected quarantine: telegram-only");
 		return fail(403, "Quarantine is only available for Telegram context");
 	}
@@ -314,7 +317,7 @@ export function handleMemoryQuarantine(
 	}
 
 	const actor = context.userId?.trim() || "agent";
-	const rateResult = checkRateLimit("telegram", actor, 1);
+	const rateResult = checkRateLimit(context.source, actor, 1);
 	if (!rateResult.ok) {
 		return rateResult;
 	}
@@ -325,12 +328,16 @@ export function handleMemoryQuarantine(
 	}
 
 	try {
-		const entry = createQuarantinedEntry({
-			id: request.id.trim(),
-			category: "posts",
-			content: request.content,
-			chatId,
-		});
+		const entry = createQuarantinedEntry(
+			{
+				id: request.id.trim(),
+				category: "posts",
+				content: request.content,
+				chatId,
+			},
+			undefined,
+			context.source,
+		);
 		return ok({ entry });
 	} catch (err) {
 		logger.warn({ error: String(err) }, "memory quarantine failed");
@@ -350,7 +357,7 @@ export function handleMemoryPromote(
 	context: { source: MemorySource; userId?: string },
 ): MemoryRpcResult<{ entry: MemoryEntry }> {
 	// Security: Reject if source is not telegram (enforced here as defense-in-depth)
-	if (context.source !== "telegram") {
+	if (!isTelegramMemorySource(context.source)) {
 		logger.warn({ source: context.source }, "rejected promote: telegram-only");
 		return fail(403, "Promote is only available for Telegram context");
 	}
