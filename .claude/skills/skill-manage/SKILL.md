@@ -1,6 +1,6 @@
 ---
 name: skill-manage
-description: Create new agent-authored telclaude skills through the guarded managed-skill writer. Use only for private/telegram agent work when a durable new skill is clearly useful.
+description: Create, patch, or archive agent-authored telclaude skills through the guarded managed-skill writer. Use only for private/telegram agent work when durable skill changes are clearly useful.
 allowed-tools:
   - Bash
   - Read
@@ -8,7 +8,7 @@ allowed-tools:
 
 # Skill Manage
 
-Use this skill only to create a new managed skill. It does not patch, rename, archive, or promote skills.
+Use this skill to create, patch, or archive managed skills. It does not rename or promote skills.
 
 The guarded writer only lands files under agent-authored paths:
 
@@ -66,13 +66,56 @@ EOF
 
 New social-targeted skills are not usable by the social runtime until the operator adds the skill name to that service's `agentSkillsAllowed` config.
 
+## Patch
+
+Patch replaces the complete `SKILL.md` body for an existing managed skill. Pass the current `SKILL.md` SHA-256 with `--expected-sha256`; stale edits fail closed.
+
+```bash
+pnpm dev maintenance skill-manage patch \
+  --persona telegram \
+  --name <skill-name> \
+  --actor-tier WRITE_LOCAL \
+  --user-id <request-user-id> \
+  --expected-sha256 <current-skill-md-sha256> \
+  --json <<'EOF'
+---
+name: <skill-name>
+description: Use when ...
+allowed-tools:
+  - Read
+---
+
+# <Title>
+
+Updated instructions.
+EOF
+```
+
+## Archive
+
+Archive moves an existing managed skill under the persona-local `archived/` directory after snapshotting the active tree. It requires the current `SKILL.md` SHA-256.
+
+```bash
+pnpm dev maintenance skill-manage archive \
+  --persona telegram \
+  --name <skill-name> \
+  --actor-tier WRITE_LOCAL \
+  --user-id <request-user-id> \
+  --expected-sha256 <current-skill-md-sha256> \
+  --json
+```
+
 ## Guardrails
 
 - SOCIAL callers are rejected by the command.
 - Names must match `^[a-z0-9-]{1,63}$`.
+- `archived` is reserved and cannot be used as a managed skill name.
 - `SKILL.md` must be 64 KB or smaller.
 - The scanner runs on a temp copy before the real file lands.
-- The command snapshots the whole skill tree before writing.
+- Patch replaces the full `SKILL.md`; it does not apply partial diffs.
+- Patch and archive require `--expected-sha256`.
+- Archive moves skills to `agent/<persona>/archived/` so normal persona loading ignores them.
+- The command snapshots the whole skill tree before writing, patching, or archiving.
 - Every attempt is written to the skill-manage audit log.
 - Bash examples must avoid shell chaining, pipes, redirection, command substitution, and process substitution.
 - Secret names, secret-looking values, private URLs, metadata URLs, and sensitive host filesystem paths are rejected.
