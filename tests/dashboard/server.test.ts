@@ -333,7 +333,12 @@ vi.mock("../../src/curator/store.js", () => {
 });
 
 vi.mock("../../src/memory/store.js", () => ({
-	getEntries: (query: { trust?: string[]; sources?: string[]; categories?: string[] }) => {
+	getEntries: (query: {
+		trust?: string[];
+		sources?: string[];
+		sourceFamilies?: string[];
+		categories?: string[];
+	}) => {
 		if (query.categories?.includes("posts") && query.trust?.includes("quarantined")) {
 			return [
 				{
@@ -364,13 +369,18 @@ vi.mock("../../src/memory/store.js", () => ({
 			];
 		}
 		if (query.categories?.some((c) => c === "profile" || c === "interests" || c === "meta")) {
+			const privateFamily = query.sourceFamilies?.includes("telegram") ?? false;
+			const socialSource = query.sources?.includes("social") ?? false;
+			if (!privateFamily && !socialSource) {
+				return [];
+			}
 			return [
 				{
 					id: "profile-1",
 					category: "profile",
 					content: "private profile should not leak",
 					_provenance: {
-						source: query.sources?.[0] ?? "telegram",
+						source: privateFamily ? "telegram:engineer" : "social",
 						trust: "trusted",
 						createdAt: 1_700_000_000_000,
 					},

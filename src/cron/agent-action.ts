@@ -1,5 +1,6 @@
 import { executeRemoteQuery } from "../agent/client.js";
 import type { TelclaudeConfig } from "../config/config.js";
+import { resolveChatProfile } from "../config/profiles.js";
 import { formatHomeTarget, getHomeTarget } from "../config/sessions.js";
 import { getChildLogger } from "../logging.js";
 import {
@@ -200,6 +201,7 @@ export async function executeScheduledAgentPromptAction(
 	].join("\n");
 	const memoryBundle = buildTelegramMemoryBundle({
 		chatId: String(destination.chatId),
+		profileId: resolveChatProfile(destination.chatId, cfg).profile.id,
 		query: job.action.prompt,
 		includeRecentHistory: true,
 	});

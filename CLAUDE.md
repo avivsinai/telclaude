@@ -107,8 +107,11 @@
 | `pnpm dev maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |
 | `pnpm dev maintenance cron run <id>` | Run cron job immediately |
 | `pnpm dev secrets setup-google` | Configure Google OAuth |
-| `pnpm dev memory read --categories profile,interests` | Read memory entries |
+| `pnpm dev memory read --chat-id <id> --categories profile,interests` | Read memory entries for the chat's active operator profile |
 | `pnpm dev memory write "fact" --category meta` | Write memory entry |
+| `pnpm dev curator scan\|list\|show\|accept\|reject` | Review local Curator suggestions |
+| `pnpm dev curator sign-producer --item item.json --producer-kind codex --producer-id codex:<id>` | Sign a Codex/Claude Curator item through the vault |
+| `pnpm dev curator submit-signed --item item.json --envelope envelope.json` | Verify and submit a signed producer Curator item |
 | `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
 
 ## Auth & control plane
@@ -125,11 +128,18 @@
 | `/me [link\|unlink]` | Identity management |
 | `/auth [setup\|verify\|logout\|disable\|skip]` | 2FA management |
 | `/system [sessions\|cron]` | System introspection |
+| `/profile [list\|switch <id>\|reset]` | Operator profile selection for the chat |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
 | `/skills [drafts\|promote <name>\|reload]` | Skill management |
+| `/curator` | Review automation suggestions |
 | `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` | Queue a single-shot Codex work unit as a background job |
 | `/approve <code>` | Fast-path approval |
 | `/new` | Reset conversation session |
+
+### Operator profiles
+- Top-level `profiles[]` entries define named private-agent modes with `id`, `label`, optional `description`, `soulPath`, `allowedSkills`, and `defaultModel`.
+- `soulPath` adds a profile-specific prompt overlay; `allowedSkills` narrows private skill loading; `defaultModel` applies unless the chat has an explicit `/model` preference.
+- `/profile switch <id>` binds a chat to that profile. Memory reads, normal replies, scheduled private runs, and capture use the matching `telegram:<profile-id>` source.
 
 ### Scheduler config
 - Private heartbeat: `telegram.heartbeat.enabled`, `intervalHours` (default 6), WRITE_LOCAL tier, `notifyOnActivity` (default true).

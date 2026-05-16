@@ -180,7 +180,9 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `/help <topic>` — contextual help for approvals, 2fa, sessions, etc.
 - `/system` — system status, sessions, cron (card-based with inline buttons).
 - `/me`, `/auth`, `/social`, `/skills` — identity, 2FA, social persona, skill management.
-- `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` — queue a single-shot Codex work unit; results return as a background job card.
+- `/profile list|switch <id>|reset` — inspect or switch the active operator profile for the chat.
+- `/curator` — review local automation suggestions and accept/reject without executing the action.
+- `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` — queue a single-shot Codex work unit; results return as a background job card. Supported overrides are `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, and `gpt-5.2`.
 - `/approve`, `/new` — fast-path shortcuts for approvals and session reset.
 
 ## Memory model
@@ -200,12 +202,20 @@ pnpm dev memory context --chat-id <telegram-chat-id> --query "oauth vault refres
 pnpm dev memory context --chat-id <telegram-chat-id> --markdown
 ```
 
+`--chat-id` resolves that chat's active operator profile before reading memory. Private memory is stored under `telegram:<profile-id>` sources, so switching `/profile` changes the semantic and episodic memory namespace used by normal replies, scheduled private runs, and local memory inspection.
+
 ## Configuration
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).
-- Profiles:
+- Security profiles:
   - `simple` (default): sandbox + secret filter + rate limits + audit.
   - `strict`: adds Haiku observer, approval workflow, and tiered tool gates.
   - `test`: disables all enforcement; requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
+- Operator profiles:
+  - Configure top-level `profiles[]` entries with `id`, `label`, optional `description`, `soulPath`, `allowedSkills`, and `defaultModel`.
+  - `soulPath` points to a profile-specific prompt overlay.
+  - `allowedSkills` narrows private-agent skill loading for that profile; omit it to allow all private skills.
+  - `defaultModel` uses `{ "providerId": "anthropic", "modelId": "claude-sonnet-4-5-20250929" }` and is overridden by explicit chat `/model` choices.
+  - Telegram admins switch a chat with `/profile switch <id>` and return to the implicit default with `/profile reset`.
 - Permission tiers:
   - `READ_ONLY`: read/search/web only; no writes.
   - `WRITE_LOCAL`: read/write/edit/bash with destructive commands blocked.
@@ -373,6 +383,20 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 | `telclaude fetch-attachment --provider <id> --id <attachment-id>` | Download provider attachment |
 | `telclaude generate-image <prompt> [-s <size>] [-q <quality>]` | Generate image (requires OpenAI) |
 | `telclaude text-to-speech <text> [-v <voice>] [-f <format>]` | Text-to-speech (requires OpenAI) |
+
+### Memory, cron & Curator
+| Command | Description |
+|---------|-------------|
+| `telclaude memory read --chat-id <id> --categories profile,interests` | Read memory entries for the chat's active profile |
+| `telclaude memory context --chat-id <id> [--markdown]` | Render the compiled private memory bundle |
+| `telclaude memory write "fact" --chat-id <id> --category meta` | Write memory under the chat's active profile |
+| `telclaude maintenance cron status` | Cron scheduler status |
+| `telclaude maintenance cron list [--all] [--json]` | List cron jobs |
+| `telclaude maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |
+| `telclaude maintenance cron run <id>` | Run cron job immediately |
+| `telclaude curator scan\|list\|show\|accept\|reject` | Review local Curator suggestions |
+| `telclaude curator sign-producer --item item.json --producer-kind codex --producer-id codex:<id>` | Sign a Codex/Claude Curator item through the vault |
+| `telclaude curator submit-signed --item item.json --envelope envelope.json` | Verify and submit a signed producer Curator item |
 
 ### Diagnostics
 | Command | Description |

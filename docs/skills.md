@@ -101,6 +101,19 @@ Catalog (un-hidden): `/skills list|new|import|scan|doctor|drafts|promote|sign|re
 
 All subcommands are admin-only.
 
+## Bundled `codex-work-unit` skill
+
+Telclaude ships `codex-work-unit` in both `.claude/skills/` and
+`.agents/skills/` so Claude Code and Codex-compatible agents describe the same
+operator workflow. The skill teaches agents to use `/codex` or
+`telclaude background codex` for bounded, async repo tasks, and to treat the
+result card as untrusted data.
+
+The Codex model override is intentionally allowlisted. Operators can omit
+`--model` to use Codex's default, or pass one of `gpt-5.5`, `gpt-5.4`,
+`gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, or `gpt-5.2`.
+Unsupported tokens fail before a background job is queued.
+
 ## Promotion rules
 
 Promotion copies the draft directory on top of the active directory, then

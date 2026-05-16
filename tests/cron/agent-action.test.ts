@@ -158,6 +158,78 @@ describe("scheduled agent cron action", () => {
 		);
 	});
 
+	it("uses the destination chat profile when compiling scheduled private memory", async () => {
+		const { setChatActiveProfileId } = await import("../../src/config/sessions.js");
+		const { createEntries } = await import("../../src/memory/store.js");
+		const { executeScheduledAgentPromptAction } = await import("../../src/cron/agent-action.js");
+
+		setChatActiveProfileId(123, "engineer");
+		createEntries(
+			[{ id: "default-fact", category: "profile", content: "Default profile fact", chatId: "123" }],
+			"telegram:default",
+			100,
+		);
+		createEntries(
+			[
+				{
+					id: "engineer-fact",
+					category: "profile",
+					content: "Engineer profile fact",
+					chatId: "123",
+				},
+			],
+			"telegram:engineer",
+			101,
+		);
+
+		const executeLocal = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "Scheduled reply.",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const sendMessage = vi.fn(async () => ({ success: true, messageId: 42 }));
+
+		const result = await executeScheduledAgentPromptAction(
+			{
+				id: "cron-profile",
+				name: "profile routine",
+				enabled: true,
+				running: false,
+				ownerId: null,
+				deliveryTarget: { kind: "chat", chatId: 123 },
+				schedule: { kind: "every", everyMs: 60_000 },
+				action: { kind: "agent-prompt", prompt: "use memory" },
+				nextRunAtMs: null,
+				lastRunAtMs: null,
+				lastStatus: null,
+				lastError: null,
+				createdAtMs: 0,
+				updatedAtMs: 0,
+			},
+			{
+				profiles: [{ id: "engineer", label: "Engineer" }],
+				telegram: { botToken: "token" },
+				cron: { timeoutSeconds: 30 },
+				security: {},
+			} as never,
+			new AbortController().signal,
+			{ executeLocal, sendMessage },
+		);
+
+		expect(result.ok).toBe(true);
+		const options = executeLocal.mock.calls[0]?.[1];
+		expect(options?.systemPromptAppend).toContain("Engineer profile fact");
+		expect(options?.systemPromptAppend).not.toContain("Default profile fact");
+		expect(options?.compiledMemoryMd).toContain("Profile memory source: telegram:engineer");
+	});
+
 	it("runs the agent when preprocess exits with empty stdout", async () => {
 		const { executeScheduledAgentPromptAction } = await import("../../src/cron/agent-action.js");
 

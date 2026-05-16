@@ -15,6 +15,7 @@
  */
 
 import type { Command } from "commander";
+import { validateCodexModel } from "../agent-runtime/codex-work-unit.js";
 import { cancelJob, createJob, getJob, getJobByShortId, listJobs } from "../background/index.js";
 import type { BackgroundJobPayload, BackgroundJobStatus } from "../background/types.js";
 import type { PermissionTier } from "../config/config.js";
@@ -200,12 +201,13 @@ export function registerBackgroundCommand(program: Command): void {
 			const threadId = parseOptionalNumber(opts.threadId) ?? null;
 			const timeoutMs = parseOptionalNumber(opts.timeoutMs);
 			const sandbox = resolveCodexSandboxForTier(tier, parseCodexSandbox(opts.sandbox));
+			const model = opts.model ? validateCodexModel(String(opts.model)) : undefined;
 			const payload: BackgroundJobPayload = {
 				kind: "codex-work-unit",
 				prompt,
 				sandbox,
 				...(opts.cwd ? { cwd: String(opts.cwd) } : {}),
-				...(opts.model ? { model: String(opts.model) } : {}),
+				...(model ? { model } : {}),
 				...(timeoutMs ? { timeoutMs } : {}),
 			};
 
