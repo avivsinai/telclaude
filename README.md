@@ -151,7 +151,7 @@ claude login             # API key is not forwarded into sandboxed agent
 
 4) (Recommended) Start TOTP daemon in another terminal
 ```bash
-pnpm dev totp-daemon
+pnpm dev maintenance totp-daemon
 ```
 
 5) Health check
@@ -216,7 +216,7 @@ pnpm dev memory context --chat-id <telegram-chat-id> --markdown
 - OpenAI/GitHub key exposure (tier-based):
   - FULL_ACCESS tier automatically gets configured API keys (OpenAI, GitHub) exposed to sandbox.
   - READ_ONLY and WRITE_LOCAL tiers never get keys.
-  - Configure keys via `telclaude setup-openai` / `telclaude setup-git` or env vars.
+  - Configure keys via `telclaude secrets setup-openai` / `telclaude secrets setup-git` or env vars.
   - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
@@ -246,7 +246,7 @@ The vault daemon stores API credentials and injects them into HTTP requests tran
 export VAULT_ENCRYPTION_KEY=$(openssl rand -base64 32)
 
 # Start vault daemon
-telclaude vault-daemon
+telclaude maintenance vault-daemon
 
 # Add a credential
 telclaude vault add http api.openai.com --type bearer --label "OpenAI"
@@ -277,9 +277,9 @@ For local services (Home Assistant, NAS, Plex, etc.), configure explicit private
 
 **CLI:**
 ```bash
-telclaude network list
-telclaude network add ha --host 192.168.1.100 --ports 8123
-telclaude network test http://192.168.1.100:8123/api
+telclaude dev network list
+telclaude dev network add ha --host 192.168.1.100 --ports 8123
+telclaude dev network test http://192.168.1.100:8123/api
 ```
 
 Metadata endpoints (169.254.169.254) and link-local addresses remain blocked regardless of allowlist.
@@ -287,7 +287,7 @@ Metadata endpoints (169.254.169.254) and link-local addresses remain blocked reg
 ## External providers (sidecars)
 Telclaude integrates with private REST API sidecars via relay-proxied requests. Agents never call provider endpoints directly (enforced at both application and firewall layers).
 
-**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude setup-google`.
+**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude providers setup google --base-url http://google-services:3001`.
 
 **Configuration:**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
@@ -318,19 +318,19 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 | Command | Description |
 |---------|-------------|
 | `telclaude link <user-id> \| --list \| --remove <chat-id>` | Manage identity links |
-| `telclaude totp-daemon [--socket-path <path>]` | Start TOTP daemon |
-| `telclaude totp-setup <user-id>` | Set up TOTP for a user |
-| `telclaude totp-disable <user-id>` | Disable TOTP for a user |
-| `telclaude reset-auth [--force]` | Reset auth state |
-| `telclaude ban <chat-id> [-r <reason>]` | Block a chat |
-| `telclaude unban <chat-id>` | Restore access |
-| `telclaude force-reauth <chat-id>` | Invalidate TOTP session |
-| `telclaude list-bans` | Show banned chats |
+| `telclaude maintenance totp-daemon [--socket-path <path>]` | Start TOTP daemon |
+| `telclaude auth totp-setup <user-id>` | Set up TOTP for a user |
+| `telclaude auth totp-disable <user-id>` | Disable TOTP for a user |
+| `telclaude maintenance reset-auth [--force]` | Reset auth state |
+| `telclaude admin ban <chat-id> [-r <reason>]` | Block a chat |
+| `telclaude admin unban <chat-id>` | Restore access |
+| `telclaude auth force-reauth <chat-id>` | Invalidate TOTP session |
+| `telclaude admin list-bans` | Show banned chats |
 
 ### Credential vault
 | Command | Description |
 |---------|-------------|
-| `telclaude vault-daemon` | Start vault daemon |
+| `telclaude maintenance vault-daemon` | Start vault daemon |
 | `telclaude vault list` | List stored credentials |
 | `telclaude vault add http <host> --type <type> [--label <name>]` | Add credential |
 | `telclaude vault remove http <host>` | Remove credential |
@@ -339,20 +339,28 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 ### API key & service setup
 | Command | Description |
 |---------|-------------|
-| `telclaude setup-openai` | Configure OpenAI API key |
-| `telclaude setup-git` | Configure Git credentials |
-| `telclaude setup-github-app` | Configure GitHub App |
-| `telclaude setup-google` | Configure Google OAuth credentials (for Google Services sidecar) |
+| `telclaude secrets setup-openai` | Configure OpenAI API key |
+| `telclaude secrets setup-git` | Configure Git credentials |
+| `telclaude secrets setup-github-app` | Configure GitHub App |
+| `telclaude secrets setup-google` | Configure Google OAuth credentials (for Google Services sidecar) |
 
 ### Network & providers
 | Command | Description |
 |---------|-------------|
-| `telclaude network list` | List private endpoints |
-| `telclaude network add <label> (--host <ip> \| --cidr <range>) [--ports <ports>]` | Add endpoint |
-| `telclaude network remove <label>` | Remove endpoint |
-| `telclaude network test <url>` | Test endpoint access |
-| `telclaude provider-query --provider <id> --service <svc> --action <act>` | Query external provider |
-| `telclaude provider-health [provider-id]` | Check provider health |
+| `telclaude dev network list` | List private endpoints |
+| `telclaude dev network add <label> (--host <ip> \| --cidr <range>) [--ports <ports>]` | Add endpoint |
+| `telclaude dev network remove <label>` | Remove endpoint |
+| `telclaude dev network test <url>` | Test endpoint access |
+| `telclaude providers init <id> [--services <csv>]` | Scaffold a provider sidecar |
+| `telclaude providers list` | List configured providers |
+| `telclaude providers add <id> --base-url <url> --services <csv>` | Add a custom provider |
+| `telclaude providers edit <id> --base-url <url> --services <csv>` | Edit a provider |
+| `telclaude providers remove <id>` | Remove a provider |
+| `telclaude providers refresh` | Refresh provider schema and runtime skill state |
+| `telclaude providers schema [id]` | Fetch provider schema |
+| `telclaude providers query <id> <svc> <act>` | Query external provider |
+| `telclaude providers doctor [id]` | Check provider health |
+| `telclaude providers setup google --base-url <url>` | Configure Google provider end-to-end |
 
 ### Media & messaging
 | Command | Description |
@@ -375,7 +383,7 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 ## Usage example
 Run strict profile with approvals and TOTP:
 ```bash
-pnpm dev totp-daemon &
+pnpm dev maintenance totp-daemon &
 pnpm dev relay --profile strict
 # In Telegram (allowed chat):
 # 1) bot replies with /approve CODE for admin claim
@@ -407,9 +415,9 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | --- | --- | --- |
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
 | Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see Requirements section above) |
-| TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
+| TOTP fails | Daemon not running or clock drift | Start `telclaude maintenance totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
-| Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
+| Vault not injecting | Daemon not running or host not configured | Start `telclaude maintenance vault-daemon`; check `vault list` |
 
 ## Community
 - Issues & discussions: open GitHub issues; we triage weekly.

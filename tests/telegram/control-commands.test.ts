@@ -43,6 +43,7 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/skills promote my-skill")?.command.id).toBe(
 				"skills:promote",
 			);
+			expect(matchTelegramControlCommand("/skills sign my-skill")?.command.id).toBe("skills:sign");
 			expect(matchTelegramControlCommand("/skills reload")?.command.id).toBe("skills:reload");
 			expect(matchTelegramControlCommand("/skills list")?.command.id).toBe("skills:list");
 			expect(matchTelegramControlCommand("/skills new my-skill")?.command.id).toBe("skills:new");
@@ -218,6 +219,7 @@ describe("telegram control command registry", () => {
 				"skills:doctor",
 				"skills:drafts",
 				"skills:promote",
+				"skills:sign",
 				"skills:reload",
 			] as const) {
 				expect(visible.has(id)).toBe(true);
@@ -231,6 +233,7 @@ describe("telegram control command registry", () => {
 			expect(catalog).toContain("/skills doctor");
 			expect(catalog).toContain("/skills drafts");
 			expect(catalog).toContain("/skills promote");
+			expect(catalog).toContain("/skills sign");
 			expect(catalog).toContain("/skills reload");
 		});
 	});

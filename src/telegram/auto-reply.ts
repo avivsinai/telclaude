@@ -93,6 +93,7 @@ import {
 	sendSkillsImportCommand,
 	sendSkillsListCommand,
 	sendSkillsScanCommand,
+	sendSkillsSignCommand,
 	sendSocialActivityLogCommand,
 	sendSocialAskResponse,
 	setHomeTargetCommand,
@@ -797,6 +798,14 @@ async function dispatchTelegramControlCommand(
 				chatId: msg.chatId,
 				skillName,
 				threadId: msg.messageThreadId,
+			});
+			return true;
+		}
+		case "skills:sign": {
+			await sendSkillsSignCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				skillName: match.args[0]?.trim(),
 			});
 			return true;
 		}

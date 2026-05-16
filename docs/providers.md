@@ -171,12 +171,12 @@ Add the provider to `telclaude.json`:
 **Allowlist the provider host as a private endpoint first.** `validateProviderBaseUrl` (`src/providers/provider-validation.ts`) refuses any provider whose `baseUrl` is not matched by `security.network.privateEndpoints`. Run:
 
 ```bash
-telclaude network add your-provider \
+telclaude dev network add your-provider \
   --host your-provider \
-  --port 3003
+  --ports 3003
 ```
 
-(or edit `security.network.privateEndpoints` directly). Without this step, provider validation fails at startup with `No private endpoints configured. Add a provider endpoint via \`telclaude network add\`.` even when the sidecar itself is healthy.
+(or edit `security.network.privateEndpoints` directly). Without this step, provider validation fails at startup with `No private endpoints configured. Configure a provider via \`telclaude providers add <id>\`.` even when the sidecar itself is healthy.
 
 Then add the provider entry itself:
 
@@ -257,7 +257,12 @@ The Google Services sidecar (`src/google-services/`) demonstrates the full patte
 
 | Command | Description |
 |---------|-------------|
+| `telclaude providers init <id> [--services <csv>]` | Scaffold a provider sidecar under `src/<id>-services/` and `docker/Dockerfile.<id>` without mutating config |
 | `telclaude providers list` | List configured providers |
+| `telclaude providers add <id> --base-url <url> --services <csv>` | Add a custom provider and private endpoint allowlist entry |
+| `telclaude providers edit <id> --base-url <url> --services <csv>` | Edit an existing provider and refresh runtime skill state |
+| `telclaude providers remove <id>` | Remove provider config and its matching private endpoint |
+| `telclaude providers refresh` | Refresh schema-derived runtime skill state |
 | `telclaude providers schema [id]` | Fetch provider schema for one provider or all configured providers |
 | `telclaude providers query <id> <svc> <act> [--user-id <uid>]` | Query a provider action |
 | `telclaude providers doctor [id]` | Run provider health, schema, network, and OAuth checks |
