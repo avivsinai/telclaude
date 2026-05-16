@@ -29,7 +29,7 @@ RUN npm install -g agent-browser@latest
 # https://github.com/steipete/gifgrep
 # Bookworm ships Go 1.19 but gifgrep needs 1.21+ (toolchain directive).
 # Download official Go, build, then remove to keep image lean.
-ARG GO_VERSION=1.23.6
+ARG GO_VERSION=1.25.4
 RUN arch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" | tar -C /usr/local -xz \
     && GOBIN=/usr/local/bin /usr/local/go/bin/go install github.com/steipete/gifgrep/cmd/gifgrep@latest \
