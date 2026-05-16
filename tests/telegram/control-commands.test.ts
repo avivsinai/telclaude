@@ -56,6 +56,7 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/skills import")?.command.id).toBe("skills:import");
 			expect(matchTelegramControlCommand("/skills scan")?.command.id).toBe("skills:scan");
 			expect(matchTelegramControlCommand("/skills doctor")?.command.id).toBe("skills:doctor");
+			expect(matchTelegramControlCommand("/codex review the diff")?.command.id).toBe("codex");
 			expect(matchTelegramControlCommand("/help commands")?.command.id).toBe("help:commands");
 			expect(matchTelegramControlCommand("/curator")?.command.id).toBe("curator");
 		});
@@ -183,6 +184,7 @@ describe("telegram control command registry", () => {
 				"social",
 				"skills",
 				"background",
+				"codex",
 				"curator",
 				"stop",
 				"approve",
@@ -249,7 +251,16 @@ describe("telegram control command registry", () => {
 		it("documents supported active-work cancellation", () => {
 			const help = formatTelegramHelp("background");
 			expect(help).toContain("/stop");
+			expect(help).toContain("/codex");
 			expect(help).toContain("background jobs");
+		});
+	});
+
+	describe("/codex command help", () => {
+		it("surfaces Codex in help and catalog", () => {
+			expect(formatTelegramHelp("codex")).toContain("Codex");
+			expect(formatTelegramHelp()).toContain("/codex");
+			expect(formatTelegramCommandCatalog()).toContain("/codex");
 		});
 	});
 

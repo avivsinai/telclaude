@@ -1,7 +1,10 @@
+import path from "node:path";
 import type { Api } from "grammy";
+import { validateCodexModel } from "../agent-runtime/codex-work-unit.js";
 import {
 	type BackgroundJob,
 	cancelJob as cancelBackgroundJob,
+	createJob as createBackgroundJob,
 	getJobByShortId as getBackgroundJobByShortId,
 	listJobs as listBackgroundJobs,
 } from "../background/index.js";
@@ -1192,6 +1195,205 @@ export function startSocialAskWizard(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const BACKGROUND_LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const CODEX_PROMPT_MAX_CHARS = 24_000;
+
+type CodexSandbox = "read-only" | "workspace-write";
+
+export type ParsedCodexWorkUnitCommand = {
+	prompt: string;
+	cwd?: string;
+	model?: string;
+	sandbox: CodexSandbox;
+	writeRequested: boolean;
+};
+
+function parseCodexOptionValue(
+	tokens: string[],
+	index: number,
+	flag: "--cwd" | "--model",
+): { value: string; nextIndex: number } {
+	const token = tokens[index];
+	const equalsPrefix = `${flag}=`;
+	if (token?.startsWith(equalsPrefix)) {
+		return { value: token.slice(equalsPrefix.length), nextIndex: index + 1 };
+	}
+	const next = tokens[index + 1];
+	if (!next || next.startsWith("--")) {
+		throw new Error(`${flag} requires a value.`);
+	}
+	return { value: next, nextIndex: index + 2 };
+}
+
+function validateCodexCwd(value: string): string {
+	const cwd = value.trim();
+	if (!cwd) {
+		throw new Error("--cwd requires a non-empty relative path.");
+	}
+	if (path.isAbsolute(cwd) || path.win32.isAbsolute(cwd)) {
+		throw new Error("--cwd must be a relative path inside the workspace.");
+	}
+	if (cwd.split(/[\\/]+/).includes("..")) {
+		throw new Error("--cwd cannot contain '..' path segments.");
+	}
+	return cwd;
+}
+
+export function parseCodexWorkUnitCommand(rawArgs: string): ParsedCodexWorkUnitCommand {
+	const trimmed = rawArgs.trim();
+	if (!trimmed) {
+		throw new Error("Usage: /codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>");
+	}
+
+	const tokens = trimmed.split(/\s+/);
+	let model: string | undefined;
+	let cwd: string | undefined;
+	let writeRequested = false;
+	let promptParts: string[] = [];
+
+	for (let i = 0; i < tokens.length; ) {
+		const token = tokens[i];
+		if (!token) {
+			i++;
+			continue;
+		}
+		if (token === "--") {
+			promptParts = tokens.slice(i + 1);
+			break;
+		}
+		if (token === "--write") {
+			writeRequested = true;
+			i++;
+			continue;
+		}
+		if (token === "--model" || token.startsWith("--model=")) {
+			const parsed = parseCodexOptionValue(tokens, i, "--model");
+			model = validateCodexModel(parsed.value);
+			i = parsed.nextIndex;
+			continue;
+		}
+		if (token === "--cwd" || token.startsWith("--cwd=")) {
+			const parsed = parseCodexOptionValue(tokens, i, "--cwd");
+			cwd = validateCodexCwd(parsed.value);
+			i = parsed.nextIndex;
+			continue;
+		}
+		if (token.startsWith("--")) {
+			throw new Error(`Unknown /codex option: ${token}`);
+		}
+		promptParts = tokens.slice(i);
+		break;
+	}
+
+	const prompt = promptParts.join(" ").trim();
+	if (!prompt) {
+		throw new Error("Codex work units require a prompt.");
+	}
+	if (prompt.length > CODEX_PROMPT_MAX_CHARS) {
+		throw new Error(`Codex prompt must be at most ${CODEX_PROMPT_MAX_CHARS} characters.`);
+	}
+
+	return {
+		prompt,
+		...(cwd ? { cwd } : {}),
+		...(model ? { model } : {}),
+		sandbox: writeRequested ? "workspace-write" : "read-only",
+		writeRequested,
+	};
+}
+
+function codexJobTitle(prompt: string): string {
+	const normalized = prompt.replace(/\s+/g, " ").trim();
+	const preview = normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
+	return `Codex: ${preview}`;
+}
+
+function codexJobDescription(parsed: ParsedCodexWorkUnitCommand): string {
+	const details = [`Sandbox: ${parsed.sandbox}`];
+	if (parsed.cwd) details.push(`cwd: ${parsed.cwd}`);
+	if (parsed.model) details.push(`model: ${parsed.model}`);
+	return details.join("\n");
+}
+
+export async function queueCodexWorkUnitCommand(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+		actorId?: number;
+		rawArgs: string;
+		cfg?: TelclaudeConfig;
+	},
+): Promise<CommandUiResult> {
+	const cfg = opts.cfg ?? loadConfig();
+	const tier = getUserPermissionTier(opts.chatId, cfg.security);
+	if (tier === "READ_ONLY") {
+		const text =
+			"READ_ONLY tier cannot queue Codex work units. Ask an operator to raise your tier first.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "READ_ONLY cannot queue Codex", callbackAlert: true };
+	}
+	if (tier === "SOCIAL") {
+		const text = "SOCIAL tier cannot queue Codex work units.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "SOCIAL cannot queue Codex", callbackAlert: true };
+	}
+
+	let parsed: ParsedCodexWorkUnitCommand;
+	try {
+		parsed = parseCodexWorkUnitCommand(opts.rawArgs);
+	} catch (err) {
+		const text = err instanceof Error ? err.message : String(err);
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "Invalid /codex command", callbackAlert: true };
+	}
+
+	if (parsed.writeRequested && tier !== "FULL_ACCESS") {
+		const text =
+			"/codex --write requires FULL_ACCESS. Run without --write for a read-only Codex work unit.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "--write requires FULL_ACCESS", callbackAlert: true };
+	}
+
+	const job = createBackgroundJob({
+		title: codexJobTitle(parsed.prompt),
+		description: codexJobDescription(parsed),
+		userId: `tg:${opts.actorId ?? opts.chatId}`,
+		chatId: opts.chatId,
+		threadId: opts.threadId,
+		tier,
+		payload: {
+			kind: "codex-work-unit",
+			prompt: parsed.prompt,
+			sandbox: parsed.sandbox,
+			...(parsed.cwd ? { cwd: parsed.cwd } : {}),
+			...(parsed.model ? { model: parsed.model } : {}),
+		},
+	});
+
+	logger.info(
+		{
+			jobId: job.id,
+			shortId: job.shortId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+			tier,
+			sandbox: parsed.sandbox,
+			cwd: parsed.cwd,
+			model: parsed.model,
+		},
+		"codex work unit queued via Telegram",
+	);
+
+	await sendBackgroundJobDetail(api, {
+		chatId: opts.chatId,
+		threadId: opts.threadId,
+		actorScope: opts.actorScope,
+		shortId: job.shortId,
+	});
+
+	return { callbackText: `Queued Codex job ${job.shortId}` };
+}
 
 function backgroundStatusLabel(status: BackgroundJobCardState["status"]): string {
 	switch (status) {

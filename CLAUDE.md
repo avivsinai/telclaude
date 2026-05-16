@@ -77,7 +77,7 @@
 - `src/auto-reply/` — auto-reply templating.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
-- `.claude/skills/` — security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
+- `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
 - `docs/providers.md` — provider integration guide (sidecar pattern, adding new providers).
@@ -127,6 +127,7 @@
 | `/system [sessions\|cron]` | System introspection |
 | `/social [queue\|promote <id>\|run [svc]\|log [svc] [hours]\|ask [svc] <q>]` | Social persona |
 | `/skills [drafts\|promote <name>\|reload]` | Skill management |
+| `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` | Queue a single-shot Codex work unit as a background job |
 | `/approve <code>` | Fast-path approval |
 | `/new` | Reset conversation session |
 
