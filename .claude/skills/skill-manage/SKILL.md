@@ -1,6 +1,6 @@
 ---
 name: skill-manage
-description: Create, patch, or archive agent-authored telclaude skills through the guarded managed-skill writer. Use only for private/telegram agent work when durable skill changes are clearly useful.
+description: Create, patch, pin, unpin, rename, or archive agent-authored telclaude skills through the guarded managed-skill writer. Use only for private/telegram agent work when durable skill changes are clearly useful.
 allowed-tools:
   - Bash
   - Read
@@ -8,7 +8,7 @@ allowed-tools:
 
 # Skill Manage
 
-Use this skill to create, patch, or archive managed skills. It does not rename or promote skills.
+Use this skill to create, patch, pin, unpin, rename, or archive managed skills. It does not promote skills into the user-authored namespace.
 
 The guarded writer only lands files under agent-authored paths:
 
@@ -105,6 +105,43 @@ pnpm dev maintenance skill-manage archive \
   --json
 ```
 
+## Pin And Unpin
+
+Pin protects a managed skill from archive and rename while still allowing content patches. Unpin removes the marker. Both commands require the current `SKILL.md` SHA-256.
+
+```bash
+pnpm dev maintenance skill-manage pin \
+  --persona telegram \
+  --name <skill-name> \
+  --actor-tier WRITE_LOCAL \
+  --user-id <request-user-id> \
+  --expected-sha256 <current-skill-md-sha256> \
+  --json
+
+pnpm dev maintenance skill-manage unpin \
+  --persona telegram \
+  --name <skill-name> \
+  --actor-tier WRITE_LOCAL \
+  --user-id <request-user-id> \
+  --expected-sha256 <current-skill-md-sha256> \
+  --json
+```
+
+## Rename
+
+Rename moves an existing managed skill to a new managed name and rewrites only the frontmatter `name:` field. Body text, examples, and headings are left unchanged. It requires the current `SKILL.md` SHA-256.
+
+```bash
+pnpm dev maintenance skill-manage rename \
+  --persona telegram \
+  --name <old-skill-name> \
+  --new-name <new-skill-name> \
+  --actor-tier WRITE_LOCAL \
+  --user-id <request-user-id> \
+  --expected-sha256 <current-skill-md-sha256> \
+  --json
+```
+
 ## Guardrails
 
 - SOCIAL callers are rejected by the command.
@@ -113,9 +150,12 @@ pnpm dev maintenance skill-manage archive \
 - `SKILL.md` must be 64 KB or smaller.
 - The scanner runs on a temp copy before the real file lands.
 - Patch replaces the full `SKILL.md`; it does not apply partial diffs.
-- Patch and archive require `--expected-sha256`.
+- Patch, archive, pin, unpin, and rename require `--expected-sha256`.
+- Pinned or malformed-pin-marker skills cannot be archived or renamed; unpin removes only the marker path.
+- Rename rewrites only frontmatter `name:` and fails on name collisions across loaded skill roots.
+- If a process is interrupted mid-rename, inspect hidden `.telclaude-rename-*.tmp-*` or `.telclaude-rename-*.bak-*` directories under the persona path before retrying.
 - Archive moves skills to `agent/<persona>/archived/` so normal persona loading ignores them.
-- The command snapshots the whole skill tree before writing, patching, or archiving.
+- The command snapshots the whole skill tree before writing, patching, pinning, unpinning, renaming, or archiving.
 - Every attempt is written to the skill-manage audit log.
 - Bash examples must avoid shell chaining, pipes, redirection, command substitution, and process substitution.
 - Secret names, secret-looking values, private URLs, metadata URLs, and sensitive host filesystem paths are rejected.

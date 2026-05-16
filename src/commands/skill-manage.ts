@@ -1,7 +1,7 @@
 /**
  * Managed skill writer for agent-authored skills.
  *
- * Slice B intentionally supports create only. It writes exclusively under
+ * Writes exclusively under
  * `.claude/skills/agent/...`, never the user-authored skill namespace.
  */
 
@@ -26,6 +26,7 @@ const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_SKILL_MARKDOWN_BYTES = 64 * 1024;
 const MAX_SNAPSHOTS_PER_PERSONA = 30;
 const AUDIT_FILENAME = "skills-manage-audit.jsonl";
+const MANAGED_SKILL_METADATA_FILENAME = ".telclaude-managed.json";
 const RESERVED_MANAGED_SKILL_NAMES = new Set(["archived"]);
 
 const SENSITIVE_ABSOLUTE_PATH_PREFIXES = [
@@ -77,7 +78,7 @@ const INFRA_SECRET_NAMES = [
 	"AWS_SECRET",
 ];
 
-type SkillManageAction = "create" | "patch" | "archive";
+type SkillManageAction = "create" | "patch" | "archive" | "pin" | "unpin" | "rename";
 
 type SkillManagePersona = { kind: "telegram" } | { kind: "social"; serviceId: string };
 
@@ -107,6 +108,16 @@ export type ArchiveManagedSkillOptions = ManagedSkillBaseOptions & {
 	expectedSha256?: string;
 };
 
+export type PinManagedSkillOptions = ManagedSkillBaseOptions & {
+	expectedSha256?: string;
+	pinned: boolean;
+};
+
+export type RenameManagedSkillOptions = ManagedSkillBaseOptions & {
+	newName: string;
+	expectedSha256?: string;
+};
+
 type ScanAuditSummary =
 	| {
 			blocked: boolean;
@@ -122,6 +133,7 @@ export type SkillManageAuditEntry = {
 	service_id?: string;
 	action: SkillManageAction;
 	skill_name: string;
+	new_skill_name?: string;
 	content_sha256: string;
 	previous_sha256?: string;
 	new_sha256?: string;
@@ -187,10 +199,51 @@ export type ArchiveManagedSkillResult =
 			auditPath?: string;
 	  };
 
+export type PinManagedSkillResult =
+	| {
+			success: true;
+			skillName: string;
+			targetDir: string;
+			metadataPath: string;
+			pinned: boolean;
+			snapshotPath: string;
+			auditPath: string;
+	  }
+	| {
+			success: false;
+			skillName: string;
+			error: string;
+			snapshotPath?: string;
+			auditPath?: string;
+	  };
+
+export type RenameManagedSkillResult =
+	| {
+			success: true;
+			skillName: string;
+			newSkillName: string;
+			sourceDir: string;
+			targetDir: string;
+			skillMdPath: string;
+			snapshotPath: string;
+			auditPath: string;
+	  }
+	| {
+			success: false;
+			skillName: string;
+			newSkillName: string;
+			error: string;
+			snapshotPath?: string;
+			auditPath?: string;
+			scanBlocked?: boolean;
+	  };
+
 type SkillManageCommandResult =
 	| CreateManagedSkillResult
 	| PatchManagedSkillResult
-	| ArchiveManagedSkillResult;
+	| ArchiveManagedSkillResult
+	| PinManagedSkillResult
+	| RenameManagedSkillResult;
 
 type ParsedFrontmatter = {
 	fields: Record<string, string>;
@@ -362,7 +415,7 @@ function validatePersonaAndName(persona: SkillManagePersona, skillName: string):
 
 function validateExpectedSha256(expectedSha256: string | undefined): string | null {
 	if (!expectedSha256) {
-		return "--expected-sha256 is required for managed skill patch/archive.";
+		return "--expected-sha256 is required for managed skill mutations.";
 	}
 	if (!SHA256_HEX_PATTERN.test(expectedSha256)) {
 		return `Invalid expected sha256 "${expectedSha256}". Must be 64 lowercase hex characters.`;
@@ -398,13 +451,67 @@ function acquireManagedSkillLock(options: ManagedSkillBaseOptions, skillName: st
 	}
 }
 
+function acquireManagedSkillLocks(
+	options: ManagedSkillBaseOptions,
+	skillNames: readonly string[],
+): string[] {
+	const uniqueNames = Array.from(new Set(skillNames));
+	const orderedNames = uniqueNames.sort((left, right) =>
+		managedSkillLockName(options.persona, left).localeCompare(
+			managedSkillLockName(options.persona, right),
+		),
+	);
+	const lockDirs: string[] = [];
+	try {
+		for (const skillName of orderedNames) {
+			lockDirs.push(acquireManagedSkillLock(options, skillName));
+		}
+		return lockDirs;
+	} catch (err) {
+		releaseManagedSkillLocks(lockDirs);
+		throw err;
+	}
+}
+
 function releaseManagedSkillLock(lockDir: string | undefined): void {
 	if (!lockDir) return;
 	fs.rmSync(lockDir, { recursive: true, force: true });
 }
 
+function releaseManagedSkillLocks(lockDirs: readonly string[] | undefined): void {
+	for (const lockDir of lockDirs ?? []) {
+		releaseManagedSkillLock(lockDir);
+	}
+}
+
 function resolveWritableSkillRoot(options: { cwd?: string; skillRoot?: string }): string {
 	return path.resolve(options.skillRoot ?? getSkillRoot(options.cwd));
+}
+
+function metadataPathForSkill(targetDir: string): string {
+	return path.join(targetDir, MANAGED_SKILL_METADATA_FILENAME);
+}
+
+function readManagedSkillPinned(targetDir: string): boolean {
+	const metadataPath = metadataPathForSkill(targetDir);
+	try {
+		const stat = fs.lstatSync(metadataPath);
+		if (!stat.isFile() || stat.isSymbolicLink()) return true;
+		JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+		return true;
+	} catch (err) {
+		if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
+			return false;
+		}
+		return true;
+	}
+}
+
+function assertManagedSkillNotPinned(targetDir: string, action: string): string | null {
+	if (readManagedSkillPinned(targetDir)) {
+		return `Managed skill is pinned and cannot be ${action}.`;
+	}
+	return null;
 }
 
 function validateExistingManagedSkillTarget(skillRoot: string, targetDir: string): string | null {
@@ -724,6 +831,24 @@ function appendAudit(entry: SkillManageAuditEntry, auditPath?: string): string {
 	return targetPath;
 }
 
+function writeJsonAtomic(targetPath: string, value: unknown): void {
+	const tempPath = path.join(
+		path.dirname(targetPath),
+		`.${path.basename(targetPath)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+	);
+	try {
+		fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+			flag: "wx",
+		});
+		fs.renameSync(tempPath, targetPath);
+	} catch (err) {
+		fs.rmSync(tempPath, { force: true });
+		throw err;
+	}
+}
+
 export function createSkillSnapshot(options: {
 	skillRoot: string;
 	persona: SkillManagePersona;
@@ -765,6 +890,46 @@ function skippedScan(reason: string): ScanAuditSummary {
 	return { blocked: false, skipped: true, reason };
 }
 
+function validateCurrentSkillHash(
+	skillMdPath: string,
+	expectedSha256: string,
+): { ok: true; markdown: string; hash: string } | { ok: false; error: string; hash: string } {
+	const markdown = fs.readFileSync(skillMdPath, "utf8");
+	const hash = sha256(markdown);
+	if (hash !== expectedSha256) {
+		return {
+			ok: false,
+			hash,
+			error: `Current SKILL.md sha256 ${hash} does not match expected ${expectedSha256}.`,
+		};
+	}
+	return { ok: true, markdown, hash };
+}
+
+function replaceFrontmatterName(markdown: string, oldName: string, newName: string): string {
+	const match = markdown.match(/^(---\s*\n)([\s\S]*?)(\n---[\s\S]*)$/);
+	if (!match) {
+		throw new Error("SKILL.md must include YAML frontmatter.");
+	}
+	const lines = match[2].split("\n");
+	let replaced = false;
+	const updatedLines = lines.map((line) => {
+		if (replaced) return line;
+		const nameMatch = line.match(/^name\s*:\s*(.*)$/);
+		if (!nameMatch) return line;
+		const current = nameMatch[1].trim().replace(/^['"]|['"]$/g, "");
+		if (current !== oldName) {
+			throw new Error(`Skill frontmatter name "${current}" must match "${oldName}".`);
+		}
+		replaced = true;
+		return `name: ${newName}`;
+	});
+	if (!replaced) {
+		throw new Error("Skill frontmatter must include name.");
+	}
+	return `${match[1]}${updatedLines.join("\n")}${match[3]}`;
+}
+
 export function createManagedSkill(options: CreateManagedSkillOptions): CreateManagedSkillResult {
 	const skillName = options.name.trim();
 	const contentHash = sha256(options.markdown);
@@ -772,6 +937,7 @@ export function createManagedSkill(options: CreateManagedSkillOptions): CreateMa
 	let scannerResult: ScanAuditSummary = skippedScan("not_started");
 	let targetRelativeDir: string | undefined;
 	let tempRoot: string | undefined;
+	let lockDirs: string[] | undefined;
 
 	type SuccessPayload = Omit<
 		Extract<CreateManagedSkillResult, { success: true }>,
@@ -842,6 +1008,7 @@ export function createManagedSkill(options: CreateManagedSkillOptions): CreateMa
 
 		const targetDir = resolveTargetDir(skillRoot, options.persona, skillName);
 		targetRelativeDir = path.relative(skillRoot, targetDir);
+		lockDirs = acquireManagedSkillLocks(options, [skillName]);
 		const roots = [skillRoot, ...getAllSkillRoots(options.cwd)];
 		const collisions = findSkillNameCollisions(skillName, roots);
 		if (collisions.length > 0) {
@@ -886,12 +1053,36 @@ export function createManagedSkill(options: CreateManagedSkillOptions): CreateMa
 			now: options.now,
 		});
 
+		let createdTargetDir = false;
 		try {
+			const finalCollisions = findSkillNameCollisions(skillName, roots);
+			if (finalCollisions.length > 0) {
+				const collision = finalCollisions[0];
+				return finish(false, {
+					error: `Skill name "${skillName}" already exists at ${path.join(collision.root, collision.relativeDir)}.`,
+					snapshotPath,
+				});
+			}
+			if (fs.existsSync(targetDir)) {
+				return finish(false, {
+					error: `Target skill directory already exists at ${targetDir}.`,
+					snapshotPath,
+				});
+			}
+			const finalParentError = ensureExistingParentInsideRoot(
+				skillRoot,
+				targetDir,
+				"Target skill path",
+			);
+			if (finalParentError) return finish(false, { error: finalParentError, snapshotPath });
 			fs.mkdirSync(path.dirname(targetDir), { recursive: true });
 			fs.mkdirSync(targetDir);
+			createdTargetDir = true;
 			fs.writeFileSync(path.join(targetDir, "SKILL.md"), options.markdown, "utf8");
 		} catch (err) {
-			fs.rmSync(targetDir, { recursive: true, force: true });
+			if (createdTargetDir) {
+				fs.rmSync(targetDir, { recursive: true, force: true });
+			}
 			return finish(false, {
 				error: `Failed to write managed skill: ${String(err)}`,
 				snapshotPath,
@@ -906,6 +1097,7 @@ export function createManagedSkill(options: CreateManagedSkillOptions): CreateMa
 	} catch (err) {
 		return finish(false, { error: err instanceof Error ? err.message : String(err) });
 	} finally {
+		releaseManagedSkillLocks(lockDirs);
 		if (tempRoot) {
 			fs.rmSync(tempRoot, { recursive: true, force: true });
 		}
@@ -1154,6 +1346,7 @@ export function archiveManagedSkill(
 
 		const expectedHashError = validateExpectedSha256(options.expectedSha256);
 		if (expectedHashError) return finish(false, { error: expectedHashError });
+		const expectedSha256 = options.expectedSha256 ?? "";
 
 		let skillRoot: string;
 		try {
@@ -1177,13 +1370,15 @@ export function archiveManagedSkill(
 			sourceDir,
 		);
 		if (collisionError) return finish(false, { error: collisionError });
+		const pinnedError = assertManagedSkillNotPinned(sourceDir, "archived");
+		if (pinnedError) return finish(false, { error: pinnedError });
 
 		const skillMdPath = path.join(sourceDir, "SKILL.md");
 		const currentMarkdown = fs.readFileSync(skillMdPath, "utf8");
 		contentHash = sha256(currentMarkdown);
-		if (options.expectedSha256 !== contentHash) {
+		if (expectedSha256 !== contentHash) {
 			return finish(false, {
-				error: `Current SKILL.md sha256 ${contentHash} does not match expected ${options.expectedSha256}.`,
+				error: `Current SKILL.md sha256 ${contentHash} does not match expected ${expectedSha256}.`,
 			});
 		}
 
@@ -1211,10 +1406,12 @@ export function archiveManagedSkill(
 		try {
 			const finalTargetError = validateExistingManagedSkillTarget(skillRoot, sourceDir);
 			if (finalTargetError) return finish(false, { error: finalTargetError, snapshotPath });
+			const finalPinnedError = assertManagedSkillNotPinned(sourceDir, "archived");
+			if (finalPinnedError) return finish(false, { error: finalPinnedError, snapshotPath });
 			const finalHash = sha256(fs.readFileSync(skillMdPath, "utf8"));
-			if (finalHash !== options.expectedSha256) {
+			if (finalHash !== expectedSha256) {
 				return finish(false, {
-					error: `Current SKILL.md sha256 ${finalHash} does not match expected ${options.expectedSha256}.`,
+					error: `Current SKILL.md sha256 ${finalHash} does not match expected ${expectedSha256}.`,
 					snapshotPath,
 				});
 			}
@@ -1236,6 +1433,397 @@ export function archiveManagedSkill(
 		return finish(false, { error: err instanceof Error ? err.message : String(err) });
 	} finally {
 		releaseManagedSkillLock(lockDir);
+	}
+}
+
+export function pinManagedSkill(options: PinManagedSkillOptions): PinManagedSkillResult {
+	const skillName = options.name.trim();
+	const personaLabel = personaKey(options.persona);
+	const scannerResult: ScanAuditSummary = skippedScan("not_applicable_for_pin");
+	let contentHash = "";
+	let targetRelativeDir: string | undefined;
+	let lockDir: string | undefined;
+
+	type SuccessPayload = Omit<
+		Extract<PinManagedSkillResult, { success: true }>,
+		"success" | "skillName" | "auditPath"
+	>;
+	type FailurePayload = Omit<
+		Extract<PinManagedSkillResult, { success: false }>,
+		"success" | "skillName" | "auditPath"
+	>;
+
+	function finish(
+		success: true,
+		result: SuccessPayload,
+	): Extract<PinManagedSkillResult, { success: true }>;
+	function finish(
+		success: false,
+		result: FailurePayload,
+	): Extract<PinManagedSkillResult, { success: false }>;
+	function finish(
+		success: boolean,
+		result: SuccessPayload | FailurePayload,
+	): PinManagedSkillResult {
+		const auditPath = appendAudit(
+			{
+				ts: (options.now ?? new Date()).toISOString(),
+				persona: personaLabel,
+				...(options.persona.kind === "social" ? { service_id: options.persona.serviceId } : {}),
+				action: options.pinned ? "pin" : "unpin",
+				skill_name: skillName || options.name,
+				content_sha256: contentHash,
+				previous_sha256: contentHash || undefined,
+				expected_sha256: options.expectedSha256,
+				...(targetRelativeDir ? { target_relative_dir: targetRelativeDir } : {}),
+				scanner_result: scannerResult,
+				success,
+				...(!success && "error" in result ? { error: result.error } : {}),
+			},
+			options.auditPath,
+		);
+
+		if (success) {
+			return { success: true, skillName, auditPath, ...(result as SuccessPayload) };
+		}
+		return { success: false, skillName, auditPath, ...(result as FailurePayload) };
+	}
+
+	try {
+		const actorError = validateActorCanManage(options);
+		if (actorError) return finish(false, { error: actorError });
+
+		const nameError = validatePersonaAndName(options.persona, skillName);
+		if (nameError) return finish(false, { error: nameError });
+
+		const expectedHashError = validateExpectedSha256(options.expectedSha256);
+		if (expectedHashError) return finish(false, { error: expectedHashError });
+		const expectedSha256 = options.expectedSha256 ?? "";
+
+		let skillRoot: string;
+		try {
+			skillRoot = resolveWritableSkillRoot(options);
+		} catch (err) {
+			if (err instanceof SkillRootUnavailableError) {
+				return finish(false, { error: err.message });
+			}
+			throw err;
+		}
+
+		const targetDir = resolveTargetDir(skillRoot, options.persona, skillName);
+		targetRelativeDir = path.relative(skillRoot, targetDir);
+		lockDir = acquireManagedSkillLock(options, skillName);
+		const targetError = validateExistingManagedSkillTarget(skillRoot, targetDir);
+		if (targetError) return finish(false, { error: targetError });
+
+		const skillMdPath = path.join(targetDir, "SKILL.md");
+		const current = validateCurrentSkillHash(skillMdPath, expectedSha256);
+		contentHash = current.hash;
+		if (!current.ok) return finish(false, { error: current.error });
+
+		const snapshotPath = createSkillSnapshot({
+			skillRoot,
+			persona: options.persona,
+			action: options.pinned ? "pin" : "unpin",
+			snapshotRoot: options.snapshotRoot,
+			now: options.now,
+		});
+
+		try {
+			const finalTargetError = validateExistingManagedSkillTarget(skillRoot, targetDir);
+			if (finalTargetError) return finish(false, { error: finalTargetError, snapshotPath });
+			const final = validateCurrentSkillHash(skillMdPath, expectedSha256);
+			if (!final.ok) return finish(false, { error: final.error, snapshotPath });
+
+			const metadataPath = metadataPathForSkill(targetDir);
+			if (options.pinned) {
+				writeJsonAtomic(metadataPath, {
+					schema_version: 1,
+					pinned: true,
+					pinned_at: (options.now ?? new Date()).toISOString(),
+					pinned_by: options.userId ?? null,
+				});
+			} else {
+				const metadataStat = fs.existsSync(metadataPath) ? fs.lstatSync(metadataPath) : null;
+				if (metadataStat && !metadataStat.isFile() && !metadataStat.isSymbolicLink()) {
+					return finish(false, {
+						error: `Managed skill metadata is not a plain file: ${metadataPath}.`,
+						snapshotPath,
+					});
+				}
+				fs.rmSync(metadataPath, { force: true });
+			}
+
+			return finish(true, {
+				targetDir,
+				metadataPath,
+				pinned: options.pinned,
+				snapshotPath,
+			});
+		} catch (err) {
+			return finish(false, {
+				error: `Failed to ${options.pinned ? "pin" : "unpin"} managed skill: ${String(err)}`,
+				snapshotPath,
+			});
+		}
+	} catch (err) {
+		return finish(false, { error: err instanceof Error ? err.message : String(err) });
+	} finally {
+		releaseManagedSkillLock(lockDir);
+	}
+}
+
+export function renameManagedSkill(options: RenameManagedSkillOptions): RenameManagedSkillResult {
+	const skillName = options.name.trim();
+	const newSkillName = options.newName.trim();
+	const personaLabel = personaKey(options.persona);
+	let scannerResult: ScanAuditSummary = skippedScan("not_started");
+	let contentHash = "";
+	let newContentHash = "";
+	let sourceRelativeDir: string | undefined;
+	let targetRelativeDir: string | undefined;
+	let stagingDir: string | undefined;
+	let backupDir: string | undefined;
+	let lockDirs: string[] | undefined;
+
+	type SuccessPayload = Omit<
+		Extract<RenameManagedSkillResult, { success: true }>,
+		"success" | "skillName" | "newSkillName" | "auditPath"
+	>;
+	type FailurePayload = Omit<
+		Extract<RenameManagedSkillResult, { success: false }>,
+		"success" | "skillName" | "newSkillName" | "auditPath"
+	>;
+
+	function finish(
+		success: true,
+		result: SuccessPayload,
+	): Extract<RenameManagedSkillResult, { success: true }>;
+	function finish(
+		success: false,
+		result: FailurePayload,
+	): Extract<RenameManagedSkillResult, { success: false }>;
+	function finish(
+		success: boolean,
+		result: SuccessPayload | FailurePayload,
+	): RenameManagedSkillResult {
+		const auditPath = appendAudit(
+			{
+				ts: (options.now ?? new Date()).toISOString(),
+				persona: personaLabel,
+				...(options.persona.kind === "social" ? { service_id: options.persona.serviceId } : {}),
+				action: "rename",
+				skill_name: skillName || options.name,
+				new_skill_name: newSkillName || options.newName,
+				content_sha256: newContentHash || contentHash,
+				previous_sha256: contentHash || undefined,
+				new_sha256: newContentHash || undefined,
+				expected_sha256: options.expectedSha256,
+				...(sourceRelativeDir ? { source_relative_dir: sourceRelativeDir } : {}),
+				...(targetRelativeDir ? { target_relative_dir: targetRelativeDir } : {}),
+				scanner_result: scannerResult,
+				success,
+				...(!success && "error" in result ? { error: result.error } : {}),
+			},
+			options.auditPath,
+		);
+
+		if (success) {
+			return {
+				success: true,
+				skillName,
+				newSkillName,
+				auditPath,
+				...(result as SuccessPayload),
+			};
+		}
+		return {
+			success: false,
+			skillName,
+			newSkillName,
+			auditPath,
+			...(result as FailurePayload),
+		};
+	}
+
+	try {
+		const actorError = validateActorCanManage(options);
+		if (actorError) return finish(false, { error: actorError });
+
+		const nameError = validatePersonaAndName(options.persona, skillName);
+		if (nameError) return finish(false, { error: nameError });
+		const newNameError = validatePersonaAndName(options.persona, newSkillName);
+		if (newNameError) return finish(false, { error: newNameError });
+		if (newSkillName === skillName) {
+			return finish(false, { error: "New skill name must differ from the current name." });
+		}
+
+		const expectedHashError = validateExpectedSha256(options.expectedSha256);
+		if (expectedHashError) return finish(false, { error: expectedHashError });
+		const expectedSha256 = options.expectedSha256 ?? "";
+
+		let skillRoot: string;
+		try {
+			skillRoot = resolveWritableSkillRoot(options);
+		} catch (err) {
+			if (err instanceof SkillRootUnavailableError) {
+				return finish(false, { error: err.message });
+			}
+			throw err;
+		}
+
+		const sourceDir = resolveTargetDir(skillRoot, options.persona, skillName);
+		const targetDir = resolveTargetDir(skillRoot, options.persona, newSkillName);
+		sourceRelativeDir = path.relative(skillRoot, sourceDir);
+		targetRelativeDir = path.relative(skillRoot, targetDir);
+		lockDirs = acquireManagedSkillLocks(options, [skillName, newSkillName]);
+		const sourceError = validateExistingManagedSkillTarget(skillRoot, sourceDir);
+		if (sourceError) return finish(false, { error: sourceError });
+		const pinnedError = assertManagedSkillNotPinned(sourceDir, "renamed");
+		if (pinnedError) return finish(false, { error: pinnedError });
+
+		if (fs.existsSync(targetDir)) {
+			return finish(false, { error: `Target skill directory already exists at ${targetDir}.` });
+		}
+		const parentError = ensureExistingParentInsideRoot(skillRoot, targetDir, "Target skill path");
+		if (parentError) return finish(false, { error: parentError });
+
+		const collisionError = assertNoOtherSkillNameCollision(
+			newSkillName,
+			[skillRoot, ...getAllSkillRoots(options.cwd)],
+			targetDir,
+		);
+		if (collisionError) return finish(false, { error: collisionError });
+
+		const skillMdPath = path.join(sourceDir, "SKILL.md");
+		const current = validateCurrentSkillHash(skillMdPath, expectedSha256);
+		contentHash = current.hash;
+		if (!current.ok) return finish(false, { error: current.error });
+
+		let renamedMarkdown: string;
+		try {
+			renamedMarkdown = replaceFrontmatterName(current.markdown, skillName, newSkillName);
+		} catch (err) {
+			return finish(false, { error: err instanceof Error ? err.message : String(err) });
+		}
+		newContentHash = sha256(renamedMarkdown);
+
+		const validationError = validateMarkdownStatic(
+			renamedMarkdown,
+			newSkillName,
+			options.actorTier,
+		);
+		if (validationError) {
+			scannerResult = skippedScan("static_validation_failed");
+			return finish(false, { error: validationError });
+		}
+
+		const snapshotPath = createSkillSnapshot({
+			skillRoot,
+			persona: options.persona,
+			action: "rename",
+			snapshotRoot: options.snapshotRoot,
+			now: options.now,
+		});
+
+		try {
+			const finalSourceError = validateExistingManagedSkillTarget(skillRoot, sourceDir);
+			if (finalSourceError) return finish(false, { error: finalSourceError, snapshotPath });
+			const finalPinnedError = assertManagedSkillNotPinned(sourceDir, "renamed");
+			if (finalPinnedError) return finish(false, { error: finalPinnedError, snapshotPath });
+			const final = validateCurrentSkillHash(skillMdPath, expectedSha256);
+			if (!final.ok) return finish(false, { error: final.error, snapshotPath });
+			if (fs.existsSync(targetDir)) {
+				return finish(false, {
+					error: `Target skill directory already exists at ${targetDir}.`,
+					snapshotPath,
+				});
+			}
+			const finalParentError = ensureExistingParentInsideRoot(
+				skillRoot,
+				targetDir,
+				"Target skill path",
+			);
+			if (finalParentError) return finish(false, { error: finalParentError, snapshotPath });
+			const finalCollisionError = assertNoOtherSkillNameCollision(
+				newSkillName,
+				[skillRoot, ...getAllSkillRoots(options.cwd)],
+				targetDir,
+			);
+			if (finalCollisionError) return finish(false, { error: finalCollisionError, snapshotPath });
+
+			stagingDir = fs.mkdtempSync(
+				path.join(path.dirname(targetDir), `.telclaude-rename-${newSkillName}.tmp-`),
+			);
+			fs.cpSync(sourceDir, stagingDir, {
+				recursive: true,
+				verbatimSymlinks: true,
+			});
+			const stagedSkillMdPath = path.join(stagingDir, "SKILL.md");
+			fs.writeFileSync(stagedSkillMdPath, renamedMarkdown, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+
+			const scanResult = scanSkill(stagingDir, {
+				repoRoot: options.cwd ? path.resolve(options.cwd) : process.cwd(),
+			});
+			scannerResult = summarizeScan(scanResult);
+			if (scanResult.blocked) {
+				const summary = scanResult.findings
+					.filter((finding) => finding.severity === "critical" || finding.severity === "high")
+					.map((finding) => `${finding.severity.toUpperCase()}: ${finding.message}`)
+					.join("; ");
+				return finish(false, {
+					error: `Skill "${newSkillName}" blocked by scanner: ${summary}`,
+					snapshotPath,
+					scanBlocked: true,
+				});
+			}
+
+			backupDir = path.join(
+				path.dirname(sourceDir),
+				`.telclaude-rename-${skillName}.bak-${process.pid}-${crypto.randomUUID()}`,
+			);
+			fs.renameSync(sourceDir, backupDir);
+			try {
+				fs.renameSync(stagingDir, targetDir);
+				stagingDir = undefined;
+			} catch (err) {
+				if (!fs.existsSync(sourceDir) && fs.existsSync(backupDir)) {
+					fs.renameSync(backupDir, sourceDir);
+					backupDir = undefined;
+				}
+				throw err;
+			}
+
+			const renamedSkillMdPath = path.join(targetDir, "SKILL.md");
+			try {
+				fs.rmSync(backupDir, { recursive: true, force: true });
+				backupDir = undefined;
+			} catch {
+				// Best effort: a leftover backup directory should not make a completed rename fail.
+			}
+
+			return finish(true, {
+				sourceDir,
+				targetDir,
+				skillMdPath: renamedSkillMdPath,
+				snapshotPath,
+			});
+		} catch (err) {
+			return finish(false, {
+				error: `Failed to rename managed skill: ${String(err)}`,
+				snapshotPath,
+			});
+		}
+	} catch (err) {
+		return finish(false, { error: err instanceof Error ? err.message : String(err) });
+	} finally {
+		releaseManagedSkillLocks(lockDirs);
+		if (stagingDir) {
+			fs.rmSync(stagingDir, { recursive: true, force: true });
+		}
 	}
 }
 
@@ -1288,6 +1876,13 @@ function printResult(
 		if ("archiveDir" in result) {
 			console.log(`Archived managed skill "${result.skillName}".`);
 			console.log(`  Archive: ${result.archiveDir}`);
+		} else if ("metadataPath" in result) {
+			const verb = result.pinned ? "Pinned" : "Unpinned";
+			console.log(`${verb} managed skill "${result.skillName}".`);
+			console.log(`  Metadata: ${result.metadataPath}`);
+		} else if ("newSkillName" in result) {
+			console.log(`Renamed managed skill "${result.skillName}" to "${result.newSkillName}".`);
+			console.log(`  SKILL.md: ${result.skillMdPath}`);
 		} else {
 			const verb = action === "patch" ? "Updated" : "Created";
 			console.log(`${verb} managed skill "${result.skillName}".`);
@@ -1302,7 +1897,7 @@ function printResult(
 export function registerSkillManageSubcommands(parent: Command): void {
 	const group = parent
 		.command("skill-manage")
-		.description("Create agent-authored skills with scanner, snapshot, and audit guards");
+		.description("Manage agent-authored skills with scanner, snapshot, and audit guards");
 
 	group
 		.command("create")
@@ -1428,6 +2023,143 @@ export function registerSkillManageSubcommands(parent: Command): void {
 						expectedSha256: opts.expectedSha256,
 					});
 					printResult(result, Boolean(opts.json), "archive");
+					if (!result.success) process.exitCode = 1;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					if (opts.json) {
+						console.log(JSON.stringify({ success: false, error: message }, null, 2));
+					} else {
+						console.error(`Error: ${message}`);
+					}
+					process.exitCode = 1;
+				}
+			},
+		);
+
+	group
+		.command("pin")
+		.description("Pin an agent-authored managed skill so archive and rename reject it")
+		.requiredOption("--name <name>", "Skill name (^[a-z0-9-]{1,63}$)")
+		.requiredOption("--persona <persona>", "Target persona: telegram or social")
+		.option("--service-id <id>", "Social service id when --persona social")
+		.requiredOption("--actor-tier <tier>", "Request permission tier")
+		.option("--user-id <id>", "Actor user id (defaults to TELCLAUDE_REQUEST_USER_ID)")
+		.requiredOption("--expected-sha256 <hash>", "Reject if current SKILL.md hash differs")
+		.option("--json", "Emit JSON", false)
+		.action(
+			(opts: {
+				name: string;
+				persona: string;
+				serviceId?: string;
+				actorTier: string;
+				userId?: string;
+				expectedSha256?: string;
+				json?: boolean;
+			}) => {
+				try {
+					const actorTier = parseActorTierOption(opts.actorTier);
+					const persona = parsePersonaOptions(opts);
+					const result = pinManagedSkill({
+						name: opts.name,
+						persona,
+						actorTier,
+						userId: process.env.TELCLAUDE_REQUEST_USER_ID ?? opts.userId,
+						expectedSha256: opts.expectedSha256,
+						pinned: true,
+					});
+					printResult(result, Boolean(opts.json), "pin");
+					if (!result.success) process.exitCode = 1;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					if (opts.json) {
+						console.log(JSON.stringify({ success: false, error: message }, null, 2));
+					} else {
+						console.error(`Error: ${message}`);
+					}
+					process.exitCode = 1;
+				}
+			},
+		);
+
+	group
+		.command("unpin")
+		.description("Remove the managed pin marker from an agent-authored skill")
+		.requiredOption("--name <name>", "Skill name (^[a-z0-9-]{1,63}$)")
+		.requiredOption("--persona <persona>", "Target persona: telegram or social")
+		.option("--service-id <id>", "Social service id when --persona social")
+		.requiredOption("--actor-tier <tier>", "Request permission tier")
+		.option("--user-id <id>", "Actor user id (defaults to TELCLAUDE_REQUEST_USER_ID)")
+		.requiredOption("--expected-sha256 <hash>", "Reject if current SKILL.md hash differs")
+		.option("--json", "Emit JSON", false)
+		.action(
+			(opts: {
+				name: string;
+				persona: string;
+				serviceId?: string;
+				actorTier: string;
+				userId?: string;
+				expectedSha256?: string;
+				json?: boolean;
+			}) => {
+				try {
+					const actorTier = parseActorTierOption(opts.actorTier);
+					const persona = parsePersonaOptions(opts);
+					const result = pinManagedSkill({
+						name: opts.name,
+						persona,
+						actorTier,
+						userId: process.env.TELCLAUDE_REQUEST_USER_ID ?? opts.userId,
+						expectedSha256: opts.expectedSha256,
+						pinned: false,
+					});
+					printResult(result, Boolean(opts.json), "unpin");
+					if (!result.success) process.exitCode = 1;
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					if (opts.json) {
+						console.log(JSON.stringify({ success: false, error: message }, null, 2));
+					} else {
+						console.error(`Error: ${message}`);
+					}
+					process.exitCode = 1;
+				}
+			},
+		);
+
+	group
+		.command("rename")
+		.description("Rename an agent-authored managed skill and rewrite frontmatter name")
+		.requiredOption("--name <name>", "Current skill name (^[a-z0-9-]{1,63}$)")
+		.requiredOption("--new-name <name>", "New skill name (^[a-z0-9-]{1,63}$)")
+		.requiredOption("--persona <persona>", "Target persona: telegram or social")
+		.option("--service-id <id>", "Social service id when --persona social")
+		.requiredOption("--actor-tier <tier>", "Request permission tier")
+		.option("--user-id <id>", "Actor user id (defaults to TELCLAUDE_REQUEST_USER_ID)")
+		.requiredOption("--expected-sha256 <hash>", "Reject if current SKILL.md hash differs")
+		.option("--json", "Emit JSON", false)
+		.action(
+			(opts: {
+				name: string;
+				newName: string;
+				persona: string;
+				serviceId?: string;
+				actorTier: string;
+				userId?: string;
+				expectedSha256?: string;
+				json?: boolean;
+			}) => {
+				try {
+					const actorTier = parseActorTierOption(opts.actorTier);
+					const persona = parsePersonaOptions(opts);
+					const result = renameManagedSkill({
+						name: opts.name,
+						newName: opts.newName,
+						persona,
+						actorTier,
+						userId: process.env.TELCLAUDE_REQUEST_USER_ID ?? opts.userId,
+						expectedSha256: opts.expectedSha256,
+					});
+					printResult(result, Boolean(opts.json), "rename");
 					if (!result.success) process.exitCode = 1;
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
