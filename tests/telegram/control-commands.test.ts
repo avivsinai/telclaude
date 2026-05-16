@@ -30,6 +30,12 @@ describe("telegram control command registry", () => {
 			expect(matchTelegramControlCommand("/auth force-reauth")?.command.id).toBe(
 				"auth:force-reauth",
 			);
+			expect(matchTelegramControlCommand("/profile list")?.command.id).toBe("profile:list");
+			expect(matchTelegramControlCommand("/profile show")?.command.id).toBe("profile:show");
+			expect(matchTelegramControlCommand("/profile switch engineer")?.command.id).toBe(
+				"profile:switch",
+			);
+			expect(matchTelegramControlCommand("/model reset")?.command.id).toBe("model:reset");
 			expect(matchTelegramControlCommand("/social queue")?.command.id).toBe("social:queue");
 			expect(matchTelegramControlCommand("/social promote post_123")?.command.id).toBe(
 				"social:promote",
@@ -172,6 +178,7 @@ describe("telegram control command registry", () => {
 				"me",
 				"auth",
 				"system",
+				"profile",
 				"sethome",
 				"social",
 				"skills",

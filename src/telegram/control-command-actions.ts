@@ -30,6 +30,7 @@ import { signSkillByName } from "../commands/skills-sign.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
 import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
+import { resolveChatProfile } from "../config/profiles.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
 import { runCuratorScan } from "../curator/actions.js";
 import { getChildLogger } from "../logging.js";
@@ -1523,7 +1524,8 @@ export async function openModelPicker(
 ): Promise<CommandUiResult> {
 	const cfg = opts.cfg ?? loadConfig();
 	const providers = cloneModelCatalog();
-	const modelRoute = resolveModelRoute(opts.chatId);
+	const activeProfile = resolveChatProfile(opts.chatId, cfg);
+	const modelRoute = resolveModelRoute(opts.chatId, { profile: activeProfile.profile });
 	const tier = getUserPermissionTier(String(opts.chatId), cfg.security);
 	const canMutate = canActorMutate(opts.chatId, cfg);
 
@@ -1539,10 +1541,9 @@ export async function openModelPicker(
 		page: 0,
 		view: hintProvider ? "models" : "providers",
 		currentModelId: modelRoute.effectiveModel ?? modelRoute.requestedModelId,
-		currentProviderId:
-			modelRoute.fallbackState === "fallback"
-				? modelRoute.requestedProviderId
-				: modelRoute.effectiveProviderId,
+		currentProviderId: modelRoute.effectiveModel
+			? modelRoute.effectiveProviderId
+			: (modelRoute.requestedProviderId ?? modelRoute.effectiveProviderId),
 		viewerTier: tier,
 		canMutate,
 		fallbackState: formatModelRoute(modelRoute),

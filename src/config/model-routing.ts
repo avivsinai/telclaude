@@ -1,7 +1,8 @@
 import { MODEL_CATALOG } from "./model-catalog.js";
 import { getChatModelPreference, type ModelPreference } from "./model-preferences.js";
+import type { EffectiveOperatorProfile } from "./profiles.js";
 
-export type ModelFallbackState = "default" | "override" | "fallback";
+export type ModelFallbackState = "default" | "override" | "profile" | "fallback";
 
 export type ModelRoute = {
 	/** Runtime model override. Undefined means use the Claude SDK default. */
@@ -11,6 +12,7 @@ export type ModelRoute = {
 	detail: string;
 	requestedProviderId?: string;
 	requestedModelId?: string;
+	profileId?: string;
 };
 
 const SDK_DEFAULT_DETAIL = "SDK default";
@@ -47,15 +49,20 @@ function findProviderForModel(modelId: string): string | undefined {
 		?.id;
 }
 
-function resolvePreferenceRoute(pref: ModelPreference): ModelRoute {
-	const requestedProviderId = pref.providerId;
-	const requestedModelId = pref.modelId;
+type ModelSelection = Pick<ModelPreference, "providerId" | "modelId">;
+
+function resolveSelectionRoute(
+	selection: ModelSelection,
+	source: "preference" | "profile",
+): ModelRoute {
+	const requestedProviderId = selection.providerId;
+	const requestedModelId = selection.modelId;
 
 	if (!isExecutableProviderId(requestedProviderId)) {
 		return {
 			effectiveProviderId: "anthropic",
 			fallbackState: "fallback",
-			detail: `${SDK_DEFAULT_DETAIL} (ignored ${requestedProviderId}:${requestedModelId})`,
+			detail: `${SDK_DEFAULT_DETAIL} (ignored ${source} ${requestedProviderId}:${requestedModelId})`,
 			requestedProviderId,
 			requestedModelId,
 		};
@@ -75,23 +82,59 @@ function resolvePreferenceRoute(pref: ModelPreference): ModelRoute {
 	return {
 		effectiveModel: requestedModelId,
 		effectiveProviderId: requestedProviderId,
-		fallbackState: "override",
+		fallbackState: source === "profile" ? "profile" : "override",
 		detail: `${requestedProviderId}:${requestedModelId}`,
 		requestedProviderId,
 		requestedModelId,
 	};
 }
 
-export function resolveModelRoute(chatId: number): ModelRoute {
+function resolveProfileDefaultRoute(profile?: EffectiveOperatorProfile): ModelRoute | null {
+	if (!profile?.defaultModel) return null;
+	const route = resolveSelectionRoute(profile.defaultModel, "profile");
+	return { ...route, profileId: profile.id };
+}
+
+export function resolveModelRoute(
+	chatId: number,
+	options: { profile?: EffectiveOperatorProfile } = {},
+): ModelRoute {
 	const pref = getChatModelPreference(chatId);
-	if (!pref) {
-		return {
-			effectiveProviderId: "anthropic",
-			fallbackState: "default",
-			detail: SDK_DEFAULT_DETAIL,
-		};
+	const profileRoute = resolveProfileDefaultRoute(options.profile);
+	if (pref) {
+		const prefRoute = resolveSelectionRoute(pref, "preference");
+		if (prefRoute.fallbackState !== "fallback") return prefRoute;
+		if (profileRoute && profileRoute.fallbackState !== "fallback") {
+			return {
+				...profileRoute,
+				fallbackState: "fallback",
+				detail: `${prefRoute.detail}; using profile default ${profileRoute.detail}`,
+				requestedProviderId: pref.providerId,
+				requestedModelId: pref.modelId,
+			};
+		}
+		if (profileRoute?.fallbackState === "fallback") {
+			return {
+				...prefRoute,
+				detail: `${prefRoute.detail}; profile default unavailable: ${profileRoute.detail}`,
+			};
+		}
+		return prefRoute;
 	}
-	return resolvePreferenceRoute(pref);
+	if (profileRoute) {
+		if (profileRoute.fallbackState === "fallback") {
+			return {
+				...profileRoute,
+				detail: `${profileRoute.detail}; using ${SDK_DEFAULT_DETAIL}`,
+			};
+		}
+		return profileRoute;
+	}
+	return {
+		effectiveProviderId: "anthropic",
+		fallbackState: "default",
+		detail: SDK_DEFAULT_DETAIL,
+	};
 }
 
 export function formatModelRoute(route: ModelRoute): string {
@@ -100,6 +143,8 @@ export function formatModelRoute(route: ModelRoute): string {
 			return route.detail;
 		case "override":
 			return `override: ${route.detail}`;
+		case "profile":
+			return `profile: ${route.detail}`;
 		case "fallback":
 			return `fallback: ${route.detail}`;
 	}

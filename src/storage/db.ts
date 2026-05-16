@@ -184,6 +184,13 @@ function initializeSchema(database: Database.Database): void {
 			system_sent INTEGER NOT NULL DEFAULT 0
 		);
 
+		-- Active private operator profile per Telegram chat.
+		CREATE TABLE IF NOT EXISTS chat_profiles (
+			chat_id INTEGER PRIMARY KEY,
+			active_profile_id TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+
 		-- Home delivery targets for conversational cron
 		CREATE TABLE IF NOT EXISTS home_targets (
 			owner_id TEXT PRIMARY KEY,
