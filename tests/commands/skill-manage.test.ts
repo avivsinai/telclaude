@@ -8,6 +8,8 @@ import {
 	archiveManagedSkill,
 	createManagedSkill,
 	patchManagedSkill,
+	pinManagedSkill,
+	renameManagedSkill,
 } from "../../src/commands/skill-manage.js";
 
 function skillMarkdown(name: string, options?: { body?: string; allowedTools?: string[] }): string {
@@ -350,6 +352,34 @@ describe("skill-manage create", () => {
 		if (!personaCollision.success) expect(personaCollision.error).toContain("already exists");
 	});
 
+	it("rejects create when a name collision appears between snapshot and write", () => {
+		const collisionDir = path.join(skillRoot, "race-create");
+
+		const result = createManagedSkill({
+			name: "race-create",
+			markdown: skillMarkdown("race-create"),
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			now: mutatingSnapshotDate(() => {
+				fs.mkdirSync(collisionDir, { recursive: true });
+				fs.writeFileSync(path.join(collisionDir, "SKILL.md"), skillMarkdown("race-create"));
+			}),
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.error).toContain("already exists");
+			expect(result.snapshotPath).toBeDefined();
+		}
+		expect(fs.existsSync(collisionDir)).toBe(true);
+		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "race-create"))).toBe(false);
+	});
+
 	it("rejects tools beyond the actor tier", () => {
 		const result = createManagedSkill({
 			name: "task-tool",
@@ -584,6 +614,37 @@ describe("skill-manage create", () => {
 		expect(fs.readFileSync(path.join(targetDir, "SKILL.md"), "utf8")).toBe(concurrent);
 	});
 
+	it("rejects archive when a pin marker appears between snapshot and final move", () => {
+		const targetDir = path.join(skillRoot, "agent", "telegram", "race-pin-archive");
+		const original = skillMarkdown("race-pin-archive", { body: "Original." });
+		fs.mkdirSync(targetDir, { recursive: true });
+		fs.writeFileSync(path.join(targetDir, "SKILL.md"), original, "utf8");
+		const metadataPath = path.join(targetDir, ".telclaude-managed.json");
+
+		const result = archiveManagedSkill({
+			name: "race-pin-archive",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now: mutatingSnapshotDate(() => {
+				fs.writeFileSync(metadataPath, JSON.stringify({ schema_version: 1, pinned: true }));
+			}),
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.error).toContain("pinned");
+			expect(result.snapshotPath).toBeDefined();
+		}
+		expect(fs.existsSync(targetDir)).toBe(true);
+		expect(fs.existsSync(metadataPath)).toBe(true);
+	});
+
 	it("refuses to patch or archive the user-authored skill namespace", () => {
 		const userDir = path.join(skillRoot, "memory");
 		const memoryMarkdown = skillMarkdown("memory");
@@ -678,9 +739,7 @@ describe("skill-manage create", () => {
 		if (!patch.success) expect(patch.error).toContain("outside the managed skill root");
 		expect(archive.success).toBe(false);
 		if (!archive.success) expect(archive.error).toContain("outside the managed skill root");
-		expect(fs.readFileSync(path.join(outsideRoot, "escape", "SKILL.md"), "utf8")).toBe(
-			original,
-		);
+		expect(fs.readFileSync(path.join(outsideRoot, "escape", "SKILL.md"), "utf8")).toBe(original);
 	});
 
 	it("does not follow a preexisting symlink at the patch temp path", () => {
@@ -690,10 +749,7 @@ describe("skill-manage create", () => {
 		fs.mkdirSync(targetDir, { recursive: true });
 		fs.writeFileSync(path.join(targetDir, "SKILL.md"), original, "utf8");
 		const outsideFile = path.join(tempRoot, "outside-file");
-		fs.symlinkSync(
-			outsideFile,
-			path.join(targetDir, `.SKILL.md.${process.pid}.fixed-temp.tmp`),
-		);
+		fs.symlinkSync(outsideFile, path.join(targetDir, `.SKILL.md.${process.pid}.fixed-temp.tmp`));
 		vi.spyOn(crypto, "randomUUID").mockReturnValue(
 			"fixed-temp" as ReturnType<typeof crypto.randomUUID>,
 		);
@@ -716,5 +772,350 @@ describe("skill-manage create", () => {
 		if (!result.success) expect(result.error).toContain("Failed to patch");
 		expect(fs.existsSync(outsideFile)).toBe(false);
 		expect(fs.readFileSync(path.join(targetDir, "SKILL.md"), "utf8")).toBe(original);
+	});
+
+	it("pins and unpins a managed skill, while pinned archive and rename fail closed", () => {
+		const targetDir = path.join(skillRoot, "agent", "telegram", "pinned-skill");
+		const original = skillMarkdown("pinned-skill", { body: "Pinned body." });
+		fs.mkdirSync(targetDir, { recursive: true });
+		fs.writeFileSync(path.join(targetDir, "SKILL.md"), original, "utf8");
+
+		const pin = pinManagedSkill({
+			name: "pinned-skill",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			pinned: true,
+			now,
+		});
+
+		expect(pin.success).toBe(true);
+		if (!pin.success) return;
+		expect(JSON.parse(fs.readFileSync(pin.metadataPath, "utf8"))).toMatchObject({
+			schema_version: 1,
+			pinned: true,
+			pinned_by: "tg:1",
+		});
+		const snapshotListing = execFileSync("tar", ["-tzf", pin.snapshotPath], {
+			encoding: "utf8",
+		});
+		expect(snapshotListing).not.toContain(".telclaude-managed.json");
+
+		const archive = archiveManagedSkill({
+			name: "pinned-skill",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+		const rename = renameManagedSkill({
+			name: "pinned-skill",
+			newName: "renamed-pinned",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+
+		expect(archive.success).toBe(false);
+		if (!archive.success) expect(archive.error).toContain("pinned");
+		expect(rename.success).toBe(false);
+		if (!rename.success) expect(rename.error).toContain("pinned");
+
+		const patched = skillMarkdown("pinned-skill", { body: "Patched while pinned." });
+		const patch = patchManagedSkill({
+			name: "pinned-skill",
+			markdown: patched,
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+		expect(patch.success).toBe(true);
+		expect(fs.existsSync(pin.metadataPath)).toBe(true);
+
+		const unpin = pinManagedSkill({
+			name: "pinned-skill",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(patched),
+			pinned: false,
+			now,
+		});
+
+		expect(unpin.success).toBe(true);
+		expect(fs.existsSync(pin.metadataPath)).toBe(false);
+		expect(readAuditEntries(auditPath).map((entry) => entry.action)).toContain("unpin");
+	});
+
+	it("treats malformed pin metadata as pinned and unpin removes symlink markers only", () => {
+		const targetDir = path.join(skillRoot, "agent", "telegram", "weird-pin");
+		const original = skillMarkdown("weird-pin", { body: "Original." });
+		fs.mkdirSync(targetDir, { recursive: true });
+		fs.writeFileSync(path.join(targetDir, "SKILL.md"), original, "utf8");
+		const outsideTarget = path.join(tempRoot, "outside-marker-target");
+		fs.writeFileSync(outsideTarget, "keep me", "utf8");
+		const metadataPath = path.join(targetDir, ".telclaude-managed.json");
+		fs.symlinkSync(outsideTarget, metadataPath);
+
+		const archive = archiveManagedSkill({
+			name: "weird-pin",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+		expect(archive.success).toBe(false);
+		if (!archive.success) expect(archive.error).toContain("pinned");
+
+		const unpin = pinManagedSkill({
+			name: "weird-pin",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			pinned: false,
+			now,
+		});
+
+		expect(unpin.success).toBe(true);
+		expect(fs.existsSync(metadataPath)).toBe(false);
+		expect(fs.readFileSync(outsideTarget, "utf8")).toBe("keep me");
+
+		fs.writeFileSync(metadataPath, JSON.stringify({ schema_version: 1, pinned: false }), "utf8");
+		const malformedArchive = archiveManagedSkill({
+			name: "weird-pin",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+		expect(malformedArchive.success).toBe(false);
+		if (!malformedArchive.success) expect(malformedArchive.error).toContain("pinned");
+	});
+
+	it("renames a managed skill, rewriting only frontmatter name after snapshotting", () => {
+		const sourceDir = path.join(skillRoot, "agent", "telegram", "old-name");
+		const original = [
+			"---",
+			"name: old-name",
+			"description: test managed skill",
+			"allowed-tools:",
+			"  - Read",
+			"---",
+			"",
+			"# old-name",
+			"",
+			"Body mentions name: old-name and should remain unchanged.",
+			"",
+		].join("\n");
+		fs.mkdirSync(sourceDir, { recursive: true });
+		fs.writeFileSync(path.join(sourceDir, "SKILL.md"), original, "utf8");
+
+		const result = renameManagedSkill({
+			name: "old-name",
+			newName: "new-name",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+
+		expect(result.success).toBe(true);
+		if (!result.success) return;
+		expect(fs.existsSync(sourceDir)).toBe(false);
+		expect(result.targetDir).toBe(path.join(skillRoot, "agent", "telegram", "new-name"));
+		const renamed = fs.readFileSync(result.skillMdPath, "utf8");
+		expect(renamed).toContain("name: new-name");
+		expect(renamed).toContain("# old-name");
+		expect(renamed).toContain("Body mentions name: old-name");
+		const snapshotSkill = execFileSync(
+			"tar",
+			["-xOf", result.snapshotPath, "./agent/telegram/old-name/SKILL.md"],
+			{ encoding: "utf8" },
+		);
+		expect(snapshotSkill).toBe(original);
+		expect(readAuditEntries(auditPath).at(-1)).toMatchObject({
+			action: "rename",
+			skill_name: "old-name",
+			new_skill_name: "new-name",
+			source_relative_dir: path.join("agent", "telegram", "old-name"),
+			target_relative_dir: path.join("agent", "telegram", "new-name"),
+			success: true,
+		});
+	});
+
+	it("scans bundled skill resources before activating a rename", () => {
+		const sourceDir = path.join(skillRoot, "agent", "telegram", "resource-rename");
+		const original = skillMarkdown("resource-rename", { body: "Original." });
+		fs.mkdirSync(path.join(sourceDir, "scripts"), { recursive: true });
+		fs.writeFileSync(path.join(sourceDir, "SKILL.md"), original, "utf8");
+		fs.writeFileSync(
+			path.join(sourceDir, "scripts", "hazard.js"),
+			'import { execSync } from "node:child_process";\nexecSync("whoami");\n',
+			"utf8",
+		);
+
+		const result = renameManagedSkill({
+			name: "resource-rename",
+			newName: "resource-renamed",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) {
+			expect(result.scanBlocked).toBe(true);
+			expect(result.error).toContain("Direct process execution");
+			expect(result.snapshotPath).toBeDefined();
+		}
+		expect(fs.existsSync(sourceDir)).toBe(true);
+		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "resource-renamed"))).toBe(
+			false,
+		);
+	});
+
+	it("rejects rename collisions and stale or concurrent edits without moving the source", () => {
+		const sourceDir = path.join(skillRoot, "agent", "telegram", "rename-steady");
+		const original = skillMarkdown("rename-steady", { body: "Original." });
+		fs.mkdirSync(sourceDir, { recursive: true });
+		fs.writeFileSync(path.join(sourceDir, "SKILL.md"), original, "utf8");
+		fs.mkdirSync(path.join(skillRoot, "existing-user"), { recursive: true });
+		fs.writeFileSync(
+			path.join(skillRoot, "existing-user", "SKILL.md"),
+			skillMarkdown("existing-user"),
+			"utf8",
+		);
+
+		const collision = renameManagedSkill({
+			name: "rename-steady",
+			newName: "existing-user",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+		const stale = renameManagedSkill({
+			name: "rename-steady",
+			newName: "rename-stale",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: "0".repeat(64),
+			now,
+		});
+		const concurrent = skillMarkdown("rename-steady", { body: "Concurrent edit." });
+		const raced = renameManagedSkill({
+			name: "rename-steady",
+			newName: "rename-raced",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now: mutatingSnapshotDate(() => {
+				fs.writeFileSync(path.join(sourceDir, "SKILL.md"), concurrent, "utf8");
+			}),
+		});
+
+		expect(collision.success).toBe(false);
+		if (!collision.success) expect(collision.error).toContain("also exists");
+		expect(stale.success).toBe(false);
+		if (!stale.success) expect(stale.error).toContain("does not match expected");
+		expect(raced.success).toBe(false);
+		if (!raced.success) expect(raced.error).toContain("does not match expected");
+		expect(fs.existsSync(sourceDir)).toBe(true);
+		expect(fs.readFileSync(path.join(sourceDir, "SKILL.md"), "utf8")).toBe(concurrent);
+		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "rename-raced"))).toBe(false);
+	});
+
+	it("does not rename user-authored skills outside the managed namespace", () => {
+		const userDir = path.join(skillRoot, "user-owned");
+		const original = skillMarkdown("user-owned", { body: "User namespace." });
+		fs.mkdirSync(userDir, { recursive: true });
+		fs.writeFileSync(path.join(userDir, "SKILL.md"), original, "utf8");
+
+		const result = renameManagedSkill({
+			name: "user-owned",
+			newName: "agent-owned",
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			expectedSha256: sha256(original),
+			now,
+		});
+
+		expect(result.success).toBe(false);
+		if (!result.success) expect(result.error).toContain("Managed skill target does not exist");
+		expect(fs.existsSync(userDir)).toBe(true);
+		expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe(original);
+		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "agent-owned"))).toBe(false);
 	});
 });
