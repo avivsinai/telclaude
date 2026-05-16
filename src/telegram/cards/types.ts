@@ -237,6 +237,16 @@ export type ModelPickerEntry = {
 export type ModelPickerProvider = {
 	id: string;
 	label: string;
+	execution:
+		| {
+				executable: true;
+				kind: "claude-sdk";
+		  }
+		| {
+				executable: false;
+				kind: "catalog-only";
+				reason: string;
+		  };
 	models: ModelPickerEntry[];
 };
 

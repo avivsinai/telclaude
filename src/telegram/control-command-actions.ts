@@ -29,7 +29,7 @@ import {
 import { signSkillByName } from "../commands/skills-sign.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
-import { getChatModelPreference } from "../config/model-preferences.js";
+import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
 import { runCuratorScan } from "../curator/actions.js";
 import { getChildLogger } from "../logging.js";
@@ -1411,7 +1411,7 @@ export async function openSystemHealthCard(
 	}
 
 	try {
-		const snapshot = await collectSystemHealth();
+		const snapshot = await collectSystemHealth({ chatId: opts.chatId });
 		const items: SystemHealthCardItem[] = snapshot.items.map((item) => ({
 			id: item.id,
 			label: item.label,
@@ -1523,7 +1523,7 @@ export async function openModelPicker(
 ): Promise<CommandUiResult> {
 	const cfg = opts.cfg ?? loadConfig();
 	const providers = cloneModelCatalog();
-	const pref = getChatModelPreference(opts.chatId);
+	const modelRoute = resolveModelRoute(opts.chatId);
 	const tier = getUserPermissionTier(String(opts.chatId), cfg.security);
 	const canMutate = canActorMutate(opts.chatId, cfg);
 
@@ -1538,11 +1538,14 @@ export async function openModelPicker(
 		selectedProviderId: hintProvider?.id,
 		page: 0,
 		view: hintProvider ? "models" : "providers",
-		currentModelId: pref?.modelId,
-		currentProviderId: pref?.providerId,
+		currentModelId: modelRoute.effectiveModel ?? modelRoute.requestedModelId,
+		currentProviderId:
+			modelRoute.fallbackState === "fallback"
+				? modelRoute.requestedProviderId
+				: modelRoute.effectiveProviderId,
 		viewerTier: tier,
 		canMutate,
-		fallbackState: pref ? "override" : "default",
+		fallbackState: formatModelRoute(modelRoute),
 		lastRefreshedAtMs: Date.now(),
 	};
 

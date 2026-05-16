@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
+import { isExecutableModelId } from "../config/model-routing.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import {
@@ -350,6 +351,10 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				}
 				if (parsed.model !== undefined && typeof parsed.model !== "string") {
 					writeJson(res, 400, { error: "Invalid model." });
+					return;
+				}
+				if (parsed.model !== undefined && !isExecutableModelId(parsed.model)) {
+					writeJson(res, 400, { error: "Model is not executable by this runtime." });
 					return;
 				}
 				if (

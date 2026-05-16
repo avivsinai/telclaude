@@ -34,6 +34,7 @@ import {
 	type PermissionTier,
 	type PrivateEndpoint,
 } from "../config/config.js";
+import { assertExecutableModelId } from "../config/model-routing.js";
 import { readEnv } from "../env.js";
 import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
@@ -1365,7 +1366,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	const sdkOpts: SDKOptions = {
 		cwd: opts.cwd,
-		model: opts.model,
+		...(opts.model ? { model: assertExecutableModelId(opts.model) } : {}),
 		maxTurns: opts.maxTurns,
 		includePartialMessages: opts.includePartialMessages,
 		abortController,

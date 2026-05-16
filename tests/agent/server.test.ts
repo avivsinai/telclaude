@@ -233,6 +233,28 @@ describe("agent server social userId normalization", () => {
 		const [, options] = executePooledQueryImpl.mock.calls[0] as [string, { model?: string }];
 		expect(options.model).toBe("claude-sonnet-4-5-20250929");
 	});
+
+	it("rejects non-executable model overrides before execution", async () => {
+		const body = JSON.stringify({
+			prompt: "hi",
+			tier: "READ_ONLY",
+			poolKey: "pool-1",
+			userId: "user-1",
+			model: "gpt-5",
+		});
+		const headers = buildInternalAuthHeaders("POST", "/v1/query", body, { scope: "social" });
+
+		const res = await fetch(`${baseUrl}/v1/query`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body,
+		});
+		const payload = (await res.json()) as { error?: string };
+
+		expect(res.status).toBe(400);
+		expect(payload.error).toContain("not executable");
+		expect(executePooledQueryImpl).not.toHaveBeenCalled();
+	});
 });
 
 describe("agent server soul + social contract prompt assembly", () => {

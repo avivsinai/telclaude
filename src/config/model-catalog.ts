@@ -1,9 +1,9 @@
 /**
  * Curated model catalog surfaced by the `/model` picker.
  *
- * This is the display catalog for the W2 picker, not an authoritative
- * routing table. The picker writes the chosen `modelId` into the per-chat
- * preference store; the SDK query path may consult it later.
+ * This is the display catalog for the W2 picker plus the runtime execution
+ * capability metadata. The picker may show catalog-only providers, but the
+ * SDK query path must only execute providers marked as executable.
  */
 
 import type { ModelPickerProvider } from "../telegram/cards/types.js";
@@ -12,6 +12,7 @@ export const MODEL_CATALOG: ModelPickerProvider[] = [
 	{
 		id: "anthropic",
 		label: "Anthropic",
+		execution: { executable: true, kind: "claude-sdk" },
 		models: [
 			{
 				id: "claude-opus-4-5-20250929",
@@ -36,6 +37,11 @@ export const MODEL_CATALOG: ModelPickerProvider[] = [
 	{
 		id: "openai",
 		label: "OpenAI",
+		execution: {
+			executable: false,
+			kind: "catalog-only",
+			reason: "OpenAI models are catalog-only until an executor is configured.",
+		},
 		models: [
 			{
 				id: "gpt-5",
@@ -117,6 +123,7 @@ export function cloneModelCatalog(): ModelPickerProvider[] {
 	return MODEL_CATALOG.map((provider) => ({
 		id: provider.id,
 		label: provider.label,
+		execution: { ...provider.execution },
 		models: provider.models.map((model) => ({ ...model })),
 	}));
 }

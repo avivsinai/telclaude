@@ -8,7 +8,7 @@ import { cleanupManagedSkillHousekeeping } from "../commands/skill-manage.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import { resolveModelHint } from "../config/model-catalog.js";
-import { getChatModelPreference } from "../config/model-preferences.js";
+import { resolveModelRoute } from "../config/model-routing.js";
 import {
 	DEFAULT_IDLE_MINUTES,
 	deleteSession,
@@ -163,9 +163,20 @@ function runManagedSkillHousekeeping(stage: "startup" | "periodic"): void {
 	}
 }
 
-function resolveClaudeModelForChat(chatId: number): string | undefined {
-	const pref = getChatModelPreference(chatId);
-	return pref?.providerId === "anthropic" ? pref.modelId : undefined;
+function resolveExecutableModelForChat(chatId: number): string | undefined {
+	const route = resolveModelRoute(chatId);
+	if (route.fallbackState === "fallback") {
+		logger.info(
+			{
+				chatId,
+				requestedProviderId: route.requestedProviderId,
+				requestedModelId: route.requestedModelId,
+				detail: route.detail,
+			},
+			"chat model preference ignored; using SDK default",
+		);
+	}
+	return route.effectiveModel;
 }
 
 /**
@@ -1226,7 +1237,7 @@ async function executeWithSession(
 				.filter(Boolean)
 				.join("\n\n") || undefined;
 
-		const model = resolveClaudeModelForChat(msg.chatId);
+		const model = resolveExecutableModelForChat(msg.chatId);
 		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const queryStream = useRemoteAgent
 			? executeRemoteQuery(queryPrompt, {
@@ -2663,7 +2674,7 @@ async function executePlanPhase(
 				.filter(Boolean)
 				.join("\n\n");
 
-			const model = resolveClaudeModelForChat(msg.chatId);
+			const model = resolveExecutableModelForChat(msg.chatId);
 			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 			const queryStream = useRemoteAgent
 				? executeRemoteQuery(queryPrompt, {

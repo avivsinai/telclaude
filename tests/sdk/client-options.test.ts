@@ -77,6 +77,25 @@ describe("buildSdkOptions", () => {
 		expect(opts.betas).toEqual(betas);
 	});
 
+	it("passes executable model overrides to the SDK", async () => {
+		const opts = await buildSdkOptions({
+			...baseOpts,
+			tier: "READ_ONLY",
+			model: "claude-sonnet-4-5-20250929",
+		});
+		expect(opts.model).toBe("claude-sonnet-4-5-20250929");
+	});
+
+	it("rejects non-executable model overrides", async () => {
+		await expect(
+			buildSdkOptions({
+				...baseOpts,
+				tier: "READ_ONLY",
+				model: "gpt-5",
+			}),
+		).rejects.toThrow(/not executable/);
+	});
+
 	it("creates an AbortController when timeoutMs is set", async () => {
 		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", timeoutMs: 10 });
 		expect(opts.abortController).toBeInstanceOf(AbortController);

@@ -136,4 +136,34 @@ describe("executePooledQuery streaming", () => {
 		expect((chunks[0] as any).content).toBe("Fallback text");
 		expect((chunks[1] as any).result.response).toBe("Fallback text");
 	});
+
+	it("passes executable model overrides into SDK options", async () => {
+		queryMock.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "result",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					subtype: "success",
+				};
+			})(),
+		);
+
+		await collectChunks(
+			executePooledQuery("prompt", {
+				cwd: "/tmp",
+				tier: "READ_ONLY",
+				poolKey: "chat-4",
+				model: "claude-sonnet-4-5-20250929",
+			}),
+		);
+
+		expect(queryMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: "prompt",
+				options: expect.objectContaining({ model: "claude-sonnet-4-5-20250929" }),
+			}),
+		);
+	});
 });
