@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import type { PermissionTier } from "../config/config.js";
+import { type LogRotationResult, rotateLogFileIfNeeded } from "../maintenance/log-rotation.js";
 import { BLOCKED_METADATA_DOMAINS } from "../sandbox/config.js";
 import { isNonOverridableBlock, isPrivateIP } from "../sandbox/network-proxy.js";
 import { filterOutput } from "../security/output-filter.js";
@@ -26,6 +27,9 @@ const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_SKILL_MARKDOWN_BYTES = 64 * 1024;
 const MAX_SNAPSHOTS_PER_PERSONA = 30;
 const AUDIT_FILENAME = "skills-manage-audit.jsonl";
+const DEFAULT_SKILL_MANAGE_AUDIT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_SKILL_MANAGE_AUDIT_RETAINED_FILES = 5;
+const DEFAULT_MANAGED_SKILL_STALE_ARTIFACT_MS = 60 * 60 * 1000;
 const MANAGED_SKILL_METADATA_FILENAME = ".telclaude-managed.json";
 const RESERVED_MANAGED_SKILL_NAMES = new Set(["archived"]);
 
@@ -116,6 +120,28 @@ export type PinManagedSkillOptions = ManagedSkillBaseOptions & {
 export type RenameManagedSkillOptions = ManagedSkillBaseOptions & {
 	newName: string;
 	expectedSha256?: string;
+};
+
+export type ManagedSkillHousekeepingOptions = {
+	cwd?: string;
+	skillRoot?: string;
+	auditPath?: string;
+	lockRoot?: string;
+	now?: Date;
+	staleMs?: number;
+	auditMaxBytes?: number;
+	auditRetainedFiles?: number;
+};
+
+export type ManagedSkillHousekeepingResult = {
+	auditPath: string;
+	lockRoot: string;
+	skillRoot?: string;
+	auditLog: LogRotationResult;
+	staleLocks: number;
+	staleArtifacts: number;
+	staleTempRoots: number;
+	artifactCleanupSkipped?: string;
 };
 
 type ScanAuditSummary =
@@ -423,13 +449,17 @@ function validateExpectedSha256(expectedSha256: string | undefined): string | nu
 	return null;
 }
 
-function managedSkillLockRoot(options: ManagedSkillBaseOptions): string {
+function resolveManagedSkillLockRoot(options: { auditPath?: string; lockRoot?: string }): string {
 	return path.resolve(
 		options.lockRoot ??
 			(options.auditPath
 				? path.join(path.dirname(options.auditPath), "skills-manage-locks")
 				: path.join(CONFIG_DIR, "skills-manage-locks")),
 	);
+}
+
+function managedSkillLockRoot(options: ManagedSkillBaseOptions): string {
+	return resolveManagedSkillLockRoot(options);
 }
 
 function managedSkillLockName(persona: SkillManagePersona, skillName: string): string {
@@ -816,9 +846,25 @@ function defaultAuditPath(): string {
 	return path.join(CONFIG_DIR, AUDIT_FILENAME);
 }
 
+function rotateSkillManageAudit(options: {
+	auditPath: string;
+	maxBytes?: number;
+	retainedFiles?: number;
+	now?: Date;
+}): LogRotationResult {
+	fs.mkdirSync(path.dirname(options.auditPath), { recursive: true, mode: 0o700 });
+	return rotateLogFileIfNeeded({
+		filePath: options.auditPath,
+		maxBytes: options.maxBytes ?? DEFAULT_SKILL_MANAGE_AUDIT_MAX_BYTES,
+		retainedFiles: options.retainedFiles ?? DEFAULT_SKILL_MANAGE_AUDIT_RETAINED_FILES,
+		now: options.now,
+	});
+}
+
 function appendAudit(entry: SkillManageAuditEntry, auditPath?: string): string {
 	const targetPath = auditPath ?? defaultAuditPath();
 	fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+	rotateSkillManageAudit({ auditPath: targetPath });
 	const existed = fs.existsSync(targetPath);
 	fs.appendFileSync(targetPath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
 	if (!existed) {
@@ -829,6 +875,192 @@ function appendAudit(entry: SkillManageAuditEntry, auditPath?: string): string {
 		}
 	}
 	return targetPath;
+}
+
+const UUID_FRAGMENT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const SKILL_MD_ARTIFACT_PATTERN = new RegExp(
+	`^\\.SKILL\\.md\\.\\d+\\.${UUID_FRAGMENT}\\.(tmp|bak)$`,
+);
+const METADATA_ARTIFACT_PATTERN = new RegExp(
+	`^\\.{1,2}${MANAGED_SKILL_METADATA_FILENAME.slice(1).replace(".", "\\.")}\\.\\d+\\.${UUID_FRAGMENT}\\.tmp$`,
+);
+const RENAME_TMP_ARTIFACT_PATTERN = /^\.telclaude-rename-[a-z0-9-]{1,63}\.tmp-.+$/;
+const RENAME_BAK_ARTIFACT_PATTERN = new RegExp(
+	`^\\.telclaude-rename-[a-z0-9-]{1,63}\\.bak-\\d+-${UUID_FRAGMENT}$`,
+);
+
+function isManagedSkillArtifactName(name: string): boolean {
+	return (
+		SKILL_MD_ARTIFACT_PATTERN.test(name) ||
+		METADATA_ARTIFACT_PATTERN.test(name) ||
+		RENAME_TMP_ARTIFACT_PATTERN.test(name) ||
+		RENAME_BAK_ARTIFACT_PATTERN.test(name)
+	);
+}
+
+function isStale(stat: fs.Stats, nowMs: number, staleMs: number): boolean {
+	return nowMs - stat.mtimeMs >= staleMs;
+}
+
+function removeStaleArtifact(entryPath: string, nowMs: number, staleMs: number): boolean {
+	try {
+		const stat = fs.lstatSync(entryPath);
+		if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) return false;
+		if (!isStale(stat, nowMs, staleMs)) return false;
+		fs.rmSync(entryPath, { recursive: stat.isDirectory(), force: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function cleanupStaleLockDirs(lockRoot: string, nowMs: number, staleMs: number): number {
+	let rootStat: fs.Stats;
+	try {
+		rootStat = fs.lstatSync(lockRoot);
+	} catch {
+		return 0;
+	}
+	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return 0;
+
+	let removed = 0;
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(lockRoot, { withFileTypes: true });
+	} catch {
+		return 0;
+	}
+
+	for (const entry of entries) {
+		if (!entry.name.endsWith(".lock")) continue;
+		const entryPath = path.join(lockRoot, entry.name);
+		try {
+			const stat = fs.lstatSync(entryPath);
+			if (stat.isSymbolicLink() || !stat.isDirectory() || !isStale(stat, nowMs, staleMs)) {
+				continue;
+			}
+			fs.rmSync(entryPath, { recursive: true, force: true });
+			removed += 1;
+		} catch {
+			// Best effort; a live process may be creating or releasing a lock.
+		}
+	}
+	return removed;
+}
+
+function cleanupStaleSkillArtifacts(skillRoot: string, nowMs: number, staleMs: number): number {
+	const resolvedRoot = path.resolve(skillRoot);
+	let rootStat: fs.Stats;
+	try {
+		rootStat = fs.lstatSync(resolvedRoot);
+	} catch {
+		return 0;
+	}
+	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return 0;
+
+	let removed = 0;
+	const visit = (dir: string): void => {
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			const entryPath = path.join(dir, entry.name);
+			const resolvedEntryPath = path.resolve(entryPath);
+			if (!isInsidePath(resolvedRoot, resolvedEntryPath)) continue;
+
+			if (isManagedSkillArtifactName(entry.name)) {
+				if (removeStaleArtifact(entryPath, nowMs, staleMs)) {
+					removed += 1;
+				}
+				continue;
+			}
+
+			if (!entry.isDirectory()) continue;
+			try {
+				const stat = fs.lstatSync(entryPath);
+				if (stat.isSymbolicLink()) continue;
+			} catch {
+				continue;
+			}
+			visit(entryPath);
+		}
+	};
+
+	visit(resolvedRoot);
+	return removed;
+}
+
+function cleanupStaleTempRoots(nowMs: number, staleMs: number): number {
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true });
+	} catch {
+		return 0;
+	}
+
+	let removed = 0;
+	for (const entry of entries) {
+		if (!entry.name.startsWith("telclaude-skill-manage-")) continue;
+		const entryPath = path.join(os.tmpdir(), entry.name);
+		try {
+			const stat = fs.lstatSync(entryPath);
+			if (stat.isSymbolicLink() || !stat.isDirectory() || !isStale(stat, nowMs, staleMs)) {
+				continue;
+			}
+			fs.rmSync(entryPath, { recursive: true, force: true });
+			removed += 1;
+		} catch {
+			// Best effort; temp roots may be concurrently cleaned by the owning process.
+		}
+	}
+	return removed;
+}
+
+export function cleanupManagedSkillHousekeeping(
+	options: ManagedSkillHousekeepingOptions = {},
+): ManagedSkillHousekeepingResult {
+	const auditPath = path.resolve(options.auditPath ?? defaultAuditPath());
+	const lockRoot = resolveManagedSkillLockRoot(options);
+	const now = options.now ?? new Date();
+	const nowMs = now.getTime();
+	const staleMs = Math.max(1, options.staleMs ?? DEFAULT_MANAGED_SKILL_STALE_ARTIFACT_MS);
+	const auditLog = rotateSkillManageAudit({
+		auditPath,
+		maxBytes: options.auditMaxBytes,
+		retainedFiles: options.auditRetainedFiles,
+		now,
+	});
+	const staleLocks = cleanupStaleLockDirs(lockRoot, nowMs, staleMs);
+	const staleTempRoots = cleanupStaleTempRoots(nowMs, staleMs);
+
+	let skillRoot: string | undefined;
+	let staleArtifacts = 0;
+	let artifactCleanupSkipped: string | undefined;
+	try {
+		skillRoot = resolveWritableSkillRoot(options);
+		staleArtifacts = cleanupStaleSkillArtifacts(skillRoot, nowMs, staleMs);
+	} catch (err) {
+		if (err instanceof SkillRootUnavailableError) {
+			artifactCleanupSkipped = err.message;
+		} else {
+			throw err;
+		}
+	}
+
+	return {
+		auditPath,
+		lockRoot,
+		...(skillRoot ? { skillRoot } : {}),
+		auditLog,
+		staleLocks,
+		staleArtifacts,
+		staleTempRoots,
+		...(artifactCleanupSkipped ? { artifactCleanupSkipped } : {}),
+	};
 }
 
 function writeJsonAtomic(targetPath: string, value: unknown): void {

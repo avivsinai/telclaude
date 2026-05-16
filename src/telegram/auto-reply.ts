@@ -4,6 +4,7 @@ import type { Api, Bot } from "grammy";
 import { executeRemoteQuery } from "../agent/client.js";
 import { collectCronOverview, formatCronOverview } from "../commands/cron.js";
 import { collectSessionRows, formatSessionRows } from "../commands/sessions.js";
+import { cleanupManagedSkillHousekeeping } from "../commands/skill-manage.js";
 import { collectTelclaudeStatus, formatTelclaudeStatus } from "../commands/status.js";
 import { loadConfig, type PermissionTier, type TelclaudeConfig } from "../config/config.js";
 import { resolveModelHint } from "../config/model-catalog.js";
@@ -132,6 +133,34 @@ import { createTypingControllerFromCallback } from "./typing.js";
 import { routeWizardTextMessage } from "./wizard/index.js";
 
 const logger = getChildLogger({ module: "telegram-auto-reply" });
+
+function managedSkillHousekeepingDidWork(
+	result: ReturnType<typeof cleanupManagedSkillHousekeeping>,
+): boolean {
+	return (
+		result.staleLocks > 0 ||
+		result.staleArtifacts > 0 ||
+		result.staleTempRoots > 0 ||
+		result.auditLog.rotated ||
+		result.auditLog.pruned > 0
+	);
+}
+
+function runManagedSkillHousekeeping(stage: "startup" | "periodic"): void {
+	try {
+		const result = cleanupManagedSkillHousekeeping();
+		if (managedSkillHousekeepingDidWork(result)) {
+			logger.info({ stage, result }, "managed skill housekeeping completed");
+		} else if (result.artifactCleanupSkipped) {
+			logger.debug(
+				{ stage, reason: result.artifactCleanupSkipped },
+				"managed skill artifact cleanup skipped",
+			);
+		}
+	} catch (err) {
+		logger.warn({ stage, error: String(err) }, "managed skill housekeeping failed");
+	}
+}
 
 function resolveClaudeModelForChat(chatId: number): string | undefined {
 	const pref = getChatModelPreference(chatId);
@@ -1582,6 +1611,7 @@ export async function monitorTelegramProvider(
 	// - Any exception occurs before the polling loop
 	try {
 		cleanupExpired();
+		runManagedSkillHousekeeping("startup");
 		logger.debug("startup cleanup of expired security artifacts completed");
 	} catch (err) {
 		// Log but don't fail - cleanup errors shouldn't prevent startup
@@ -1746,6 +1776,7 @@ export async function monitorTelegramProvider(
 			// cleanupExpired() handles approvals, linkCodes, rateLimits, totpSessions, adminClaims
 			const cleanupInterval = setInterval(() => {
 				cleanupExpired();
+				runManagedSkillHousekeeping("periodic");
 			}, 60_000);
 
 			logger.info("Listening for Telegram messages. Ctrl+C to stop.");

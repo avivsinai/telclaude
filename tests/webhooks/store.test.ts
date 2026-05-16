@@ -110,4 +110,80 @@ describe("webhook store", () => {
 		expect(second.allowed).toBe(false);
 		expect(second.limitType).toBe("webhook");
 	});
+
+	it("prunes stale webhook replay guards and hit audit rows during cleanup", async () => {
+		const now = Date.now();
+		const oldDeliveryDigest = "a".repeat(64);
+		const freshDeliveryDigest = "b".repeat(64);
+		const oldBodyHash = "c".repeat(64);
+		const freshBodyHash = "d".repeat(64);
+		const { cleanupExpired, getDb } = await import("../../src/storage/db.js");
+		const { recordWebhookHit, reserveWebhookDelivery } = await import(
+			"../../src/webhooks/store.js"
+		);
+
+		expect(
+			reserveWebhookDelivery(
+				{
+					slug: "deploy",
+					signatureDigest: oldDeliveryDigest,
+					bodySha256: oldBodyHash,
+				},
+				now - 25 * 60 * 60 * 1000,
+			).fresh,
+		).toBe(true);
+		expect(
+			reserveWebhookDelivery(
+				{
+					slug: "deploy",
+					signatureDigest: freshDeliveryDigest,
+					bodySha256: freshBodyHash,
+				},
+				now,
+			).fresh,
+		).toBe(true);
+		recordWebhookHit(
+			{
+				slug: "deploy",
+				signatureValid: true,
+				actionTaken: "accepted",
+				bodySha256: oldBodyHash,
+			},
+			now - 31 * 24 * 60 * 60 * 1000,
+		);
+		recordWebhookHit(
+			{
+				slug: "deploy",
+				signatureValid: true,
+				actionTaken: "accepted",
+				bodySha256: freshBodyHash,
+			},
+			now,
+		);
+
+		const result = cleanupExpired();
+
+		expect(result.webhookDeliveries).toBe(1);
+		expect(result.webhookHits).toBe(1);
+		expect(getDb().prepare("SELECT COUNT(*) AS count FROM webhook_deliveries").get()).toMatchObject(
+			{ count: 1 },
+		);
+		expect(getDb().prepare("SELECT COUNT(*) AS count FROM webhook_hits").get()).toMatchObject({
+			count: 1,
+		});
+		expect(
+			reserveWebhookDelivery({
+				slug: "deploy",
+				signatureDigest: oldDeliveryDigest,
+				bodySha256: oldBodyHash,
+			}).fresh,
+		).toBe(true);
+		expect(
+			reserveWebhookDelivery({
+				slug: "deploy",
+				signatureDigest: freshDeliveryDigest,
+				bodySha256: freshBodyHash,
+			}).fresh,
+		).toBe(false);
+	});
 });
