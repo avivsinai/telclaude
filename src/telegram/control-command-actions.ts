@@ -26,6 +26,7 @@ import {
 	listActiveSkills,
 	listDraftSkills,
 } from "../commands/skills-promote.js";
+import { signSkillByName } from "../commands/skills-sign.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
 import { getChatModelPreference } from "../config/model-preferences.js";
@@ -453,6 +454,47 @@ export async function sendSkillsImportCommand(
 		callbackText:
 			"Use `telclaude plugins install` for plugins, `skills import-openclaw` for standalone skills.",
 	};
+}
+
+export async function sendSkillsSignCommand(
+	api: Api,
+	opts: { chatId: number; skillName?: string; threadId?: number },
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(opts.chatId, "Only admin can sign skills.", threadOptions(opts.threadId));
+		return { callbackText: "Only admin.", callbackAlert: true };
+	}
+	const skillName = opts.skillName?.trim();
+	if (!skillName) {
+		await api.sendMessage(
+			opts.chatId,
+			"Usage: `/skills sign <name>`",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Usage: /skills sign <name>", callbackAlert: true };
+	}
+
+	const result = await signSkillByName(skillName);
+	if (!result.ok) {
+		await api.sendMessage(
+			opts.chatId,
+			`Skill signing failed: ${result.error}`,
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Skill signing failed", callbackAlert: true };
+	}
+
+	await api.sendMessage(
+		opts.chatId,
+		[
+			`Signed ${result.skillName}.`,
+			`digest: sha256:${result.digest}`,
+			`signature: ${result.signature.slice(0, 20)}...`,
+			`written: ${result.sigPath}`,
+		].join("\n"),
+		threadOptions(opts.threadId),
+	);
+	return { callbackText: `Signed ${result.skillName}` };
 }
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

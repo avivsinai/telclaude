@@ -48,6 +48,7 @@ export type TelegramCommandId =
 	| "skills:doctor"
 	| "skills:drafts"
 	| "skills:promote"
+	| "skills:sign"
 	| "skills:reload"
 	| "skills:picker"
 	| "background"
@@ -437,12 +438,13 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domainDefault: true,
 		category: "Skills",
 		description: "Skill management.",
-		usage: "/skills [list|new|import|scan|doctor|drafts|promote|reload]",
+		usage: "/skills [list|new|import|scan|doctor|drafts|promote|sign|reload]",
 		examples: [
 			"/skills list",
 			"/skills new my-helper",
 			"/skills doctor",
 			"/skills promote my-skill",
+			"/skills sign my-skill",
 		],
 		keywords: ["skills", "draft skills", "skill management"],
 		readOnly: true,
@@ -531,6 +533,18 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		usage: "/skills promote <name>",
 		examples: ["/skills promote my-skill"],
 		keywords: ["promote skill", "publish skill"],
+		rateLimited: true,
+	},
+	{
+		id: "skills:sign",
+		name: "skills",
+		domain: "skills",
+		subcommand: "sign",
+		category: "Skills",
+		description: "Sign SKILL.md through the local vault and write SKILL.md.sig.",
+		usage: "/skills sign <name>",
+		examples: ["/skills sign my-skill"],
+		keywords: ["sign skill", "skill signature", "trusted skill"],
 		rateLimited: true,
 	},
 	{
@@ -786,7 +800,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "skills",
 		title: "Skills",
 		summary:
-			"Skills are promoted intentionally. /skills list shows everything, /skills new scaffolds a draft, /skills doctor validates, /skills drafts shows candidates, /skills promote activates one, /skills reload resets the next session so the refreshed set is loaded.",
+			"Skills are promoted intentionally. /skills list shows everything, /skills new scaffolds a draft, /skills doctor validates, /skills drafts shows candidates, /skills promote activates one, /skills sign marks trusted skills, /skills reload resets the next session so the refreshed set is loaded.",
 		keywords: [
 			"skills",
 			"skill scaffold",
@@ -794,6 +808,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 			"skill doctor",
 			"draft skills",
 			"promote skill",
+			"sign skill",
 			"reload skills",
 		],
 		commands: [
@@ -803,6 +818,7 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 			"skills:doctor",
 			"skills:drafts",
 			"skills:promote",
+			"skills:sign",
 			"skills:reload",
 		],
 	},
