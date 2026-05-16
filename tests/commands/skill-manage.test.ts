@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	archiveManagedSkill,
+	cleanupManagedSkillHousekeeping,
 	createManagedSkill,
 	patchManagedSkill,
 	pinManagedSkill,
@@ -1117,5 +1118,116 @@ describe("skill-manage create", () => {
 		expect(fs.existsSync(userDir)).toBe(true);
 		expect(fs.readFileSync(path.join(userDir, "SKILL.md"), "utf8")).toBe(original);
 		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "agent-owned"))).toBe(false);
+	});
+
+	it("cleans stale managed skill locks and mutation artifacts only", () => {
+		const lockRoot = path.join(tempRoot, "locks");
+		const staleLock = path.join(lockRoot, "telegram-stale.lock");
+		const freshLock = path.join(lockRoot, "telegram-fresh.lock");
+		const skillDir = path.join(skillRoot, "agent", "telegram", "cleanup-target");
+		const personaDir = path.dirname(skillDir);
+		const uuid = "11111111-1111-4111-8111-111111111111";
+		const staleTmp = path.join(skillDir, `.SKILL.md.123.${uuid}.tmp`);
+		const staleBak = path.join(skillDir, `.SKILL.md.123.${uuid}.bak`);
+		const staleMetadataTmp = path.join(skillDir, `..telclaude-managed.json.123.${uuid}.tmp`);
+		const freshTmp = path.join(skillDir, `.SKILL.md.456.${uuid}.tmp`);
+		const unrelated = path.join(skillDir, ".SKILL.md.not-a-managed-temp.tmp");
+		const symlinkTarget = path.join(tempRoot, "outside-target");
+		const symlinkArtifact = path.join(skillDir, `.SKILL.md.789.${uuid}.tmp`);
+		const staleRenameTmp = path.join(personaDir, ".telclaude-rename-new-name.tmp-abcdef");
+		const staleRenameBak = path.join(personaDir, `.telclaude-rename-old-name.bak-123-${uuid}`);
+		const staleTempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-skill-manage-"));
+		const oldDate = new Date(now.getTime() - 2 * 60 * 60 * 1000);
+
+		fs.mkdirSync(staleLock, { recursive: true });
+		fs.mkdirSync(freshLock, { recursive: true });
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(staleTmp, "old", "utf8");
+		fs.writeFileSync(staleBak, "old", "utf8");
+		fs.writeFileSync(staleMetadataTmp, "old", "utf8");
+		fs.writeFileSync(freshTmp, "fresh", "utf8");
+		fs.writeFileSync(unrelated, "keep", "utf8");
+		fs.writeFileSync(symlinkTarget, "outside", "utf8");
+		fs.symlinkSync(symlinkTarget, symlinkArtifact);
+		fs.mkdirSync(staleRenameTmp, { recursive: true });
+		fs.mkdirSync(staleRenameBak, { recursive: true });
+
+		for (const stalePath of [
+			staleLock,
+			staleTmp,
+			staleBak,
+			staleMetadataTmp,
+			symlinkArtifact,
+			staleRenameTmp,
+			staleRenameBak,
+			staleTempRoot,
+		]) {
+			fs.utimesSync(stalePath, oldDate, oldDate);
+		}
+
+		const result = cleanupManagedSkillHousekeeping({
+			skillRoot,
+			auditPath,
+			lockRoot,
+			now,
+			staleMs: 60 * 60 * 1000,
+		});
+
+		expect(result.staleLocks).toBe(1);
+		expect(result.staleArtifacts).toBe(5);
+		expect(result.staleTempRoots).toBeGreaterThanOrEqual(1);
+		expect(fs.existsSync(staleLock)).toBe(false);
+		expect(fs.existsSync(staleTmp)).toBe(false);
+		expect(fs.existsSync(staleBak)).toBe(false);
+		expect(fs.existsSync(staleMetadataTmp)).toBe(false);
+		expect(fs.existsSync(staleRenameTmp)).toBe(false);
+		expect(fs.existsSync(staleRenameBak)).toBe(false);
+		expect(fs.existsSync(staleTempRoot)).toBe(false);
+		expect(fs.existsSync(freshLock)).toBe(true);
+		expect(fs.readFileSync(freshTmp, "utf8")).toBe("fresh");
+		expect(fs.readFileSync(unrelated, "utf8")).toBe("keep");
+		expect(fs.lstatSync(symlinkArtifact).isSymbolicLink()).toBe(true);
+		expect(fs.readFileSync(symlinkTarget, "utf8")).toBe("outside");
+	});
+
+	it("rotates managed skill audit logs with bounded retention", () => {
+		const auditDir = path.dirname(auditPath);
+		const oldRotated = `${auditPath}.2026-05-15T00-00-00-000Z`;
+		const olderRotated = `${auditPath}.2026-05-14T00-00-00-000Z`;
+		const manualBackup = `${auditPath}.manual-backup`;
+		fs.mkdirSync(auditDir, { recursive: true });
+		fs.writeFileSync(auditPath, "x".repeat(32), "utf8");
+		fs.writeFileSync(oldRotated, "old", "utf8");
+		fs.writeFileSync(olderRotated, "older", "utf8");
+		fs.writeFileSync(manualBackup, "manual", "utf8");
+		fs.utimesSync(auditPath, now, now);
+		fs.utimesSync(
+			oldRotated,
+			new Date("2026-05-15T00:00:00.000Z"),
+			new Date("2026-05-15T00:00:00.000Z"),
+		);
+		fs.utimesSync(
+			olderRotated,
+			new Date("2026-05-14T00:00:00.000Z"),
+			new Date("2026-05-14T00:00:00.000Z"),
+		);
+
+		const result = cleanupManagedSkillHousekeeping({
+			skillRoot,
+			auditPath,
+			lockRoot: path.join(tempRoot, "locks"),
+			now,
+			auditMaxBytes: 16,
+			auditRetainedFiles: 1,
+		});
+
+		expect(result.auditLog.rotated).toBe(true);
+		expect(result.auditLog.rotatedPath).toBeDefined();
+		expect(result.auditLog.pruned).toBe(2);
+		expect(fs.existsSync(auditPath)).toBe(false);
+		expect(fs.existsSync(result.auditLog.rotatedPath ?? "")).toBe(true);
+		expect(fs.existsSync(oldRotated)).toBe(false);
+		expect(fs.existsSync(olderRotated)).toBe(false);
+		expect(fs.readFileSync(manualBackup, "utf8")).toBe("manual");
 	});
 });
