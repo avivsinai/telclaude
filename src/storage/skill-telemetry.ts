@@ -34,6 +34,17 @@ export type SkillInvocationRow = {
 	createdAt: number;
 };
 
+export type SkillInvocationSummary = {
+	skillName: string;
+	source: SkillInvocationSource;
+	serviceId: string | null;
+	totalCount: number;
+	allowedCount: number;
+	deniedCount: number;
+	lastInvokedAt: number;
+	lastAllowedAt: number | null;
+};
+
 const MAX_TEXT_LENGTH = 512;
 
 function clampText(value: string | undefined): string | null {
@@ -147,5 +158,43 @@ export function listSkillInvocations(limit = 100): SkillInvocationRow[] {
 		durationMs: row.duration_ms,
 		resultStatus: row.result_status,
 		createdAt: row.created_at,
+	}));
+}
+
+export function listSkillInvocationSummaries(): SkillInvocationSummary[] {
+	const rows = getDb()
+		.prepare(
+			`SELECT
+				skill_name,
+				source,
+				service_id,
+				COUNT(*) AS total_count,
+				SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) AS allowed_count,
+				SUM(CASE WHEN decision = 'deny' THEN 1 ELSE 0 END) AS denied_count,
+				MAX(created_at) AS last_invoked_at,
+				MAX(CASE WHEN decision = 'allow' THEN created_at ELSE NULL END) AS last_allowed_at
+			FROM skill_invocations
+			GROUP BY skill_name, source, service_id`,
+		)
+		.all() as Array<{
+		skill_name: string;
+		source: SkillInvocationSource;
+		service_id: string | null;
+		total_count: number;
+		allowed_count: number | null;
+		denied_count: number | null;
+		last_invoked_at: number;
+		last_allowed_at: number | null;
+	}>;
+
+	return rows.map((row) => ({
+		skillName: row.skill_name,
+		source: row.source,
+		serviceId: row.service_id,
+		totalCount: row.total_count,
+		allowedCount: row.allowed_count ?? 0,
+		deniedCount: row.denied_count ?? 0,
+		lastInvokedAt: row.last_invoked_at,
+		lastAllowedAt: row.last_allowed_at,
 	}));
 }

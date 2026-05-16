@@ -1,18 +1,31 @@
-import { collectCronHardeningItems } from "./collectors.js";
+import { collectCronHardeningItems, collectUnusedSkillItems } from "./collectors.js";
 import { listCuratorItems, upsertCuratorItem } from "./store.js";
 import type { CuratorScanResult } from "./types.js";
 
 export function runCuratorScan(options?: {
 	producerKind?: "system" | "claude-code" | "codex";
 	producerId?: string;
+	cwd?: string;
+	nowMs?: number;
+	unusedSkillStaleAfterMs?: number;
 }): CuratorScanResult {
-	const items = collectCronHardeningItems();
+	const items = [
+		...collectCronHardeningItems(),
+		...collectUnusedSkillItems({
+			cwd: options?.cwd,
+			nowMs: options?.nowMs,
+			staleAfterMs: options?.unusedSkillStaleAfterMs,
+		}),
+	];
 	for (const item of items) {
-		upsertCuratorItem({
-			...item,
-			producerKind: options?.producerKind ?? item.producerKind,
-			...(options?.producerId ? { producerId: options.producerId } : {}),
-		});
+		upsertCuratorItem(
+			{
+				...item,
+				producerKind: options?.producerKind ?? item.producerKind,
+				...(options?.producerId ? { producerId: options.producerId } : {}),
+			},
+			options?.nowMs,
+		);
 	}
 	const openItems = listCuratorItems({ status: "open" });
 	const byKind: Record<string, number> = {};
