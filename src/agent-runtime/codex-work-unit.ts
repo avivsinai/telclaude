@@ -35,7 +35,7 @@ function validateToken(value: string, label: string, max = 200): string {
 	return trimmed;
 }
 
-function validateModel(value: string): string {
+export function validateCodexModel(value: string): string {
 	const model = validateToken(value, "codex model", 120);
 	if (!CODEX_MODEL_PATTERN.test(model)) {
 		throw new Error(
@@ -179,7 +179,7 @@ async function runCodexProcess(params: {
 		params.cwd,
 		"--output-last-message",
 		params.outputFile,
-		...(params.payload.model ? ["--model", validateModel(params.payload.model)] : []),
+		...(params.payload.model ? ["--model", validateCodexModel(params.payload.model)] : []),
 		"-",
 	];
 

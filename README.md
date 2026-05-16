@@ -180,6 +180,7 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `/help <topic>` — contextual help for approvals, 2fa, sessions, etc.
 - `/system` — system status, sessions, cron (card-based with inline buttons).
 - `/me`, `/auth`, `/social`, `/skills` — identity, 2FA, social persona, skill management.
+- `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` — queue a single-shot Codex work unit; results return as a background job card.
 - `/approve`, `/new` — fast-path shortcuts for approvals and session reset.
 
 ## Memory model

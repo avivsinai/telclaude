@@ -2,6 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { listJobs } from "../../src/background/index.js";
+import { resetDatabase } from "../../src/storage/db.js";
 
 // Hoisted mutable stubs
 const replies: string[] = [];
@@ -97,6 +99,8 @@ vi.mock("../../src/logging.js", () => ({
 }));
 
 import { __test as autoReplyTest } from "../../src/telegram/auto-reply.js";
+import { registerAllCardRenderers } from "../../src/telegram/cards/renderers/index.js";
+import { matchTelegramControlCommand } from "../../src/telegram/control-commands.js";
 
 const makeMsg = () => ({
 	chatId: 123,
@@ -380,5 +384,49 @@ describe("auto-reply control commands", () => {
 
 		expect(autoReplyTest.resolveCommandBody(msg)).toBe("/approve\u200B 123456");
 		expect(autoReplyTest.resolveProcessingBody(msg)).toBe("/approve 123456");
+	});
+
+	it("dispatches /codex as a background job without entering the Claude session", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-codex-"));
+		const previousDataDir = process.env.TELCLAUDE_DATA_DIR;
+		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		try {
+			executePooledQueryImpl.mockReset();
+			resetDatabase();
+			registerAllCardRenderers();
+
+			const match = matchTelegramControlCommand("/codex inspect the latest diff");
+			expect(match?.command.id).toBe("codex");
+
+			const api = { sendMessage: vi.fn(async () => ({ message_id: 1 })) };
+			await autoReplyTest.dispatchTelegramControlCommand(
+				match as never,
+				{
+					bot: { api },
+					msg: { ...makeMsg(), body: "/codex inspect the latest diff", senderId: 555 },
+					cfg: {
+						security: { permissions: { users: { "123": { tier: "WRITE_LOCAL" } } } },
+					},
+					auditLogger: { log: vi.fn(async () => {}) },
+					recentlySent: new Set<string>(),
+					requestId: "req-codex",
+				} as never,
+			);
+
+			expect(executePooledQueryImpl).not.toHaveBeenCalled();
+			const [job] = listJobs();
+			expect(job?.payload).toMatchObject({
+				kind: "codex-work-unit",
+				prompt: "inspect the latest diff",
+				sandbox: "read-only",
+			});
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+			if (previousDataDir === undefined) {
+				delete process.env.TELCLAUDE_DATA_DIR;
+			} else {
+				process.env.TELCLAUDE_DATA_DIR = previousDataDir;
+			}
+		}
 	});
 });

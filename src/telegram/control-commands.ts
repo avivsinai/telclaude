@@ -60,6 +60,7 @@ export type TelegramCommandId =
 	| "background:list"
 	| "background:show"
 	| "background:cancel"
+	| "codex"
 	| "model"
 	| "model:reset"
 	| "providers"
@@ -640,7 +641,8 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "background",
 		domainDefault: true,
 		category: "Background",
-		description: "Inspect or cancel long-running background jobs; use /stop for active jobs here.",
+		description:
+			"Inspect or cancel long-running background jobs; use /codex to queue Codex work and /stop for active jobs here.",
 		usage: "/background [list|show <id>|cancel <id>]",
 		examples: ["/background", "/background show a1b2c3d4", "/background cancel a1b2c3d4"],
 		keywords: ["background", "jobs", "background job", "long running task"],
@@ -684,6 +686,21 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/background cancel a1b2c3d4"],
 		keywords: ["cancel background", "abort job", "kill job"],
 		rateLimited: true,
+	},
+	{
+		id: "codex",
+		name: "codex",
+		category: "Background",
+		description: "Queue a single-shot Codex work unit; results return as a background job card.",
+		usage: "/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>",
+		examples: [
+			"/codex review the latest diff",
+			"/codex --model gpt-5.4 --cwd packages/api inspect the tests",
+			"/codex --write update docs for the new command",
+		],
+		keywords: ["codex", "codex work unit", "delegate", "review", "background codex"],
+		rateLimited: true,
+		menuDescription: "Queue Codex work",
 	},
 	// ── /curator domain ───────────────────────────────────────────────
 	{
@@ -903,9 +920,16 @@ const TELEGRAM_HELP_TOPICS: TelegramHelpTopic[] = [
 		id: "background",
 		title: "Background Jobs",
 		summary:
-			"Background jobs run long tasks asynchronously and notify on completion. /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts one queued or running job. /stop cancels queued/running background jobs in the current chat or topic.",
-		keywords: ["background", "jobs", "long running", "async"],
-		commands: ["background", "background:list", "background:show", "background:cancel", "stop"],
+			"Background jobs run long tasks asynchronously and notify on completion. /codex queues a single-shot Codex work unit; /background lists recent jobs; /background show <id> opens a status card; /background cancel <id> aborts one queued or running job. /stop cancels queued/running background jobs in the current chat or topic.",
+		keywords: ["background", "jobs", "long running", "async", "codex", "delegate"],
+		commands: [
+			"codex",
+			"background",
+			"background:list",
+			"background:show",
+			"background:cancel",
+			"stop",
+		],
 	},
 	{
 		id: "curator",
@@ -1248,6 +1272,7 @@ export function formatTelegramHelpOverview(): string {
 		"  /social — Social persona, queue, posting",
 		"  /skills — Skill drafts and management",
 		"  /background — Long-running background jobs",
+		"  /codex — Queue a Codex work unit",
 		"  /curator — Review automation suggestions",
 		"  /stop — Stop active background work here",
 		"  /model — Pick a model",
@@ -1391,6 +1416,7 @@ export function getTelegramMenuCommands(
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },
 		{ command: "background", description: "Background jobs" },
+		{ command: "codex", description: "Queue Codex work" },
 		{ command: "curator", description: "Automation suggestions" },
 		{ command: "stop", description: "Stop active work" },
 		{ command: "model", description: "Pick a model" },

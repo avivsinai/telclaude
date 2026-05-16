@@ -99,6 +99,7 @@ import {
 	openSkillReviewCard,
 	openSocialQueueCard,
 	openSystemHealthCard,
+	queueCodexWorkUnitCommand,
 	reloadSkillsSession,
 	runSocialHeartbeatCommand,
 	sendBackgroundJobDetail,
@@ -1066,6 +1067,17 @@ async function dispatchTelegramControlCommand(
 			});
 			return true;
 		}
+		case "codex": {
+			await queueCodexWorkUnitCommand(bot.api, {
+				chatId: msg.chatId,
+				threadId: msg.messageThreadId,
+				actorScope: `user:${msg.senderId ?? msg.chatId}`,
+				actorId: msg.senderId,
+				rawArgs: match.rawArgs,
+				cfg,
+			});
+			return true;
+		}
 		// ── /curator domain ───────────────────────────────────────────
 		case "curator": {
 			await openCuratorInboxCard(bot.api, {
@@ -1731,6 +1743,7 @@ async function executeWithSession(
 
 // Test-only surface
 export const __test = {
+	dispatchTelegramControlCommand,
 	executeAndReply,
 	handleLinkCommand,
 	handleProfileSwitchCommand,
