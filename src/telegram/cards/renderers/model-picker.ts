@@ -54,7 +54,10 @@ function renderProvidersView(card: CardInstance<K>): CardRenderResult {
 	if (s.fallbackState) {
 		lines.push(`*Fallback:* ${esc(s.fallbackState)}`);
 	}
-	lines.push("", esc("Tap a provider to browse its models."));
+	lines.push(
+		"",
+		esc("Tap a provider to browse its models. Explicit chat choices override profile defaults."),
+	);
 
 	if (visible.length === 0) {
 		lines.push("", "_No providers configured._");

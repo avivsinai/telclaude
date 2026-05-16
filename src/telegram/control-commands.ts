@@ -9,6 +9,7 @@ type TelegramCommandCategory =
 	| "Skills"
 	| "Background"
 	| "Model"
+	| "Profile"
 	| "Providers"
 	| "Curator";
 
@@ -34,6 +35,10 @@ export type TelegramCommandId =
 	| "system:sessions"
 	| "system:cron"
 	| "system:health"
+	| "profile"
+	| "profile:list"
+	| "profile:show"
+	| "profile:switch"
 	| "social"
 	| "social:queue"
 	| "social:promote"
@@ -56,6 +61,7 @@ export type TelegramCommandId =
 	| "background:show"
 	| "background:cancel"
 	| "model"
+	| "model:reset"
 	| "providers"
 	| "curator"
 	// Fast-path shortcuts (no domain prefix)
@@ -346,6 +352,62 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		examples: ["/system cron"],
 		keywords: ["cron", "schedule", "scheduled jobs", "heartbeat schedule", "next run"],
 		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	// ── /profile ───────────────────────────────────────────────────────
+	{
+		id: "profile",
+		name: "profile",
+		domain: "profile",
+		domainDefault: true,
+		category: "Profile",
+		description: "Show or switch the active private operator profile.",
+		usage: "/profile [list|show|switch <id>]",
+		examples: ["/profile", "/profile list", "/profile switch engineer"],
+		keywords: ["profile", "persona", "operator profile", "switch profile"],
+		readOnly: true,
+		rateLimited: true,
+		menuDescription: "Operator profile",
+	},
+	{
+		id: "profile:list",
+		name: "profile",
+		domain: "profile",
+		subcommand: "list",
+		category: "Profile",
+		description: "List configured private operator profiles.",
+		usage: "/profile list",
+		examples: ["/profile list"],
+		keywords: ["profiles", "list profiles", "personas"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "profile:show",
+		name: "profile",
+		domain: "profile",
+		subcommand: "show",
+		category: "Profile",
+		description: "Show the active private operator profile.",
+		usage: "/profile show",
+		examples: ["/profile show"],
+		keywords: ["profile show", "active profile", "persona"],
+		readOnly: true,
+		rateLimited: true,
+		hideFromCatalog: true,
+	},
+	{
+		id: "profile:switch",
+		name: "profile",
+		domain: "profile",
+		subcommand: "switch",
+		category: "Profile",
+		description: "Switch this chat to a configured private operator profile and reset session.",
+		usage: "/profile switch <id>",
+		examples: ["/profile switch engineer", "/profile switch default"],
+		keywords: ["profile switch", "switch persona", "operator profile"],
 		rateLimited: true,
 		hideFromCatalog: true,
 	},
@@ -644,9 +706,10 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		domain: "model",
 		domainDefault: true,
 		category: "Model",
-		description: "Open the model picker: browse providers and switch models.",
-		usage: "/model",
-		examples: ["/model"],
+		description:
+			"Open the model picker: explicit chat choices override profile defaults; reset clears the override.",
+		usage: "/model [reset]",
+		examples: ["/model", "/model reset"],
 		keywords: [
 			"model",
 			"switch model",
@@ -660,6 +723,20 @@ const TELEGRAM_CONTROL_COMMANDS: TelegramControlCommandDefinition[] = [
 		readOnly: true,
 		rateLimited: true,
 		menuDescription: "Pick a model",
+	},
+	{
+		id: "model:reset",
+		name: "model",
+		domain: "model",
+		subcommand: "reset",
+		category: "Model",
+		description:
+			"Clear this chat's explicit model preference so the active profile default applies.",
+		usage: "/model reset",
+		examples: ["/model reset"],
+		keywords: ["model reset", "clear model", "profile default model"],
+		rateLimited: true,
+		hideFromCatalog: true,
 	},
 	// ── /providers domain ────────────────────────────────────────────
 	{
@@ -1309,6 +1386,7 @@ export function getTelegramMenuCommands(
 		{ command: "me", description: "Identity management" },
 		{ command: "auth", description: "Two-factor authentication" },
 		{ command: "system", description: "System introspection" },
+		{ command: "profile", description: "Operator profile" },
 		{ command: "sethome", description: "Home delivery target" },
 		{ command: "social", description: "Social persona management" },
 		{ command: "skills", description: "Skill management" },

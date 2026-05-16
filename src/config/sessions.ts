@@ -35,6 +35,12 @@ type HomeTargetRow = {
 	updated_at: number;
 };
 
+type ChatProfileRow = {
+	chat_id: number;
+	active_profile_id: string;
+	updated_at: number;
+};
+
 export type HomeTarget = {
 	ownerId: string;
 	chatId: number;
@@ -98,6 +104,36 @@ export function getAllSessions(): Record<string, SessionEntry> {
 		result[row.session_key] = rowToEntry(row);
 	}
 	return result;
+}
+
+export function getChatActiveProfileId(chatId: number): string | null {
+	const db = getDb();
+	const row = db.prepare("SELECT * FROM chat_profiles WHERE chat_id = ?").get(chatId) as
+		| ChatProfileRow
+		| undefined;
+	return row?.active_profile_id ?? null;
+}
+
+export function setChatActiveProfileId(
+	chatId: number,
+	profileId: string,
+	updatedAt = Date.now(),
+): void {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO chat_profiles (chat_id, active_profile_id, updated_at)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(chat_id) DO UPDATE SET
+		   active_profile_id = excluded.active_profile_id,
+		   updated_at = excluded.updated_at`,
+	).run(chatId, profileId, updatedAt);
+	logger.info({ chatId, profileId }, "chat active profile updated");
+}
+
+export function clearChatActiveProfileId(chatId: number): boolean {
+	const db = getDb();
+	const result = db.prepare("DELETE FROM chat_profiles WHERE chat_id = ?").run(chatId);
+	return result.changes > 0;
 }
 
 export function resolveHomeTargetOwnerId(chatId: number): string {

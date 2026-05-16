@@ -56,6 +56,7 @@ describe("sdk config defaults", () => {
 
 		const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
 		expect(cfg.sdk).toEqual({ betas: [] });
+		expect(cfg.profiles).toEqual([]);
 		expect(cfg.webhooks).toMatchObject({
 			enabled: false,
 			port: 3015,
@@ -90,6 +91,63 @@ describe("sdk config defaults", () => {
 			trustedProxies: [],
 			allowedHosts: [],
 		});
+		expect(cfg.profiles).toEqual([]);
+	});
+
+	it("accepts valid operator profiles", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						id: "engineer",
+						label: "Engineer",
+						description: "Code-heavy private operator profile",
+						soulPath: "docs/soul.md",
+						allowedSkills: ["integration-test"],
+						defaultModel: {
+							providerId: "anthropic",
+							modelId: "claude-sonnet-4-5-20250929",
+						},
+					},
+				],
+			}),
+		);
+
+		const cfg = loadConfig();
+		expect(cfg.profiles[0]).toMatchObject({
+			id: "engineer",
+			label: "Engineer",
+			allowedSkills: ["integration-test"],
+		});
+	});
+
+	it("rejects reserved, duplicate, and unsafe operator profiles", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [{ id: "default", label: "Bad" }] }));
+		expect(() => loadConfig()).toThrow();
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{ id: "engineer", label: "Engineer" },
+					{ id: "engineer", label: "Duplicate" },
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/duplicate profile id/);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [{ id: "engineer", label: "Engineer", soulPath: "/etc/passwd" }],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/soulPath/);
 	});
 });
 

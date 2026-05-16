@@ -448,7 +448,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				if (soul) {
 					const soulBlock = `<soul>\n${soul}\n</soul>`;
 					effectiveSystemPromptAppend = effectiveSystemPromptAppend
-						? `${effectiveSystemPromptAppend}\n${soulBlock}`
+						? `${soulBlock}\n${effectiveSystemPromptAppend}`
 						: soulBlock;
 				}
 				const socialPrompt = loadSocialContractPrompt();

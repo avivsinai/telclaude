@@ -2,6 +2,7 @@ import { getActiveJobCount } from "../background/jobs.js";
 import { collectTelclaudeStatus } from "../commands/status.js";
 import { loadConfig } from "../config/config.js";
 import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
+import { formatAllowedSkillsCount, resolveChatProfile } from "../config/profiles.js";
 import { getAllSessions } from "../config/sessions.js";
 import { listCronJobs } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
@@ -324,8 +325,20 @@ export async function collectSystemHealth(
 	// Model / fallback state: no SDK call here; route stored preferences through
 	// the same executable-provider logic used by Telegram execution.
 	const sdkBetas = cfg.sdk?.betas ?? [];
+	const activeProfile =
+		typeof options.chatId === "number" ? resolveChatProfile(options.chatId, cfg) : undefined;
+	if (activeProfile) {
+		items.push({
+			id: "profile:active",
+			label: "Profile",
+			status: activeProfile.missingProfileId ? "degraded" : "ok",
+			detail: `${activeProfile.profile.label} (${activeProfile.profile.id}); ${formatAllowedSkillsCount(activeProfile.profile)}`,
+		});
+	}
 	const modelRoute =
-		typeof options.chatId === "number" ? resolveModelRoute(options.chatId) : undefined;
+		typeof options.chatId === "number"
+			? resolveModelRoute(options.chatId, { profile: activeProfile?.profile })
+			: undefined;
 	const modelDetail = modelRoute
 		? formatModelRoute(modelRoute)
 		: sdkBetas.length === 0

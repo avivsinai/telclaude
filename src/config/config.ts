@@ -3,6 +3,7 @@ import fs from "node:fs";
 import JSON5 from "json5";
 import { z } from "zod";
 
+import { resolveInsideRoot } from "../path-safety.js";
 import { CONFIG_DIR } from "../utils.js";
 import { resolveConfigPath, resolveRuntimeConfigPath } from "./path.js";
 
@@ -124,6 +125,35 @@ const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
 const SdkConfigSchema = z.object({
 	betas: z.array(SdkBetaEnum).default([]),
 });
+
+const OperatorProfileIdSchema = z
+	.string()
+	.regex(/^[a-z0-9-]{1,32}$/, "profile id must match ^[a-z0-9-]{1,32}$")
+	.refine((id) => id !== "default", "'default' is reserved for the implicit profile");
+
+const OperatorProfileConfigSchema = z.object({
+	id: OperatorProfileIdSchema,
+	label: z.string().min(1).max(80),
+	description: z.string().max(500).optional(),
+	soulPath: z.string().min(1).optional(),
+	allowedSkills: z.array(z.string().min(1).max(128)).optional(),
+	defaultModel: z
+		.object({
+			providerId: z.string().min(1).max(64),
+			modelId: z.string().min(1).max(128),
+		})
+		.optional(),
+});
+
+function validateProfileSoulPaths(
+	profiles: readonly z.infer<typeof OperatorProfileConfigSchema>[],
+) {
+	const root = process.cwd();
+	for (const profile of profiles) {
+		if (!profile.soulPath) continue;
+		resolveInsideRoot(profile.soulPath, root, `profile ${profile.id} soulPath`);
+	}
+}
 
 // OpenAI configuration schema (for Whisper, GPT Image, TTS)
 // NOTE: Keys are automatically exposed to sandbox for FULL_ACCESS tier only.
@@ -541,6 +571,23 @@ const TelclaudeConfigSchema = z.object({
 	providers: z.array(ExternalProviderSchema).default([]),
 	// Generic social services (replaces per-service top-level keys)
 	socialServices: z.array(SocialServiceConfigSchema).default([]),
+	// Private Telegram operator profiles. Social services remain a separate trust boundary.
+	profiles: z
+		.array(OperatorProfileConfigSchema)
+		.default([])
+		.superRefine((profiles, ctx) => {
+			const seen = new Set<string>();
+			for (const [index, profile] of profiles.entries()) {
+				if (seen.has(profile.id)) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						path: [index, "id"],
+						message: `duplicate profile id: ${profile.id}`,
+					});
+				}
+				seen.add(profile.id);
+			}
+		}),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),
@@ -554,6 +601,7 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type OperatorProfileConfig = z.infer<typeof OperatorProfileConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type CronConfig = z.infer<typeof CronConfigSchema>;
 export type DashboardConfig = z.infer<typeof DashboardConfigSchema>;
@@ -669,6 +717,7 @@ export function loadConfig(): TelclaudeConfig {
 		}
 
 		const validated = TelclaudeConfigSchema.parse(parsed);
+		validateProfileSoulPaths(validated.profiles);
 
 		cachedConfig = validated;
 		configMtime = stat?.mtimeMs ?? null;
@@ -789,6 +838,7 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			logging: {
 				level: "info",
 			},
+			profiles: [],
 			cron: CRON_DEFAULTS,
 			webhooks: WEBHOOKS_DEFAULTS,
 		};

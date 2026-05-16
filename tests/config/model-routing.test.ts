@@ -84,6 +84,98 @@ describe("model routing", () => {
 		);
 	});
 
+	it("uses profile default model when there is no chat preference", () => {
+		const route = resolveModelRoute(123, {
+			profile: {
+				id: "engineer",
+				label: "Engineer",
+				implicit: false,
+				defaultModel: {
+					providerId: "anthropic",
+					modelId: "claude-haiku-4-5-20251001",
+				},
+			},
+		});
+
+		expect(route).toEqual(
+			expect.objectContaining({
+				effectiveModel: "claude-haiku-4-5-20251001",
+				fallbackState: "profile",
+				profileId: "engineer",
+			}),
+		);
+	});
+
+	it("lets executable chat preferences override profile defaults", () => {
+		setChatModelPreference({
+			chatId: 123,
+			providerId: "anthropic",
+			modelId: "claude-opus-4-5-20250929",
+		});
+
+		const route = resolveModelRoute(123, {
+			profile: {
+				id: "engineer",
+				label: "Engineer",
+				implicit: false,
+				defaultModel: {
+					providerId: "anthropic",
+					modelId: "claude-haiku-4-5-20251001",
+				},
+			},
+		});
+
+		expect(route).toEqual(
+			expect.objectContaining({
+				effectiveModel: "claude-opus-4-5-20250929",
+				fallbackState: "override",
+			}),
+		);
+	});
+
+	it("falls through stale chat preferences to a valid profile default", () => {
+		setChatModelPreference({
+			chatId: 123,
+			providerId: "openai",
+			modelId: "gpt-5",
+		});
+
+		const route = resolveModelRoute(123, {
+			profile: {
+				id: "engineer",
+				label: "Engineer",
+				implicit: false,
+				defaultModel: {
+					providerId: "anthropic",
+					modelId: "claude-sonnet-4-5-20250929",
+				},
+			},
+		});
+
+		expect(route.effectiveModel).toBe("claude-sonnet-4-5-20250929");
+		expect(route.fallbackState).toBe("fallback");
+		expect(route.detail).toContain("ignored preference openai:gpt-5");
+		expect(route.detail).toContain("profile default anthropic:claude-sonnet-4-5-20250929");
+	});
+
+	it("degrades to SDK default when profile default is not executable", () => {
+		const route = resolveModelRoute(123, {
+			profile: {
+				id: "engineer",
+				label: "Engineer",
+				implicit: false,
+				defaultModel: {
+					providerId: "openai",
+					modelId: "gpt-5",
+				},
+			},
+		});
+
+		expect(route.effectiveModel).toBeUndefined();
+		expect(route.fallbackState).toBe("fallback");
+		expect(route.detail).toContain("ignored profile openai:gpt-5");
+	});
+
 	it("rejects non-executable model IDs", () => {
 		expect(assertExecutableModelId("claude-haiku-4-5-20251001")).toBe("claude-haiku-4-5-20251001");
 		expect(() => assertExecutableModelId("gpt-5")).toThrow(/not executable/);

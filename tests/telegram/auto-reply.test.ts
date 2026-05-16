@@ -9,6 +9,13 @@ const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
 const executePooledQueryImpl = vi.hoisted(() => vi.fn());
 const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
+const activeProfileState = vi.hoisted(() => ({ profileId: null as string | null }));
+const loggerImpl = vi.hoisted(() => ({
+	info: vi.fn(),
+	warn: vi.fn(),
+	error: vi.fn(),
+	debug: vi.fn(),
+}));
 
 vi.mock("../../src/sdk/client.js", () => ({
 	executePooledQuery: (...args: unknown[]) => executePooledQueryImpl(...args),
@@ -19,12 +26,22 @@ vi.mock("../../src/config/sessions.js", () => ({
 	getSession: () => null,
 	setSession: (key: string, entry: unknown) => sessionStore.push({ key, entry }),
 	deleteSession: vi.fn(),
+	getChatActiveProfileId: () => activeProfileState.profileId,
+	setChatActiveProfileId: (_chatId: number, profileId: string) => {
+		activeProfileState.profileId = profileId;
+	},
+	clearChatActiveProfileId: () => {
+		const hadProfile = activeProfileState.profileId !== null;
+		activeProfileState.profileId = null;
+		return hadProfile;
+	},
 	DEFAULT_IDLE_MINUTES: 60,
 }));
 
 vi.mock("../../src/config/model-preferences.js", () => ({
 	getChatModelPreference: (...args: Parameters<typeof getChatModelPreferenceImpl>) =>
 		getChatModelPreferenceImpl(...args),
+	clearChatModelPreference: vi.fn(() => true),
 }));
 
 const redactors = vi.hoisted(
@@ -76,12 +93,7 @@ vi.mock("../../src/telegram/system-context.js", () => ({
 }));
 
 vi.mock("../../src/logging.js", () => ({
-	getChildLogger: () => ({
-		info: vi.fn(),
-		warn: vi.fn(),
-		error: vi.fn(),
-		debug: vi.fn(),
-	}),
+	getChildLogger: () => loggerImpl,
 }));
 
 import { __test as autoReplyTest } from "../../src/telegram/auto-reply.js";
@@ -138,6 +150,11 @@ describe("auto-reply executeAndReply", () => {
 		executePooledQueryImpl.mockReset();
 		getChatModelPreferenceImpl.mockReset();
 		getChatModelPreferenceImpl.mockReturnValue(null);
+		activeProfileState.profileId = null;
+		loggerImpl.info.mockReset();
+		loggerImpl.warn.mockReset();
+		loggerImpl.error.mockReset();
+		loggerImpl.debug.mockReset();
 		fs.rmSync(tempDir, { recursive: true, force: true });
 		if (ORIGINAL_DATA_DIR === undefined) {
 			delete process.env.TELCLAUDE_DATA_DIR;
@@ -259,6 +276,75 @@ describe("auto-reply executeAndReply", () => {
 		expect(executePooledQueryImpl).toHaveBeenCalledWith(
 			"please respond",
 			expect.objectContaining({ model: undefined }),
+		);
+	});
+
+	it("applies active profile model, skill allowlist, and soul overlay", async () => {
+		activeProfileState.profileId = "engineer";
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "ok",
+						success: true,
+						error: undefined,
+						costUsd: 0.2,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			config: {
+				...baseCtx().config,
+				profiles: [
+					{
+						id: "engineer",
+						label: "Engineer",
+						soulPath: "docs/soul.md",
+						allowedSkills: ["integration-test"],
+						defaultModel: {
+							providerId: "anthropic",
+							modelId: "claude-haiku-4-5-20251001",
+						},
+					},
+				],
+			},
+		};
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({
+				model: "claude-haiku-4-5-20251001",
+				allowedSkills: ["integration-test"],
+				systemPromptAppend: expect.stringContaining('<profile-soul id="engineer"'),
+			}),
+		);
+	});
+
+	it("switches profiles and logs the transition", async () => {
+		const msg = { ...makeMsg(), senderId: 555 };
+		await autoReplyTest.handleProfileSwitchCommand(msg as never, "engineer", {
+			...baseCtx().config,
+			security: { permissions: { users: { "123": { tier: "WRITE_LOCAL" } } } },
+			profiles: [{ id: "engineer", label: "Engineer" }],
+		} as never);
+
+		expect(activeProfileState.profileId).toBe("engineer");
+		expect(replies[0]).toContain("Profile switched to Engineer");
+		expect(loggerImpl.info).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatId: 123,
+				fromProfileId: "default",
+				toProfileId: "engineer",
+				actor: "555",
+			}),
+			"profile switched",
 		);
 	});
 });
