@@ -859,6 +859,7 @@ export function cleanupExpired(): {
 	pairingLockouts: number;
 	backgroundJobs: number;
 	approvalAllowlist: number;
+	skillInvocations: number;
 	webhookHits: number;
 	webhookDeliveries: number;
 } {
@@ -867,6 +868,7 @@ export function cleanupExpired(): {
 	const oneHourAgo = now - 3600 * 1000;
 	const oneDayAgo = now - 24 * 3600 * 1000;
 	const thirtyDaysAgo = now - 30 * 24 * 3600 * 1000;
+	const oneYearAgo = now - 365 * 24 * 3600 * 1000;
 
 	const run = database.transaction(() => {
 		const approvalsResult = database.prepare("DELETE FROM approvals WHERE expires_at < ?").run(now);
@@ -945,6 +947,9 @@ export function cleanupExpired(): {
 		const webhookHitsResult = database
 			.prepare("DELETE FROM webhook_hits WHERE created_at < ?")
 			.run(thirtyDaysAgo);
+		const skillInvocationsResult = database
+			.prepare("DELETE FROM skill_invocations WHERE created_at < ?")
+			.run(oneYearAgo);
 
 		// W1 graduated approval allowlist:
 		//   - delete anything past its expiry
@@ -985,6 +990,7 @@ export function cleanupExpired(): {
 				allowlistExpiredResult.changes +
 				allowlistStaleOnceResult.changes +
 				allowlistStaleAlwaysResult.changes,
+			skillInvocations: skillInvocationsResult.changes,
 			webhookHits: webhookHitsResult.changes,
 			webhookDeliveries: webhookDeliveriesResult.changes,
 		};

@@ -131,6 +131,20 @@ function getByFingerprint(fingerprint: string): CuratorItem | null {
 }
 
 export function upsertCuratorItem(input: CuratorItemInput, nowMs = Date.now()): CuratorItem {
+	if (input.producerKind && input.producerKind !== "system") {
+		throw new Error("non-system curator producers must use signed curator auth");
+	}
+	return upsertVerifiedCuratorItem(input, nowMs);
+}
+
+/**
+ * INTERNAL: only call from `src/curator/auth.ts` after producer-envelope
+ * verification, or for local system writes via `upsertCuratorItem`.
+ */
+export function upsertVerifiedCuratorItem(
+	input: CuratorItemInput,
+	nowMs = Date.now(),
+): CuratorItem {
 	const db = getDb();
 	const existing = getByFingerprint(input.fingerprint);
 	const producerKind = input.producerKind ?? "system";
