@@ -5,6 +5,7 @@ import { isTransientNetworkError } from "../infra/network-errors.js";
 import { retryAsync } from "../infra/retry.js";
 import { withTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
+import { isTelegramMemorySource } from "../memory/source.js";
 import { createEntries, getEntries, markEntryPosted } from "../memory/store.js";
 import type { MemoryEntry, MemorySource, TrustLevel } from "../memory/types.js";
 import type { QueryResult, StreamChunk } from "../sdk/client.js";
@@ -234,18 +235,18 @@ function getTrustedSocialEntries(categories?: Array<MemoryEntry["category"]>): M
 
 	// Runtime assertion: no telegram entries should ever leak into social queries
 	if (process.env.NODE_ENV !== "production") {
-		const leaked = entries.filter((e) => e._provenance.source === "telegram");
+		const leaked = entries.filter((e) => isTelegramMemorySource(e._provenance.source));
 		if (leaked.length > 0) {
 			throw new Error(`SECURITY: ${leaked.length} telegram entries leaked into social query`);
 		}
 	} else {
-		const leaked = entries.filter((e) => e._provenance.source === "telegram");
+		const leaked = entries.filter((e) => isTelegramMemorySource(e._provenance.source));
 		if (leaked.length > 0) {
 			logger.warn(
 				{ count: leaked.length },
 				"SECURITY: telegram entries leaked into social query — filtering out",
 			);
-			return entries.filter((e) => e._provenance.source !== "telegram");
+			return entries.filter((e) => !isTelegramMemorySource(e._provenance.source));
 		}
 	}
 
@@ -1199,7 +1200,7 @@ function parseProactivePostOutput(structuredOutput: unknown): ProactivePostOutpu
 function getPromotedIdeas(): MemoryEntry[] {
 	return getEntries({
 		categories: ["posts"],
-		sources: ["telegram", "social"],
+		sourceFamilies: ["telegram", "social"],
 		trust: ["trusted"],
 		promoted: true,
 		posted: false,

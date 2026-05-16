@@ -1,4 +1,5 @@
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
+import { validateMemorySource } from "./source.js";
 import type { MemoryEntryInput } from "./store.js";
 import type { MemoryCategory, TrustLevel } from "./types.js";
 
@@ -24,8 +25,6 @@ export const VALID_CATEGORIES: MemoryCategory[] = [
 	"meta",
 ];
 export const VALID_TRUST: TrustLevel[] = ["trusted", "quarantined", "untrusted"];
-export const VALID_SOURCE_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-
 export function isValidCategory(value: unknown): value is MemoryCategory {
 	return typeof value === "string" && VALID_CATEGORIES.includes(value as MemoryCategory);
 }
@@ -35,7 +34,7 @@ export function isValidTrust(value: unknown): value is TrustLevel {
 }
 
 export function isValidSource(value: unknown): boolean {
-	return typeof value === "string" && VALID_SOURCE_PATTERN.test(value);
+	return typeof value === "string" && validateMemorySource(value) === null;
 }
 
 export function checkForbiddenMemoryPatterns(value: string): string | null {

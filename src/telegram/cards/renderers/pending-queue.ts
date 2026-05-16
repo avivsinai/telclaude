@@ -1,3 +1,4 @@
+import { isTelegramMemorySource } from "../../../memory/source.js";
 import { getEntries, promoteEntryTrust } from "../../../memory/store.js";
 import {
 	dismissSocialDraft,
@@ -269,7 +270,7 @@ function renderDetail(card: CardInstance<K>, s: PendingQueueCardState): CardRend
 export function loadPendingQueueEntries(chatId?: string): SocialDraftListEntry[] {
 	const entries = getEntries({
 		categories: ["posts"],
-		sources: ["telegram", "social"],
+		sourceFamilies: ["telegram", "social"],
 		posted: false,
 		limit: 100,
 		order: "desc",
@@ -278,10 +279,10 @@ export function loadPendingQueueEntries(chatId?: string): SocialDraftListEntry[]
 	return entries
 		.filter((entry) => {
 			const source = entry._provenance.source;
-			if (source === "telegram" && chatId && entry._provenance.chatId !== chatId) {
+			if (isTelegramMemorySource(source) && chatId && entry._provenance.chatId !== chatId) {
 				return false;
 			}
-			if (source === "telegram" && entry._provenance.trust !== "quarantined") {
+			if (isTelegramMemorySource(source) && entry._provenance.trust !== "quarantined") {
 				return Boolean(entry._provenance.promotedAt);
 			}
 			if (source === "social" && entry._provenance.trust !== "untrusted") {

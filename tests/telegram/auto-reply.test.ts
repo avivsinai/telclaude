@@ -12,6 +12,16 @@ const sessionStore: Array<{ key: string; entry: unknown }> = [];
 const executePooledQueryImpl = vi.hoisted(() => vi.fn());
 const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
 const activeProfileState = vi.hoisted(() => ({ profileId: null as string | null }));
+const buildTelegramMemoryBundleImpl = vi.hoisted(() =>
+	vi.fn(() => ({
+		stableEntries: [],
+		recentEpisodes: [],
+		relevantEpisodes: [],
+		promptContext: null,
+		compiledMemoryMd: "# Compiled Memory\n",
+	})),
+);
+const captureTelegramTurnMemoryImpl = vi.hoisted(() => vi.fn());
 const loggerImpl = vi.hoisted(() => ({
 	info: vi.fn(),
 	warn: vi.fn(),
@@ -76,18 +86,14 @@ vi.mock("../../src/memory/telegram-context.js", () => ({
 }));
 
 vi.mock("../../src/memory/telegram-memory.js", () => ({
-	buildTelegramMemoryBundle: () => ({
-		stableEntries: [],
-		recentEpisodes: [],
-		relevantEpisodes: [],
-		promptContext: null,
-		compiledMemoryMd: "# Compiled Memory\n",
-	}),
+	buildTelegramMemoryBundle: (...args: Parameters<typeof buildTelegramMemoryBundleImpl>) =>
+		buildTelegramMemoryBundleImpl(...args),
 	buildTelegramMemoryPolicyPrompt: () => "<memory-policy />",
 }));
 
 vi.mock("../../src/memory/telegram-capture.js", () => ({
-	captureTelegramTurnMemory: vi.fn(),
+	captureTelegramTurnMemory: (...args: Parameters<typeof captureTelegramTurnMemoryImpl>) =>
+		captureTelegramTurnMemoryImpl(...args),
 }));
 
 vi.mock("../../src/telegram/system-context.js", () => ({
@@ -142,6 +148,9 @@ describe("auto-reply executeAndReply", () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-autoreply-"));
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
 		vi.resetModules();
+		buildTelegramMemoryBundleImpl.mockClear();
+		captureTelegramTurnMemoryImpl.mockClear();
+		activeProfileState.profileId = null;
 		// Re-import to get fresh database
 		const { resetDatabase } = await import("../../src/storage/db.js");
 		resetDatabase();
@@ -328,6 +337,12 @@ describe("auto-reply executeAndReply", () => {
 				allowedSkills: ["integration-test"],
 				systemPromptAppend: expect.stringContaining('<profile-soul id="engineer"'),
 			}),
+		);
+		expect(buildTelegramMemoryBundleImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ chatId: "123", profileId: "engineer" }),
+		);
+		expect(captureTelegramTurnMemoryImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ chatId: "123", profileId: "engineer" }),
 		);
 	});
 

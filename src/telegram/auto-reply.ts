@@ -838,7 +838,7 @@ async function dispatchTelegramControlCommand(
 			const telegramEntries = getEntries({
 				categories: ["posts"],
 				trust: ["quarantined"],
-				sources: ["telegram"],
+				sourceFamilies: ["telegram"],
 				chatId: String(msg.chatId),
 			});
 			const socialEntries = getEntries({
@@ -1418,6 +1418,7 @@ async function executeWithSession(
 
 		const memoryBundle = buildTelegramMemoryBundle({
 			chatId: String(msg.chatId),
+			profileId: activeProfile.profile.id,
 			query: queryPrompt,
 			includeRecentHistory: isNewSession,
 		});
@@ -1687,6 +1688,7 @@ async function executeWithSession(
 							sessionId: sessionEntry.sessionId,
 							userText: buildMemoryCaptureText(processedContext),
 							assistantText: finalResponse,
+							profileId: activeProfile.profile.id,
 							createdAt: Date.now(),
 						});
 					} catch (memoryError) {
@@ -2886,12 +2888,13 @@ async function executePlanPhase(
 			}
 
 			const queryPrompt = `${approval.body}\n\n(Planning mode: describe what you would do, do not execute.)`;
+			const activeProfile = resolveChatProfile(msg.chatId, cfg);
 			const memoryBundle = buildTelegramMemoryBundle({
 				chatId: String(msg.chatId),
+				profileId: activeProfile.profile.id,
 				query: approval.body,
 				includeRecentHistory: isNewSession,
 			});
-			const activeProfile = resolveChatProfile(msg.chatId, cfg);
 			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
 			const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
 				includeProjectSoul: !useRemoteAgent,
