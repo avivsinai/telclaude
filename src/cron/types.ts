@@ -21,9 +21,26 @@ export type CronAction =
 			kind: "private-heartbeat";
 	  }
 	| {
+			kind: "curator-scan";
+	  }
+	| {
 			kind: "agent-prompt";
 			prompt: string;
+			/**
+			 * Explicit SDK skill allowlist for scheduled prompts.
+			 * Undefined preserves legacy private-agent behavior. [] denies all skills.
+			 */
+			allowedSkills?: string[];
+			preprocess?: CronPreprocessCommand;
 	  };
+
+export type CronPreprocessCommand = {
+	command: string;
+	args?: string[];
+	cwd?: string;
+	timeoutMs?: number;
+	maxStdoutBytes?: number;
+};
 
 export type CronDeliveryTarget =
 	| {

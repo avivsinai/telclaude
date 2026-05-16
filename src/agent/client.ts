@@ -71,6 +71,7 @@ export async function* executeRemoteQuery(
 			poolKey: options.poolKey,
 			enableSkills: options.enableSkills,
 			allowedSkills: options.allowedSkills,
+			agentSkillsAllowed: options.agentSkillsAllowed,
 			timeoutMs: options.timeoutMs,
 			resumeSessionId: options.resumeSessionId,
 			betas: options.betas,
@@ -78,10 +79,13 @@ export async function* executeRemoteQuery(
 			chatId: options.chatId,
 			actorId: options.actorId,
 			threadId: options.threadId,
+			model: options.model,
 			systemPromptAppend: options.systemPromptAppend,
 			sessionToken,
 			outputFormat: options.outputFormat,
 			compiledMemoryMd: options.compiledMemoryMd,
+			telemetrySource: options.telemetrySource,
+			telemetryServiceId: options.telemetryServiceId,
 		});
 		const endpoint = `${stripTrailingSlash(agentUrl)}${path}`;
 		const scope = options.scope ?? "telegram";

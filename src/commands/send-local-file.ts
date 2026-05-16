@@ -19,6 +19,51 @@ export type SendLocalFileOptions = {
 	userId?: string;
 };
 
+export type SendLocalFileActionOptions = {
+	commandName: string;
+	usage: string;
+	successLabel: string;
+};
+
+export async function executeSendLocalFileCommand(
+	opts: SendLocalFileOptions,
+	actionOptions: SendLocalFileActionOptions,
+): Promise<void> {
+	try {
+		requireRelay();
+
+		const sourcePath = opts.path?.trim();
+		if (!sourcePath) {
+			console.error("Error: --path is required.");
+			console.error(`Usage: ${actionOptions.usage}`);
+			process.exit(1);
+		}
+
+		const result = await relayDeliverLocalFile({
+			sourcePath,
+			filename: opts.filename,
+			userId: opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID,
+		});
+
+		if (result.status !== "ok") {
+			console.error(`Error: ${result.error ?? "Delivery failed"}`);
+			process.exit(1);
+		}
+
+		// Output the path - the outbox watcher will detect and send to Telegram.
+		console.log(`${actionOptions.successLabel}: ${result.path}`);
+		console.log(`Filename: ${result.filename}`);
+		console.log(`Size: ${result.size} bytes`);
+	} catch (err) {
+		logger.error(
+			{ error: String(err), commandName: actionOptions.commandName },
+			"send-local-file command failed",
+		);
+		console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+		process.exit(1);
+	}
+}
+
 export function registerSendLocalFileCommand(program: Command): void {
 	program
 		.command("send-local-file")
@@ -26,36 +71,11 @@ export function registerSendLocalFileCommand(program: Command): void {
 		.option("--path <path>", "Path to the local file (required)")
 		.option("--filename <name>", "Override the filename for display")
 		.option("--user-id <id>", "User ID for logging (optional)")
-		.action(async (opts: SendLocalFileOptions) => {
-			try {
-				requireRelay();
-
-				const sourcePath = opts.path?.trim();
-				if (!sourcePath) {
-					console.error("Error: --path is required.");
-					console.error("Usage: telclaude send-local-file --path /workspace/file.pdf");
-					process.exit(1);
-				}
-
-				const result = await relayDeliverLocalFile({
-					sourcePath,
-					filename: opts.filename,
-					userId: opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID,
-				});
-
-				if (result.status !== "ok") {
-					console.error(`Error: ${result.error ?? "Delivery failed"}`);
-					process.exit(1);
-				}
-
-				// Output the path - the outbox watcher will detect and send to Telegram
-				console.log(`File delivered: ${result.path}`);
-				console.log(`Filename: ${result.filename}`);
-				console.log(`Size: ${result.size} bytes`);
-			} catch (err) {
-				logger.error({ error: String(err) }, "send-local-file command failed");
-				console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-				process.exit(1);
-			}
-		});
+		.action((opts: SendLocalFileOptions) =>
+			executeSendLocalFileCommand(opts, {
+				commandName: "send-local-file",
+				usage: "telclaude send-local-file --path /workspace/file.pdf",
+				successLabel: "File delivered",
+			}),
+		);
 }

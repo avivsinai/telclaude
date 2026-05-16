@@ -1,7 +1,10 @@
+import path from "node:path";
 import type { Api } from "grammy";
+import { validateCodexModel } from "../agent-runtime/codex-work-unit.js";
 import {
 	type BackgroundJob,
 	cancelJob as cancelBackgroundJob,
+	createJob as createBackgroundJob,
 	getJobByShortId as getBackgroundJobByShortId,
 	listJobs as listBackgroundJobs,
 } from "../background/index.js";
@@ -21,11 +24,18 @@ import {
 	formatReportForTelegram as formatDoctorReport,
 	runSkillsDoctor,
 } from "../commands/skills-doctor.js";
-import { listActiveSkills, listDraftSkills } from "../commands/skills-promote.js";
+import {
+	buildSkillReviewState,
+	listActiveSkills,
+	listDraftSkills,
+} from "../commands/skills-promote.js";
+import { signSkillByName } from "../commands/skills-sign.js";
 import { loadConfig, type TelclaudeConfig } from "../config/config.js";
 import { cloneModelCatalog } from "../config/model-catalog.js";
-import { getChatModelPreference } from "../config/model-preferences.js";
+import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
+import { resolveChatProfile } from "../config/profiles.js";
 import { deleteSession, formatHomeTarget, setHomeTargetForChat } from "../config/sessions.js";
+import { runCuratorScan } from "../curator/actions.js";
 import { getChildLogger } from "../logging.js";
 import {
 	getProviderCatalogEntry,
@@ -44,20 +54,24 @@ import { getUserPermissionTier } from "../security/permissions.js";
 import {
 	sendBackgroundJobCard,
 	sendBackgroundJobListCard,
+	sendCuratorInboxCard,
 	sendModelPickerCard,
 	sendPendingQueueCard,
 	sendProviderListCard,
 	sendSkillDraftCard,
 	sendSkillPickerCard,
+	sendSkillReviewCard,
 	sendSystemHealthCard,
 } from "./cards/create-helpers.js";
 import { getEnabledSocialServices, type SocialServiceConfig } from "./cards/menu-state.js";
+import { loadCuratorInboxEntries } from "./cards/renderers/curator-inbox.js";
 import { loadPendingQueueEntries } from "./cards/renderers/pending-queue.js";
 import { loadSkillPickerEntries } from "./cards/renderers/skill-picker.js";
 import type {
 	BackgroundJobCardState,
 	BackgroundJobListCardState,
 	CardActorScope,
+	CuratorInboxCardState,
 	ModelPickerCardState,
 	ProviderHealthIcon,
 	ProviderListCardState,
@@ -289,6 +303,42 @@ export async function openSkillDraftCard(
 	return { callbackText: "Opened skill drafts" };
 }
 
+export async function openSkillReviewCard(
+	api: Api,
+	opts: {
+		chatId: number;
+		skillName: string;
+		threadId?: number;
+	},
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can promote skills.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin can promote skills.", callbackAlert: true };
+	}
+	const review = await buildSkillReviewState({
+		skillName: opts.skillName,
+		adminControlsEnabled: true,
+	});
+	if ("error" in review) {
+		await api.sendMessage(
+			opts.chatId,
+			`Promote failed: ${review.error}`,
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: review.error, callbackAlert: true };
+	}
+	await sendSkillReviewCard(api, opts.chatId, {
+		state: review,
+		actorScope: "admin",
+		threadId: opts.threadId,
+	});
+	return { callbackText: `Opened skill review for ${opts.skillName}` };
+}
+
 export function reloadSkillsSession(sessionKey: string | undefined): CommandUiResult {
 	if (!sessionKey) {
 		return { callbackText: "No session to reload", callbackAlert: true };
@@ -408,6 +458,47 @@ export async function sendSkillsImportCommand(
 		callbackText:
 			"Use `telclaude plugins install` for plugins, `skills import-openclaw` for standalone skills.",
 	};
+}
+
+export async function sendSkillsSignCommand(
+	api: Api,
+	opts: { chatId: number; skillName?: string; threadId?: number },
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(opts.chatId, "Only admin can sign skills.", threadOptions(opts.threadId));
+		return { callbackText: "Only admin.", callbackAlert: true };
+	}
+	const skillName = opts.skillName?.trim();
+	if (!skillName) {
+		await api.sendMessage(
+			opts.chatId,
+			"Usage: `/skills sign <name>`",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Usage: /skills sign <name>", callbackAlert: true };
+	}
+
+	const result = await signSkillByName(skillName);
+	if (!result.ok) {
+		await api.sendMessage(
+			opts.chatId,
+			`Skill signing failed: ${result.error}`,
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Skill signing failed", callbackAlert: true };
+	}
+
+	await api.sendMessage(
+		opts.chatId,
+		[
+			`Signed ${result.skillName}.`,
+			`digest: sha256:${result.digest}`,
+			`signature: ${result.signature.slice(0, 20)}...`,
+			`written: ${result.sigPath}`,
+		].join("\n"),
+		threadOptions(opts.threadId),
+	);
+	return { callbackText: `Signed ${result.skillName}` };
 }
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -1104,6 +1195,205 @@ export function startSocialAskWizard(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const BACKGROUND_LIST_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const CODEX_PROMPT_MAX_CHARS = 24_000;
+
+type CodexSandbox = "read-only" | "workspace-write";
+
+export type ParsedCodexWorkUnitCommand = {
+	prompt: string;
+	cwd?: string;
+	model?: string;
+	sandbox: CodexSandbox;
+	writeRequested: boolean;
+};
+
+function parseCodexOptionValue(
+	tokens: string[],
+	index: number,
+	flag: "--cwd" | "--model",
+): { value: string; nextIndex: number } {
+	const token = tokens[index];
+	const equalsPrefix = `${flag}=`;
+	if (token?.startsWith(equalsPrefix)) {
+		return { value: token.slice(equalsPrefix.length), nextIndex: index + 1 };
+	}
+	const next = tokens[index + 1];
+	if (!next || next.startsWith("--")) {
+		throw new Error(`${flag} requires a value.`);
+	}
+	return { value: next, nextIndex: index + 2 };
+}
+
+function validateCodexCwd(value: string): string {
+	const cwd = value.trim();
+	if (!cwd) {
+		throw new Error("--cwd requires a non-empty relative path.");
+	}
+	if (path.isAbsolute(cwd) || path.win32.isAbsolute(cwd)) {
+		throw new Error("--cwd must be a relative path inside the workspace.");
+	}
+	if (cwd.split(/[\\/]+/).includes("..")) {
+		throw new Error("--cwd cannot contain '..' path segments.");
+	}
+	return cwd;
+}
+
+export function parseCodexWorkUnitCommand(rawArgs: string): ParsedCodexWorkUnitCommand {
+	const trimmed = rawArgs.trim();
+	if (!trimmed) {
+		throw new Error("Usage: /codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>");
+	}
+
+	const tokens = trimmed.split(/\s+/);
+	let model: string | undefined;
+	let cwd: string | undefined;
+	let writeRequested = false;
+	let promptParts: string[] = [];
+
+	for (let i = 0; i < tokens.length; ) {
+		const token = tokens[i];
+		if (!token) {
+			i++;
+			continue;
+		}
+		if (token === "--") {
+			promptParts = tokens.slice(i + 1);
+			break;
+		}
+		if (token === "--write") {
+			writeRequested = true;
+			i++;
+			continue;
+		}
+		if (token === "--model" || token.startsWith("--model=")) {
+			const parsed = parseCodexOptionValue(tokens, i, "--model");
+			model = validateCodexModel(parsed.value);
+			i = parsed.nextIndex;
+			continue;
+		}
+		if (token === "--cwd" || token.startsWith("--cwd=")) {
+			const parsed = parseCodexOptionValue(tokens, i, "--cwd");
+			cwd = validateCodexCwd(parsed.value);
+			i = parsed.nextIndex;
+			continue;
+		}
+		if (token.startsWith("--")) {
+			throw new Error(`Unknown /codex option: ${token}`);
+		}
+		promptParts = tokens.slice(i);
+		break;
+	}
+
+	const prompt = promptParts.join(" ").trim();
+	if (!prompt) {
+		throw new Error("Codex work units require a prompt.");
+	}
+	if (prompt.length > CODEX_PROMPT_MAX_CHARS) {
+		throw new Error(`Codex prompt must be at most ${CODEX_PROMPT_MAX_CHARS} characters.`);
+	}
+
+	return {
+		prompt,
+		...(cwd ? { cwd } : {}),
+		...(model ? { model } : {}),
+		sandbox: writeRequested ? "workspace-write" : "read-only",
+		writeRequested,
+	};
+}
+
+function codexJobTitle(prompt: string): string {
+	const normalized = prompt.replace(/\s+/g, " ").trim();
+	const preview = normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
+	return `Codex: ${preview}`;
+}
+
+function codexJobDescription(parsed: ParsedCodexWorkUnitCommand): string {
+	const details = [`Sandbox: ${parsed.sandbox}`];
+	if (parsed.cwd) details.push(`cwd: ${parsed.cwd}`);
+	if (parsed.model) details.push(`model: ${parsed.model}`);
+	return details.join("\n");
+}
+
+export async function queueCodexWorkUnitCommand(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+		actorId?: number;
+		rawArgs: string;
+		cfg?: TelclaudeConfig;
+	},
+): Promise<CommandUiResult> {
+	const cfg = opts.cfg ?? loadConfig();
+	const tier = getUserPermissionTier(opts.chatId, cfg.security);
+	if (tier === "READ_ONLY") {
+		const text =
+			"READ_ONLY tier cannot queue Codex work units. Ask an operator to raise your tier first.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "READ_ONLY cannot queue Codex", callbackAlert: true };
+	}
+	if (tier === "SOCIAL") {
+		const text = "SOCIAL tier cannot queue Codex work units.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "SOCIAL cannot queue Codex", callbackAlert: true };
+	}
+
+	let parsed: ParsedCodexWorkUnitCommand;
+	try {
+		parsed = parseCodexWorkUnitCommand(opts.rawArgs);
+	} catch (err) {
+		const text = err instanceof Error ? err.message : String(err);
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "Invalid /codex command", callbackAlert: true };
+	}
+
+	if (parsed.writeRequested && tier !== "FULL_ACCESS") {
+		const text =
+			"/codex --write requires FULL_ACCESS. Run without --write for a read-only Codex work unit.";
+		await api.sendMessage(opts.chatId, text, threadOptions(opts.threadId));
+		return { callbackText: "--write requires FULL_ACCESS", callbackAlert: true };
+	}
+
+	const job = createBackgroundJob({
+		title: codexJobTitle(parsed.prompt),
+		description: codexJobDescription(parsed),
+		userId: `tg:${opts.actorId ?? opts.chatId}`,
+		chatId: opts.chatId,
+		threadId: opts.threadId,
+		tier,
+		payload: {
+			kind: "codex-work-unit",
+			prompt: parsed.prompt,
+			sandbox: parsed.sandbox,
+			...(parsed.cwd ? { cwd: parsed.cwd } : {}),
+			...(parsed.model ? { model: parsed.model } : {}),
+		},
+	});
+
+	logger.info(
+		{
+			jobId: job.id,
+			shortId: job.shortId,
+			chatId: opts.chatId,
+			threadId: opts.threadId,
+			tier,
+			sandbox: parsed.sandbox,
+			cwd: parsed.cwd,
+			model: parsed.model,
+		},
+		"codex work unit queued via Telegram",
+	);
+
+	await sendBackgroundJobDetail(api, {
+		chatId: opts.chatId,
+		threadId: opts.threadId,
+		actorScope: opts.actorScope,
+		shortId: job.shortId,
+	});
+
+	return { callbackText: `Queued Codex job ${job.shortId}` };
+}
 
 function backgroundStatusLabel(status: BackgroundJobCardState["status"]): string {
 	switch (status) {
@@ -1324,7 +1614,7 @@ export async function openSystemHealthCard(
 	}
 
 	try {
-		const snapshot = await collectSystemHealth();
+		const snapshot = await collectSystemHealth({ chatId: opts.chatId });
 		const items: SystemHealthCardItem[] = snapshot.items.map((item) => ({
 			id: item.id,
 			label: item.label,
@@ -1365,6 +1655,48 @@ export async function openSystemHealthCard(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Curator inbox
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export async function openCuratorInboxCard(
+	api: Api,
+	opts: {
+		chatId: number;
+		threadId?: number;
+		actorScope: CardActorScope;
+	},
+): Promise<CommandUiResult> {
+	if (!isAdmin(opts.chatId)) {
+		await api.sendMessage(
+			opts.chatId,
+			"Only admin can view the Curator inbox.",
+			threadOptions(opts.threadId),
+		);
+		return { callbackText: "Only admin can view Curator.", callbackAlert: true };
+	}
+
+	const scan = runCuratorScan({ producerKind: "system" });
+	const entries = loadCuratorInboxEntries();
+	const state: CuratorInboxCardState = {
+		kind: CardKind.CuratorInbox,
+		title: "Curator",
+		view: "list",
+		entries,
+		page: 0,
+		lastScanSummary: `Scan updated ${scan.createdOrUpdated} item(s); ${scan.openItems} open.`,
+		lastRefreshedAtMs: Date.now(),
+	};
+
+	await sendCuratorInboxCard(api, opts.chatId, {
+		state,
+		actorScope: opts.actorScope,
+		threadId: opts.threadId,
+	});
+
+	return { callbackText: `${scan.openItems} open Curator item${scan.openItems === 1 ? "" : "s"}` };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Interactive pickers (W2)
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1394,7 +1726,8 @@ export async function openModelPicker(
 ): Promise<CommandUiResult> {
 	const cfg = opts.cfg ?? loadConfig();
 	const providers = cloneModelCatalog();
-	const pref = getChatModelPreference(opts.chatId);
+	const activeProfile = resolveChatProfile(opts.chatId, cfg);
+	const modelRoute = resolveModelRoute(opts.chatId, { profile: activeProfile.profile });
 	const tier = getUserPermissionTier(String(opts.chatId), cfg.security);
 	const canMutate = canActorMutate(opts.chatId, cfg);
 
@@ -1409,11 +1742,13 @@ export async function openModelPicker(
 		selectedProviderId: hintProvider?.id,
 		page: 0,
 		view: hintProvider ? "models" : "providers",
-		currentModelId: pref?.modelId,
-		currentProviderId: pref?.providerId,
+		currentModelId: modelRoute.effectiveModel ?? modelRoute.requestedModelId,
+		currentProviderId: modelRoute.effectiveModel
+			? modelRoute.effectiveProviderId
+			: (modelRoute.requestedProviderId ?? modelRoute.effectiveProviderId),
 		viewerTier: tier,
 		canMutate,
-		fallbackState: pref ? "override" : "default",
+		fallbackState: formatModelRoute(modelRoute),
 		lastRefreshedAtMs: Date.now(),
 	};
 

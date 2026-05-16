@@ -4,6 +4,7 @@ import path from "node:path";
 
 import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
 import type { PermissionTier } from "../config/config.js";
+import { isExecutableModelId } from "../config/model-routing.js";
 import { verifyInternalAuth } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 import {
@@ -36,6 +37,8 @@ type QueryRequest = {
 	enableSkills?: boolean;
 	/** When set, only these skills can be invoked. Requires enableSkills: true. */
 	allowedSkills?: string[];
+	/** SOCIAL-only operator-curated agent-authored skills for this service. */
+	agentSkillsAllowed?: string[];
 	timeoutMs?: number;
 	resumeSessionId?: string;
 	betas?: SdkBeta[];
@@ -43,6 +46,7 @@ type QueryRequest = {
 	chatId?: number;
 	actorId?: number;
 	threadId?: number;
+	model?: string;
 	systemPromptAppend?: string;
 	/** Pre-minted session token from relay for agent subprocess relay capabilities. */
 	sessionToken?: string;
@@ -50,6 +54,8 @@ type QueryRequest = {
 	outputFormat?: OutputFormat;
 	/** Relay-compiled Claude working memory snapshot. */
 	compiledMemoryMd?: string;
+	telemetrySource?: "telegram" | "social";
+	telemetryServiceId?: string;
 };
 
 type AgentServerOptions = {
@@ -223,10 +229,14 @@ async function streamQuery(
 			resumeSessionId: req.resumeSessionId,
 			enableSkills: req.enableSkills ?? req.tier !== "READ_ONLY",
 			allowedSkills: req.allowedSkills,
+			agentSkillsAllowed: req.agentSkillsAllowed,
+			telemetrySource: req.telemetrySource,
+			telemetryServiceId: req.telemetryServiceId,
 			sessionToken: req.sessionToken,
 			timeoutMs: req.timeoutMs,
 			abortController,
 			betas: req.betas,
+			model: req.model,
 			systemPromptAppend: req.systemPromptAppend,
 			outputFormat: req.outputFormat,
 			compiledMemoryMd: req.compiledMemoryMd,
@@ -339,12 +349,53 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 					writeJson(res, 400, { error: "Invalid compiledMemoryMd." });
 					return;
 				}
+				if (parsed.model !== undefined && typeof parsed.model !== "string") {
+					writeJson(res, 400, { error: "Invalid model." });
+					return;
+				}
+				if (parsed.model !== undefined && !isExecutableModelId(parsed.model)) {
+					writeJson(res, 400, { error: "Model is not executable by this runtime." });
+					return;
+				}
+				if (
+					parsed.agentSkillsAllowed !== undefined &&
+					(!Array.isArray(parsed.agentSkillsAllowed) ||
+						parsed.agentSkillsAllowed.some((skill) => typeof skill !== "string"))
+				) {
+					writeJson(res, 400, { error: "Invalid agentSkillsAllowed." });
+					return;
+				}
+				if (
+					parsed.telemetrySource !== undefined &&
+					parsed.telemetrySource !== "telegram" &&
+					parsed.telemetrySource !== "social"
+				) {
+					writeJson(res, 400, { error: "Invalid telemetrySource." });
+					return;
+				}
+				if (
+					parsed.telemetryServiceId !== undefined &&
+					typeof parsed.telemetryServiceId !== "string"
+				) {
+					writeJson(res, 400, { error: "Invalid telemetryServiceId." });
+					return;
+				}
 
 				const scope = authResult.scope;
 				let effectiveTier = parsed.tier;
 				const effectiveEnableSkills = parsed.enableSkills;
 				let effectiveUserId = parsed.userId;
 				const effectiveCwd = resolveCwd(parsed.cwd);
+				const effectiveTelemetrySource = scope === "telegram" ? "telegram" : "social";
+				if (parsed.telemetrySource && parsed.telemetrySource !== effectiveTelemetrySource) {
+					logger.warn(
+						{ requested: parsed.telemetrySource, effective: effectiveTelemetrySource, scope },
+						"ignored telemetrySource that did not match authenticated scope",
+					);
+				}
+				const effectiveTelemetryServiceId =
+					parsed.telemetryServiceId ??
+					(scope !== "telegram" && scope !== "social" ? scope : undefined);
 
 				// Any scope that isn't "telegram" is treated as a social service scope
 				if (scope !== "telegram") {
@@ -397,7 +448,7 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				if (soul) {
 					const soulBlock = `<soul>\n${soul}\n</soul>`;
 					effectiveSystemPromptAppend = effectiveSystemPromptAppend
-						? `${effectiveSystemPromptAppend}\n${soulBlock}`
+						? `${soulBlock}\n${effectiveSystemPromptAppend}`
 						: soulBlock;
 				}
 				const socialPrompt = loadSocialContractPrompt();
@@ -419,7 +470,10 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 						cwd: effectiveCwd,
 						tier: effectiveTier,
 						enableSkills: effectiveEnableSkills,
+						agentSkillsAllowed: parsed.agentSkillsAllowed,
 						userId: effectiveUserId,
+						telemetrySource: effectiveTelemetrySource,
+						telemetryServiceId: effectiveTelemetryServiceId,
 						systemPromptAppend: effectiveSystemPromptAppend,
 						timeoutMs,
 					},

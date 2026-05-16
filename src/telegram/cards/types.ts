@@ -19,6 +19,7 @@ export enum CardKind {
 	ProviderList = "ProviderList",
 	SkillPicker = "SkillPicker",
 	SkillReview = "SkillReview",
+	CuratorInbox = "CuratorInbox",
 }
 
 export type CardStatus = "active" | "consumed" | "expired" | "superseded";
@@ -236,6 +237,16 @@ export type ModelPickerEntry = {
 export type ModelPickerProvider = {
 	id: string;
 	label: string;
+	execution:
+		| {
+				executable: true;
+				kind: "claude-sdk";
+		  }
+		| {
+				executable: false;
+				kind: "catalog-only";
+				reason: string;
+		  };
 	models: ModelPickerEntry[];
 };
 
@@ -352,6 +363,31 @@ export type SkillReviewCardState = {
 	decisionError?: string;
 };
 
+export type CuratorInboxEntry = {
+	shortId: string;
+	kind: string;
+	status: "open" | "accepted" | "rejected" | "expired";
+	severity: "info" | "low" | "medium" | "high";
+	source: string;
+	title: string;
+	summary: string;
+	rationale?: string;
+	entityRef: string;
+	proposedActionType?: string;
+	updatedAtMs: number;
+};
+
+export type CuratorInboxCardState = {
+	kind: CardKind.CuratorInbox;
+	title: string;
+	view: "list" | "detail";
+	entries: CuratorInboxEntry[];
+	page?: number;
+	selectedShortId?: string;
+	lastScanSummary?: string;
+	lastRefreshedAtMs?: number;
+};
+
 export type SkillPickerView = "list";
 
 export type SkillPickerCardState = {
@@ -383,6 +419,7 @@ export type CardStateMap = {
 	[CardKind.ProviderList]: ProviderListCardState;
 	[CardKind.SkillPicker]: SkillPickerCardState;
 	[CardKind.SkillReview]: SkillReviewCardState;
+	[CardKind.CuratorInbox]: CuratorInboxCardState;
 };
 
 export type CardState<K extends CardKind = CardKind> = CardStateMap[K];
@@ -522,6 +559,16 @@ export type SkillPickerCardAction =
 
 export type SkillReviewCardAction = { type: "promote" } | { type: "reject" } | { type: "refresh" };
 
+export type CuratorInboxCardAction =
+	| PickerSelectAction
+	| { type: "page-next" }
+	| { type: "page-prev" }
+	| { type: "back" }
+	| { type: "accept" }
+	| { type: "reject" }
+	| { type: "scan" }
+	| { type: "refresh" };
+
 export type CardActionMap = {
 	[CardKind.Approval]: ApprovalCardAction;
 	[CardKind.ApprovalScope]: ApprovalScopeCardAction;
@@ -540,6 +587,7 @@ export type CardActionMap = {
 	[CardKind.ProviderList]: ProviderListCardAction;
 	[CardKind.SkillPicker]: SkillPickerCardAction;
 	[CardKind.SkillReview]: SkillReviewCardAction;
+	[CardKind.CuratorInbox]: CuratorInboxCardAction;
 };
 
 export type CardAction<K extends CardKind = CardKind> = CardActionMap[K];
@@ -637,6 +685,16 @@ const CARD_ACTIONS_BY_KIND = {
 		"refresh",
 	],
 	[CardKind.SkillReview]: ["promote", "reject", "refresh"],
+	[CardKind.CuratorInbox]: [
+		...PICKER_SELECT_ACTIONS,
+		"page-next",
+		"page-prev",
+		"back",
+		"accept",
+		"reject",
+		"scan",
+		"refresh",
+	],
 } as const satisfies { [K in CardKind]: readonly CardActionType<K>[] };
 
 export interface CardInstance<K extends CardKind = CardKind> {

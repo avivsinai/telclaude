@@ -14,6 +14,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { collectAgentRuntimeStatuses } from "../agent-runtime/status.js";
 import type { TelclaudeConfig } from "../config/config.js";
 import { fetchWithTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
@@ -218,6 +219,23 @@ export function checkClaudeLogin(): CheckResult {
 			"claude login",
 		);
 	}
+}
+
+export function checkAgentRuntimes(): CheckResult[] {
+	return collectAgentRuntimeStatuses().map((runtime) => {
+		const name = `agent-runtime.${runtime.id}`;
+		const category = "Agent Runtimes";
+		const detail = runtime.remediation
+			? `${runtime.detail}\ntry: ${runtime.remediation}`
+			: runtime.detail;
+		if (runtime.readiness === "ready") {
+			return pass(name, category, `${runtime.label} ready`, detail);
+		}
+		if (runtime.readiness === "warning") {
+			return warn(name, category, `${runtime.label} available with warnings`, detail);
+		}
+		return fail(name, category, `${runtime.label} unavailable`, detail, runtime.remediation);
+	});
 }
 
 /**

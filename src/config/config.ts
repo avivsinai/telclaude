@@ -3,6 +3,7 @@ import fs from "node:fs";
 import JSON5 from "json5";
 import { z } from "zod";
 
+import { resolveInsideRoot } from "../path-safety.js";
 import { CONFIG_DIR } from "../utils.js";
 import { resolveConfigPath, resolveRuntimeConfigPath } from "./path.js";
 
@@ -71,6 +72,16 @@ const SOCIAL_SERVICE_DEFAULTS = {
 } as const;
 const CRON_DEFAULTS = { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 } as const;
 const DASHBOARD_DEFAULTS = { enabled: false, port: 3005 } as const;
+const WEBHOOKS_DEFAULTS = {
+	enabled: false,
+	port: 3015,
+	maxBodyBytes: 256 * 1024,
+	globalRateLimitPerHour: 600,
+	defaultRateLimitPerHour: 60,
+	unauthenticatedRateLimitPerHour: 120,
+	trustedProxies: [] as string[],
+	allowedHosts: [] as string[],
+} as const;
 
 // Session configuration schema
 const SessionConfigSchema = z.object({
@@ -114,6 +125,35 @@ const SdkBetaEnum = z.enum(["context-1m-2025-08-07"]);
 const SdkConfigSchema = z.object({
 	betas: z.array(SdkBetaEnum).default([]),
 });
+
+const OperatorProfileIdSchema = z
+	.string()
+	.regex(/^[a-z0-9-]{1,32}$/, "profile id must match ^[a-z0-9-]{1,32}$")
+	.refine((id) => id !== "default", "'default' is reserved for the implicit profile");
+
+const OperatorProfileConfigSchema = z.object({
+	id: OperatorProfileIdSchema,
+	label: z.string().min(1).max(80),
+	description: z.string().max(500).optional(),
+	soulPath: z.string().min(1).optional(),
+	allowedSkills: z.array(z.string().min(1).max(128)).optional(),
+	defaultModel: z
+		.object({
+			providerId: z.string().min(1).max(64),
+			modelId: z.string().min(1).max(128),
+		})
+		.optional(),
+});
+
+function validateProfileSoulPaths(
+	profiles: readonly z.infer<typeof OperatorProfileConfigSchema>[],
+) {
+	const root = process.cwd();
+	for (const profile of profiles) {
+		if (!profile.soulPath) continue;
+		resolveInsideRoot(profile.soulPath, root, `profile ${profile.id} soulPath`);
+	}
+}
 
 // OpenAI configuration schema (for Whisper, GPT Image, TTS)
 // NOTE: Keys are automatically exposed to sandbox for FULL_ACCESS tier only.
@@ -458,6 +498,8 @@ const SocialServiceConfigSchema = z.object({
 	enableSkills: z.boolean().default(false),
 	/** Future: filter which skills load for this service */
 	allowedSkills: z.array(z.string()).optional(),
+	/** Operator-curated agent-authored skills under agent/social/<service>. Default: none. */
+	agentSkillsAllowed: z.array(z.string()).default([]),
 	/** When to send Telegram notifications on heartbeat. Default: "activity" */
 	notifyOnHeartbeat: z.enum(["always", "activity", "never"]).default("activity"),
 });
@@ -475,6 +517,39 @@ const CronConfigSchema = z.object({
 const DashboardConfigSchema = z.object({
 	enabled: z.boolean().default(DASHBOARD_DEFAULTS.enabled),
 	port: z.number().int().positive().default(DASHBOARD_DEFAULTS.port),
+});
+
+/**
+ * Local-only signed webhook receiver. Binds to 127.0.0.1 exclusively; put
+ * nginx/Caddy/Cloudflare Tunnel in front for TLS/public ingress.
+ */
+const WebhooksConfigSchema = z.object({
+	enabled: z.boolean().default(WEBHOOKS_DEFAULTS.enabled),
+	port: z.number().int().positive().default(WEBHOOKS_DEFAULTS.port),
+	maxBodyBytes: z.number().int().positive().default(WEBHOOKS_DEFAULTS.maxBodyBytes),
+	globalRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.globalRateLimitPerHour),
+	defaultRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.defaultRateLimitPerHour),
+	/** Per source+slug hourly cap before secret lookup/HMAC verification. */
+	unauthenticatedRateLimitPerHour: z
+		.number()
+		.int()
+		.positive()
+		.default(WEBHOOKS_DEFAULTS.unauthenticatedRateLimitPerHour),
+	/**
+	 * Immediate proxy hops whose X-Forwarded-For headers Fastify may trust.
+	 * Leave empty to ignore X-Forwarded-For entirely.
+	 */
+	trustedProxies: z.array(z.string().min(1)).default(WEBHOOKS_DEFAULTS.trustedProxies),
+	/** Additional accepted Host header names for reverse proxies that preserve public Host. */
+	allowedHosts: z.array(z.string().min(1)).default(WEBHOOKS_DEFAULTS.allowedHosts),
 });
 
 // Main config schema
@@ -496,8 +571,26 @@ const TelclaudeConfigSchema = z.object({
 	providers: z.array(ExternalProviderSchema).default([]),
 	// Generic social services (replaces per-service top-level keys)
 	socialServices: z.array(SocialServiceConfigSchema).default([]),
+	// Private Telegram operator profiles. Social services remain a separate trust boundary.
+	profiles: z
+		.array(OperatorProfileConfigSchema)
+		.default([])
+		.superRefine((profiles, ctx) => {
+			const seen = new Set<string>();
+			for (const [index, profile] of profiles.entries()) {
+				if (seen.has(profile.id)) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						path: [index, "id"],
+						message: `duplicate profile id: ${profile.id}`,
+					});
+				}
+				seen.add(profile.id);
+			}
+		}),
 	cron: CronConfigSchema.default(CRON_DEFAULTS),
 	dashboard: DashboardConfigSchema.default(DASHBOARD_DEFAULTS),
+	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
@@ -508,9 +601,11 @@ export type NetworkConfig = z.infer<typeof NetworkConfigSchema>;
 export type ExternalProviderConfig = z.infer<typeof ExternalProviderSchema>;
 export type TelegramConfig = z.infer<typeof TelegramConfigSchema>;
 export type SdkConfig = z.infer<typeof SdkConfigSchema>;
+export type OperatorProfileConfig = z.infer<typeof OperatorProfileConfigSchema>;
 export type SocialServiceConfig = z.infer<typeof SocialServiceConfigSchema>;
 export type CronConfig = z.infer<typeof CronConfigSchema>;
 export type DashboardConfig = z.infer<typeof DashboardConfigSchema>;
+export type WebhooksConfig = z.infer<typeof WebhooksConfigSchema>;
 export type OpenAIConfig = z.infer<typeof OpenAIConfigSchema>;
 export type TranscriptionConfig = z.infer<typeof TranscriptionConfigSchema>;
 export type ImageGenerationConfig = z.infer<typeof ImageGenerationConfigSchema>;
@@ -622,6 +717,7 @@ export function loadConfig(): TelclaudeConfig {
 		}
 
 		const validated = TelclaudeConfigSchema.parse(parsed);
+		validateProfileSoulPaths(validated.profiles);
 
 		cachedConfig = validated;
 		configMtime = stat?.mtimeMs ?? null;
@@ -742,6 +838,9 @@ export async function createDefaultConfigIfMissing(): Promise<boolean> {
 			logging: {
 				level: "info",
 			},
+			profiles: [],
+			cron: CRON_DEFAULTS,
+			webhooks: WEBHOOKS_DEFAULTS,
 		};
 
 		await fs.promises.writeFile(configPath, JSON.stringify(defaultConfig, null, 2), {

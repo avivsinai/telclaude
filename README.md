@@ -1,6 +1,6 @@
 # telclaude
 
-Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals, and tiered permissions.
+Isolation-first Telegram ⇄ agent relay for Claude Code, Codex, and operator workflows, with LLM pre-screening, approvals, and tiered permissions.
 
 [![CI](https://github.com/avivsinai/telclaude/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/telclaude/actions/workflows/ci.yml)
 [![Gitleaks](https://github.com/avivsinai/telclaude/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/avivsinai/telclaude/actions/workflows/gitleaks.yml)
@@ -15,7 +15,7 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 - Relay-authoritative memory: trusted semantic memory + episodic shared history archive + compiled Claude `MEMORY.md` working set. Private recall is aggressive, but source boundaries remain hard.
 - Hard defaults: secret redaction (CORE patterns + entropy), rate limits, audit log, and fail-closed chat allowlist.
 - Soft controls: Haiku observer, nonce-based approval workflow for FULL_ACCESS, and optional TOTP auth gate for periodic identity verification.
-- Four permission tiers mapped to Claude Agent SDK allowedTools: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
+- Four permission tiers mapped to agent runtime capabilities: READ_ONLY, WRITE_LOCAL, SOCIAL, FULL_ACCESS.
 - Generic social services integration (X/Twitter, Moltbook, Bluesky, etc.) via config-driven `SOCIAL` agent context with unified social persona.
 - External provider sidecars: Google Services (Gmail, Calendar, Drive, Contacts) with approval-gated actions; extensible pattern for adding new providers.
 - Private network allowlist for homelab services (Home Assistant, NAS, etc.) with port enforcement.
@@ -91,7 +91,8 @@ Isolation-first Telegram ⇄ Claude Code relay with LLM pre-screening, approvals
 
 ## Requirements
 - Node 20+, pnpm 9.x
-- Claude CLI (`brew install anthropic-ai/cli/claude`) — recommended. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
+- Claude CLI (`brew install anthropic-ai/cli/claude`) — current primary runtime. In Docker, telclaude routes Anthropic access through the relay proxy; if you use OAuth, run `claude login` in the relay container with `CLAUDE_CONFIG_DIR=/home/telclaude-auth` so tokens live in the dedicated auth profile.
+- Codex CLI (`codex`) — first-class peer runtime surface. For write-capable Codex work, configure a dedicated `CODEX_HOME`; `telclaude runtimes status` reports whether Codex would use controlled or global config.
 - Telegram bot token from @BotFather
 - Native mode: macOS 14+ or Linux with `bubblewrap`, `socat`, and `ripgrep` available on PATH
 - Docker/WSL: Docker + Compose (no host bubblewrap required)
@@ -150,7 +151,7 @@ claude login             # API key is not forwarded into sandboxed agent
 
 4) (Recommended) Start TOTP daemon in another terminal
 ```bash
-pnpm dev totp-daemon
+pnpm dev maintenance totp-daemon
 ```
 
 5) Health check
@@ -179,6 +180,9 @@ docker compose exec telclaude pnpm start relay --profile strict
 - `/help <topic>` — contextual help for approvals, 2fa, sessions, etc.
 - `/system` — system status, sessions, cron (card-based with inline buttons).
 - `/me`, `/auth`, `/social`, `/skills` — identity, 2FA, social persona, skill management.
+- `/profile list|switch <id>|reset` — inspect or switch the active operator profile for the chat.
+- `/curator` — review local automation suggestions and accept/reject without executing the action.
+- `/codex [--model <id>] [--cwd <relative-path>] [--write] <prompt>` — queue a single-shot Codex work unit; results return as a background job card. Supported overrides are `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, and `gpt-5.2`.
 - `/approve`, `/new` — fast-path shortcuts for approvals and session reset.
 
 ## Memory model
@@ -198,12 +202,20 @@ pnpm dev memory context --chat-id <telegram-chat-id> --query "oauth vault refres
 pnpm dev memory context --chat-id <telegram-chat-id> --markdown
 ```
 
+`--chat-id` resolves that chat's active operator profile before reading memory. Private memory is stored under `telegram:<profile-id>` sources, so switching `/profile` changes the semantic and episodic memory namespace used by normal replies, scheduled private runs, and local memory inspection.
+
 ## Configuration
 - Default path: `~/.telclaude/telclaude.json` (override with `TELCLAUDE_CONFIG` or `--config`).
-- Profiles:
+- Security profiles:
   - `simple` (default): sandbox + secret filter + rate limits + audit.
   - `strict`: adds Haiku observer, approval workflow, and tiered tool gates.
   - `test`: disables all enforcement; requires `TELCLAUDE_ENABLE_TEST_PROFILE=1`.
+- Operator profiles:
+  - Configure top-level `profiles[]` entries with `id`, `label`, optional `description`, `soulPath`, `allowedSkills`, and `defaultModel`.
+  - `soulPath` points to a profile-specific prompt overlay.
+  - `allowedSkills` narrows private-agent skill loading for that profile; omit it to allow all private skills.
+  - `defaultModel` uses `{ "providerId": "anthropic", "modelId": "claude-sonnet-4-5-20250929" }` and is overridden by explicit chat `/model` choices.
+  - Telegram admins switch a chat with `/profile switch <id>` and return to the implicit default with `/profile reset`.
 - Permission tiers:
   - `READ_ONLY`: read/search/web only; no writes.
   - `WRITE_LOCAL`: read/write/edit/bash with destructive commands blocked.
@@ -215,7 +227,7 @@ pnpm dev memory context --chat-id <telegram-chat-id> --markdown
 - OpenAI/GitHub key exposure (tier-based):
   - FULL_ACCESS tier automatically gets configured API keys (OpenAI, GitHub) exposed to sandbox.
   - READ_ONLY and WRITE_LOCAL tiers never get keys.
-  - Configure keys via `telclaude setup-openai` / `telclaude setup-git` or env vars.
+  - Configure keys via `telclaude secrets setup-openai` / `telclaude secrets setup-git` or env vars.
   - **Security note:** keys are exposed to the model in FULL_ACCESS; use restricted keys if concerned.
 - Rate limits and audit logging are on by default; see `CLAUDE.md` for full schema and options.
 
@@ -245,7 +257,7 @@ The vault daemon stores API credentials and injects them into HTTP requests tran
 export VAULT_ENCRYPTION_KEY=$(openssl rand -base64 32)
 
 # Start vault daemon
-telclaude vault-daemon
+telclaude maintenance vault-daemon
 
 # Add a credential
 telclaude vault add http api.openai.com --type bearer --label "OpenAI"
@@ -276,9 +288,9 @@ For local services (Home Assistant, NAS, Plex, etc.), configure explicit private
 
 **CLI:**
 ```bash
-telclaude network list
-telclaude network add ha --host 192.168.1.100 --ports 8123
-telclaude network test http://192.168.1.100:8123/api
+telclaude dev network list
+telclaude dev network add ha --host 192.168.1.100 --ports 8123
+telclaude dev network test http://192.168.1.100:8123/api
 ```
 
 Metadata endpoints (169.254.169.254) and link-local addresses remain blocked regardless of allowlist.
@@ -286,7 +298,7 @@ Metadata endpoints (169.254.169.254) and link-local addresses remain blocked reg
 ## External providers (sidecars)
 Telclaude integrates with private REST API sidecars via relay-proxied requests. Agents never call provider endpoints directly (enforced at both application and firewall layers).
 
-**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude setup-google`.
+**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude providers setup google --base-url http://google-services:3001`.
 
 **Configuration:**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).
@@ -311,24 +323,25 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 | `telclaude quickstart` | Interactive first-time setup |
 | `telclaude doctor [--network] [--secrets]` | Health check |
 | `telclaude status [--json]` | Show relay status |
+| `telclaude runtimes status [--json]` | Show Claude Code and Codex runtime readiness |
 
 ### Authentication & access control
 | Command | Description |
 |---------|-------------|
 | `telclaude link <user-id> \| --list \| --remove <chat-id>` | Manage identity links |
-| `telclaude totp-daemon [--socket-path <path>]` | Start TOTP daemon |
-| `telclaude totp-setup <user-id>` | Set up TOTP for a user |
-| `telclaude totp-disable <user-id>` | Disable TOTP for a user |
-| `telclaude reset-auth [--force]` | Reset auth state |
-| `telclaude ban <chat-id> [-r <reason>]` | Block a chat |
-| `telclaude unban <chat-id>` | Restore access |
-| `telclaude force-reauth <chat-id>` | Invalidate TOTP session |
-| `telclaude list-bans` | Show banned chats |
+| `telclaude maintenance totp-daemon [--socket-path <path>]` | Start TOTP daemon |
+| `telclaude auth totp-setup <user-id>` | Set up TOTP for a user |
+| `telclaude auth totp-disable <user-id>` | Disable TOTP for a user |
+| `telclaude maintenance reset-auth [--force]` | Reset auth state |
+| `telclaude admin ban <chat-id> [-r <reason>]` | Block a chat |
+| `telclaude admin unban <chat-id>` | Restore access |
+| `telclaude auth force-reauth <chat-id>` | Invalidate TOTP session |
+| `telclaude admin list-bans` | Show banned chats |
 
 ### Credential vault
 | Command | Description |
 |---------|-------------|
-| `telclaude vault-daemon` | Start vault daemon |
+| `telclaude maintenance vault-daemon` | Start vault daemon |
 | `telclaude vault list` | List stored credentials |
 | `telclaude vault add http <host> --type <type> [--label <name>]` | Add credential |
 | `telclaude vault remove http <host>` | Remove credential |
@@ -337,30 +350,53 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 ### API key & service setup
 | Command | Description |
 |---------|-------------|
-| `telclaude setup-openai` | Configure OpenAI API key |
-| `telclaude setup-git` | Configure Git credentials |
-| `telclaude setup-github-app` | Configure GitHub App |
-| `telclaude setup-google` | Configure Google OAuth credentials (for Google Services sidecar) |
+| `telclaude secrets setup-openai` | Configure OpenAI API key |
+| `telclaude secrets setup-git` | Configure Git credentials |
+| `telclaude secrets setup-github-app` | Configure GitHub App |
+| `telclaude secrets setup-google` | Configure Google OAuth credentials (for Google Services sidecar) |
 
 ### Network & providers
 | Command | Description |
 |---------|-------------|
-| `telclaude network list` | List private endpoints |
-| `telclaude network add <label> (--host <ip> \| --cidr <range>) [--ports <ports>]` | Add endpoint |
-| `telclaude network remove <label>` | Remove endpoint |
-| `telclaude network test <url>` | Test endpoint access |
-| `telclaude provider-query --provider <id> --service <svc> --action <act>` | Query external provider |
-| `telclaude provider-health [provider-id]` | Check provider health |
+| `telclaude dev network list` | List private endpoints |
+| `telclaude dev network add <label> (--host <ip> \| --cidr <range>) [--ports <ports>]` | Add endpoint |
+| `telclaude dev network remove <label>` | Remove endpoint |
+| `telclaude dev network test <url>` | Test endpoint access |
+| `telclaude providers init <id> [--services <csv>]` | Scaffold a provider sidecar |
+| `telclaude providers list` | List configured providers |
+| `telclaude providers add <id> --base-url <url> --services <csv>` | Add a custom provider |
+| `telclaude providers edit <id> --base-url <url> --services <csv>` | Edit a provider |
+| `telclaude providers remove <id>` | Remove a provider |
+| `telclaude providers refresh` | Refresh provider schema and runtime skill state |
+| `telclaude providers schema [id]` | Fetch provider schema |
+| `telclaude providers query <id> <svc> <act>` | Query external provider |
+| `telclaude providers doctor [id]` | Check provider health |
+| `telclaude providers setup google --base-url <url>` | Configure Google provider end-to-end |
 
 ### Media & messaging
 | Command | Description |
 |---------|-------------|
 | `telclaude send <chatId> [message] [--media <path>] [--caption <text>]` | Send message/media |
-| `telclaude send-local-file --path <path> [--filename <name>]` | Send workspace file to Telegram |
+| `telclaude send-file --path <path> [--filename <name>]` | Send workspace file to Telegram |
+| `telclaude send-local-file --path <path> [--filename <name>]` | Backward-compatible alias for sending workspace files |
 | `telclaude send-attachment --ref <ref>` | Send provider attachment via ref token |
 | `telclaude fetch-attachment --provider <id> --id <attachment-id>` | Download provider attachment |
 | `telclaude generate-image <prompt> [-s <size>] [-q <quality>]` | Generate image (requires OpenAI) |
 | `telclaude text-to-speech <text> [-v <voice>] [-f <format>]` | Text-to-speech (requires OpenAI) |
+
+### Memory, cron & Curator
+| Command | Description |
+|---------|-------------|
+| `telclaude memory read --chat-id <id> --categories profile,interests` | Read memory entries for the chat's active profile |
+| `telclaude memory context --chat-id <id> [--markdown]` | Render the compiled private memory bundle |
+| `telclaude memory write "fact" --chat-id <id> --category meta` | Write memory under the chat's active profile |
+| `telclaude maintenance cron status` | Cron scheduler status |
+| `telclaude maintenance cron list [--all] [--json]` | List cron jobs |
+| `telclaude maintenance cron add --name <n> --every <dur>\|--cron <expr>` | Add cron job |
+| `telclaude maintenance cron run <id>` | Run cron job immediately |
+| `telclaude curator scan\|list\|show\|accept\|reject` | Review local Curator suggestions |
+| `telclaude curator sign-producer --item item.json --producer-kind codex --producer-id codex:<id>` | Sign a Codex/Claude Curator item through the vault |
+| `telclaude curator submit-signed --item item.json --envelope envelope.json` | Verify and submit a signed producer Curator item |
 
 ### Diagnostics
 | Command | Description |
@@ -372,7 +408,7 @@ Optional: `/v1/challenge/respond` (POST) for OTP/2FA completion.
 ## Usage example
 Run strict profile with approvals and TOTP:
 ```bash
-pnpm dev totp-daemon &
+pnpm dev maintenance totp-daemon &
 pnpm dev relay --profile strict
 # In Telegram (allowed chat):
 # 1) bot replies with /approve CODE for admin claim
@@ -404,9 +440,9 @@ Use `pnpm dev <command>` during development (tsx). For production: `pnpm build &
 | --- | --- | --- |
 | Bot silent/denied | `allowedChats` empty or rate limit hit | Add your chat ID and rerun; check audit/doctor |
 | Sandbox unavailable (native) | seatbelt/bubblewrap/rg/socat missing | Install deps (see Requirements section above) |
-| TOTP fails | Daemon not running or clock drift | Start `pnpm dev totp-daemon`; sync device time |
+| TOTP fails | Daemon not running or clock drift | Start `telclaude maintenance totp-daemon`; sync device time |
 | SDK/observer errors | Claude CLI missing or not logged in | `brew install anthropic-ai/cli/claude && claude login` (Docker: `docker compose exec -e CLAUDE_CONFIG_DIR=/home/telclaude-auth telclaude claude login`) |
-| Vault not injecting | Daemon not running or host not configured | Start `telclaude vault-daemon`; check `vault list` |
+| Vault not injecting | Daemon not running or host not configured | Start `telclaude maintenance vault-daemon`; check `vault list` |
 
 ## Community
 - Issues & discussions: open GitHub issues; we triage weekly.

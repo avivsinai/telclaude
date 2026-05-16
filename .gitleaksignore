@@ -75,3 +75,15 @@ d4b1e62c0e878c1858defe91e2b0eb33ed87c2a0:src/telegram/wizard/prompter.ts:credent
 
 # ffprobe output format flag `noprint_wrappers=1:nokey=1` (not a credential)
 657bbcc897c1e98cd88aca1cc86689e7ce2f7bda:.claude/skills/video-frames/scripts/frame.sh:credentials-shell:20
+
+# Product-wave test fixtures - intentionally fake hex secrets and PAT shapes used
+# to verify webhook HMAC signing, skill scanner secret detection, and curator
+# sanitizer. Not real credentials.
+6f5e3435f456995687b8ccbe090493de5a0d6bd4:tests/webhooks/auth.test.ts:credentials-javascript:9
+6f5e3435f456995687b8ccbe090493de5a0d6bd4:tests/webhooks/server.test.ts:credentials-javascript:8
+411d111aa971f69f3517483ea06a65fec1850f79:tests/commands/skill-manage.test.ts:authorization-bearer-token:183
+e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/store.test.ts:github-pat:112
+e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/store.test.ts:github-pat:123
+e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:33
+e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:38
+e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:58

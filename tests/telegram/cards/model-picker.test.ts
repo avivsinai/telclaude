@@ -84,9 +84,7 @@ describe("model picker card", () => {
 		expect(render.text).toContain("Fallback");
 		expect(render.text).toContain("Current");
 		const buttons =
-			render.keyboard?.inline_keyboard
-				?.flat()
-				.map((b) => ("text" in b ? b.text : "")) ?? [];
+			render.keyboard?.inline_keyboard?.flat().map((b) => ("text" in b ? b.text : "")) ?? [];
 		expect(buttons.some((b) => b.includes("Anthropic"))).toBe(true);
 		expect(buttons.some((b) => b.includes("OpenAI"))).toBe(true);
 		// Pagination buttons absent when everything fits on one page
@@ -152,6 +150,32 @@ describe("model picker card", () => {
 				providerId: "anthropic",
 			}),
 		);
+	});
+
+	it("blocks catalog-only provider models from being persisted", async () => {
+		const providers = cloneModelCatalog();
+		const card = {
+			...baseCard(CardKind.ModelPicker),
+			state: {
+				kind: CardKind.ModelPicker,
+				title: "Model",
+				providers,
+				selectedProviderId: "openai",
+				page: 0,
+				view: "models" as const,
+				canMutate: true,
+			},
+		} as any;
+
+		const result = await modelPickerRenderer.execute({
+			action: { type: "select-0" },
+			card,
+			ctx: { from: { id: 101 } } as any,
+		});
+
+		expect(result.callbackAlert).toBe(true);
+		expect(result.callbackText).toContain("catalog-only");
+		expect(getChatModelPreference(card.chatId)).toBeNull();
 	});
 
 	it("blocks model selection when the viewer cannot mutate", async () => {

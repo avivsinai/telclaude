@@ -1,6 +1,8 @@
 import { getActiveJobCount } from "../background/jobs.js";
 import { collectTelclaudeStatus } from "../commands/status.js";
 import { loadConfig } from "../config/config.js";
+import { formatModelRoute, resolveModelRoute } from "../config/model-routing.js";
+import { formatAllowedSkillsCount, resolveChatProfile } from "../config/profiles.js";
 import { getAllSessions } from "../config/sessions.js";
 import { listCronJobs } from "../cron/store.js";
 import { getChildLogger } from "../logging.js";
@@ -296,7 +298,9 @@ async function collectOAuthHealthItems(): Promise<HealthItem[]> {
  * health, OAuth refresh) in parallel but is resilient: any probe that fails
  * degrades its own item rather than poisoning the entire snapshot.
  */
-export async function collectSystemHealth(): Promise<SystemHealthSnapshot> {
+export async function collectSystemHealth(
+	options: { chatId?: number } = {},
+): Promise<SystemHealthSnapshot> {
 	const cfg = loadConfig();
 	const collectedAtMs = Date.now();
 
@@ -318,15 +322,35 @@ export async function collectSystemHealth(): Promise<SystemHealthSnapshot> {
 		remediation: defaultTier ? undefined : "tier_misconfigured",
 	});
 
-	// Model / fallback state: we only expose what we know without an SDK call.
-	// Model overrides live per-session, not in top-level config — surface the
-	// SDK default and note if any SDK betas are active as a proxy signal.
+	// Model / fallback state: no SDK call here; route stored preferences through
+	// the same executable-provider logic used by Telegram execution.
 	const sdkBetas = cfg.sdk?.betas ?? [];
+	const activeProfile =
+		typeof options.chatId === "number" ? resolveChatProfile(options.chatId, cfg) : undefined;
+	if (activeProfile) {
+		items.push({
+			id: "profile:active",
+			label: "Profile",
+			status: activeProfile.missingProfileId ? "degraded" : "ok",
+			detail: `${activeProfile.profile.label} (${activeProfile.profile.id}); ${formatAllowedSkillsCount(activeProfile.profile)}`,
+		});
+	}
+	const modelRoute =
+		typeof options.chatId === "number"
+			? resolveModelRoute(options.chatId, { profile: activeProfile?.profile })
+			: undefined;
+	const modelDetail = modelRoute
+		? formatModelRoute(modelRoute)
+		: sdkBetas.length === 0
+			? "SDK default"
+			: `SDK default (+${sdkBetas.length} betas)`;
+	const betaSuffix = modelRoute && sdkBetas.length > 0 ? ` (+${sdkBetas.length} betas)` : "";
 	items.push({
 		id: "model:active",
 		label: "Model",
-		status: "ok",
-		detail: sdkBetas.length === 0 ? "SDK default" : `SDK default (+${sdkBetas.length} betas)`,
+		status: modelRoute?.fallbackState === "fallback" ? "degraded" : "ok",
+		detail: `${modelDetail}${betaSuffix}`,
+		remediation: modelRoute?.fallbackState === "fallback" ? "model_fallback_active" : undefined,
 	});
 
 	// ── Vault ─────────────────────────────────────────────────────────

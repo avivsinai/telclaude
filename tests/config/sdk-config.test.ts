@@ -4,7 +4,8 @@ import path from "node:path";
 
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
-const getTempDir = () => (globalThis as Record<string, string | undefined>).__telclaudeTempConfigDir;
+const getTempDir = () =>
+	(globalThis as Record<string, string | undefined>).__telclaudeTempConfigDir;
 
 vi.mock("../../src/utils.js", async () => {
 	const actual = await vi.importActual<typeof import("../../src/utils.js")>("../../src/utils.js");
@@ -55,6 +56,14 @@ describe("sdk config defaults", () => {
 
 		const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
 		expect(cfg.sdk).toEqual({ betas: [] });
+		expect(cfg.profiles).toEqual([]);
+		expect(cfg.webhooks).toMatchObject({
+			enabled: false,
+			port: 3015,
+			maxBodyBytes: 256 * 1024,
+			trustedProxies: [],
+			allowedHosts: [],
+		});
 	});
 
 	it("rejects unknown beta values in config", async () => {
@@ -65,6 +74,80 @@ describe("sdk config defaults", () => {
 		fs.writeFileSync(configPath(), JSON.stringify(badCfg));
 
 		await expect(() => loadConfig()).toThrow();
+	});
+
+	it("defaults webhooks to disabled local receiver settings", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({}));
+
+		const cfg = loadConfig();
+		expect(cfg.webhooks).toEqual({
+			enabled: false,
+			port: 3015,
+			maxBodyBytes: 256 * 1024,
+			globalRateLimitPerHour: 600,
+			defaultRateLimitPerHour: 60,
+			unauthenticatedRateLimitPerHour: 120,
+			trustedProxies: [],
+			allowedHosts: [],
+		});
+		expect(cfg.profiles).toEqual([]);
+	});
+
+	it("accepts valid operator profiles", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{
+						id: "engineer",
+						label: "Engineer",
+						description: "Code-heavy private operator profile",
+						soulPath: "docs/soul.md",
+						allowedSkills: ["integration-test"],
+						defaultModel: {
+							providerId: "anthropic",
+							modelId: "claude-sonnet-4-5-20250929",
+						},
+					},
+				],
+			}),
+		);
+
+		const cfg = loadConfig();
+		expect(cfg.profiles[0]).toMatchObject({
+			id: "engineer",
+			label: "Engineer",
+			allowedSkills: ["integration-test"],
+		});
+	});
+
+	it("rejects reserved, duplicate, and unsafe operator profiles", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({ profiles: [{ id: "default", label: "Bad" }] }));
+		expect(() => loadConfig()).toThrow();
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [
+					{ id: "engineer", label: "Engineer" },
+					{ id: "engineer", label: "Duplicate" },
+				],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/duplicate profile id/);
+
+		resetConfigCache();
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				profiles: [{ id: "engineer", label: "Engineer", soulPath: "/etc/passwd" }],
+			}),
+		);
+		expect(() => loadConfig()).toThrow(/soulPath/);
 	});
 });
 

@@ -2,9 +2,9 @@
  * Per-chat model preference storage (W2 model picker).
  *
  * The model picker writes into this table when an operator taps a model.
- * Runtime session execution may read it later to inform SDK model overrides;
- * this module only defines the storage surface — wiring into the query path
- * is intentionally left to a later workstream so W2 stays scoped.
+ * Telegram session execution reads Anthropic preferences from here and passes
+ * them as Claude SDK model overrides; non-Anthropic providers remain catalog
+ * metadata until a separate runtime exists.
  */
 
 import { z } from "zod";

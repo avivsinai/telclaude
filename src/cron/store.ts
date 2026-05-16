@@ -7,6 +7,7 @@ import type {
 	CronCoverage,
 	CronDeliveryTarget,
 	CronJob,
+	CronPreprocessCommand,
 	CronSchedule,
 	CronStatusSummary,
 } from "./types.js";
@@ -23,6 +24,8 @@ type CronJobRow = {
 	action_kind: string;
 	action_service_id: string | null;
 	action_prompt: string | null;
+	action_allowed_skills_json: string | null;
+	action_preprocess_json: string | null;
 	owner_id: string | null;
 	delivery_target_kind: string | null;
 	delivery_chat_id: number | null;
@@ -69,14 +72,76 @@ function parseAction(row: CronJobRow): CronAction {
 			};
 		case "private-heartbeat":
 			return { kind: "private-heartbeat" };
+		case "curator-scan":
+			return { kind: "curator-scan" };
 		case "agent-prompt":
 			if (!row.action_prompt) {
 				throw new Error(`cron job ${row.id} is missing action prompt`);
 			}
-			return { kind: "agent-prompt", prompt: row.action_prompt };
+			return {
+				kind: "agent-prompt",
+				prompt: row.action_prompt,
+				...parseAllowedSkills(row),
+				...parsePreprocess(row),
+			};
 		default:
 			throw new Error(`cron job ${row.id} has unsupported action kind '${row.action_kind}'`);
 	}
+}
+
+function parseAllowedSkills(row: CronJobRow): { allowedSkills?: string[] } {
+	if (row.action_allowed_skills_json === null) {
+		return {};
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(row.action_allowed_skills_json);
+	} catch {
+		throw new Error(`cron job ${row.id} has invalid allowed skills JSON`);
+	}
+	if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== "string")) {
+		throw new Error(`cron job ${row.id} has invalid allowed skills`);
+	}
+	return { allowedSkills: parsed.map((item) => item.trim()).filter(Boolean) };
+}
+
+function parsePreprocess(row: CronJobRow): { preprocess?: CronPreprocessCommand } {
+	if (row.action_preprocess_json === null) {
+		return {};
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(row.action_preprocess_json);
+	} catch {
+		throw new Error(`cron job ${row.id} has invalid preprocess JSON`);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error(`cron job ${row.id} has invalid preprocess config`);
+	}
+	const raw = parsed as Record<string, unknown>;
+	if (typeof raw.command !== "string" || !raw.command.trim()) {
+		throw new Error(`cron job ${row.id} has invalid preprocess command`);
+	}
+	const args = Array.isArray(raw.args)
+		? raw.args.map((arg) => {
+				if (typeof arg !== "string") {
+					throw new Error(`cron job ${row.id} has invalid preprocess args`);
+				}
+				return arg;
+			})
+		: undefined;
+	const cwd = typeof raw.cwd === "string" && raw.cwd.trim() ? raw.cwd : undefined;
+	const timeoutMs = typeof raw.timeoutMs === "number" ? raw.timeoutMs : undefined;
+	const maxStdoutBytes = typeof raw.maxStdoutBytes === "number" ? raw.maxStdoutBytes : undefined;
+	return {
+		preprocess: {
+			command: raw.command,
+			...(args === undefined ? {} : { args }),
+			...(cwd === undefined ? {} : { cwd }),
+			...(timeoutMs === undefined ? {} : { timeoutMs }),
+			...(maxStdoutBytes === undefined ? {} : { maxStdoutBytes }),
+		},
+	};
 }
 
 function parseDeliveryTarget(row: CronJobRow): CronDeliveryTarget {
@@ -166,6 +231,8 @@ function encodeAction(action: CronAction): {
 	actionKind: string;
 	actionServiceId: string | null;
 	actionPrompt: string | null;
+	actionAllowedSkillsJson: string | null;
+	actionPreprocessJson: string | null;
 } {
 	switch (action.kind) {
 		case "social-heartbeat":
@@ -173,18 +240,34 @@ function encodeAction(action: CronAction): {
 				actionKind: "social-heartbeat",
 				actionServiceId: action.serviceId ?? null,
 				actionPrompt: null,
+				actionAllowedSkillsJson: null,
+				actionPreprocessJson: null,
 			};
 		case "private-heartbeat":
 			return {
 				actionKind: "private-heartbeat",
 				actionServiceId: null,
 				actionPrompt: null,
+				actionAllowedSkillsJson: null,
+				actionPreprocessJson: null,
+			};
+		case "curator-scan":
+			return {
+				actionKind: "curator-scan",
+				actionServiceId: null,
+				actionPrompt: null,
+				actionAllowedSkillsJson: null,
+				actionPreprocessJson: null,
 			};
 		case "agent-prompt":
 			return {
 				actionKind: "agent-prompt",
 				actionServiceId: null,
 				actionPrompt: action.prompt,
+				actionAllowedSkillsJson:
+					action.allowedSkills === undefined ? null : JSON.stringify(action.allowedSkills),
+				actionPreprocessJson:
+					action.preprocess === undefined ? null : JSON.stringify(action.preprocess),
 			};
 		default: {
 			const exhaustiveCheck: never = action;
@@ -236,6 +319,13 @@ function validateAddInput(input: CronAddInput, nowMs: number): number | null {
 	if (input.action.kind === "agent-prompt" && !input.action.prompt.trim()) {
 		throw new Error("agent prompt cron jobs require a prompt");
 	}
+	if (input.action.kind === "agent-prompt") {
+		if (
+			input.action.allowedSkills?.some((skill) => !skill.trim() || /[\0\r\n]/.test(skill)) === true
+		) {
+			throw new Error("allowed skill names must be non-empty single-line strings");
+		}
+	}
 	if (input.deliveryTarget?.kind === "home" && !input.ownerId?.trim()) {
 		throw new Error("home delivery requires ownerId");
 	}
@@ -279,7 +369,13 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 	const { scheduleKind, scheduleAt, scheduleEveryMs, scheduleCron } = encodeSchedule(
 		input.schedule,
 	);
-	const { actionKind, actionServiceId, actionPrompt } = encodeAction(input.action);
+	const {
+		actionKind,
+		actionServiceId,
+		actionPrompt,
+		actionAllowedSkillsJson,
+		actionPreprocessJson,
+	} = encodeAction(input.action);
 	const { deliveryTargetKind, deliveryChatId, deliveryThreadId } = encodeDeliveryTarget(
 		input.deliveryTarget,
 	);
@@ -290,12 +386,19 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		`INSERT INTO cron_jobs (
 			id, name, enabled, running,
 			schedule_kind, schedule_at, schedule_every_ms, schedule_cron,
-			action_kind, action_service_id, action_prompt,
+			action_kind, action_service_id, action_prompt, action_allowed_skills_json, action_preprocess_json,
 			owner_id, delivery_target_kind, delivery_chat_id, delivery_thread_id,
 			next_run_at, last_run_at, last_status, last_error,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+		VALUES (
+			?, ?, ?, 0,
+			?, ?, ?, ?,
+			?, ?, ?, ?, ?,
+			?, ?, ?, ?,
+			?, NULL, NULL, NULL,
+			?, ?
+		)`,
 	).run(
 		id,
 		name,
@@ -307,6 +410,8 @@ export function addCronJob(input: CronAddInput, nowMs = Date.now()): CronJob {
 		actionKind,
 		actionServiceId,
 		actionPrompt,
+		actionAllowedSkillsJson,
+		actionPreprocessJson,
 		ownerId,
 		deliveryTargetKind,
 		deliveryChatId,

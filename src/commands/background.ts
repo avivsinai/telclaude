@@ -15,6 +15,7 @@
  */
 
 import type { Command } from "commander";
+import { validateCodexModel } from "../agent-runtime/codex-work-unit.js";
 import { cancelJob, createJob, getJob, getJobByShortId, listJobs } from "../background/index.js";
 import type { BackgroundJobPayload, BackgroundJobStatus } from "../background/types.js";
 import type { PermissionTier } from "../config/config.js";
@@ -24,6 +25,7 @@ import { getUserPermissionTier } from "../security/permissions.js";
 const logger = getChildLogger({ module: "cmd-background" });
 
 const VALID_TIERS: PermissionTier[] = ["READ_ONLY", "WRITE_LOCAL", "SOCIAL", "FULL_ACCESS"];
+type CodexSandbox = "read-only" | "workspace-write";
 
 function resolveTier(explicit?: string): PermissionTier {
 	if (explicit) {
@@ -42,12 +44,29 @@ function resolveTier(explicit?: string): PermissionTier {
 	return "READ_ONLY";
 }
 
-function ensureCanSpawn(tier: PermissionTier): void {
+export function ensureCanSpawn(tier: PermissionTier): void {
 	if (tier === "READ_ONLY") {
 		throw new Error(
 			"READ_ONLY tier cannot spawn background jobs. Ask an operator to raise your tier first.",
 		);
 	}
+}
+
+export function ensureCanSpawnCodexWorkUnit(tier: PermissionTier): void {
+	ensureCanSpawn(tier);
+	if (tier === "SOCIAL") {
+		throw new Error("SOCIAL tier cannot spawn Codex work units.");
+	}
+}
+
+export function resolveCodexSandboxForTier(
+	tier: PermissionTier,
+	requested: CodexSandbox,
+): CodexSandbox {
+	if (tier !== "FULL_ACCESS") {
+		return "read-only";
+	}
+	return requested;
 }
 
 function parseOptionalNumber(raw: string | undefined): number | undefined {
@@ -57,6 +76,12 @@ function parseOptionalNumber(raw: string | undefined): number | undefined {
 		throw new Error(`Invalid number: ${raw}`);
 	}
 	return parsed;
+}
+
+function parseCodexSandbox(raw: string | undefined): CodexSandbox {
+	if (!raw) return "read-only";
+	if (raw === "read-only" || raw === "workspace-write") return raw;
+	throw new Error("Invalid --sandbox. Must be read-only or workspace-write.");
 }
 
 export function registerBackgroundCommand(program: Command): void {
@@ -139,6 +164,87 @@ export function registerBackgroundCommand(program: Command): void {
 				);
 			} else {
 				console.log(`Queued ${job.shortId} (${job.title})`);
+			}
+		});
+
+	background
+		.command("codex")
+		.description("Register a non-interactive Codex work unit as a background job")
+		.requiredOption("--title <text>", "Human-readable title for the job")
+		.option("--description <text>", "Longer description (optional)")
+		.option("--prompt <text>", "Prompt to hand to codex exec")
+		.option("--cwd <path>", "Working directory for Codex, confined by the runner")
+		.option("--sandbox <mode>", "Codex sandbox mode: read-only or workspace-write", "read-only")
+		.option("--model <model>", "Optional Codex model override")
+		.option("--timeout-ms <ms>", "Soft timeout in milliseconds")
+		.option("--chat-id <id>", "Originating Telegram chat id (auto-inferred if omitted)")
+		.option("--thread-id <id>", "Originating Telegram thread id")
+		.option("--user-id <id>", "Local user id (auto-inferred if omitted)")
+		.option(
+			"--tier <tier>",
+			"Explicit permission tier; defaults to inferred tier from request context",
+		)
+		.option("--json", "Emit job metadata as JSON", false)
+		.argument("[prompt...]", "Prompt text when --prompt is omitted")
+		.action(async (promptParts: string[], opts) => {
+			const tier = resolveTier(opts.tier);
+			ensureCanSpawnCodexWorkUnit(tier);
+
+			const prompt = String(opts.prompt ?? promptParts.join(" ")).trim();
+			if (!prompt) {
+				throw new Error("Codex work units require --prompt or prompt text.");
+			}
+
+			const userId =
+				opts.userId ?? process.env.TELCLAUDE_REQUEST_USER_ID ?? process.env.USER ?? "unknown";
+			const chatId = parseOptionalNumber(opts.chatId) ?? null;
+			const threadId = parseOptionalNumber(opts.threadId) ?? null;
+			const timeoutMs = parseOptionalNumber(opts.timeoutMs);
+			const sandbox = resolveCodexSandboxForTier(tier, parseCodexSandbox(opts.sandbox));
+			const model = opts.model ? validateCodexModel(String(opts.model)) : undefined;
+			const payload: BackgroundJobPayload = {
+				kind: "codex-work-unit",
+				prompt,
+				sandbox,
+				...(opts.cwd ? { cwd: String(opts.cwd) } : {}),
+				...(model ? { model } : {}),
+				...(timeoutMs ? { timeoutMs } : {}),
+			};
+
+			const job = createJob({
+				title: String(opts.title),
+				description: opts.description ? String(opts.description) : undefined,
+				userId,
+				chatId,
+				threadId,
+				tier,
+				payload,
+			});
+
+			logger.info(
+				{
+					jobId: job.id,
+					shortId: job.shortId,
+					tier: job.tier,
+					payloadKind: job.payload.kind,
+					userId: job.userId,
+				},
+				"codex work unit registered via CLI",
+			);
+
+			if (opts.json) {
+				console.log(
+					JSON.stringify({
+						id: job.id,
+						shortId: job.shortId,
+						status: job.status,
+						tier: job.tier,
+						payloadKind: job.payload.kind,
+						createdAt: new Date(job.createdAtMs).toISOString(),
+					}),
+				);
+			} else {
+				console.log(`Queued Codex work unit ${job.shortId} (${job.title})`);
 			}
 		});
 

@@ -55,6 +55,12 @@ The relay and agents are separate trust domains. The relay is the only component
 
 In Docker, this maps to separate containers on isolated networks. In native mode, the SDK sandbox provides equivalent isolation. Both modes enforce the same invariant: agents never see raw credentials, and durable memory authority stays in the relay rather than in Claude's local files.
 
+### Codex Work Unit Boundary
+
+Codex is a peer runtime, not a second stateful conversation loop. The `/codex` command and `telclaude background codex` create bounded background jobs that run `codex exec` with an explicit sandbox, confined working directory, `--ephemeral`, and `--ignore-user-config`. Results come back as background job output wrapped as untrusted data; they are not fed into the active Claude session unless the operator explicitly asks for a follow-up.
+
+Write-capable Codex work requires FULL_ACCESS and still runs with workspace-write network access disabled. Model overrides are allowlisted to known executable Codex models so an invalid but syntactically plausible token fails before a job is queued.
+
 ### Private ↔ Public Persona Split
 
 The private persona (Telegram agent) and public persona (social agent) are air-gapped at the memory and network level:
@@ -120,8 +126,10 @@ The operator can query the social persona from Telegram via two tiers:
 ## Memory & Provenance
 
 Memory is split at the **private vs. public boundary**, not per-service:
-- `source: "telegram"` — private persona memory.
+- `source: "telegram:<profile-id>"` — private persona memory for one operator profile. Legacy bare `telegram` rows are migrated to `telegram:default`.
 - `source: "social"` — unified public persona memory across all social platforms.
+
+Operator profiles are sub-namespaces inside the private side. The relay resolves the active profile server-side from the chat id; agents cannot choose an arbitrary private memory source. Normal Telegram replies, scheduled private runs, relay memory RPC, and local `memory read/context --chat-id` all read the resolved `telegram:<profile-id>` source only.
 
 Within the private Telegram path, telclaude now uses three layers with clear authority:
 
@@ -133,7 +141,7 @@ Within the private Telegram path, telclaude now uses three layers with clear aut
 
 *Why not per-service*: the public persona is one cohesive identity across platforms. Fragmenting memory per-service would create inconsistent personality and duplicate storage. Social platforms are the distribution channel, not the identity boundary.
 
-*Why trusted vs. untrusted*: Telegram memory comes from the operator and the private collaboration loop. Social memory may originate from public timeline content that passed through the LLM — it could contain injected instructions. The relay therefore keeps private and public memory fully separated, and the private agent never loads `source: "social"` memory.
+*Why trusted vs. untrusted*: Telegram-profile memory comes from the operator and the private collaboration loop. Social memory may originate from public timeline content that passed through the LLM — it could contain injected instructions. The relay therefore keeps private and public memory fully separated, and the private agent never loads `source: "social"` memory.
 
 ### Private Memory Flow
 
@@ -157,6 +165,12 @@ The memory path has two distinct safety rules:
 - **Episodic recall is sanitized** — archived turn text is normalized, secrets are redacted, and instruction-like content is replaced with a neutral placeholder before it can be recalled into prompt context or compiled into Claude's local memory file.
 
 This is the key invariant: memory may preserve continuity, but it must not become a prompt-injection persistence layer.
+
+## Curator Inbox
+
+Curator is a review-only inbox for automation suggestions. Local scans can create system-produced suggestions for cron hardening and skill hygiene. Claude Code and Codex producers can submit their own suggestions only through a vault-signed envelope: the producer signs the item claims, the relay verifies the domain-separated signature, and the stored item records `producerKind`/`producerId` for audit.
+
+Curator never executes the proposed action. Accept/reject records operator intent and audit context; privileged mutations stay manual or go through the existing command-specific approval path.
 
 ## Telegram Cards
 

@@ -37,6 +37,7 @@ import { getVaultClient, isVaultAvailable } from "../vault-daemon/index.js";
 import { requireRelay } from "./cli-guards.js";
 import { promptLine, promptYesNo } from "./cli-prompt.js";
 import type { ProviderQueryOptions } from "./provider-query.js";
+import { scaffoldProviderSidecar } from "./provider-scaffold.js";
 import { GOOGLE_SCOPE_BUNDLES, runGoogleOAuthSetup } from "./setup-google.js";
 
 const logger = getChildLogger({ module: "cmd-providers" });
@@ -530,6 +531,15 @@ function parseServicesArg(value: string): string[] {
 	return normalizeProviderServices(value.split(","));
 }
 
+function parseProviderInitPort(value?: string): number {
+	if (!value) return 3003;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+		throw new Error("Provider port must be an integer from 1 to 65535.");
+	}
+	return parsed;
+}
+
 async function promptProviderBaseUrl(defaultValue?: string): Promise<string> {
 	const promptLabel = defaultValue
 		? `Provider base URL [${defaultValue}]: `
@@ -740,6 +750,38 @@ async function runProviderAdd(
 	process.exitCode = computeDoctorExitCode(result.doctorResults);
 }
 
+async function runProviderInit(
+	providerId: string,
+	options: {
+		services?: string;
+		port?: string;
+		description?: string;
+		out?: string;
+		force?: boolean;
+	},
+): Promise<void> {
+	const normalizedId = validateProviderId(providerId);
+	const result = scaffoldProviderSidecar({
+		providerId: normalizedId,
+		services: options.services?.trim() ? parseServicesArg(options.services) : [normalizedId],
+		port: parseProviderInitPort(options.port),
+		description: options.description,
+		outDir: options.out,
+		force: options.force,
+	});
+	console.log(`Scaffolded provider '${result.providerId}' (${result.serviceIds.join(", ")}).`);
+	console.log();
+	for (const file of result.files) {
+		console.log(`  ${file.relativePath}`);
+	}
+	console.log();
+	console.log("Next:");
+	console.log(
+		`  telclaude providers add ${result.providerId} --base-url ${result.baseUrl} --services ${result.serviceIds.join(",")}`,
+	);
+	console.log(`  telclaude providers doctor ${result.providerId}`);
+}
+
 async function runProviderEdit(
 	providerId: string,
 	options: { baseUrl?: string; services?: string; description?: string },
@@ -886,6 +928,36 @@ async function runProviderSetup(
 }
 
 export function registerProvidersCommandGroup(parent: Command): void {
+	parent
+		.command("init")
+		.description("Scaffold a provider sidecar without mutating config or Docker Compose")
+		.argument("<provider-id>", "Provider ID for generated files")
+		.option("--services <csv>", "Comma-separated service IDs")
+		.option("--port <port>", "Container port for the sidecar", "3003")
+		.option("--description <text>", "Human-readable provider description")
+		.option("--out <dir>", "Repository root to scaffold into")
+		.option("--force", "Overwrite existing scaffold files")
+		.action(
+			async (
+				providerId: string,
+				options: {
+					services?: string;
+					port?: string;
+					description?: string;
+					out?: string;
+					force?: boolean;
+				},
+			) => {
+				try {
+					await runProviderInit(providerId, options);
+				} catch (err) {
+					logger.error({ error: String(err), providerId }, "providers init failed");
+					console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+					process.exit(1);
+				}
+			},
+		);
+
 	parent
 		.command("list")
 		.description("List configured external providers")

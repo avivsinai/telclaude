@@ -77,6 +77,25 @@ describe("buildSdkOptions", () => {
 		expect(opts.betas).toEqual(betas);
 	});
 
+	it("passes executable model overrides to the SDK", async () => {
+		const opts = await buildSdkOptions({
+			...baseOpts,
+			tier: "READ_ONLY",
+			model: "claude-sonnet-4-5-20250929",
+		});
+		expect(opts.model).toBe("claude-sonnet-4-5-20250929");
+	});
+
+	it("rejects non-executable model overrides", async () => {
+		await expect(
+			buildSdkOptions({
+				...baseOpts,
+				tier: "READ_ONLY",
+				model: "gpt-5",
+			}),
+		).rejects.toThrow(/not executable/);
+	});
+
 	it("creates an AbortController when timeoutMs is set", async () => {
 		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY", timeoutMs: 10 });
 		expect(opts.abortController).toBeInstanceOf(AbortController);
@@ -95,5 +114,15 @@ describe("buildSdkOptions", () => {
 		expect(env?.OPENAI_API_KEY).toBeUndefined();
 		expect(env?.GITHUB_TOKEN).toBeUndefined();
 		expect(env?.GH_TOKEN).toBeUndefined();
+	});
+
+	it("passes request tier to Docker sandbox commands", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
+
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "SOCIAL", userId: "social:xtwitter" });
+		const env = opts.env as Record<string, string> | undefined;
+
+		expect(env?.TELCLAUDE_REQUEST_USER_ID).toBe("social:xtwitter");
+		expect(env?.TELCLAUDE_REQUEST_TIER).toBe("SOCIAL");
 	});
 });

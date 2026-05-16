@@ -34,6 +34,7 @@ import {
 	type PermissionTier,
 	type PrivateEndpoint,
 } from "../config/config.js";
+import { assertExecutableModelId } from "../config/model-routing.js";
 import { readEnv } from "../env.js";
 import { buildInternalAuthHeaders } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
@@ -49,6 +50,16 @@ import { redactSecrets } from "../security/output-filter.js";
 import { containsBlockedCommand, TIER_TOOLS } from "../security/permissions.js";
 import { decideToolApproval } from "../security/pipeline.js";
 import type { ApprovalScope, RiskTier } from "../security/risk-tiers.js";
+import {
+	buildSkillLoadPlan,
+	resolveSkillPersonaContext,
+	type SkillLoadPlan,
+} from "../skills/persona.js";
+import {
+	recordSkillInvocation,
+	type SkillInvocationDecision,
+	type SkillInvocationSource,
+} from "../storage/skill-telemetry.js";
 import {
 	isAssistantMessage,
 	isBashInput,
@@ -114,6 +125,10 @@ function computeToolApprovalHookTimeoutSeconds(queryTimeoutMs?: number): number 
 		HOOK_TIMEOUT_SECONDS,
 		Math.ceil(computeToolApprovalTimeoutMs(queryTimeoutMs) / 1000) + 5,
 	);
+}
+
+function dedupeSkillNames(names: readonly string[]): string[] {
+	return Array.from(new Set(names));
 }
 
 function summarizeToolApprovalRequest(
@@ -258,6 +273,9 @@ export type TelclaudeQueryOptions = {
 	/** Resume a previous session by ID for conversation continuity. */
 	resumeSessionId?: string;
 
+	/** Internal stable pool key for pooled sessions. */
+	poolKey?: string;
+
 	/** Custom system prompt to append to the default claude_code preset. */
 	systemPromptAppend?: string;
 
@@ -282,6 +300,9 @@ export type TelclaudeQueryOptions = {
 	 * Other tiers: omitting allows all skills (private agents are trusted). */
 	allowedSkills?: string[];
 
+	/** SOCIAL-only operator-curated agent-authored skills for this service. Default: none. */
+	agentSkillsAllowed?: string[];
+
 	/** Pre-minted session token for relay capabilities (request-scoped, NOT from process.env). */
 	sessionToken?: string;
 
@@ -299,6 +320,12 @@ export type TelclaudeQueryOptions = {
 
 	/** Relay-compiled memory snapshot for Claude's local working-memory file. */
 	compiledMemoryMd?: string;
+
+	/** Metadata-only Skill telemetry source. Defaults from tier/userId when omitted. */
+	telemetrySource?: SkillInvocationSource;
+
+	/** Social service id for metadata-only Skill telemetry. */
+	telemetryServiceId?: string;
 };
 
 /**
@@ -836,6 +863,46 @@ function extractSkillName(toolInput: Record<string, unknown>): string | null {
 	return found;
 }
 
+type SkillTelemetryContext = {
+	sessionKey: string;
+	source: SkillInvocationSource;
+	serviceId?: string;
+};
+
+function inferSkillTelemetrySource(opts: TelclaudeQueryOptions): SkillInvocationSource {
+	if (opts.telemetrySource) return opts.telemetrySource;
+	return opts.tier === "SOCIAL" || isSocialContext(opts.userId) ? "social" : "telegram";
+}
+
+function inferSkillTelemetryServiceId(opts: TelclaudeQueryOptions): string | undefined {
+	if (opts.telemetryServiceId) return opts.telemetryServiceId;
+	const match = /^social:([^:\s]+)/.exec(opts.userId ?? "");
+	return match?.[1];
+}
+
+function resolveSkillTelemetryContext(opts: TelclaudeQueryOptions): SkillTelemetryContext {
+	const sessionKey = opts.poolKey ?? opts.resumeSessionId ?? `single:${opts.userId ?? "anonymous"}`;
+	const source = inferSkillTelemetrySource(opts);
+	const serviceId = source === "social" ? inferSkillTelemetryServiceId(opts) : undefined;
+	return { sessionKey, source, ...(serviceId ? { serviceId } : {}) };
+}
+
+function recordSkillAllowlistDecision(
+	context: SkillTelemetryContext,
+	skillName: string,
+	decision: SkillInvocationDecision,
+	denyReason?: string,
+): void {
+	void recordSkillInvocation({
+		sessionKey: context.sessionKey,
+		skillName,
+		decision,
+		...(denyReason ? { denyReason } : {}),
+		source: context.source,
+		...(context.serviceId ? { serviceId: context.serviceId } : {}),
+	});
+}
+
 /**
  * Create a PreToolUse hook that restricts which skills can be invoked.
  *
@@ -887,6 +954,7 @@ function createGraduatedApprovalHook(opts: {
 			toolName,
 			bashCommand,
 			sessionKey,
+			chatId: opts.chatId ?? null,
 			isAdmin: adminBypass,
 		});
 		if (decision.decision === "allow") {
@@ -1017,6 +1085,8 @@ function createGraduatedApprovalHook(opts: {
 			toolName,
 			bashCommand,
 			sessionKey,
+			chatId: opts.chatId ?? null,
+			isAdmin: adminBypass,
 		});
 		if (followUpDecision.decision !== "allow") {
 			logger.warn(
@@ -1050,8 +1120,13 @@ function createGraduatedApprovalHook(opts: {
 	};
 }
 
-function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher {
-	const allowSet = new Set(allowedSkills);
+function createSkillAllowlistHook(
+	allowedSkills: string[] | null,
+	telemetryContext: SkillTelemetryContext,
+	skillLoadPlan?: SkillLoadPlan,
+): HookCallbackMatcher {
+	const allowSet = allowedSkills ? new Set(allowedSkills) : null;
+	const loadableSet = skillLoadPlan ? new Set(skillLoadPlan.names) : null;
 
 	const hookCallback: HookCallback = async (input: HookInput) => {
 		if (input.hook_event_name !== "PreToolUse") {
@@ -1066,25 +1141,40 @@ function createSkillAllowlistHook(allowedSkills: string[]): HookCallbackMatcher 
 		const skillName = extractSkillName(toolInput);
 
 		if (!skillName) {
+			if (allowSet === null) {
+				recordSkillAllowlistDecision(telemetryContext, "unknown", "allow");
+				return allowHookResponse();
+			}
+			const reason = "Skill invocation denied: could not determine skill name from input.";
 			logger.warn(
 				{ toolInput: formatToolInputForLog(toolInput) },
 				"[hook] denied Skill: could not extract skill name (fail-closed)",
 			);
-			return denyHookResponse(
-				"Skill invocation denied: could not determine skill name from input.",
-			);
+			recordSkillAllowlistDecision(telemetryContext, "unknown", "deny", reason);
+			return denyHookResponse(reason);
 		}
 
-		if (!allowSet.has(skillName)) {
+		if (loadableSet && !loadableSet.has(skillName)) {
+			const reason = `Skill "${skillName}" is not loadable in this persona context.`;
 			logger.warn(
-				{ skill: skillName, allowed: allowedSkills },
+				{ skill: skillName, context: skillLoadPlan?.context },
+				"[hook] denied Skill: persona load boundary",
+			);
+			recordSkillAllowlistDecision(telemetryContext, skillName, "deny", reason);
+			return denyHookResponse(reason);
+		}
+
+		if (allowSet !== null && !allowSet.has(skillName)) {
+			const reason = `Skill "${skillName}" is not in the allowedSkills list for this service.`;
+			logger.warn(
+				{ skill: skillName, allowed: allowedSkills ?? "unrestricted" },
 				"[hook] denied Skill: not in allowedSkills",
 			);
-			return denyHookResponse(
-				`Skill "${skillName}" is not in the allowedSkills list for this service.`,
-			);
+			recordSkillAllowlistDecision(telemetryContext, skillName, "deny", reason);
+			return denyHookResponse(reason);
 		}
 
+		recordSkillAllowlistDecision(telemetryContext, skillName, "allow");
 		return allowHookResponse();
 	};
 
@@ -1226,6 +1316,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		if (opts.userId) {
 			sandboxEnv.TELCLAUDE_REQUEST_USER_ID = opts.userId;
 		}
+		sandboxEnv.TELCLAUDE_REQUEST_TIER = opts.tier;
 
 		// Pass relay capability config for image/TTS/transcription commands
 		// These are needed by `telclaude generate-image` etc. when run via Bash
@@ -1275,7 +1366,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	const sdkOpts: SDKOptions = {
 		cwd: opts.cwd,
-		model: opts.model,
+		...(opts.model ? { model: assertExecutableModelId(opts.model) } : {}),
 		maxTurns: opts.maxTurns,
 		includePartialMessages: opts.includePartialMessages,
 		abortController,
@@ -1359,21 +1450,53 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		}),
 	];
 
-	// Skill allowlist enforcement:
+	// Skill allowlist enforcement and metadata-only telemetry:
 	// - When allowedSkills is set: only listed skills can be invoked
 	// - SOCIAL tier with enableSkills but no allowedSkills: fail-closed (deny all)
-	// - Other tiers without allowedSkills: no restriction (private agent is trusted)
-	if (opts.allowedSkills) {
-		preToolUseHooks.push(createSkillAllowlistHook(opts.allowedSkills));
-	} else if (opts.tier === "SOCIAL" && opts.enableSkills) {
-		// SOCIAL tier must explicitly declare which skills are allowed.
-		// Fail-closed: deny all skills rather than allowing everything.
-		// Keyed on tier (not userId prefix) so this fires even if userId is missing.
-		logger.warn(
-			{ userId: opts.userId },
-			"SOCIAL tier has enableSkills=true but no allowedSkills — denying all skills",
+	// - Other tiers without allowedSkills: record only, no restriction (private agent is trusted)
+	let effectiveAllowedSkillsForCanUseTool: string[] | null = null;
+	let skillLoadPlanForCanUseTool: SkillLoadPlan | undefined;
+	if (opts.enableSkills) {
+		const socialAgentSkillsAllowed = opts.agentSkillsAllowed ?? [];
+		let effectiveAllowedSkills: string[] | null =
+			opts.tier === "SOCIAL"
+				? dedupeSkillNames([...(opts.allowedSkills ?? []), ...socialAgentSkillsAllowed])
+				: (opts.allowedSkills ?? null);
+		if (opts.tier === "SOCIAL" && !opts.allowedSkills && socialAgentSkillsAllowed.length === 0) {
+			// SOCIAL tier must explicitly declare which skills are allowed.
+			// Fail-closed: deny all skills rather than allowing everything.
+			// Keyed on tier (not userId prefix) so this fires even if userId is missing.
+			logger.warn(
+				{ userId: opts.userId },
+				"SOCIAL tier has enableSkills=true but no allowedSkills — denying all skills",
+			);
+			effectiveAllowedSkills = [];
+		}
+		const skillContext = resolveSkillPersonaContext({
+			tier: opts.tier,
+			userId: opts.userId,
+			telemetrySource: opts.telemetrySource,
+			telemetryServiceId: opts.telemetryServiceId,
+			agentSkillsAllowed: socialAgentSkillsAllowed,
+		});
+		const skillLoadPlan = buildSkillLoadPlan(skillContext, {
+			cwd: opts.cwd,
+			requestedSkillNames: effectiveAllowedSkills,
+		});
+		const loadableSet = new Set(skillLoadPlan.names);
+		sdkOpts.skills =
+			effectiveAllowedSkills === null
+				? skillLoadPlan.names
+				: effectiveAllowedSkills.filter((skillName) => loadableSet.has(skillName));
+		effectiveAllowedSkillsForCanUseTool = effectiveAllowedSkills;
+		skillLoadPlanForCanUseTool = skillLoadPlan;
+		preToolUseHooks.push(
+			createSkillAllowlistHook(
+				effectiveAllowedSkills,
+				resolveSkillTelemetryContext(opts),
+				skillLoadPlan,
+			),
 		);
-		preToolUseHooks.push(createSkillAllowlistHook([]));
 	}
 
 	sdkOpts.hooks = {
@@ -1409,10 +1532,22 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		// Defense-in-depth: skill allowlist check (PRIMARY enforcement is PreToolUse hook above)
 		// SOCIAL tier without allowedSkills also fails closed here.
 		if (toolName === "Skill") {
-			const effectiveAllowedSkills =
-				opts.allowedSkills ?? (opts.tier === "SOCIAL" && opts.enableSkills ? [] : null);
+			const effectiveAllowedSkills = effectiveAllowedSkillsForCanUseTool;
+			const skillName = extractSkillName(input as Record<string, unknown>);
+			if (
+				skillLoadPlanForCanUseTool &&
+				(!skillName || !skillLoadPlanForCanUseTool.names.includes(skillName))
+			) {
+				logger.warn(
+					{ skill: skillName ?? "unknown", context: skillLoadPlanForCanUseTool.context },
+					"blocked Skill outside persona load plan (canUseTool fallback)",
+				);
+				return {
+					behavior: "deny",
+					message: `Skill "${skillName ?? "unknown"}" is not loadable in this persona context.`,
+				};
+			}
 			if (effectiveAllowedSkills !== null) {
-				const skillName = extractSkillName(input as Record<string, unknown>);
 				if (!skillName || !effectiveAllowedSkills.includes(skillName)) {
 					logger.warn(
 						{ skill: skillName ?? "unknown" },

@@ -1,4 +1,5 @@
 import type { TelclaudeConfig } from "../config/config.js";
+import { runCuratorScan } from "../curator/actions.js";
 import { getChildLogger } from "../logging.js";
 import { createSocialClient, handleSocialHeartbeat } from "../social/index.js";
 import { getAutomaticHeartbeatSocialServices } from "../social/service-config.js";
@@ -100,6 +101,13 @@ export async function executeCronAction(
 		}
 		case "agent-prompt":
 			return executeScheduledAgentPromptAction(job, cfg, _signal ?? new AbortController().signal);
+		case "curator-scan": {
+			const result = runCuratorScan({ producerKind: "system" });
+			return {
+				ok: true,
+				message: `curator scan updated ${result.createdOrUpdated} item(s); ${result.openItems} open`,
+			};
+		}
 		default: {
 			const exhaustiveCheck: never = job.action;
 			return {
