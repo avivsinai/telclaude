@@ -1,4 +1,5 @@
 import { setChatModelPreference } from "../../../config/model-preferences.js";
+import { getModelExecutionBlockReason } from "../../../config/model-routing.js";
 import type {
 	CardExecutionContext,
 	CardExecutionResult,
@@ -71,8 +72,9 @@ function renderProvidersView(card: CardInstance<K>): CardRenderResult {
 	// Provider rows (one per row for readability)
 	visible.forEach((provider, idx) => {
 		const active = provider.id === s.currentProviderId ? " \u2605" : "";
+		const catalogOnly = provider.execution.executable ? "" : " \u00B7 catalog";
 		kb.text(
-			`${provider.label} (${provider.models.length})${active}`,
+			`${provider.label} (${provider.models.length})${catalogOnly}${active}`,
 			btn(card, `select-${idx}`),
 		).row();
 	});
@@ -113,7 +115,12 @@ function renderModelsView(card: CardInstance<K>): CardRenderResult {
 	if (s.currentModelId) {
 		lines.push("", `*Current:* ${esc(s.currentModelId)}`);
 	}
-	lines.push("", esc("Tap a model to switch."));
+	if (!provider.execution.executable) {
+		lines.push("", esc(provider.execution.reason));
+		lines.push("", esc("Browse only. Choose an executable provider to switch models."));
+	} else {
+		lines.push("", esc("Tap a model to switch."));
+	}
 
 	if (visible.length === 0) {
 		lines.push("", "_No models for this provider._");
@@ -256,6 +263,14 @@ export const modelPickerRenderer: CardRenderer<K> = {
 				if (!s.canMutate) {
 					return {
 						callbackText: "Your tier cannot switch models.",
+						callbackAlert: true,
+					};
+				}
+
+				const blockReason = getModelExecutionBlockReason(provider.id);
+				if (blockReason) {
+					return {
+						callbackText: blockReason,
 						callbackAlert: true,
 					};
 				}

@@ -172,7 +172,7 @@ export const systemHealthRenderer: CardRenderer<K> = {
 		const { action, card } = context;
 
 		if (action.type === "refresh") {
-			const snapshot = await collectSystemHealth().catch(() => null);
+			const snapshot = await collectSystemHealth({ chatId: card.chatId }).catch(() => null);
 			if (!snapshot) {
 				return {
 					callbackText: "Health probe failed — see logs",

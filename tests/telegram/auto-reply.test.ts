@@ -230,6 +230,37 @@ describe("auto-reply executeAndReply", () => {
 			expect.objectContaining({ model: "claude-sonnet-4-5-20250929" }),
 		);
 	});
+
+	it("ignores catalog-only model preferences during session execution", async () => {
+		getChatModelPreferenceImpl.mockReturnValue({
+			chatId: 123,
+			providerId: "openai",
+			modelId: "gpt-5",
+		});
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "ok",
+						success: true,
+						error: undefined,
+						costUsd: 0.2,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = baseCtx();
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({ model: undefined }),
+		);
+	});
 });
 
 describe("auto-reply control commands", () => {
