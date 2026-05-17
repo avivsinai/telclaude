@@ -73,8 +73,6 @@ export const ANTHROPIC_DOMAINS: DomainRule[] = [
 	{ domain: "api.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "claude.ai", methods: ["GET", "HEAD", "POST"] },
 	{ domain: "*.claude.ai", methods: ["GET", "HEAD", "POST"] },
-	{ domain: "code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
-	{ domain: "*.code.anthropic.com", methods: ["GET", "HEAD", "POST"] },
 ];
 
 /**
