@@ -17,6 +17,7 @@ const baseOpts = {
 } as const;
 
 const ORIGINAL_DOCKER_ENV = process.env.TELCLAUDE_DOCKER;
+const ORIGINAL_CLAUDE_CODE_EXECUTABLE = process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE;
 const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 const ORIGINAL_GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const ORIGINAL_GH_TOKEN = process.env.GH_TOKEN;
@@ -26,6 +27,11 @@ afterEach(() => {
 		delete process.env.TELCLAUDE_DOCKER;
 	} else {
 		process.env.TELCLAUDE_DOCKER = ORIGINAL_DOCKER_ENV;
+	}
+	if (ORIGINAL_CLAUDE_CODE_EXECUTABLE === undefined) {
+		delete process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE;
+	} else {
+		process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE = ORIGINAL_CLAUDE_CODE_EXECUTABLE;
 	}
 	if (ORIGINAL_OPENAI_KEY === undefined) {
 		delete process.env.OPENAI_API_KEY;
@@ -94,6 +100,33 @@ describe("buildSdkOptions", () => {
 				model: "gpt-5",
 			}),
 		).rejects.toThrow(/not executable/);
+	});
+
+	it("uses the installed Claude Code executable in Docker mode", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
+		delete process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE;
+
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "FULL_ACCESS" });
+
+		expect(opts.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude");
+	});
+
+	it("leaves the Claude Code executable unset in native mode", async () => {
+		delete process.env.TELCLAUDE_DOCKER;
+		delete process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE;
+
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY" });
+
+		expect(opts.pathToClaudeCodeExecutable).toBeUndefined();
+	});
+
+	it("respects the Docker Claude Code executable override", async () => {
+		process.env.TELCLAUDE_DOCKER = "1";
+		process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE = "/custom/claude";
+
+		const opts = await buildSdkOptions({ ...baseOpts, tier: "READ_ONLY" });
+
+		expect(opts.pathToClaudeCodeExecutable).toBe("/custom/claude");
 	});
 
 	it("creates an AbortController when timeoutMs is set", async () => {

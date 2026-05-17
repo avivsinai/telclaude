@@ -83,6 +83,7 @@ import { executeWithSession, getSessionManager } from "./session-manager.js";
 import { getUrlPortNumber, validateToolPath } from "./tool-validation.js";
 
 const logger = getChildLogger({ module: "sdk-client" });
+const DOCKER_CLAUDE_CODE_EXECUTABLE = "/usr/local/bin/claude";
 
 /**
  * Timeout for PreToolUse hooks in seconds.
@@ -91,6 +92,15 @@ const logger = getChildLogger({ module: "sdk-client" });
 const HOOK_TIMEOUT_SECONDS = 10;
 const DEFAULT_TOOL_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 const TOOL_APPROVAL_TIMEOUT_SLACK_MS = 5_000;
+
+function resolveClaudeCodeExecutablePath(sandboxEnabled: boolean): string | undefined {
+	const configured = process.env.TELCLAUDE_CLAUDE_CODE_EXECUTABLE?.trim();
+	if (configured) {
+		return configured;
+	}
+	// Docker mode disables the SDK sandbox and uses the CLI installed in the image.
+	return sandboxEnabled ? undefined : DOCKER_CLAUDE_CODE_EXECUTABLE;
+}
 
 function isSocialContext(actorUserId?: string): boolean {
 	return actorUserId?.startsWith("social:") ?? false;
@@ -1267,6 +1277,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 
 	const config = loadConfig();
 	const sandboxEnabled = shouldEnableSdkSandbox();
+	const claudeCodeExecutablePath = resolveClaudeCodeExecutablePath(sandboxEnabled);
 
 	// Environment handling for SDK spawn process
 	//
@@ -1371,6 +1382,7 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 		includePartialMessages: opts.includePartialMessages,
 		abortController,
 		resume: opts.resumeSessionId,
+		...(claudeCodeExecutablePath && { pathToClaudeCodeExecutable: claudeCodeExecutablePath }),
 		// Only pass env in Docker mode (when sandboxEnv is defined)
 		// In native mode, let SDK use process.env and handle sandbox env internally
 		...(sandboxEnv && { env: sandboxEnv }),
