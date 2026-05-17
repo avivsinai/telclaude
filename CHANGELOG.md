@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-17
+
+### Fixed
+
+- **Docker Claude binary path (TC-OC-06)** — `buildSdkOptions` now passes `pathToClaudeCodeExecutable=/usr/local/bin/claude` in Docker mode so the SDK uses the installed CLI instead of the bundled `@anthropic-ai/claude-agent-sdk-linux-x64-musl` optional dep, which is not executable in the Debian-based image. Resolves "Claude Code native binary not found" `ReferenceError` on private heartbeats and pooled queries. Override via `TELCLAUDE_CLAUDE_CODE_EXECUTABLE`; native sandbox mode is unaffected.
+- **Stale Anthropic firewall entries** — Dropped `code.anthropic.com`, `www.code.anthropic.com`, and `console.code.anthropic.com` from `ANTHROPIC_DOMAINS` and `FIREWALL_WILDCARD_EXPANSIONS`. The hosts never resolved and produced "could not resolve" warnings on every firewall-refresh; Claude Code traffic uses `claude.ai`/`console.claude.ai`, which remain allowlisted.
+- **gifgrep build input** — Pinned the Docker build copy for the gifgrep skill assets.
+
+### Changed
+
+- **CI deploy timeout + healthcheck grace** — Extended the production deploy job timeout and relay healthcheck grace to absorb cold-cache rebuilds on the self-hosted runner.
+
 ## [0.7.0] - 2026-05-16
 
 ### Added

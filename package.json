@@ -1,6 +1,6 @@
 {
   "name": "telclaude",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Secure Telegram agent bridge with LLM-based command screening, tiered permissions, and OS-level sandboxing",
   "type": "module",
   "main": "dist/index.js",
