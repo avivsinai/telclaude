@@ -23,7 +23,6 @@ export const FIREWALL_WILDCARD_EXPANSIONS: Record<string, readonly string[]> = {
 		"security.stackexchange.com",
 	],
 	"*.claude.ai": ["www.claude.ai", "console.claude.ai"],
-	"*.code.anthropic.com": ["www.code.anthropic.com", "console.code.anthropic.com"],
 };
 
 function dedupePreserveOrder(domains: readonly string[]): string[] {
