@@ -1,7 +1,11 @@
 import { Command } from "commander";
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
+import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approval-continuation.js";
 import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
@@ -95,6 +99,23 @@ const emptyQueues: HermesQueueSnapshot = {
 	webhooks: { enabled: 0, total: 0 },
 	memory: { entries: 0, episodes: 0 },
 };
+
+async function runHermesCommand(args: string[]): Promise<{ exitCode: unknown; stdout: string }> {
+	const output: string[] = [];
+	const logSpy = vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
+		output.push(values.map(String).join(" "));
+	});
+	const program = new Command();
+	registerHermesCommand(program);
+	process.exitCode = undefined;
+	try {
+		await program.parseAsync(["node", "telclaude", ...args]);
+		return { exitCode: process.exitCode, stdout: output.join("\n") };
+	} finally {
+		process.exitCode = undefined;
+		logSpy.mockRestore();
+	}
+}
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
 	return {
@@ -671,6 +692,70 @@ describe("Hermes wrapper foundation", () => {
 		const program = new Command();
 		registerHermesCommand(program);
 		expect(program.commands.map((command) => command.name())).toContain("hermes");
+	});
+
+	it("registers the approval-continuation probe command", () => {
+		const program = new Command();
+		registerHermesCommand(program);
+		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain("probe");
+	});
+
+	it("fails the approval-continuation probe closed when evidence is missing", async () => {
+		const missingEvidence = path.join(os.tmpdir(), `missing-hermes-probe-${process.pid}.json`);
+		fs.rmSync(missingEvidence, { force: true });
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.approval_continuation",
+			"--json",
+			"--evidence",
+			missingEvidence,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; productionEnable: boolean };
+
+		expect(result.exitCode).toBe(2);
+		expect(report).toMatchObject({ status: "input_error", productionEnable: false });
+	});
+
+	it("passes the approval-continuation probe only from explicit evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-probe-"));
+		const evidencePath = path.join(tempDir, "approval-continuation.json");
+		fs.writeFileSync(
+			evidencePath,
+			JSON.stringify({
+				schemaVersion: 1,
+				hermes: hermesPin,
+				native: {
+					events_wait: false,
+					permissions_list_open: false,
+					permissions_respond: false,
+					responds_to_blocked_run: false,
+				},
+				fallback: {
+					strategy: "cross_turn_prepare_approve_execute",
+					fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
+						id,
+						status: "pass",
+						evidence_path: `artifacts/hermes/approval/${id}.json`,
+					})),
+				},
+			}),
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.approval_continuation",
+			"--json",
+			"--evidence",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; mode: string };
+
+		expect(result.exitCode).toBe(0);
+		expect(report).toMatchObject({ status: "pass", mode: "cross_turn_fallback" });
 	});
 
 	it("builds a real sanitized inventory snapshot with deterministic workflows", () => {

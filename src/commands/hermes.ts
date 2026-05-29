@@ -1,5 +1,9 @@
 import type { Command } from "commander";
 import {
+	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
+	evaluateApprovalContinuationEvidence,
+} from "../hermes/approval-continuation.js";
+import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
 	buildCutoverScopeManifestFromInventory,
@@ -157,6 +161,49 @@ export function registerHermesCommand(program: Command): void {
 					`Hermes inventory: ${inventory.status}, ${inventory.summary.workflows} workflow(s), ${inventory.summary.issues} issue(s)`,
 				);
 			}
+		});
+
+	hermes
+		.command("probe")
+		.description("Evaluate a single Hermes wrapper feature probe")
+		.argument("<surface>", "Feature surface id")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--evidence <path>",
+			"Approval-continuation evidence JSON path",
+			DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
+		)
+		.action((surface: string, options: JsonOption & { evidence: string }) => {
+			if (surface !== "execution.approval_continuation") {
+				const report = {
+					schemaVersion: "telclaude.hermes.probe-report.v1",
+					status: "input_error",
+					surface,
+					detail: `Unsupported Hermes probe surface: ${surface}`,
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- FAIL surface: ${report.detail}`);
+				}
+				process.exitCode = 2;
+				return;
+			}
+
+			const evidencePath = resolveHermesArtifactPath(options.evidence);
+			const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
+				missingPath: evidencePath,
+			});
+			if (options.json) {
+				printJson(report);
+			} else {
+				console.log(`Hermes probe ${surface}: ${report.status}`);
+				for (const gate of report.gates) {
+					console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+				}
+			}
+			process.exitCode = report.status === "pass" ? 0 : report.status === "input_error" ? 2 : 1;
 		});
 
 	hermes
