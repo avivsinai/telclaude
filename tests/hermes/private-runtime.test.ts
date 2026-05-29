@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildHermesPrivateRuntimeAdapterFromEnv,
 	executeHermesPrivateQuery,
 	setHermesPrivateRuntimeAdapterForTest,
 	shouldUseHermesPrivateRuntime,
@@ -142,6 +143,73 @@ describe("Hermes private runtime seam", () => {
 				},
 			},
 		]);
+	});
+
+	it("builds the production API adapter only from explicit Hermes API env", () => {
+		expect(buildHermesPrivateRuntimeAdapterFromEnv({})).toBeNull();
+		expect(() =>
+			buildHermesPrivateRuntimeAdapterFromEnv({
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes.local",
+			}),
+		).toThrow("TELCLAUDE_HERMES_API_KEY is required");
+		expect(() =>
+			buildHermesPrivateRuntimeAdapterFromEnv({
+				TELCLAUDE_HERMES_API_KEY: "api-key",
+			}),
+		).toThrow("TELCLAUDE_HERMES_API_BASE_URL is required");
+		expect(
+			buildHermesPrivateRuntimeAdapterFromEnv({
+				TELCLAUDE_HERMES_API_BASE_URL: "http://hermes.local",
+				TELCLAUDE_HERMES_API_KEY: "api-key",
+			}),
+		).not.toBeNull();
+	});
+
+	it("reports Hermes API env misconfiguration as a failed private query", async () => {
+		const priorBaseUrl = process.env.TELCLAUDE_HERMES_API_BASE_URL;
+		const priorApiKey = process.env.TELCLAUDE_HERMES_API_KEY;
+		try {
+			process.env.TELCLAUDE_HERMES_API_BASE_URL = "http://hermes.local";
+			delete process.env.TELCLAUDE_HERMES_API_KEY;
+			setHermesPrivateRuntimeAdapterForTest(null);
+
+			const chunks = await collect(
+				executeHermesPrivateQuery("hello", {
+					cwd: "/repo",
+					tier: "READ_ONLY",
+					poolKey: "tg:123",
+					telclaudeSessionId: "tc-session-1",
+					profileId: "ops",
+					enableSkills: false,
+					timeoutMs: 60_000,
+				}),
+			);
+
+			expect(chunks).toEqual([
+				{
+					type: "done",
+					result: {
+						response: "",
+						success: false,
+						error: "TELCLAUDE_HERMES_API_KEY is required when TELCLAUDE_HERMES_API_BASE_URL is set",
+						costUsd: 0,
+						numTurns: 0,
+						durationMs: 0,
+					},
+				},
+			]);
+		} finally {
+			if (priorBaseUrl === undefined) {
+				delete process.env.TELCLAUDE_HERMES_API_BASE_URL;
+			} else {
+				process.env.TELCLAUDE_HERMES_API_BASE_URL = priorBaseUrl;
+			}
+			if (priorApiKey === undefined) {
+				delete process.env.TELCLAUDE_HERMES_API_KEY;
+			} else {
+				process.env.TELCLAUDE_HERMES_API_KEY = priorApiKey;
+			}
+		}
 	});
 
 	it("passes private query options into the configured runtime adapter", async () => {

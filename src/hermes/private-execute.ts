@@ -1,5 +1,6 @@
 import type { PermissionTier } from "../config/config.js";
 import type { StreamChunk } from "../sdk/client.js";
+import { HermesApiRuntimeAdapter } from "./api-adapter.js";
 import {
 	executeHermesPrivateRuntime,
 	type HermesPrivateRuntimeRequest,
@@ -36,11 +37,48 @@ export function setHermesPrivateRuntimeAdapterForTest(adapter: HermesRuntimeAdap
 	privateRuntimeAdapter = adapter;
 }
 
+export function buildHermesPrivateRuntimeAdapterFromEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): HermesRuntimeAdapter | null {
+	const baseUrl = env.TELCLAUDE_HERMES_API_BASE_URL?.trim();
+	const apiKey = env.TELCLAUDE_HERMES_API_KEY?.trim();
+	if (!baseUrl && !apiKey) return null;
+	if (!baseUrl) {
+		throw new Error(
+			"TELCLAUDE_HERMES_API_BASE_URL is required when TELCLAUDE_HERMES_API_KEY is set",
+		);
+	}
+	if (!apiKey) {
+		throw new Error(
+			"TELCLAUDE_HERMES_API_KEY is required when TELCLAUDE_HERMES_API_BASE_URL is set",
+		);
+	}
+	return new HermesApiRuntimeAdapter({ baseUrl, apiKey });
+}
+
 export async function* executeHermesPrivateQuery(
 	prompt: string,
 	options: HermesPrivateQueryOptions,
 ): AsyncGenerator<StreamChunk, void, unknown> {
-	if (!privateRuntimeAdapter) {
+	let runtime: HermesRuntimeAdapter | null;
+	try {
+		runtime = privateRuntimeAdapter ?? buildHermesPrivateRuntimeAdapterFromEnv();
+	} catch (error) {
+		yield {
+			type: "done",
+			result: {
+				response: "",
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+				costUsd: 0,
+				numTurns: 0,
+				durationMs: 0,
+			},
+		};
+		return;
+	}
+
+	if (!runtime) {
 		yield {
 			type: "done",
 			result: {
@@ -80,7 +118,7 @@ export async function* executeHermesPrivateQuery(
 			signal: controller.signal,
 		};
 		yield* executeHermesPrivateRuntime({
-			runtime: privateRuntimeAdapter,
+			runtime,
 			sessions: hermesSessionMap,
 			request,
 		});
