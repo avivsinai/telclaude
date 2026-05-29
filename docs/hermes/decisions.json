@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "decisions": [
+    {
+      "id": "D-private-execution-contract",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 1",
+      "affected_workflows": [],
+      "cutover_impact": "Private execution cannot enter the included cutover set until the Hermes runtime contract is proven."
+    },
+    {
+      "id": "D-profile-generation",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 1",
+      "affected_workflows": [],
+      "cutover_impact": "Generated Hermes profiles must be pinned, reproducible, and relay-owned before cutover."
+    },
+    {
+      "id": "D-cron-idempotency",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 2",
+      "affected_workflows": [],
+      "cutover_impact": "Cron and background workflows cannot cut over until duplicate delivery and resume semantics are proven."
+    },
+    {
+      "id": "D-social-persona-isolation",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 2",
+      "affected_workflows": [],
+      "cutover_impact": "Social workflows cannot cut over until workspace, memory, network, and identity isolation are proven."
+    },
+    {
+      "id": "D-provider-envelope",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 2",
+      "affected_workflows": [],
+      "cutover_impact": "Provider-backed workflows cannot cut over until relay-proxy routing and signed write approvals are preserved."
+    },
+    {
+      "id": "D-webhook-delivery",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 2",
+      "affected_workflows": [],
+      "cutover_impact": "Public-channel workflows cannot cut over until webhook delivery, retries, and identity binding are proven."
+    },
+    {
+      "id": "D-first-cutover-workflow-set",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 1",
+      "affected_workflows": [],
+      "cutover_impact": "No workflow enters production until the first complete included set is explicitly accepted."
+    },
+    {
+      "id": "D-model-relay-seam",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "Phase 1",
+      "affected_workflows": [],
+      "cutover_impact": "Hermes model traffic must route through Telclaude-owned relay boundaries before production use."
+    }
+  ]
+}

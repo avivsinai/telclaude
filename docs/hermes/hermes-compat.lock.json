@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "hermes": {
+    "version": "0.15.1"
+  },
+  "featureProbeMatrixDigest": "sha256:f19a649781cd17d43c36635214e208832048dd7fcbc64e6d75cb4d2a049aabbf",
+  "featureProbes": [
+    {
+      "surface_id": "execution.cli_headless",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/execution-cli-headless.json"
+    },
+    {
+      "surface_id": "execution.approval_continuation",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
+    },
+    {
+      "surface_id": "model.relay",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/model-relay.json"
+    }
+  ],
+  "adapterApiSignatures": {
+    "execution.cli_headless": "sha256:pending",
+    "execution.approval_continuation": "sha256:pending",
+    "model.relay": "sha256:pending"
+  },
+  "capabilities": {
+    "plugins": [
+      "platform-adapter",
+      "tool-registration"
+    ],
+    "mcp": [
+      "stdio",
+      "events_wait",
+      "permissions_list_open",
+      "permissions_respond"
+    ],
+    "modelProviders": [
+      "relay-owned-provider"
+    ],
+    "memoryProviders": [
+      "telclaude-memory-provider"
+    ]
+  },
+  "requiredUpgradeTests": [
+    "pnpm dev hermes doctor --probes --compat-lock --json",
+    "pnpm dev hermes cutover-check --strict --dry-run --json",
+    "pnpm dev hermes prove --upstream-clean --p0"
+  ],
+  "generatedProfileSchemaVersion": "1",
+  "wrapperPackageVersion": "0.7.1",
+  "paritySuiteDigests": {
+    "p0": "sha256:pending"
+  },
+  "noForkProofEvidencePath": "artifacts/hermes/no-fork.json",
+  "sourceDriftSignals": {
+    "sourceCommit": "pending",
+    "docsCommit": "pending"
+  }
+}
