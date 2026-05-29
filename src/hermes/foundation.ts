@@ -149,6 +149,26 @@ const InventorySnapshotSchema = z
 	})
 	.catchall(z.unknown());
 
+const InventoryQueueEvidenceSchema = z
+	.object({
+		status: z.literal("complete"),
+		summary: z
+			.object({
+				pendingQueues: z
+					.object({
+						approvals: z.number().int().min(0),
+						planApprovals: z.number().int().min(0),
+						cards: z.number().int().min(0),
+						backgroundJobs: z.number().int().min(0),
+						socialItems: z.number().int().min(0),
+						curatorItems: z.number().int().min(0),
+					})
+					.strict(),
+			})
+			.passthrough(),
+	})
+	.passthrough();
+
 export const DecisionLogSchema = z
 	.object({
 		schemaVersion: z.literal(1),
@@ -825,10 +845,14 @@ function sameJson(left: unknown, right: unknown): boolean {
 }
 
 function deriveQueueOwnershipSnapshot(inventory: unknown): QueueOwnershipSnapshot {
-	const pendingQueues = (inventory as { summary?: { pendingQueues?: Record<string, unknown> } })
-		.summary?.pendingQueues;
-	const unownedActiveCount = Object.values(pendingQueues ?? {}).reduce<number>(
-		(total, value) => total + (typeof value === "number" && Number.isFinite(value) ? value : 0),
+	const parsed = InventoryQueueEvidenceSchema.safeParse(inventory);
+	if (!parsed.success) {
+		throw new Error(
+			`inventory queue evidence is missing or incomplete: ${flattenZodError(parsed.error)}`,
+		);
+	}
+	const unownedActiveCount = Object.values(parsed.data.summary.pendingQueues).reduce<number>(
+		(total, value) => total + value,
 		0,
 	);
 	return { unownedActiveCount };

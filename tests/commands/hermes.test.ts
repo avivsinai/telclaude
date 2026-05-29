@@ -275,7 +275,20 @@ describe("Hermes wrapper foundation", () => {
 	it("assembles cutover input from separate canonical artifacts", () => {
 		const source = safeCutoverBundle();
 		const assembled = buildCutoverInputBundleFromArtifacts({
-			inventory: source.inventory,
+			inventory: {
+				...source.inventory,
+				status: "complete",
+				summary: {
+					pendingQueues: {
+						approvals: 0,
+						planApprovals: 0,
+						cards: 0,
+						backgroundJobs: 0,
+						socialItems: 0,
+						curatorItems: 0,
+					},
+				},
+			},
 			scopeManifest: source.scopeManifest,
 			decisionLog: source.decisionLog,
 			lockfile: source.lockfile,
@@ -288,6 +301,83 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(evaluateCutoverCheck(assembled).exitCode).toBe(0);
 		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 0 });
+	});
+
+	it("fails closed when canonical artifact assembly lacks complete queue evidence", () => {
+		const source = safeCutoverBundle();
+		expect(() =>
+			buildCutoverInputBundleFromArtifacts({
+				inventory: source.inventory,
+				scopeManifest: source.scopeManifest,
+				decisionLog: source.decisionLog,
+				lockfile: source.lockfile,
+				featureProbeMatrix: source.featureProbeMatrix,
+				fixtureResults: source.fixtureResults,
+				noForkProof: source.noForkProof,
+				networkProbes: source.networkProbes,
+				rollbackRehearsal: source.rollbackRehearsal,
+			}),
+		).toThrow("inventory queue evidence is missing or incomplete");
+
+		expect(() =>
+			buildCutoverInputBundleFromArtifacts({
+				inventory: {
+					...source.inventory,
+					status: "partial",
+					summary: {
+						pendingQueues: {
+							approvals: 0,
+							planApprovals: 0,
+							cards: 0,
+							backgroundJobs: 0,
+							socialItems: 0,
+							curatorItems: 0,
+						},
+					},
+				},
+				scopeManifest: source.scopeManifest,
+				decisionLog: source.decisionLog,
+				lockfile: source.lockfile,
+				featureProbeMatrix: source.featureProbeMatrix,
+				fixtureResults: source.fixtureResults,
+				noForkProof: source.noForkProof,
+				networkProbes: source.networkProbes,
+				rollbackRehearsal: source.rollbackRehearsal,
+			}),
+		).toThrow("inventory queue evidence is missing or incomplete");
+	});
+
+	it("derives nonzero queue ownership failures from complete inventory evidence", () => {
+		const source = safeCutoverBundle();
+		const assembled = buildCutoverInputBundleFromArtifacts({
+			inventory: {
+				...source.inventory,
+				status: "complete",
+				summary: {
+					pendingQueues: {
+						approvals: 1,
+						planApprovals: 0,
+						cards: 0,
+						backgroundJobs: 2,
+						socialItems: 0,
+						curatorItems: 0,
+					},
+				},
+			},
+			scopeManifest: source.scopeManifest,
+			decisionLog: source.decisionLog,
+			lockfile: source.lockfile,
+			featureProbeMatrix: source.featureProbeMatrix,
+			fixtureResults: source.fixtureResults,
+			noForkProof: source.noForkProof,
+			networkProbes: source.networkProbes,
+			rollbackRehearsal: source.rollbackRehearsal,
+		});
+
+		const report = evaluateCutoverCheck(assembled);
+		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 3 });
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "queues.owned")?.status).toBe("fail");
 	});
 
 	it("generates a fail-closed cutover scope skeleton from inventory workflows", () => {
