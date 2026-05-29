@@ -218,7 +218,7 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 	// Sentinel values that exist ONLY in the merged config / private overlay, never in
 	// the raw policy file on disk. If any of these surface in the rewritten policy file,
 	// the fixer leaked merged state.
-	const PRIVATE_BOT_TOKEN = "1111111111:LEAKED-PRIVATE-BOT-TOKEN-do-not-write";
+	const PRIVATE_BOT_TOKEN = "1111111111:LEAKED-PRIVATE-BOT-TOKEN-do-not-write"; // gitleaks:allow -- fake sentinel, not a real bot token
 	const PRIVATE_ALLOWED_CHAT = 7_001_002_003;
 	const PRIVATE_ADMIN_CHAT = 9_008_007_006;
 	const PRIVATE_USER_ID = "424242";
@@ -370,7 +370,7 @@ describe("raw-policy-only write (no overlay/default leak)", () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("overlay guard (raw-only regardless of TELCLAUDE_PRIVATE_CONFIG)", () => {
-	const PRIVATE_BOT_TOKEN = "2222222222:OVERLAY-TOKEN-must-not-leak";
+	const PRIVATE_BOT_TOKEN = "2222222222:OVERLAY-TOKEN-must-not-leak"; // gitleaks:allow -- fake sentinel, not a real bot token
 	const PRIVATE_ALLOWED_CHAT = 8_111_222_333;
 
 	it("writes only the raw policy even when TELCLAUDE_PRIVATE_CONFIG is set and points at a real overlay", () => {

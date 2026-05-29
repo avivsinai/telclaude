@@ -87,8 +87,3 @@ e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/store.test.ts:github-pat:
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:33
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:38
 e0dea00a83982bd35dbf329029903fa2031f6b58:tests/curator/collectors.test.ts:github-pat:58
-
-# PR #115 review-fix test fixtures: fake encryption passphrase + sentinel bot tokens (not real secrets)
-3929d79433d4ea61e279a8cdb0eda6d120125228:tests/crypto/encrypted-file-store.test.ts:credentials-javascript:18
-3929d79433d4ea61e279a8cdb0eda6d120125228:tests/commands/audit-fixers.test.ts:credentials-javascript:221
-3929d79433d4ea61e279a8cdb0eda6d120125228:tests/commands/audit-fixers.test.ts:credentials-javascript:373
