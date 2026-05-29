@@ -195,7 +195,11 @@ function isPathAllowed(path: string, allowedPaths?: string[]): boolean {
 
 	return allowedPaths.some((pattern) => {
 		try {
-			return new RegExp(pattern).test(path);
+			// SECURITY: Anchor at the start so a prefix-intended pattern cannot
+			// substring-match elsewhere in the path. Already-anchored patterns
+			// (starting with ^) are left untouched.
+			const anchored = pattern.startsWith("^") ? pattern : `^${pattern}`;
+			return new RegExp(anchored).test(path);
 		} catch {
 			return false; // Invalid regex, skip
 		}

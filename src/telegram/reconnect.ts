@@ -54,11 +54,15 @@ export function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> 
 			return;
 		}
 
-		const timer = setTimeout(resolve, ms);
-
-		signal?.addEventListener("abort", () => {
+		const onAbort = () => {
 			clearTimeout(timer);
 			reject(new Error("Aborted"));
-		});
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }

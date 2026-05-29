@@ -184,13 +184,22 @@ class VaultProvider implements SecretsStorageProvider {
 	}
 
 	async delete(key: string): Promise<boolean> {
-		let vaultDeleted = false;
+		// The vault is the authoritative store. A transport/RPC failure (vs. a
+		// clean not-found, which comes back as { ok: true, deleted: false }) means
+		// the secret may still live in the vault. Propagate so callers know the
+		// revocation did not complete rather than fail open on a deleted fallback.
+		let vaultDeleted: boolean;
 		try {
 			const client = getVaultClient();
 			const response = await client.delete("secret", key);
 			vaultDeleted = response.deleted;
 		} catch (err) {
-			logger.debug({ key, error: String(err) }, "vault delete failed");
+			// Propagate rather than log-and-continue: the secret may still live in the
+			// vault, so the caller must treat revocation as failed. The thrown error
+			// already carries the key id + cause for the caller to surface; logging it
+			// here too would double-report and needlessly route a secret identifier
+			// through a logging sink.
+			throw new Error(`vault delete failed for secret "${key}": ${String(err)}`, { cause: err });
 		}
 		const fallbackDeleted = await this.fallback.delete(key);
 		return vaultDeleted || fallbackDeleted;

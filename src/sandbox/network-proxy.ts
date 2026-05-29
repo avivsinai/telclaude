@@ -50,9 +50,13 @@ const logger = getChildLogger({ module: "network-proxy" });
 // result, we ensure the same IP is used for both security check and connection.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// NOTE: This cache stores raw resolved addresses only. It performs NO blocking
+// enforcement — every caller must re-run isBlockedIP/isNonOverridableBlock on the
+// returned addresses (see fetchWithGuard's resolveAndValidate and
+// checkPrivateNetworkAccess). Do not add a "blocked" flag here: it would invite
+// callers to assume the cache enforces blocking when it does not (fail-open).
 interface CachedDNSResult {
 	addresses: string[];
-	blocked: boolean;
 	expireAt: number;
 }
 
@@ -127,7 +131,6 @@ export async function cachedDNSLookup(host: string): Promise<string[] | null> {
 		evictDNSCacheIfNeeded();
 		DNS_CACHE.set(host, {
 			addresses,
-			blocked: addresses.some((addr) => isBlockedIP(addr)),
 			expireAt: now + DNS_CACHE_TTL_MS,
 		});
 		return addresses;
@@ -137,7 +140,6 @@ export async function cachedDNSLookup(host: string): Promise<string[] | null> {
 	evictDNSCacheIfNeeded();
 	DNS_CACHE.set(host, {
 		addresses: [],
-		blocked: false,
 		expireAt: now + DNS_CACHE_TTL_MS,
 	});
 	return null;

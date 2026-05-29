@@ -139,26 +139,38 @@ export async function defaultCommandExecutor(
 	}, timeoutMs);
 	timer.unref?.();
 
-	const exit: Promise<{ code: number | null; signalName: NodeJS.Signals | null }> = new Promise(
-		(resolve) => {
-			child.on("exit", (code, signalName) => resolve({ code, signalName }));
-		},
-	);
+	const exit: Promise<{
+		code: number | null;
+		signalName: NodeJS.Signals | null;
+		spawnError?: string;
+	}> = new Promise((resolve) => {
+		// `exit` fires on normal/forced termination; `error` fires for async
+		// spawn failures (EACCES/ENOENT surfaced after spawn() returns) where
+		// `exit` may never arrive. Settle on whichever comes first so the
+		// executor never hangs until the runner's hard timeout.
+		child.on("exit", (code, signalName) => resolve({ code, signalName }));
+		child.on("error", (err) => resolve({ code: null, signalName: null, spawnError: String(err) }));
+	});
 
-	const { code, signalName } = await exit;
+	const { code, signalName, spawnError } = await exit;
 	clearTimeout(timer);
 	signal.removeEventListener?.("abort", onAbort);
 
 	const stdout = truncateOutput(Buffer.concat(stdoutChunks).toString("utf8"));
 	const stderr = truncateOutput(Buffer.concat(stderrChunks).toString("utf8"));
 	const exitCode = code ?? -1;
-	const success = code === 0;
+	const success = !spawnError && code === 0;
 
-	const message = success
-		? `Exit 0${stdout ? ` — ${stdout.split(/\n/)[0].slice(0, 160)}` : ""}`
-		: signalName
-			? `Killed by ${signalName} (exit ${exitCode})`
-			: `Exited with code ${exitCode}`;
+	let message: string;
+	if (spawnError) {
+		message = `Spawn error: ${spawnError}`;
+	} else if (success) {
+		message = `Exit 0${stdout ? ` — ${stdout.split(/\n/)[0].slice(0, 160)}` : ""}`;
+	} else if (signalName) {
+		message = `Killed by ${signalName} (exit ${exitCode})`;
+	} else {
+		message = `Exited with code ${exitCode}`;
+	}
 
 	return {
 		ok: success,

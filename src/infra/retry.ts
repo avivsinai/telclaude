@@ -59,7 +59,7 @@ export function computeRetryDelay(config: RetryConfig, attempt: number): number 
 	const capped = Math.min(base, config.maxDelayMs);
 	const jitterRange = capped * config.jitter;
 	const jitter = (Math.random() - 0.5) * 2 * jitterRange;
-	return Math.max(0, Math.round(capped + jitter));
+	return Math.max(0, Math.min(config.maxDelayMs, Math.round(capped + jitter)));
 }
 
 /**

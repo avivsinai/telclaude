@@ -10,6 +10,7 @@ export type { WebhookServerHandle, WebhookServerOptions } from "./server.js";
 export { buildWebhookServer, startWebhookServer } from "./server.js";
 export type {
 	WebhookDefinition,
+	WebhookDeliveryIngest,
 	WebhookHit,
 	WebhookRateLimitResult,
 } from "./store.js";
@@ -19,6 +20,7 @@ export {
 	consumeWebhookRateLimit,
 	createWebhook,
 	getWebhook,
+	ingestWebhookDelivery,
 	listWebhookHits,
 	listWebhooks,
 	recordWebhookHit,

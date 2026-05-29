@@ -194,31 +194,76 @@ export function checkClaudeCli(): CheckResult {
 }
 
 export function checkClaudeLogin(): CheckResult {
-	try {
-		const who = execSync("claude whoami", {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		}).trim();
-		const loggedIn = /Logged in/i.test(who) || who.length > 0;
-		if (loggedIn) {
-			return pass("claude-cli.logged-in", "Claude CLI", "logged in to Anthropic");
-		}
-		return warn(
-			"claude-cli.logged-in",
-			"Claude CLI",
-			"claude whoami returned empty output",
-			undefined,
-			"claude login",
-		);
-	} catch {
+	// `claude auth status` is the real auth-state subcommand. (An earlier
+	// version ran `claude whoami`, which is NOT a subcommand — the CLI treats
+	// "whoami" as a prompt, exits 0 with conversational text, and the check
+	// passed meaninglessly.) Use spawnSync so a non-zero exit (not logged in)
+	// doesn't throw, and so we can inspect the combined output.
+	const res = spawnSync("claude", ["auth", "status"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+
+	if (res.error) {
+		// CLI not spawnable (missing binary, etc.).
 		return fail(
 			"claude-cli.logged-in",
 			"Claude CLI",
-			"claude login appears to be missing",
-			undefined,
+			"could not run claude auth status",
+			res.error.message,
 			"claude login",
 		);
 	}
+
+	const output = `${res.stdout ?? ""}${res.stderr ?? ""}`.trim();
+
+	// Older/newer CLIs may not expose `auth status`. Treat an unknown-subcommand
+	// response as "cannot determine" (warn) rather than a false pass/fail.
+	if (/unknown\s+(?:command|subcommand|option)|usage:/i.test(output)) {
+		return warn(
+			"claude-cli.logged-in",
+			"Claude CLI",
+			"claude auth status unavailable; cannot determine login state",
+			output || undefined,
+			"claude login",
+		);
+	}
+
+	const loggedOut =
+		/not\s+logged\s+in|logged\s+out|please\s+log\s*in|no\s+(?:active\s+)?(?:session|account|credentials)/i.test(
+			output,
+		);
+	const loggedIn =
+		!loggedOut && (/logged\s+in/i.test(output) || (res.status === 0 && /@/.test(output)));
+
+	if (loggedIn) {
+		return pass(
+			"claude-cli.logged-in",
+			"Claude CLI",
+			"logged in to Anthropic",
+			output || undefined,
+		);
+	}
+
+	if (loggedOut || res.status !== 0) {
+		return warn(
+			"claude-cli.logged-in",
+			"Claude CLI",
+			"not logged in to Anthropic",
+			output || undefined,
+			"claude login",
+		);
+	}
+
+	return warn(
+		"claude-cli.logged-in",
+		"Claude CLI",
+		output
+			? "claude auth status returned unrecognized output; cannot determine login state"
+			: "claude auth status returned empty output; cannot determine login state",
+		output || undefined,
+		"claude login",
+	);
 }
 
 export function checkAgentRuntimes(): CheckResult[] {
@@ -440,6 +485,26 @@ export function checkNetworkConfig(cfg: TelclaudeConfig): CheckResult[] {
 }
 
 /**
+ * Whether a `/v1/schema` body carries a recognizable service container.
+ *
+ * Mirrors the authoritative parser in `provider-skill.ts`
+ * (`extractServiceDocs`): the container may live under `services`,
+ * `connectors`, `providers`, `service`, or `connector`, and may be either a
+ * non-empty array or a non-empty object. The doctor check must accept exactly
+ * this set so it doesn't false-fail providers the runtime parses fine.
+ */
+function hasServiceContainer(body: Record<string, unknown> | null | undefined): boolean {
+	if (!body || typeof body !== "object") return false;
+	const container =
+		body.services ?? body.connectors ?? body.providers ?? body.service ?? body.connector;
+	if (Array.isArray(container)) return container.length > 0;
+	if (container && typeof container === "object") {
+		return Object.keys(container).length > 0;
+	}
+	return false;
+}
+
+/**
  * Provider reachability + schema validity. One check per configured
  * provider, so operators can see which is healthy.
  */
@@ -501,8 +566,8 @@ export async function checkProviders(cfg: TelclaudeConfig): Promise<CheckResult[
 						),
 					);
 				} else {
-					const body = (await schemaRes.json()) as { services?: unknown };
-					if (!body || typeof body !== "object") {
+					const body = (await schemaRes.json()) as Record<string, unknown> | null;
+					if (!hasServiceContainer(body)) {
 						checks.push(
 							warn(
 								`providers.${provider.id}.schema`,

@@ -12,7 +12,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import JSON5 from "json5";
 import type { TelclaudeConfig } from "../config/config.js";
+import { getChildLogger } from "../logging.js";
+
+const logger = getChildLogger({ module: "cmd-audit-fixers" });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
@@ -42,6 +46,8 @@ export type FixAction = {
 export type FixReport = {
 	actions: FixAction[];
 	configBackupPath: string | null;
+	/** Operator-facing warnings emitted during the run (e.g., comment-loss on rewrite). */
+	warnings?: string[];
 	summary: {
 		applied: number;
 		skipped: number;
@@ -188,23 +194,74 @@ function atomicJsonWrite(filePath: string, content: string): void {
 // Config fixers
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type RawConfig = Record<string, unknown>;
+
+/** Return the nested object at `key`, creating it if absent. Throws if a non-object sits there. */
+function ensureObject(parent: RawConfig, key: string): RawConfig {
+	const existing = parent[key];
+	if (
+		existing !== undefined &&
+		(typeof existing !== "object" || existing === null || Array.isArray(existing))
+	) {
+		throw new Error(
+			`expected object at "${key}", found ${Array.isArray(existing) ? "array" : typeof existing}`,
+		);
+	}
+	const obj = (existing as RawConfig | undefined) ?? {};
+	parent[key] = obj;
+	return obj;
+}
+
+/** Read the nested object at `key` for inspection only. Throws if a non-object sits there. */
+function readObject(parent: RawConfig | undefined, key: string): RawConfig | undefined {
+	if (parent === undefined) return undefined;
+	const existing = parent[key];
+	if (existing === undefined) return undefined;
+	if (typeof existing !== "object" || existing === null || Array.isArray(existing)) {
+		throw new Error(
+			`expected object at "${key}", found ${Array.isArray(existing) ? "array" : typeof existing}`,
+		);
+	}
+	return existing as RawConfig;
+}
+
 /**
- * Apply safe config fixes. Returns the modified config and a list of actions taken.
- * Only modifies values that the audit collectors flagged as dangerous.
+ * Apply safe config fixes derived SOLELY from the RAW policy config object (the sparse,
+ * comment-free shape parsed from the policy file only — no `loadConfig()`, no
+ * runtime/private overlays, no Zod defaults).
+ *
+ * Both the decisions ("is this value dangerous?") and the mutations read and write `raw`.
+ * This guarantees we only ever fix values the operator explicitly wrote into the policy
+ * file, and never bake an overlay value or a Zod default into the agent-facing policy
+ * config. A flagged value that lives only in the runtime/private overlay is invisible
+ * here by design — the policy file stays untouched rather than absorbing merged state.
+ *
+ * If a fix ever needed a value that only exists after the merge, it must refuse rather
+ * than read merged state. None of the current fixes need merged state.
+ *
+ * Returns the mutated raw object and a list of actions taken. May throw via
+ * `ensureObject`/`readObject` if the policy file has a malformed `security` subtree; the
+ * caller runs this inside the parse try/catch so the operator sees a clear message.
  */
 function applyConfigFixes(
-	cfg: TelclaudeConfig,
+	raw: RawConfig,
 	env: NodeJS.ProcessEnv,
-): { config: TelclaudeConfig; actions: FixAction[] } {
+): { config: RawConfig; actions: FixAction[] } {
 	const actions: FixAction[] = [];
-
-	// Deep clone to avoid mutating the original
-	const next = JSON.parse(JSON.stringify(cfg)) as TelclaudeConfig;
+	// Inspect the existing security subtree without materializing it; mutations below
+	// create it lazily only when a fix actually fires.
+	const rawSecurity = readObject(raw, "security");
+	const rawProfile = rawSecurity?.profile;
+	const rawPermissions = readObject(rawSecurity, "permissions");
+	const rawAudit = readObject(rawSecurity, "audit");
+	const rawObserver = readObject(rawSecurity, "observer");
 
 	// 1. Test profile → simple
-	if (next.security.profile === "test") {
+	if (rawProfile === "test") {
 		const isTestEnvEnabled = env.TELCLAUDE_ENABLE_TEST_PROFILE === "1";
 		if (!isTestEnvEnabled) {
+			const security = ensureObject(raw, "security");
+			security.profile = "simple";
 			actions.push({
 				kind: "config",
 				target: "security.profile",
@@ -213,7 +270,6 @@ function applyConfigFixes(
 				after: "simple",
 				applied: true,
 			});
-			next.security.profile = "simple";
 		} else {
 			actions.push({
 				kind: "config",
@@ -228,13 +284,10 @@ function applyConfigFixes(
 	}
 
 	// 2. FULL_ACCESS default tier → READ_ONLY
-	const defaultTier = next.security.permissions?.defaultTier;
-	if (defaultTier === "FULL_ACCESS") {
-		if (!next.security.permissions) {
-			next.security.permissions = { defaultTier: "READ_ONLY", users: {} };
-		} else {
-			next.security.permissions.defaultTier = "READ_ONLY";
-		}
+	if (rawPermissions?.defaultTier === "FULL_ACCESS") {
+		const security = ensureObject(raw, "security");
+		const permissions = ensureObject(security, "permissions");
+		permissions.defaultTier = "READ_ONLY";
 		actions.push({
 			kind: "config",
 			target: "security.permissions.defaultTier",
@@ -246,8 +299,10 @@ function applyConfigFixes(
 	}
 
 	// 3. Audit logging disabled → enable
-	if (next.security.audit?.enabled === false) {
-		next.security.audit.enabled = true;
+	if (rawAudit?.enabled === false) {
+		const security = ensureObject(raw, "security");
+		const audit = ensureObject(security, "audit");
+		audit.enabled = true;
 		actions.push({
 			kind: "config",
 			target: "security.audit.enabled",
@@ -259,8 +314,10 @@ function applyConfigFixes(
 	}
 
 	// 4. Observer disabled in strict profile → enable
-	if (next.security.profile === "strict" && next.security.observer?.enabled === false) {
-		next.security.observer.enabled = true;
+	if (rawProfile === "strict" && rawObserver?.enabled === false) {
+		const security = ensureObject(raw, "security");
+		const observer = ensureObject(security, "observer");
+		observer.enabled = true;
 		actions.push({
 			kind: "config",
 			target: "security.observer.enabled",
@@ -271,7 +328,7 @@ function applyConfigFixes(
 		});
 	}
 
-	return { config: next, actions };
+	return { config: raw, actions };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -431,37 +488,74 @@ function applyHookHardeningFixes(cwd: string): FixAction[] {
  *   - Conservative config defaults (test → simple, FULL_ACCESS → READ_ONLY)
  *   - settingSources isolation
  *
- * Config writes use atomic write + backup (write to .tmp, rename, keep .bak).
+ * Config decisions AND writes are derived solely from the RAW policy file (JSON5.parse
+ * of `configPath` only — no `loadConfig()`, no runtime/private overlays, no Zod
+ * defaults). `loadConfig()` always deep-merges the `*.runtime.json` overlay (and, when
+ * `TELCLAUDE_PRIVATE_CONFIG` is set, the private overlay), so consulting the merged
+ * config could fold an overlay value or a defaulted value into the agent-facing policy
+ * file. Reading only the raw policy file means we fix exactly what the operator wrote
+ * there and nothing else; a dangerous value that lives only in an overlay is invisible
+ * here by design and the policy file is left untouched.
+ *
+ * Writes use atomic write + backup (write to .tmp, rename, keep .bak). JSON5 comments in
+ * the policy file are lost on rewrite (JSON.stringify output is plain JSON); a warning is
+ * emitted to make that disclosure visible to the operator.
+ *
+ * `_cfg` (the merged, loadConfig()-produced config) is intentionally NOT consulted for
+ * config decisions — doing so would reintroduce the overlay/default leak. It is kept in
+ * the signature for caller compatibility and so callers don't have to recompute it.
  */
 export function runAutoFix(
-	cfg: TelclaudeConfig,
+	_cfg: TelclaudeConfig,
 	configPath: string,
 	cwd: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): FixReport {
 	const allActions: FixAction[] = [];
+	const warnings: string[] = [];
 	let configBackupPath: string | null = null;
 
-	// 1. Config fixes (requires atomic write)
-	const configResult = applyConfigFixes(cfg, env);
-	const configActionsApplied = configResult.actions.filter((a) => a.applied);
+	// 1. Config fixes — never write merged config back; decide and patch off the raw
+	// policy file only. The parse, the fix decisions (ensureObject/readObject can throw
+	// on a malformed security subtree), and the write all run inside one try/catch so a
+	// broken policy file fails with a clear operator-facing message, not an uncaught
+	// exception.
+	const configActions: FixAction[] = [];
+	try {
+		let raw: RawConfig = {};
+		if (fs.existsSync(configPath)) {
+			raw = JSON5.parse(fs.readFileSync(configPath, "utf-8")) as RawConfig;
+		}
 
-	if (configActionsApplied.length > 0) {
-		try {
+		const configResult = applyConfigFixes(raw, env);
+		configActions.push(...configResult.actions);
+		const hasAppliedFix = configResult.actions.some((a) => a.applied);
+
+		if (hasAppliedFix) {
 			const content = `${JSON.stringify(configResult.config, null, "\t")}\n`;
 			const { backupPath } = atomicConfigWrite(configPath, content);
 			configBackupPath = backupPath;
-		} catch (err) {
-			// Mark all config actions as failed
-			for (const action of configResult.actions) {
-				if (action.applied) {
-					action.applied = false;
-					action.error = `Atomic write failed: ${String(err)}`;
-				}
-			}
+			const warning =
+				"Rewriting the policy config drops JSON5 comments; review the regenerated file (a .bak of the original was kept).";
+			warnings.push(warning);
+			logger.warn({ configPath, backupPath }, warning);
 		}
+	} catch (err) {
+		// Parse error, malformed security subtree, or atomic write failure: do not leave a
+		// half-applied state. Surface a single clear error action so the operator knows the
+		// policy file needs manual attention.
+		configActions.length = 0;
+		configActions.push({
+			kind: "config",
+			target: configPath,
+			description: "Apply safe policy-config remediations",
+			before: null,
+			after: "(no change)",
+			applied: false,
+			error: `Could not auto-fix policy config (it may be malformed): ${String(err)}`,
+		});
 	}
-	allActions.push(...configResult.actions);
+	allActions.push(...configActions);
 
 	// 2. Filesystem permission fixes
 	allActions.push(...applyFilesystemFixes(cwd));
@@ -482,6 +576,7 @@ export function runAutoFix(
 	return {
 		actions: allActions,
 		configBackupPath,
+		warnings: warnings.length > 0 ? warnings : undefined,
 		summary: { applied, skipped, errors },
 	};
 }
@@ -527,6 +622,14 @@ export function formatFixReport(report: FixReport): string {
 	// Backup info
 	if (configBackupPath) {
 		lines.push(`\n   Config backup: ${configBackupPath}`);
+	}
+
+	// Warnings (e.g., JSON5 comment loss on rewrite)
+	if (report.warnings && report.warnings.length > 0) {
+		lines.push("\n   WARNINGS:");
+		for (const warning of report.warnings) {
+			lines.push(`     ${warning}`);
+		}
 	}
 
 	// Summary

@@ -33,6 +33,14 @@ export async function handleGmail(
 
 type Gmail = ReturnType<typeof google.gmail>;
 
+/**
+ * Maximum attachment download size. The sidecar runs at mem_limit 256M and base64
+ * encoding adds ~1.33x, so an uncapped large attachment would OOM-crash the
+ * process — a single-request availability attack. 25 MiB matches Gmail's own send
+ * limit and stays well within the memory budget even with the base64 copy.
+ */
+const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
 async function handleSearch(gmail: Gmail, params: Record<string, unknown>): Promise<FetchResponse> {
 	try {
 		const res = await gmail.users.messages.list({
@@ -97,8 +105,29 @@ async function handleDownloadAttachment(
 			messageId: params.messageId as string,
 			id: params.attachmentId as string,
 		});
+		// `size` is the decoded byte count. Reject oversized attachments before
+		// decoding so a single request cannot exhaust the sidecar's 256M budget.
+		const declaredSize = typeof res.data.size === "number" ? res.data.size : null;
+		if (declaredSize !== null && declaredSize > MAX_DOWNLOAD_BYTES) {
+			return {
+				status: "error",
+				error: `Attachment exceeds ${MAX_DOWNLOAD_BYTES}-byte download limit (size ${declaredSize})`,
+				attachments: [],
+			};
+		}
+		const rawData = res.data.data ?? "";
+		// base64url decodes to 3 bytes per 4 chars; guard against a missing or
+		// understated `size` before allocating the decoded + normalized copies.
+		const decodedBytes = Math.floor((rawData.length * 3) / 4);
+		if (decodedBytes > MAX_DOWNLOAD_BYTES) {
+			return {
+				status: "error",
+				error: `Attachment exceeds ${MAX_DOWNLOAD_BYTES}-byte download limit`,
+				attachments: [],
+			};
+		}
 		// Gmail API returns base64url; normalize to standard base64 for provider proxy
-		const b64 = res.data.data ? res.data.data.replace(/-/g, "+").replace(/_/g, "/") : "";
+		const b64 = rawData ? rawData.replace(/-/g, "+").replace(/_/g, "/") : "";
 		return {
 			status: "ok",
 			data: { size: res.data.size },

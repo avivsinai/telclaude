@@ -59,12 +59,19 @@ async function guardedFetch(input: string | URL | Request, init?: RequestInit): 
 	if (origBody) {
 		// Wrap the response so release() runs when the body is consumed
 		const reader = origBody.getReader();
-		let streamConsumed = false;
+		// Tracks whether the stream actually finished (done/error/cancel) so the
+		// safety timer only skips when release has already run. A partially
+		// consumed-then-abandoned stream must still trigger the auto-release.
+		let completed = false;
+		const releaseOnce = async () => {
+			if (completed) return;
+			completed = true;
+			await result.release();
+		};
 		let releaseTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-			// Safety net for unconsumed responses.
-			if (streamConsumed) return;
 			releaseTimer = null;
-			void result.release();
+			// Safety net for streams that are never finished or abandoned mid-read.
+			void releaseOnce();
 		}, GUARDED_FETCH_AUTO_RELEASE_TIMEOUT_MS);
 		const clearReleaseTimer = () => {
 			if (!releaseTimer) return;
@@ -73,26 +80,25 @@ async function guardedFetch(input: string | URL | Request, init?: RequestInit): 
 		};
 		const wrappedStream = new ReadableStream({
 			async pull(controller) {
-				streamConsumed = true;
 				try {
 					const { done, value } = await reader.read();
 					if (done) {
 						clearReleaseTimer();
 						controller.close();
-						await result.release();
+						await releaseOnce();
 						return;
 					}
 					controller.enqueue(value);
 				} catch (error) {
 					clearReleaseTimer();
 					controller.error(error);
-					await result.release();
+					await releaseOnce();
 				}
 			},
 			async cancel(reason) {
 				clearReleaseTimer();
 				await reader.cancel(reason);
-				await result.release();
+				await releaseOnce();
 			},
 		});
 		return new Response(wrappedStream, {

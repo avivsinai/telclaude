@@ -202,6 +202,307 @@ describe("config fixes", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Raw-policy-only write (private-overlay leak regression)
+//
+// `runAutoFix(_cfg, configPath, ...)` receives the fully MERGED config as `_cfg`
+// (what loadConfig() produces: raw policy + telclaude.runtime.json overlay +
+// TELCLAUDE_PRIVATE_CONFIG overlay + Zod defaults). The fix must derive its decisions
+// AND its rewrite SOLELY from JSON5.parse(configPath) — the sparse raw policy file —
+// never from `_cfg`. The old behavior stringified the merged `_cfg` back into the
+// policy file, leaking private-only values (telegram.allowedChats,
+// security.permissions.users, botToken, moltbook.adminChatId) into the agent-readable
+// policy file. These tests fail against that old merged-write behavior.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("raw-policy-only write (no overlay/default leak)", () => {
+	// Sentinel values that exist ONLY in the merged config / private overlay, never in
+	// the raw policy file on disk. If any of these surface in the rewritten policy file,
+	// the fixer leaked merged state.
+	const PRIVATE_BOT_TOKEN = "1111111111:LEAKED-PRIVATE-BOT-TOKEN-do-not-write";
+	const PRIVATE_ALLOWED_CHAT = 7_001_002_003;
+	const PRIVATE_ADMIN_CHAT = 9_008_007_006;
+	const PRIVATE_USER_ID = "424242";
+
+	/** A merged config (loadConfig() shape) carrying private-only values, as the real caller passes. */
+	function makeMergedConfigWithPrivateValues(
+		securityOverride: Record<string, unknown>,
+	): TelclaudeConfig {
+		return makeMinimalConfig({
+			telegram: {
+				heartbeatSeconds: 60,
+				allowedChats: [PRIVATE_ALLOWED_CHAT],
+				botToken: PRIVATE_BOT_TOKEN,
+			},
+			moltbook: { adminChatId: PRIVATE_ADMIN_CHAT },
+			security: securityOverride,
+		} as unknown as Partial<TelclaudeConfig>);
+	}
+
+	/** Walk a parsed-JSON object along `keys`, returning undefined if any segment is absent. */
+	function at(obj: Record<string, unknown>, ...keys: string[]): unknown {
+		let cur: unknown = obj;
+		for (const key of keys) {
+			if (typeof cur !== "object" || cur === null) return undefined;
+			cur = (cur as Record<string, unknown>)[key];
+		}
+		return cur;
+	}
+
+	function assertNoPrivateValuesLeaked(
+		writtenText: string,
+		written: Record<string, unknown>,
+	): void {
+		// Raw text scan: catches the value showing up anywhere in the rewritten file.
+		expect(writtenText).not.toContain(PRIVATE_BOT_TOKEN);
+		expect(writtenText).not.toContain(String(PRIVATE_ALLOWED_CHAT));
+		expect(writtenText).not.toContain(String(PRIVATE_ADMIN_CHAT));
+		expect(writtenText).not.toContain(PRIVATE_USER_ID);
+		// Structural scan: the private-only keys must not exist in the policy object.
+		expect(at(written, "telegram", "allowedChats")).toBeUndefined();
+		expect(at(written, "telegram", "botToken")).toBeUndefined();
+		expect(at(written, "moltbook")).toBeUndefined();
+		expect(at(written, "security", "permissions", "users")).toBeUndefined();
+	}
+
+	it("corrects the misconfig but does not bake private-overlay values into the policy file (test profile)", () => {
+		// Raw policy file is SPARSE: only the fixable misconfig, no private keys.
+		const rawPolicy = { security: { profile: "test" } };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+
+		// Merged config (what loadConfig + private overlay produce) DOES carry private values.
+		const merged = makeMergedConfigWithPrivateValues({
+			profile: "test",
+			permissions: { defaultTier: "READ_ONLY", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
+			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			audit: { enabled: true },
+		});
+
+		const report = runAutoFix(merged, configPath, tmpDir, {});
+
+		// (a) The misconfig was corrected.
+		const profileFix = findByTarget(report.actions, "security.profile");
+		expect(profileFix?.applied).toBe(true);
+		expect(profileFix?.after).toBe("simple");
+
+		const writtenText = fs.readFileSync(configPath, "utf-8");
+		const written = JSON.parse(writtenText);
+		expect(written.security.profile).toBe("simple");
+
+		// (b) No private-overlay values leaked into the agent-readable policy file.
+		assertNoPrivateValuesLeaked(writtenText, written);
+	});
+
+	it("does not inject Zod-defaulted keys from the merged config into the policy file", () => {
+		// Raw policy mentions ONLY security.audit; the merged config is fully populated
+		// with defaults (transcription, tts, imageGeneration, rateLimits, sdk, etc.).
+		const rawPolicy = { security: { audit: { enabled: false } } };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+
+		const merged = makeMergedConfigWithPrivateValues({
+			profile: "simple",
+			permissions: { defaultTier: "READ_ONLY", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
+			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			audit: { enabled: false },
+		});
+
+		const report = runAutoFix(merged, configPath, tmpDir, {});
+
+		const auditFix = findByTarget(report.actions, "audit.enabled");
+		expect(auditFix?.applied).toBe(true);
+
+		const writtenText = fs.readFileSync(configPath, "utf-8");
+		const written = JSON.parse(writtenText);
+
+		// Fix applied to the raw policy.
+		expect(written.security.audit.enabled).toBe(true);
+		// Raw policy never mentioned profile/permissions; the merged defaults must NOT appear.
+		expect(written.security.profile).toBeUndefined();
+		expect(written.security.permissions).toBeUndefined();
+		// Top-level defaulted subtrees from the merged config must NOT be written.
+		expect(written.transcription).toBeUndefined();
+		expect(written.tts).toBeUndefined();
+		expect(written.imageGeneration).toBeUndefined();
+		expect(written.sdk).toBeUndefined();
+		assertNoPrivateValuesLeaked(writtenText, written);
+	});
+
+	it("only fixes values the operator actually wrote in the policy file (overlay-only danger is invisible)", () => {
+		// The dangerous defaultTier=FULL_ACCESS lives ONLY in the merged config (e.g. from the
+		// private overlay), NOT in the raw policy. The fixer must NOT touch the policy file for it.
+		const rawPolicy = { security: { profile: "simple" } };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+
+		const merged = makeMergedConfigWithPrivateValues({
+			profile: "simple",
+			permissions: { defaultTier: "FULL_ACCESS", users: { [PRIVATE_USER_ID]: { tier: "FULL_ACCESS" } } },
+			rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+			audit: { enabled: true },
+		});
+
+		const report = runAutoFix(merged, configPath, tmpDir, {});
+
+		// No tier fix fired — the policy file never declared defaultTier.
+		const tierFix = findByTarget(report.actions, "defaultTier");
+		expect(tierFix).toBeUndefined();
+		// No config write at all → no backup.
+		expect(report.configBackupPath).toBeNull();
+
+		const writtenText = fs.readFileSync(configPath, "utf-8");
+		const written = JSON.parse(writtenText);
+		// Policy file is untouched: still just the sparse raw shape, no overlay state folded in.
+		expect(written.security.permissions).toBeUndefined();
+		assertNoPrivateValuesLeaked(writtenText, written);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Overlay guard contract
+//
+// The documented protection is STRUCTURAL: runAutoFix never calls loadConfig() and
+// never reads TELCLAUDE_PRIVATE_CONFIG, so the private overlay can never be folded into
+// the rewritten policy file — even when the env var is set and points at a real overlay
+// file. There is NO explicit refusal in audit-fixers.ts (verified by reading the code);
+// the contract is "raw-only, regardless of the overlay env var". These tests assert that
+// REAL contract, not an invented refusal.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("overlay guard (raw-only regardless of TELCLAUDE_PRIVATE_CONFIG)", () => {
+	const PRIVATE_BOT_TOKEN = "2222222222:OVERLAY-TOKEN-must-not-leak";
+	const PRIVATE_ALLOWED_CHAT = 8_111_222_333;
+
+	it("writes only the raw policy even when TELCLAUDE_PRIVATE_CONFIG is set and points at a real overlay", () => {
+		// A real private-overlay file on disk, holding exactly the sensitive keys the relay owns.
+		const privateOverlayPath = path.join(tmpDir, "telclaude-private.json");
+		writeJsonFile(privateOverlayPath, {
+			telegram: { allowedChats: [PRIVATE_ALLOWED_CHAT], botToken: PRIVATE_BOT_TOKEN },
+			security: { permissions: { users: { "777": { tier: "FULL_ACCESS" } } } },
+		});
+
+		// Sparse raw policy with a fixable misconfig.
+		const rawPolicy = { security: { profile: "test" } };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+
+		// Merged config carries the overlay values, mirroring loadConfig() with the env var set.
+		const merged = makeMinimalConfig({
+			telegram: {
+				heartbeatSeconds: 60,
+				allowedChats: [PRIVATE_ALLOWED_CHAT],
+				botToken: PRIVATE_BOT_TOKEN,
+			},
+			security: {
+				profile: "test",
+				permissions: { defaultTier: "READ_ONLY", users: { "777": { tier: "FULL_ACCESS" } } },
+				rateLimits: { global: { perMinute: 100, perHour: 1000 }, perUser: { perMinute: 10, perHour: 100 } },
+				audit: { enabled: true },
+			},
+		} as unknown as Partial<TelclaudeConfig>);
+
+		const report = runAutoFix(merged, configPath, tmpDir, {
+			TELCLAUDE_PRIVATE_CONFIG: privateOverlayPath,
+		});
+
+		// The fixer still applies the raw-policy fix (it does not refuse when the env var is set)...
+		const profileFix = findByTarget(report.actions, "security.profile");
+		expect(profileFix?.applied).toBe(true);
+		expect(profileFix?.after).toBe("simple");
+
+		const writtenText = fs.readFileSync(configPath, "utf-8");
+		const written = JSON.parse(writtenText);
+		expect(written.security.profile).toBe("simple");
+
+		// ...and the overlay's private values never reach the policy file.
+		expect(writtenText).not.toContain(PRIVATE_BOT_TOKEN);
+		expect(writtenText).not.toContain(String(PRIVATE_ALLOWED_CHAT));
+		expect(written.telegram?.allowedChats).toBeUndefined();
+		expect(written.telegram?.botToken).toBeUndefined();
+		expect(written.security?.permissions?.users).toBeUndefined();
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Malformed raw policy (try/catch fix)
+//
+// applyConfigFixes (ensureObject/readObject) throws when security or a known subtree is a
+// non-object. runAutoFix wraps the parse + fix + write in one try/catch, so a malformed
+// policy surfaces a single clear error action (applied:false, error set) rather than an
+// uncaught/unhandled exception, and it does NOT rewrite the policy file.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("malformed raw policy fails cleanly (no uncaught throw)", () => {
+	it("non-object security subtree yields an error action, not a thrown exception", () => {
+		const rawPolicy = { security: "not-an-object" };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+		const before = fs.readFileSync(configPath, "utf-8");
+		const cfg = makeMinimalConfig();
+
+		// The call itself must not throw.
+		expect(() => runAutoFix(cfg, configPath, tmpDir, {})).not.toThrow();
+		const report: FixReport = runAutoFix(cfg, configPath, tmpDir, {});
+
+		const configError = report.actions.find(
+			(a) => a.kind === "config" && a.error && a.target === configPath,
+		);
+		expect(configError).toBeDefined();
+		expect(configError?.applied).toBe(false);
+		expect(configError?.error).toContain("may be malformed");
+		expect(report.summary.errors).toBeGreaterThanOrEqual(1);
+
+		// The malformed policy file is left untouched (no half-applied rewrite, no backup).
+		expect(fs.readFileSync(configPath, "utf-8")).toBe(before);
+		expect(report.configBackupPath).toBeNull();
+		expect(fs.existsSync(`${configPath}.bak`)).toBe(false);
+	});
+
+	it("non-object security.permissions subtree fails cleanly too", () => {
+		const rawPolicy = { security: { profile: "test", permissions: ["not", "an", "object"] } };
+		const configPath = path.join(tmpDir, "telclaude.json");
+		writeJsonFile(configPath, rawPolicy);
+		const before = fs.readFileSync(configPath, "utf-8");
+		const cfg = makeMinimalConfig();
+
+		expect(() => runAutoFix(cfg, configPath, tmpDir, {})).not.toThrow();
+		const report: FixReport = runAutoFix(cfg, configPath, tmpDir, {});
+
+		const configError = report.actions.find(
+			(a) => a.kind === "config" && a.error && a.target === configPath,
+		);
+		expect(configError).toBeDefined();
+		expect(configError?.error).toContain("malformed");
+		// readObject reports which subtree was wrong.
+		expect(configError?.error).toContain("permissions");
+
+		// File untouched despite the profile:test misconfig that would otherwise have been fixed.
+		expect(fs.readFileSync(configPath, "utf-8")).toBe(before);
+		expect(report.configBackupPath).toBeNull();
+	});
+
+	it("malformed JSON5 in the policy file fails cleanly", () => {
+		const configPath = path.join(tmpDir, "telclaude.json");
+		fs.writeFileSync(configPath, "{ this is : not valid json5 ", "utf-8");
+		const before = fs.readFileSync(configPath, "utf-8");
+		const cfg = makeMinimalConfig();
+
+		expect(() => runAutoFix(cfg, configPath, tmpDir, {})).not.toThrow();
+		const report: FixReport = runAutoFix(cfg, configPath, tmpDir, {});
+
+		const configError = report.actions.find(
+			(a) => a.kind === "config" && a.error && a.target === configPath,
+		);
+		expect(configError).toBeDefined();
+		expect(configError?.applied).toBe(false);
+
+		// Unparseable file is left exactly as-is.
+		expect(fs.readFileSync(configPath, "utf-8")).toBe(before);
+		expect(report.configBackupPath).toBeNull();
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Atomic write + backup
 // ═══════════════════════════════════════════════════════════════════════════════
 

@@ -7,10 +7,14 @@
  *     these prevent accidental exposure even if a reverse proxy is misconfigured.
  *   - TOTP-gated: every /api/* route (except /api/auth/verify) requires a
  *     valid dashboard session cookie.
- *   - Mutations: the spec says read-only except `/api/doctor/run`. We enforce
- *     this by route: no route writes to the DB, grants/revokes approvals, or
- *     touches the vault. The only POST endpoints are `/api/auth/*` (auth) and
- *     `/api/doctor/run` (idempotent health probe).
+ *   - Mutations: the dashboard is read-only EXCEPT for two narrow, auth-gated
+ *     POST routes. `/api/doctor/run` is an idempotent health probe and does not
+ *     mutate persisted state. `/api/operator/background-jobs/:shortId/cancel` is
+ *     the one DB-mutating exception: it transitions a queued/running background
+ *     job to cancelled via cancelJob. Neither route grants/revokes approvals or
+ *     touches the vault, and both — like every non-public route — are auth-gated
+ *     by the onRequest session hook below. The only POST endpoints are
+ *     `/api/auth/*` (auth), `/api/doctor/run`, and the cancel route above.
  *   - No CORS: the dashboard is same-origin only. We deliberately omit any
  *     Access-Control-Allow-* headers so a hostile page in another browser tab
  *     cannot fetch-read dashboard data.

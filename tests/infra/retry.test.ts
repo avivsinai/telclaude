@@ -52,6 +52,20 @@ describe("infra/retry", () => {
 		expect(computeRetryDelay(config, 4)).toBe(500);
 	});
 
+	it("never exceeds maxDelayMs even with maximum positive jitter", () => {
+		const config = resolveRetryConfig({
+			baseDelayMs: 100,
+			factor: 2,
+			maxDelayMs: 500,
+			jitter: 1,
+		});
+
+		// Math.random() === 1 yields the largest possible positive jitter.
+		vi.spyOn(Math, "random").mockReturnValue(1);
+		expect(computeRetryDelay(config, 4)).toBe(500);
+		expect(computeRetryDelay(config, 10)).toBe(500);
+	});
+
 	it("retries and succeeds with exponential delays", async () => {
 		let attempts = 0;
 		const onRetry = vi.fn();
