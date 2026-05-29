@@ -466,4 +466,40 @@ describe("pending queue cards", () => {
 		expect(rendered.text).not.toContain("post 1");
 		expect(rendered.text).not.toContain("_No pending entries_");
 	});
+
+	it("does not expose Approve/Dismiss in the list view keyboard", () => {
+		const card = makePendingQueueCard({
+			chatId: 777,
+			actorScope: "user:101",
+			entries: makePagedEntries(),
+		});
+
+		const rendered = pendingQueueRenderer.render(card);
+		const buttons = JSON.stringify(rendered.keyboard?.inline_keyboard);
+		expect(buttons).toContain("View ▶");
+		expect(buttons).not.toContain("Approve");
+		expect(buttons).not.toContain("Dismiss");
+	});
+
+	it("preserves the current page on refresh", async () => {
+		const card = makePendingQueueCard({
+			chatId: 777,
+			actorScope: "user:101",
+			page: 1,
+			entries: makePagedEntries(),
+		});
+
+		const result = await pendingQueueRenderer.execute({
+			ctx: { from: { id: 101 } } as any,
+			card,
+			action: { type: "refresh" },
+		});
+
+		expect(result.state).toEqual(
+			expect.objectContaining({
+				page: 1,
+				total: 5,
+			}),
+		);
+	});
 });

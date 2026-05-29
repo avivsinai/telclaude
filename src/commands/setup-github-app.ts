@@ -356,7 +356,7 @@ async function runInteractiveSetup(providerName: string): Promise<void> {
 	const config: GitHubAppConfig = {
 		appId,
 		installationId,
-		privateKey: resolvedPath,
+		privateKey: pemContent, // Store inline PEM content (works in Docker where path isn't available)
 		appSlug,
 		botUserId,
 	};

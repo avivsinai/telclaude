@@ -287,7 +287,11 @@ export async function buildWebhookServer(opts: WebhookServerOptions): Promise<Fa
 			signatureDigest: deliveryDigest,
 			bodySha256: bodyHash,
 		});
-		if (!delivery.fresh) {
+		// A reservation row with no background job id is a stale reservation left by a
+		// crash between reserve and complete. Treat it as recoverable and fall through to
+		// enqueue rather than reporting a completed duplicate with no job (which would
+		// silently drop the delivery on the sender's retry).
+		if (!delivery.fresh && delivery.backgroundJobId) {
 			auditHit({
 				slug: rawSlug,
 				sourceIp,
@@ -301,7 +305,7 @@ export async function buildWebhookServer(opts: WebhookServerOptions): Promise<Fa
 			return reply.status(202).send({
 				ok: true,
 				duplicate: true,
-				job: delivery.backgroundJobId ? { id: delivery.backgroundJobId } : null,
+				job: { id: delivery.backgroundJobId },
 				targetCronJobId: targetCronJob.id,
 			});
 		}

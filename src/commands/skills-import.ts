@@ -33,6 +33,9 @@ import {
 // OpenClaw Skill Discovery
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Strict slug pattern for skill names — no path separators or traversal. */
+const SKILL_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+
 /** Standard OpenClaw skill directory locations. */
 const OPENCLAW_SKILL_DIRS = ["skills", ".agents/skills", "extensions"];
 
@@ -274,7 +277,23 @@ function importSkills(
 	console.log(`Found ${discovered.length} skill(s) in ${sourceDir}\n`);
 
 	for (const skill of discovered) {
+		// Validate skill name to prevent path traversal — names come from
+		// untrusted source directory/entry names.
+		if (!SKILL_NAME_PATTERN.test(skill.name)) {
+			result.errors.push(
+				`Invalid skill name "${skill.name}". Must match ${SKILL_NAME_PATTERN} (no path separators or traversal).`,
+			);
+			continue;
+		}
+
 		const targetDir = path.join(targetRoot, skill.name);
+
+		// Verify the resolved target stays within the skills root (defense in depth).
+		const resolvedTarget = path.resolve(targetDir);
+		if (!resolvedTarget.startsWith(`${path.resolve(targetRoot)}${path.sep}`)) {
+			result.errors.push(`Path traversal detected in target path for "${skill.name}".`);
+			continue;
+		}
 
 		// Read and convert SKILL.md
 		let content: string;

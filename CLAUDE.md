@@ -74,7 +74,6 @@
 - `src/media/` — media store.
 - `src/storage/` — SQLite storage layer.
 - `src/config/` — configuration loading.
-- `src/auto-reply/` — auto-reply templating.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
 - `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.

@@ -286,6 +286,109 @@ describe("fetchWithGuard", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 	});
 
+	it("downgrades POST to GET and drops body on 303 redirect", async () => {
+		mockDNSResults.set("post.example", ["93.184.216.34"]);
+
+		const mockFetch = vi.spyOn(globalThis, "fetch");
+		mockFetch.mockResolvedValueOnce(
+			new Response(null, {
+				status: 303,
+				headers: { Location: "http://post.example/result" },
+			}),
+		);
+		mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const result = await fetchWithGuard({
+			url: "http://post.example/submit",
+			init: { method: "POST", body: "payload" },
+		});
+		await result.release();
+
+		const secondInit = mockFetch.mock.calls[1][1] as RequestInit;
+		expect(secondInit.method).toBe("GET");
+		expect(secondInit.body).toBeUndefined();
+	});
+
+	it("preserves method and body on 307 redirect", async () => {
+		mockDNSResults.set("keep.example", ["93.184.216.34"]);
+
+		const mockFetch = vi.spyOn(globalThis, "fetch");
+		mockFetch.mockResolvedValueOnce(
+			new Response(null, {
+				status: 307,
+				headers: { Location: "http://keep.example/result" },
+			}),
+		);
+		mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const result = await fetchWithGuard({
+			url: "http://keep.example/submit",
+			init: { method: "POST", body: "payload" },
+		});
+		await result.release();
+
+		const secondInit = mockFetch.mock.calls[1][1] as RequestInit;
+		expect(secondInit.method).toBe("POST");
+		expect(secondInit.body).toBe("payload");
+	});
+
+	it("strips credentials when a redirect crosses origins", async () => {
+		mockDNSResults.set("origin-a.example", ["93.184.216.34"]);
+		mockDNSResults.set("origin-b.example", ["93.184.216.35"]);
+
+		const mockFetch = vi.spyOn(globalThis, "fetch");
+		mockFetch.mockResolvedValueOnce(
+			new Response(null, {
+				status: 307,
+				headers: { Location: "http://origin-b.example/next" },
+			}),
+		);
+		mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const result = await fetchWithGuard({
+			url: "http://origin-a.example/start",
+			init: {
+				method: "POST",
+				body: "payload",
+				headers: { Authorization: "Bearer secret", Cookie: "sid=abc", "X-Trace": "keep" },
+			},
+		});
+		await result.release();
+
+		const secondInit = mockFetch.mock.calls[1][1] as RequestInit;
+		const sentHeaders = new Headers(secondInit.headers);
+		expect(sentHeaders.has("authorization")).toBe(false);
+		expect(sentHeaders.has("cookie")).toBe(false);
+		// Non-sensitive headers survive the cross-origin hop.
+		expect(sentHeaders.get("x-trace")).toBe("keep");
+		// 307 keeps method/body even across origins.
+		expect(secondInit.method).toBe("POST");
+		expect(secondInit.body).toBe("payload");
+	});
+
+	it("retains credentials on a same-origin redirect", async () => {
+		mockDNSResults.set("same.example", ["93.184.216.34"]);
+
+		const mockFetch = vi.spyOn(globalThis, "fetch");
+		mockFetch.mockResolvedValueOnce(
+			new Response(null, {
+				status: 307,
+				headers: { Location: "http://same.example/next" },
+			}),
+		);
+		mockFetch.mockResolvedValueOnce(new Response("ok", { status: 200 }));
+
+		const result = await fetchWithGuard({
+			url: "http://same.example/start",
+			init: { headers: { Authorization: "Bearer secret" } },
+		});
+		await result.release();
+
+		const secondInit = mockFetch.mock.calls[1][1] as RequestInit;
+		const sentHeaders = new Headers(secondInit.headers);
+		expect(sentHeaders.get("authorization")).toBe("Bearer secret");
+	});
+
 	it("blocks redirect to private IP (SSRF redirect bypass)", async () => {
 		mockDNSResults.set("legit.example", ["93.184.216.34"]);
 		mockDNSResults.set("internal.corp", ["192.168.1.100"]);

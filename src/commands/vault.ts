@@ -590,7 +590,11 @@ export function registerVaultCommand(program: Command): void {
 		.command("import-anthropic")
 		.description("Import Anthropic credentials from claude login into the vault")
 		.option("--path <path>", "Path to .credentials.json file")
-		.action(async (opts: { path?: string }) => {
+		.option(
+			"--prune-source",
+			"Delete the source credentials file even if session divergence failed (risks credential loss)",
+		)
+		.action(async (opts: { path?: string; pruneSource?: boolean }) => {
 			try {
 				if (!(await isVaultAvailable())) {
 					console.error("Error: Vault daemon is not running.");
@@ -670,6 +674,7 @@ export function registerVaultCommand(program: Command): void {
 				const DEFAULT_SCOPES = "user:inference user:profile user:sessions:claude_code";
 
 				console.log("  Refreshing to diverge session...");
+				let diverged = false;
 				const refreshResp = await fetch(TOKEN_URL, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -693,6 +698,7 @@ export function registerVaultCommand(program: Command): void {
 						expiresAt: Date.now() + data.expires_in * 1000,
 						scopes: oauthCreds.scopes,
 					};
+					diverged = true;
 					console.log("  Session diverged (own refresh token obtained)");
 				} else {
 					const errText = await refreshResp.text();
@@ -709,13 +715,26 @@ export function registerVaultCommand(program: Command): void {
 				});
 				console.log(`  IMPORTED: OAuth credentials from ${source} → secret:anthropic-oauth`);
 
-				// Delete the credentials file (secrets now live in vault)
+				// Delete the credentials file only once we hold our own (diverged)
+				// refresh token. If divergence failed, the vault holds the source's
+				// shared refresh token, which the source will rotate and invalidate —
+				// deleting the only local copy would lose the credential. Keep it and
+				// tell the operator to re-run after the source session is offline.
 				if (source) {
-					try {
-						unlinkSync(source);
-						console.log(`  DELETED: ${source} (credentials moved to vault)`);
-					} catch {
-						console.warn(`  WARNING: Could not delete ${source}`);
+					if (diverged || opts.pruneSource) {
+						try {
+							unlinkSync(source);
+							console.log(`  DELETED: ${source} (credentials moved to vault)`);
+						} catch {
+							console.warn(`  WARNING: Could not delete ${source}`);
+						}
+					} else {
+						console.warn(
+							`  KEPT: ${source} (session not diverged — source still owns the refresh token)`,
+						);
+						console.warn(
+							"  Take the source session offline and re-run, or pass --prune-source to delete anyway.",
+						);
 					}
 				}
 			} catch (err) {

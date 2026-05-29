@@ -94,7 +94,7 @@ describe("describeProviderApproval", () => {
 describe("consumeProviderApproval", () => {
 	it("generates token, replays request, and returns result", async () => {
 		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
-		const result = await consumeProviderApproval(nonce, mockVaultClient);
+		const result = await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 
 		expect(result).not.toBeNull();
 		expect(result!.status).toBe("ok");
@@ -102,15 +102,19 @@ describe("consumeProviderApproval", () => {
 
 	it("consumes the nonce (one-time use)", async () => {
 		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
-		await consumeProviderApproval(nonce, mockVaultClient);
+		await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 
 		// Second consume should return null
-		const result2 = await consumeProviderApproval(nonce, mockVaultClient);
+		const result2 = await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 		expect(result2).toBeNull();
 	});
 
 	it("returns null for unknown nonce", async () => {
-		const result = await consumeProviderApproval("deadbeef12345678", mockVaultClient);
+		const result = await consumeProviderApproval(
+			"deadbeef12345678",
+			"telegram:123",
+			mockVaultClient,
+		);
 		expect(result).toBeNull();
 	});
 
@@ -118,15 +122,44 @@ describe("consumeProviderApproval", () => {
 		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
 		vi.useFakeTimers();
 		vi.advanceTimersByTime(6 * 60 * 1000);
-		const result = await consumeProviderApproval(nonce, mockVaultClient);
+		const result = await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 		expect(result).toBeNull();
 		vi.useRealTimers();
+	});
+
+	it("rejects a mismatched consuming actor without consuming the approval", async () => {
+		const { generateApprovalToken } = await import("../../src/relay/approval-token.js");
+		const { proxyProviderRequest } = await import("../../src/relay/provider-proxy.js");
+		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
+
+		// Isolate call counts: the mock fns persist across tests (vi.resetModules
+		// only re-imports the unit under test, not the vi.mock factory spies).
+		vi.mocked(generateApprovalToken).mockClear();
+		vi.mocked(proxyProviderRequest).mockClear();
+
+		// A different chat member who learned the nonce must not be able to
+		// approve another actor's queued privileged action.
+		const wrong = await consumeProviderApproval(nonce, "telegram:999", mockVaultClient);
+		expect(wrong).toBeNull();
+		// Rejection must not generate a token or replay the request.
+		expect(generateApprovalToken).not.toHaveBeenCalled();
+		expect(proxyProviderRequest).not.toHaveBeenCalled();
+		// The approval must remain pending so the legitimate actor can retry.
+		expect(isProviderApproval(nonce)).toBe(true);
+
+		// The bound actor can still consume it afterward.
+		const right = await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
+		expect(right).not.toBeNull();
+		expect(right!.status).toBe("ok");
+		expect(generateApprovalToken).toHaveBeenCalledTimes(1);
+		expect(proxyProviderRequest).toHaveBeenCalledTimes(1);
+		expect(isProviderApproval(nonce)).toBe(false);
 	});
 
 	it("calls generateApprovalToken with correct args", async () => {
 		const { generateApprovalToken } = await import("../../src/relay/approval-token.js");
 		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
-		await consumeProviderApproval(nonce, mockVaultClient);
+		await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 
 		expect(generateApprovalToken).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -142,7 +175,7 @@ describe("consumeProviderApproval", () => {
 	it("replays original request with approval token", async () => {
 		const { proxyProviderRequest } = await import("../../src/relay/provider-proxy.js");
 		const nonce = createProviderApproval(mockRequest, mockParsedBody, "telegram:123");
-		await consumeProviderApproval(nonce, mockVaultClient);
+		await consumeProviderApproval(nonce, "telegram:123", mockVaultClient);
 
 		expect(proxyProviderRequest).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -176,7 +209,7 @@ describe("real CLI request shape roundtrip", () => {
 			{ service: parsedBody.service, action: parsedBody.action, params: parsedBody.params },
 			cliRequest.userId!,
 		);
-		await consumeProviderApproval(nonce, mockVaultClient);
+		await consumeProviderApproval(nonce, cliRequest.userId!, mockVaultClient);
 
 		expect(generateApprovalToken).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -201,13 +234,13 @@ describe("real CLI request shape roundtrip", () => {
 		expect(describeProviderApproval(nonce)).toBe("gmail.create_draft");
 
 		// Consume it
-		const result = await consumeProviderApproval(nonce, mockVaultClient);
+		const result = await consumeProviderApproval(nonce, cliRequest.userId!, mockVaultClient);
 		expect(result).not.toBeNull();
 		expect(result!.status).toBe("ok");
 
 		// Gone after consumption
 		expect(isProviderApproval(nonce)).toBe(false);
-		const result2 = await consumeProviderApproval(nonce, mockVaultClient);
+		const result2 = await consumeProviderApproval(nonce, cliRequest.userId!, mockVaultClient);
 		expect(result2).toBeNull();
 	});
 });

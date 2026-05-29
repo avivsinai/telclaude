@@ -446,9 +446,13 @@ export function setCronJobEnabled(
 	}
 	const nextRunAtMs = enabled ? computeNextRunAtMs(existing.schedule, nowMs) : null;
 
+	// Do not touch `running` here. If the scheduler is mid-execution on this job,
+	// clearing `running` would make it re-claimable and run concurrently with the
+	// in-flight execution. The running flag is reset by completeClaimedCronJob when
+	// the active run finishes (or by resetRunningCronJobs on startup).
 	db.prepare(
 		`UPDATE cron_jobs
-		 SET enabled = ?, running = 0, next_run_at = ?, updated_at = ?
+		 SET enabled = ?, next_run_at = ?, updated_at = ?
 		 WHERE id = ?`,
 	).run(enabled ? 1 : 0, nextRunAtMs, nowMs, id);
 
@@ -587,17 +591,25 @@ export function completeClaimedCronJob(params: {
 }): CronJob | null {
 	const db = getDb();
 	const finishedAtMs = params.finishedAtMs ?? Date.now();
-	let nextRunAtMs: number | null = null;
-	let enabled = params.job.enabled;
-
-	if (params.job.schedule.kind === "at") {
-		enabled = false;
-		nextRunAtMs = null;
-	} else if (enabled) {
-		nextRunAtMs = computeNextRunAtMs(params.job.schedule, finishedAtMs);
-	}
 
 	db.transaction(() => {
+		// Re-read the current enabled state inside the transaction. A disable issued
+		// mid-run (setCronJobEnabled) must not be resurrected from the claim-time
+		// snapshot in params.job.
+		const current = db.prepare("SELECT enabled FROM cron_jobs WHERE id = ?").get(params.job.id) as
+			| { enabled: number }
+			| undefined;
+
+		let enabled = current ? current.enabled === 1 : params.job.enabled;
+		let nextRunAtMs: number | null = null;
+
+		if (params.job.schedule.kind === "at") {
+			enabled = false;
+			nextRunAtMs = null;
+		} else if (enabled) {
+			nextRunAtMs = computeNextRunAtMs(params.job.schedule, finishedAtMs);
+		}
+
 		db.prepare(
 			`INSERT INTO cron_runs (job_id, started_at, finished_at, status, message)
 			 VALUES (?, ?, ?, ?, ?)`,

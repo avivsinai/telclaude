@@ -330,7 +330,7 @@ export function registerBackgroundCommand(program: Command): void {
 		.description("Cancel a queued or running job")
 		.argument("<shortId>", "Short id of the job")
 		.action(async (shortId: string) => {
-			const job = getJobByShortId(shortId);
+			const job = getJobByShortId(shortId) ?? getJob(shortId);
 			if (!job) {
 				throw new Error(`Background job ${shortId} not found`);
 			}

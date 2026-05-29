@@ -31,7 +31,9 @@ export class TokenManager {
 		try {
 			const result = await this.vault.getToken(VAULT_TARGET);
 			if (result.ok) {
-				if (service) this.health.recordSuccess(service);
+				// Do not record per-service API health here — a fresh token does not
+				// imply the Google API call succeeded. Health is driven by the handler
+				// outcome in server.ts step 7. Only token failures below touch health.
 				return { ok: true, token: result.token, expiresAt: result.expiresAt };
 			}
 

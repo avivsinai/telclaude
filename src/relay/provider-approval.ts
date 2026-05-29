@@ -64,10 +64,18 @@ export function createProviderApproval(
 
 /**
  * Consume a pending provider approval: generate token and replay request.
- * Returns null if nonce is invalid/expired.
+ * Returns null if nonce is invalid/expired, or if the consuming actor is not
+ * the actor that triggered the action_required (actor-binding check).
+ *
+ * `consumingActorUserId` must be derived the same way as the actor stored at
+ * creation time (the relay's resolved actor id, i.e.
+ * `getIdentityLink(chatId)?.localUserId ?? String(chatId)`), so that a
+ * different chat member who learns the nonce cannot approve another actor's
+ * queued privileged action.
  */
 export async function consumeProviderApproval(
 	nonce: string,
+	consumingActorUserId: string,
 	vaultClient: VaultClient,
 ): Promise<ProviderProxyResponse | null> {
 	const entry = pendingApprovals.get(nonce);
@@ -76,6 +84,12 @@ export async function consumeProviderApproval(
 	// Check expiry
 	if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
 		pendingApprovals.delete(nonce);
+		return null;
+	}
+
+	// Actor binding: only the actor that triggered the action_required may
+	// approve it. Reject without consuming so the legitimate actor can retry.
+	if (consumingActorUserId !== entry.actorUserId) {
 		return null;
 	}
 

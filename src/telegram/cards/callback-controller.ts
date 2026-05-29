@@ -478,7 +478,7 @@ export async function handleCallback(
 		});
 
 		if (execution.afterCommit) {
-			void Promise.resolve(execution.afterCommit()).catch((afterCommitError) => {
+			void Promise.resolve(execution.afterCommit()).catch(async (afterCommitError) => {
 				logger.error(
 					{
 						cardId: finalCard.cardId,
@@ -488,6 +488,23 @@ export async function handleCallback(
 					},
 					"card post-commit action failed",
 				);
+				// The optimistic success toast already fired, but the promised follow-up
+				// surface (review card, wizard, queue) never appeared. Correct the ACK with
+				// a best-effort chat notice so the operator is not left believing it opened.
+				try {
+					await ctx.api.sendMessage(
+						finalCard.chatId,
+						"Action failed: follow-up step could not complete. Run the command again.",
+						{
+							message_thread_id: finalCard.threadId,
+						},
+					);
+				} catch (notifyError) {
+					logger.error(
+						{ cardId: finalCard.cardId, kind: finalCard.kind, error: String(notifyError) },
+						"failed to notify chat of post-commit failure",
+					);
+				}
 			});
 		}
 	} catch (error) {

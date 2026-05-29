@@ -12,8 +12,12 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+
+import { getChildLogger } from "../logging.js";
+
+const logger = getChildLogger({ module: "encrypted-file-store" });
 
 interface EncryptedEntry {
 	/** Base64-encoded IV */
@@ -71,8 +75,34 @@ export class EncryptedFileStore {
 
 		try {
 			const content = readFileSync(this.filePath, "utf8");
-			return JSON.parse(content) as EncryptedFileData;
-		} catch {
+			const fileData = JSON.parse(content) as EncryptedFileData;
+
+			// Validate structure before trusting it.
+			if (!fileData.salt || typeof fileData.secrets !== "object") {
+				throw new Error("Invalid encrypted file structure");
+			}
+
+			return fileData;
+		} catch (err) {
+			// SECURITY: Don't silently reset on corruption - a fresh empty store
+			// would destroy every existing secret on the next write. Quarantine the
+			// existing file for manual recovery, and only then start fresh. If the
+			// rename fails, fail closed rather than risk overwriting credentials.
+			const backupPath = `${this.filePath}.corrupted.${Date.now()}`;
+			try {
+				renameSync(this.filePath, backupPath);
+				logger.error(
+					{ filePath: this.filePath, backupPath, error: String(err) },
+					"encrypted file corrupted, moved to backup - starting fresh",
+				);
+			} catch {
+				logger.error(
+					{ filePath: this.filePath, error: String(err) },
+					"encrypted file corrupted and backup failed",
+				);
+				throw new Error(`Encrypted file corrupted: ${String(err)}. Manual recovery required.`);
+			}
+
 			const salt = randomBytes(16);
 			return { salt: salt.toString("base64"), secrets: {} };
 		}

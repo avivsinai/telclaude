@@ -110,17 +110,21 @@ function checkRateLimit(
 	const key = `${source}:agent`;
 	const bucket = rateBuckets.get(key);
 
+	const resetMs = HOUR_MS - (now - windowStart);
+	const rateLimited = (): MemoryRpcResult<void> =>
+		fail(
+			429,
+			`Rate limit exceeded (${limit}/hour). Try again in ${Math.ceil(resetMs / 60000)} minutes.`,
+		);
+
 	if (!bucket || bucket.windowStart !== windowStart) {
+		if (count > limit) return rateLimited();
 		rateBuckets.set(key, { windowStart, count });
 		return ok(undefined);
 	}
 
 	if (bucket.count + count > limit) {
-		const resetMs = HOUR_MS - (now - windowStart);
-		return fail(
-			429,
-			`Rate limit exceeded (${limit}/hour). Try again in ${Math.ceil(resetMs / 60000)} minutes.`,
-		);
+		return rateLimited();
 	}
 
 	bucket.count += count;

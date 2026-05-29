@@ -2,6 +2,7 @@
  * Drive handler — dispatches FetchRequest actions to the Google Drive API.
  */
 
+import type { Readable } from "node:stream";
 import { google } from "googleapis";
 import { createGoogleAuth, formatError } from "../handler-utils.js";
 import type { FetchRequest, FetchResponse } from "../types.js";
@@ -31,6 +32,16 @@ export async function handleDrive(
 
 type Drive = ReturnType<typeof google.drive>;
 const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Maximum download size. The sidecar runs at mem_limit 256M and base64 encoding
+ * adds ~1.33x, so an uncapped multi-GB download would OOM-crash the process — a
+ * single-request availability attack. 25 MiB raw stays well within the memory
+ * budget even with the base64 copy and several requests in flight, and covers
+ * legitimate Gmail attachments (Gmail's own send limit is 25 MB) plus typical
+ * Drive documents.
+ */
+const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
 function normalizeFolderId(value: unknown): string | null {
 	if (value === undefined || value === null) return "root";
@@ -96,11 +107,51 @@ async function handleDownload(
 	params: Record<string, unknown>,
 ): Promise<FetchResponse> {
 	try {
-		const res = await drive.files.get(
-			{ fileId: params.fileId as string, alt: "media" },
-			{ responseType: "arraybuffer" },
-		);
-		const buf = Buffer.from(res.data as ArrayBuffer);
+		const fileId = params.fileId as string;
+
+		// Cheap pre-check: reject if the declared size already exceeds the cap.
+		// `size` is absent for files that have no blob size (folders, shortcuts,
+		// Google Workspace editor files), so this is best-effort — the streaming
+		// counter below is the authoritative limit.
+		const meta = await drive.files.get({ fileId, fields: "size" });
+		const declaredSize = meta.data.size ? Number(meta.data.size) : null;
+		if (
+			declaredSize !== null &&
+			Number.isFinite(declaredSize) &&
+			declaredSize > MAX_DOWNLOAD_BYTES
+		) {
+			return {
+				status: "error",
+				error: `File exceeds ${MAX_DOWNLOAD_BYTES}-byte download limit (size ${declaredSize})`,
+				attachments: [],
+			};
+		}
+
+		// Stream the media and abort once the running byte count passes the cap,
+		// so a missing/understated metadata size cannot lead to unbounded buffering.
+		const res = await drive.files.get({ fileId, alt: "media" }, { responseType: "stream" });
+		const stream = res.data as Readable;
+		const chunks: Buffer[] = [];
+		let total = 0;
+		try {
+			for await (const chunk of stream) {
+				const buf = chunk as Buffer;
+				total += buf.length;
+				if (total > MAX_DOWNLOAD_BYTES) {
+					stream.destroy();
+					return {
+						status: "error",
+						error: `File exceeds ${MAX_DOWNLOAD_BYTES}-byte download limit`,
+						attachments: [],
+					};
+				}
+				chunks.push(buf);
+			}
+		} catch (streamErr) {
+			stream.destroy();
+			throw streamErr;
+		}
+		const buf = Buffer.concat(chunks, total);
 		return {
 			status: "ok",
 			data: { size: buf.length },

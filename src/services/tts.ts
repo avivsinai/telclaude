@@ -42,6 +42,13 @@ async function convertToOggOpus(inputBuffer: Buffer): Promise<Buffer> {
 
 		const chunks: Buffer[] = [];
 		let stderr = "";
+		let settled = false;
+
+		const fail = (err: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(err);
+		};
 
 		ffmpeg.stdout.on("data", (chunk: Buffer) => {
 			chunks.push(chunk);
@@ -52,6 +59,8 @@ async function convertToOggOpus(inputBuffer: Buffer): Promise<Buffer> {
 		});
 
 		ffmpeg.on("close", (code) => {
+			if (settled) return;
+			settled = true;
 			if (code === 0) {
 				resolve(Buffer.concat(chunks));
 			} else {
@@ -60,12 +69,21 @@ async function convertToOggOpus(inputBuffer: Buffer): Promise<Buffer> {
 		});
 
 		ffmpeg.on("error", (err) => {
-			reject(new Error(`ffmpeg spawn error: ${err.message}`));
+			fail(new Error(`ffmpeg spawn error: ${err.message}`));
+		});
+
+		// ffmpeg may close stdin before the full buffer is written (e.g. it
+		// exits early or is missing). Without this listener the resulting EPIPE
+		// would surface as an unhandled stream 'error' and crash the process.
+		ffmpeg.stdin.on("error", (err) => {
+			fail(new Error(`ffmpeg stdin error: ${err.message}`));
 		});
 
 		// Write input buffer to ffmpeg stdin
-		ffmpeg.stdin.write(inputBuffer);
-		ffmpeg.stdin.end();
+		if (!ffmpeg.stdin.destroyed) {
+			ffmpeg.stdin.write(inputBuffer);
+			ffmpeg.stdin.end();
+		}
 	});
 }
 
