@@ -10,6 +10,7 @@ import {
 	readOptionalJsonFile,
 	resolveHermesArtifactPath,
 } from "../hermes/foundation.js";
+import { collectHermesInventory } from "../hermes/inventory.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -123,19 +124,16 @@ export function registerHermesCommand(program: Command): void {
 
 	hermes
 		.command("inventory")
-		.description("Emit the Phase 0 wrapper inventory shell")
+		.description("Emit the Phase 0 wrapper inventory")
 		.option("--json", "Emit structured JSON")
 		.action((options: JsonOption) => {
-			const inventory = {
-				schemaVersion: 1,
-				status: "skeleton",
-				workflows: [],
-				note: "Phase 0 inventory schema is present; workflow collectors land in the next slice.",
-			};
+			const inventory = collectHermesInventory();
 			if (options.json) {
 				printJson(inventory);
 			} else {
-				console.log("Hermes inventory skeleton: 0 workflows collected");
+				console.log(
+					`Hermes inventory: ${inventory.status}, ${inventory.summary.workflows} workflow(s), ${inventory.summary.issues} issue(s)`,
+				);
 			}
 		});
 

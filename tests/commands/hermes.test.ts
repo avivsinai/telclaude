@@ -1,17 +1,22 @@
 import { Command } from "commander";
 import { describe, expect, it } from "vitest";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
+import type { TelclaudeConfig } from "../../src/config/config.js";
 import {
-	type CompatibilityLockfile,
-	type CutoverInputBundle,
-	type FeatureProbeMatrix,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
+	type CompatibilityLockfile,
+	type CutoverInputBundle,
 	evaluateCutoverCheck,
+	type FeatureProbeMatrix,
 	parseHermesPin,
 	validateCompatibilityLockfile,
 	validateFeatureProbeMatrix,
 } from "../../src/hermes/foundation.js";
+import {
+	buildHermesInventorySnapshot,
+	type HermesQueueSnapshot,
+} from "../../src/hermes/inventory.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [
@@ -70,6 +75,19 @@ const compatLockfile: CompatibilityLockfile = {
 		sourceCommit: "abcdef1",
 		docsCommit: "1234567",
 	},
+};
+
+const emptyQueues: HermesQueueSnapshot = {
+	approvals: { pending: 0, expired: 0 },
+	planApprovals: { pending: 0, expired: 0 },
+	cards: { active: 0, expired: 0, byStatus: {} },
+	backgroundJobs: { active: 0, byStatus: {} },
+	pairing: { pendingRequests: 0, activePairs: 0, activeLockouts: 0 },
+	allowlist: { active: 0, total: 0 },
+	curator: { open: 0, byStatus: {} },
+	social: { activeItems: 0 },
+	webhooks: { enabled: 0, total: 0 },
+	memory: { entries: 0, episodes: 0 },
 };
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
@@ -148,7 +166,10 @@ describe("Hermes wrapper foundation", () => {
 		expect(validateFeatureProbeMatrix(featureProbeMatrix)).toEqual({ valid: true, errors: [] });
 		expect(validateCompatibilityLockfile(compatLockfile)).toEqual({ valid: true, errors: [] });
 
-		const invalidProbe = validateFeatureProbeMatrix({ schemaVersion: 1, probes: [{ surface_id: "" }] });
+		const invalidProbe = validateFeatureProbeMatrix({
+			schemaVersion: 1,
+			probes: [{ surface_id: "" }],
+		});
 		expect(invalidProbe.valid).toBe(false);
 		expect(invalidProbe.errors.join("\n")).toContain("hermes_pin");
 	});
@@ -221,13 +242,9 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(failed.status).toBe("fail");
 		expect(failed.exitCode).toBe(1);
-		expect(failed.gates.find((gate) => gate.name === "featureProbes.pass")?.status).toBe(
-			"fail",
-		);
+		expect(failed.gates.find((gate) => gate.name === "featureProbes.pass")?.status).toBe("fail");
 		expect(failed.gates.find((gate) => gate.name === "fixtures.pass")?.status).toBe("fail");
-		expect(failed.gates.find((gate) => gate.name === "networkProbes.pass")?.status).toBe(
-			"fail",
-		);
+		expect(failed.gates.find((gate) => gate.name === "networkProbes.pass")?.status).toBe("fail");
 	});
 
 	it("fails strict cutover when a required feature probe has no passing status", () => {
@@ -276,6 +293,32 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("accepts rich Hermes inventory workflow metadata in cutover input", () => {
+		const bundle = safeCutoverBundle();
+		const richBundle: unknown = {
+			...bundle,
+			inventory: {
+				generatedAt: "2026-05-29T00:00:00Z",
+				workflows: [
+					{
+						...bundle.inventory.workflows[0],
+						current_surface: "Telclaude Telegram relay",
+						hermes_target: "Hermes private profile behind Telclaude edge",
+						status: "inventory_only",
+						p_class: "P0",
+						source_refs: ["config.telegram.allowedChats"],
+						queue_refs: [],
+						fixture_ids: [],
+						unresolved_decision_ids: [],
+						risk_notes: [],
+					},
+				],
+			},
+		};
+
+		expect(evaluateCutoverCheck(richBundle).exitCode).toBe(0);
+	});
+
 	it("fails strict cutover when unresolved decisions affect included workflows", () => {
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
@@ -287,7 +330,8 @@ describe("Hermes wrapper foundation", () => {
 							owner: "operator",
 							deadline_phase: "Phase 1",
 							affected_workflows: ["private.telegram.basic"],
-							cutover_impact: "Private Telegram workflow cannot cut over until execution seam is chosen.",
+							cutover_impact:
+								"Private Telegram workflow cannot cut over until execution seam is chosen.",
 						},
 					],
 				},
@@ -327,5 +371,172 @@ describe("Hermes wrapper foundation", () => {
 		const program = new Command();
 		registerHermesCommand(program);
 		expect(program.commands.map((command) => command.name())).toContain("hermes");
+	});
+
+	it("builds a real sanitized inventory snapshot with deterministic workflows", () => {
+		const inventory = buildHermesInventorySnapshot({
+			generatedAt: new Date("2026-05-29T00:00:00.000Z"),
+			redactionSalt: "test-only-redaction-salt",
+			source: {
+				configPath: "/tmp/telclaude.json",
+				runtimeConfigPath: "/tmp/telclaude.runtime.json",
+				privateConfigPresent: true,
+				dataDir: "/tmp/telclaude-data",
+			},
+			config: {
+				security: {
+					profile: "strict",
+					permissions: { defaultTier: "READ_ONLY", users: {} },
+					network: {
+						privateEndpoints: [{ label: "provider", host: "provider.local", ports: [3000] }],
+					},
+				},
+				telegram: {
+					botToken: "12345:RAW_TELEGRAM_TOKEN",
+					allowedChats: ["RAW_CHAT_ID_SHOULD_NOT_LEAK"],
+					webhook: { secretToken: "RAW_WEBHOOK_SECRET" },
+					heartbeatSeconds: 60,
+					heartbeat: { enabled: true },
+				},
+				profiles: [
+					{
+						id: "family",
+						label: "Family",
+						allowedSkills: ["memory"],
+						soulPath: "docs/soul.md",
+					},
+				],
+				providers: [
+					{
+						id: "clalit",
+						baseUrl: "http://clalit.internal:3000/api?token=RAW_PROVIDER_QUERY_SECRET",
+						services: ["appointments"],
+						description: "Health provider",
+					},
+					{
+						id: "broken",
+						baseUrl: "://RAW_MALFORMED_BASE_URL_SECRET",
+						services: ["debug"],
+					},
+				],
+				socialServices: [
+					{
+						id: "x",
+						type: "xtwitter",
+						enabled: true,
+						apiKey: "RAW_SOCIAL_API_KEY",
+						handle: "operator",
+						displayName: "Operator",
+						agentUrl: "http://agent.internal/private",
+						heartbeatEnabled: true,
+						heartbeatIntervalHours: 4,
+						enableSkills: true,
+						allowedSkills: ["social-posting"],
+						agentSkillsAllowed: ["voice"],
+						notifyOnHeartbeat: "activity",
+					},
+				],
+				cron: { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 },
+				dashboard: { enabled: true, port: 8787 },
+				webhooks: { enabled: true, port: 8788 },
+			} as unknown as TelclaudeConfig,
+			sessions: [
+				{
+					key: "RAW_SESSION_KEY_SHOULD_NOT_LEAK",
+					kind: "direct",
+					sessionId: "RAW_SDK_SESSION_ID_SHOULD_NOT_LEAK",
+					updatedAt: Date.parse("2026-05-29T00:00:00.000Z"),
+					ageMs: 0,
+					systemSent: true,
+				},
+			],
+			cron: {
+				enabled: true,
+				pollIntervalSeconds: 15,
+				timeoutSeconds: 900,
+				summary: { totalJobs: 1, enabledJobs: 1, runningJobs: 0, nextRunAtMs: null },
+				coverage: { allSocial: false, socialServiceIds: ["x"], hasPrivateHeartbeat: false },
+				jobs: [
+					{
+						id: "daily-brief",
+						name: "Daily brief",
+						enabled: true,
+						running: false,
+						ownerId: "RAW_OWNER_ID_SHOULD_NOT_LEAK",
+						deliveryTarget: { kind: "home" },
+						schedule: { kind: "cron", expr: "0 8 * * *" },
+						action: {
+							kind: "agent-prompt",
+							prompt: "RAW_CRON_PROMPT_SHOULD_NOT_LEAK",
+							allowedSkills: ["daily-brief"],
+							preprocess: { command: "RAW_PREPROCESS_COMMAND_SHOULD_NOT_LEAK" },
+						},
+						nextRunAtMs: null,
+						lastRunAtMs: null,
+						lastStatus: null,
+						lastError: null,
+						createdAtMs: 0,
+						updatedAtMs: 0,
+					},
+				],
+			},
+			queues: {
+				...emptyQueues,
+				approvals: { pending: 1, expired: 0 },
+				backgroundJobs: { active: 1, byStatus: { queued: 1 } },
+				social: { activeItems: 1 },
+			},
+			socialActivity: [{ serviceId: "x", type: "drafted", count: 2 }],
+		});
+
+		expect(inventory.status).toBe("complete");
+		expect(inventory.summary.workflows).toBeGreaterThan(0);
+		expect(inventory.workflows.map((workflow) => workflow.workflow_id)).toEqual(
+			[...inventory.workflows.map((workflow) => workflow.workflow_id)].sort(),
+		);
+		expect(inventory.config.telegram.botTokenPresent).toBe(true);
+		expect(inventory.actors.find((actor) => actor.kind === "telegram-chat")?.id).toMatch(
+			/^telegram-chat:/,
+		);
+		expect(
+			inventory.workflows.find((workflow) =>
+				workflow.source_refs.includes("config.telegram.allowedChats"),
+			)?.owner,
+		).toMatch(/^telegram-chat:/);
+		expect(inventory.sessions.rows[0].keyRef).toMatch(/^session-key:/);
+		expect(inventory.sessions.rows[0].sessionRef).toMatch(/^session:/);
+		expect(inventory.cron.jobs[0].ownerRef).toMatch(/^owner:/);
+		expect(inventory.cron.jobs[0].action).toMatchObject({
+			kind: "agent-prompt",
+			promptPresent: true,
+			allowedSkillCount: 1,
+			preprocessPresent: true,
+		});
+		expect(inventory.providers.find((provider) => provider.id === "broken")?.endpoint).toMatchObject(
+			{
+				scheme: null,
+				host: null,
+				parseError: "unparseable baseUrl",
+			},
+		);
+
+		const serialized = JSON.stringify(inventory);
+		for (const secret of [
+			"RAW_TELEGRAM_TOKEN",
+			"RAW_CHAT_ID_SHOULD_NOT_LEAK",
+			"RAW_SESSION_KEY_SHOULD_NOT_LEAK",
+			"RAW_OWNER_ID_SHOULD_NOT_LEAK",
+			"RAW_WEBHOOK_SECRET",
+			"RAW_PROVIDER_QUERY_SECRET",
+			"RAW_MALFORMED_BASE_URL_SECRET",
+			"RAW_SOCIAL_API_KEY",
+			"RAW_SDK_SESSION_ID_SHOULD_NOT_LEAK",
+			"RAW_CRON_PROMPT_SHOULD_NOT_LEAK",
+			"RAW_PREPROCESS_COMMAND_SHOULD_NOT_LEAK",
+			"/api?token=",
+			"/private",
+		]) {
+			expect(serialized).not.toContain(secret);
+		}
 	});
 });
