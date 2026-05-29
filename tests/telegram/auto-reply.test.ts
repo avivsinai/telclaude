@@ -10,7 +10,12 @@ const replies: string[] = [];
 const sessionStore: Array<{ key: string; entry: unknown }> = [];
 
 const executePooledQueryImpl = vi.hoisted(() => vi.fn());
+const executeHermesPrivateQueryImpl = vi.hoisted(() => vi.fn());
+const shouldUseHermesPrivateRuntimeImpl = vi.hoisted(() => vi.fn(() => false));
+const clearHermesSessionMappingImpl = vi.hoisted(() => vi.fn(() => 0));
 const getChatModelPreferenceImpl = vi.hoisted(() => vi.fn(() => null));
+const getSessionImpl = vi.hoisted(() => vi.fn(() => null));
+const deleteSessionImpl = vi.hoisted(() => vi.fn());
 const activeProfileState = vi.hoisted(() => ({ profileId: null as string | null }));
 const buildTelegramMemoryBundleImpl = vi.hoisted(() =>
 	vi.fn(() => ({
@@ -33,11 +38,20 @@ vi.mock("../../src/sdk/client.js", () => ({
 	executePooledQuery: (...args: unknown[]) => executePooledQueryImpl(...args),
 }));
 
+vi.mock("../../src/hermes/private-execute.js", () => ({
+	executeHermesPrivateQuery: (...args: unknown[]) => executeHermesPrivateQueryImpl(...args),
+	shouldUseHermesPrivateRuntime: (...args: unknown[]) => shouldUseHermesPrivateRuntimeImpl(...args),
+}));
+
+vi.mock("../../src/hermes/session-map.js", () => ({
+	clearHermesSessionMapping: (...args: unknown[]) => clearHermesSessionMappingImpl(...args),
+}));
+
 vi.mock("../../src/config/sessions.js", () => ({
 	deriveSessionKey: () => "session-1",
-	getSession: () => null,
+	getSession: (...args: unknown[]) => getSessionImpl(...args),
 	setSession: (key: string, entry: unknown) => sessionStore.push({ key, entry }),
-	deleteSession: vi.fn(),
+	deleteSession: (...args: unknown[]) => deleteSessionImpl(...args),
 	getChatActiveProfileId: () => activeProfileState.profileId,
 	setChatActiveProfileId: (_chatId: number, profileId: string) => {
 		activeProfileState.profileId = profileId;
@@ -161,6 +175,14 @@ describe("auto-reply executeAndReply", () => {
 		sessionStore.length = 0;
 		redactors.length = 0;
 		executePooledQueryImpl.mockReset();
+		executeHermesPrivateQueryImpl.mockReset();
+		shouldUseHermesPrivateRuntimeImpl.mockReset();
+		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(false);
+		clearHermesSessionMappingImpl.mockReset();
+		clearHermesSessionMappingImpl.mockReturnValue(0);
+		getSessionImpl.mockReset();
+		getSessionImpl.mockReturnValue(null);
+		deleteSessionImpl.mockReset();
 		getChatModelPreferenceImpl.mockReset();
 		getChatModelPreferenceImpl.mockReturnValue(null);
 		activeProfileState.profileId = null;
@@ -261,6 +283,52 @@ describe("auto-reply executeAndReply", () => {
 		);
 	});
 
+	it("routes opt-in Telegram replies through Hermes with tier, identity, and memory", async () => {
+		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
+		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "hermes ok",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			msg: { ...makeMsg(), senderId: 456, messageThreadId: 789 },
+		};
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(executePooledQueryImpl).not.toHaveBeenCalled();
+		expect(executeHermesPrivateQueryImpl).toHaveBeenCalledWith(
+			"please respond",
+			expect.objectContaining({
+				cwd: expect.any(String),
+				tier: "WRITE_LOCAL",
+				poolKey: "session-1",
+				telclaudeSessionId: expect.any(String),
+				profileId: "default",
+				enableSkills: true,
+				timeoutMs: 60_000,
+				userId: "123",
+				chatId: 123,
+				actorId: 456,
+				threadId: 789,
+				compiledMemoryMd: "# Compiled Memory\n",
+				systemPromptAppend: expect.stringContaining('<chat-context chat-id="123" />'),
+			}),
+		);
+		expect(replies).toEqual(["hermes ok"]);
+	});
+
 	it("ignores catalog-only model preferences during session execution", async () => {
 		getChatModelPreferenceImpl.mockReturnValue({
 			chatId: 123,
@@ -343,6 +411,58 @@ describe("auto-reply executeAndReply", () => {
 		);
 		expect(captureTelegramTurnMemoryImpl).toHaveBeenCalledWith(
 			expect.objectContaining({ chatId: "123", profileId: "engineer" }),
+		);
+	});
+
+	it("clears the Hermes session mapping when a Telegram session resets", async () => {
+		getSessionImpl.mockReturnValueOnce({
+			sessionId: "old-telclaude-session",
+			updatedAt: Date.now(),
+			systemSent: true,
+		});
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "fresh",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			msg: { ...makeMsg(), body: "/fresh please" },
+			prompt: "/fresh please",
+			config: {
+				...baseCtx().config,
+				inbound: {
+					reply: {
+						enabled: true,
+						timeoutSeconds: 60,
+						session: {
+							scope: "per-sender",
+							idleMinutes: 60,
+							resetTriggers: ["/fresh"],
+						},
+					},
+				},
+			},
+		};
+
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		expect(deleteSessionImpl).toHaveBeenCalledWith("session-1");
+		expect(clearHermesSessionMappingImpl).toHaveBeenCalledWith("session-1");
+		expect(executePooledQueryImpl).toHaveBeenCalledWith(
+			"/fresh please",
+			expect.objectContaining({ resumeSessionId: undefined }),
 		);
 	});
 

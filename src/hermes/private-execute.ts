@@ -61,9 +61,17 @@ export async function* executeHermesPrivateQuery(
 		const request: HermesPrivateRuntimeRequest = {
 			prompt,
 			cwd: options.cwd,
+			tier: options.tier,
 			sessionKey: options.poolKey,
 			telclaudeSessionId: options.telclaudeSessionId,
 			profileId: options.profileId,
+			identity: {
+				userId: options.userId,
+				chatId: options.chatId,
+				actorId: options.actorId,
+				threadId: options.threadId,
+			},
+			memory: options.compiledMemoryMd ? { compiledMemoryMd: options.compiledMemoryMd } : undefined,
 			model: options.model,
 			systemPromptAppend: options.systemPromptAppend,
 			allowedSkills: options.enableSkills ? options.allowedSkills : [],

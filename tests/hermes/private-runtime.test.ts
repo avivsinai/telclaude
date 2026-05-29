@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	executeHermesPrivateQuery,
 	setHermesPrivateRuntimeAdapterForTest,
@@ -166,7 +166,12 @@ describe("Hermes private runtime seam", () => {
 				enableSkills: true,
 				allowedSkills: ["external-provider"],
 				systemPromptAppend: "<context />",
+				compiledMemoryMd: "# Memory\n- family prefers WhatsApp",
 				timeoutMs: 60_000,
+				userId: "operator",
+				chatId: 123,
+				actorId: 456,
+				threadId: 789,
 			}),
 		);
 
@@ -183,9 +188,19 @@ describe("Hermes private runtime seam", () => {
 		expect(seenRequest).toMatchObject({
 			prompt: "hello",
 			cwd: "/repo",
+			tier: "WRITE_LOCAL",
 			sessionKey: "tg:123",
 			telclaudeSessionId: "tc-session-1",
 			profileId: "ops",
+			identity: {
+				userId: "operator",
+				chatId: 123,
+				actorId: 456,
+				threadId: 789,
+			},
+			memory: {
+				compiledMemoryMd: "# Memory\n- family prefers WhatsApp",
+			},
 			model: "anthropic/claude-sonnet",
 			allowedSkills: ["external-provider"],
 			systemPromptAppend: "<context />",
@@ -299,9 +314,19 @@ function baseRequest(
 	return {
 		prompt: "hello",
 		cwd: "/repo",
+		tier: "WRITE_LOCAL" as const,
 		sessionKey: "tg:123",
 		telclaudeSessionId: "tc-session-1",
 		profileId: "ops",
+		identity: {
+			userId: "operator",
+			chatId: 123,
+			actorId: 456,
+			threadId: 789,
+		},
+		memory: {
+			compiledMemoryMd: "# Memory\n- family prefers WhatsApp",
+		},
 		model: "anthropic/claude-sonnet",
 		systemPromptAppend: "<context />",
 		allowedSkills: ["external-provider"],
