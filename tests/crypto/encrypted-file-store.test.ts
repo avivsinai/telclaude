@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { EncryptedFileStore } from "../../src/crypto/encrypted-file-store.js";
 
-const KEY = "test-encryption-key-at-least-32-chars-long";
+const KEY = "test-encryption-key-at-least-32-chars-long"; // gitleaks:allow -- fake test passphrase, not a real secret
 const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
 describe("EncryptedFileStore", () => {
