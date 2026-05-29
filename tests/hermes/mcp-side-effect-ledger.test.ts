@@ -1,0 +1,450 @@
+import { describe, expect, it } from "vitest";
+import {
+	createTelclaudeMcpSideEffectLedger,
+	type TelclaudeMcpOutboundSideEffectPrepareInput,
+	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpSideEffectApprovalBinding,
+	type TelclaudeMcpSideEffectApprovalVerifier,
+} from "../../src/hermes/mcp/side-effect-ledger.js";
+
+describe("Telclaude MCP side-effect ledger", () => {
+	it("computes deterministic canonical hashes over all provider-bound fields", () => {
+		const ledger = createTestLedger();
+
+		const first = ledger.prepare(
+			providerInput({
+				params: { nested: { z: 2, a: 1 }, items: ["first"] },
+				wysiwysRender: "Create draft to Alice: hello",
+			}),
+		);
+		const equivalent = ledger.prepare(
+			providerInput({
+				params: { items: ["first"], nested: { a: 1, z: 2 } },
+				wysiwysRender: "Create draft to Alice: hello",
+			}),
+		);
+		const differentParams = ledger.prepare(
+			providerInput({
+				params: { nested: { a: 99, z: 2 }, items: ["first"] },
+				wysiwysRender: "Create draft to Alice: hello",
+			}),
+		);
+		const differentRender = ledger.prepare(
+			providerInput({
+				params: { nested: { a: 1, z: 2 }, items: ["first"] },
+				wysiwysRender: "Create draft to Bob: hello",
+			}),
+		);
+		const differentApprovalRevision = ledger.prepare(
+			providerInput({
+				params: { nested: { a: 1, z: 2 }, items: ["first"] },
+				approvalRevision: 2,
+				wysiwysRender: "Create draft to Alice: hello",
+			}),
+		);
+
+		expect(first.paramsHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(first.bodyHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(equivalent.paramsHash).toBe(first.paramsHash);
+		expect(equivalent.bodyHash).toBe(first.bodyHash);
+		expect(differentParams.paramsHash).not.toBe(first.paramsHash);
+		expect(differentRender.bodyHash).not.toBe(first.bodyHash);
+		expect(differentApprovalRevision.paramsHash).not.toBe(first.paramsHash);
+		expect(differentApprovalRevision.bodyHash).not.toBe(first.bodyHash);
+	});
+
+	it("computes deterministic canonical hashes over all outbound-bound fields", () => {
+		const ledger = createTestLedger();
+
+		const first = ledger.prepare(
+			outboundInput({
+				renderedBody: "Send WhatsApp to Dan: on my way",
+				mediaRefs: ["att-b", "att-a"],
+				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
+			}),
+		);
+		const equivalent = ledger.prepare(
+			outboundInput({
+				renderedBody: "Send WhatsApp to Dan: on my way",
+				mediaRefs: ["att-b", "att-a"],
+				approvalMetadata: { facts: { a: false, z: true }, reviewer: "operator" },
+			}),
+		);
+		const differentDestination = ledger.prepare(
+			outboundInput({
+				destination: "+15550009999",
+				renderedBody: "Send WhatsApp to Dan: on my way",
+				mediaRefs: ["att-b", "att-a"],
+				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
+			}),
+		);
+		const differentBody = ledger.prepare(
+			outboundInput({
+				renderedBody: "Send WhatsApp to Dan: never mind",
+				mediaRefs: ["att-b", "att-a"],
+				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
+			}),
+		);
+		const differentMedia = ledger.prepare(
+			outboundInput({
+				renderedBody: "Send WhatsApp to Dan: on my way",
+				mediaRefs: ["att-a", "att-b"],
+				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
+			}),
+		);
+
+		expect(first.paramsHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(first.bodyHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(equivalent.paramsHash).toBe(first.paramsHash);
+		expect(equivalent.bodyHash).toBe(first.bodyHash);
+		expect(differentDestination.paramsHash).not.toBe(first.paramsHash);
+		expect(differentDestination.bodyHash).not.toBe(first.bodyHash);
+		expect(differentBody.bodyHash).not.toBe(first.bodyHash);
+		expect(differentMedia.paramsHash).not.toBe(first.paramsHash);
+		expect(differentMedia.bodyHash).not.toBe(first.bodyHash);
+	});
+
+	it("authorizes by stored ref only and passes precise stored binding to the verifier", async () => {
+		const verifierCalls: unknown[] = [];
+		const ledger = createTestLedger({
+			nowMs: () => 1_500,
+			verifier: async (request) => {
+				verifierCalls.push(request);
+				return { ok: true, approvalId: "approval-1" };
+			},
+		});
+		const prepared = ledger.prepare(
+			providerInput({
+				params: { subject: "Lunch", body: "12:30" },
+				providerAccountRef: "google:primary",
+				approvalRequestId: "approval-provider-1",
+				approvalRevision: 3,
+				idempotencyKey: "idem-provider-1",
+				wysiwysRender: "Calendar event: Lunch at 12:30",
+			}),
+		);
+
+		const authorized = await ledger.authorize(prepared.ref, "signed-token");
+
+		expect(authorized).toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: prepared.ref,
+				status: "executed",
+				executedAtMs: 1_500,
+				approvalId: "approval-1",
+			}),
+		});
+		expect(verifierCalls).toHaveLength(1);
+		expect(verifierCalls[0]).toMatchObject({
+			approvalToken: "signed-token",
+			nowMs: 1_500,
+			record: {
+				ref: prepared.ref,
+				status: "prepared",
+				params: { subject: "Lunch", body: "12:30" },
+				wysiwysRender: "Calendar event: Lunch at 12:30",
+			},
+			binding: {
+				domainSeparator: "telclaude.hermes.mcp.side-effect.provider.approval.v1",
+				ref: prepared.ref,
+				kind: "provider",
+				actorId: "telegram:123",
+				profileId: "private",
+				domain: "private",
+				service: "calendar",
+				action: "event.create",
+				providerAccountRef: "google:primary",
+				approvalRequestId: "approval-provider-1",
+				approvalRevision: 3,
+				idempotencyKey: "idem-provider-1",
+				paramsHash: prepared.paramsHash,
+				bodyHash: prepared.bodyHash,
+				contentHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			},
+		});
+
+		const verifierRequest = verifierCalls[0] as { binding: TelclaudeMcpSideEffectApprovalBinding };
+		expect(Object.isFrozen(verifierRequest.binding)).toBe(true);
+		expect(verifierRequest.binding.contentHash).not.toBe(prepared.bodyHash);
+	});
+
+	it("denies replay after success and keeps verifier failures retryable", async () => {
+		let attempt = 0;
+		const ledger = createTestLedger({
+			verifier: async () => {
+				attempt += 1;
+				if (attempt === 1) {
+					return { ok: false, code: "approval_mismatch", reason: "token hashes differ" };
+				}
+				return { ok: true };
+			},
+		});
+		const prepared = ledger.prepare(outboundInput());
+
+		await expect(ledger.authorize(prepared.ref, "wrong-token")).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "token hashes differ",
+			retryable: true,
+			record: expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		});
+		expect(ledger.get(prepared.ref)).toEqual(
+			expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		);
+
+		await expect(ledger.authorize(prepared.ref, "signed-token")).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({ ref: prepared.ref, status: "executed" }),
+		});
+		await expect(ledger.authorize(prepared.ref, "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "effect_already_executed",
+			reason: "side effect has already executed",
+			retryable: false,
+			record: expect.objectContaining({ ref: prepared.ref, status: "executed" }),
+		});
+		expect(attempt).toBe(2);
+	});
+
+	it("rejects tokens bound to a different paramsHash or bodyHash without consuming", async () => {
+		const acceptedTokens = new Map<string, { paramsHash: string; bodyHash: string }>();
+		const ledger = createTestLedger({
+			verifier: tokenBindingVerifier(acceptedTokens),
+		});
+		const original = ledger.prepare(
+			providerInput({
+				params: { amount: 100, currency: "USD" },
+				wysiwysRender: "Transfer USD 100",
+			}),
+		);
+		const paramsChanged = ledger.prepare(
+			providerInput({
+				params: { amount: 101, currency: "USD" },
+				wysiwysRender: "Transfer USD 100",
+			}),
+		);
+		const bodyChanged = ledger.prepare(
+			providerInput({
+				params: { amount: 100, currency: "USD" },
+				wysiwysRender: "Transfer USD 100 to attacker",
+			}),
+		);
+		acceptedTokens.set("token-for-original", {
+			paramsHash: original.paramsHash,
+			bodyHash: original.bodyHash,
+		});
+
+		await expect(ledger.authorize(paramsChanged.ref, "token-for-original")).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "token hashes differ",
+			retryable: true,
+			record: expect.objectContaining({ ref: paramsChanged.ref, status: "prepared" }),
+		});
+		await expect(ledger.authorize(bodyChanged.ref, "token-for-original")).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "token hashes differ",
+			retryable: true,
+			record: expect.objectContaining({ ref: bodyChanged.ref, status: "prepared" }),
+		});
+		expect(ledger.get(paramsChanged.ref)).toEqual(
+			expect.objectContaining({ ref: paramsChanged.ref, status: "prepared" }),
+		);
+		expect(ledger.get(bodyChanged.ref)).toEqual(
+			expect.objectContaining({ ref: bodyChanged.ref, status: "prepared" }),
+		);
+	});
+
+	it("blocks revoked refs, denies expired refs before verifier, and denies unknown refs", async () => {
+		let nowMs = 10_000;
+		let verifierCalls = 0;
+		const ledger = createTestLedger({
+			nowMs: () => nowMs,
+			verifier: async () => {
+				verifierCalls += 1;
+				return { ok: true };
+			},
+		});
+		const revoked = ledger.prepare(outboundInput());
+
+		expect(ledger.revoke(revoked.ref, "operator denied")).toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: revoked.ref,
+				status: "revoked",
+				revokedAtMs: 10_000,
+				revokeReason: "operator denied",
+			}),
+		});
+		await expect(ledger.authorize(revoked.ref, "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "effect_revoked",
+			reason: "side effect was revoked",
+			retryable: false,
+			record: expect.objectContaining({ ref: revoked.ref, status: "revoked" }),
+		});
+
+		const expiring = ledger.prepare(providerInput({ ttlMs: 1_000 }));
+		nowMs = 11_001;
+		await expect(ledger.authorize(expiring.ref, "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "effect_expired",
+			reason: "side effect approval window expired",
+			retryable: false,
+			record: expect.objectContaining({
+				ref: expiring.ref,
+				status: "prepared",
+			}),
+		});
+		await expect(ledger.authorize("missing-ref", "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "effect_not_found",
+			reason: "side effect was not prepared",
+			retryable: false,
+		});
+		expect(verifierCalls).toBe(0);
+	});
+
+	it("deep-clones and freezes prepare/get/authorize records to prevent TOCTOU mutation", async () => {
+		const params = { nested: { a: 1 }, items: ["before"] };
+		const approvalMetadata = { reviewer: "operator", facts: { a: true } };
+		const mediaRefs = ["att-1"];
+		const ledger = createTestLedger();
+
+		const provider = ledger.prepare(providerInput({ params }));
+		const outbound = ledger.prepare(outboundInput({ approvalMetadata, mediaRefs }));
+
+		params.nested.a = 99;
+		params.items.push("after");
+		approvalMetadata.facts.a = false;
+		mediaRefs.push("att-2");
+
+		expect(Object.isFrozen(provider)).toBe(true);
+		expect(Object.isFrozen(provider.params)).toBe(true);
+		expect(Object.isFrozen((provider.params as { nested: object }).nested)).toBe(true);
+		expect(() => {
+			(provider.params as { nested: { a: number } }).nested.a = 42;
+		}).toThrow(TypeError);
+		expect(Object.isFrozen(outbound.mediaRefs)).toBe(true);
+		expect(() => {
+			(outbound.mediaRefs as string[]).push("att-3");
+		}).toThrow(TypeError);
+
+		expect(ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({
+				params: { nested: { a: 1 }, items: ["before"] },
+			}),
+		);
+		expect(ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({
+				mediaRefs: ["att-1"],
+				approvalMetadata: { reviewer: "operator", facts: { a: true } },
+			}),
+		);
+
+		const authorized = await ledger.authorize(outbound.ref, "signed-token");
+		expect(authorized).toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				mediaRefs: ["att-1"],
+				approvalMetadata: { reviewer: "operator", facts: { a: true } },
+			}),
+		});
+		if (authorized.ok) {
+			expect(authorized.record).not.toBe(outbound);
+			expect(Object.isFrozen(authorized.record)).toBe(true);
+			expect(Object.isFrozen((authorized.record as { mediaRefs: string[] }).mediaRefs)).toBe(true);
+		}
+	});
+
+	it("keeps the state machine terminal after execute and prevents revoke-after-execute", async () => {
+		const ledger = createTestLedger();
+		const prepared = ledger.prepare(providerInput());
+
+		await expect(ledger.authorize(prepared.ref, "signed-token")).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({ ref: prepared.ref, status: "executed" }),
+		});
+
+		expect(ledger.revoke(prepared.ref, "too late")).toEqual({
+			ok: false,
+			code: "effect_already_executed",
+			reason: "side effect has already executed",
+			retryable: false,
+			record: expect.objectContaining({ ref: prepared.ref, status: "executed" }),
+		});
+		expect(ledger.get(prepared.ref)).toEqual(
+			expect.objectContaining({ ref: prepared.ref, status: "executed" }),
+		);
+	});
+});
+
+function createTestLedger(
+	options: { verifier?: TelclaudeMcpSideEffectApprovalVerifier; nowMs?: () => number } = {},
+) {
+	let nextRef = 0;
+	return createTelclaudeMcpSideEffectLedger({
+		verifyApproval: options.verifier ?? (async () => ({ ok: true })),
+		nowMs: options.nowMs ?? (() => 1_000),
+		makeRef: () => `effect-${++nextRef}`,
+		defaultTtlMs: 60_000,
+	});
+}
+
+function tokenBindingVerifier(
+	acceptedTokens: Map<string, { paramsHash: string; bodyHash: string }>,
+): TelclaudeMcpSideEffectApprovalVerifier {
+	return async ({ approvalToken, binding }) => {
+		const expected = acceptedTokens.get(approvalToken);
+		if (!expected) return { ok: false, code: "approval_required", reason: "unknown token" };
+		if (expected.paramsHash !== binding.paramsHash || expected.bodyHash !== binding.bodyHash) {
+			return { ok: false, code: "approval_mismatch", reason: "token hashes differ" };
+		}
+		return { ok: true };
+	};
+}
+
+function providerInput(
+	overrides: Partial<TelclaudeMcpProviderSideEffectPrepareInput> = {},
+): TelclaudeMcpProviderSideEffectPrepareInput {
+	return {
+		kind: "provider" as const,
+		actorId: "telegram:123",
+		profileId: "private",
+		domain: "private" as const,
+		service: "calendar",
+		action: "event.create",
+		params: { subject: "Lunch" },
+		providerAccountRef: "google:primary",
+		approvalRequestId: "approval-provider-1",
+		approvalRevision: 1,
+		wysiwysRender: "Calendar event: Lunch",
+		idempotencyKey: "idem-provider-1",
+		...overrides,
+	};
+}
+
+function outboundInput(
+	overrides: Partial<TelclaudeMcpOutboundSideEffectPrepareInput> = {},
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	return {
+		kind: "outbound" as const,
+		actorId: "telegram:123",
+		profileId: "private",
+		domain: "private" as const,
+		channel: "whatsapp",
+		destination: "+15551234567",
+		renderedBody: "Send WhatsApp to Dan: on my way",
+		mediaRefs: ["att-1"],
+		conversationRef: "whatsapp:+15551234567",
+		approvalRequestId: "approval-outbound-1",
+		approvalRevision: 1,
+		approvalMetadata: { reviewer: "operator" },
+		idempotencyKey: "idem-outbound-1",
+		...overrides,
+	};
+}
