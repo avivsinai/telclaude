@@ -1,9 +1,16 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
 export const DEFAULT_FEATURE_PROBE_MATRIX_PATH = "docs/hermes/feature-probes.json";
 export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json";
+export const DEFAULT_CUTOVER_SCOPE_PATH = "docs/hermes/cutover-scope.json";
+export const DEFAULT_DECISION_LOG_PATH = "docs/hermes/decisions.json";
+export const DEFAULT_FIXTURE_RESULTS_PATH = "docs/hermes/fixture-results.json";
+export const DEFAULT_NETWORK_PROBES_PATH = "docs/hermes/network-probes.json";
+export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
+export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
 export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 	"network.direct-provider-denied",
 	"network.direct-vault-denied",
@@ -37,6 +44,16 @@ export const FeatureProbeSchema = z
 		negative_probe: NonEmptyString,
 		evidence_path: NonEmptyString,
 		lockfile_key: NonEmptyString,
+		security_scope: z
+			.enum([
+				"headless-availability-only",
+				"approval-continuation",
+				"edge-adapter",
+				"model-relay",
+				"nofork-proof",
+			])
+			.optional(),
+		approval_equivalent: z.boolean().optional(),
 		failure_outcome: z.enum(["disable", "downgrade"]),
 		status: z.enum(["pass", "fail", "skip"]).optional(),
 	})
@@ -108,6 +125,15 @@ const WorkflowScopeSchema = z
 	})
 	.strict();
 
+export const CutoverScopeManifestSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		workflows: z.array(WorkflowScopeSchema),
+	})
+	.strict();
+
+export type CutoverScopeManifest = z.infer<typeof CutoverScopeManifestSchema>;
+
 const InventoryWorkflowSchema = z
 	.object({
 		workflow_id: NonEmptyString,
@@ -123,8 +149,9 @@ const InventorySnapshotSchema = z
 	})
 	.catchall(z.unknown());
 
-const DecisionLogSchema = z
+export const DecisionLogSchema = z
 	.object({
+		schemaVersion: z.literal(1),
 		decisions: z.array(
 			z
 				.object({
@@ -155,8 +182,11 @@ const DecisionLogSchema = z
 	})
 	.strict();
 
-const FixtureResultBundleSchema = z
+export type DecisionLog = z.infer<typeof DecisionLogSchema>;
+
+export const FixtureResultBundleSchema = z
 	.object({
+		schemaVersion: z.literal(1),
 		results: z.array(
 			z
 				.object({
@@ -169,8 +199,11 @@ const FixtureResultBundleSchema = z
 	})
 	.strict();
 
-const ProbeBundleSchema = z
+export type FixtureResultBundle = z.infer<typeof FixtureResultBundleSchema>;
+
+export const ProbeBundleSchema = z
 	.object({
+		schemaVersion: z.literal(1),
 		probes: z.array(
 			z
 				.object({
@@ -183,33 +216,49 @@ const ProbeBundleSchema = z
 	})
 	.strict();
 
+export type ProbeBundle = z.infer<typeof ProbeBundleSchema>;
+
+export const NoForkProofSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		hermesCheckoutClean: z.boolean(),
+		evidence_path: NonEmptyString,
+	})
+	.strict();
+
+export type NoForkProof = z.infer<typeof NoForkProofSchema>;
+
+export const QueueOwnershipSnapshotSchema = z
+	.object({
+		unownedActiveCount: z.number().int().min(0),
+	})
+	.strict();
+
+export type QueueOwnershipSnapshot = z.infer<typeof QueueOwnershipSnapshotSchema>;
+
+export const RollbackRehearsalSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		passed: z.boolean(),
+		evidence_path: NonEmptyString,
+	})
+	.strict();
+
+export type RollbackRehearsal = z.infer<typeof RollbackRehearsalSchema>;
+
 export const CutoverInputBundleSchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		inventory: InventorySnapshotSchema,
-		scopeManifest: z.object({ workflows: z.array(WorkflowScopeSchema) }).strict(),
+		scopeManifest: CutoverScopeManifestSchema,
 		decisionLog: DecisionLogSchema,
 		lockfile: CompatibilityLockfileSchema,
 		featureProbeMatrix: FeatureProbeMatrixSchema,
 		fixtureResults: FixtureResultBundleSchema,
-		noForkProof: z
-			.object({
-				hermesCheckoutClean: z.boolean(),
-				evidence_path: NonEmptyString,
-			})
-			.strict(),
+		noForkProof: NoForkProofSchema,
 		networkProbes: ProbeBundleSchema,
-		queueSnapshot: z
-			.object({
-				unownedActiveCount: z.number().int().min(0),
-			})
-			.strict(),
-		rollbackRehearsal: z
-			.object({
-				passed: z.boolean(),
-				evidence_path: NonEmptyString,
-			})
-			.strict(),
+		queueSnapshot: QueueOwnershipSnapshotSchema,
+		rollbackRehearsal: RollbackRehearsalSchema,
 	})
 	.strict();
 
@@ -261,6 +310,10 @@ export function validateCompatibilityLockfile(value: unknown): ValidationResult 
 	return formatValidationResult(CompatibilityLockfileSchema.safeParse(value));
 }
 
+export function computeHermesArtifactDigest(value: unknown): string {
+	return `sha256:${crypto.createHash("sha256").update(stableStringify(value)).digest("hex")}`;
+}
+
 export function readJsonFile(filePath: string): unknown {
 	return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
 }
@@ -268,6 +321,116 @@ export function readJsonFile(filePath: string): unknown {
 export function readOptionalJsonFile(filePath: string): unknown | undefined {
 	if (!fs.existsSync(filePath)) return undefined;
 	return readJsonFile(filePath);
+}
+
+export function buildCutoverInputBundleFromArtifacts(input: {
+	inventory: unknown;
+	scopeManifest: unknown;
+	decisionLog: unknown;
+	lockfile: unknown;
+	featureProbeMatrix: unknown;
+	fixtureResults: unknown;
+	noForkProof: unknown;
+	networkProbes: unknown;
+	queueSnapshot?: unknown;
+	rollbackRehearsal: unknown;
+}): CutoverInputBundle {
+	const bundle = {
+		schemaVersion: 1,
+		inventory: input.inventory,
+		scopeManifest: input.scopeManifest,
+		decisionLog: input.decisionLog,
+		lockfile: input.lockfile,
+		featureProbeMatrix: input.featureProbeMatrix,
+		fixtureResults: input.fixtureResults,
+		noForkProof: input.noForkProof,
+		networkProbes: input.networkProbes,
+		queueSnapshot: input.queueSnapshot ?? deriveQueueOwnershipSnapshot(input.inventory),
+		rollbackRehearsal: input.rollbackRehearsal,
+	};
+	const parsed = CutoverInputBundleSchema.safeParse(bundle);
+	if (!parsed.success) {
+		throw new Error(flattenZodError(parsed.error));
+	}
+	return parsed.data;
+}
+
+export function buildCutoverScopeManifestFromInventory(inventory: unknown): CutoverScopeManifest {
+	const parsed = InventorySnapshotSchema.safeParse(inventory);
+	if (!parsed.success) {
+		throw new Error(flattenZodError(parsed.error));
+	}
+	return {
+		schemaVersion: 1,
+		workflows: parsed.data.workflows.map((workflow) => {
+			const metadata = workflow as Record<string, unknown>;
+			const active = workflow.active;
+			return {
+				workflow_id: workflow.workflow_id,
+				owner: workflow.owner,
+				trust_domain: workflow.trust_domain,
+				current_behavior:
+					typeof metadata.current_surface === "string"
+						? metadata.current_surface
+						: "TODO: describe current Telclaude behavior",
+				hermes_target_behavior:
+					typeof metadata.hermes_target === "string"
+						? metadata.hermes_target
+						: "TODO: describe Hermes target behavior",
+				cutover_class:
+					metadata.p_class === "P1" || metadata.p_class === "P2" ? metadata.p_class : "P0",
+				cutover_requirement: "Resolve parity evidence before inclusion.",
+				status: active ? "excluded" : "disabled",
+				fixture_ids: [],
+				negative_fixture_ids: [],
+				required_surface_ids: [],
+				unresolved_decision_ids: active ? ["D-first-cutover-workflow-set"] : [],
+			};
+		}),
+	};
+}
+
+export function buildCompatibilityLockfileDraft(input: {
+	pin: HermesPin | null;
+	featureProbeMatrix: unknown;
+	wrapperPackageVersion: string;
+}): CompatibilityLockfile {
+	if (!input.pin) {
+		throw new Error(
+			"Cannot generate Hermes compatibility lockfile without a pinned Hermes artifact.",
+		);
+	}
+	const parsed = FeatureProbeMatrixSchema.safeParse(input.featureProbeMatrix);
+	if (!parsed.success) {
+		throw new Error(flattenZodError(parsed.error));
+	}
+	return {
+		schemaVersion: 1,
+		hermes: input.pin,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(parsed.data),
+		featureProbes: parsed.data.probes.map((probe) => ({
+			surface_id: probe.surface_id,
+			status: probe.status === "pass" ? "pass" : "fail",
+			evidence_path: probe.evidence_path,
+		})),
+		adapterApiSignatures: {},
+		capabilities: {
+			plugins: [],
+			mcp: [],
+			modelProviders: [],
+			memoryProviders: [],
+		},
+		requiredUpgradeTests: [
+			"pnpm dev hermes doctor --probes --compat-lock --json",
+			"pnpm dev hermes cutover-check --strict --dry-run --json",
+			"pnpm dev hermes prove --upstream-clean --p0",
+		],
+		generatedProfileSchemaVersion: "1",
+		wrapperPackageVersion: input.wrapperPackageVersion,
+		paritySuiteDigests: {},
+		noForkProofEvidencePath: "artifacts/hermes/no-fork.json",
+		sourceDriftSignals: {},
+	};
 }
 
 export function buildHermesDoctorReport(options: {
@@ -296,11 +459,26 @@ export function buildHermesDoctorReport(options: {
 			detail: options.featureProbeMatrixMissing,
 		});
 	} else if (options.featureProbeMatrix !== undefined) {
-		const result = validateFeatureProbeMatrix(options.featureProbeMatrix);
+		const parsed = FeatureProbeMatrixSchema.safeParse(options.featureProbeMatrix);
+		const result = formatValidationResult(parsed);
+		const statusFailures = parsed.success
+			? [
+					...(parsed.data.probes.length === 0 ? ["feature-probe matrix is empty"] : []),
+					...parsed.data.probes.flatMap((probe) =>
+						probe.status === "pass"
+							? []
+							: [`${probe.surface_id} status is ${probe.status ?? "missing"}`],
+					),
+				]
+			: [];
 		checks.push({
 			name: "hermes.featureProbes",
-			status: result.valid ? "pass" : "fail",
-			detail: result.valid ? "feature-probe matrix schema is valid" : result.errors.join("; "),
+			status: result.valid && statusFailures.length === 0 ? "pass" : "fail",
+			detail: !result.valid
+				? result.errors.join("; ")
+				: statusFailures.length === 0
+					? "feature-probe matrix schema is valid and all probes passed"
+					: statusFailures.join("; "),
 		});
 	}
 
@@ -311,11 +489,24 @@ export function buildHermesDoctorReport(options: {
 			detail: options.lockfileMissing,
 		});
 	} else if (options.lockfile !== undefined) {
-		const result = validateCompatibilityLockfile(options.lockfile);
+		const parsed = CompatibilityLockfileSchema.safeParse(options.lockfile);
+		const result = formatValidationResult(parsed);
+		const consistencyFailures =
+			parsed.success === true
+				? collectLockfileConsistencyFailures({
+						lockfile: parsed.data,
+						pin,
+						featureProbeMatrix: options.featureProbeMatrix,
+					})
+				: [];
 		checks.push({
 			name: "hermes.compatLockfile",
-			status: result.valid ? "pass" : "fail",
-			detail: result.valid ? "compatibility lockfile schema is valid" : result.errors.join("; "),
+			status: result.valid && consistencyFailures.length === 0 ? "pass" : "fail",
+			detail: !result.valid
+				? result.errors.join("; ")
+				: consistencyFailures.length === 0
+					? "compatibility lockfile schema is valid and tied to the current probe matrix"
+					: consistencyFailures.join("; "),
 		});
 	}
 
@@ -393,13 +584,16 @@ export function evaluateCutoverCheck(
 		(workflow) => workflow.status === "included",
 	);
 	const includedWorkflowIds = new Set(included.map((workflow) => workflow.workflow_id));
+	const scopedWorkflowIds = new Set(
+		bundle.scopeManifest.workflows.map((workflow) => workflow.workflow_id),
+	);
 	const activeInventoryWorkflowIds = new Set(
 		bundle.inventory.workflows
 			.filter((workflow) => workflow.active)
 			.map((workflow) => workflow.workflow_id),
 	);
 	const unmappedActiveWorkflowIds = [...activeInventoryWorkflowIds].filter(
-		(workflowId) => !includedWorkflowIds.has(workflowId),
+		(workflowId) => !scopedWorkflowIds.has(workflowId),
 	);
 	const duplicateScopeWorkflowIds = findDuplicates(
 		bundle.scopeManifest.workflows.map((workflow) => workflow.workflow_id),
@@ -466,6 +660,15 @@ export function evaluateCutoverCheck(
 		bundle.lockfile.featureProbes.map((probe) => [probe.surface_id, probe]),
 	);
 	const lockfileFailures = [
+		...(bundle.lockfile.featureProbeMatrixDigest ===
+		computeHermesArtifactDigest(bundle.featureProbeMatrix)
+			? []
+			: ["lockfile feature-probe matrix digest does not match current matrix"]),
+		...bundle.lockfile.featureProbes.flatMap((probe) =>
+			probe.status === "pass"
+				? []
+				: [`lockfile feature probe ${probe.surface_id} status is ${probe.status}`],
+		),
 		...bundle.featureProbeMatrix.probes.flatMap((probe) =>
 			sameJson(probe.hermes_pin, bundle.lockfile.hermes)
 				? []
@@ -619,4 +822,51 @@ function findDuplicates(values: string[]): string[] {
 
 function sameJson(left: unknown, right: unknown): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function deriveQueueOwnershipSnapshot(inventory: unknown): QueueOwnershipSnapshot {
+	const pendingQueues = (inventory as { summary?: { pendingQueues?: Record<string, unknown> } })
+		.summary?.pendingQueues;
+	const unownedActiveCount = Object.values(pendingQueues ?? {}).reduce<number>(
+		(total, value) => total + (typeof value === "number" && Number.isFinite(value) ? value : 0),
+		0,
+	);
+	return { unownedActiveCount };
+}
+
+function collectLockfileConsistencyFailures(input: {
+	lockfile: CompatibilityLockfile;
+	pin: HermesPin | null;
+	featureProbeMatrix?: unknown;
+}): string[] {
+	const failures: string[] = [];
+	if (input.pin && !sameJson(input.lockfile.hermes, input.pin)) {
+		failures.push("lockfile Hermes pin does not match requested pin");
+	}
+	for (const probe of input.lockfile.featureProbes) {
+		if (probe.status !== "pass") {
+			failures.push(`lockfile feature probe ${probe.surface_id} status is ${probe.status}`);
+		}
+	}
+	if (input.featureProbeMatrix !== undefined) {
+		const parsed = FeatureProbeMatrixSchema.safeParse(input.featureProbeMatrix);
+		if (parsed.success) {
+			const digest = computeHermesArtifactDigest(parsed.data);
+			if (input.lockfile.featureProbeMatrixDigest !== digest) {
+				failures.push("lockfile feature-probe matrix digest does not match current matrix");
+			}
+		}
+	}
+	return unique(failures);
+}
+
+function stableStringify(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value);
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+	const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+		left.localeCompare(right),
+	);
+	return `{${entries
+		.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`)
+		.join(",")}}`;
 }

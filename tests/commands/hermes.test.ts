@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import {
+	buildCompatibilityLockfileDraft,
+	buildCutoverInputBundleFromArtifacts,
+	buildCutoverScopeManifestFromInventory,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
+	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
 	parseHermesPin,
@@ -38,6 +42,8 @@ const featureProbeMatrix: FeatureProbeMatrix = {
 			negative_probe: "native WhatsApp credential access fails",
 			evidence_path: "artifacts/hermes/whatsapp-edge.json",
 			lockfile_key: "featureProbes.edge.whatsapp",
+			security_scope: "edge-adapter",
+			approval_equivalent: true,
 			failure_outcome: "disable",
 			status: "pass",
 		},
@@ -47,7 +53,7 @@ const featureProbeMatrix: FeatureProbeMatrix = {
 const compatLockfile: CompatibilityLockfile = {
 	schemaVersion: 1,
 	hermes: hermesPin,
-	featureProbeMatrixDigest: "sha256:feature-probes",
+	featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
 	featureProbes: [
 		{
 			surface_id: "edge.whatsapp.plugin-adapter",
@@ -105,6 +111,7 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 			],
 		},
 		scopeManifest: {
+			schemaVersion: 1,
 			workflows: [
 				{
 					workflow_id: "private.telegram.basic",
@@ -123,10 +130,11 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 				},
 			],
 		},
-		decisionLog: { decisions: [] },
+		decisionLog: { schemaVersion: 1, decisions: [] },
 		lockfile: compatLockfile,
 		featureProbeMatrix,
 		fixtureResults: {
+			schemaVersion: 1,
 			results: [
 				{
 					id: "fixture.private.telegram.basic",
@@ -140,8 +148,13 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 				},
 			],
 		},
-		noForkProof: { hermesCheckoutClean: true, evidence_path: "artifacts/hermes/no-fork.json" },
+		noForkProof: {
+			schemaVersion: 1,
+			hermesCheckoutClean: true,
+			evidence_path: "artifacts/hermes/no-fork.json",
+		},
 		networkProbes: {
+			schemaVersion: 1,
 			probes: requiredNetworkProbeIds.map((id) => ({
 				id,
 				status: "pass",
@@ -149,7 +162,11 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 			})),
 		},
 		queueSnapshot: { unownedActiveCount: 0 },
-		rollbackRehearsal: { passed: true, evidence_path: "artifacts/hermes/rollback.json" },
+		rollbackRehearsal: {
+			schemaVersion: 1,
+			passed: true,
+			evidence_path: "artifacts/hermes/rollback.json",
+		},
 		...overrides,
 	};
 }
@@ -189,6 +206,46 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.status).toBe("pass");
 	});
 
+	it("fails doctor when feature probes or lockfile evidence are not production-ready", () => {
+		const [probe] = featureProbeMatrix.probes;
+		const skippedProbes = buildHermesDoctorReport({
+			pin: hermesPin,
+			featureProbeMatrix: {
+				schemaVersion: 1,
+				probes: [{ ...probe, status: "skip" }],
+			},
+		});
+		expect(skippedProbes.status).toBe("fail");
+		expect(
+			skippedProbes.checks.find((check) => check.name === "hermes.featureProbes")?.detail,
+		).toContain("status is skip");
+
+		const mismatchedLock = buildHermesDoctorReport({
+			pin: hermesPin,
+			featureProbeMatrix,
+			lockfile: {
+				...compatLockfile,
+				featureProbeMatrixDigest: "sha256:stale",
+			},
+		});
+		expect(mismatchedLock.status).toBe("fail");
+		expect(
+			mismatchedLock.checks.find((check) => check.name === "hermes.compatLockfile")?.detail,
+		).toContain("digest does not match");
+
+		const failingLockProbe = buildHermesDoctorReport({
+			pin: hermesPin,
+			lockfile: {
+				...compatLockfile,
+				featureProbes: [{ ...compatLockfile.featureProbes[0], status: "fail" }],
+			},
+		});
+		expect(failingLockProbe.status).toBe("fail");
+		expect(
+			failingLockProbe.checks.find((check) => check.name === "hermes.compatLockfile")?.detail,
+		).toContain("status is fail");
+	});
+
 	it("fails doctor with a distinct missing-artifact reason", () => {
 		const report = buildHermesDoctorReport({
 			pin: hermesPin,
@@ -215,12 +272,97 @@ describe("Hermes wrapper foundation", () => {
 		]);
 	});
 
+	it("assembles cutover input from separate canonical artifacts", () => {
+		const source = safeCutoverBundle();
+		const assembled = buildCutoverInputBundleFromArtifacts({
+			inventory: source.inventory,
+			scopeManifest: source.scopeManifest,
+			decisionLog: source.decisionLog,
+			lockfile: source.lockfile,
+			featureProbeMatrix: source.featureProbeMatrix,
+			fixtureResults: source.fixtureResults,
+			noForkProof: source.noForkProof,
+			networkProbes: source.networkProbes,
+			rollbackRehearsal: source.rollbackRehearsal,
+		});
+
+		expect(evaluateCutoverCheck(assembled).exitCode).toBe(0);
+		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 0 });
+	});
+
+	it("generates a fail-closed cutover scope skeleton from inventory workflows", () => {
+		const manifest = buildCutoverScopeManifestFromInventory({
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+					current_surface: "Telclaude Telegram relay",
+					hermes_target: "Hermes private runtime behind Telclaude edge",
+					p_class: "P0",
+				},
+				{
+					workflow_id: "social.xtwitter.proactive",
+					owner: "operator",
+					trust_domain: "social",
+					active: false,
+				},
+			],
+		});
+
+		expect(manifest).toMatchObject({
+			schemaVersion: 1,
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					status: "excluded",
+					unresolved_decision_ids: ["D-first-cutover-workflow-set"],
+				},
+				{
+					workflow_id: "social.xtwitter.proactive",
+					status: "disabled",
+					unresolved_decision_ids: [],
+				},
+			],
+		});
+	});
+
+	it("generates a compatibility lockfile draft only for a pinned Hermes artifact", () => {
+		expect(() =>
+			buildCompatibilityLockfileDraft({
+				pin: null,
+				featureProbeMatrix,
+				wrapperPackageVersion: "0.7.1",
+			}),
+		).toThrow("pinned Hermes artifact");
+
+		const draft = buildCompatibilityLockfileDraft({
+			pin: hermesPin,
+			featureProbeMatrix: {
+				schemaVersion: 1,
+				probes: [{ ...featureProbeMatrix.probes[0], status: "skip" }],
+			},
+			wrapperPackageVersion: "0.7.1",
+		});
+
+		expect(draft.featureProbeMatrixDigest).toMatch(/^sha256:/);
+		expect(draft.featureProbes).toEqual([
+			{
+				surface_id: "edge.whatsapp.plugin-adapter",
+				status: "fail",
+				evidence_path: "artifacts/hermes/whatsapp-edge.json",
+			},
+		]);
+	});
+
 	it("returns cutover exit code 0 only when all strict evidence gates pass", () => {
 		expect(evaluateCutoverCheck(safeCutoverBundle()).exitCode).toBe(0);
 
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
 				noForkProof: {
+					schemaVersion: 1,
 					hermesCheckoutClean: false,
 					evidence_path: "artifacts/hermes/no-fork.json",
 				},
@@ -235,8 +377,8 @@ describe("Hermes wrapper foundation", () => {
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
 				featureProbeMatrix: { schemaVersion: 1, probes: [] },
-				fixtureResults: { results: [] },
-				networkProbes: { probes: [] },
+				fixtureResults: { schemaVersion: 1, results: [] },
+				networkProbes: { schemaVersion: 1, probes: [] },
 			}),
 		);
 
@@ -293,6 +435,45 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("does not require explicitly excluded active workflows to satisfy included-workflow gates", () => {
+		const bundle = safeCutoverBundle();
+		const report = evaluateCutoverCheck(
+			safeCutoverBundle({
+				inventory: {
+					generatedAt: "2026-05-29T00:00:00Z",
+					workflows: [
+						...bundle.inventory.workflows,
+						{
+							workflow_id: "provider.bank.read",
+							owner: "operator",
+							trust_domain: "provider-read",
+							active: true,
+						},
+					],
+				},
+				scopeManifest: {
+					schemaVersion: 1,
+					workflows: [
+						...bundle.scopeManifest.workflows,
+						{
+							workflow_id: "provider.bank.read",
+							owner: "operator",
+							trust_domain: "provider-read",
+							current_behavior: "Telclaude provider reads route through the relay.",
+							hermes_target_behavior: "Excluded until provider envelope parity is proven.",
+							cutover_class: "P0",
+							cutover_requirement: "Provider envelope parity required before inclusion.",
+							status: "excluded",
+						},
+					],
+				},
+			}),
+		);
+
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "workflow.scope")?.status).toBe("pass");
+	});
+
 	it("accepts rich Hermes inventory workflow metadata in cutover input", () => {
 		const bundle = safeCutoverBundle();
 		const richBundle: unknown = {
@@ -323,6 +504,7 @@ describe("Hermes wrapper foundation", () => {
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
 				decisionLog: {
+					schemaVersion: 1,
 					decisions: [
 						{
 							id: "D-private-execution",
@@ -358,6 +540,34 @@ describe("Hermes wrapper foundation", () => {
 		expect(failed.status).toBe("fail");
 		expect(failed.gates.find((gate) => gate.name === "lockfile.consistent")?.detail).toContain(
 			"not tied to the lockfile Hermes pin",
+		);
+	});
+
+	it("fails strict cutover when the lockfile digest or probe status is stale", () => {
+		const staleDigest = evaluateCutoverCheck(
+			safeCutoverBundle({
+				lockfile: {
+					...compatLockfile,
+					featureProbeMatrixDigest: "sha256:stale",
+				},
+			}),
+		);
+		expect(staleDigest.status).toBe("fail");
+		expect(staleDigest.gates.find((gate) => gate.name === "lockfile.consistent")?.detail).toContain(
+			"digest does not match",
+		);
+
+		const failedProbe = evaluateCutoverCheck(
+			safeCutoverBundle({
+				lockfile: {
+					...compatLockfile,
+					featureProbes: [{ ...compatLockfile.featureProbes[0], status: "fail" }],
+				},
+			}),
+		);
+		expect(failedProbe.status).toBe("fail");
+		expect(failedProbe.gates.find((gate) => gate.name === "lockfile.consistent")?.detail).toContain(
+			"status is fail",
 		);
 	});
 
@@ -512,13 +722,13 @@ describe("Hermes wrapper foundation", () => {
 			allowedSkillCount: 1,
 			preprocessPresent: true,
 		});
-		expect(inventory.providers.find((provider) => provider.id === "broken")?.endpoint).toMatchObject(
-			{
-				scheme: null,
-				host: null,
-				parseError: "unparseable baseUrl",
-			},
-		);
+		expect(
+			inventory.providers.find((provider) => provider.id === "broken")?.endpoint,
+		).toMatchObject({
+			scheme: null,
+			host: null,
+			parseError: "unparseable baseUrl",
+		});
 
 		const serialized = JSON.stringify(inventory);
 		for (const secret of [

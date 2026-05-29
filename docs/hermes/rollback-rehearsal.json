@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "passed": false,
+  "evidence_path": "artifacts/hermes/rollback-rehearsal.json"
+}
