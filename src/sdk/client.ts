@@ -1265,6 +1265,10 @@ export async function buildSdkOptions(opts: TelclaudeQueryOptions): Promise<SDKO
 	if (opts.timeoutMs && !abortController) {
 		const controller = new AbortController();
 		const timeoutId = setTimeout(() => controller.abort(), opts.timeoutMs);
+		// unref so a normally-completing query does not keep the event loop alive
+		// waiting on a timer that will never need to fire. The abort listener still
+		// clears it eagerly when the timeout (or any other caller) aborts.
+		timeoutId.unref();
 		controller.signal.addEventListener(
 			"abort",
 			() => {

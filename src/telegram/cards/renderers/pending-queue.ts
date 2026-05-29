@@ -195,12 +195,7 @@ function renderList(card: CardInstance<K>, s: PendingQueueCardState): CardRender
 
 	const kb = keyboard();
 	if (visible.length > 0) {
-		kb.text("View ▶", btn(card, "view"))
-			.text("Approve ▶", btn(card, "promote"))
-			.row()
-			.text("Dismiss ▶", btn(card, "dismiss"))
-			.text("Refresh", btn(card, "refresh"))
-			.row();
+		kb.text("View ▶", btn(card, "view")).text("Refresh", btn(card, "refresh")).row();
 	}
 
 	if (page > 0) {
@@ -720,7 +715,7 @@ export const pendingQueueRenderer: CardRenderer<K> = {
 						...s,
 						entries: refreshedEntries,
 						total: refreshedEntries.length,
-						page: 0,
+						page: clampPage(currentPage, refreshedEntries.length),
 						view: selectedId && s.view === "detail" ? "detail" : "list",
 						selectedEntryId: selectedId,
 					},

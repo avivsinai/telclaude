@@ -123,6 +123,14 @@ const VALID_REACTION_EMOJI = new Set<string>([
 	"😡",
 ]);
 
+/**
+ * Strip the U+FE0F variation selector so emoji-presentation forms (e.g. "❤️")
+ * match the bare-codepoint allowlist and the form Telegram's setMessageReaction expects.
+ */
+function normalizeReactionEmoji(emoji: string): string {
+	return emoji.replace(/\uFE0F/g, "");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -526,7 +534,8 @@ export function executeDirectives(directives: Directive[], ctx: DirectiveContext
 			}
 
 			case "reaction": {
-				const { emoji, messageId: reactionTargetId } = directive;
+				const { messageId: reactionTargetId } = directive;
+				const emoji = normalizeReactionEmoji(directive.emoji);
 				if (!VALID_REACTION_EMOJI.has(emoji)) {
 					logger.warn({ emoji }, "reaction directive: unsupported emoji, skipping");
 					break;

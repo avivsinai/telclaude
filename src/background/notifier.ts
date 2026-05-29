@@ -133,7 +133,7 @@ export async function emitCompletionNotification(
 		.join("\n");
 
 	try {
-		await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+		const resp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -142,6 +142,14 @@ export async function emitCompletionNotification(
 				...(resolvedDest.threadId ? { message_thread_id: resolvedDest.threadId } : {}),
 			}),
 		});
+		if (!resp.ok) {
+			const errBody = await resp.text();
+			logger.warn(
+				{ jobId: job.id, chatId: resolvedDest.chatId, status: resp.status, body: errBody },
+				"failed to send completion text notification",
+			);
+			return;
+		}
 		logger.info(
 			{ jobId: job.id, chatId: resolvedDest.chatId },
 			"background job completion text notification sent",

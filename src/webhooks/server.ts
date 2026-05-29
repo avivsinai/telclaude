@@ -10,14 +10,13 @@ import { verifyWebhookSignature, WEBHOOK_SIGNATURE_HEADER } from "./auth.js";
 import { ipAllowedByCidrs } from "./cidr.js";
 import { getWebhookCronTargetRejection } from "./policy.js";
 import {
-	completeWebhookDelivery,
 	consumeWebhookIngressRateLimit,
 	consumeWebhookRateLimit,
 	getWebhook,
+	ingestWebhookDelivery,
 	recordWebhookHit,
-	releaseWebhookDelivery,
-	reserveWebhookDelivery,
 	type WebhookDefinition,
+	type WebhookDeliveryIngest,
 } from "./store.js";
 
 const logger = getChildLogger({ module: "webhook-server" });
@@ -282,12 +281,48 @@ export async function buildWebhookServer(opts: WebhookServerOptions): Promise<Fa
 		}
 
 		const deliveryDigest = signatureDigest(request.headers[WEBHOOK_SIGNATURE_HEADER], bodyHash);
-		const delivery = reserveWebhookDelivery({
-			slug: webhook.slug,
-			signatureDigest: deliveryDigest,
-			bodySha256: bodyHash,
-		});
-		if (!delivery.fresh) {
+		// Reserve the replay guard, enqueue the job, and record the job id atomically.
+		// A crash mid-transaction rolls back both, so a retry can never enqueue a twin
+		// job alongside a half-committed one (which would double-trigger the target cron).
+		let delivery: WebhookDeliveryIngest<BackgroundJob>;
+		try {
+			delivery = ingestWebhookDelivery(
+				{
+					slug: webhook.slug,
+					signatureDigest: deliveryDigest,
+					bodySha256: bodyHash,
+				},
+				() =>
+					enqueueJob({
+						title: `Webhook ${webhook.slug}`,
+						description: `Trigger cron job ${targetCronJob.id} (${targetCronJob.name})`,
+						userId: `webhook:${webhook.slug}`,
+						tier: "WRITE_LOCAL",
+						payload: {
+							kind: "cron-run",
+							jobId: targetCronJob.id,
+							webhook: {
+								slug: webhook.slug,
+								bodyHash,
+							},
+						},
+					}),
+			);
+		} catch (err) {
+			auditHit({
+				slug: rawSlug,
+				sourceIp,
+				webhook,
+				signatureValid: true,
+				timestampDeltaSeconds: verification.timestampDeltaSeconds ?? null,
+				actionTaken: "rejected",
+				failureReason: `enqueue_failed:${err instanceof Error ? err.message : String(err)}`,
+				bodyHash,
+			});
+			throw err;
+		}
+
+		if (delivery.duplicate) {
 			auditHit({
 				slug: rawSlug,
 				sourceIp,
@@ -301,49 +336,12 @@ export async function buildWebhookServer(opts: WebhookServerOptions): Promise<Fa
 			return reply.status(202).send({
 				ok: true,
 				duplicate: true,
-				job: delivery.backgroundJobId ? { id: delivery.backgroundJobId } : null,
+				job: { id: delivery.backgroundJobId },
 				targetCronJobId: targetCronJob.id,
 			});
 		}
 
-		let job: BackgroundJob;
-		try {
-			job = enqueueJob({
-				title: `Webhook ${webhook.slug}`,
-				description: `Trigger cron job ${targetCronJob.id} (${targetCronJob.name})`,
-				userId: `webhook:${webhook.slug}`,
-				tier: "WRITE_LOCAL",
-				payload: {
-					kind: "cron-run",
-					jobId: targetCronJob.id,
-					webhook: {
-						slug: webhook.slug,
-						bodyHash,
-					},
-				},
-			});
-		} catch (err) {
-			releaseWebhookDelivery({
-				slug: webhook.slug,
-				signatureDigest: deliveryDigest,
-			});
-			auditHit({
-				slug: rawSlug,
-				sourceIp,
-				webhook,
-				signatureValid: true,
-				timestampDeltaSeconds: verification.timestampDeltaSeconds ?? null,
-				actionTaken: "rejected",
-				failureReason: `enqueue_failed:${err instanceof Error ? err.message : String(err)}`,
-				bodyHash,
-			});
-			throw err;
-		}
-		completeWebhookDelivery({
-			slug: webhook.slug,
-			signatureDigest: deliveryDigest,
-			backgroundJobId: job.id,
-		});
+		const job = delivery.job;
 
 		auditHit({
 			slug: rawSlug,

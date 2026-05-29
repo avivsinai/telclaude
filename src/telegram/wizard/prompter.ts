@@ -439,11 +439,15 @@ export function createWizardPrompter(ctx: WizardContext): WizardPrompter {
 			reply_markup: { force_reply: true, selective: true },
 			message_thread_id: ctx.threadId,
 		});
-		// Track the prompt message so we can clean up, but keep the wizard
-		// message ID for future steps.
-		const promptMessageId = msg.message_id;
+		// Track the currently-visible prompt message. force_reply cannot be set
+		// via editMessageText, so each re-prompt is a fresh send; we delete the
+		// previous one first so failed attempts don't leave dangling reply UIs.
+		// The wizard message ID is left untouched for future steps.
+		let promptMessageId = msg.message_id;
 
-		const attemptTextInput = async (): Promise<string> => {
+		// Loop instead of recursing so stack depth stays constant across retries.
+		let result: string;
+		for (;;) {
 			let value: string;
 			try {
 				value = await waitForTextMessage(params.message);
@@ -463,24 +467,28 @@ export function createWizardPrompter(ctx: WizardContext): WizardPrompter {
 			}
 
 			// Validate if validator provided
-			if (params.validate) {
-				const errorMsg = params.validate(value);
-				if (errorMsg) {
-					// Send error and re-prompt
-					await ctx.api.sendMessage(ctx.chatId, `${errorMsg}\n\nPlease try again:`, {
-						reply_markup: { force_reply: true, selective: true },
-						message_thread_id: ctx.threadId,
-					});
-					return attemptTextInput();
+			const errorMsg = params.validate?.(value);
+			if (errorMsg) {
+				// Replace the stale re-prompt with a fresh one carrying force_reply,
+				// keeping at most one outstanding reply prompt in the chat.
+				try {
+					await ctx.api.deleteMessage(ctx.chatId, promptMessageId);
+				} catch {
+					// Best effort — message may have been deleted already
 				}
+				const rePrompt = await ctx.api.sendMessage(ctx.chatId, `${errorMsg}\n\nPlease try again:`, {
+					reply_markup: { force_reply: true, selective: true },
+					message_thread_id: ctx.threadId,
+				});
+				promptMessageId = rePrompt.message_id;
+				continue;
 			}
 
-			return value;
-		};
+			result = value;
+			break;
+		}
 
-		const result = await attemptTextInput();
-
-		// Update the original prompt to show the result
+		// Update the currently-visible prompt to show the result
 		try {
 			await ctx.api.editMessageText(ctx.chatId, promptMessageId, `${params.message}\n> ${result}`);
 		} catch {
@@ -544,70 +552,112 @@ export function createWizardPrompter(ctx: WizardContext): WizardPrompter {
 
 		await sendOrEdit(formatMessage(), buildKeyboard());
 
-		// Loop: handle toggle and done callbacks
-		for (;;) {
-			let callbackData: string;
-			try {
-				callbackData = await waitForCallback(params.message);
-			} catch (err) {
-				if (err instanceof WizardTimeoutError) {
-					try {
-						await sendOrEdit(`${params.message}\n> _Timed out_`);
-					} catch {
-						// Best effort
+		// The handler stays registered for the whole multiselect interaction.
+		// Callbacks arriving while we re-render (e.g. a fast double-tap on the
+		// still-visible keyboard) are buffered in this queue instead of hitting
+		// an empty registry and being rejected as "expired".
+		const callbackQueue: string[] = [];
+		let pendingWaiter: ((data: string) => void) | null = null;
+
+		activeWizardHandlers.set(wizardId, {
+			actorId: ctx.actorId,
+			chatId: ctx.chatId,
+			threadId: ctx.threadId,
+			handler: (data: string) => {
+				if (pendingWaiter) {
+					const resolve = pendingWaiter;
+					pendingWaiter = null;
+					resolve(data);
+				} else {
+					callbackQueue.push(data);
+				}
+			},
+		});
+
+		/** Resolve the next queued callback, or await one with a timeout. */
+		function waitNext(): Promise<string> {
+			const buffered = callbackQueue.shift();
+			if (buffered !== undefined) {
+				return Promise.resolve(buffered);
+			}
+			return new Promise<string>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					pendingWaiter = null;
+					reject(new WizardTimeoutError(params.message));
+				}, timeoutMs);
+				pendingWaiter = (data: string) => {
+					clearTimeout(timer);
+					resolve(data);
+				};
+			});
+		}
+
+		try {
+			// Loop: handle toggle and done callbacks
+			for (;;) {
+				const callbackData = await waitNext();
+				const parts = callbackData.split(":");
+
+				if (parts[2] === "done") {
+					// Validate selections; on failure re-render and keep looping.
+					if (params.minSelections !== undefined && selected.size < params.minSelections) {
+						await sendOrEdit(
+							`${formatMessage()}\n\nPlease select at least ${params.minSelections}.`,
+							buildKeyboard(),
+						);
+						continue;
 					}
-				}
-				throw err;
-			}
+					if (params.maxSelections !== undefined && selected.size > params.maxSelections) {
+						await sendOrEdit(
+							`${formatMessage()}\n\nPlease select at most ${params.maxSelections}.`,
+							buildKeyboard(),
+						);
+						continue;
+					}
 
-			const parts = callbackData.split(":");
+					// Collect selected values
+					const result: T[] = [];
+					for (const idx of selected) {
+						result.push(options[idx].value);
+					}
 
-			if (parts[2] === "done") {
-				// Validate selections
-				if (params.minSelections !== undefined && selected.size < params.minSelections) {
-					// Re-register handler and re-render with error hint
-					await sendOrEdit(
-						`${formatMessage()}\n\nPlease select at least ${params.minSelections}.`,
-						buildKeyboard(),
-					);
-					continue;
-				}
-				if (params.maxSelections !== undefined && selected.size > params.maxSelections) {
-					await sendOrEdit(
-						`${formatMessage()}\n\nPlease select at most ${params.maxSelections}.`,
-						buildKeyboard(),
-					);
-					continue;
+					// Show result
+					const labels = [...selected].map((i) => options[i].label).join(", ");
+					await showResult(params.message, labels || "None");
+					return result;
 				}
 
-				// Collect selected values
-				const result: T[] = [];
-				for (const idx of selected) {
-					result.push(options[idx].value);
-				}
-
-				// Show result
-				const labels = [...selected].map((i) => options[i].label).join(", ");
-				await showResult(params.message, labels || "None");
-				return result;
-			}
-
-			if (parts[2] === "t") {
-				// Toggle
-				const index = Number.parseInt(parts[3], 10);
-				if (index >= 0 && index < options.length) {
-					if (selected.has(index)) {
-						selected.delete(index);
-					} else {
-						// Check max before adding
-						if (params.maxSelections === undefined || selected.size < params.maxSelections) {
-							selected.add(index);
+				if (parts[2] === "t") {
+					// Toggle
+					const index = Number.parseInt(parts[3], 10);
+					if (index >= 0 && index < options.length) {
+						if (selected.has(index)) {
+							selected.delete(index);
+						} else {
+							// Check max before adding
+							if (params.maxSelections === undefined || selected.size < params.maxSelections) {
+								selected.add(index);
+							}
 						}
 					}
+					// Re-render with updated checkmarks
+					await sendOrEdit(formatMessage(), buildKeyboard());
 				}
-				// Re-render with updated checkmarks
-				await sendOrEdit(formatMessage(), buildKeyboard());
 			}
+		} catch (err) {
+			if (err instanceof WizardTimeoutError) {
+				try {
+					await sendOrEdit(`${params.message}\n> _Timed out_`);
+				} catch {
+					// Best effort
+				}
+			}
+			throw err;
+		} finally {
+			// Tear down the persistent handler exactly once, regardless of how
+			// the loop exits (done, timeout, or unexpected error).
+			activeWizardHandlers.delete(wizardId);
+			pendingWaiter = null;
 		}
 	};
 

@@ -3,13 +3,14 @@ import { executeRemoteQuery } from "../agent/client.js";
 import type { SocialServiceConfig } from "../config/config.js";
 import { isTransientNetworkError } from "../infra/network-errors.js";
 import { retryAsync } from "../infra/retry.js";
-import { withTimeout } from "../infra/timeout.js";
+import { TimeoutError, withTimeout } from "../infra/timeout.js";
 import { getChildLogger } from "../logging.js";
 import { isTelegramMemorySource } from "../memory/source.js";
 import { createEntries, getEntries, markEntryPosted } from "../memory/store.js";
 import type { MemoryEntry, MemorySource, TrustLevel } from "../memory/types.js";
 import type { QueryResult, StreamChunk } from "../sdk/client.js";
 import { sanitizeInlineContent, wrapExternalContent } from "../security/external-content.js";
+import { filterOutput } from "../security/output-filter.js";
 import { getMultimediaRateLimiter } from "../services/multimedia-rate-limit.js";
 import { sendAdminAlert } from "../telegram/admin-alert.js";
 import {
@@ -22,6 +23,7 @@ import { formatSocialContextForPrompt } from "./context.js";
 import { buildSocialIdentityPreamble } from "./identity.js";
 import {
 	getSocialDraft,
+	markSocialDraftPostingFailed,
 	parseSocialQuoteProposalMetadata,
 	socialDraftMetadataForNewProposal,
 	updateSocialDraftText,
@@ -1155,16 +1157,32 @@ function checkAutonomousFollowBudgets(
 	return { allowed: true };
 }
 
-function consumeAutonomousFollowBudgets(
+/**
+ * Consume the per-target follow/unfollow budget.
+ *
+ * Called once an actual attempt is made against a handle (i.e. after the lookup
+ * API call), regardless of outcome, so a handle that keeps failing (transient
+ * errors, tier-gated 403, suspended account) is not re-attempted every heartbeat.
+ */
+function consumeAutonomousFollowTargetBudget(
 	serviceId: string,
 	action: AutonomousFollowAction["action"],
 	handleKey: string,
 ): void {
-	const rateLimiter = getMultimediaRateLimiter();
-	rateLimiter.consume(`${serviceId}_${action}`, `social:${serviceId}:autonomous-${action}`);
-	rateLimiter.consume(
+	getMultimediaRateLimiter().consume(
 		`${serviceId}_${action}_target`,
 		`social:${serviceId}:${action}-target:${handleKey}`,
+	);
+}
+
+/** Consume the service-wide follow/unfollow budget (only on a successful mutation). */
+function consumeAutonomousFollowServiceBudget(
+	serviceId: string,
+	action: AutonomousFollowAction["action"],
+): void {
+	getMultimediaRateLimiter().consume(
+		`${serviceId}_${action}`,
+		`social:${serviceId}:autonomous-${action}`,
 	);
 }
 
@@ -1279,6 +1297,46 @@ function buildProactivePostPrompt(
 }
 
 /**
+ * Retire a promoted idea that could not be published.
+ *
+ * Surfaces the failure in the workbench (draftState = "failed") and alerts the
+ * operator, then marks the idea posted so it is removed from the proactive queue
+ * and not re-attempted on the next heartbeat. Without the posted mark a permanent
+ * failure (e.g. 403) would be retried indefinitely; without the failed state +
+ * alert the operator-approved idea would silently vanish.
+ */
+async function retireFailedProactiveIdea(params: {
+	ideaId: string;
+	serviceId: string;
+	reason: string;
+	alertTitle: string;
+	alertMessage: string;
+}): Promise<void> {
+	try {
+		markSocialDraftPostingFailed({
+			id: params.ideaId,
+			error: params.reason,
+			serviceId: params.serviceId,
+		});
+	} catch (err) {
+		logger.warn(
+			{ ideaId: params.ideaId, error: String(err), serviceId: params.serviceId },
+			"failed to transition idea to failed state",
+		);
+	}
+	try {
+		markEntryPosted(params.ideaId);
+	} catch {
+		// best effort — failed state already recorded above
+	}
+	await sendAdminAlert({
+		level: "warn",
+		title: params.alertTitle,
+		message: params.alertMessage,
+	}).catch(() => {});
+}
+
+/**
  * Handle proactive posting during heartbeat.
  */
 async function handleProactivePosting(
@@ -1354,8 +1412,15 @@ async function handleProactivePosting(
 					},
 					"failed to create quote post",
 				);
-				// Mark as posted to prevent infinite retry on permanent failures (e.g. 403)
-				markEntryPosted(idea.id);
+				// Permanent failure (e.g. 403): surface in workbench + alert operator,
+				// then mark posted so it is not retried indefinitely.
+				await retireFailedProactiveIdea({
+					ideaId: idea.id,
+					serviceId,
+					reason: `quote post failed (status ${quoteResult.status ?? "?"}): ${quoteResult.error ?? "unknown error"}`,
+					alertTitle: `${serviceId} quote post failed`,
+					alertMessage: `Quote post for idea ${idea.id} (target ${quoteMetadata.targetPostId}) failed and was dropped. ${quoteResult.error ?? ""}`,
+				});
 				continue;
 			}
 
@@ -1427,7 +1492,50 @@ async function handleProactivePosting(
 				continue;
 			}
 
-			const postResult = await postThread(client, tweets, serviceId);
+			// Secret scrub: agent-shaped public content must not leak secret-shaped
+			// strings (matches the rejection already enforced on draft text).
+			if (filterOutput(tweets.join("\n")).blocked) {
+				logger.error(
+					{ ideaId: idea.id, serviceId },
+					"proactive thread blocked by secret filter; dropping idea",
+				);
+				await retireFailedProactiveIdea({
+					ideaId: idea.id,
+					serviceId,
+					reason: "thread content blocked by secret filter",
+					alertTitle: `${serviceId} thread blocked`,
+					alertMessage: `Thread for idea ${idea.id} was blocked by the secret filter before posting and was dropped.`,
+				});
+				continue;
+			}
+
+			let postResult: SocialPostResult;
+			try {
+				postResult = await postThread(client, tweets, serviceId);
+			} catch (err) {
+				// withTimeout rejects but does NOT cancel createThread; the thread may
+				// still be posting in the background. Treat a timeout as an uncertain
+				// (likely partial/complete) post: mark posted + alert, never let it
+				// throw, otherwise the idea re-posts the full thread next heartbeat.
+				if (err instanceof TimeoutError) {
+					try {
+						markEntryPosted(idea.id);
+					} catch {
+						// best effort
+					}
+					logger.error(
+						{ ideaId: idea.id, serviceId, timeoutMs: err.timeoutMs },
+						"thread post timed out; marked as posted (createThread may still be running)",
+					);
+					await sendAdminAlert({
+						level: "warn",
+						title: `${serviceId} thread post timed out`,
+						message: `Thread for idea ${idea.id} timed out after ${err.timeoutMs}ms. The thread may be partially or fully posted in the background; marked as posted to prevent a duplicate next heartbeat.`,
+					}).catch(() => {});
+					return { posted: true, message: `thread timed out ${idea.id}` };
+				}
+				throw err;
+			}
 			if (!postResult.ok) {
 				// If any tweets were posted (partial failure), mark as posted to prevent
 				// duplicate thread prefixes on next heartbeat. Alert operator instead.
@@ -1462,7 +1570,14 @@ async function handleProactivePosting(
 					{ ideaId: idea.id, status: postResult.status, error: postResult.error, serviceId },
 					"failed to create thread",
 				);
-				markEntryPosted(idea.id);
+				// Permanent failure: surface in workbench + alert operator, then mark posted.
+				await retireFailedProactiveIdea({
+					ideaId: idea.id,
+					serviceId,
+					reason: `thread post failed (status ${postResult.status ?? "?"}): ${postResult.error ?? "unknown error"}`,
+					alertTitle: `${serviceId} thread post failed`,
+					alertMessage: `Thread for idea ${idea.id} failed and was dropped. ${postResult.error ?? ""}`,
+				});
 				continue;
 			}
 
@@ -1496,6 +1611,23 @@ async function handleProactivePosting(
 			continue;
 		}
 
+		// Secret scrub: agent-shaped public content must not leak secret-shaped
+		// strings (matches the rejection already enforced on draft text).
+		if (filterOutput(postContent).blocked) {
+			logger.error(
+				{ ideaId: idea.id, serviceId },
+				"proactive post blocked by secret filter; dropping idea",
+			);
+			await retireFailedProactiveIdea({
+				ideaId: idea.id,
+				serviceId,
+				reason: "post content blocked by secret filter",
+				alertTitle: `${serviceId} post blocked`,
+				alertMessage: `Post for idea ${idea.id} was blocked by the secret filter before posting and was dropped.`,
+			});
+			continue;
+		}
+
 		const postResult = await retryAsync(
 			() => withTimeout(client.createPost(postContent), 30_000, "create-post"),
 			{
@@ -1520,7 +1652,14 @@ async function handleProactivePosting(
 				{ ideaId: idea.id, status: postResult.status, error: postResult.error, serviceId },
 				"failed to create social post",
 			);
-			markEntryPosted(idea.id);
+			// Permanent failure: surface in workbench + alert operator, then mark posted.
+			await retireFailedProactiveIdea({
+				ideaId: idea.id,
+				serviceId,
+				reason: `post failed (status ${postResult.status ?? "?"}): ${postResult.error ?? "unknown error"}`,
+				alertTitle: `${serviceId} post failed`,
+				alertMessage: `Post for idea ${idea.id} failed and was dropped. ${postResult.error ?? ""}`,
+			});
 			continue;
 		}
 
@@ -1664,6 +1803,12 @@ async function handleAutonomousActivity(
 			15_000,
 			"lookup-user",
 		);
+		// Consume the per-target budget as soon as an attempt is made against this
+		// handle, regardless of outcome. The per-target limit (1/hour, 1/day) exists
+		// to stop re-attempting the same handle; without this a failing handle would
+		// be retried every heartbeat. The service-wide budget is consumed only on a
+		// successful mutation below.
+		consumeAutonomousFollowTargetBudget(serviceId, parsed.action, matchedHandle.handleKey);
 		if (!lookupResult.ok) {
 			logger.warn(
 				{
@@ -1705,7 +1850,7 @@ async function handleAutonomousActivity(
 			return { acted: false, summary: "" };
 		}
 
-		consumeAutonomousFollowBudgets(serviceId, parsed.action, matchedHandle.handleKey);
+		consumeAutonomousFollowServiceBudget(serviceId, parsed.action);
 		logger.info(
 			{ serviceId, action: parsed.action, handle: matchedHandle.label },
 			"autonomous follow action completed",

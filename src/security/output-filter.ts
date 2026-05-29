@@ -642,8 +642,10 @@ export function redactSecretsWithConfig(text: string, config?: SecretFilterConfi
 		const threshold = config?.entropyDetection?.threshold ?? 4.5;
 		const minLength = config?.entropyDetection?.minLength ?? 32;
 		const blobs = detectHighEntropyBlobs(result, threshold, minLength);
-		for (const blob of blobs) {
-			result = result.replace(blob, "[REDACTED:HIGH_ENTROPY]");
+		for (const blob of new Set(blobs)) {
+			// Replace ALL occurrences: detectHighEntropyBlobs only finds blobs
+			// preceded by [=:], but the same value can be echoed elsewhere too.
+			result = result.split(blob).join("[REDACTED:HIGH_ENTROPY]");
 		}
 	}
 

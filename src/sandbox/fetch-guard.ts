@@ -106,6 +106,64 @@ function isRedirectStatus(status: number): boolean {
 }
 
 /**
+ * Request headers that carry credentials and must be stripped when a redirect
+ * crosses an origin boundary, to avoid leaking auth/cookies to a new host.
+ */
+const SENSITIVE_REDIRECT_HEADERS = new Set([
+	"authorization",
+	"cookie",
+	"cookie2",
+	"proxy-authorization",
+	"www-authenticate",
+]);
+
+/**
+ * Remove sensitive headers (Authorization, Cookie, …) from a RequestInit's
+ * headers, normalizing whatever headers shape was supplied into a plain record.
+ * Returns undefined when no headers remain.
+ */
+function stripSensitiveHeaders(
+	headers: RequestInit["headers"],
+): RequestInit["headers"] | undefined {
+	if (!headers) return undefined;
+	const normalized = new Headers(headers);
+	for (const name of SENSITIVE_REDIRECT_HEADERS) {
+		normalized.delete(name);
+	}
+	const entries = [...normalized.entries()];
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Compute the request init for the next redirect hop following WHATWG fetch
+ * redirect semantics:
+ * - 301/302/303 downgrade the method to GET and drop the request body
+ *   (303 always; 301/302 for compatibility with legacy server behavior).
+ * - 307/308 preserve method and body.
+ * - When the redirect crosses an origin boundary, sensitive headers
+ *   (Authorization, Cookie, …) are stripped so credentials are not forwarded
+ *   to a different host (a redirect-based credential-exfiltration / SSRF hazard).
+ */
+function buildRedirectInit(
+	prevInit: RequestInit | undefined,
+	status: number,
+	sameOrigin: boolean,
+): RequestInit {
+	const next: RequestInit = { ...(prevInit ?? {}) };
+
+	if (status === 301 || status === 302 || status === 303) {
+		next.method = "GET";
+		next.body = undefined;
+	}
+
+	if (!sameOrigin) {
+		next.headers = stripSensitiveHeaders(next.headers);
+	}
+
+	return next;
+}
+
+/**
  * Resolve hostname and validate all IPs against blocked ranges.
  * Returns the validated IP addresses, or throws on blocked/unresolvable hosts.
  */
@@ -248,6 +306,10 @@ export async function fetchWithGuard(opts: FetchWithGuardOptions): Promise<Fetch
 	let currentUrl = opts.url;
 	visited.add(currentUrl); // Track initial URL for loop detection
 	let redirectCount = 0;
+	// The init for the current hop. Rebuilt per redirect following WHATWG rules
+	// rather than replaying opts.init verbatim (which would forward the method,
+	// body, and auth headers to a redirect target — even cross-origin).
+	let currentInit: RequestInit | undefined = opts.init;
 
 	while (true) {
 		// Parse and validate URL
@@ -277,7 +339,7 @@ export async function fetchWithGuard(opts: FetchWithGuardOptions): Promise<Fetch
 			// Dispatcher type on RequestInit due to dual package versions;
 			// the cast is safe since Agent extends Dispatcher at runtime.
 			const init: RequestInit = {
-				...(opts.init ?? {}),
+				...(currentInit ?? {}),
 				redirect: "manual",
 				dispatcher: agent as never,
 				...(signal ? { signal } : {}),
@@ -299,13 +361,23 @@ export async function fetchWithGuard(opts: FetchWithGuardOptions): Promise<Fetch
 					throw new FetchGuardError(`Too many redirects (limit: ${maxRedirects})`);
 				}
 
-				const nextUrl = new URL(location, parsedUrl).toString();
+				const nextParsedUrl = new URL(location, parsedUrl);
+				const nextUrl = nextParsedUrl.toString();
 				if (visited.has(nextUrl)) {
 					await release(agent);
 					throw new FetchGuardError("Redirect loop detected");
 				}
 
 				visited.add(nextUrl);
+
+				// Rebuild the next-hop init per WHATWG redirect rules: downgrade
+				// the method/drop the body for 301/302/303, and strip credentials
+				// (Authorization, Cookie, …) when the origin changes.
+				currentInit = buildRedirectInit(
+					currentInit,
+					response.status,
+					nextParsedUrl.origin === parsedUrl.origin,
+				);
 
 				// Drain the redirect response body and close the agent for this hop
 				try {

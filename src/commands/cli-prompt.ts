@@ -36,11 +36,6 @@ export async function promptLine(question: string): Promise<string | null> {
  */
 export async function promptSecret(prompt: string): Promise<string | null> {
 	return new Promise((resolve) => {
-		const rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		});
-
 		const stdin = process.stdin;
 		const wasRaw = stdin.isRaw;
 
@@ -55,14 +50,14 @@ export async function promptSecret(prompt: string): Promise<string | null> {
 				if (c === "\n" || c === "\r" || c === "\u0004") {
 					stdin.setRawMode(wasRaw ?? false);
 					stdin.removeListener("data", handler);
+					stdin.pause();
 					process.stdout.write("\n");
-					rl.close();
 					resolve(secret.trim() || null);
 				} else if (c === "\u0003") {
 					stdin.setRawMode(wasRaw ?? false);
 					stdin.removeListener("data", handler);
+					stdin.pause();
 					process.stdout.write("\n");
-					rl.close();
 					resolve(null);
 				} else if (c === "\u007F" || c === "\b") {
 					if (secret.length > 0) {
@@ -76,6 +71,10 @@ export async function promptSecret(prompt: string): Promise<string | null> {
 			};
 			stdin.on("data", handler);
 		} else {
+			const rl = readline.createInterface({
+				input: process.stdin,
+				output: process.stdout,
+			});
 			rl.question(prompt, (answer) => {
 				rl.close();
 				resolve(answer.trim() || null);

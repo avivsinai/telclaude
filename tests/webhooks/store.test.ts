@@ -186,4 +186,113 @@ describe("webhook store", () => {
 			}).fresh,
 		).toBe(false);
 	});
+
+	it("ingestWebhookDelivery enqueues once and returns the existing job on replay", async () => {
+		const { ingestWebhookDelivery } = await import("../../src/webhooks/store.js");
+		const digest = "a".repeat(64);
+		const body = "b".repeat(64);
+		let calls = 0;
+		const enqueue = () => {
+			calls += 1;
+			return { id: `job-${calls}` };
+		};
+
+		const first = ingestWebhookDelivery(
+			{ slug: "deploy", signatureDigest: digest, bodySha256: body },
+			enqueue,
+		);
+		expect(first).toEqual({ duplicate: false, job: { id: "job-1" } });
+
+		const replay = ingestWebhookDelivery(
+			{ slug: "deploy", signatureDigest: digest, bodySha256: body },
+			enqueue,
+		);
+		expect(replay).toEqual({ duplicate: true, backgroundJobId: "job-1" });
+		// The replay must NOT enqueue a second job (the double-trigger this guards against).
+		expect(calls).toBe(1);
+	});
+
+	it("ingestWebhookDelivery rolls back the job and the reservation on a crash before completion", async () => {
+		const { ingestWebhookDelivery } = await import("../../src/webhooks/store.js");
+		const { createJob } = await import("../../src/background/jobs.js");
+		const { getDb } = await import("../../src/storage/db.js");
+		const digest = "c".repeat(64);
+		const body = "d".repeat(64);
+		const jobInput = {
+			title: "Webhook deploy",
+			description: "trigger",
+			userId: "webhook:deploy",
+			tier: "WRITE_LOCAL" as const,
+			payload: {
+				kind: "cron-run" as const,
+				jobId: "target-cron",
+				webhook: { slug: "deploy", bodyHash: body },
+			},
+		};
+
+		// Real job insert, then a failure BEFORE completeWebhookDelivery runs — exactly
+		// the crash-after-enqueue/before-complete window. The transaction must undo both.
+		expect(() =>
+			ingestWebhookDelivery({ slug: "deploy", signatureDigest: digest, bodySha256: body }, () => {
+				createJob(jobInput);
+				throw new Error("crash before complete");
+			}),
+		).toThrow(/crash before complete/);
+
+		const db = getDb();
+		expect(
+			db
+				.prepare("SELECT COUNT(*) AS count FROM webhook_deliveries WHERE signature_digest = ?")
+				.get(digest),
+		).toMatchObject({ count: 0 });
+		// The job insert was rolled back too — no orphan queued job survives the crash.
+		expect(db.prepare("SELECT COUNT(*) AS count FROM background_jobs").get()).toMatchObject({
+			count: 0,
+		});
+
+		// A retry now succeeds and enqueues exactly one job — no double-trigger.
+		let made = 0;
+		const retry = ingestWebhookDelivery(
+			{ slug: "deploy", signatureDigest: digest, bodySha256: body },
+			() => {
+				made += 1;
+				return createJob(jobInput);
+			},
+		);
+		expect(retry.duplicate).toBe(false);
+		expect(made).toBe(1);
+		expect(db.prepare("SELECT COUNT(*) AS count FROM background_jobs").get()).toMatchObject({
+			count: 1,
+		});
+	});
+
+	it("ingestWebhookDelivery self-heals a stale reservation without double-enqueuing", async () => {
+		const { ingestWebhookDelivery, reserveWebhookDelivery } = await import(
+			"../../src/webhooks/store.js"
+		);
+		const { getDb } = await import("../../src/storage/db.js");
+		const digest = "e".repeat(64);
+		const body = "f".repeat(64);
+
+		// A reservation row with no job id, as left by a crash under an older path.
+		expect(
+			reserveWebhookDelivery({ slug: "deploy", signatureDigest: digest, bodySha256: body }).fresh,
+		).toBe(true);
+
+		let calls = 0;
+		const result = ingestWebhookDelivery(
+			{ slug: "deploy", signatureDigest: digest, bodySha256: body },
+			() => {
+				calls += 1;
+				return { id: "job-heal" };
+			},
+		);
+		expect(result).toEqual({ duplicate: false, job: { id: "job-heal" } });
+		expect(calls).toBe(1);
+		expect(
+			getDb()
+				.prepare("SELECT background_job_id AS jobId FROM webhook_deliveries WHERE signature_digest = ?")
+				.get(digest),
+		).toMatchObject({ jobId: "job-heal" });
+	});
 });

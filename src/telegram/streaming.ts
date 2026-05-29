@@ -157,6 +157,8 @@ export class StreamingResponse {
 		secretFilterConfig?: SecretFilterConfig;
 	};
 	private readonly messageThreadId?: number;
+	/** Baseline update interval, restored after a successful edit unwinds 429 backoff. */
+	private readonly baseUpdateIntervalMs: number;
 
 	private messageId: number | null = null;
 	private content = "";
@@ -189,6 +191,7 @@ export class StreamingResponse {
 					? false
 					: statusReactions;
 		this.config = { ...DEFAULT_CONFIG, ...rest };
+		this.baseUpdateIntervalMs = this.config.minUpdateIntervalMs;
 		this.streamLoop = createDraftStreamLoop({
 			throttleMs: this.config.minUpdateIntervalMs,
 			isStopped: () => this.isFinished,
@@ -393,6 +396,7 @@ export class StreamingResponse {
 			this.lastSentContent = this.content;
 			this.lastUpdateTime = Date.now();
 			this.consecutiveErrors = 0; // Reset error counter on success
+			this.config.minUpdateIntervalMs = this.baseUpdateIntervalMs; // Unwind any 429 backoff
 			this.clearForceUpdateTimer();
 
 			logger.debug(
@@ -506,6 +510,7 @@ export class StreamingResponse {
 			this.lastSentContent = this.content;
 			this.lastUpdateTime = Date.now();
 			this.consecutiveErrors = 0;
+			this.config.minUpdateIntervalMs = this.baseUpdateIntervalMs; // Unwind any 429 backoff
 			this.clearForceUpdateTimer();
 
 			logger.info(

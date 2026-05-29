@@ -316,6 +316,12 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 	}
 	const ext = path.extname(pathForExt).toLowerCase();
 
+	// Stickers must be checked before photos: a .webp with no caption is a
+	// sticker, but Telegram stickers cannot carry captions, so a captioned
+	// .webp falls through to the photo branch below.
+	if ([".webp", ".tgs"].includes(ext) && !caption) {
+		return { type: "sticker", source };
+	}
 	if ([".jpg", ".jpeg", ".png", ".gif", ".webp"].includes(ext)) {
 		return { type: "photo", source, caption };
 	}
@@ -328,9 +334,6 @@ function inferMediaPayload(source: string, caption?: string): TelegramMediaPaylo
 	}
 	if ([".ogg", ".oga"].includes(ext)) {
 		return { type: "voice", source, caption };
-	}
-	if ([".webp", ".tgs"].includes(ext) && !caption) {
-		return { type: "sticker", source };
 	}
 
 	return { type: "document", source, caption };

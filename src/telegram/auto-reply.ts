@@ -2608,7 +2608,12 @@ async function handleApproveCommand(
 		await msg.reply(`Approving ${description}...`);
 		const { getVaultClient } = await import("../vault-daemon/client.js");
 		const vaultClient = getVaultClient();
-		const providerResult = await consumeProviderApproval(nonce, vaultClient);
+		// Actor binding: resolve the consuming actor id the same way the SDK query
+		// path does (executeAndReply), so it matches the actor stored when the
+		// approval was created. A different chat member who learns the nonce must
+		// not be able to approve another actor's queued privileged action.
+		const consumingActorUserId = getIdentityLink(msg.chatId)?.localUserId ?? String(msg.chatId);
+		const providerResult = await consumeProviderApproval(nonce, consumingActorUserId, vaultClient);
 		if (!providerResult) {
 			await msg.reply("Provider approval expired or already consumed.");
 			return;

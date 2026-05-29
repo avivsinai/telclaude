@@ -238,19 +238,22 @@ export function recordEpisode(input: MemoryEpisodeInput): MemoryEpisode {
 	);
 
 	const countRow = db
-		.prepare("SELECT COUNT(*) as cnt FROM memory_episodes WHERE scope_key = ?")
-		.get(episode.scopeKey) as { cnt: number };
+		.prepare("SELECT COUNT(*) as cnt FROM memory_episodes WHERE source = ? AND scope_key = ?")
+		.get(episode.source, episode.scopeKey) as { cnt: number };
 	if (countRow.cnt > MAX_EPISODES_PER_SCOPE) {
 		const excess = countRow.cnt - MAX_EPISODES_PER_SCOPE;
 		db.prepare(
 			`DELETE FROM memory_episodes WHERE id IN (
 				SELECT id FROM memory_episodes
-				WHERE scope_key = ?
+				WHERE source = ? AND scope_key = ?
 				ORDER BY created_at ASC
 				LIMIT ?
 			)`,
-		).run(episode.scopeKey, excess);
-		logger.info({ scopeKey: episode.scopeKey, deleted: excess }, "trimmed old episodic entries");
+		).run(episode.source, episode.scopeKey, excess);
+		logger.info(
+			{ source: episode.source, scopeKey: episode.scopeKey, deleted: excess },
+			"trimmed old episodic entries",
+		);
 	}
 
 	return episode;

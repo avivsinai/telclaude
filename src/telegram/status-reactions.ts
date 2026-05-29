@@ -175,6 +175,13 @@ export function createStatusReactionController(
 	let currentStage: ReactionStage | null = null;
 	let disposed = false;
 
+	// Generation counter. Bumped when a terminal stage is chosen so that any
+	// non-terminal reaction write captured before the terminal transition — even
+	// one already awaiting the Telegram API in flight — is dropped instead of
+	// clobbering the terminal emoji.
+	let generation = 0;
+	let terminalChosen = false;
+
 	// Promise serialisation queue — all reaction updates run sequentially.
 	let queue: Promise<void> = Promise.resolve();
 
@@ -196,8 +203,11 @@ export function createStatusReactionController(
 		});
 	}
 
-	async function applyReaction(emoji: ReactionTypeEmoji["emoji"]): Promise<void> {
-		if (disposed) return;
+	async function applyReaction(emoji: ReactionTypeEmoji["emoji"], gen: number): Promise<void> {
+		// Drop stale writes: a non-terminal reaction queued before a terminal
+		// stage was chosen must not overwrite the terminal emoji, even if it only
+		// reaches the front of the queue (or returns from an in-flight call) later.
+		if (disposed || gen !== generation) return;
 		try {
 			await api.setMessageReaction(chatId, messageId, [{ type: "emoji", emoji }]);
 		} catch (err) {
@@ -292,9 +302,12 @@ export function createStatusReactionController(
 
 		debounceTimer = setTimeout(() => {
 			debounceTimer = null;
+			// A terminal stage may have been chosen during the debounce window.
+			if (terminalChosen) return;
 			currentStage = stage;
 			startStallTimers(stage);
-			enqueue(() => applyReaction(STAGE_EMOJI[stage]));
+			const gen = generation;
+			enqueue(() => applyReaction(STAGE_EMOJI[stage], gen));
 		}, opts.debounceMs);
 	}
 
@@ -317,12 +330,17 @@ export function createStatusReactionController(
 		cancelDebounce();
 		resetStallTimers();
 
-		// Drain the promise queue — discard any pending non-terminal writes that
-		// could run after the terminal reaction under auto-retry.
-		queue = Promise.resolve();
+		// Bump the generation so every non-terminal write captured before now —
+		// including one already awaiting the Telegram API in flight — becomes a
+		// no-op when it returns to the queue. The terminal write stays chained on
+		// the existing queue so it runs strictly after any in-flight call rather
+		// than racing it (which could let a stale non-terminal emoji land last).
+		generation += 1;
+		terminalChosen = true;
 
 		currentStage = stage;
-		enqueue(() => applyReaction(STAGE_EMOJI[stage]));
+		const gen = generation;
+		enqueue(() => applyReaction(STAGE_EMOJI[stage], gen));
 
 		// Return a promise that resolves when the queue catches up.
 		return new Promise<boolean>((resolve) => {
