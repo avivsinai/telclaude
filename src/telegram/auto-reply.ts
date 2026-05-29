@@ -1774,6 +1774,7 @@ async function executeWithSession(
 export const __test = {
 	dispatchTelegramControlCommand,
 	executeAndReply,
+	executePlanPhase,
 	handleLinkCommand,
 	handleProfileSwitchCommand,
 	resolveCommandBody,
@@ -2898,6 +2899,7 @@ async function executePlanPhase(
 
 	// Execute planning query at READ_ONLY tier within session lock
 	let planText = "";
+	const planRedactor = createStreamingRedactor(undefined, cfg.security?.secretFilter);
 
 	await withSessionLock(
 		sessionKey,
@@ -2997,7 +2999,7 @@ async function executePlanPhase(
 
 			for await (const chunk of queryStream) {
 				if (chunk.type === "text") {
-					planText += chunk.content;
+					planText += planRedactor.processChunk(chunk.content);
 				} else if (chunk.type === "done") {
 					if (!chunk.result.success) {
 						logger.warn(
@@ -3007,9 +3009,12 @@ async function executePlanPhase(
 						await msg.reply("Failed to generate execution plan. Please try your request again.");
 						return;
 					}
+					planText += planRedactor.flush();
 					// Use accumulated text, or fallback to result response
 					if (!planText && chunk.result.response) {
-						planText = chunk.result.response;
+						const fallbackRedactor = createStreamingRedactor(undefined, cfg.security?.secretFilter);
+						planText = fallbackRedactor.processChunk(chunk.result.response);
+						planText += fallbackRedactor.flush();
 					}
 
 					// Update session

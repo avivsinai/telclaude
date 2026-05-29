@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listJobs } from "../../src/background/index.js";
+import { getMostRecentPendingPlanApproval } from "../../src/security/approvals.js";
 import { resetDatabase } from "../../src/storage/db.js";
 
 // Hoisted mutable stubs
@@ -464,6 +465,50 @@ describe("auto-reply executeAndReply", () => {
 			"/fresh please",
 			expect.objectContaining({ resumeSessionId: undefined }),
 		);
+	});
+
+	it("redacts plan-phase output before Telegram display and approval storage", async () => {
+		executePooledQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield { type: "text", content: "Plan: use secret token" };
+				yield {
+					type: "done",
+					result: {
+						response: "",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		await autoReplyTest.executePlanPhase(
+			makeMsg() as never,
+			baseCtx().config as never,
+			{
+				nonce: "approval-1",
+				requestId: "req-plan",
+				chatId: 123,
+				createdAt: Date.now(),
+				expiresAt: Date.now() + 60_000,
+				tier: "FULL_ACCESS",
+				body: "please do the risky thing",
+				from: "user",
+				to: "bot",
+				messageId: "msg-plan",
+				observerClassification: "WARN",
+				observerConfidence: 0.9,
+			} as never,
+			{ log: vi.fn(async () => {}) } as never,
+		);
+
+		const stored = getMostRecentPendingPlanApproval(123);
+		expect(replies[0]).toContain("Plan: use [REDACTED] token");
+		expect(replies[0]).not.toContain("secret");
+		expect(stored?.planText).toBe("Plan: use [REDACTED] token");
 	});
 
 	it("switches profiles and logs the transition", async () => {
