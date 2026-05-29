@@ -458,3 +458,48 @@ export function releaseWebhookDelivery(params: { slug: string; signatureDigest: 
 		.prepare("DELETE FROM webhook_deliveries WHERE slug = ? AND signature_digest = ?")
 		.run(slug, params.signatureDigest);
 }
+
+export type WebhookDeliveryIngest<TJob> =
+	| { duplicate: true; backgroundJobId: string }
+	| { duplicate: false; job: TJob };
+
+/**
+ * Reserve the replay guard, enqueue the background job, and record the job id as
+ * a single atomic unit. Wrapping all three in one SQLite transaction is what
+ * makes the webhook path crash-safe: the intermediate state (a reservation row
+ * with a NULL background_job_id) is never *committed*, so a crash between enqueue
+ * and complete rolls back BOTH the reservation and the job. That removes the
+ * split-brain the previous non-atomic sequence allowed, where a retry after a
+ * crash-before-complete would enqueue a second job alongside the first and
+ * double-trigger the target cron. (Single sync better-sqlite3 connection shared
+ * with createJob, so the mid-transaction NULL is invisible to any other reader.)
+ */
+export function ingestWebhookDelivery<TJob extends { id: string }>(
+	input: { slug: string; signatureDigest: string; bodySha256: string },
+	enqueue: () => TJob,
+	nowMs = Date.now(),
+): WebhookDeliveryIngest<TJob> {
+	const db = getDb();
+	const run = db.transaction((): WebhookDeliveryIngest<TJob> => {
+		const reservation = reserveWebhookDelivery(input, nowMs);
+		if (!reservation.fresh) {
+			if (reservation.backgroundJobId) {
+				return { duplicate: true, backgroundJobId: reservation.backgroundJobId };
+			}
+			// A committed reservation with no job id can only be a stale leftover (a
+			// crash under an older non-atomic path, or a direct reserveWebhookDelivery
+			// in tests). Under this atomic path a committed row always carries a job id,
+			// so there is no in-flight job to double. Drop the stale row and re-reserve.
+			releaseWebhookDelivery({ slug: input.slug, signatureDigest: input.signatureDigest });
+			reserveWebhookDelivery(input, nowMs);
+		}
+		const job = enqueue();
+		completeWebhookDelivery({
+			slug: input.slug,
+			signatureDigest: input.signatureDigest,
+			backgroundJobId: job.id,
+		});
+		return { duplicate: false, job };
+	});
+	return run();
+}
