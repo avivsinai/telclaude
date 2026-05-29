@@ -33,6 +33,11 @@ import {
 	setSession,
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
+import {
+	executeHermesPrivateQuery,
+	shouldUseHermesPrivateRuntime,
+} from "../hermes/private-execute.js";
+import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
 import { cleanupOldMedia } from "../media/store.js";
 import { getEntries, promoteEntryTrust } from "../memory/store.js";
@@ -547,6 +552,7 @@ function resolveSessionKeyForMessage(msg: TelegramInboundMessage, cfg: Telclaude
 function resetSessionKey(sessionKey: string): number {
 	deleteSession(sessionKey);
 	getSessionManager().clearSession(sessionKey);
+	clearHermesSessionMapping(sessionKey);
 	return revokeSessionAllowlist(sessionKey);
 }
 
@@ -1332,6 +1338,7 @@ async function executeWithSession(
 		// Delete old session if resetting
 		if (existingSession && shouldReset) {
 			deleteSession(sessionKey);
+			clearHermesSessionMapping(sessionKey);
 		}
 	} else {
 		sessionEntry = existingSession;
@@ -1430,7 +1437,8 @@ async function executeWithSession(
 		// Build chat context for agent (skills need chat ID for memory scoping)
 		const chatContext = `<chat-context chat-id="${msg.chatId}" />`;
 		const profileContext = buildProfileContext(activeProfile);
-		const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+		const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
+		const useRemoteAgent = !useHermesPrivateRuntime && Boolean(process.env.TELCLAUDE_AGENT_URL);
 		const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
 			includeProjectSoul: !useRemoteAgent,
 			cwd: process.cwd(),
@@ -1457,17 +1465,18 @@ async function executeWithSession(
 
 		const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
 		const profileAllowedSkills = activeProfile.profile.allowedSkills;
-		const queryStream = useRemoteAgent
-			? executeRemoteQuery(queryPrompt, {
+		const queryStream = useHermesPrivateRuntime
+			? executeHermesPrivateQuery(queryPrompt, {
 					cwd: process.cwd(),
 					tier,
 					poolKey: sessionKey,
+					telclaudeSessionId: sessionEntry.sessionId,
+					profileId: activeProfile.profile.id,
 					model,
 					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 					enableSkills: tier !== "READ_ONLY",
 					allowedSkills: profileAllowedSkills,
 					timeoutMs: timeoutSeconds * 1000,
-					betas: ctx.config.sdk?.betas,
 					userId,
 					chatId: msg.chatId,
 					actorId: msg.senderId ?? msg.chatId,
@@ -1475,23 +1484,41 @@ async function executeWithSession(
 					systemPromptAppend,
 					compiledMemoryMd: memoryBundle.compiledMemoryMd,
 				})
-			: executePooledQuery(queryPrompt, {
-					cwd: process.cwd(),
-					tier,
-					poolKey: sessionKey,
-					model,
-					resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-					enableSkills: tier !== "READ_ONLY",
-					allowedSkills: profileAllowedSkills,
-					timeoutMs: timeoutSeconds * 1000,
-					betas: ctx.config.sdk?.betas,
-					userId,
-					chatId: msg.chatId,
-					actorId: msg.senderId ?? msg.chatId,
-					threadId: msg.messageThreadId,
-					systemPromptAppend,
-					compiledMemoryMd: memoryBundle.compiledMemoryMd,
-				});
+			: useRemoteAgent
+				? executeRemoteQuery(queryPrompt, {
+						cwd: process.cwd(),
+						tier,
+						poolKey: sessionKey,
+						model,
+						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+						enableSkills: tier !== "READ_ONLY",
+						allowedSkills: profileAllowedSkills,
+						timeoutMs: timeoutSeconds * 1000,
+						betas: ctx.config.sdk?.betas,
+						userId,
+						chatId: msg.chatId,
+						actorId: msg.senderId ?? msg.chatId,
+						threadId: msg.messageThreadId,
+						systemPromptAppend,
+						compiledMemoryMd: memoryBundle.compiledMemoryMd,
+					})
+				: executePooledQuery(queryPrompt, {
+						cwd: process.cwd(),
+						tier,
+						poolKey: sessionKey,
+						model,
+						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+						enableSkills: tier !== "READ_ONLY",
+						allowedSkills: profileAllowedSkills,
+						timeoutMs: timeoutSeconds * 1000,
+						betas: ctx.config.sdk?.betas,
+						userId,
+						chatId: msg.chatId,
+						actorId: msg.senderId ?? msg.chatId,
+						threadId: msg.messageThreadId,
+						systemPromptAppend,
+						compiledMemoryMd: memoryBundle.compiledMemoryMd,
+					});
 
 		// Determine if streaming is enabled
 		const streamingConfig = replyConfig?.streaming;
@@ -2900,7 +2927,8 @@ async function executePlanPhase(
 				query: approval.body,
 				includeRecentHistory: isNewSession,
 			});
-			const useRemoteAgent = Boolean(process.env.TELCLAUDE_AGENT_URL);
+			const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
+			const useRemoteAgent = !useHermesPrivateRuntime && Boolean(process.env.TELCLAUDE_AGENT_URL);
 			const soulAppend = buildSoulPromptAppend(activeProfile.profile, {
 				includeProjectSoul: !useRemoteAgent,
 				cwd: process.cwd(),
@@ -2915,16 +2943,17 @@ async function executePlanPhase(
 				.join("\n\n");
 
 			const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
-			const queryStream = useRemoteAgent
-				? executeRemoteQuery(queryPrompt, {
+			const queryStream = useHermesPrivateRuntime
+				? executeHermesPrivateQuery(queryPrompt, {
 						cwd: process.cwd(),
 						tier: "READ_ONLY",
 						poolKey: sessionKey,
+						telclaudeSessionId: sessionEntry.sessionId,
+						profileId: activeProfile.profile.id,
 						model,
 						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
 						enableSkills: false,
 						timeoutMs: timeoutSeconds * 1000,
-						betas: cfg.sdk?.betas,
 						userId,
 						chatId: msg.chatId,
 						actorId: msg.senderId ?? msg.chatId,
@@ -2932,22 +2961,39 @@ async function executePlanPhase(
 						systemPromptAppend: planningPromptAppend,
 						compiledMemoryMd: memoryBundle.compiledMemoryMd,
 					})
-				: executePooledQuery(queryPrompt, {
-						cwd: process.cwd(),
-						tier: "READ_ONLY",
-						poolKey: sessionKey,
-						model,
-						resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
-						enableSkills: false,
-						timeoutMs: timeoutSeconds * 1000,
-						betas: cfg.sdk?.betas,
-						userId,
-						chatId: msg.chatId,
-						actorId: msg.senderId ?? msg.chatId,
-						threadId: msg.messageThreadId,
-						systemPromptAppend: planningPromptAppend,
-						compiledMemoryMd: memoryBundle.compiledMemoryMd,
-					});
+				: useRemoteAgent
+					? executeRemoteQuery(queryPrompt, {
+							cwd: process.cwd(),
+							tier: "READ_ONLY",
+							poolKey: sessionKey,
+							model,
+							resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+							enableSkills: false,
+							timeoutMs: timeoutSeconds * 1000,
+							betas: cfg.sdk?.betas,
+							userId,
+							chatId: msg.chatId,
+							actorId: msg.senderId ?? msg.chatId,
+							threadId: msg.messageThreadId,
+							systemPromptAppend: planningPromptAppend,
+							compiledMemoryMd: memoryBundle.compiledMemoryMd,
+						})
+					: executePooledQuery(queryPrompt, {
+							cwd: process.cwd(),
+							tier: "READ_ONLY",
+							poolKey: sessionKey,
+							model,
+							resumeSessionId: isNewSession ? undefined : sessionEntry.sessionId,
+							enableSkills: false,
+							timeoutMs: timeoutSeconds * 1000,
+							betas: cfg.sdk?.betas,
+							userId,
+							chatId: msg.chatId,
+							actorId: msg.senderId ?? msg.chatId,
+							threadId: msg.messageThreadId,
+							systemPromptAppend: planningPromptAppend,
+							compiledMemoryMd: memoryBundle.compiledMemoryMd,
+						});
 
 			for await (const chunk of queryStream) {
 				if (chunk.type === "text") {

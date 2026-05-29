@@ -1,3 +1,4 @@
+import type { PermissionTier } from "../config/config.js";
 import type { StreamChunk } from "../sdk/client.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
 import type { HermesSessionMap } from "./session-map.js";
@@ -7,9 +8,19 @@ export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result
 export type HermesRuntimeRequest = {
 	prompt: string;
 	cwd: string;
+	tier: PermissionTier;
 	sessionKey: string;
 	telclaudeSessionId: string;
 	profileId: string;
+	identity: {
+		userId?: string;
+		chatId?: number;
+		actorId?: number | string;
+		threadId?: number;
+	};
+	memory?: {
+		compiledMemoryMd?: string;
+	};
 	resumeHermesSessionId?: string;
 	model?: string;
 	systemPromptAppend?: string;
