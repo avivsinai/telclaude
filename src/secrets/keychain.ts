@@ -194,7 +194,11 @@ class VaultProvider implements SecretsStorageProvider {
 			const response = await client.delete("secret", key);
 			vaultDeleted = response.deleted;
 		} catch (err) {
-			logger.error({ key, error: String(err) }, "vault delete failed");
+			// Propagate rather than log-and-continue: the secret may still live in the
+			// vault, so the caller must treat revocation as failed. The thrown error
+			// already carries the key id + cause for the caller to surface; logging it
+			// here too would double-report and needlessly route a secret identifier
+			// through a logging sink.
 			throw new Error(`vault delete failed for secret "${key}": ${String(err)}`, { cause: err });
 		}
 		const fallbackDeleted = await this.fallback.delete(key);
