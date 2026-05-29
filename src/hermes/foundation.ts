@@ -115,7 +115,7 @@ const InventoryWorkflowSchema = z
 		trust_domain: NonEmptyString,
 		active: z.boolean(),
 	})
-	.strict();
+	.passthrough();
 
 const InventorySnapshotSchema = z
 	.object({
