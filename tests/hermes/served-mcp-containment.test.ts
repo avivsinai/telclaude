@@ -246,6 +246,54 @@ describe("Hermes served-MCP containment probe", () => {
 				?.detail,
 		).toContain("false");
 	});
+
+	it("does not count negative-control transport failures as proven denials", async () => {
+		const harness = await startHarness(cleanup);
+
+		for (const target of [
+			{
+				context: "probe-forged",
+				property: "handle_forgery_denied",
+				negativeControl: "forgedAuthorityDenied",
+			},
+			{
+				context: "probe-wrong",
+				property: "wrong_connection_denied",
+				negativeControl: "wrongConnectionDenied",
+			},
+			{
+				context: "probe-off-domain",
+				property: "off_domain_peer_denied",
+				negativeControl: "offDomainPeerDenied",
+			},
+		] as const) {
+			const report = await runServedMcpContainmentProbe({
+				allowRun: true,
+				endpoint: harness.endpoint("private"),
+				offDomainPeerEndpoint: harness.endpoint("off-domain"),
+				forgedAuthorityEndpoint: harness.endpoint("forged"),
+				wrongConnectionEndpoint: harness.endpoint("wrong"),
+				unauthenticatedEndpoint: { url: harness.url },
+				origin: containedPeerOrigin(),
+				fetchImpl: async (input, init) => {
+					const headers = new Headers(init?.headers);
+					if (headers.get("x-tc-probe-context") === target.context) {
+						throw new Error(`simulated transport failure for ${target.context}`);
+					}
+					return fetch(input, init);
+				},
+			});
+
+			expect(report.status).toBe("fail");
+			expect(report.properties[target.property]).toBe(false);
+			expect(report.negativeControls[target.negativeControl]).toBe(false);
+			expect(report.checks.find((check) => check.name === target.property)).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("transportError="),
+			});
+			expect(evaluateServedMcpContainmentEvidence(report).productionEnable).toBe(false);
+		}
+	});
 });
 
 type HarnessOptions = {
