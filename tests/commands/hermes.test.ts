@@ -982,6 +982,18 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 			loadBearing: false,
 			detail: "Placement metadata is informational; bind enforcement is a deployment gate.",
 		},
+		origin: {
+			kind: "contained-peer",
+			containerName: "tc-hermes-contained",
+			observedPeerAddress: "172.29.92.11",
+			expectedPeerAddress: "172.29.92.11",
+			detail: "probe originated from the contained Hermes peer",
+		},
+		negativeControls: {
+			forgedAuthorityDenied: true,
+			wrongConnectionDenied: true,
+			offDomainPeerDenied: true,
+		},
 		properties,
 		checks: SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((property) => ({
 			name: property,
@@ -997,6 +1009,12 @@ function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
 		allowed: {
 			token: "tc_mcp_conn_allowed",
 			authorizationHeader: "Bearer tc_mcp_conn_allowed",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+		},
+		offDomainPeer: {
+			token: "tc_mcp_conn_off_domain_peer",
+			authorizationHeader: "Bearer tc_mcp_conn_off_domain_peer",
 			issuedAtMs: 1_000,
 			expiresAtMs: 61_000,
 		},
@@ -1020,6 +1038,7 @@ function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
 			tokenPrefix: "tc_mcp_conn_",
 			tokenMaterial: "omitted",
 			peerBound: false,
+			offDomainPeerBound: true,
 			privateConnection: {
 				profileId: "default",
 				endpointId: "tc-hermes-private",
@@ -1907,8 +1926,7 @@ describe("Hermes wrapper foundation", () => {
 							owner: "operator",
 							deadline_phase: "Phase 1",
 							affected_workflows: [],
-							cutover_impact:
-								"Model relay seam cannot be treated as resolved by omission.",
+							cutover_impact: "Model relay seam cannot be treated as resolved by omission.",
 						},
 					],
 				},
@@ -2878,6 +2896,56 @@ sleep 5
 		});
 	});
 
+	it("fails the served-MCP cutover gate when evidence is relay-self smoke only", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, "relay-self-served-mcp.json");
+		writeJson(
+			evidencePath,
+			servedMcpContainmentEvidence({
+				origin: {
+					kind: "relay-self-smoke",
+					containerName: "telclaude",
+					observedPeerAddress: "172.29.92.10",
+					expectedPeerAddress: "172.29.92.11",
+					detail: "probe originated from relay namespace",
+				},
+			}),
+		);
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("smoke"),
+		});
+	});
+
+	it("fails the served-MCP cutover gate when negative controls are missing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, "missing-served-mcp-negative.json");
+		writeJson(
+			evidencePath,
+			servedMcpContainmentEvidence({
+				negativeControls: {},
+			}),
+		);
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("negative control offDomainPeerDenied is missing"),
+		});
+	});
+
 	it.each(
 		SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 	)("fails the served-MCP cutover gate when property %s is missing", async (property) => {
@@ -2948,6 +3016,9 @@ sleep 5
 			expect(response.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH).toBe(
 				"Authorization: Bearer tc_mcp_conn_allowed",
 			);
+			expect(response.env.TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH).toBe(
+				"Authorization: Bearer tc_mcp_conn_off_domain_peer",
+			);
 			expect(response.tokens).toBeUndefined();
 			expect(admin.requests[0]).toMatchObject({
 				ttlMs: 60000,
@@ -2989,6 +3060,9 @@ sleep 5
 			expect(result.exitCode).toBeUndefined();
 			expect(result.stdout).toContain(
 				"export TELCLAUDE_HERMES_SERVED_MCP_AUTH='Authorization: Bearer tc_mcp_conn_allowed'",
+			);
+			expect(result.stdout).toContain(
+				"export TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH='Authorization: Bearer tc_mcp_conn_off_domain_peer'",
 			);
 			expect(result.stdout).toContain(
 				"export TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH='Authorization: Bearer tc_mcp_conn_forged'",

@@ -88,6 +88,7 @@ const ProbeTokensRequestSchema = z
 		nowMs: z.number().finite().nonnegative().optional(),
 		ttlMs: z.number().finite().positive().optional(),
 		peerAddress: NonEmptyString.optional(),
+		offDomainPeerAddress: NonEmptyString.optional(),
 	})
 	.strip();
 
@@ -278,6 +279,7 @@ function toProbeTokenInput(
 		...(input.nowMs !== undefined ? { nowMs: input.nowMs } : {}),
 		...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
 		...(input.peerAddress ? { peerAddress: input.peerAddress } : {}),
+		...(input.offDomainPeerAddress ? { offDomainPeerAddress: input.offDomainPeerAddress } : {}),
 	};
 }
 

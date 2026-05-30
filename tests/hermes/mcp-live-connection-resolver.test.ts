@@ -172,6 +172,76 @@ describe("Telclaude live MCP connection resolver", () => {
 				request({ authorization: `Bearer ${peerBound.token}` }, "10.0.0.3"),
 			),
 		).toBeNull();
+
+		const allowlistedResolver = createTelclaudeLiveMcpConnectionResolver({
+			registry,
+			nowMs: () => 2_000,
+			allowedPeerAddresses: ["10.0.0.2"],
+		});
+		const allowlistedUnbound = allowlistedResolver.issue({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+			nowMs: 1_000,
+		});
+
+		expect(
+			allowlistedResolver.resolveConnection(
+				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, "10.0.0.2"),
+			),
+		).toEqual({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+		});
+		expect(
+			allowlistedResolver.resolveConnection(
+				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, "::ffff:10.0.0.2"),
+			),
+		).toEqual({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+		});
+		expect(
+			allowlistedResolver.resolveConnection(
+				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, "10.0.0.3"),
+			),
+		).toBeNull();
+		expect(
+			allowlistedResolver.resolveConnection(
+				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, undefined),
+			),
+		).toBeNull();
+	});
+
+	it("rejects production peer-bound token issuance outside the configured peer ceiling", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const resolver = createTelclaudeLiveMcpConnectionResolver({
+			registry,
+			nowMs: () => 2_000,
+			allowedPeerAddresses: ["10.0.0.2"],
+		});
+		const authorityConnection = connection();
+		const authorityGrant = registry.register({
+			connection: authorityConnection,
+			authority: authority(),
+			nowMs: 1_000,
+		});
+
+		expect(() =>
+			resolver.issue({
+				authorityHandle: authorityGrant.handle,
+				connection: authorityConnection,
+				nowMs: 1_000,
+				peerAddress: "10.0.0.3",
+			}),
+		).toThrow("peerAddress is not in allowedPeerAddresses");
+		expect(() =>
+			resolver.issue({
+				authorityHandle: authorityGrant.handle,
+				connection: authorityConnection,
+				nowMs: 1_000,
+				peerAddress: "tc-hermes-contained",
+			}),
+		).toThrow("peerAddress must be an IP address");
 	});
 
 	it("revokes all transport tokens and authority for a connection", () => {
@@ -230,11 +300,12 @@ describe("Telclaude live MCP connection resolver", () => {
 
 function request(
 	headers: Record<string, string> = {},
-	remoteAddress = "10.0.0.2",
+	remoteAddress?: string,
 ): http.IncomingMessage {
+	const resolvedRemoteAddress = arguments.length < 2 ? "10.0.0.2" : remoteAddress;
 	return {
 		headers,
-		socket: { remoteAddress },
+		socket: { remoteAddress: resolvedRemoteAddress },
 	} as http.IncomingMessage;
 }
 

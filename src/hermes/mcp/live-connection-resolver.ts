@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type http from "node:http";
+import net from "node:net";
 import type {
 	TelclaudeMcpAuthorityConnection,
 	TelclaudeMcpAuthorityRegistry,
@@ -8,6 +9,9 @@ import type { TelclaudeLiveMcpConnectionContext } from "./live-server.js";
 
 export const TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX = "tc_mcp_conn_";
 export const DEFAULT_LIVE_MCP_CONNECTION_TTL_MS = 15 * 60 * 1_000;
+export const TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS: unique symbol = Symbol(
+	"telclaude.liveMcp.probeModePeerBypass",
+);
 
 export type TelclaudeLiveMcpConnectionGrant = {
 	readonly token: string;
@@ -25,6 +29,7 @@ export type TelclaudeLiveMcpConnectionResolver = {
 		readonly nowMs?: number;
 		readonly ttlMs?: number;
 		readonly peerAddress?: string;
+		readonly [TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS]?: true;
 	}): TelclaudeLiveMcpConnectionGrant;
 	resolveConnection(request: http.IncomingMessage): TelclaudeLiveMcpConnectionContext | null;
 	revoke(token: string, reason?: string, nowMs?: number): boolean;
@@ -69,7 +74,15 @@ export function createTelclaudeLiveMcpConnectionResolver(
 			const tokenHash = hashToken(token);
 			const connection = normalizeConnection(input.connection);
 			const authorityHandle = requiredTrimmed(input.authorityHandle, "authorityHandle");
-			const peerAddress = normalizeOptionalPeerAddress(input.peerAddress);
+			const peerAddress = normalizeOptionalIssuePeerAddress(input.peerAddress);
+			if (
+				peerAddress &&
+				allowedPeers &&
+				!allowedPeers.has(peerAddress) &&
+				input[TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS] !== true
+			) {
+				throw new Error("live MCP peerAddress is not in allowedPeerAddresses");
+			}
 			records.set(tokenHash, {
 				tokenHash,
 				authorityHandle,
@@ -207,9 +220,20 @@ function normalizeOptionalPeerAddress(value: string | undefined): string | undef
 
 function normalizedPeerSet(values: readonly string[] | undefined): Set<string> | null {
 	if (!values || values.length === 0) return null;
-	return new Set(
-		values.map(normalizeOptionalPeerAddress).filter((value): value is string => !!value),
-	);
+	return new Set(values.map((value) => normalizeRequiredIpAddress(value, "allowedPeerAddresses")));
+}
+
+function normalizeOptionalIssuePeerAddress(value: string | undefined): string | undefined {
+	const normalized = normalizeOptionalPeerAddress(value);
+	return normalized ? normalizeRequiredIpAddress(normalized, "peerAddress") : undefined;
+}
+
+function normalizeRequiredIpAddress(value: string, field: string): string {
+	const normalized = normalizeOptionalPeerAddress(value);
+	if (!normalized || net.isIP(normalized) === 0) {
+		throw new Error(`live MCP ${field} must be an IP address`);
+	}
+	return normalized;
 }
 
 function peerAllowed(peerAddress: string | undefined, allowedPeers: Set<string> | null): boolean {

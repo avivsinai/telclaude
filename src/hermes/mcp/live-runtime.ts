@@ -57,6 +57,7 @@ export type TelclaudeLiveMcpRuntimeProbeTokenInput = {
 	readonly nowMs?: number;
 	readonly ttlMs?: number;
 	readonly peerAddress?: string;
+	readonly offDomainPeerAddress?: string;
 };
 
 export type TelclaudeLiveMcpRuntimeAdminHandle = {
@@ -110,7 +111,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 		),
 		allowedPeerAddresses: parsePeerAllowlist(env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS),
 	};
-	assertPeerAllowlistForBindHost(config);
+	assertLiveMcpRuntimeConfig(config);
 	return config;
 }
 
@@ -118,6 +119,7 @@ export async function startTelclaudeLiveMcpRuntime(
 	options: StartTelclaudeLiveMcpRuntimeOptions,
 ): Promise<TelclaudeLiveMcpRuntime> {
 	if (!options.config.enabled) return disabledRuntime();
+	assertLiveMcpRuntimeConfig(options.config);
 
 	const registry = options.registry ?? createTelclaudeMcpAuthorityRegistry();
 	const resolver = createTelclaudeLiveMcpConnectionResolver({
@@ -281,6 +283,22 @@ function parsePeerAllowlist(value: string | undefined): string[] | undefined {
 	});
 }
 
+function assertLiveMcpRuntimeConfig(config: TelclaudeLiveMcpRuntimeConfig): void {
+	assertLiveMcpBindHost(config);
+	assertPeerAllowlistForBindHost(config);
+}
+
+function assertLiveMcpBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
+	if (!config.enabled) return;
+	const normalized = normalizeHostAddress(config.host);
+	if (normalized === "0.0.0.0" || normalized === "::" || normalized === "") {
+		throw new Error("TELCLAUDE_HERMES_LIVE_MCP_HOST must not bind an unspecified interface");
+	}
+	if (normalized === "localhost") {
+		throw new Error("TELCLAUDE_HERMES_LIVE_MCP_HOST must be explicit, not localhost");
+	}
+}
+
 function assertPeerAllowlistForBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
 	if (!config.enabled || !requiresPeerAllowlist(config.host)) return;
 	if (config.allowedPeerAddresses && config.allowedPeerAddresses.length > 0) return;
@@ -292,7 +310,7 @@ function assertPeerAllowlistForBindHost(config: TelclaudeLiveMcpRuntimeConfig): 
 function requiresPeerAllowlist(host: string): boolean {
 	const normalized = normalizeHostAddress(host);
 	if (normalized === "localhost") return false;
-	if (normalized === "0.0.0.0" || normalized === "::" || normalized === "") return false;
+	if (normalized === "0.0.0.0" || normalized === "::" || normalized === "") return true;
 	if (normalized === "127.0.0.1" || normalized === "::1") return false;
 	if (/^127\./.test(normalized)) return false;
 	return true;

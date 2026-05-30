@@ -105,8 +105,13 @@ type ProbeOption = JsonOption & {
 	hermesHome?: string;
 	mcpAuth?: string;
 	mcpForgedAuth?: string;
+	mcpOffDomainPeerAuth?: string;
 	mcpUrl?: string;
 	mcpWrongConnectionAuth?: string;
+	originContainer?: string;
+	originExpectedPeerAddress?: string;
+	originKind?: string;
+	originPeerAddress?: string;
 	image?: string;
 	modelUrl?: string;
 	network?: string;
@@ -155,6 +160,7 @@ type LiveMcpProbeTokenOption = JsonOption & {
 	outboundChannels?: string;
 	ttlMs?: string;
 	peerAddress?: string;
+	offDomainPeerAddress?: string;
 	timeoutMs?: string;
 };
 
@@ -290,6 +296,7 @@ function buildLiveMcpProbeTokenRequest(
 		},
 		ttlMs: parsePositiveIntegerOption(options.ttlMs, "--ttl-ms"),
 		peerAddress: options.peerAddress?.trim() || undefined,
+		offDomainPeerAddress: options.offDomainPeerAddress?.trim() || undefined,
 	};
 }
 
@@ -303,6 +310,9 @@ function formatLiveMcpProbeTokenExports(response: TelclaudeLiveMcpProbeTokenBund
 	return [
 		`export TELCLAUDE_HERMES_SERVED_MCP_AUTH=${shellQuote(
 			`Authorization: ${response.allowed.authorizationHeader}`,
+		)}`,
+		`export TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH=${shellQuote(
+			`Authorization: ${response.offDomainPeer.authorizationHeader}`,
 		)}`,
 		`export TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH=${shellQuote(
 			`Authorization: ${response.wrongConnection.authorizationHeader}`,
@@ -320,6 +330,7 @@ function formatLiveMcpProbeTokenJson(response: TelclaudeLiveMcpProbeTokenBundle)
 		type: "probe_tokens",
 		env: {
 			TELCLAUDE_HERMES_SERVED_MCP_AUTH: `Authorization: ${response.allowed.authorizationHeader}`,
+			TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH: `Authorization: ${response.offDomainPeer.authorizationHeader}`,
 			TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH: `Authorization: ${response.wrongConnection.authorizationHeader}`,
 			TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH: `Authorization: ${response.forged.authorizationHeader}`,
 		},
@@ -710,6 +721,10 @@ export function registerHermesCommand(program: Command): void {
 		.option("--outbound-channels <csv>", "Private authority outbound channels")
 		.option("--ttl-ms <ms>", "Token TTL in milliseconds")
 		.option("--peer-address <address>", "Bind issued tokens to a specific MCP peer address")
+		.option(
+			"--off-domain-peer-address <address>",
+			"Bind the off-domain negative-control token to this non-origin peer address",
+		)
 		.option("--timeout-ms <ms>", "Admin socket request timeout in milliseconds")
 		.action(async (options: LiveMcpProbeTokenOption) => {
 			try {
@@ -748,12 +763,23 @@ export function registerHermesCommand(program: Command): void {
 		.option("--mcp-url <url>", "Relay-only served MCP HTTP endpoint URL")
 		.option("--mcp-auth <header>", "Authorized served MCP context header as 'Name: value'")
 		.option(
+			"--mcp-off-domain-peer-auth <header>",
+			"Off-domain/wrong-peer served MCP context header as 'Name: value'",
+		)
+		.option(
 			"--mcp-forged-auth <header>",
 			"Forged/unregistered served MCP context header as 'Name: value'",
 		)
 		.option(
 			"--mcp-wrong-connection-auth <header>",
 			"Wrong-connection served MCP context header as 'Name: value'",
+		)
+		.option("--origin-kind <kind>", "served-MCP probe origin kind")
+		.option("--origin-container <name>", "served-MCP probe origin container name")
+		.option("--origin-peer-address <address>", "Observed MCP peer source address")
+		.option(
+			"--origin-expected-peer-address <address>",
+			"Expected MCP peer source address for the contained runtime",
 		)
 		.option("--container-name <name>", "Hermes API-server container name")
 		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
@@ -917,12 +943,19 @@ export function registerHermesCommand(program: Command): void {
 					report = await runServedMcpContainmentProbe({
 						allowRun: options.allowRun === true,
 						endpoint,
+						offDomainPeerEndpoint: servedMcpEndpoint(options.mcpUrl, options.mcpOffDomainPeerAuth),
 						forgedAuthorityEndpoint: servedMcpEndpoint(options.mcpUrl, options.mcpForgedAuth),
 						wrongConnectionEndpoint: servedMcpEndpoint(
 							options.mcpUrl,
 							options.mcpWrongConnectionAuth,
 						),
 						unauthenticatedEndpoint: endpoint ? { url: endpoint.url } : undefined,
+						origin: {
+							kind: options.originKind,
+							containerName: options.originContainer,
+							observedPeerAddress: options.originPeerAddress,
+							expectedPeerAddress: options.originExpectedPeerAddress,
+						},
 						timeoutMs,
 					});
 					if (options.allowRun === true && report.status !== "pending") {
@@ -947,6 +980,15 @@ export function registerHermesCommand(program: Command): void {
 							loadBearing: false,
 							detail:
 								"Placement metadata is informational; relay-internal bind enforcement remains a deployment live-run gate.",
+						},
+						origin: {
+							kind: "unknown",
+							detail: "probe origin was not declared",
+						},
+						negativeControls: {
+							forgedAuthorityDenied: false,
+							wrongConnectionDenied: false,
+							offDomainPeerDenied: false,
 						},
 						properties: {},
 						checks: [],
