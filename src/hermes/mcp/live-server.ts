@@ -39,9 +39,9 @@ export type TelclaudeLiveMcpConnectionContext = {
 type JsonRpcId = string | number | null;
 
 export type TelclaudeLiveMcpJsonRpcRequest = {
-	readonly jsonrpc?: unknown;
-	readonly id?: unknown;
-	readonly method?: unknown;
+	readonly jsonrpc: "2.0";
+	readonly id?: JsonRpcId;
+	readonly method: string;
 	readonly params?: unknown;
 };
 
@@ -73,7 +73,7 @@ export type TelclaudeLiveMcpRelayHttpServer = {
 	};
 	readonly dependencySurface: typeof TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE;
 	handleJsonRpc(
-		request: TelclaudeLiveMcpJsonRpcRequest,
+		request: unknown,
 		context?: TelclaudeLiveMcpConnectionContext | null,
 	): Promise<TelclaudeLiveMcpJsonRpcResponse>;
 };
@@ -117,6 +117,8 @@ const CLIENT_AUTHORITY_KEYS = new Set([
 	"networkNamespace",
 ]);
 
+const PROTOTYPE_POLLUTION_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
 const MAX_HTTP_BODY_BYTES = 1024 * 1024;
 
 export function createTelclaudeLiveMcpRelayHttpServer(
@@ -140,11 +142,11 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 		dependencySurface: TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE,
 
 		async handleJsonRpc(request, context) {
-			const id = jsonRpcId(request.id);
-			if (typeof request.method !== "string" || !request.method.trim()) {
-				return jsonError(id, -32600, "MCP JSON-RPC method is required");
+			const parsedRequest = parseJsonRpcRequest(request);
+			if (!parsedRequest.ok) {
+				return jsonError(parsedRequest.id, parsedRequest.code, parsedRequest.reason);
 			}
-			const method = request.method.trim();
+			const { id, method, params } = parsedRequest.request;
 
 			if (method === "initialize") {
 				return jsonResult(id, {
@@ -165,8 +167,9 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 				});
 			}
 
-			if (method in EMPTY_SURFACES) {
-				return jsonResult(id, EMPTY_SURFACES[method]);
+			const emptySurface = emptySurfaceForMethod(method);
+			if (emptySurface) {
+				return jsonResult(id, emptySurface);
 			}
 
 			if (method.startsWith("sampling/")) {
@@ -181,10 +184,13 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 				return jsonError(id, -32001, "MCP connection is not authorized");
 			}
 
-			const call = parseToolCall(request.params);
+			const call = parseToolCall(params);
 			if (!call.ok) return jsonError(id, call.code, call.reason);
 			if (!isTelclaudeToolName(call.name)) {
 				return jsonError(id, -32601, "MCP tool denied");
+			}
+			if (containsPrototypePollutionKey(call.args)) {
+				return jsonError(id, -32602, "MCP tools/call arguments contain forbidden prototype key");
 			}
 			if (isMemoryTool(call.name) && containsClientAuthorityField(call.args)) {
 				return jsonError(id, -32001, "MCP client cannot supply memory authority fields");
@@ -251,12 +257,50 @@ export function createTelclaudeLiveMcpNodeHttpServer(
 			return;
 		}
 
-		const rpcResponse = await server.handleJsonRpc(
-			isRecord(payload) ? (payload as TelclaudeLiveMcpJsonRpcRequest) : {},
-			context,
-		);
+		const rpcResponse = await server.handleJsonRpc(payload, context);
 		writeHttpJson(response, httpStatusForRpcResponse(rpcResponse), rpcResponse);
 	});
+}
+
+function parseJsonRpcRequest(value: unknown):
+	| { readonly ok: true; readonly request: TelclaudeLiveMcpJsonRpcRequest }
+	| {
+			readonly ok: false;
+			readonly id?: JsonRpcId;
+			readonly code: number;
+			readonly reason: string;
+	  } {
+	if (Array.isArray(value)) {
+		return {
+			ok: false,
+			code: -32600,
+			reason: "MCP JSON-RPC batch requests are not supported",
+		};
+	}
+	if (!isRecord(value)) {
+		return { ok: false, code: -32600, reason: "MCP JSON-RPC request must be an object" };
+	}
+
+	const id = jsonRpcId(value.id);
+	if (value.jsonrpc !== "2.0") {
+		return { ok: false, id, code: -32600, reason: "MCP JSON-RPC version must be 2.0" };
+	}
+	if (hasOwn(value, "id") && id === undefined) {
+		return { ok: false, code: -32600, reason: "MCP JSON-RPC id is invalid" };
+	}
+	if (typeof value.method !== "string" || !value.method.trim()) {
+		return { ok: false, id, code: -32600, reason: "MCP JSON-RPC method is required" };
+	}
+
+	return {
+		ok: true,
+		request: {
+			jsonrpc: "2.0",
+			...(id !== undefined ? { id } : {}),
+			method: value.method.trim(),
+			params: value.params,
+		},
+	};
 }
 
 function parseToolCall(
@@ -305,12 +349,28 @@ function containsClientAuthorityField(value: unknown): boolean {
 	);
 }
 
+function containsPrototypePollutionKey(value: unknown): boolean {
+	if (Array.isArray(value)) {
+		return value.some(containsPrototypePollutionKey);
+	}
+	if (!isRecord(value)) return false;
+	return Object.entries(value).some(
+		([key, child]) => PROTOTYPE_POLLUTION_KEYS.has(key) || containsPrototypePollutionKey(child),
+	);
+}
+
 function stripClientAuthorityEnvelope(input: Record<string, unknown>): Record<string, unknown> {
-	const stripped: Record<string, unknown> = {};
+	const stripped = Object.create(null) as Record<string, unknown>;
 	for (const [key, value] of Object.entries(input)) {
 		if (!CLIENT_AUTHORITY_KEYS.has(key)) stripped[key] = value;
 	}
 	return stripped;
+}
+
+function emptySurfaceForMethod(
+	method: string,
+): { readonly [key: string]: readonly unknown[] } | undefined {
+	return hasOwn(EMPTY_SURFACES, method) ? EMPTY_SURFACES[method] : undefined;
 }
 
 function jsonResult(id: JsonRpcId | undefined, result: unknown): TelclaudeLiveMcpJsonRpcResponse {
@@ -372,6 +432,10 @@ async function readHttpBody(request: http.IncomingMessage): Promise<string> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOwn(value: object, key: PropertyKey): boolean {
+	return Object.hasOwn(value, key);
 }
 
 function requiredTrimmed(value: string, field: string): string {
