@@ -30,6 +30,10 @@ import {
 	type HermesPendingQueueSummary,
 	type HermesQueueSnapshot,
 } from "../../src/hermes/inventory.js";
+import {
+	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
+	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
+} from "../../src/hermes/served-mcp-containment.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
@@ -191,9 +195,7 @@ async function closedProbeUrl(): Promise<string> {
 	return url;
 }
 
-function minimalInventoryConfig(
-	options: { webhooksEnabled?: boolean } = {},
-): TelclaudeConfig {
+function minimalInventoryConfig(options: { webhooksEnabled?: boolean } = {}): TelclaudeConfig {
 	return {
 		security: { profile: "simple", permissions: { defaultTier: "READ_ONLY", users: {} } },
 		telegram: { allowedChats: [], heartbeatSeconds: 60 },
@@ -547,6 +549,81 @@ function approvalContinuationCutoverBundle(
 	});
 }
 
+function servedMcpContainmentProbe(
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "skip",
+) {
+	return {
+		surface_id: "execution.served_mcp_containment",
+		hermes_pin: hermesPin,
+		documented_seam: "Telclaude-served Hermes MCP relay-only HTTP endpoint",
+		probe_command: "pnpm dev hermes probe execution.served_mcp_containment --allow-run",
+		expected_result:
+			"HTTP JSON-RPC client proves positive tools-only control and specific adversarial denials",
+		negative_probe:
+			"Forged handle, wrong connection, cross-domain memory, out-of-scope provider/outbound, sampling, malformed, unauthenticated, batch, prototype-key, and execute-without-ledger calls fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.execution.servedMcpContainment",
+		security_scope: "served-mcp-containment" as const,
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function servedMcpContainmentCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "skip",
+) {
+	const probe = servedMcpContainmentProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["execution.served_mcp_containment"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "execution.served_mcp_containment",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"execution.served_mcp_containment": "sha256:adapter-signature",
+			},
+		},
+	});
+}
+
 function writeCutoverBundleArtifacts(tempDir: string, bundle: CutoverInputBundle) {
 	const paths = {
 		inventory: path.join(tempDir, "inventory.json"),
@@ -616,6 +693,35 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
 			envKeys: ["HERMES_HOME", "NO_COLOR"],
 		},
 		findings: [],
+		...overrides,
+	};
+}
+
+function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
+	const properties = Object.fromEntries(
+		SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((property) => [property, true]),
+	);
+	return {
+		schemaVersion: SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
+		probeId: "execution.served_mcp_containment",
+		status: "pass",
+		ran: true,
+		generatedAt: "2026-05-30T00:00:00.000Z",
+		summary: "Served MCP containment probe passed",
+		endpoint: {
+			transport: "http",
+			target: "redacted-http-mcp-endpoint",
+		},
+		placement: {
+			loadBearing: false,
+			detail: "Placement metadata is informational; bind enforcement is a deployment gate.",
+		},
+		properties,
+		checks: SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((property) => ({
+			name: property,
+			status: "pass",
+			detail: `${property} observed`,
+		})),
 		...overrides,
 	};
 }
@@ -2052,6 +2158,94 @@ sleep 5
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("approval replay denial is unproven"),
+		});
+	});
+
+	it("does not connect or write served-MCP evidence without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-served-mcp-probe-"));
+		const evidencePath = path.join(tempDir, "served-mcp-containment.json");
+		const server = await startProbeServer();
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"probe",
+				"execution.served_mcp_containment",
+				"--json",
+				"--mcp-url",
+				server.url,
+				"--out",
+				evidencePath,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; ran: boolean };
+
+			expect(result.exitCode).toBe(2);
+			expect(report).toMatchObject({ status: "pending", ran: false });
+			expect(server.requests.count).toBe(0);
+			expect(fs.existsSync(evidencePath)).toBe(false);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("passes the served-MCP cutover gate from complete observed evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, "execution-served-mcp-containment.json");
+		writeJson(evidencePath, servedMcpContainmentEvidence());
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it.each(
+		SERVED_MCP_REQUIRED_PROPERTY_NAMES,
+	)("fails the served-MCP cutover gate when property %s is missing", async (property) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, `missing-${property}.json`);
+		const evidence = servedMcpContainmentEvidence() as {
+			properties: Record<string, boolean | undefined>;
+		};
+		delete evidence.properties[property];
+		writeJson(evidencePath, evidence);
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(`served-MCP property ${property} is missing`),
+		});
+	});
+
+	it.each(
+		SERVED_MCP_REQUIRED_PROPERTY_NAMES,
+	)("fails the served-MCP cutover gate when property %s is false", async (property) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, `false-${property}.json`);
+		const evidence = servedMcpContainmentEvidence() as {
+			properties: Record<string, boolean | undefined>;
+		};
+		evidence.properties[property] = false;
+		writeJson(evidencePath, evidence);
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(`served-MCP property ${property} is false`),
 		});
 	});
 

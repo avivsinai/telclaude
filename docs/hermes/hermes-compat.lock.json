@@ -3,7 +3,7 @@
   "hermes": {
     "version": "0.15.1"
   },
-  "featureProbeMatrixDigest": "sha256:f19a649781cd17d43c36635214e208832048dd7fcbc64e6d75cb4d2a049aabbf",
+  "featureProbeMatrixDigest": "sha256:00e074c9b87aaf0f7850b2473ea41ded45bf1a42ae018774e2a8d7b0dedd3297",
   "featureProbes": [
     {
       "surface_id": "execution.cli_headless",
@@ -16,6 +16,11 @@
       "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
     },
     {
+      "surface_id": "execution.served_mcp_containment",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/execution-served-mcp-containment.json"
+    },
+    {
       "surface_id": "model.relay",
       "status": "fail",
       "evidence_path": "artifacts/hermes/probes/model-relay.json"
@@ -24,6 +29,7 @@
   "adapterApiSignatures": {
     "execution.cli_headless": "sha256:pending",
     "execution.approval_continuation": "sha256:pending",
+    "execution.served_mcp_containment": "sha256:pending",
     "model.relay": "sha256:pending"
   },
   "capabilities": {
@@ -33,6 +39,7 @@
     ],
     "mcp": [
       "stdio",
+      "http_relay_internal_network",
       "events_wait",
       "permissions_list_open",
       "permissions_respond"

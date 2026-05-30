@@ -34,6 +34,22 @@
       "status": "skip"
     },
     {
+      "surface_id": "execution.served_mcp_containment",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "documented_seam": "Telclaude-served Hermes MCP relay-only HTTP endpoint",
+      "probe_command": "pnpm dev hermes probe execution.served_mcp_containment --allow-run",
+      "expected_result": "HTTP JSON-RPC client proves positive tools-only control and specific adversarial denials",
+      "negative_probe": "Forged handle, wrong connection, cross-domain memory, out-of-scope provider/outbound, sampling, malformed, unauthenticated, batch, prototype-key, and execute-without-ledger calls fail closed",
+      "evidence_path": "artifacts/hermes/probes/execution-served-mcp-containment.json",
+      "lockfile_key": "featureProbes.execution.servedMcpContainment",
+      "security_scope": "served-mcp-containment",
+      "approval_equivalent": true,
+      "failure_outcome": "disable",
+      "status": "skip"
+    },
+    {
       "surface_id": "model.relay",
       "hermes_pin": {
         "version": "0.15.1"
