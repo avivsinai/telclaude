@@ -18,7 +18,7 @@ import {
 
 const DEFAULT_TOKEN_TTL_SECONDS = 60;
 const MAX_MINT_TOKEN_TTL_SECONDS = 60;
-const MAX_TOKEN_TTL_SECONDS = 300;
+const MAX_VERIFY_TOKEN_TTL_SECONDS = MAX_MINT_TOKEN_TTL_SECONDS;
 const APPROVAL_AUDIENCE = "telclaude-hermes-mcp-side-effect";
 const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
 
@@ -236,8 +236,8 @@ export function createTelclaudeMcpSideEffectApprovalVerifier(
 		if (claims.iat > nowSeconds) {
 			return failure("approval_required", "Token issued in the future");
 		}
-		if (claims.exp - claims.iat > MAX_TOKEN_TTL_SECONDS) {
-			return failure("approval_required", "Token TTL exceeds maximum (300s)");
+		if (claims.exp - claims.iat > MAX_VERIFY_TOKEN_TTL_SECONDS) {
+			return failure("approval_required", "Token TTL exceeds maximum (60s)");
 		}
 		if (!sameBinding(claims.binding, recordBinding)) {
 			return failure("approval_mismatch", "Approval token binding mismatch");
