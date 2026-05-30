@@ -29,6 +29,7 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly ref: string;
 	readonly kind: "provider";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly service: string;
@@ -54,6 +55,7 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly ref: string;
 	readonly kind: "outbound";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
@@ -83,6 +85,7 @@ export type TelclaudeMcpSideEffectRecord =
 export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly kind: "provider";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly service: string;
@@ -99,6 +102,7 @@ export type TelclaudeMcpProviderSideEffectPrepareInput = {
 export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly kind: "outbound";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
@@ -122,6 +126,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 	readonly ref: string;
 	readonly kind: "provider";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly service: string;
@@ -140,6 +145,7 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly ref: string;
 	readonly kind: "outbound";
 	readonly actorId: string;
+	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
@@ -294,12 +300,12 @@ export function createTelclaudeMcpSideEffectLedger(
 				return terminalFailure("effect_expired", "side effect approval window expired", prepared);
 			}
 
-			const binding = approvalBinding(prepared);
+			const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
 			let approval: TelclaudeMcpSideEffectApprovalResult;
 			try {
 				approval = await options.verifyApproval({
 					approvalToken: requiredTrimmed(approvalToken, "approvalToken"),
-					binding: immutableClone(binding),
+					binding,
 					record: cloneRecord(prepared),
 					nowMs: authorizationNowMs,
 				});
@@ -329,6 +335,12 @@ export function createTelclaudeMcpSideEffectLedger(
 	};
 }
 
+export function getTelclaudeMcpSideEffectApprovalBinding(
+	record: TelclaudeMcpSideEffectRecord,
+): TelclaudeMcpSideEffectApprovalBinding {
+	return immutableClone(approvalBinding(record));
+}
+
 function prepareProviderRecord(
 	input: TelclaudeMcpProviderSideEffectPrepareInput,
 	makeRef: () => string,
@@ -339,6 +351,7 @@ function prepareProviderRecord(
 		ref: requiredTrimmed(makeRef(), "ref"),
 		kind: "provider" as const,
 		actorId: requiredTrimmed(input.actorId, "actorId"),
+		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
 		profileId: requiredTrimmed(input.profileId, "profileId"),
 		domain: input.domain,
 		service: requiredTrimmed(input.service, "service"),
@@ -373,6 +386,7 @@ function prepareOutboundRecord(
 		ref: requiredTrimmed(makeRef(), "ref"),
 		kind: "outbound" as const,
 		actorId: requiredTrimmed(input.actorId, "actorId"),
+		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
 		profileId: requiredTrimmed(input.profileId, "profileId"),
 		domain: input.domain,
 		channel: requiredTrimmed(input.channel, "channel"),
@@ -470,6 +484,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 	return canonicalDigest({
 		domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 		actorId: record.actorId,
+		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
 		service: record.service,
@@ -487,6 +502,7 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 	return canonicalDigest({
 		domainSeparator: TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 		actorId: record.actorId,
+		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
 		channel: record.channel,
@@ -509,6 +525,7 @@ function approvalBinding(
 			ref: record.ref,
 			kind: "provider",
 			actorId: record.actorId,
+			approverActorId: record.approverActorId,
 			profileId: record.profileId,
 			domain: record.domain,
 			service: record.service,
@@ -527,6 +544,7 @@ function approvalBinding(
 		ref: record.ref,
 		kind: "outbound",
 		actorId: record.actorId,
+		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
 		channel: record.channel,
