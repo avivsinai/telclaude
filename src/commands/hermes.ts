@@ -12,6 +12,7 @@ import {
 	buildCutoverScopeManifestFromInventory,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
+	collectFeatureProbeEvidence,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
 	DEFAULT_CUTOVER_SCOPE_PATH,
 	DEFAULT_DECISION_LOG_PATH,
@@ -358,6 +359,7 @@ export function registerHermesCommand(program: Command): void {
 				const dryRun = options.dryRun ?? false;
 				let input: unknown;
 				try {
+					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
 					input = buildCutoverInputBundleFromArtifacts({
 						inventory: options.inventory
 							? readJsonFile(resolveHermesArtifactPath(options.inventory))
@@ -365,7 +367,8 @@ export function registerHermesCommand(program: Command): void {
 						scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
 						lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
-						featureProbeMatrix: readJsonFile(resolveHermesArtifactPath(options.featureProbes)),
+						featureProbeMatrix,
+						featureProbeEvidence: collectFeatureProbeEvidence(featureProbeMatrix),
 						fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
 						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
 						networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
