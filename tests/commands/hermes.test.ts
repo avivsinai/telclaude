@@ -1602,6 +1602,44 @@ echo should-not-run
 		expect(fs.existsSync(evidencePath)).toBe(false);
 	});
 
+	it("does not execute or write api-server containment evidence without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-api-server-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const markerPath = path.join(tempDir, "ran");
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+touch "${markerPath}"
+echo should-not-run
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.api_server_containment",
+			"--json",
+			"--docker-bin",
+			dockerBin,
+			"--cwd",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			ran: boolean;
+			invocation: { envKeys: string[]; ephemeralAuth: { classification: string } };
+		};
+
+		expect(result.exitCode).toBe(2);
+		expect(report).toMatchObject({ status: "pending", ran: false });
+		expect(report.invocation.envKeys).toContain("API_SERVER_KEY");
+		expect(report.invocation.ephemeralAuth.classification).toBe("ephemeral_api_auth");
+		expect(fs.existsSync(markerPath)).toBe(false);
+		expect(fs.existsSync(evidencePath)).toBe(false);
+	});
+
 	it("writes a passing cli-headless artifact only after observed child exit zero", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
 		const evidencePath = path.join(tempDir, "evidence.json");

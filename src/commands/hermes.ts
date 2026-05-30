@@ -3,6 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import {
+	buildHermesApiServerLaunchPlan,
+	DEFAULT_HERMES_API_SERVER_CONTAINER_NAME,
+	DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH,
+	DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
+	DEFAULT_HERMES_API_SERVER_NETWORK,
+	DEFAULT_HERMES_API_SERVER_PORT,
+	DEFAULT_HERMES_RELAY_CONTAINER_NAME,
+	DEFAULT_HERMES_RELAY_INTERNAL_HOST,
+	runHermesApiServerContainmentProbe,
+	runHermesApiServerDockerContainment,
+	writeHermesApiServerContainmentEvidence,
+} from "../hermes/api-server-containment.js";
+import {
 	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 	evaluateApprovalContinuationEvidence,
 } from "../hermes/approval-continuation.js";
@@ -59,13 +72,25 @@ type PinOption = {
 
 type ProbeOption = JsonOption & {
 	allowRun?: boolean;
+	apiPort?: string;
+	containerName?: string;
 	cwd?: string;
+	dnsUrl?: string;
+	dockerBin?: string;
 	evidence: string;
 	hermesBin?: string;
 	hermesHome?: string;
+	image?: string;
+	modelUrl?: string;
+	network?: string;
 	out?: string;
 	prompt?: string;
+	providerUrl?: string;
+	relayContainer?: string;
+	relayHost?: string;
+	relayUrl?: string;
 	timeoutMs?: string;
+	vaultSocket?: string;
 	pin?: string;
 };
 
@@ -115,6 +140,15 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 	const parsed = Number.parseInt(value, 10);
 	if (!Number.isFinite(parsed) || parsed <= 0) {
 		throw new Error(`Invalid --timeout-ms value: ${value}`);
+	}
+	return parsed;
+}
+
+function parsePort(value: string | undefined): number | undefined {
+	if (!value?.trim()) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+		throw new Error(`Invalid --api-port value: ${value}`);
 	}
 	return parsed;
 }
@@ -303,11 +337,29 @@ export function registerHermesCommand(program: Command): void {
 		.option("--allow-run", "Permit the probe to execute a real pinned-Hermes command")
 		.option("--pin <pin>", "Pinned Hermes artifact for evidence-generating probes")
 		.option("--hermes-bin <path>", "Hermes executable path for executable probes")
+		.option("--docker-bin <path>", "Docker executable path for contained API-server probes")
 		.option("--hermes-home <dir>", "HERMES_HOME for executable probes")
 		.option("--cwd <dir>", "Working directory for executable probes", process.cwd())
 		.option("--out <path>", "Write executable probe evidence to this path")
 		.option("--prompt <prompt>", "Prompt for execution.cli_headless")
 		.option("--timeout-ms <ms>", "Maximum executable probe runtime in milliseconds")
+		.option("--image <image>", "Hermes Docker image for execution.api_server_containment")
+		.option("--container-name <name>", "Hermes API-server container name")
+		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
+		.option("--api-port <port>", "Hermes API-server container port")
+		.option("--relay-host <host>", "Relay host allowed by the contained runtime topology")
+		.option(
+			"--relay-container <name>",
+			"Relay container expected on the dedicated internal network",
+		)
+		.option(
+			"--relay-url <url>",
+			"Relay/control URL that must be reachable from the contained runtime",
+		)
+		.option("--provider-url <csv>", "Direct provider URL(s) that must be denied")
+		.option("--vault-socket <path>", "Vault socket path that must be absent")
+		.option("--model-url <url>", "Direct model-provider URL that must be denied")
+		.option("--dns-url <csv>", "DNS/private egress URL(s) that must be denied")
 		.option(
 			"--evidence <path>",
 			"Approval-continuation evidence JSON path",
@@ -356,6 +408,90 @@ export function registerHermesCommand(program: Command): void {
 					console.log(`Hermes probe ${surface}: ${report.status}`);
 					console.log(`- ${report.status.toUpperCase()} execution.cli_headless: ${report.summary}`);
 					if (outPath && report.status !== "pending") console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+				return;
+			}
+
+			if (surface === "execution.api_server_containment") {
+				let report: Awaited<ReturnType<typeof runHermesApiServerContainmentProbe>>;
+				let outPath: string | undefined;
+				try {
+					const timeoutMs = parseTimeoutMs(options.timeoutMs);
+					const launch = buildHermesApiServerLaunchPlan({
+						dockerBin: options.dockerBin,
+						image: options.image ?? DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
+						containerName: options.containerName ?? DEFAULT_HERMES_API_SERVER_CONTAINER_NAME,
+						network: options.network ?? DEFAULT_HERMES_API_SERVER_NETWORK,
+						cwd: path.resolve(options.cwd ?? process.cwd()),
+						hermesHome: options.hermesHome,
+						apiPort: parsePort(options.apiPort) ?? DEFAULT_HERMES_API_SERVER_PORT,
+						relayInternalHost: options.relayHost ?? DEFAULT_HERMES_RELAY_INTERNAL_HOST,
+						relayContainerName: options.relayContainer ?? DEFAULT_HERMES_RELAY_CONTAINER_NAME,
+					});
+					report = await runHermesApiServerContainmentProbe({
+						allowRun: options.allowRun === true,
+						launch,
+						runner:
+							options.allowRun === true
+								? (plan) =>
+										runHermesApiServerDockerContainment(plan, {
+											timeoutMs,
+											relayControlUrl:
+												options.relayUrl?.trim() ||
+												process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
+												undefined,
+											providerUrls: parseCsvOption(
+												options.providerUrl ?? process.env.TELCLAUDE_HERMES_NETWORK_PROVIDER_URL,
+											),
+											vaultSocketPath: options.vaultSocket ?? DEFAULT_VAULT_SOCKET_PATH,
+											modelProviderUrl:
+												options.modelUrl?.trim() ||
+												process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
+												DEFAULT_MODEL_PROVIDER_PROBE_URL,
+											dnsPrivateUrls: parseCsvOption(
+												options.dnsUrl ||
+													process.env.TELCLAUDE_HERMES_NETWORK_DNS_URL ||
+													DEFAULT_DNS_EXFIL_PROBE_URL,
+											),
+										})
+								: undefined,
+					});
+					if (options.allowRun === true && report.status !== "pending") {
+						outPath = resolveHermesArtifactPath(
+							options.out ?? DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH,
+						);
+						writeHermesApiServerContainmentEvidence(report, outPath);
+					}
+				} catch (error) {
+					report = {
+						schemaVersion: "telclaude.hermes.api-server-containment.v1",
+						probeId: "execution.api_server_containment",
+						status: "fail",
+						ran: false,
+						summary: error instanceof Error ? error.message : String(error),
+						gates: [
+							{
+								name: "probe.exception",
+								status: "fail",
+								detail: error instanceof Error ? error.message : String(error),
+							},
+						],
+						findings: [],
+					};
+				}
+
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(
+						`- ${report.status.toUpperCase()} execution.api_server_containment: ${report.summary}`,
+					);
+					for (const gate of report.gates) {
+						console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
 				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
 				return;
