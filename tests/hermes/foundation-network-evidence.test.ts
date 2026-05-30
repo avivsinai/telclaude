@@ -143,6 +143,103 @@ function writeNetworkBundle(
 	return { schemaVersion: 1 as const, probes };
 }
 
+function writeNoForkProof() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-nofork-"));
+	const evidencePath = path.join(tempDir, "no-fork.json");
+	const proof = {
+		schemaVersion: 1,
+		hermesCheckoutClean: true,
+		evidence_path: evidencePath,
+		checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
+		expectedRef: "v2026.5.29",
+		expectedVersion: "0.15.1",
+		head: "a".repeat(40),
+		expectedRefCommit: "a".repeat(40),
+		exactTags: ["v2026.5.29"],
+		statusPorcelain: "",
+		diffExitCode: 0,
+		cachedDiffExitCode: 0,
+		checks: [
+			{
+				name: "checkout.present",
+				status: "pass",
+				detail: "Hermes checkout found at pinned tag",
+			},
+			{
+				name: "checkout.head",
+				status: "pass",
+				detail: "HEAD is pinned",
+			},
+			{
+				name: "checkout.expectedRef",
+				status: "pass",
+				detail: "expected ref resolved",
+			},
+			{
+				name: "checkout.pinned",
+				status: "pass",
+				detail: "HEAD matches pinned Hermes ref",
+			},
+			{
+				name: "checkout.statusClean",
+				status: "pass",
+				detail: "git status porcelain is clean",
+			},
+			{
+				name: "checkout.diffClean",
+				status: "pass",
+				detail: "git diff --quiet is clean",
+			},
+			{
+				name: "checkout.indexClean",
+				status: "pass",
+				detail: "git diff --cached --quiet is clean",
+			},
+		],
+	};
+	writeJson(evidencePath, proof);
+	return proof;
+}
+
+function writeRollbackRehearsal() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-rollback-"));
+	const evidencePath = path.join(tempDir, "rollback-rehearsal.json");
+	const rehearsal = {
+		schemaVersion: 1,
+		passed: true,
+		evidence_path: evidencePath,
+		allowedToRun: true,
+		observedBeforeValue: "1",
+		observedAfterValue: "0",
+		observedFallbackPath: "telclaude.private-runtime.legacy",
+		observedAt: "2026-05-30T00:00:00.000Z",
+		checks: [
+			{
+				name: "rollback.allowed",
+				status: "pass",
+				detail: "operator allowed a real rollback rehearsal",
+			},
+			{
+				name: "rollback.flagBefore",
+				status: "pass",
+				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed enabled before rollback",
+			},
+			{
+				name: "rollback.flagAfter",
+				status: "pass",
+				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed disabled after rollback",
+			},
+			{
+				name: "rollback.fallbackPath",
+				status: "pass",
+				detail: "pre-Hermes fallback path observed",
+			},
+		],
+	};
+	writeJson(evidencePath, rehearsal);
+	return rehearsal;
+}
+
 function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 	return {
 		schemaVersion: 1,
@@ -195,18 +292,10 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 				},
 			],
 		},
-		noForkProof: {
-			schemaVersion: 1,
-			hermesCheckoutClean: true,
-			evidence_path: "artifacts/hermes/no-fork.json",
-		},
+		noForkProof: writeNoForkProof(),
 		networkProbes,
 		queueSnapshot: { unownedActiveCount: 0 },
-		rollbackRehearsal: {
-			schemaVersion: 1,
-			passed: true,
-			evidence_path: "artifacts/hermes/rollback.json",
-		},
+		rollbackRehearsal: writeRollbackRehearsal(),
 	};
 }
 

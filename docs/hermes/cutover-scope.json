@@ -1,4 +1,29 @@
 {
   "schemaVersion": 1,
-  "workflows": []
+  "workflows": [
+    {
+      "workflow_id": "telegram-chat.telegram-chat-telegram-chat-EXAMPLE",
+      "owner": "telegram-chat:telegram-chat-EXAMPLE",
+      "trust_domain": "private",
+      "current_behavior": "Telclaude handles private Telegram chat through the relay with Telclaude-owned auth, approvals, memory, provider access, and rollback.",
+      "hermes_target_behavior": "Hermes handles the private agent loop behind the Telclaude edge while Telclaude keeps authority, approvals, memory, providers, network containment, and rollback ownership.",
+      "cutover_class": "P0",
+      "cutover_requirement": "All required execution surfaces, network probes, parity fixtures, no-fork proof, and rollback rehearsal must pass from observed evidence before this workflow can flip.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.private.telegram.basic"
+      ],
+      "negative_fixture_ids": [
+        "fixture.private.telegram.basic.deny"
+      ],
+      "required_surface_ids": [
+        "execution.cli_headless",
+        "execution.approval_continuation",
+        "execution.api_server_containment",
+        "execution.served_mcp_containment"
+      ],
+      "unresolved_decision_ids": []
+    }
+  ]
 }
