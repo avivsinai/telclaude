@@ -144,15 +144,18 @@ const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
 	"network.relay_only",
 	"network.tamper_resistant",
 ] as const;
-const REQUIRED_MODEL_RELAY_GATES = [
+const REQUIRED_MODEL_RELAY_CONTAINED_GATES = [
 	"modelRelay.allowed",
-	"firewall.sentinel",
 	"modelRelay.origin",
 	"relay.reachable",
 	"directModel.denied",
 	"profile.noRawModelCredentials",
 	"profile.noDirectModelHosts",
 	"profile.scanComplete",
+] as const;
+const REQUIRED_MODEL_RELAY_AGENT_IPTABLES_GATES = [
+	...REQUIRED_MODEL_RELAY_CONTAINED_GATES,
+	"firewall.sentinel",
 ] as const;
 const DIRECT_MODEL_RELAY_PROVIDER_HOSTS = new Set([
 	"api.anthropic.com",
@@ -210,10 +213,13 @@ const ApiServerContainmentProbeEvidenceSchema = z
 	})
 	.passthrough();
 
+const NetworkProbePostureSchema = z.enum(NETWORK_PROBE_POSTURES);
+
 const ModelRelayProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(MODEL_RELAY_SCHEMA_VERSION),
 		probeId: z.literal("model.relay"),
+		posture: NetworkProbePostureSchema.optional(),
 		status: z.enum(["pass", "fail", "pending"]),
 		ran: z.boolean(),
 		origin: z
@@ -273,8 +279,6 @@ const NetworkProbeAttemptSchema = z
 			.optional(),
 	})
 	.strict();
-
-const NetworkProbePostureSchema = z.enum(NETWORK_PROBE_POSTURES);
 
 const NetworkProbeEvidenceSchema = z
 	.object({
@@ -2007,6 +2011,11 @@ function collectModelRelayProbeEvidence(
 	const failures: string[] = [];
 	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
 	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (parsed.data.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
+		failures.push(
+			`posture is ${parsed.data.posture ?? "missing"}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
+		);
+	}
 	if (!parsed.data.observation.relayUrl) {
 		failures.push("observation.relayUrl is missing");
 	} else if (isDirectModelRelayProviderUrl(parsed.data.observation.relayUrl)) {
@@ -2042,7 +2051,7 @@ function collectModelRelayProbeEvidence(
 	}
 
 	const gateByName = new Map(parsed.data.gates.map((gate) => [gate.name, gate]));
-	for (const gateName of REQUIRED_MODEL_RELAY_GATES) {
+	for (const gateName of requiredModelRelayGateNames(parsed.data.posture)) {
 		const gate = gateByName.get(gateName);
 		if (!gate) {
 			failures.push(`gate ${gateName} is missing`);
@@ -2063,6 +2072,14 @@ function collectModelRelayProbeEvidence(
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed model relay reachability, direct-model denial, and profile credential absence`,
 	};
+}
+
+function requiredModelRelayGateNames(
+	posture: z.infer<typeof NetworkProbePostureSchema> | undefined,
+): readonly string[] {
+	return posture === "agent-iptables"
+		? REQUIRED_MODEL_RELAY_AGENT_IPTABLES_GATES
+		: REQUIRED_MODEL_RELAY_CONTAINED_GATES;
 }
 
 function isDirectModelRelayProviderUrl(value: string): boolean {

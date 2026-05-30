@@ -57,6 +57,8 @@ import {
 } from "../hermes/mcp/live-runtime.js";
 import {
 	DEFAULT_MODEL_RELAY_EVIDENCE_PATH,
+	DEFAULT_MODEL_RELAY_POSTURE,
+	type ModelRelayPosture,
 	runHermesModelRelayProbe,
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
@@ -132,6 +134,7 @@ type ProbeOption = JsonOption & {
 	profileDir?: string;
 	network?: string;
 	out?: string;
+	posture?: string;
 	prompt?: string;
 	providerUrl?: string;
 	relayContainer?: string;
@@ -231,6 +234,15 @@ function parseNetworkProbePosture(value: string | undefined): NetworkProbePostur
 		value?.trim() || process.env.TELCLAUDE_HERMES_NETWORK_PROBE_POSTURE?.trim() || "agent-iptables";
 	if (posture === "agent-iptables" || posture === "contained-internal") return posture;
 	throw new Error(`Invalid network probe posture: ${posture}`);
+}
+
+function parseModelRelayPosture(value: string | undefined): ModelRelayPosture {
+	const posture =
+		value?.trim() ||
+		process.env.TELCLAUDE_HERMES_MODEL_RELAY_POSTURE?.trim() ||
+		DEFAULT_MODEL_RELAY_POSTURE;
+	if (posture === "agent-iptables" || posture === "contained-internal") return posture;
+	throw new Error(`Invalid model-relay posture: ${posture}`);
 }
 
 function parsePort(value: string | undefined): number | undefined {
@@ -869,6 +881,7 @@ export function registerHermesCommand(program: Command): void {
 		.option("--vault-socket <path>", "Vault socket path that must be absent")
 		.option("--model-url <url>", "Direct model-provider URL that must be denied")
 		.option("--profile-dir <dir>", "Generated Hermes profile directory to scan for model secrets")
+		.option("--posture <posture>", "Model relay posture: agent-iptables or contained-internal")
 		.option(
 			"--firewall-sentinel <path>",
 			"Firewall sentinel path required for production model-relay evidence",
@@ -1093,9 +1106,12 @@ export function registerHermesCommand(program: Command): void {
 			if (surface === "model.relay") {
 				let report: Awaited<ReturnType<typeof runHermesModelRelayProbe>>;
 				let outPath: string | undefined;
+				let posture: ModelRelayPosture = DEFAULT_MODEL_RELAY_POSTURE;
 				try {
+					posture = parseModelRelayPosture(options.posture);
 					report = await runHermesModelRelayProbe({
 						allowRun: options.allowRun === true,
+						posture,
 						relayUrl:
 							options.relayUrl?.trim() ||
 							process.env.TELCLAUDE_HERMES_MODEL_RELAY_URL?.trim() ||
@@ -1134,6 +1150,7 @@ export function registerHermesCommand(program: Command): void {
 					report = {
 						schemaVersion: "telclaude.hermes.model-relay.v1",
 						probeId: "model.relay",
+						posture,
 						status: "fail",
 						ran: false,
 						generatedAt: new Date().toISOString(),

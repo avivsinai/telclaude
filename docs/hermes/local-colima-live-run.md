@@ -275,10 +275,10 @@ Production command shape once a contained-peer probe runner exists:
 <contained-peer-runner> telclaude hermes probe model.relay \
   --allow-run \
   --json \
+  --posture contained-internal \
   --relay-url http://telclaude:8790/v1/models \
   --model-url https://api.anthropic.com/v1/models \
   --profile-dir /home/hermes/.hermes \
-  --firewall-sentinel /run/telclaude/firewall-active \
   --container-name tc-hermes-contained \
   --expected-peer-address "$TELCLAUDE_HERMES_CONTAINED_IP" \
   --relay-peer-address "$TELCLAUDE_HERMES_RELAY_IP" \
