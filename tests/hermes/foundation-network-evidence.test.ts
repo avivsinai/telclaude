@@ -8,6 +8,8 @@ import {
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
+	HERMES_ROLLBACK_CONTROL_SURFACE,
+	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
@@ -213,6 +215,11 @@ function writeRollbackRehearsal() {
 		observedAfterValue: "0",
 		observedFallbackPath: "telclaude.private-runtime.legacy",
 		observedAt: "2026-05-30T00:00:00.000Z",
+		controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
+		observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
+		observedBeforeSource: "relay-effective-mode",
+		observedAfterSource: "relay-effective-mode",
+		observedAfterControlSource: "runtime-config",
 		checks: [
 			{
 				name: "rollback.allowed",
@@ -233,6 +240,16 @@ function writeRollbackRehearsal() {
 				name: "rollback.fallbackPath",
 				status: "pass",
 				detail: "pre-Hermes fallback path observed",
+			},
+			{
+				name: "rollback.controlSurface",
+				status: "pass",
+				detail: "relay durable runtime config accepted legacy mode",
+			},
+			{
+				name: "rollback.observedSources",
+				status: "pass",
+				detail: "rollback observations came from relay effective-mode status",
 			},
 		],
 	};
@@ -340,7 +357,9 @@ describe("Hermes cutover network evidence validation", () => {
 	it("fails dns-exfil evidence when dns_guard has no non-overridable resolved address", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
 		const networkProbes = writeNetworkBundle(tempDir);
-		const probe = networkProbes.probes.find((candidate) => candidate.id === "network.dns-exfil-denied");
+		const probe = networkProbes.probes.find(
+			(candidate) => candidate.id === "network.dns-exfil-denied",
+		);
 		if (!probe) throw new Error("missing dns-exfil probe");
 		writeJson(
 			probe.evidence_path,

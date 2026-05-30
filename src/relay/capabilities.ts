@@ -20,6 +20,11 @@ import { getOperatorProfile } from "../config/profiles.js";
 import { getChatActiveProfileId } from "../config/sessions.js";
 import { readEnv } from "../env.js";
 import {
+	type HermesPrivateRuntimeControlMode,
+	readHermesPrivateRuntimeEffectiveState,
+	setHermesPrivateRuntimeControlMode,
+} from "../hermes/private-runtime-control.js";
+import {
 	type InternalAuthScope,
 	isInternalAuthScope,
 	verifyInternalAuth,
@@ -951,6 +956,8 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					allowedPaths.add("/v1/config.providers.refresh");
 					allowedPaths.add("/v1/config.providers.upsert");
 					allowedPaths.add("/v1/config.providers.remove");
+					allowedPaths.add("/v1/hermes.private-runtime.status");
+					allowedPaths.add("/v1/hermes.private-runtime.mode");
 				}
 				if (!allowedPaths.has(requestPath)) {
 					writeJson(res, 403, { error: "Forbidden." });
@@ -1096,6 +1103,39 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					}
 					throw error;
 				}
+				return;
+			}
+
+			if (requestPath === "/v1/hermes.private-runtime.status") {
+				if (!isOperatorScope(authResult.scope)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				writeJson(res, 200, readHermesPrivateRuntimeEffectiveState());
+				return;
+			}
+
+			if (requestPath === "/v1/hermes.private-runtime.mode") {
+				if (!isOperatorScope(authResult.scope)) {
+					writeJson(res, 403, { error: "Forbidden." });
+					return;
+				}
+				let typed: { mode?: unknown };
+				try {
+					typed = JSON.parse(body) as { mode?: unknown };
+				} catch {
+					writeJson(res, 400, { error: "Invalid JSON." });
+					return;
+				}
+				if (typed.mode !== "hermes" && typed.mode !== "legacy") {
+					writeJson(res, 400, { error: "mode must be hermes or legacy" });
+					return;
+				}
+				writeJson(
+					res,
+					200,
+					setHermesPrivateRuntimeControlMode(typed.mode as HermesPrivateRuntimeControlMode),
+				);
 				return;
 			}
 
