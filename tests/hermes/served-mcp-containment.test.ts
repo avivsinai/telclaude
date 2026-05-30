@@ -8,6 +8,8 @@ import {
 	type TelclaudeMcpAuthorityConnection,
 } from "../../src/hermes/mcp/authority-registry.js";
 import type { TelclaudeMcpAuthority } from "../../src/hermes/mcp/bridge.js";
+import { createTelclaudeLiveMcpConnectionResolver } from "../../src/hermes/mcp/live-connection-resolver.js";
+import { createTelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 import {
 	createTelclaudeLiveMcpNodeHttpServer,
 	createTelclaudeLiveMcpRelayHttpServer,
@@ -54,6 +56,38 @@ describe("Hermes served-MCP containment probe", () => {
 		expect(serialized).not.toContain("tc_probe_provider_without_ledger_token");
 		expect(serialized).not.toContain("tc_probe_outbound_without_ledger_token");
 		expect(serialized).not.toContain(new URL(harness.url).host);
+	});
+
+	it("passes with the real bearer resolver denying forged and wrong-connection tokens at HTTP auth", async () => {
+		const harness = await startBearerHarness(cleanup);
+		const report = await runServedMcpContainmentProbe({
+			allowRun: true,
+			endpoint: harness.endpoint("private"),
+			forgedAuthorityEndpoint: harness.endpoint("forged"),
+			wrongConnectionEndpoint: harness.endpoint("wrong"),
+			unauthenticatedEndpoint: { url: harness.url },
+		});
+
+		expect(report.status).toBe("pass");
+		expect(report.properties.handle_forgery_denied).toBe(true);
+		expect(report.properties.wrong_connection_denied).toBe(true);
+		expect(report.checks.find((check) => check.name === "handle_forgery_denied")).toMatchObject({
+			status: "pass",
+			httpStatus: 403,
+			rpcErrorCode: -32001,
+			rpcErrorMessage: expect.stringContaining("not authorized"),
+		});
+		expect(report.checks.find((check) => check.name === "wrong_connection_denied")).toMatchObject({
+			status: "pass",
+			httpStatus: 403,
+			rpcErrorCode: -32001,
+			rpcErrorMessage: expect.stringContaining("not authorized"),
+		});
+		const serialized = JSON.stringify(report);
+		for (const token of harness.tokens) {
+			expect(serialized).not.toContain(token);
+		}
+		expect(serialized).not.toContain("tc_mcp_conn_");
 	});
 
 	it("fails the forged-handle property when a weakened resolver maps forged context to a valid authority", async () => {
@@ -175,6 +209,71 @@ async function startHarness(
 		endpoint: (context: "private" | "forged" | "wrong") => ({
 			url,
 			headers: { "x-tc-probe-context": `probe-${context}` },
+		}),
+	};
+}
+
+async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
+	const registry = createTelclaudeMcpAuthorityRegistry();
+	const resolver = createTelclaudeLiveMcpConnectionResolver({
+		registry,
+		nowMs: () => 120_000,
+		allowedPeerAddresses: ["127.0.0.1"],
+	});
+	const privateConnection = connection("ops", "endpoint-private", "netns-private");
+	const socialConnection = connection("social", "endpoint-social", "netns-social");
+	const tokenBundle = createTelclaudeLiveMcpProbeTokenBundle({
+		registry,
+		resolver,
+		privateConnection,
+		wrongConnection: socialConnection,
+		privateAuthority: authority(),
+		nowMs: 120_000,
+		ttlMs: 60_000,
+		peerAddress: "127.0.0.1",
+	});
+	const ledger = createTelclaudeMcpSideEffectLedger({
+		nowMs: () => 120_000,
+		makeRef: makeRef(),
+		verifyApproval: async () => ({
+			ok: false,
+			code: "approval_required",
+			reason: "Probe approval token is not valid",
+		}),
+	});
+	const relayClients: TelclaudeLiveMcpRelayClients = {
+		providerRead: async () => ({ balances: [] }),
+		providerPrepareWrite: async () => ({ actionRef: "prepared-by-relay" }),
+		memorySearch: async () => ({ entries: [] }),
+		memoryWrite: async () => ({ accepted: 1 }),
+		attachmentGet: async () => ({ bytes: 0 }),
+		outboundPrepare: async () => ({ outboundRef: "prepared-outbound" }),
+		auditNote: async () => ({ stored: true }),
+	};
+	const server = createTelclaudeLiveMcpRelayHttpServer({
+		registry,
+		ledger,
+		relayClients,
+		bindHost: "telclaude",
+		networkName: "telclaude-hermes-relay",
+		nowMs: () => 120_000,
+	});
+	const nodeServer = createTelclaudeLiveMcpNodeHttpServer(server, {
+		resolveConnection: (request) => resolver.resolveConnection(request),
+	});
+	const { url, close } = await listen(nodeServer);
+	cleanup.push(close);
+	const tokens = {
+		private: tokenBundle.allowed.token,
+		forged: tokenBundle.forged.token,
+		wrong: tokenBundle.wrongConnection.token,
+	};
+	return {
+		url,
+		tokens: Object.values(tokens),
+		endpoint: (context: "private" | "forged" | "wrong") => ({
+			url,
+			headers: { Authorization: `Bearer ${tokens[context]}` },
 		}),
 	};
 }

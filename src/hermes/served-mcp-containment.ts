@@ -249,7 +249,7 @@ export async function runServedMcpContainmentProbe(
 	checks.push(
 		passIf(
 			"handle_forgery_denied",
-			expectedRpcError(forgedAuthority, -32001, "not registered"),
+			expectedAuthorityDenial(forgedAuthority, "not registered"),
 			"forged transport authority was specifically denied as unregistered",
 			"forged transport authority was not specifically denied as unregistered",
 			forgedAuthority,
@@ -269,7 +269,7 @@ export async function runServedMcpContainmentProbe(
 	checks.push(
 		passIf(
 			"wrong_connection_denied",
-			expectedRpcError(wrongConnection, -32001, "connection mismatch"),
+			expectedAuthorityDenial(wrongConnection, "connection mismatch"),
 			"wrong-connection authority was specifically denied",
 			"wrong-connection authority was not specifically denied",
 			wrongConnection,
@@ -705,6 +705,16 @@ function expectedRpcError(
 		error?.code === code &&
 		typeof error.message === "string" &&
 		error.message.toLowerCase().includes(messageIncludes.toLowerCase())
+	);
+}
+
+function expectedAuthorityDenial(
+	observation: RpcObservation,
+	bridgeMessageIncludes: string,
+): boolean {
+	return (
+		expectedRpcError(observation, -32001, bridgeMessageIncludes) ||
+		expectedRpcError(observation, -32001, "not authorized", 403)
 	);
 }
 
