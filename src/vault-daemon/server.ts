@@ -18,6 +18,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
 
 import { getChildLogger } from "../logging.js";
+import { isGenericPayloadSigningPrefix } from "../security/approval-domains.js";
 import {
 	clearTokenCache,
 	getAccessToken,
@@ -41,10 +42,10 @@ const TOKEN_VERSION = "v3";
 /**
  * Domain-separation prefix for SKILL.md signatures.
  *
- * Distinct from `approval-v1` (Google approval tokens), `session-v1` (relay
- * session tokens), and `pairing-v1` (identity link codes). Ensures a
+ * Distinct from generic payload signing prefixes, `session-v1` (relay session
+ * tokens), and `pairing-v1` (identity link codes). Ensures a
  * signature generated for one domain cannot verify in another, even though
- * all four domains share the vault's master Ed25519 keypair.
+ * the signing domains share the vault's master Ed25519 keypair.
  */
 const SKILL_SIGNING_PREFIX = "skill-v1";
 
@@ -56,15 +57,13 @@ const SKILL_SIGNING_PREFIX = "skill-v1";
  * keypair, so a caller-controlled prefix is a domain-separation oracle: without
  * a constraint, calling `sign-payload` with `prefix="skill-v1"` would forge a
  * signature that `verify-skill` accepts (and likewise for any other domain).
- * Restricting the prefix to the two domains that legitimately use this endpoint
- * (Google approval tokens and Curator producer envelopes) keeps every other
- * domain cryptographically isolated. Domains owned by dedicated endpoints or
- * token formats — `skill-v1` (sign-skill/verify-skill), the `v3` session token
- * format (sign-token/verify-token), and `pairing-v1` (identity link codes) —
- * are intentionally excluded and must never be reachable here.
+ * Restricting the prefix to domains that legitimately use this endpoint
+ * keeps every other domain cryptographically isolated. Domains owned by
+ * dedicated endpoints or token formats — `skill-v1` (sign-skill/verify-skill),
+ * the `v3` session token format (sign-token/verify-token), and `pairing-v1`
+ * (identity link codes) — are intentionally excluded and must never be
+ * reachable here.
  */
-const ALLOWED_PAYLOAD_PREFIXES = new Set(["approval-v1", "curator-producer-v1"]);
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Ed25519 Token Signing
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -585,7 +584,7 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 		}
 
 		case "sign-payload": {
-			if (!ALLOWED_PAYLOAD_PREFIXES.has(request.prefix)) {
+			if (!isGenericPayloadSigningPrefix(request.prefix)) {
 				return { type: "error", error: `Unsupported signing prefix: ${request.prefix}` };
 			}
 			const keys = await getOrCreateSigningKeys();
@@ -595,7 +594,7 @@ async function handleRequest(request: VaultRequest, clientId: string): Promise<V
 		}
 
 		case "verify-payload": {
-			if (!ALLOWED_PAYLOAD_PREFIXES.has(request.prefix)) {
+			if (!isGenericPayloadSigningPrefix(request.prefix)) {
 				return { type: "error", error: `Unsupported signing prefix: ${request.prefix}` };
 			}
 			const keys = await getOrCreateSigningKeys();

@@ -149,7 +149,8 @@ export class VaultClient {
 
 	/**
 	 * Sign an arbitrary payload with domain-separated prefix.
-	 * Used for approval tokens (prefix: "approval-v1").
+	 * Used for approved generic payload domains such as provider approvals and
+	 * Curator envelopes.
 	 */
 	async signPayload(
 		payload: string,

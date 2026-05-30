@@ -1,13 +1,20 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
+import {
+	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+} from "../../security/approval-domains.js";
+
+export {
+	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+} from "../../security/approval-domains.js";
 
 const DEFAULT_SIDE_EFFECT_TTL_MS = 5 * 60 * 1_000;
 const PROVIDER_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.params.v1";
 const PROVIDER_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.body.v1";
-const PROVIDER_APPROVAL_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.approval.v1";
 const OUTBOUND_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.params.v1";
 const OUTBOUND_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.body.v1";
-const OUTBOUND_APPROVAL_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.approval.v1";
 
 export type TelclaudeMcpSideEffectDomain =
 	| "private"
@@ -111,7 +118,7 @@ export type TelclaudeMcpSideEffectPrepareInput =
 	| TelclaudeMcpOutboundSideEffectPrepareInput;
 
 export type TelclaudeMcpProviderApprovalBinding = {
-	readonly domainSeparator: typeof PROVIDER_APPROVAL_DOMAIN;
+	readonly domainSeparator: typeof TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN;
 	readonly ref: string;
 	readonly kind: "provider";
 	readonly actorId: string;
@@ -129,7 +136,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 };
 
 export type TelclaudeMcpOutboundApprovalBinding = {
-	readonly domainSeparator: typeof OUTBOUND_APPROVAL_DOMAIN;
+	readonly domainSeparator: typeof TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN;
 	readonly ref: string;
 	readonly kind: "outbound";
 	readonly actorId: string;
@@ -461,7 +468,7 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 
 function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecord): string {
 	return canonicalDigest({
-		domainSeparator: PROVIDER_APPROVAL_DOMAIN,
+		domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
@@ -478,7 +485,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 
 function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecord): string {
 	return canonicalDigest({
-		domainSeparator: OUTBOUND_APPROVAL_DOMAIN,
+		domainSeparator: TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
@@ -498,7 +505,7 @@ function approvalBinding(
 ): TelclaudeMcpSideEffectApprovalBinding {
 	if (record.kind === "provider") {
 		return {
-			domainSeparator: PROVIDER_APPROVAL_DOMAIN,
+			domainSeparator: TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 			ref: record.ref,
 			kind: "provider",
 			actorId: record.actorId,
@@ -516,7 +523,7 @@ function approvalBinding(
 		};
 	}
 	return {
-		domainSeparator: OUTBOUND_APPROVAL_DOMAIN,
+		domainSeparator: TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 		ref: record.ref,
 		kind: "outbound",
 		actorId: record.actorId,
