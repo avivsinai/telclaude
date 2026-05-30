@@ -43,7 +43,7 @@ services:
   tc-hermes-contained:
     image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7}
     container_name: tc-hermes-contained
-    entrypoint: ["/opt/hermes/hermes"]
+    entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]
     command: ["gateway", "run"]
     environment:
       - API_SERVER_ENABLED=true
@@ -53,7 +53,12 @@ services:
       - HERMES_HOME=/home/hermes/.hermes
       - HOME=/home/hermes
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-contained-skills.allowlist
+      - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
       - NO_COLOR=1
+    volumes:
+      - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
+      - ./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro
     user: "10000:10000"
     cap_drop:
       - ALL
