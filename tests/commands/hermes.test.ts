@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
+import { shutdownTokenClient } from "../../src/agent/token-client.js";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approval-continuation.js";
@@ -19,6 +20,8 @@ import {
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
+	HERMES_ROLLBACK_CONTROL_SURFACE,
+	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	parseHermesPin,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
@@ -155,6 +158,32 @@ function readJson(filePath: string): unknown {
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function hermesRuntimeState() {
+	return {
+		ok: true,
+		effectiveMode: "hermes",
+		effectiveValue: "1",
+		rolloutAllowed: true,
+		rolloutEnvValue: "1",
+		controlMode: "hermes",
+		controlSource: "runtime-config",
+		fallbackPath: "telclaude.private-runtime.legacy",
+	};
+}
+
+function legacyRuntimeState() {
+	return {
+		ok: true,
+		effectiveMode: "legacy",
+		effectiveValue: "0",
+		rolloutAllowed: true,
+		rolloutEnvValue: "1",
+		controlMode: "legacy",
+		controlSource: "runtime-config",
+		fallbackPath: "telclaude.private-runtime.legacy",
+	};
 }
 
 async function startProbeServer(
@@ -361,6 +390,11 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		observedAfterValue: "0",
 		observedFallbackPath: "telclaude.private-runtime.legacy",
 		observedAt: "2026-05-30T00:00:00.000Z",
+		controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
+		observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
+		observedBeforeSource: "relay-effective-mode",
+		observedAfterSource: "relay-effective-mode",
+		observedAfterControlSource: "runtime-config",
 		checks: [
 			{
 				name: "rollback.allowed",
@@ -381,6 +415,16 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 				name: "rollback.fallbackPath",
 				status: "pass",
 				detail: "pre-Hermes fallback path observed",
+			},
+			{
+				name: "rollback.controlSurface",
+				status: "pass",
+				detail: "relay durable runtime config accepted legacy mode",
+			},
+			{
+				name: "rollback.observedSources",
+				status: "pass",
+				detail: "rollback observations came from relay effective-mode status",
 			},
 		],
 		...overrides,
@@ -2192,7 +2236,7 @@ describe("Hermes wrapper foundation", () => {
 				probes: Array<{ id: string; status: string; evidence_path: string }>;
 			};
 
-			expect(result.exitCode).toBe(0);
+			expect(result.exitCode, result.stdout).toBe(0);
 			expect(report).toMatchObject({ status: "pass", ran: true, bundlePath: outPath });
 			expect(bundle.probes.map((probe) => probe.id)).toEqual(requiredNetworkProbeIds);
 			expect(bundle.probes.every((probe) => probe.status === "pass")).toBe(true);
@@ -2211,6 +2255,100 @@ describe("Hermes wrapper foundation", () => {
 			).toMatchObject({ observed: "reachable" });
 		} finally {
 			await relay.close();
+		}
+	});
+
+	it("does not write rollback rehearsal evidence without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-cli-"));
+		const outPath = path.join(tempDir, "rollback.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"rollback-rehearsal",
+			"--json",
+			"--out",
+			outPath,
+		]);
+		const report = JSON.parse(result.stdout) as { allowedToRun: boolean; written: boolean };
+
+		expect(result.exitCode).toBe(2);
+		expect(report.allowedToRun).toBe(false);
+		expect(report.written).toBe(false);
+		expect(fs.existsSync(outPath)).toBe(false);
+	});
+
+	it("writes rollback rehearsal evidence by driving the relay capability surface", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-cli-"));
+		const outPath = path.join(tempDir, "rollback.json");
+		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
+		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const keys = generateKeyPair();
+		let statusCalls = 0;
+		shutdownTokenClient();
+		const relay = await startProbeServer((req, res) => {
+			const requestPath = req.url?.split("?")[0] ?? "";
+			res.setHeader("Content-Type", "application/json");
+			if (requestPath === "/v1/hermes.private-runtime.status") {
+				statusCalls += 1;
+				res.end(JSON.stringify(statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState()));
+				return;
+			}
+			if (requestPath === "/v1/hermes.private-runtime.mode") {
+				res.end(JSON.stringify(legacyRuntimeState()));
+				return;
+			}
+			res.statusCode = 404;
+			res.end(JSON.stringify({ error: `not found: ${requestPath}` }));
+		});
+		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
+		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"rollback-rehearsal",
+				"--allow-run",
+				"--json",
+				"--out",
+				outPath,
+				"--evidence-path",
+				"artifacts/hermes/rollback-rehearsal.json",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				passed: boolean;
+				written: boolean;
+				evidence_path: string;
+				observedBeforeValue: string;
+				observedAfterValue: string;
+				controlSurface: string;
+			};
+			const evidence = readJson(outPath) as {
+				passed: boolean;
+				evidence_path: string;
+				observedAfterControlSource: string;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({
+				passed: true,
+				written: true,
+				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
+				observedBeforeValue: "1",
+				observedAfterValue: "0",
+			});
+			expect(evidence).toMatchObject({
+				passed: true,
+				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
+				observedAfterControlSource: "runtime-config",
+			});
+			expect(statusCalls).toBe(2);
+		} finally {
+			await relay.close();
+			shutdownTokenClient();
+			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
+			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
+			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
 		}
 	});
 

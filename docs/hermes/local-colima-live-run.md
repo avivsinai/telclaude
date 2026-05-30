@@ -309,7 +309,32 @@ probe available inside the contained namespace. The resulting evidence must show
 
 Expected green: all required served-MCP properties pass, including exact tools list, empty resources/prompts/roots, sampling disabled, forged handle denied, wrong connection denied, cross-domain memory denied, out-of-scope provider/outbound denied, execute-without-ledger denied, malformed/unauthenticated/batch/prototype denial, and artifact redaction.
 
-## 6. Cutover Check
+## 6. Rollback Rehearsal
+
+Run the rollback rehearsal after the live probes. It must call the relay
+capability surface, observe Hermes mode enabled, drive the durable runtime
+overlay back to legacy mode, and observe legacy mode after the change. Do not
+hand-write this evidence.
+
+```bash
+docker exec \
+  -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  telclaude telclaude hermes rollback-rehearsal \
+    --allow-run \
+    --json \
+    --out /data/hermes/rollback-rehearsal.json \
+    --evidence-path artifacts/hermes/rollback-rehearsal.json
+
+docker cp telclaude:/data/hermes/rollback-rehearsal.json artifacts/hermes/rollback-rehearsal.json
+```
+
+Expected green: `passed=true`, `observedBeforeValue=1`,
+`observedAfterValue=0`, `controlSurface=relay.capabilities:/v1/hermes.private-runtime.mode`,
+`observationSurface=relay.capabilities:/v1/hermes.private-runtime.status`,
+and `observedAfterControlSource=runtime-config`.
+
+## 7. Cutover Check
 
 `cutover-check` consumes docs/evidence files from the host checkout. Run it only after host-side files point at the live evidence paths chosen for this run:
 
@@ -325,7 +350,7 @@ pnpm dev hermes cutover-check \
 
 Expected green: exit code `0`, `status=safe`, and all gates pass. If it fails only because placeholder docs still say `skip`, `fail`, `pending`, empty fixtures, no-fork not clean, or rollback not rehearsed, do not override the result. Update those artifacts from real evidence or keep the cutover blocked.
 
-## 7. Remaining Non-Probe Gates
+## 8. Remaining Non-Probe Gates
 
 The five live probes are necessary, not sufficient. A green probe set does not authorize flipping `TELCLAUDE_HERMES_PRIVATE_RUNTIME` by itself.
 
@@ -341,7 +366,7 @@ Before any flag flip, these non-probe gates also need real evidence:
 
 Treat any placeholder `skip`, `fail`, `pending`, empty bundle, missing evidence file, stale lockfile digest, dirty no-fork proof, or failed rollback as a hard cutover block.
 
-## 8. Regenerate The Compatibility Lockfile Draft
+## 9. Regenerate The Compatibility Lockfile Draft
 
 After evidence is accepted and `docs/hermes/feature-probes.json` reflects the live pass/fail status and evidence paths, regenerate a reviewable lockfile draft:
 
@@ -356,7 +381,7 @@ pnpm dev hermes compat-lock \
 
 Review the draft before replacing `docs/hermes/hermes-compat.lock.json`. There is no automatic write command by design; committing a lockfile update is an explicit evidence decision.
 
-## 9. Evidence Policy Decision
+## 10. Evidence Policy Decision
 
 Resolve this at live-run time before committing anything beyond this playbook.
 

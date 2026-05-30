@@ -64,6 +64,21 @@ type RelayProvidersResponse = {
 	providersEpoch: string;
 };
 
+type HermesPrivateRuntimeState = {
+	ok: true;
+	effectiveMode: "hermes" | "legacy";
+	effectiveValue: "1" | "0";
+	rolloutAllowed: boolean;
+	rolloutEnvValue?: string;
+	controlMode: "hermes" | "legacy";
+	controlSource:
+		| "env-disabled"
+		| "runtime-config"
+		| "runtime-config-default"
+		| "runtime-config-invalid";
+	fallbackPath: string;
+};
+
 export async function relayGetProviders(): Promise<RelayProvidersResponse> {
 	return postJson("/v1/config.providers", {});
 }
@@ -100,6 +115,16 @@ export async function relayRemoveProvider(input: { providerId: string }): Promis
 	}
 > {
 	return postJsonWithScope("/v1/config.providers.remove", input, "operator");
+}
+
+export async function relayGetHermesPrivateRuntimeState(): Promise<HermesPrivateRuntimeState> {
+	return postJsonWithScope("/v1/hermes.private-runtime.status", {}, "operator");
+}
+
+export async function relaySetHermesPrivateRuntimeMode(input: {
+	mode: "hermes" | "legacy";
+}): Promise<HermesPrivateRuntimeState> {
+	return postJsonWithScope("/v1/hermes.private-runtime.mode", input, "operator");
 }
 
 export async function relayGenerateImage(input: {

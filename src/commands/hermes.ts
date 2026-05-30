@@ -80,6 +80,11 @@ import {
 	runHermesLaunchInvocation,
 } from "../hermes/private-runtime.js";
 import {
+	DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH,
+	runHermesRollbackRehearsal,
+	writeHermesRollbackRehearsalEvidence,
+} from "../hermes/rollback-rehearsal.js";
+import {
 	DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME,
 	DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
 	runServedMcpContainmentProbe,
@@ -136,6 +141,12 @@ type NetworkProbeOption = JsonOption & {
 	dnsUrl: string;
 	firewallSentinel: string;
 	timeoutMs?: string;
+};
+
+type RollbackRehearsalOption = JsonOption & {
+	allowRun?: boolean;
+	out: string;
+	evidencePath?: string;
 };
 
 type LiveMcpProbeTokenOption = JsonOption & {
@@ -1202,6 +1213,63 @@ export function registerHermesCommand(program: Command): void {
 				} else {
 					console.log(`Hermes network-probes: ${report.status}`);
 					console.log(`- FAIL: ${report.summary}`);
+				}
+				process.exitCode = 1;
+			}
+		});
+
+	hermes
+		.command("rollback-rehearsal")
+		.description("Generate relay-observed Hermes private-runtime rollback evidence")
+		.option("--allow-run", "Actually drive the relay durable control surface")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--out <path>",
+			"Rollback rehearsal evidence path",
+			DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH,
+		)
+		.option(
+			"--evidence-path <path>",
+			"Logical evidence_path recorded inside the artifact; defaults to --out",
+		)
+		.action(async (options: RollbackRehearsalOption) => {
+			try {
+				const outPath = resolveHermesArtifactPath(options.out);
+				const evidencePath = options.evidencePath?.trim() || options.out;
+				const report = await runHermesRollbackRehearsal({
+					allowRun: options.allowRun === true,
+					evidencePath,
+				});
+				const written = writeHermesRollbackRehearsalEvidence(report, outPath);
+				if (options.json) {
+					printJson({ ...report, written });
+				} else {
+					console.log(`Hermes rollback-rehearsal: ${report.passed ? "pass" : "fail"}`);
+					for (const check of report.checks ?? []) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (written) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.passed ? 0 : report.allowedToRun ? 1 : 2;
+			} catch (error) {
+				const report = {
+					schemaVersion: 1,
+					passed: false,
+					written: false,
+					evidence_path: options.evidencePath?.trim() || options.out,
+					checks: [
+						{
+							name: "rollback.controlSurface",
+							status: "fail",
+							detail: String(error instanceof Error ? error.message : error),
+						},
+					],
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log("Hermes rollback-rehearsal: fail");
+					console.log(`- FAIL rollback.controlSurface: ${report.checks[0].detail}`);
 				}
 				process.exitCode = 1;
 			}

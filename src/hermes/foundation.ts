@@ -149,7 +149,13 @@ const REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES = [
 	"rollback.flagBefore",
 	"rollback.flagAfter",
 	"rollback.fallbackPath",
+	"rollback.controlSurface",
+	"rollback.observedSources",
 ] as const;
+export const HERMES_ROLLBACK_CONTROL_SURFACE =
+	"relay.capabilities:/v1/hermes.private-runtime.mode" as const;
+export const HERMES_ROLLBACK_OBSERVATION_SURFACE =
+	"relay.capabilities:/v1/hermes.private-runtime.status" as const;
 
 const ApiServerContainmentProbeEvidenceSchema = z
 	.object({
@@ -433,6 +439,11 @@ export const RollbackRehearsalSchema = z
 		observedAfterValue: NonEmptyString.optional(),
 		observedFallbackPath: NonEmptyString.optional(),
 		observedAt: NonEmptyString.optional(),
+		controlSurface: NonEmptyString.optional(),
+		observationSurface: NonEmptyString.optional(),
+		observedBeforeSource: NonEmptyString.optional(),
+		observedAfterSource: NonEmptyString.optional(),
+		observedAfterControlSource: NonEmptyString.optional(),
 		checks: z
 			.array(
 				z
@@ -1166,6 +1177,23 @@ function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal)
 	}
 	if (typeof evidence.observedAt !== "string") {
 		failures.push("rollback rehearsal evidence observedAt is missing");
+	}
+	if (evidence.controlSurface !== HERMES_ROLLBACK_CONTROL_SURFACE) {
+		failures.push("rollback rehearsal evidence controlSurface is not relay durable control");
+	}
+	if (evidence.observationSurface !== HERMES_ROLLBACK_OBSERVATION_SURFACE) {
+		failures.push(
+			"rollback rehearsal evidence observationSurface is not relay effective-mode status",
+		);
+	}
+	if (evidence.observedBeforeSource !== "relay-effective-mode") {
+		failures.push("rollback rehearsal evidence observedBeforeSource is not relay-effective-mode");
+	}
+	if (evidence.observedAfterSource !== "relay-effective-mode") {
+		failures.push("rollback rehearsal evidence observedAfterSource is not relay-effective-mode");
+	}
+	if (evidence.observedAfterControlSource !== "runtime-config") {
+		failures.push("rollback rehearsal evidence observedAfterControlSource is not runtime-config");
 	}
 	if (evidence.checks === undefined || evidence.checks.length === 0) {
 		failures.push("rollback rehearsal evidence checks are empty");

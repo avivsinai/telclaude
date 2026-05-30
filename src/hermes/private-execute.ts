@@ -7,6 +7,7 @@ import {
 	type HermesPrivateRuntimeRequest,
 	type HermesRuntimeAdapter,
 } from "./private-runtime.js";
+import { readHermesPrivateRuntimeEffectiveState } from "./private-runtime-control.js";
 import { hermesSessionMap } from "./session-map.js";
 
 export type HermesPrivateQueryOptions = {
@@ -32,7 +33,7 @@ export type HermesPrivateQueryOptions = {
 let privateRuntimeAdapter: HermesRuntimeAdapter | null = null;
 
 export function shouldUseHermesPrivateRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
-	return env.TELCLAUDE_HERMES_PRIVATE_RUNTIME === "1";
+	return readHermesPrivateRuntimeEffectiveState(env).effectiveMode === "hermes";
 }
 
 export function setHermesPrivateRuntimeAdapterForTest(adapter: HermesRuntimeAdapter | null): void {
