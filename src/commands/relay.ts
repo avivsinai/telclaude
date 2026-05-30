@@ -8,6 +8,11 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import {
+	createFailClosedTelclaudeLiveMcpRelayClients,
+	readTelclaudeLiveMcpRuntimeConfig,
+	startTelclaudeLiveMcpRuntime,
+} from "../hermes/mcp/live-runtime.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
 import {
@@ -217,6 +222,17 @@ export function registerRelayCommand(program: Command): void {
 					}
 				} else {
 					console.log("  Capabilities: disabled");
+				}
+
+				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
+					config: readTelclaudeLiveMcpRuntimeConfig(),
+					relayClients: createFailClosedTelclaudeLiveMcpRelayClients(),
+				});
+				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
+					schedulerHandles.push({ stop: () => liveMcpRuntime.stop() });
+					console.log(`  Hermes live MCP: enabled (${liveMcpRuntime.endpoint.url})`);
+				} else {
+					console.log("  Hermes live MCP: disabled");
 				}
 
 				// Initialize activity log table for cross-persona queries
