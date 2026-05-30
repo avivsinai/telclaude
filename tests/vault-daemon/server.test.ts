@@ -3,6 +3,12 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import {
+	CURATOR_PRODUCER_SIGNING_PREFIX,
+	GOOGLE_APPROVAL_SIGNING_PREFIX,
+	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
+	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+} from "../../src/security/approval-domains.js";
 import { VaultClient } from "../../src/vault-daemon/client.js";
 import type { ServerHandle } from "../../src/vault-daemon/server.js";
 import { startServer } from "../../src/vault-daemon/server.js";
@@ -74,13 +80,13 @@ describe("vault daemon socket permissions", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// sign-payload / verify-payload prefix allowlist (ALLOWED_PAYLOAD_PREFIXES).
+// sign-payload / verify-payload prefix allowlist.
 //
 // The generic signing endpoint signs `${prefix}\n${payload}` with the shared
 // master keypair, so a caller-controlled prefix is a domain-separation oracle.
-// The server must only sign/verify the two domains that legitimately use this
-// endpoint (`approval-v1`, `curator-producer-v1`) and reject every other
-// prefix — including domains owned by dedicated endpoints (`skill-v1`) or
+// The server must only sign/verify the domains that legitimately use this
+// endpoint (Google, Curator, and Hermes MCP side-effect approvals) and reject
+// every other prefix — including domains owned by dedicated endpoints (`skill-v1`) or
 // other token formats (`session-v1`, `pairing-v1`). These tests drive the live
 // server over the Unix socket; they fail against a server that signs any
 // prefix because the forbidden cases would come back with a signature instead
@@ -113,7 +119,7 @@ describe("vault sign-payload prefix allowlist", () => {
 	it("signs a payload under an allowed prefix (approval-v1)", async () => {
 		await startVault();
 
-		const response = await client.signPayload("approval-payload", "approval-v1");
+		const response = await client.signPayload("approval-payload", GOOGLE_APPROVAL_SIGNING_PREFIX);
 
 		expect(response.type).toBe("sign-payload");
 		expect(typeof response.signature).toBe("string");
@@ -123,11 +129,30 @@ describe("vault sign-payload prefix allowlist", () => {
 	it("signs a payload under the other allowed prefix (curator-producer-v1)", async () => {
 		await startVault();
 
-		const response = await client.signPayload("curator-payload", "curator-producer-v1");
+		const response = await client.signPayload("curator-payload", CURATOR_PRODUCER_SIGNING_PREFIX);
 
 		expect(response.type).toBe("sign-payload");
 		expect(typeof response.signature).toBe("string");
 		expect(response.signature.length).toBeGreaterThan(0);
+	});
+
+	it("signs payloads under Hermes MCP provider and outbound approval domains", async () => {
+		await startVault();
+
+		const provider = await client.signPayload(
+			"provider-approval-payload",
+			TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+		);
+		const outbound = await client.signPayload(
+			"outbound-approval-payload",
+			TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
+		);
+
+		expect(provider.type).toBe("sign-payload");
+		expect(outbound.type).toBe("sign-payload");
+		expect(provider.type === "sign-payload" ? provider.signature : "").not.toBe(
+			outbound.type === "sign-payload" ? outbound.signature : "",
+		);
 	});
 
 	it("refuses to sign under a forbidden domain prefix (skill-v1) and returns no signature", async () => {
@@ -155,7 +180,7 @@ describe("vault sign-payload prefix allowlist", () => {
 		await startVault();
 
 		// First obtain a genuine approval-v1 signature for some payload.
-		const signed = await client.signPayload("payload", "approval-v1");
+		const signed = await client.signPayload("payload", GOOGLE_APPROVAL_SIGNING_PREFIX);
 		expect(signed.type).toBe("sign-payload");
 		const signature = signed.type === "sign-payload" ? signed.signature : "";
 
@@ -171,15 +196,44 @@ describe("vault sign-payload prefix allowlist", () => {
 	it("verifies a signature it produced under an allowed prefix", async () => {
 		await startVault();
 
-		const signed = await client.signPayload("round-trip-payload", "approval-v1");
+		const signed = await client.signPayload("round-trip-payload", GOOGLE_APPROVAL_SIGNING_PREFIX);
 		expect(signed.type).toBe("sign-payload");
 		const signature = signed.type === "sign-payload" ? signed.signature : "";
 
-		const verified = await client.verifyPayload("round-trip-payload", signature, "approval-v1");
+		const verified = await client.verifyPayload(
+			"round-trip-payload",
+			signature,
+			GOOGLE_APPROVAL_SIGNING_PREFIX,
+		);
 
 		expect(verified.type).toBe("verify-payload");
 		if (verified.type === "verify-payload") {
 			expect(verified.valid).toBe(true);
 		}
+	});
+
+	it("verifies Hermes MCP side-effect signatures only under the matching approval domain", async () => {
+		await startVault();
+
+		const signed = await client.signPayload(
+			"provider-round-trip-payload",
+			TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+		);
+		expect(signed.type).toBe("sign-payload");
+		const signature = signed.type === "sign-payload" ? signed.signature : "";
+
+		const providerVerified = await client.verifyPayload(
+			"provider-round-trip-payload",
+			signature,
+			TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
+		);
+		const outboundVerified = await client.verifyPayload(
+			"provider-round-trip-payload",
+			signature,
+			TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
+		);
+
+		expect(providerVerified).toEqual({ type: "verify-payload", valid: true });
+		expect(outboundVerified).toEqual({ type: "verify-payload", valid: false });
 	});
 });

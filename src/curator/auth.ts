@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { CURATOR_PRODUCER_SIGNING_PREFIX } from "../security/approval-domains.js";
 import type { VaultClient } from "../vault-daemon/client.js";
 import { upsertVerifiedCuratorItem } from "./store.js";
 import type { CuratorItem, CuratorItemInput, CuratorProducerKind } from "./types.js";
 
-export const CURATOR_PRODUCER_SIGNING_PREFIX = "curator-producer-v1";
+export { CURATOR_PRODUCER_SIGNING_PREFIX } from "../security/approval-domains.js";
+
 const DEFAULT_CURATOR_PRODUCER_TTL_MS = 5 * 60 * 1000;
 
 export type SignedCuratorProducerKind = Exclude<CuratorProducerKind, "system">;

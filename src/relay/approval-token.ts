@@ -11,9 +11,9 @@
 
 import crypto from "node:crypto";
 import { canonicalHash } from "../crypto/canonical-hash.js";
+import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../security/approval-domains.js";
 import type { VaultClient } from "../vault-daemon/client.js";
 
-const SIGNING_PREFIX = "approval-v1";
 const TOKEN_TTL_SECONDS = 60; // 1 minute — short-lived by design
 
 export interface ApprovalTokenInput {
@@ -71,7 +71,7 @@ export async function generateApprovalToken(
 	const claimsB64 = Buffer.from(JSON.stringify(claims)).toString("base64url");
 
 	// Sign via vault (domain-separated: "approval-v1\n<payload>")
-	const signResult = await vaultClient.signPayload(claimsB64, SIGNING_PREFIX);
+	const signResult = await vaultClient.signPayload(claimsB64, GOOGLE_APPROVAL_SIGNING_PREFIX);
 	if (signResult.type !== "sign-payload" || !signResult.signature) {
 		throw new Error("Vault signing failed");
 	}
