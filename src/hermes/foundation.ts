@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { redactSecrets } from "../security/output-filter.js";
 
 export const DEFAULT_FEATURE_PROBE_MATRIX_PATH = "docs/hermes/feature-probes.json";
 export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json";
@@ -12,6 +13,7 @@ export const DEFAULT_NETWORK_PROBES_PATH = "docs/hermes/network-probes.json";
 export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
+export const NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION = "telclaude.hermes.network-probe.v1";
 export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 	"network.relay-control-allowed",
 	"network.direct-provider-denied",
@@ -97,6 +99,46 @@ const CliHeadlessProbeEvidenceSchema = z
 		exitCode: z.number().int(),
 	})
 	.passthrough();
+
+const NetworkProbeAttemptSchema = z
+	.object({
+		name: NonEmptyString,
+		kind: z.enum(["http", "unix_socket", "dns_guard", "firewall_sentinel", "configuration"]),
+		target: NonEmptyString,
+		expectation: z.enum(["allow", "deny", "present", "configured"]),
+		status: z.enum(["pass", "fail"]),
+		observed: NonEmptyString,
+		detail: NonEmptyString,
+		durationMs: z.number().nonnegative().optional(),
+		httpStatus: z.number().int().nonnegative().optional(),
+		errorName: NonEmptyString.optional(),
+		errorCode: NonEmptyString.optional(),
+		resolvedAddresses: z
+			.array(
+				z
+					.object({
+						address: NonEmptyString,
+						blocked: z.boolean(),
+						nonOverridable: z.boolean(),
+					})
+					.strict(),
+			)
+			.optional(),
+	})
+	.strict();
+
+const NetworkProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION),
+		id: NonEmptyString,
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		summary: NonEmptyString,
+		generatedAt: NonEmptyString,
+		evidence_path: NonEmptyString,
+		attempts: z.array(NetworkProbeAttemptSchema),
+	})
+	.strict();
 
 export const CompatibilityLockfileSchema = z
 	.object({
@@ -772,15 +814,15 @@ export function evaluateCutoverCheck(
 	const networkProbeById = new Map(bundle.networkProbes.probes.map((probe) => [probe.id, probe]));
 	const networkProbeFailures = [
 		...(bundle.networkProbes.probes.length === 0 ? ["network probe bundle is empty"] : []),
+		...findDuplicates(bundle.networkProbes.probes.map((probe) => probe.id)).map(
+			(id) => `duplicate network probe ${id}`,
+		),
 		...REQUIRED_CUTOVER_NETWORK_PROBE_IDS.flatMap((probeId) => {
 			const probe = networkProbeById.get(probeId);
 			if (!probe) return [`missing network probe ${probeId}`];
-			if (probe.status !== "pass") return [`network probe ${probeId} status is ${probe.status}`];
 			return [];
 		}),
-		...bundle.networkProbes.probes.flatMap((probe) =>
-			probe.status === "pass" ? [] : [`network probe ${probe.id} status is ${probe.status}`],
-		),
+		...bundle.networkProbes.probes.flatMap((probe) => networkProbeEvidenceFailures(probe)),
 	];
 
 	gates.push({
@@ -858,6 +900,86 @@ export function evaluateCutoverCheck(
 
 export function resolveHermesArtifactPath(relativePath: string): string {
 	return path.resolve(relativePath);
+}
+
+function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): string[] {
+	const failures =
+		probe.status === "pass" ? [] : [`network probe ${probe.id} status is ${probe.status}`];
+	const loaded = readNetworkProbeEvidence(probe);
+	if (!loaded.valid) return [...failures, loaded.failure];
+
+	const evidence = loaded.evidence;
+	if (evidence.id !== probe.id) {
+		failures.push(`network probe evidence ${probe.id} id is ${redactDetail(evidence.id)}`);
+	}
+	if (!sameResolvedArtifactPath(evidence.evidence_path, probe.evidence_path)) {
+		failures.push(
+			`network probe evidence ${probe.id} evidence_path is ${redactDetail(evidence.evidence_path)}`,
+		);
+	}
+	if (evidence.status !== "pass") {
+		failures.push(`network probe evidence ${probe.id} status is ${evidence.status}`);
+	}
+	if (evidence.ran !== true) {
+		failures.push(`network probe evidence ${probe.id} ran is ${String(evidence.ran)}`);
+	}
+	if (evidence.attempts.length === 0) {
+		failures.push(`network probe evidence ${probe.id} attempts are empty`);
+	}
+	for (const attempt of evidence.attempts) {
+		if (attempt.status === "pass") continue;
+		failures.push(
+			`network probe evidence ${probe.id} attempt ${redactDetail(
+				attempt.name,
+			)} status is ${attempt.status}: ${redactDetail(attempt.detail)}`,
+		);
+	}
+	return failures;
+}
+
+function readNetworkProbeEvidence(
+	probe: ProbeBundle["probes"][number],
+):
+	| { valid: true; evidence: z.infer<typeof NetworkProbeEvidenceSchema> }
+	| { valid: false; failure: string } {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return {
+			valid: false,
+			failure: `missing network probe evidence ${probe.id}: ${redactDetail(resolvedPath)}`,
+		};
+	}
+
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return {
+			valid: false,
+			failure: `unreadable network probe evidence ${probe.id}: ${redactDetail(
+				error instanceof Error ? error.message : String(error),
+			)}`,
+		};
+	}
+
+	const parsed = NetworkProbeEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return {
+			valid: false,
+			failure: `invalid network probe evidence ${probe.id}: ${redactDetail(
+				flattenZodError(parsed.error),
+			)}`,
+		};
+	}
+	return { valid: true, evidence: parsed.data };
+}
+
+function sameResolvedArtifactPath(left: string, right: string): boolean {
+	return resolveHermesArtifactPath(left) === resolveHermesArtifactPath(right);
+}
+
+function redactDetail(detail: string): string {
+	return redactSecrets(detail).replace(/\s+/g, " ").trim();
 }
 
 function collectCliHeadlessProbeEvidence(

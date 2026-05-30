@@ -19,6 +19,7 @@ import {
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
+	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	parseHermesPin,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	validateCompatibilityLockfile,
@@ -178,6 +179,118 @@ function writeFirewallSentinel(tempDir: string): string {
 	return sentinelPath;
 }
 
+function writePassingNetworkProbeBundle() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-network-"));
+	return {
+		schemaVersion: 1 as const,
+		probes: requiredNetworkProbeIds.map((id) => {
+			const evidencePath = path.join(tempDir, `${id.replace(/^network\./, "")}.json`);
+			writeJson(evidencePath, passingNetworkProbeEvidence(id, evidencePath));
+			return {
+				id,
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			};
+		}),
+	};
+}
+
+function passingNetworkProbeEvidence(id: string, evidencePath: string) {
+	return {
+		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+		id,
+		status: "pass",
+		ran: true,
+		summary:
+			id === "network.relay-control-allowed"
+				? `${id} observed expected relay reachability`
+				: `${id} observed only expected denials`,
+		generatedAt: "2026-05-30T00:00:00.000Z",
+		evidence_path: evidencePath,
+		attempts: [passingFirewallSentinelAttempt(), passingNetworkProbeAttempt(id)],
+	};
+}
+
+function passingFirewallSentinelAttempt() {
+	return {
+		name: "firewall-sentinel",
+		kind: "firewall_sentinel",
+		target: "/run/telclaude/firewall-active",
+		expectation: "present",
+		status: "pass",
+		observed: "present",
+		detail: "firewall sentinel is present",
+	};
+}
+
+function passingNetworkProbeAttempt(id: string) {
+	switch (id) {
+		case "network.relay-control-allowed":
+			return {
+				name: "relay-control",
+				kind: "http",
+				target: "http://127.0.0.1/relay-control",
+				expectation: "allow",
+				status: "pass",
+				observed: "reachable",
+				detail: "allowed control reached relay with HTTP status 204",
+				durationMs: 1,
+				httpStatus: 204,
+			};
+		case "network.direct-vault-denied":
+			return {
+				name: "vault-socket",
+				kind: "unix_socket",
+				target: "/run/vault/vault.sock",
+				expectation: "deny",
+				status: "pass",
+				observed: "absent",
+				detail: "vault socket path is absent from the probe environment",
+			};
+		case "network.dns-exfil-denied":
+			return {
+				name: "dns-exfil-1",
+				kind: "dns_guard",
+				target: "http://169.254.169.254/latest/meta-data/",
+				expectation: "deny",
+				status: "pass",
+				observed: "denied",
+				detail: "target was actively denied with ECONNREFUSED",
+				durationMs: 1,
+				errorName: "TypeError",
+				errorCode: "ECONNREFUSED",
+				resolvedAddresses: [
+					{
+						address: "169.254.169.254",
+						blocked: true,
+						nonOverridable: true,
+					},
+				],
+			};
+		case "network.direct-provider-denied":
+			return passingHttpDenialAttempt("provider", "https://provider.internal/probe");
+		case "network.direct-model-provider-denied":
+			return passingHttpDenialAttempt("model-provider", "https://api.anthropic.com/v1/models");
+		default:
+			throw new Error(`unsupported network probe fixture ${id}`);
+	}
+}
+
+function passingHttpDenialAttempt(name: string, target: string) {
+	return {
+		name,
+		kind: "http",
+		target,
+		expectation: "deny",
+		status: "pass",
+		observed: "denied",
+		detail: "target was actively denied with ECONNREFUSED",
+		durationMs: 1,
+		errorName: "TypeError",
+		errorCode: "ECONNREFUSED",
+	};
+}
+
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
 	return {
 		schemaVersion: 1,
@@ -235,14 +348,7 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 			hermesCheckoutClean: true,
 			evidence_path: "artifacts/hermes/no-fork.json",
 		},
-		networkProbes: {
-			schemaVersion: 1,
-			probes: requiredNetworkProbeIds.map((id) => ({
-				id,
-				status: "pass",
-				evidence_path: `artifacts/hermes/${id}.json`,
-			})),
-		},
+		networkProbes: writePassingNetworkProbeBundle(),
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: {
 			schemaVersion: 1,
