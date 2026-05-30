@@ -246,7 +246,7 @@ Command shape once the tokens exist:
 docker exec telclaude telclaude hermes probe execution.served_mcp_containment \
   --allow-run \
   --json \
-  --mcp-url http://127.0.0.1:8793/mcp \
+  --mcp-url http://telclaude:8793/mcp \
   --mcp-auth "Authorization: Bearer ${TC_MCP_ALLOWED_TOKEN}" \
   --mcp-forged-auth "Authorization: Bearer ${TC_MCP_FORGED_TOKEN}" \
   --mcp-wrong-connection-auth "Authorization: Bearer ${TC_MCP_WRONG_CONNECTION_TOKEN}" \
