@@ -99,4 +99,25 @@ describe("Hermes private-runtime durable control", () => {
 			controlSource: "runtime-config",
 		});
 	});
+
+	it.each([
+		["non-object root", []],
+		["non-object hermes", { hermes: [] }],
+		["non-object privateRuntime", { hermes: { privateRuntime: [] } }],
+		["invalid mode", { hermes: { privateRuntime: { mode: "maybe" } } }],
+	])("fails closed for structurally invalid runtime overlay: %s", (_name, overlay) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-runtime-control-"));
+		const configPath = path.join(tempDir, "telclaude.json");
+		const runtimeConfigPath = path.join(tempDir, "telclaude.runtime.json");
+		setConfigPath(configPath);
+		process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = "1";
+		fs.writeFileSync(runtimeConfigPath, `${JSON.stringify(overlay)}\n`, { mode: 0o600 });
+
+		expect(readHermesPrivateRuntimeEffectiveState()).toMatchObject({
+			effectiveMode: "legacy",
+			effectiveValue: "0",
+			controlMode: "legacy",
+			controlSource: "runtime-config-invalid",
+		});
+	});
 });

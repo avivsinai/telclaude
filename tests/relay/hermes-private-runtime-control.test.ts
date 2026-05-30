@@ -11,8 +11,12 @@ import { startCapabilityServer } from "../../src/relay/capabilities.js";
 const ORIGINAL_ENV = {
 	OPERATOR_RPC_AGENT_PRIVATE_KEY: process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY,
 	OPERATOR_RPC_AGENT_PUBLIC_KEY: process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY,
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 	SOCIAL_RPC_AGENT_PRIVATE_KEY: process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY,
 	SOCIAL_RPC_AGENT_PUBLIC_KEY: process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY,
+	TELEGRAM_RPC_AGENT_PRIVATE_KEY: process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY,
+	TELEGRAM_RPC_AGENT_PUBLIC_KEY: process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY,
 	TELCLAUDE_HERMES_PRIVATE_RUNTIME: process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME,
 };
 
@@ -35,8 +39,11 @@ describe("relay Hermes private-runtime control surface", () => {
 		setConfigPath(configPath);
 		process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = "1";
 		const keys = generateKeyPair();
+		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		const server = startCapabilityServer({ port: 0, host: "127.0.0.1" });
 		try {
 			await once(server, "listening");
@@ -72,15 +79,29 @@ describe("relay Hermes private-runtime control surface", () => {
 			expect(unauthenticated.status).toBe(401);
 
 			const socialKeys = generateKeyPair();
+			const telegramKeys = generateKeyPair();
 			process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = socialKeys.privateKey;
 			process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = socialKeys.publicKey;
+			process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY = telegramKeys.privateKey;
+			process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY = telegramKeys.publicKey;
+			for (const scope of ["telegram", "social"]) {
+				expect(
+					(await postWithScope(baseUrl, "/v1/hermes.private-runtime.status", {}, scope)).status,
+				).toBe(403);
+				expect(
+					(
+						await postWithScope(
+							baseUrl,
+							"/v1/hermes.private-runtime.mode",
+							{ mode: "hermes" },
+							scope,
+						)
+					).status,
+				).toBe(403);
+			}
 			expect(
-				(await postWithScope(baseUrl, "/v1/hermes.private-runtime.status", {}, "social")).status,
-			).toBe(403);
-			expect(
-				(await postWithScope(baseUrl, "/v1/hermes.private-runtime.mode", { mode: "hermes" }, "social"))
-					.status,
-			).toBe(403);
+				(await post(baseUrl, "/v1/hermes.private-runtime.mode", { mode: "maybe" })).status,
+			).toBe(400);
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server.close((error) => (error ? reject(error) : resolve()));
@@ -96,8 +117,11 @@ describe("relay Hermes private-runtime control surface", () => {
 		process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = "1";
 		fs.writeFileSync(runtimeConfigPath, "{ bad json", { mode: 0o600 });
 		const keys = generateKeyPair();
+		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		const server = startCapabilityServer({ port: 0, host: "127.0.0.1" });
 		try {
 			await once(server, "listening");

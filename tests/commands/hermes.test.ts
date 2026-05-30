@@ -39,7 +39,7 @@ import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
-import { generateKeyPair } from "../../src/internal-auth.js";
+import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
@@ -76,7 +76,7 @@ const compatLockfile: CompatibilityLockfile = {
 		},
 	],
 	adapterApiSignatures: {
-		"edge.whatsapp": "sha256:adapter-signature",
+		"edge.whatsapp": `sha256:${"a".repeat(64)}`,
 	},
 	capabilities: {
 		plugins: ["platform-adapter"],
@@ -88,7 +88,7 @@ const compatLockfile: CompatibilityLockfile = {
 	generatedProfileSchemaVersion: "1",
 	wrapperPackageVersion: "0.7.1",
 	paritySuiteDigests: {
-		p0: "sha256:p0",
+		p0: `sha256:${"b".repeat(64)}`,
 	},
 	noForkProofEvidencePath: "artifacts/hermes/no-fork.json",
 	sourceDriftSignals: {
@@ -184,6 +184,20 @@ function legacyRuntimeState() {
 		controlSource: "runtime-config",
 		fallbackPath: "telclaude.private-runtime.legacy",
 	};
+}
+
+function signedRuntimeStatePayload(
+	requestPath: string,
+	requestBody: string,
+	state: ReturnType<typeof hermesRuntimeState> | ReturnType<typeof legacyRuntimeState>,
+): string {
+	const unsignedBody = JSON.stringify(state);
+	return JSON.stringify({
+		...state,
+		relayProof: buildInternalResponseProof("POST", requestPath, requestBody, unsignedBody, {
+			scope: "operator",
+		}),
+	});
 }
 
 async function startProbeServer(
@@ -381,6 +395,9 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		typeof overrides.evidence_path === "string"
 			? overrides.evidence_path
 			: path.join(tempDir, "rollback-rehearsal.json");
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const rehearsal = {
 		schemaVersion: 1,
 		passed: true,
@@ -395,11 +412,29 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		observedBeforeSource: "relay-effective-mode",
 		observedAfterSource: "relay-effective-mode",
 		observedAfterControlSource: "runtime-config",
+		signedRelayTranscripts: {
+			before: signedRelayTranscript(
+				"/v1/hermes.private-runtime.status",
+				"{}",
+				hermesRuntimeState(),
+			),
+			afterControl: signedRelayTranscript(
+				"/v1/hermes.private-runtime.mode",
+				JSON.stringify({ mode: "legacy" }),
+				legacyRuntimeState(),
+			),
+			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", legacyRuntimeState()),
+		},
 		checks: [
 			{
 				name: "rollback.allowed",
 				status: "pass",
 				detail: "operator allowed a real rollback rehearsal",
+			},
+			{
+				name: "rollback.relayProofs",
+				status: "pass",
+				detail: "relay signed every rollback observation",
 			},
 			{
 				name: "rollback.flagBefore",
@@ -431,6 +466,44 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 	};
 	writeJson(evidencePath, rehearsal);
 	return rehearsal;
+}
+
+function signedRelayTranscript(
+	requestPath: string,
+	requestBody: string,
+	state: ReturnType<typeof hermesRuntimeState> | ReturnType<typeof legacyRuntimeState>,
+) {
+	const responseBody = JSON.stringify(state);
+	return {
+		request: { method: "POST", path: requestPath, body: requestBody },
+		responseBody,
+		proof: buildInternalResponseProof("POST", requestPath, requestBody, responseBody, {
+			scope: "operator",
+		}),
+	};
+}
+
+function writeFixtureResults() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-fixtures-"));
+	const fixtures = ["fixture.private.telegram.basic", "fixture.private.telegram.basic.deny"].map(
+		(id) => {
+			const evidencePath = path.join(tempDir, `${id}.json`);
+			writeJson(evidencePath, {
+				schemaVersion: "telclaude.hermes.fixture-evidence.v1",
+				id,
+				status: "pass",
+				ran: true,
+				evidence_path: evidencePath,
+				observedAt: "2026-05-30T00:00:00.000Z",
+				provenance: {
+					runner: "vitest",
+					source: "unit-fixture",
+				},
+			});
+			return { id, status: "pass" as const, evidence_path: evidencePath };
+		},
+	);
+	return { schemaVersion: 1 as const, results: fixtures };
 }
 
 function passingNetworkProbeEvidence(id: string, evidencePath: string) {
@@ -530,6 +603,7 @@ function passingHttpDenialAttempt(name: string, target: string) {
 }
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
+	const noForkProof = writeNoForkProof();
 	return {
 		schemaVersion: 1,
 		inventory: {
@@ -564,24 +638,10 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 			],
 		},
 		decisionLog: { schemaVersion: 1, decisions: [] },
-		lockfile: compatLockfile,
+		lockfile: { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path },
 		featureProbeMatrix,
-		fixtureResults: {
-			schemaVersion: 1,
-			results: [
-				{
-					id: "fixture.private.telegram.basic",
-					status: "pass",
-					evidence_path: "artifacts/hermes/private-telegram.json",
-				},
-				{
-					id: "fixture.private.telegram.basic.deny",
-					status: "pass",
-					evidence_path: "artifacts/hermes/private-telegram-deny.json",
-				},
-			],
-		},
-		noForkProof: writeNoForkProof(),
+		fixtureResults: writeFixtureResults(),
+		noForkProof,
 		networkProbes: writePassingNetworkProbeBundle(),
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: writeRollbackRehearsal(),
@@ -642,6 +702,7 @@ function cliHeadlessCutoverBundle(
 			],
 		},
 		featureProbeMatrix,
+		noForkProof: base.noForkProof,
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
@@ -653,8 +714,9 @@ function cliHeadlessCutoverBundle(
 				},
 			],
 			adapterApiSignatures: {
-				"execution.cli_headless": "sha256:adapter-signature",
+				"execution.cli_headless": `sha256:${"c".repeat(64)}`,
 			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
 	});
 }
@@ -716,6 +778,7 @@ function approvalContinuationCutoverBundle(
 			],
 		},
 		featureProbeMatrix,
+		noForkProof: base.noForkProof,
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
@@ -727,8 +790,9 @@ function approvalContinuationCutoverBundle(
 				},
 			],
 			adapterApiSignatures: {
-				"execution.approval_continuation": "sha256:adapter-signature",
+				"execution.approval_continuation": `sha256:${"d".repeat(64)}`,
 			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
 	});
 }
@@ -813,6 +877,7 @@ function apiServerContainmentCutoverBundle(
 			],
 		},
 		featureProbeMatrix,
+		noForkProof: base.noForkProof,
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
@@ -824,8 +889,9 @@ function apiServerContainmentCutoverBundle(
 				},
 			],
 			adapterApiSignatures: {
-				"execution.api_server_containment": "sha256:adapter-signature",
+				"execution.api_server_containment": `sha256:${"e".repeat(64)}`,
 			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
 	});
 }
@@ -866,6 +932,7 @@ function servedMcpContainmentCutoverBundle(
 			],
 		},
 		featureProbeMatrix,
+		noForkProof: base.noForkProof,
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
@@ -877,8 +944,9 @@ function servedMcpContainmentCutoverBundle(
 				},
 			],
 			adapterApiSignatures: {
-				"execution.served_mcp_containment": "sha256:adapter-signature",
+				"execution.served_mcp_containment": `sha256:${"f".repeat(64)}`,
 			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
 	});
 }
@@ -1554,6 +1622,22 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("fails strict cutover when no-fork proof fields are placeholders", () => {
+		const proof = writeNoForkProof({
+			expectedRef: "TODO",
+			head: "pending",
+			expectedRefCommit: "pending",
+			exactTags: ["TODO"],
+		});
+
+		const failed = evaluateCutoverCheck(safeCutoverBundle({ noForkProof: proof }));
+
+		expect(failed.status).toBe("fail");
+		const detail = failed.gates.find((gate) => gate.name === "nofork.clean")?.detail ?? "";
+		expect(detail).toContain("no-fork evidence.expectedRef is placeholder");
+		expect(detail).toContain("no-fork evidence head is placeholder or invalid");
+	});
+
 	it("fails strict cutover when rollback rehearsal evidence is missing", () => {
 		const missingEvidence = path.join(
 			fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-rollback-missing-")),
@@ -1592,6 +1676,31 @@ describe("Hermes wrapper foundation", () => {
 		expect(failed.status).toBe("fail");
 		expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
 			"missing rollback rehearsal evidence check rollback.flagBefore",
+		);
+	});
+
+	it("fails strict cutover when rollback transcript proof is tampered", () => {
+		const base = safeCutoverBundle();
+		const rehearsal = base.rollbackRehearsal;
+		const transcripts = rehearsal.signedRelayTranscripts;
+		if (!transcripts) throw new Error("missing signed relay transcripts");
+		const tampered = {
+			...rehearsal,
+			signedRelayTranscripts: {
+				...transcripts,
+				before: {
+					...transcripts.before,
+					responseBody: JSON.stringify(legacyRuntimeState()),
+				},
+			},
+		};
+		writeJson(rehearsal.evidence_path, tampered);
+
+		const failed = evaluateCutoverCheck({ ...base, rollbackRehearsal: tampered });
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+			"rollback before relay transcript signature is invalid",
 		);
 	});
 
@@ -2030,6 +2139,53 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("fails strict cutover when lockfile proof fields are placeholders", () => {
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				lockfile: {
+					...compatLockfile,
+					adapterApiSignatures: { "edge.whatsapp": "sha256:pending" },
+					paritySuiteDigests: { p0: "sha256:pending" },
+					sourceDriftSignals: { sourceCommit: "pending", docsCommit: "pending" },
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		const detail = failed.gates.find((gate) => gate.name === "lockfile.consistent")?.detail ?? "";
+		expect(detail).toContain("adapterApiSignatures.edge.whatsapp");
+		expect(detail).toContain("paritySuiteDigests.p0");
+		expect(detail).toContain("sourceDriftSignals.sourceCommit");
+	});
+
+	it("fails strict cutover when fixture evidence is missing", () => {
+		const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-fixture-missing-"));
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				fixtureResults: {
+					schemaVersion: 1,
+					results: [
+						{
+							id: "fixture.private.telegram.basic",
+							status: "pass",
+							evidence_path: path.join(missingDir, "missing.json"),
+						},
+						{
+							id: "fixture.private.telegram.basic.deny",
+							status: "pass",
+							evidence_path: path.join(missingDir, "missing-deny.json"),
+						},
+					],
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"missing fixture evidence",
+		);
+	});
+
 	it("returns cutover exit code 2 for malformed checker inputs", () => {
 		const report = evaluateCutoverCheck({ schemaVersion: 1 });
 		expect(report.status).toBe("input_error");
@@ -2283,7 +2439,10 @@ describe("Hermes wrapper foundation", () => {
 		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
 		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
 		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const originalOperatorRelayPrivate = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalOperatorRelayPublic = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const keys = generateKeyPair();
+		const relayKeys = generateKeyPair();
 		let statusCalls = 0;
 		shutdownTokenClient();
 		const relay = await startProbeServer((req, res) => {
@@ -2291,11 +2450,23 @@ describe("Hermes wrapper foundation", () => {
 			res.setHeader("Content-Type", "application/json");
 			if (requestPath === "/v1/hermes.private-runtime.status") {
 				statusCalls += 1;
-				res.end(JSON.stringify(statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState()));
+				res.end(
+					signedRuntimeStatePayload(
+						requestPath,
+						"{}",
+						statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState(),
+					),
+				);
 				return;
 			}
 			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				res.end(JSON.stringify(legacyRuntimeState()));
+				res.end(
+					signedRuntimeStatePayload(
+						requestPath,
+						JSON.stringify({ mode: "legacy" }),
+						legacyRuntimeState(),
+					),
+				);
 				return;
 			}
 			res.statusCode = 404;
@@ -2303,6 +2474,8 @@ describe("Hermes wrapper foundation", () => {
 		});
 		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
 		try {
 			const result = await runHermesCommand([
@@ -2349,26 +2522,32 @@ describe("Hermes wrapper foundation", () => {
 			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
 			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
 			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalOperatorRelayPrivate);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalOperatorRelayPublic);
 		}
 	});
 
-	it("sets and observes private-runtime durable mode through relay operator RPC", async () => {
+	it("rejects forged rollback evidence from an unsigned fake capability surface", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-cli-"));
+		const outPath = path.join(tempDir, "rollback.json");
 		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
 		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
 		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const originalOperatorRelayPublic = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const keys = generateKeyPair();
-		const requests: string[] = [];
+		const relayKeys = generateKeyPair();
+		let statusCalls = 0;
 		shutdownTokenClient();
 		const relay = await startProbeServer((req, res) => {
 			const requestPath = req.url?.split("?")[0] ?? "";
-			requests.push(requestPath);
 			res.setHeader("Content-Type", "application/json");
 			if (requestPath === "/v1/hermes.private-runtime.status") {
-				res.end(JSON.stringify(hermesRuntimeState()));
+				statusCalls += 1;
+				res.end(JSON.stringify(statusCalls === 1 ? hermesRuntimeState() : legacyRuntimeState()));
 				return;
 			}
 			if (requestPath === "/v1/hermes.private-runtime.mode") {
-				res.end(JSON.stringify(hermesRuntimeState()));
+				res.end(JSON.stringify(legacyRuntimeState()));
 				return;
 			}
 			res.statusCode = 404;
@@ -2376,6 +2555,68 @@ describe("Hermes wrapper foundation", () => {
 		});
 		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"rollback-rehearsal",
+				"--allow-run",
+				"--json",
+				"--out",
+				outPath,
+			]);
+			const report = JSON.parse(result.stdout) as { passed: boolean; written: boolean };
+
+			expect(result.exitCode).toBe(2);
+			expect(report.passed).toBe(false);
+			expect(report.written).toBe(false);
+			expect(fs.existsSync(outPath)).toBe(false);
+		} finally {
+			await relay.close();
+			shutdownTokenClient();
+			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
+			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
+			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalOperatorRelayPublic);
+		}
+	});
+
+	it("sets and observes private-runtime durable mode through relay operator RPC", async () => {
+		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
+		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const originalOperatorRelayPrivate = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalOperatorRelayPublic = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const keys = generateKeyPair();
+		const relayKeys = generateKeyPair();
+		const requests: string[] = [];
+		shutdownTokenClient();
+		const relay = await startProbeServer((req, res) => {
+			const requestPath = req.url?.split("?")[0] ?? "";
+			requests.push(requestPath);
+			res.setHeader("Content-Type", "application/json");
+			if (requestPath === "/v1/hermes.private-runtime.status") {
+				res.end(signedRuntimeStatePayload(requestPath, "{}", hermesRuntimeState()));
+				return;
+			}
+			if (requestPath === "/v1/hermes.private-runtime.mode") {
+				res.end(
+					signedRuntimeStatePayload(
+						requestPath,
+						JSON.stringify({ mode: "hermes" }),
+						hermesRuntimeState(),
+					),
+				);
+				return;
+			}
+			res.statusCode = 404;
+			res.end(JSON.stringify({ error: `not found: ${requestPath}` }));
+		});
+		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
+		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
 		try {
 			const setResult = await runHermesCommand([
@@ -2409,6 +2650,8 @@ describe("Hermes wrapper foundation", () => {
 			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
 			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
 			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalOperatorRelayPrivate);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalOperatorRelayPublic);
 		}
 	});
 

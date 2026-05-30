@@ -7,6 +7,7 @@ const HEADER_SIGNATURE = "x-telclaude-signature";
 const HEADER_AUTH_TYPE = "x-telclaude-auth-type";
 const HEADER_SESSION_TOKEN = "x-telclaude-session-token";
 const SIGNING_VERSION_ASYMMETRIC = "v2";
+const RESPONSE_PROOF_VERSION = "v1";
 
 // Two-keypair bidirectional auth: each side owns its own keypair.
 // Agent keypair: agent signs → relay verifies
@@ -29,6 +30,18 @@ type SignatureInput = {
 	method: string;
 	path: string;
 	body: string;
+};
+
+export type InternalResponseProof = {
+	version: typeof RESPONSE_PROOF_VERSION;
+	scope: string;
+	timestamp: string;
+	nonce: string;
+	method: string;
+	path: string;
+	requestBodySha256: string;
+	responseBodySha256: string;
+	signature: string;
 };
 
 /**
@@ -137,6 +150,26 @@ function scopeEnvVarNames(scope: string): {
 	};
 }
 
+function sha256Hex(value: string): string {
+	return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function responseProofPayload(proof: Omit<InternalResponseProof, "signature">): Buffer {
+	return Buffer.from(
+		[
+			RESPONSE_PROOF_VERSION,
+			"relay-response",
+			proof.scope,
+			proof.timestamp,
+			proof.nonce,
+			proof.method.toUpperCase(),
+			proof.path,
+			proof.requestBodySha256,
+			proof.responseBodySha256,
+		].join("\n"),
+	);
+}
+
 /**
  * Load asymmetric keys from environment for the given scope.
  *
@@ -220,6 +253,88 @@ export function buildInternalAuthHeaders(
 	throw new Error(
 		`Missing RPC credentials for ${scope}. Set ${vars.agentPrivateKey} (agent) or ${vars.relayPrivateKey} (relay). Run \`telclaude keygen ${scope}\` to generate keys.`,
 	);
+}
+
+export function buildInternalResponseProof(
+	method: string,
+	path: string,
+	requestBody: string,
+	responseBody: string,
+	options?: InternalAuthOptions,
+): InternalResponseProof {
+	const scope = options?.scope ?? "telegram";
+	const vars = scopeEnvVarNames(scope);
+	const privateKeyBase64 = process.env[vars.relayPrivateKey];
+	if (!privateKeyBase64) {
+		throw new Error(
+			`Missing relay response signing key for ${scope}. Set ${vars.relayPrivateKey}.`,
+		);
+	}
+	const unsigned = {
+		version: RESPONSE_PROOF_VERSION,
+		scope,
+		timestamp: Date.now().toString(),
+		nonce: crypto.randomBytes(16).toString("hex"),
+		method: method.toUpperCase(),
+		path,
+		requestBodySha256: sha256Hex(requestBody),
+		responseBodySha256: sha256Hex(responseBody),
+	} satisfies Omit<InternalResponseProof, "signature">;
+	const signature = crypto
+		.sign(null, responseProofPayload(unsigned), {
+			key: Buffer.from(privateKeyBase64, "base64"),
+			format: "der",
+			type: "pkcs8",
+		})
+		.toString("base64");
+	return { ...unsigned, signature };
+}
+
+export function verifyInternalResponseProof(
+	proof: InternalResponseProof,
+	method: string,
+	path: string,
+	requestBody: string,
+	responseBody: string,
+	options?: InternalAuthOptions,
+): boolean {
+	const scope = options?.scope ?? proof.scope;
+	if (
+		proof.version !== RESPONSE_PROOF_VERSION ||
+		proof.scope !== scope ||
+		proof.method !== method.toUpperCase() ||
+		proof.path !== path ||
+		proof.requestBodySha256 !== sha256Hex(requestBody) ||
+		proof.responseBodySha256 !== sha256Hex(responseBody)
+	) {
+		return false;
+	}
+	const timestampMs = Number.parseInt(proof.timestamp, 10);
+	if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > DEFAULT_SKEW_MS) {
+		return false;
+	}
+	const vars = scopeEnvVarNames(scope);
+	const publicKeyBase64 = process.env[vars.relayPublicKey];
+	if (!publicKeyBase64) return false;
+	try {
+		return crypto.verify(
+			null,
+			responseProofPayload({
+				version: proof.version,
+				scope: proof.scope,
+				timestamp: proof.timestamp,
+				nonce: proof.nonce,
+				method: proof.method,
+				path: proof.path,
+				requestBodySha256: proof.requestBodySha256,
+				responseBodySha256: proof.responseBodySha256,
+			}),
+			{ key: Buffer.from(publicKeyBase64, "base64"), format: "der", type: "spki" },
+			Buffer.from(proof.signature, "base64"),
+		);
+	} catch {
+		return false;
+	}
 }
 
 /**

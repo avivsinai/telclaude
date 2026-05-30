@@ -25,6 +25,7 @@ import {
 	setHermesPrivateRuntimeControlMode,
 } from "../hermes/private-runtime-control.js";
 import {
+	buildInternalResponseProof,
 	type InternalAuthScope,
 	isInternalAuthScope,
 	verifyInternalAuth,
@@ -422,6 +423,26 @@ function writeJson(res: http.ServerResponse, status: number, payload: unknown): 
 		"Content-Length": Buffer.byteLength(body),
 	});
 	res.end(body);
+}
+
+function writeRelayProvenJson(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+	status: number,
+	requestPath: string,
+	requestBody: string,
+	payload: Record<string, unknown>,
+	scope: InternalAuthScope,
+): void {
+	const unsignedBody = JSON.stringify(payload);
+	const relayProof = buildInternalResponseProof(
+		req.method ?? "POST",
+		requestPath,
+		requestBody,
+		unsignedBody,
+		{ scope },
+	);
+	writeJson(res, status, { ...payload, relayProof });
 }
 
 function parseBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
@@ -1111,7 +1132,15 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 403, { error: "Forbidden." });
 					return;
 				}
-				writeJson(res, 200, readHermesPrivateRuntimeEffectiveState());
+				writeRelayProvenJson(
+					req,
+					res,
+					200,
+					requestPath,
+					body,
+					readHermesPrivateRuntimeEffectiveState() as unknown as Record<string, unknown>,
+					authResult.scope,
+				);
 				return;
 			}
 
@@ -1131,10 +1160,16 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 					writeJson(res, 400, { error: "mode must be hermes or legacy" });
 					return;
 				}
-				writeJson(
+				writeRelayProvenJson(
+					req,
 					res,
 					200,
-					setHermesPrivateRuntimeControlMode(typed.mode as HermesPrivateRuntimeControlMode),
+					requestPath,
+					body,
+					setHermesPrivateRuntimeControlMode(
+						typed.mode as HermesPrivateRuntimeControlMode,
+					) as unknown as Record<string, unknown>,
+					authResult.scope,
 				);
 				return;
 			}

@@ -224,6 +224,8 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `ANTHROPIC_API_KEY` | No | Alternative to `claude login` (vault preferred) |
 | `OPERATOR_RPC_AGENT_PRIVATE_KEY` | Host CLI only | Operator private key — signs operator-only relay mutations such as provider add/edit/remove/refresh |
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator public key — relay verifies operator-only RPC mutations |
+| `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key — signs relay-observed operator RPC responses such as Hermes rollback evidence |
+| `OPERATOR_RPC_RELAY_PUBLIC_KEY` | Host CLI only | Operator relay public key — CLI verifies relay-observed operator RPC responses |
 | `TELEGRAM_RPC_AGENT_PRIVATE_KEY` | Yes | Agent private key — signs agent→relay requests. Generate with `telclaude keygen telegram` |
 | `TELEGRAM_RPC_AGENT_PUBLIC_KEY` | Yes | Agent public key — relay verifies agent→relay requests |
 | `TELEGRAM_RPC_RELAY_PRIVATE_KEY` | Yes | Relay private key — signs relay→agent requests |
@@ -241,7 +243,7 @@ docker run --rm -v telclaude-claude-auth:/data:ro -v $(pwd):/backup \
 | `TELCLAUDE_IPV6_FAIL_CLOSED` | No | If IPv6 is enabled and ip6tables is missing, refuse to start (defaults to 1) |
 
 Generate:
-- `telclaude keygen operator` for operator-only relay mutations. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` on the host where you run the CLI; only `OPERATOR_RPC_AGENT_PUBLIC_KEY` goes into the relay container env.
+- `telclaude keygen operator` for operator-only relay mutations and relay-observed rollback evidence. Keep `OPERATOR_RPC_AGENT_PRIVATE_KEY` and `OPERATOR_RPC_RELAY_PUBLIC_KEY` on the host where you run the CLI; put `OPERATOR_RPC_AGENT_PUBLIC_KEY` and `OPERATOR_RPC_RELAY_PRIVATE_KEY` in the relay container env.
 - `telclaude keygen telegram` / `telclaude keygen social` for agent scopes. Each command generates two keypairs (4 keys): the agent keypair (agent signs, relay verifies) and the relay keypair (relay signs, agent verifies). The relay container gets `*_AGENT_PUBLIC_KEY` + `*_RELAY_PRIVATE_KEY`; the agent container gets `*_AGENT_PRIVATE_KEY` + `*_RELAY_PUBLIC_KEY`.
 
 Telegram admin wizards for `/providers add|edit|remove` do not require `OPERATOR_RPC_AGENT_PRIVATE_KEY`. They run inside the relay process, which writes the runtime overlay locally after Telegram admin/TOTP checks. The operator keypair is still required for host-side CLI or agent-container calls that hit the relay's operator-scope RPC endpoints over HTTP.

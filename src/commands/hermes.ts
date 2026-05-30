@@ -1256,7 +1256,7 @@ export function registerHermesCommand(program: Command): void {
 					}
 					if (written) console.log(`- evidence: ${outPath}`);
 				}
-				process.exitCode = report.passed ? 0 : report.allowedToRun ? 1 : 2;
+				process.exitCode = report.passed ? 0 : written ? 1 : 2;
 			} catch (error) {
 				const report = {
 					schemaVersion: 1,

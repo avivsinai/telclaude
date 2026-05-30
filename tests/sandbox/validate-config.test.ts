@@ -7,10 +7,7 @@ import { auditSandboxPosture } from "../../src/sandbox/validate-config.js";
 
 const TEMP_DIRS: string[] = [];
 
-function createFixture(params: {
-	composeContent: string;
-	envContent?: string;
-}): {
+function createFixture(params: { composeContent: string; envContent?: string }): {
 	rootDir: string;
 	composePath: string;
 	envPath: string;
@@ -141,18 +138,15 @@ TELCLAUDE_LOG_LEVEL=info
 		const hermes = serviceBlock(compose, "tc-hermes-contained");
 		const telclaudeEnv = envMap(listValues(telclaude, "environment"));
 		const hermesEnv = envMap(listValues(hermes, "environment"));
-		const requiredApiKey = "${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}";
+		const requiredApiKey =
+			"${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}";
 
 		expect(telclaude).toContain("tc-hermes-contained:");
 		expect(telclaude).toContain("condition: service_healthy");
 		expect(telclaude).toContain("hermes-relay-net:");
-		expect(telclaude).toContain(
-			"ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}",
-		);
+		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}");
 		expect(hermes).toContain("hermes-relay-net:");
-		expect(hermes).toContain(
-			"ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.29.92.11}",
-		);
+		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.29.92.11}");
 		expect(compose).toContain("name: telclaude-hermes-relay");
 		expect(compose).toContain("internal: true");
 		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-172.29.92.0/24}");
@@ -170,6 +164,9 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.OPERATOR_RPC_AGENT_PUBLIC_KEY).toBe(
 			"${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}",
 		);
+		expect(telclaudeEnv.OPERATOR_RPC_RELAY_PRIVATE_KEY).toBe(
+			"${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}",
+		);
 		expect(hermesEnv).toEqual({
 			API_SERVER_ENABLED: "true",
 			API_SERVER_HOST: "0.0.0.0",
@@ -181,9 +178,7 @@ TELCLAUDE_LOG_LEVEL=info
 			NO_COLOR: "1",
 		});
 
-		expect(hermes).toContain(
-			"image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:",
-		);
+		expect(hermes).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
 		expect(hermes).not.toMatch(/image:.*:latest\b/);
 		expect(hermes).toContain('user: "10000:10000"');
 		expect(listValues(hermes, "cap_drop")).toEqual(["ALL"]);
@@ -218,9 +213,11 @@ TELCLAUDE_LOG_LEVEL=info
 		for (const interpolation of compose.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)) {
 			const variableName = interpolation[1] ?? "";
 			if (/(KEY|SECRET|TOKEN|OAUTH|VAULT|PROVIDER)/.test(variableName)) {
-				expect(["TELCLAUDE_HERMES_API_SERVER_KEY", "OPERATOR_RPC_AGENT_PUBLIC_KEY"]).toContain(
-					variableName,
-				);
+				expect([
+					"TELCLAUDE_HERMES_API_SERVER_KEY",
+					"OPERATOR_RPC_AGENT_PUBLIC_KEY",
+					"OPERATOR_RPC_RELAY_PRIVATE_KEY",
+				]).toContain(variableName);
 			}
 		}
 	});
@@ -232,7 +229,7 @@ function serviceBlock(compose: string, serviceName: string): string {
 	if (start < 0) throw new Error(`Missing service ${serviceName}`);
 	let end = lines.length;
 	for (let index = start + 1; index < lines.length; index += 1) {
-		if (/^  [A-Za-z0-9_-]+:\s*$/.test(lines[index] ?? "")) {
+		if (/^ {2}[A-Za-z0-9_-]+:\s*$/.test(lines[index] ?? "")) {
 			end = index;
 			break;
 		}

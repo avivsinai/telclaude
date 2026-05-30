@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
@@ -11,6 +11,12 @@ import {
 	runHermesRollbackRehearsal,
 	writeHermesRollbackRehearsalEvidence,
 } from "../../src/hermes/rollback-rehearsal.js";
+import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
+
+const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
 
 describe("Hermes rollback rehearsal producer", () => {
 	it("does not contact the relay or write evidence without --allow-run", async () => {
@@ -45,11 +51,12 @@ describe("Hermes rollback rehearsal producer", () => {
 	});
 
 	it("passes only by observing enabled mode, driving durable legacy mode, then observing disabled mode", async () => {
+		installRelayProofKeys();
 		const calls: string[] = [];
 		const client: HermesRollbackRelayClient = {
 			getStatus: async () => {
 				calls.push("status");
-				return calls.length === 1 ? hermesStatus() : legacyStatus();
+				return calls.length === 1 ? hermesStatus() : legacyStatusAfterRead();
 			},
 			setMode: async (mode) => {
 				calls.push(`set:${mode}`);
@@ -83,8 +90,9 @@ describe("Hermes rollback rehearsal producer", () => {
 	});
 
 	it("fails closed when the relay never observes Hermes mode before rollback", async () => {
+		installRelayProofKeys();
 		const client: HermesRollbackRelayClient = {
-			getStatus: async () => legacyStatus(),
+			getStatus: async () => legacyStatusAfterRead(),
 			setMode: async () => legacyStatus(),
 		};
 
@@ -123,8 +131,13 @@ describe("Hermes rollback rehearsal producer", () => {
 	});
 });
 
+afterEach(() => {
+	restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", ORIGINAL_ENV.OPERATOR_RPC_RELAY_PRIVATE_KEY);
+	restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", ORIGINAL_ENV.OPERATOR_RPC_RELAY_PUBLIC_KEY);
+});
+
 function hermesStatus() {
-	return {
+	const state = {
 		ok: true as const,
 		effectiveMode: "hermes" as const,
 		effectiveValue: "1" as const,
@@ -134,10 +147,14 @@ function hermesStatus() {
 		controlSource: "runtime-config" as const,
 		fallbackPath: "telclaude.private-runtime.legacy",
 	};
+	return {
+		...state,
+		relayProof: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", state),
+	};
 }
 
 function legacyStatus() {
-	return {
+	const state = {
 		ok: true as const,
 		effectiveMode: "legacy" as const,
 		effectiveValue: "0" as const,
@@ -147,4 +164,50 @@ function legacyStatus() {
 		controlSource: "runtime-config" as const,
 		fallbackPath: "telclaude.private-runtime.legacy",
 	};
+	return {
+		...state,
+		relayProof: signedRelayTranscript(
+			"/v1/hermes.private-runtime.mode",
+			JSON.stringify({ mode: "legacy" }),
+			state,
+		),
+	};
+}
+
+function legacyStatusAfterRead() {
+	const state = legacyStatus();
+	return {
+		...state,
+		relayProof: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", state),
+	};
+}
+
+function signedRelayTranscript(
+	requestPath: string,
+	requestBody: string,
+	state: Record<string, unknown>,
+) {
+	const { relayProof: _ignored, ...unsignedState } = state;
+	const responseBody = JSON.stringify(unsignedState);
+	return {
+		request: { method: "POST", path: requestPath, body: requestBody },
+		responseBody,
+		proof: buildInternalResponseProof("POST", requestPath, requestBody, responseBody, {
+			scope: "operator",
+		}),
+	};
+}
+
+function installRelayProofKeys() {
+	const keys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = keys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = keys.publicKey;
+}
+
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
 }

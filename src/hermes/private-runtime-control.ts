@@ -101,8 +101,8 @@ export function setHermesPrivateRuntimeControlMode(
 ): HermesPrivateRuntimeEffectiveState {
 	const runtimeConfigPath = resolveRuntimeConfigPath(resolveConfigPath());
 	const config = readRuntimeConfigForWrite(runtimeConfigPath);
-	const hermes = asPlainObject(config.hermes);
-	const privateRuntime = asPlainObject(hermes.privateRuntime);
+	const hermes = isPlainObject(config.hermes) ? { ...config.hermes } : {};
+	const privateRuntime = isPlainObject(hermes.privateRuntime) ? { ...hermes.privateRuntime } : {};
 	config.hermes = {
 		...hermes,
 		privateRuntime: {
@@ -119,40 +119,41 @@ function readConfiguredControlMode():
 	| { mode?: undefined; invalid?: false }
 	| { mode?: undefined; invalid: true } {
 	const runtimeConfigPath = resolveRuntimeConfigPath(resolveConfigPath());
-	let config: RuntimeConfig;
-	try {
-		config = readRuntimeConfig(runtimeConfigPath);
-	} catch (error) {
-		if (isParseError(error)) return { invalid: true };
-		throw error;
-	}
-	const hermes = asPlainObject(config.hermes);
-	const privateRuntime = asPlainObject(hermes.privateRuntime);
+	const runtimeConfig = readRuntimeConfigForRead(runtimeConfigPath);
+	if (runtimeConfig.invalid) return { invalid: true };
+	const { config } = runtimeConfig;
+	if (config.hermes === undefined) return {};
+	if (!isPlainObject(config.hermes)) return { invalid: true };
+	const hermes = config.hermes;
+	if (hermes.privateRuntime === undefined) return {};
+	if (!isPlainObject(hermes.privateRuntime)) return { invalid: true };
+	const privateRuntime = hermes.privateRuntime;
 	const rawMode = privateRuntime.mode;
 	if (rawMode === undefined) return {};
 	if (rawMode === "hermes" || rawMode === "legacy") return { mode: rawMode };
 	return { invalid: true };
 }
 
-function readRuntimeConfig(runtimeConfigPath: string): RuntimeConfig {
+function readRuntimeConfigForRead(runtimeConfigPath: string): {
+	config: RuntimeConfig;
+	invalid: boolean;
+} {
 	try {
 		const raw = fs.readFileSync(runtimeConfigPath, "utf8");
 		const parsed = JSON5.parse(raw) as unknown;
-		return asPlainObject(parsed);
+		if (!isPlainObject(parsed)) return { config: {}, invalid: true };
+		return { config: parsed, invalid: false };
 	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") return {};
+		if (code === "ENOENT") return { config: {}, invalid: false };
+		if (isParseError(error)) return { config: {}, invalid: true };
 		throw error;
 	}
 }
 
 function readRuntimeConfigForWrite(runtimeConfigPath: string): RuntimeConfig {
-	try {
-		return readRuntimeConfig(runtimeConfigPath);
-	} catch (error) {
-		if (isParseError(error)) return {};
-		throw error;
-	}
+	const runtimeConfig = readRuntimeConfigForRead(runtimeConfigPath);
+	return runtimeConfig.invalid ? {} : runtimeConfig.config;
 }
 
 function writeRuntimeConfig(runtimeConfigPath: string, config: RuntimeConfig): void {
@@ -166,10 +167,8 @@ function writeRuntimeConfig(runtimeConfigPath: string, config: RuntimeConfig): v
 	fs.chmodSync(runtimeConfigPath, 0o600);
 }
 
-function asPlainObject(value: unknown): RuntimeConfig {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? { ...(value as RuntimeConfig) }
-		: {};
+function isPlainObject(value: unknown): value is RuntimeConfig {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isParseError(error: unknown): boolean {
