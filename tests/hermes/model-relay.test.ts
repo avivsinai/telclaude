@@ -207,7 +207,7 @@ describe("Hermes model-relay probe", () => {
 		});
 	});
 
-	it("fails closed when profile files are skipped", async () => {
+	it("scans script files for model credentials instead of skipping them", async () => {
 		const relayUrl = await startServer((_req, res) => {
 			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
 			res.writeHead(204).end();
@@ -228,9 +228,37 @@ describe("Hermes model-relay probe", () => {
 		});
 
 		expect(report.status).toBe("fail");
-		expect(gate(report, "profile.scanComplete")).toMatchObject({
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("provider.py"),
+		});
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
+	it("fails closed when profile files cannot be fully scanned", async () => {
+		const relayUrl = await startServer((_req, res) => {
+			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
+			res.writeHead(204).end();
+		});
+		const { profileDir, sentinel } = makeCleanProfile();
+		fs.writeFileSync(path.join(profileDir, "oversized.bin"), Buffer.alloc(1_000_001));
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			fetchImpl: directModelFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.scanComplete")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("oversized.bin"),
 		});
 	});
 
