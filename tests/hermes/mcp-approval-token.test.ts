@@ -230,7 +230,7 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 				iss: "telclaude-vault",
 				aud: "telclaude-hermes-mcp-side-effect",
 				iat: 100,
-				exp: 401,
+				exp: 220,
 				jti: "jti-overlong",
 				binding,
 			},
@@ -240,7 +240,7 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 		await expect(verifier(verification(binding, overlong, 120_000, record))).resolves.toEqual({
 			ok: false,
 			code: "approval_required",
-			reason: "Token TTL exceeds maximum (300s)",
+			reason: "Token TTL exceeds maximum (60s)",
 		});
 
 		const retry = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
