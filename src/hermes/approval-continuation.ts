@@ -110,6 +110,7 @@ export function evaluateApprovalContinuationEvidence(
 	const input = parsed.data;
 	const nativeFailures = collectNativeFailures(input.native);
 	const fallbackFailures = collectFallbackFailures(input.fallback);
+	const replayDefenseFailures = collectReplayDefenseFailures(input.native);
 	const nativeGate: ApprovalContinuationGate = {
 		name: "approvalContinuation.native",
 		status: nativeFailures.length === 0 ? "pass" : "fail",
@@ -126,20 +127,29 @@ export function evaluateApprovalContinuationEvidence(
 				? "Cross-turn prepare/approve/execute fallback fixtures passed"
 				: fallbackFailures.join("; "),
 	};
-	const mode =
+	const replayDefenseGate: ApprovalContinuationGate = {
+		name: "approvalContinuation.replayDefenses",
+		status: replayDefenseFailures.length === 0 ? "pass" : "fail",
+		detail:
+			replayDefenseFailures.length === 0
+				? "Wrong actor, stale request, replay, and mutated decision defenses are proven"
+				: replayDefenseFailures.join("; "),
+	};
+	const candidateMode =
 		nativeGate.status === "pass"
 			? "native"
 			: fallbackGate.status === "pass"
 				? "cross_turn_fallback"
 				: "blocked";
+	const productionEnable = candidateMode !== "blocked" && replayDefenseGate.status === "pass";
 
 	return {
 		schemaVersion: "telclaude.hermes.approval-continuation-report.v1",
-		status: mode === "blocked" ? "fail" : "pass",
-		mode,
+		status: productionEnable ? "pass" : "fail",
+		mode: productionEnable ? candidateMode : "blocked",
 		hermes: input.hermes,
-		productionEnable: mode !== "blocked",
-		gates: [nativeGate, fallbackGate],
+		productionEnable,
+		gates: [nativeGate, fallbackGate, replayDefenseGate],
 	};
 }
 
@@ -151,6 +161,11 @@ function collectNativeFailures(native: ApprovalContinuationEvidence["native"]): 
 	if (!native.responds_to_blocked_run) {
 		failures.push("permissions_respond is not proven to resume the blocked Hermes run");
 	}
+	return failures;
+}
+
+function collectReplayDefenseFailures(native: ApprovalContinuationEvidence["native"]): string[] {
+	const failures: string[] = [];
 	if (native.wrong_actor_denied !== true) failures.push("wrong actor denial is unproven");
 	if (native.stale_request_denied !== true) failures.push("stale request denial is unproven");
 	if (native.replay_denied !== true) failures.push("approval replay denial is unproven");

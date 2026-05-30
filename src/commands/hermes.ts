@@ -7,6 +7,10 @@ import {
 	evaluateApprovalContinuationEvidence,
 } from "../hermes/approval-continuation.js";
 import {
+	runHermesApprovalContinuationProbe,
+	writeApprovalContinuationArtifacts,
+} from "../hermes/approval-continuation-runner.js";
+import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
 	buildCutoverScopeManifestFromInventory,
@@ -62,6 +66,7 @@ type ProbeOption = JsonOption & {
 	out?: string;
 	prompt?: string;
 	timeoutMs?: string;
+	pin?: string;
 };
 
 type NetworkProbeOption = JsonOption & {
@@ -119,6 +124,53 @@ function parseCsvOption(value: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
+}
+
+function collectHermesFeatureProbeEvidence(featureProbeMatrix: unknown) {
+	const collected = collectFeatureProbeEvidence(featureProbeMatrix) ?? {
+		schemaVersion: 1,
+		results: [],
+	};
+	if (
+		typeof featureProbeMatrix !== "object" ||
+		featureProbeMatrix === null ||
+		!("probes" in featureProbeMatrix) ||
+		!Array.isArray(featureProbeMatrix.probes)
+	) {
+		return collected;
+	}
+	const approvalProbe = featureProbeMatrix.probes.find(
+		(probe) =>
+			typeof probe === "object" &&
+			probe !== null &&
+			"surface_id" in probe &&
+			probe.surface_id === "execution.approval_continuation" &&
+			"evidence_path" in probe &&
+			typeof probe.evidence_path === "string",
+	);
+	if (!approvalProbe || typeof approvalProbe.evidence_path !== "string") return collected;
+	const evidencePath = resolveHermesArtifactPath(approvalProbe.evidence_path);
+	const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
+		missingPath: evidencePath,
+	});
+	return {
+		schemaVersion: 1 as const,
+		results: [
+			...collected.results,
+			{
+				surface_id: "execution.approval_continuation",
+				status:
+					report.status === "pass" && report.productionEnable
+						? ("pass" as const)
+						: ("fail" as const),
+				evidence_path: approvalProbe.evidence_path,
+				detail:
+					report.status === "pass" && report.productionEnable
+						? `approval-continuation evidence passed in ${report.mode} mode`
+						: report.gates.map((gate) => gate.detail).join("; "),
+			},
+		],
+	};
 }
 
 function readWrapperPackageVersion(): string {
@@ -249,6 +301,7 @@ export function registerHermesCommand(program: Command): void {
 		.argument("<surface>", "Feature surface id")
 		.option("--json", "Emit structured JSON")
 		.option("--allow-run", "Permit the probe to execute a real pinned-Hermes command")
+		.option("--pin <pin>", "Pinned Hermes artifact for evidence-generating probes")
 		.option("--hermes-bin <path>", "Hermes executable path for executable probes")
 		.option("--hermes-home <dir>", "HERMES_HOME for executable probes")
 		.option("--cwd <dir>", "Working directory for executable probes", process.cwd())
@@ -325,19 +378,43 @@ export function registerHermesCommand(program: Command): void {
 				return;
 			}
 
-			const evidencePath = resolveHermesArtifactPath(options.evidence);
-			const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
-				missingPath: evidencePath,
+			if (options.allowRun === true) {
+				let run = await runHermesApprovalContinuationProbe({
+					allowRun: true,
+					hermes: resolvePin(options),
+				});
+				if (run.evidence) {
+					run = writeApprovalContinuationArtifacts(run, {
+						evidencePath: options.out ?? options.evidence,
+					});
+				}
+				if (options.json) {
+					printJson(run);
+				} else {
+					console.log(`Hermes probe ${surface}: ${run.status}`);
+					console.log(
+						`- ${run.status.toUpperCase()} execution.approval_continuation: ${run.summary}`,
+					);
+					if (run.evidencePath) console.log(`- evidence: ${run.evidencePath}`);
+					if (run.fixtureEvidenceDir) console.log(`- fixture evidence: ${run.fixtureEvidenceDir}`);
+				}
+				process.exitCode = run.status === "pass" ? 0 : run.status === "pending" ? 2 : 1;
+				return;
+			}
+
+			const run = await runHermesApprovalContinuationProbe({
+				allowRun: false,
+				hermes: resolvePin(options),
 			});
 			if (options.json) {
-				printJson(report);
+				printJson(run);
 			} else {
-				console.log(`Hermes probe ${surface}: ${report.status}`);
-				for (const gate of report.gates) {
-					console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
-				}
+				console.log(`Hermes probe ${surface}: ${run.status}`);
+				console.log(
+					`- ${run.status.toUpperCase()} execution.approval_continuation: ${run.summary}`,
+				);
 			}
-			process.exitCode = report.status === "pass" ? 0 : report.status === "input_error" ? 2 : 1;
+			process.exitCode = 2;
 		});
 
 	hermes
@@ -508,7 +585,7 @@ export function registerHermesCommand(program: Command): void {
 						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
 						lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 						featureProbeMatrix,
-						featureProbeEvidence: collectFeatureProbeEvidence(featureProbeMatrix),
+						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
 						fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
 						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
 						networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
