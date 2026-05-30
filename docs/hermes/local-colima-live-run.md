@@ -252,6 +252,13 @@ The model-relay probe must run from the same namespace and generated profile
 that production Hermes uses for model calls. A host-side run proves only host
 networking and is not production evidence.
 
+`tc-hermes-contained` provisions `HERMES_HOME` from
+`docker/hermes-contained-skills.allowlist` before Hermes starts. The allowlist is
+intentionally broad for assistant usefulness, but it excludes bundled skills that
+carry model-provider key examples, direct model-provider hosts, or red-team
+godmode material. Do not bypass the profile scan by disabling skills in config:
+disabled files still exist on disk and must fail this gate if unsafe.
+
 The relay model endpoint used by this probe must echo the source peer IP in
 `x-telclaude-model-relay-observed-peer-address`. Do not count self-declared
 container or peer flags as proof; the cutover gate accepts only a server-observed
