@@ -90,8 +90,6 @@ export function createTelclaudeLiveMcpConnectionResolver(
 
 		resolveConnection(request) {
 			const peerAddress = normalizeOptionalPeerAddress(request.socket.remoteAddress);
-			if (!peerAllowed(peerAddress, allowedPeers)) return null;
-
 			const token = extractBearerToken(request.headers.authorization);
 			if (!token) return null;
 
@@ -100,7 +98,11 @@ export function createTelclaudeLiveMcpConnectionResolver(
 
 			const resolvedNow = now();
 			if (record.revokedAtMs !== undefined || record.expiresAtMs <= resolvedNow) return null;
-			if (record.peerAddress && record.peerAddress !== peerAddress) return null;
+			if (record.peerAddress) {
+				if (record.peerAddress !== peerAddress) return null;
+			} else if (!peerAllowed(peerAddress, allowedPeers)) {
+				return null;
+			}
 
 			const authority = options.registry.resolve({
 				handle: record.authorityHandle,
@@ -211,8 +213,7 @@ function normalizedPeerSet(values: readonly string[] | undefined): Set<string> |
 }
 
 function peerAllowed(peerAddress: string | undefined, allowedPeers: Set<string> | null): boolean {
-	if (!allowedPeers) return true;
-	return !!peerAddress && allowedPeers.has(peerAddress);
+	return !!peerAddress && !!allowedPeers && allowedPeers.has(peerAddress);
 }
 
 function sameConnection(

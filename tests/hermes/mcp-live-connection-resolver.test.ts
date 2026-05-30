@@ -130,6 +130,50 @@ describe("Telclaude live MCP connection resolver", () => {
 		});
 	});
 
+	it("requires either a peer-bound token or an explicit resolver peer allowlist", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const unscopedResolver = createTelclaudeLiveMcpConnectionResolver({
+			registry,
+			nowMs: () => 2_000,
+		});
+		const authorityConnection = connection();
+		const authorityGrant = registry.register({
+			connection: authorityConnection,
+			authority: authority(),
+			nowMs: 1_000,
+		});
+		const unbound = unscopedResolver.issue({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+			nowMs: 1_000,
+		});
+		const peerBound = unscopedResolver.issue({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+			nowMs: 1_000,
+			peerAddress: "10.0.0.2",
+		});
+
+		expect(
+			unscopedResolver.resolveConnection(
+				request({ authorization: `Bearer ${unbound.token}` }, "10.0.0.2"),
+			),
+		).toBeNull();
+		expect(
+			unscopedResolver.resolveConnection(
+				request({ authorization: `Bearer ${peerBound.token}` }, "10.0.0.2"),
+			),
+		).toEqual({
+			authorityHandle: authorityGrant.handle,
+			connection: authorityConnection,
+		});
+		expect(
+			unscopedResolver.resolveConnection(
+				request({ authorization: `Bearer ${peerBound.token}` }, "10.0.0.3"),
+			),
+		).toBeNull();
+	});
+
 	it("revokes all transport tokens and authority for a connection", () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const resolver = createTelclaudeLiveMcpConnectionResolver({ registry, nowMs: () => 2_000 });
@@ -155,14 +199,17 @@ describe("Telclaude live MCP connection resolver", () => {
 		const first = resolver.issue({
 			authorityHandle: authorityGrant.handle,
 			connection: authorityConnection,
+			peerAddress: "10.0.0.2",
 		});
 		const second = resolver.issue({
 			authorityHandle: authorityGrant.handle,
 			connection: authorityConnection,
+			peerAddress: "10.0.0.2",
 		});
 		const other = resolver.issue({
 			authorityHandle: otherGrant.handle,
 			connection: otherConnection,
+			peerAddress: "10.0.0.2",
 		});
 
 		expect(resolver.revokeConnection(authorityConnection, "session closed", 2_500)).toBe(2);

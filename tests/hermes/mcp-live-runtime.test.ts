@@ -227,6 +227,24 @@ describe("Telclaude live MCP runtime", () => {
 				TELCLAUDE_HERMES_LIVE_MCP_PORT: "8793abc",
 			}),
 		).toThrow("Invalid TELCLAUDE_HERMES_LIVE_MCP_PORT");
+		expect(() =>
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+				TELCLAUDE_HERMES_LIVE_MCP_HOST: "10.0.0.4",
+			}),
+		).toThrow("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required");
+		expect(() =>
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+				TELCLAUDE_HERMES_LIVE_MCP_HOST: "10.0.0.4",
+				TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS: "tc-hermes-contained",
+			}),
+		).toThrow("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS must contain IP addresses");
+		expect(
+			readTelclaudeLiveMcpRuntimeConfig({
+				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+			}).allowedPeerAddresses,
+		).toBeUndefined();
 	});
 });
 
