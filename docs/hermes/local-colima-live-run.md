@@ -37,11 +37,14 @@ export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS="$TELCLAUDE_HERMES_CONTAINED_IP"
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-admin.sock
 
-# Required for the one-off operator CLI that talks to the relay-local admin socket.
-# Generate once with `pnpm dev keygen operator`; keep the private key on the host,
-# and pass only OPERATOR_RPC_AGENT_PUBLIC_KEY into the relay compose environment.
+# Required for the one-off operator CLI and relay-authenticated rollback evidence.
+# Generate once with `pnpm dev keygen operator`; keep OPERATOR_RPC_AGENT_PRIVATE_KEY
+# on the host, pass OPERATOR_RPC_AGENT_PUBLIC_KEY and OPERATOR_RPC_RELAY_PRIVATE_KEY
+# into the relay, and pass OPERATOR_RPC_RELAY_PUBLIC_KEY to the rollback CLI.
 export OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}"
 export OPERATOR_RPC_AGENT_PUBLIC_KEY="${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}"
+export OPERATOR_RPC_RELAY_PRIVATE_KEY="${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}"
+export OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen operator}"
 ```
 
 Compose requires these base-stack values. For a local containment rehearsal without real accounts, use generated placeholders. For an operator smoke against real services, use the real local secret source instead.
@@ -320,6 +323,7 @@ hand-write this evidence.
 docker exec \
   -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
   -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  -e OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen operator}" \
   telclaude telclaude hermes rollback-rehearsal \
     --allow-run \
     --json \

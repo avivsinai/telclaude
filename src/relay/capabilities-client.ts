@@ -1,4 +1,6 @@
+import { z } from "zod";
 import { buildRpcAuthHeaders } from "../agent/token-client.js";
+import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
 import { getChildLogger } from "../logging.js";
 
 const logger = getChildLogger({ module: "relay-capabilities-client" });
@@ -64,6 +66,16 @@ type RelayProvidersResponse = {
 	providersEpoch: string;
 };
 
+type HermesPrivateRuntimeRelayProof = {
+	request: {
+		method: string;
+		path: string;
+		body: string;
+	};
+	responseBody: string;
+	proof: InternalResponseProof;
+};
+
 type HermesPrivateRuntimeState = {
 	ok: true;
 	effectiveMode: "hermes" | "legacy";
@@ -77,7 +89,70 @@ type HermesPrivateRuntimeState = {
 		| "runtime-config-default"
 		| "runtime-config-invalid";
 	fallbackPath: string;
+	relayProof: HermesPrivateRuntimeRelayProof;
 };
+
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: z.string().min(1),
+		timestamp: z.string().min(1),
+		nonce: z.string().min(1),
+		method: z.string().min(1),
+		path: z.string().min(1),
+		requestBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		responseBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		signature: z.string().min(1),
+	})
+	.strict();
+
+const HermesPrivateRuntimeStateSchema = z
+	.object({
+		ok: z.literal(true),
+		effectiveMode: z.enum(["hermes", "legacy"]),
+		effectiveValue: z.enum(["1", "0"]),
+		rolloutAllowed: z.boolean(),
+		rolloutEnvValue: z.string().optional(),
+		controlMode: z.enum(["hermes", "legacy"]),
+		controlSource: z.enum([
+			"env-disabled",
+			"runtime-config",
+			"runtime-config-default",
+			"runtime-config-invalid",
+		]),
+		fallbackPath: z.string().min(1),
+		relayProof: InternalResponseProofSchema,
+	})
+	.strict();
+
+function parseHermesPrivateRuntimeState(
+	payload: unknown,
+	request: { method: string; path: string; body: string },
+): HermesPrivateRuntimeState {
+	const parsed = HermesPrivateRuntimeStateSchema.parse(payload);
+	const { relayProof, ...unsigned } = parsed;
+	const unsignedBody = JSON.stringify(unsigned);
+	if (
+		!verifyInternalResponseProof(
+			relayProof as InternalResponseProof,
+			request.method,
+			request.path,
+			request.body,
+			unsignedBody,
+			{ scope: "operator" },
+		)
+	) {
+		throw new Error("Capability response failed relay proof verification");
+	}
+	return {
+		...unsigned,
+		relayProof: {
+			request,
+			responseBody: unsignedBody,
+			proof: relayProof as InternalResponseProof,
+		},
+	};
+}
 
 export async function relayGetProviders(): Promise<RelayProvidersResponse> {
 	return postJson("/v1/config.providers", {});
@@ -118,13 +193,19 @@ export async function relayRemoveProvider(input: { providerId: string }): Promis
 }
 
 export async function relayGetHermesPrivateRuntimeState(): Promise<HermesPrivateRuntimeState> {
-	return postJsonWithScope("/v1/hermes.private-runtime.status", {}, "operator");
+	const path = "/v1/hermes.private-runtime.status";
+	const body = "{}";
+	const payload = await postJsonWithScope<unknown>(path, {}, "operator");
+	return parseHermesPrivateRuntimeState(payload, { method: "POST", path, body });
 }
 
 export async function relaySetHermesPrivateRuntimeMode(input: {
 	mode: "hermes" | "legacy";
 }): Promise<HermesPrivateRuntimeState> {
-	return postJsonWithScope("/v1/hermes.private-runtime.mode", input, "operator");
+	const path = "/v1/hermes.private-runtime.mode";
+	const body = JSON.stringify(input);
+	const payload = await postJsonWithScope<unknown>(path, input, "operator");
+	return parseHermesPrivateRuntimeState(payload, { method: "POST", path, body });
 }
 
 export async function relayGenerateImage(input: {

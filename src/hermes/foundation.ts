@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 
@@ -24,6 +25,17 @@ export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 ] as const;
 
 const NonEmptyString = z.string().trim().min(1);
+const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/i;
+const GIT_COMMIT_PATTERN = /^[0-9a-f]{7,40}$/i;
+const PLACEHOLDER_VALUES = new Set([
+	"pending",
+	"todo",
+	"tbd",
+	"fixme",
+	"sha256:pending",
+	"sha256:todo",
+	"sha256:tbd",
+]);
 
 export const HermesPinSchema = z
 	.object({
@@ -146,6 +158,7 @@ const REQUIRED_NO_FORK_CHECK_NAMES = [
 ] as const;
 const REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES = [
 	"rollback.allowed",
+	"rollback.relayProofs",
 	"rollback.flagBefore",
 	"rollback.flagAfter",
 	"rollback.fallbackPath",
@@ -373,6 +386,28 @@ export const FixtureResultBundleSchema = z
 
 export type FixtureResultBundle = z.infer<typeof FixtureResultBundleSchema>;
 
+const FixtureEvidenceSchema = z
+	.object({
+		schemaVersion: NonEmptyString,
+		id: NonEmptyString,
+		status: z.enum(["pass", "fail"]),
+		ran: z.literal(true),
+		evidence_path: NonEmptyString,
+		generatedAt: NonEmptyString.optional(),
+		observedAt: NonEmptyString.optional(),
+		provenance: z
+			.object({
+				runner: NonEmptyString,
+				command: NonEmptyString.optional(),
+				source: NonEmptyString.optional(),
+			})
+			.passthrough(),
+	})
+	.passthrough()
+	.refine((evidence) => evidence.generatedAt !== undefined || evidence.observedAt !== undefined, {
+		message: "fixture evidence requires generatedAt or observedAt",
+	});
+
 export const ProbeBundleSchema = z
 	.object({
 		schemaVersion: z.literal(1),
@@ -429,6 +464,52 @@ export const QueueOwnershipSnapshotSchema = z
 
 export type QueueOwnershipSnapshot = z.infer<typeof QueueOwnershipSnapshotSchema>;
 
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: z.string().min(1),
+		timestamp: z.string().min(1),
+		nonce: z.string().min(1),
+		method: z.string().min(1),
+		path: z.string().min(1),
+		requestBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		responseBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		signature: z.string().min(1),
+	})
+	.strict();
+
+const RollbackRelayStateBodySchema = z
+	.object({
+		ok: z.literal(true),
+		effectiveMode: z.enum(["hermes", "legacy"]),
+		effectiveValue: z.enum(["1", "0"]),
+		rolloutAllowed: z.boolean(),
+		rolloutEnvValue: z.string().optional(),
+		controlMode: z.enum(["hermes", "legacy"]),
+		controlSource: z.enum([
+			"env-disabled",
+			"runtime-config",
+			"runtime-config-default",
+			"runtime-config-invalid",
+		]),
+		fallbackPath: NonEmptyString,
+	})
+	.strict();
+
+const RollbackRelayTranscriptSchema = z
+	.object({
+		request: z
+			.object({
+				method: NonEmptyString,
+				path: NonEmptyString,
+				body: z.string(),
+			})
+			.strict(),
+		responseBody: NonEmptyString,
+		proof: InternalResponseProofSchema,
+	})
+	.strict();
+
 export const RollbackRehearsalSchema = z
 	.object({
 		schemaVersion: z.literal(1),
@@ -444,6 +525,14 @@ export const RollbackRehearsalSchema = z
 		observedBeforeSource: NonEmptyString.optional(),
 		observedAfterSource: NonEmptyString.optional(),
 		observedAfterControlSource: NonEmptyString.optional(),
+		signedRelayTranscripts: z
+			.object({
+				before: RollbackRelayTranscriptSchema,
+				afterControl: RollbackRelayTranscriptSchema,
+				after: RollbackRelayTranscriptSchema,
+			})
+			.strict()
+			.optional(),
 		checks: z
 			.array(
 				z
@@ -907,6 +996,7 @@ export function evaluateCutoverCheck(
 		bundle.lockfile.featureProbes.map((probe) => [probe.surface_id, probe]),
 	);
 	const lockfileFailures = [
+		...lockfileEvidenceFailures(bundle.lockfile, bundle.noForkProof),
 		...(bundle.lockfile.featureProbeMatrixDigest ===
 		computeHermesArtifactDigest(bundle.featureProbeMatrix)
 			? []
@@ -940,11 +1030,15 @@ export function evaluateCutoverCheck(
 			const result = fixtureById.get(fixtureId);
 			if (!result) return [`missing fixture result ${fixtureId}`];
 			if (result.status !== "pass") return [`fixture ${fixtureId} status is ${result.status}`];
+			const evidenceFailure = fixtureEvidenceFailure(result);
+			if (evidenceFailure) return [evidenceFailure];
 			return [];
 		}),
-		...bundle.fixtureResults.results.flatMap((result) =>
-			result.status === "pass" ? [] : [`fixture ${result.id} status is ${result.status}`],
-		),
+		...bundle.fixtureResults.results.flatMap((result) => {
+			if (result.status !== "pass") return [`fixture ${result.id} status is ${result.status}`];
+			const evidenceFailure = fixtureEvidenceFailure(result);
+			return evidenceFailure ? [evidenceFailure] : [];
+		}),
 	];
 	const noForkFailures = noForkProofEvidenceFailures(bundle.noForkProof);
 	const rollbackRehearsalFailures = rollbackRehearsalEvidenceFailures(bundle.rollbackRehearsal);
@@ -1041,6 +1135,80 @@ export function evaluateCutoverCheck(
 	};
 }
 
+function lockfileEvidenceFailures(
+	lockfile: CompatibilityLockfile,
+	noForkProof: NoForkProof,
+): string[] {
+	const failures: string[] = [];
+	failures.push(...placeholderFailures("lockfile", lockfile));
+	if (!SHA256_DIGEST_PATTERN.test(lockfile.featureProbeMatrixDigest)) {
+		failures.push("lockfile featureProbeMatrixDigest is placeholder or invalid");
+	}
+	for (const [key, value] of Object.entries(lockfile.adapterApiSignatures)) {
+		if (!SHA256_DIGEST_PATTERN.test(value)) {
+			failures.push(`lockfile adapterApiSignatures.${key} is placeholder or invalid`);
+		}
+	}
+	if (Object.keys(lockfile.adapterApiSignatures).length === 0) {
+		failures.push("lockfile adapterApiSignatures is empty");
+	}
+	for (const [key, value] of Object.entries(lockfile.paritySuiteDigests)) {
+		if (!SHA256_DIGEST_PATTERN.test(value)) {
+			failures.push(`lockfile paritySuiteDigests.${key} is placeholder or invalid`);
+		}
+	}
+	if (Object.keys(lockfile.paritySuiteDigests).length === 0) {
+		failures.push("lockfile paritySuiteDigests is empty");
+	}
+	for (const [key, value] of Object.entries(lockfile.sourceDriftSignals)) {
+		if (value !== undefined && !GIT_COMMIT_PATTERN.test(value)) {
+			failures.push(`lockfile sourceDriftSignals.${key} is placeholder or invalid`);
+		}
+	}
+	if (!lockfile.sourceDriftSignals.sourceCommit || !lockfile.sourceDriftSignals.docsCommit) {
+		failures.push("lockfile sourceDriftSignals must include sourceCommit and docsCommit");
+	}
+	if (!sameResolvedArtifactPath(lockfile.noForkProofEvidencePath, noForkProof.evidence_path)) {
+		failures.push("lockfile noForkProofEvidencePath does not match no-fork evidence path");
+	}
+	return failures;
+}
+
+function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]): string | null {
+	const resultPlaceholders = placeholderFailures(`fixture result ${result.id}`, result);
+	if (resultPlaceholders.length > 0) return resultPlaceholders.join("; ");
+	const resolvedPath = resolveHermesArtifactPath(result.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return `missing fixture evidence ${redactDetail(result.id)}: ${redactDetail(resolvedPath)}`;
+	}
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return `unreadable fixture evidence ${redactDetail(result.id)}: ${redactDetail(
+			error instanceof Error ? error.message : String(error),
+		)}`;
+	}
+	const parsed = FixtureEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return `invalid fixture evidence ${redactDetail(result.id)}: ${redactDetail(
+			flattenZodError(parsed.error),
+		)}`;
+	}
+	const evidencePlaceholders = placeholderFailures(`fixture evidence ${result.id}`, parsed.data);
+	if (evidencePlaceholders.length > 0) return evidencePlaceholders.join("; ");
+	if (parsed.data.id !== result.id) {
+		return `fixture evidence id mismatch for ${redactDetail(result.id)}`;
+	}
+	if (parsed.data.status !== "pass") {
+		return `fixture evidence ${redactDetail(result.id)} status is ${parsed.data.status}`;
+	}
+	if (!sameResolvedArtifactPath(parsed.data.evidence_path, result.evidence_path)) {
+		return `fixture evidence_path mismatch for ${redactDetail(result.id)}`;
+	}
+	return null;
+}
+
 export function resolveHermesArtifactPath(relativePath: string): string {
 	return path.resolve(relativePath);
 }
@@ -1053,6 +1221,17 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 	if (!loaded.valid) return [...failures, loaded.failure];
 
 	const evidence = loaded.evidence;
+	failures.push(
+		...placeholderFailures("no-fork evidence", {
+			checkoutPath: evidence.checkoutPath,
+			expectedRef: evidence.expectedRef,
+			expectedVersion: evidence.expectedVersion,
+			head: evidence.head,
+			expectedRefCommit: evidence.expectedRefCommit,
+			exactTags: evidence.exactTags,
+			evidence_path: evidence.evidence_path,
+		}),
+	);
 	if (!sameResolvedArtifactPath(evidence.evidence_path, noForkProof.evidence_path)) {
 		failures.push(`no-fork evidence_path is ${redactDetail(evidence.evidence_path)}`);
 	}
@@ -1079,6 +1258,15 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 		evidence.head !== evidence.expectedRefCommit
 	) {
 		failures.push("no-fork evidence HEAD does not match expectedRefCommit");
+	}
+	if (typeof evidence.head === "string" && !GIT_COMMIT_PATTERN.test(evidence.head)) {
+		failures.push("no-fork evidence head is placeholder or invalid");
+	}
+	if (
+		typeof evidence.expectedRefCommit === "string" &&
+		!GIT_COMMIT_PATTERN.test(evidence.expectedRefCommit)
+	) {
+		failures.push("no-fork evidence expectedRefCommit is placeholder or invalid");
 	}
 	if (
 		typeof evidence.expectedRef === "string" &&
@@ -1195,6 +1383,7 @@ function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal)
 	if (evidence.observedAfterControlSource !== "runtime-config") {
 		failures.push("rollback rehearsal evidence observedAfterControlSource is not runtime-config");
 	}
+	failures.push(...rollbackRelayTranscriptFailures(evidence));
 	if (evidence.checks === undefined || evidence.checks.length === 0) {
 		failures.push("rollback rehearsal evidence checks are empty");
 	}
@@ -1220,6 +1409,125 @@ function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal)
 		);
 	}
 	return failures;
+}
+
+function rollbackRelayTranscriptFailures(evidence: RollbackRehearsal): string[] {
+	const transcripts = evidence.signedRelayTranscripts;
+	if (!transcripts) return ["rollback rehearsal signed relay transcripts are missing"];
+	return [
+		...rollbackRelayTranscriptFailure("before", transcripts.before, evidence, {
+			method: "POST",
+			path: "/v1/hermes.private-runtime.status",
+			body: "{}",
+			effectiveValue: "1",
+			effectiveMode: "hermes",
+		}),
+		...rollbackRelayTranscriptFailure("afterControl", transcripts.afterControl, evidence, {
+			method: "POST",
+			path: "/v1/hermes.private-runtime.mode",
+			body: JSON.stringify({ mode: "legacy" }),
+			effectiveValue: "0",
+			controlMode: "legacy",
+			controlSource: "runtime-config",
+		}),
+		...rollbackRelayTranscriptFailure("after", transcripts.after, evidence, {
+			method: "POST",
+			path: "/v1/hermes.private-runtime.status",
+			body: "{}",
+			effectiveValue: "0",
+			effectiveMode: "legacy",
+			controlSource: "runtime-config",
+		}),
+	];
+}
+
+function rollbackRelayTranscriptFailure(
+	label: "before" | "afterControl" | "after",
+	transcript: z.infer<typeof RollbackRelayTranscriptSchema>,
+	evidence: RollbackRehearsal,
+	expected: {
+		method: string;
+		path: string;
+		body: string;
+		effectiveValue: "1" | "0";
+		effectiveMode?: "hermes" | "legacy";
+		controlMode?: "hermes" | "legacy";
+		controlSource?:
+			| "env-disabled"
+			| "runtime-config"
+			| "runtime-config-default"
+			| "runtime-config-invalid";
+	},
+): string[] {
+	const failures: string[] = [];
+	if (transcript.request.method !== expected.method) {
+		failures.push(`rollback ${label} relay transcript method is ${transcript.request.method}`);
+	}
+	if (transcript.request.path !== expected.path) {
+		failures.push(`rollback ${label} relay transcript path is ${transcript.request.path}`);
+	}
+	if (transcript.request.body !== expected.body) {
+		failures.push(`rollback ${label} relay transcript body does not match`);
+	}
+	if (
+		!verifyInternalResponseProof(
+			transcript.proof as InternalResponseProof,
+			expected.method,
+			expected.path,
+			expected.body,
+			transcript.responseBody,
+			{ scope: "operator" },
+		)
+	) {
+		failures.push(`rollback ${label} relay transcript signature is invalid`);
+		return failures;
+	}
+	const response = RollbackRelayStateBodySchema.safeParse(safeParseJson(transcript.responseBody));
+	if (!response.success) {
+		failures.push(`rollback ${label} relay transcript response body is invalid`);
+		return failures;
+	}
+	if (response.data.effectiveValue !== expected.effectiveValue) {
+		failures.push(
+			`rollback ${label} relay transcript effectiveValue is ${response.data.effectiveValue}`,
+		);
+	}
+	if (expected.effectiveMode && response.data.effectiveMode !== expected.effectiveMode) {
+		failures.push(
+			`rollback ${label} relay transcript effectiveMode is ${response.data.effectiveMode}`,
+		);
+	}
+	if (expected.controlMode && response.data.controlMode !== expected.controlMode) {
+		failures.push(`rollback ${label} relay transcript controlMode is ${response.data.controlMode}`);
+	}
+	if (expected.controlSource && response.data.controlSource !== expected.controlSource) {
+		failures.push(
+			`rollback ${label} relay transcript controlSource is ${response.data.controlSource}`,
+		);
+	}
+	if (label === "before" && response.data.effectiveValue !== evidence.observedBeforeValue) {
+		failures.push("rollback before relay transcript does not match observedBeforeValue");
+	}
+	if (label === "after" && response.data.effectiveValue !== evidence.observedAfterValue) {
+		failures.push("rollback after relay transcript does not match observedAfterValue");
+	}
+	if (
+		label === "afterControl" &&
+		response.data.controlSource !== evidence.observedAfterControlSource
+	) {
+		failures.push(
+			"rollback afterControl relay transcript does not match observedAfterControlSource",
+		);
+	}
+	return failures;
+}
+
+function safeParseJson(value: string): unknown {
+	try {
+		return JSON.parse(value) as unknown;
+	} catch {
+		return undefined;
+	}
 }
 
 function readRollbackRehearsalEvidence(
@@ -1360,6 +1668,32 @@ function sameResolvedArtifactPath(left: string, right: string): boolean {
 
 function redactDetail(detail: string): string {
 	return redactSecrets(detail).replace(/\s+/g, " ").trim();
+}
+
+function placeholderFailures(label: string, value: unknown): string[] {
+	const failures: string[] = [];
+	collectPlaceholderFailures(label, value, failures);
+	return failures;
+}
+
+function collectPlaceholderFailures(label: string, value: unknown, failures: string[]): void {
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		if (PLACEHOLDER_VALUES.has(normalized) || normalized.startsWith("todo:")) {
+			failures.push(`${label} is placeholder: ${redactDetail(value)}`);
+		}
+		return;
+	}
+	if (Array.isArray(value)) {
+		value.forEach((item, index) => {
+			collectPlaceholderFailures(`${label}[${index}]`, item, failures);
+		});
+		return;
+	}
+	if (typeof value !== "object" || value === null) return;
+	for (const [key, nested] of Object.entries(value)) {
+		collectPlaceholderFailures(`${label}.${key}`, nested, failures);
+	}
 }
 
 function collectCliHeadlessProbeEvidence(

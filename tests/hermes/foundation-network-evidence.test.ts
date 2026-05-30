@@ -14,6 +14,7 @@ import {
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 } from "../../src/hermes/foundation.js";
+import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 
 const hermesPin = { version: "0.15.1" };
 
@@ -48,7 +49,7 @@ const compatLockfile: CompatibilityLockfile = {
 			evidence_path: "artifacts/hermes/whatsapp-edge.json",
 		},
 	],
-	adapterApiSignatures: { "edge.whatsapp": "sha256:adapter-signature" },
+	adapterApiSignatures: { "edge.whatsapp": `sha256:${"a".repeat(64)}` },
 	capabilities: {
 		plugins: ["platform-adapter"],
 		mcp: ["stdio"],
@@ -58,7 +59,7 @@ const compatLockfile: CompatibilityLockfile = {
 	requiredUpgradeTests: ["pnpm dev hermes prove --upstream-clean --p0"],
 	generatedProfileSchemaVersion: "1",
 	wrapperPackageVersion: "0.7.1",
-	paritySuiteDigests: { p0: "sha256:p0" },
+	paritySuiteDigests: { p0: `sha256:${"b".repeat(64)}` },
 	noForkProofEvidencePath: "artifacts/hermes/no-fork.json",
 	sourceDriftSignals: { sourceCommit: "abcdef1", docsCommit: "1234567" },
 };
@@ -206,6 +207,9 @@ function writeNoForkProof() {
 function writeRollbackRehearsal() {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-rollback-"));
 	const evidencePath = path.join(tempDir, "rollback-rehearsal.json");
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const rehearsal = {
 		schemaVersion: 1,
 		passed: true,
@@ -220,11 +224,29 @@ function writeRollbackRehearsal() {
 		observedBeforeSource: "relay-effective-mode",
 		observedAfterSource: "relay-effective-mode",
 		observedAfterControlSource: "runtime-config",
+		signedRelayTranscripts: {
+			before: signedRelayTranscript(
+				"/v1/hermes.private-runtime.status",
+				"{}",
+				hermesRuntimeState(),
+			),
+			afterControl: signedRelayTranscript(
+				"/v1/hermes.private-runtime.mode",
+				JSON.stringify({ mode: "legacy" }),
+				legacyRuntimeState(),
+			),
+			after: signedRelayTranscript("/v1/hermes.private-runtime.status", "{}", legacyRuntimeState()),
+		},
 		checks: [
 			{
 				name: "rollback.allowed",
 				status: "pass",
 				detail: "operator allowed a real rollback rehearsal",
+			},
+			{
+				name: "rollback.relayProofs",
+				status: "pass",
+				detail: "relay signed every rollback observation",
 			},
 			{
 				name: "rollback.flagBefore",
@@ -257,7 +279,72 @@ function writeRollbackRehearsal() {
 	return rehearsal;
 }
 
+function hermesRuntimeState() {
+	return {
+		ok: true,
+		effectiveMode: "hermes",
+		effectiveValue: "1",
+		rolloutAllowed: true,
+		rolloutEnvValue: "1",
+		controlMode: "hermes",
+		controlSource: "runtime-config",
+		fallbackPath: "telclaude.private-runtime.legacy",
+	};
+}
+
+function legacyRuntimeState() {
+	return {
+		ok: true,
+		effectiveMode: "legacy",
+		effectiveValue: "0",
+		rolloutAllowed: true,
+		rolloutEnvValue: "1",
+		controlMode: "legacy",
+		controlSource: "runtime-config",
+		fallbackPath: "telclaude.private-runtime.legacy",
+	};
+}
+
+function signedRelayTranscript(
+	requestPath: string,
+	requestBody: string,
+	state: ReturnType<typeof hermesRuntimeState> | ReturnType<typeof legacyRuntimeState>,
+) {
+	const responseBody = JSON.stringify(state);
+	return {
+		request: { method: "POST", path: requestPath, body: requestBody },
+		responseBody,
+		proof: buildInternalResponseProof("POST", requestPath, requestBody, responseBody, {
+			scope: "operator",
+		}),
+	};
+}
+
+function writeFixtureResults() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-fixtures-"));
+	const results = ["fixture.private.telegram.basic", "fixture.private.telegram.basic.deny"].map(
+		(id) => {
+			const evidencePath = path.join(tempDir, `${id}.json`);
+			writeJson(evidencePath, {
+				schemaVersion: "telclaude.hermes.fixture-evidence.v1",
+				id,
+				status: "pass",
+				ran: true,
+				evidence_path: evidencePath,
+				observedAt: "2026-05-30T00:00:00.000Z",
+				provenance: {
+					runner: "vitest",
+					source: "unit-fixture",
+				},
+			});
+			return { id, status: "pass" as const, evidence_path: evidencePath };
+		},
+	);
+	return { schemaVersion: 1 as const, results };
+}
+
 function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
+	const noForkProof = writeNoForkProof();
 	return {
 		schemaVersion: 1,
 		inventory: {
@@ -292,24 +379,10 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 			],
 		},
 		decisionLog: { schemaVersion: 1, decisions: [] },
-		lockfile: compatLockfile,
+		lockfile: { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path },
 		featureProbeMatrix,
-		fixtureResults: {
-			schemaVersion: 1,
-			results: [
-				{
-					id: "fixture.private.telegram.basic",
-					status: "pass",
-					evidence_path: "artifacts/hermes/private-telegram.json",
-				},
-				{
-					id: "fixture.private.telegram.basic.deny",
-					status: "pass",
-					evidence_path: "artifacts/hermes/private-telegram-deny.json",
-				},
-			],
-		},
-		noForkProof: writeNoForkProof(),
+		fixtureResults: writeFixtureResults(),
+		noForkProof,
 		networkProbes,
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: writeRollbackRehearsal(),
