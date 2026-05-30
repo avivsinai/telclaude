@@ -221,27 +221,32 @@ docker compose \
 
 ### 5.4 Network Probes
 
-Important: `telclaude hermes network-probes` measures the namespace where the command runs. A host run proves host networking only. For relay firewall evidence, run it inside the `telclaude` container and copy the produced artifacts back out.
+Important: `telclaude hermes network-probes` measures the namespace where the command runs. A host run proves host networking only, and a relay-container run proves relay reachability to provider/vault/model surfaces rather than Hermes containment. Run this probe from the contained Hermes runtime namespace. Use the provider sidecar's relay-network IP, not the Docker service name, so the direct-provider denial is an observed route denial instead of an inconclusive DNS miss. The command below assumes the current Telclaude runner has been staged at `/opt/data/telclaude-runner`; an equivalent packaged contained-peer probe runner is also acceptable.
 
 ```bash
-docker exec telclaude mkdir -p /data/hermes/network
+GOOGLE_RELAY_IP=$(
+  docker inspect telclaude-google-services \
+    --format '{{ index .NetworkSettings.Networks "telclaude-relay-google" "IPAddress" }}'
+)
 
-docker exec telclaude telclaude hermes network-probes \
+docker exec tc-hermes-contained mkdir -p /opt/data/hermes/network
+
+docker exec tc-hermes-contained /opt/data/telclaude-runner/bin/telclaude.js hermes network-probes \
   --allow-run \
   --json \
-  --relay-url http://127.0.0.1:8790/health \
-  --provider-url http://google-services:3002/v1/health \
+  --relay-url http://telclaude:8790/health \
+  --provider-url "http://${GOOGLE_RELAY_IP}:3002/v1/health" \
   --vault-socket /run/vault/vault.sock \
   --model-url https://api.anthropic.com/v1/models \
   --dns-url http://169.254.169.254/latest/meta-data/,http://10.0.0.1/,http://100.64.0.1/ \
   --firewall-sentinel /run/telclaude/firewall-active \
   --timeout-ms 3000 \
-  --out /data/hermes/network-probes.json \
-  --evidence-dir /data/hermes/network
+  --out /opt/data/hermes/network-probes.json \
+  --evidence-dir /opt/data/hermes/network
 
-docker cp telclaude:/data/hermes/network-probes.json docs/hermes/network-probes.json
+docker cp tc-hermes-contained:/opt/data/hermes/network-probes.json docs/hermes/network-probes.json
 rm -rf artifacts/hermes/network
-docker cp telclaude:/data/hermes/network artifacts/hermes/network
+docker cp tc-hermes-contained:/opt/data/hermes/network artifacts/hermes/network
 ```
 
 Expected green: exit code `0`, all five required network probes pass, and every network evidence file includes a passing firewall sentinel attempt.
