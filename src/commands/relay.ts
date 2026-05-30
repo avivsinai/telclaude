@@ -8,8 +8,8 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import { createTelclaudeLiveMcpRelayClients } from "../hermes/mcp/live-relay-clients.js";
 import {
-	createFailClosedTelclaudeLiveMcpRelayClients,
 	readTelclaudeLiveMcpRuntimeConfig,
 	startTelclaudeLiveMcpRuntime,
 } from "../hermes/mcp/live-runtime.js";
@@ -226,7 +226,7 @@ export function registerRelayCommand(program: Command): void {
 
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: readTelclaudeLiveMcpRuntimeConfig(),
-					relayClients: createFailClosedTelclaudeLiveMcpRelayClients(),
+					createRelayClients: ({ ledger }) => createTelclaudeLiveMcpRelayClients({ ledger }),
 				});
 				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
 					schedulerHandles.push({ stop: () => liveMcpRuntime.stop() });
