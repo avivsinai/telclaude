@@ -343,6 +343,8 @@ const CAPABILITIES_STARTED_AT = Date.now();
 // Base64 encoding adds ~33% overhead, so 20MB file = ~27MB base64
 const ATTACHMENT_DELIVER_BODY_LIMIT = 30 * 1024 * 1024;
 const DEFAULT_ATTACHMENT_TIMEOUT_MS = 15_000;
+const MODEL_RELAY_PROBE_PATH = "/v1/models";
+const MODEL_RELAY_OBSERVED_PEER_HEADER = "x-telclaude-model-relay-observed-peer-address";
 
 type CapabilityServerOptions = {
 	port?: number;
@@ -423,6 +425,21 @@ function writeJson(res: http.ServerResponse, status: number, payload: unknown): 
 		"Content-Length": Buffer.byteLength(body),
 	});
 	res.end(body);
+}
+
+function writeModelRelayProbeResponse(req: http.IncomingMessage, res: http.ServerResponse): void {
+	const observedPeerAddress = normalizeObservedPeerAddress(req.socket.remoteAddress);
+	res.writeHead(204, {
+		"Content-Length": 0,
+		...(observedPeerAddress ? { [MODEL_RELAY_OBSERVED_PEER_HEADER]: observedPeerAddress } : {}),
+	});
+	res.end();
+}
+
+function normalizeObservedPeerAddress(remoteAddress?: string | null): string | undefined {
+	const trimmed = remoteAddress?.trim();
+	if (!trimmed) return undefined;
+	return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
 }
 
 function writeRelayProvenJson(
@@ -900,6 +917,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				service: "relay",
 				runtime: buildRuntimeSnapshot(CAPABILITIES_STARTED_AT),
 			});
+			return;
+		}
+
+		if (req.method === "GET" && requestPath === MODEL_RELAY_PROBE_PATH) {
+			writeModelRelayProbeResponse(req, res);
 			return;
 		}
 

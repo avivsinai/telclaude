@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { z } from "zod";
 import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
@@ -132,6 +133,7 @@ const CliHeadlessProbeEvidenceSchema = z
 	.passthrough();
 
 const API_SERVER_CONTAINMENT_SCHEMA_VERSION = "telclaude.hermes.api-server-containment.v1";
+const MODEL_RELAY_SCHEMA_VERSION = "telclaude.hermes.model-relay.v1";
 const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
 	"lifecycle.started",
 	"readiness.health",
@@ -140,6 +142,23 @@ const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
 	"network.relay_only",
 	"network.tamper_resistant",
 ] as const;
+const REQUIRED_MODEL_RELAY_GATES = [
+	"modelRelay.allowed",
+	"firewall.sentinel",
+	"modelRelay.origin",
+	"relay.reachable",
+	"directModel.denied",
+	"profile.noRawModelCredentials",
+	"profile.noDirectModelHosts",
+	"profile.scanComplete",
+] as const;
+const DIRECT_MODEL_RELAY_PROVIDER_HOSTS = new Set([
+	"api.anthropic.com",
+	"api.openai.com",
+	"generativelanguage.googleapis.com",
+	"openrouter.ai",
+	"api.x.ai",
+]);
 const FEATURE_PROBE_SURFACES_REQUIRING_OBSERVED_EVIDENCE = new Set([
 	"execution.cli_headless",
 	"execution.approval_continuation",
@@ -186,6 +205,43 @@ const ApiServerContainmentProbeEvidenceSchema = z
 				.passthrough(),
 		),
 		findings: z.array(z.unknown()),
+	})
+	.passthrough();
+
+const ModelRelayProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(MODEL_RELAY_SCHEMA_VERSION),
+		probeId: z.literal("model.relay"),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		origin: z
+			.object({
+				kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
+				containerName: NonEmptyString.optional(),
+				observedPeerAddress: NonEmptyString.optional(),
+				observedPeerSource: z.literal("server-peer-echo").optional(),
+				expectedPeerAddress: NonEmptyString.optional(),
+				expectedPeerSource: z.literal("configured-contained-ip").optional(),
+				detail: NonEmptyString,
+			})
+			.passthrough(),
+		observation: z
+			.object({
+				relayUrl: NonEmptyString.optional(),
+				directModelUrl: NonEmptyString,
+				profileDir: NonEmptyString.optional(),
+				scannedProfileFiles: z.array(NonEmptyString).optional(),
+			})
+			.passthrough(),
+		gates: z.array(
+			z
+				.object({
+					name: NonEmptyString,
+					status: z.enum(["pass", "fail", "pending"]),
+					detail: NonEmptyString,
+				})
+				.passthrough(),
+		),
 	})
 	.passthrough();
 
@@ -675,6 +731,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "execution.api_server_containment") {
 			return [collectApiServerContainmentProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "model.relay") {
+			return [collectModelRelayProbeEvidence(probe)];
 		}
 		return [];
 	});
@@ -1845,6 +1904,105 @@ function collectApiServerContainmentProbeEvidence(
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed live API-server containment gates`,
 	};
+}
+
+function collectModelRelayProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+
+	const parsed = ModelRelayProbeEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`invalid feature probe evidence ${probe.surface_id}: ${flattenZodError(parsed.error)}`,
+		);
+	}
+
+	const failures: string[] = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (!parsed.data.observation.relayUrl) {
+		failures.push("observation.relayUrl is missing");
+	} else if (isDirectModelRelayProviderUrl(parsed.data.observation.relayUrl)) {
+		failures.push("observation.relayUrl points at a direct model-provider host");
+	}
+	if (!isDirectModelRelayProviderUrl(parsed.data.observation.directModelUrl)) {
+		failures.push("observation.directModelUrl is not a recognized direct model-provider URL");
+	}
+	const origin = parsed.data.origin;
+	if (origin.kind === "relay-self-smoke") {
+		failures.push("origin is relay-self-smoke");
+	}
+	const originMatches =
+		origin.kind === "contained-peer" &&
+		origin.containerName === "tc-hermes-contained" &&
+		origin.observedPeerAddress !== undefined &&
+		origin.expectedPeerAddress !== undefined &&
+		origin.observedPeerSource === "server-peer-echo" &&
+		origin.expectedPeerSource === "configured-contained-ip" &&
+		net.isIP(origin.observedPeerAddress) !== 0 &&
+		net.isIP(origin.expectedPeerAddress) !== 0 &&
+		origin.observedPeerAddress === origin.expectedPeerAddress;
+	if (!originMatches) {
+		failures.push(
+			"origin is not a server-observed tc-hermes-contained peer matching the configured contained IP",
+		);
+	}
+	if (!parsed.data.observation.profileDir) {
+		failures.push("observation.profileDir is missing");
+	}
+	if ((parsed.data.observation.scannedProfileFiles ?? []).length === 0) {
+		failures.push("observation.scannedProfileFiles is empty");
+	}
+
+	const gateByName = new Map(parsed.data.gates.map((gate) => [gate.name, gate]));
+	for (const gateName of REQUIRED_MODEL_RELAY_GATES) {
+		const gate = gateByName.get(gateName);
+		if (!gate) {
+			failures.push(`gate ${gateName} is missing`);
+		} else if (gate.status !== "pass") {
+			failures.push(`gate ${gateName} is ${gate.status}: ${redactDetail(gate.detail)}`);
+		}
+	}
+	if (failures.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
+		);
+	}
+
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed model relay reachability, direct-model denial, and profile credential absence`,
+	};
+}
+
+function isDirectModelRelayProviderUrl(value: string): boolean {
+	try {
+		return DIRECT_MODEL_RELAY_PROVIDER_HOSTS.has(new URL(value).hostname.toLowerCase());
+	} catch {
+		return false;
+	}
 }
 
 function isForbiddenCredentialKey(key: string): boolean {
