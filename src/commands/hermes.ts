@@ -29,6 +29,16 @@ import {
 } from "../hermes/foundation.js";
 import { collectHermesInventory } from "../hermes/inventory.js";
 import {
+	DEFAULT_DNS_EXFIL_PROBE_URL,
+	DEFAULT_FIREWALL_SENTINEL_PATH,
+	DEFAULT_MODEL_PROVIDER_PROBE_URL,
+	DEFAULT_NETWORK_PROBE_BUNDLE_PATH,
+	DEFAULT_NETWORK_PROBE_EVIDENCE_DIR,
+	DEFAULT_VAULT_SOCKET_PATH,
+	runHermesNetworkProbes,
+	writeHermesNetworkProbeArtifacts,
+} from "../hermes/network-probes.js";
+import {
 	buildHermesCliProbeInvocation,
 	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
 	runHermesCliHeadlessProbe,
@@ -51,6 +61,20 @@ type ProbeOption = JsonOption & {
 	hermesHome?: string;
 	out?: string;
 	prompt?: string;
+	timeoutMs?: string;
+};
+
+type NetworkProbeOption = JsonOption & {
+	allowRun?: boolean;
+	out: string;
+	evidenceDir: string;
+	relayUrl?: string;
+	providerUrl?: string;
+	vaultUrl?: string;
+	vaultSocket: string;
+	modelUrl: string;
+	dnsUrl: string;
+	firewallSentinel: string;
 	timeoutMs?: string;
 };
 
@@ -88,6 +112,13 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 		throw new Error(`Invalid --timeout-ms value: ${value}`);
 	}
 	return parsed;
+}
+
+function parseCsvOption(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
 }
 
 function readWrapperPackageVersion(): string {
@@ -307,6 +338,115 @@ export function registerHermesCommand(program: Command): void {
 				}
 			}
 			process.exitCode = report.status === "pass" ? 0 : report.status === "input_error" ? 2 : 1;
+		});
+
+	hermes
+		.command("network-probes")
+		.description("Run gated Hermes network isolation probes and write cutover evidence")
+		.option("--json", "Emit structured JSON")
+		.option("--allow-run", "Permit real network probes and artifact writes")
+		.option("--out <path>", "Network probe bundle JSON path", DEFAULT_NETWORK_PROBE_BUNDLE_PATH)
+		.option(
+			"--evidence-dir <dir>",
+			"Per-probe evidence output directory",
+			DEFAULT_NETWORK_PROBE_EVIDENCE_DIR,
+		)
+		.option(
+			"--relay-url <url>",
+			"Allowed relay/control URL that must remain reachable; defaults to TELCLAUDE_HERMES_NETWORK_RELAY_URL",
+		)
+		.option(
+			"--provider-url <csv>",
+			"Direct provider URL(s) that must be denied; defaults to TELCLAUDE_HERMES_NETWORK_PROVIDER_URL",
+		)
+		.option(
+			"--vault-url <url>",
+			"Optional direct vault HTTP URL that must be denied; defaults to TELCLAUDE_HERMES_NETWORK_VAULT_URL",
+		)
+		.option(
+			"--vault-socket <path>",
+			"Vault socket path that must be absent from the Hermes runtime",
+			DEFAULT_VAULT_SOCKET_PATH,
+		)
+		.option(
+			"--model-url <url>",
+			"Direct model-provider URL that must be denied",
+			DEFAULT_MODEL_PROVIDER_PROBE_URL,
+		)
+		.option(
+			"--dns-url <csv>",
+			"DNS/private egress URL(s) that must be denied",
+			DEFAULT_DNS_EXFIL_PROBE_URL,
+		)
+		.option(
+			"--firewall-sentinel <path>",
+			"Firewall sentinel that must exist before network evidence can be trusted",
+			DEFAULT_FIREWALL_SENTINEL_PATH,
+		)
+		.option("--timeout-ms <ms>", "Maximum time per HTTP probe in milliseconds")
+		.action(async (options: NetworkProbeOption) => {
+			try {
+				let report = await runHermesNetworkProbes({
+					allowRun: options.allowRun === true,
+					relayUrl:
+						options.relayUrl?.trim() ||
+						process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
+						undefined,
+					providerUrls: parseCsvOption(
+						options.providerUrl ?? process.env.TELCLAUDE_HERMES_NETWORK_PROVIDER_URL,
+					),
+					vaultUrl:
+						options.vaultUrl?.trim() ||
+						process.env.TELCLAUDE_HERMES_NETWORK_VAULT_URL?.trim() ||
+						undefined,
+					vaultSocketPath: options.vaultSocket,
+					modelProviderUrl:
+						options.modelUrl?.trim() ||
+						process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
+						DEFAULT_MODEL_PROVIDER_PROBE_URL,
+					dnsExfilUrls: parseCsvOption(
+						options.dnsUrl ||
+							process.env.TELCLAUDE_HERMES_NETWORK_DNS_URL ||
+							DEFAULT_DNS_EXFIL_PROBE_URL,
+					),
+					firewallSentinelPath: options.firewallSentinel,
+					timeoutMs: parseTimeoutMs(options.timeoutMs),
+				});
+
+				if (options.allowRun === true) {
+					report = writeHermesNetworkProbeArtifacts(report, {
+						outPath: options.out,
+						evidenceDir: options.evidenceDir,
+					});
+				}
+
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes network-probes: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()}: ${report.summary}`);
+					for (const probe of report.evidence) {
+						console.log(`- ${probe.status.toUpperCase()} ${probe.id}: ${probe.summary}`);
+					}
+					if (report.bundlePath) console.log(`- bundle: ${report.bundlePath}`);
+					if (report.evidenceDir) console.log(`- evidence: ${report.evidenceDir}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+			} catch (error) {
+				const report = {
+					schemaVersion: "telclaude.hermes.network-probe-run.v1",
+					status: "fail",
+					ran: false,
+					summary: String(error instanceof Error ? error.message : error),
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes network-probes: ${report.status}`);
+					console.log(`- FAIL: ${report.summary}`);
+				}
+				process.exitCode = 1;
+			}
 		});
 
 	hermes

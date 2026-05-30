@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import net, { type AddressInfo, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
@@ -18,6 +20,7 @@ import {
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
 	parseHermesPin,
+	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	validateCompatibilityLockfile,
 	validateFeatureProbeMatrix,
 } from "../../src/hermes/foundation.js";
@@ -27,12 +30,7 @@ import {
 } from "../../src/hermes/inventory.js";
 
 const hermesPin = { version: "0.15.1" };
-const requiredNetworkProbeIds = [
-	"network.direct-provider-denied",
-	"network.direct-vault-denied",
-	"network.direct-model-provider-denied",
-	"network.dns-exfil-denied",
-];
+const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
 
 const featureProbeMatrix: FeatureProbeMatrix = {
 	schemaVersion: 1,
@@ -131,6 +129,53 @@ function readJson(filePath: string): unknown {
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function startProbeServer(
+	handler: (req: IncomingMessage, res: ServerResponse) => void = (_req, res) => {
+		res.statusCode = 204;
+		res.end();
+	},
+): Promise<{ url: string; requests: { count: number }; close: () => Promise<void> }> {
+	const requests = { count: 0 };
+	const sockets = new Set<Socket>();
+	const server = http.createServer((req, res) => {
+		requests.count += 1;
+		handler(req, res);
+	});
+	server.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.on("close", () => sockets.delete(socket));
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address() as AddressInfo;
+	return {
+		url: `http://127.0.0.1:${address.port}/probe`,
+		requests,
+		close: async () => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolve, reject) => {
+				server.close((error) => (error ? reject(error) : resolve()));
+			});
+		},
+	};
+}
+
+async function closedProbeUrl(): Promise<string> {
+	const server = net.createServer();
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address() as AddressInfo;
+	const url = `http://127.0.0.1:${address.port}/probe`;
+	await new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()));
+	});
+	return url;
+}
+
+function writeFirewallSentinel(tempDir: string): string {
+	const sentinelPath = path.join(tempDir, "firewall-active");
+	fs.writeFileSync(sentinelPath, "active\n", "utf8");
+	return sentinelPath;
 }
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
@@ -994,6 +1039,279 @@ describe("Hermes wrapper foundation", () => {
 		registerHermesCommand(program);
 		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("probe");
+	});
+
+	it("registers the network-probes command", () => {
+		const program = new Command();
+		registerHermesCommand(program);
+		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain("network-probes");
+	});
+
+	it("does not execute or write network-probe artifacts without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--json",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				relay.url,
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; ran: boolean };
+
+			expect(result.exitCode).toBe(2);
+			expect(report).toMatchObject({ status: "pending", ran: false });
+			expect(relay.requests.count).toBe(0);
+			expect(fs.existsSync(path.join(tempDir, "network-probes.json"))).toBe(false);
+			expect(fs.existsSync(path.join(tempDir, "evidence"))).toBe(false);
+		} finally {
+			await relay.close();
+		}
+	});
+
+	it("writes passing network-probe artifacts from observed denials and a reachable relay control", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		try {
+			const outPath = path.join(tempDir, "network-probes.json");
+			const evidenceDir = path.join(tempDir, "evidence");
+			const deniedProviderUrl = await closedProbeUrl();
+			const deniedModelUrl = await closedProbeUrl();
+			const deniedDnsUrl = await closedProbeUrl();
+
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				deniedProviderUrl,
+				"--model-url",
+				deniedModelUrl,
+				"--dns-url",
+				deniedDnsUrl,
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--firewall-sentinel",
+				writeFirewallSentinel(tempDir),
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				ran: boolean;
+				bundlePath: string;
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{ name: string; observed: string; errorCode?: string }>;
+				}>;
+			};
+			const bundle = readJson(outPath) as {
+				probes: Array<{ id: string; status: string; evidence_path: string }>;
+			};
+
+			expect(result.exitCode).toBe(0);
+			expect(report).toMatchObject({ status: "pass", ran: true, bundlePath: outPath });
+			expect(bundle.probes.map((probe) => probe.id)).toEqual(requiredNetworkProbeIds);
+			expect(bundle.probes.every((probe) => probe.status === "pass")).toBe(true);
+			for (const probe of bundle.probes) {
+				expect(fs.existsSync(probe.evidence_path)).toBe(true);
+			}
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider"),
+			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.relay-control-allowed")
+					?.attempts.find((attempt) => attempt.name === "relay-control"),
+			).toMatchObject({ observed: "reachable" });
+		} finally {
+			await relay.close();
+		}
+	});
+
+	it("fails network-probes when a direct provider connection succeeds", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		const provider = await startProbeServer();
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				provider.url,
+				"--model-url",
+				await closedProbeUrl(),
+				"--dns-url",
+				await closedProbeUrl(),
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--firewall-sentinel",
+				writeFirewallSentinel(tempDir),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{ name: string; observed: string; httpStatus?: number }>;
+				}>;
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("fail");
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider"),
+			).toMatchObject({ observed: "reachable", httpStatus: 204 });
+		} finally {
+			await provider.close();
+			await relay.close();
+		}
+	});
+
+	it("does not count an ambiguous denial timeout as a passing network probe", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		const hangingProvider = await startProbeServer(() => {
+			// Intentionally keep the socket open so the probe hits its own timeout path.
+		});
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--timeout-ms",
+				"20",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				hangingProvider.url,
+				"--model-url",
+				await closedProbeUrl(),
+				"--dns-url",
+				await closedProbeUrl(),
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--firewall-sentinel",
+				writeFirewallSentinel(tempDir),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{ name: string; observed: string }>;
+				}>;
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("fail");
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider"),
+			).toMatchObject({ observed: "inconclusive_timeout" });
+		} finally {
+			await hangingProvider.close();
+			await relay.close();
+		}
+	});
+
+	it("fails network-probes when the allowed relay control cannot connect", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--allow-run",
+			"--json",
+			"--relay-url",
+			await closedProbeUrl(),
+			"--provider-url",
+			await closedProbeUrl(),
+			"--model-url",
+			await closedProbeUrl(),
+			"--dns-url",
+			await closedProbeUrl(),
+			"--vault-socket",
+			path.join(tempDir, "missing-vault.sock"),
+			"--firewall-sentinel",
+			writeFirewallSentinel(tempDir),
+			"--out",
+			path.join(tempDir, "network-probes.json"),
+			"--evidence-dir",
+			path.join(tempDir, "evidence"),
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			evidence: Array<{
+				id: string;
+				status: string;
+				attempts: Array<{ name: string; observed: string }>;
+			}>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.status).toBe("fail");
+		expect(
+			report.evidence
+				.find((probe) => probe.id === "network.relay-control-allowed")
+				?.attempts.find((attempt) => attempt.name === "relay-control"),
+		).toMatchObject({ observed: "unreachable" });
+		expect(
+			report.evidence.find((probe) => probe.id === "network.direct-provider-denied"),
+		).toMatchObject({ status: "pass" });
+	});
+
+	it("fails cutover when the required relay-control network probe is missing", () => {
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				networkProbes: {
+					schemaVersion: 1,
+					probes: requiredNetworkProbeIds
+						.filter((id) => id !== "network.relay-control-allowed")
+						.map((id) => ({
+							id,
+							status: "pass",
+							evidence_path: `artifacts/hermes/${id}.json`,
+						})),
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "networkProbes.pass")?.detail).toContain(
+			"missing network probe network.relay-control-allowed",
+		);
 	});
 
 	it("fails the approval-continuation probe closed when evidence is missing", async () => {

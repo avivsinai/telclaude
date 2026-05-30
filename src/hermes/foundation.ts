@@ -13,6 +13,7 @@ export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
 export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
+	"network.relay-control-allowed",
 	"network.direct-provider-denied",
 	"network.direct-vault-denied",
 	"network.direct-model-provider-denied",
