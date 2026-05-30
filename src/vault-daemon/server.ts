@@ -211,6 +211,11 @@ export interface ServerHandle {
 	socketPath: string;
 }
 
+type VaultServerState = {
+	stopping: boolean;
+	sockets: Set<Socket>;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Server
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -236,8 +241,9 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 		// Ignore if doesn't exist
 	}
 
+	const state: VaultServerState = { stopping: false, sockets: new Set() };
 	const server = createServer((socket) => {
-		handleConnection(socket);
+		handleConnection(socket, state);
 	});
 
 	return new Promise((resolve, reject) => {
@@ -275,7 +281,7 @@ export async function startServer(options: ServerOptions = {}): Promise<ServerHa
 
 			resolve({
 				isRunning: () => server.listening,
-				stop: () => stopServer(server, socketPath),
+				stop: () => stopServer(server, socketPath, state),
 				socketPath,
 			});
 		});
@@ -308,8 +314,14 @@ function resolveSocketMode(rawMode?: number | string): number {
 /**
  * Stop the server and clean up.
  */
-async function stopServer(server: Server, socketPath: string): Promise<void> {
+async function stopServer(
+	server: Server,
+	socketPath: string,
+	state: VaultServerState,
+): Promise<void> {
 	return new Promise((resolve) => {
+		state.stopping = true;
+
 		// Stop OAuth cleanup timer
 		stopCleanupTimer();
 
@@ -318,6 +330,10 @@ async function stopServer(server: Server, socketPath: string): Promise<void> {
 
 		// Reset store singleton
 		resetVaultStore();
+
+		for (const socket of state.sockets) {
+			socket.destroy();
+		}
 
 		server.close(() => {
 			try {
@@ -341,9 +357,12 @@ const MAX_REQUEST_SIZE = 1024 * 1024;
 /**
  * Handle a new client connection.
  */
-function handleConnection(socket: Socket): void {
+function handleConnection(socket: Socket, state: VaultServerState): void {
 	const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-	logger.debug({ clientId }, "client connected");
+	state.sockets.add(socket);
+	if (!state.stopping) {
+		logger.debug({ clientId }, "client connected");
+	}
 
 	let buffer = "";
 
@@ -371,11 +390,16 @@ function handleConnection(socket: Socket): void {
 	});
 
 	socket.on("error", (err) => {
-		logger.debug({ clientId, error: String(err) }, "socket error");
+		if (!state.stopping) {
+			logger.debug({ clientId, error: String(err) }, "socket error");
+		}
 	});
 
 	socket.on("close", () => {
-		logger.debug({ clientId }, "client disconnected");
+		state.sockets.delete(socket);
+		if (!state.stopping) {
+			logger.debug({ clientId }, "client disconnected");
+		}
 	});
 }
 
