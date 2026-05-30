@@ -179,6 +179,8 @@ export type HermesPendingQueueSummary = {
 	backgroundJobs: number;
 	socialItems: number;
 	curatorItems: number;
+	pairingPendingRequests: number;
+	pairingActiveLockouts: number;
 };
 
 export type HermesQueueSnapshot = {
@@ -513,6 +515,9 @@ function collectRisks(
 	if (queues.planApprovals.pending > 0) risks.push("pending plan approvals exist");
 	if (queues.backgroundJobs.active > 0) risks.push("active background jobs exist");
 	if (queues.cards.active > 0) risks.push("active Telegram cards exist");
+	if (queues.pairing.pendingRequests > 0) risks.push("pending pairing requests exist");
+	if (queues.pairing.activeLockouts > 0) risks.push("active pairing lockouts exist");
+	if (queues.webhooks.enabled > 0) risks.push("enabled webhooks require cutover review");
 	return risks;
 }
 
@@ -665,28 +670,20 @@ function parseEndpoint(baseUrl: string): HermesInventorySnapshot["providers"][nu
 
 // Table names, columns, and where clauses are static in this module; keep these helpers private.
 function countRows(table: string, where?: string, params: unknown[] = []): number {
-	try {
-		const sql = where
-			? `SELECT COUNT(*) as count FROM ${table} WHERE ${where}`
-			: `SELECT COUNT(*) as count FROM ${table}`;
-		const row = getDb()
-			.prepare(sql)
-			.get(...params) as { count: number } | undefined;
-		return row?.count ?? 0;
-	} catch {
-		return 0;
-	}
+	const sql = where
+		? `SELECT COUNT(*) as count FROM ${table} WHERE ${where}`
+		: `SELECT COUNT(*) as count FROM ${table}`;
+	const row = getDb()
+		.prepare(sql)
+		.get(...params) as { count: number } | undefined;
+	return row?.count ?? 0;
 }
 
 function countByColumn(table: string, column: string): Record<string, number> {
-	try {
-		const rows = getDb()
-			.prepare(`SELECT ${column} as key, COUNT(*) as count FROM ${table} GROUP BY ${column}`)
-			.all() as Array<{ key: string | null; count: number }>;
-		return Object.fromEntries(rows.map((row) => [row.key ?? "null", row.count]));
-	} catch {
-		return {};
-	}
+	const rows = getDb()
+		.prepare(`SELECT ${column} as key, COUNT(*) as count FROM ${table} GROUP BY ${column}`)
+		.all() as Array<{ key: string | null; count: number }>;
+	return Object.fromEntries(rows.map((row) => [row.key ?? "null", row.count]));
 }
 
 function summarizePendingQueues(queues: HermesQueueSnapshot): HermesPendingQueueSummary {
@@ -697,6 +694,8 @@ function summarizePendingQueues(queues: HermesQueueSnapshot): HermesPendingQueue
 		backgroundJobs: queues.backgroundJobs.active,
 		socialItems: queues.social.activeItems,
 		curatorItems: queues.curator.open,
+		pairingPendingRequests: queues.pairing.pendingRequests,
+		pairingActiveLockouts: queues.pairing.activeLockouts,
 	};
 }
 

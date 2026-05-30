@@ -27,6 +27,7 @@ import {
 } from "../../src/hermes/foundation.js";
 import {
 	buildHermesInventorySnapshot,
+	type HermesPendingQueueSummary,
 	type HermesQueueSnapshot,
 } from "../../src/hermes/inventory.js";
 
@@ -98,6 +99,23 @@ const emptyQueues: HermesQueueSnapshot = {
 	webhooks: { enabled: 0, total: 0 },
 	memory: { entries: 0, episodes: 0 },
 };
+
+const emptyPendingQueues: HermesPendingQueueSummary = {
+	approvals: 0,
+	planApprovals: 0,
+	cards: 0,
+	backgroundJobs: 0,
+	socialItems: 0,
+	curatorItems: 0,
+	pairingPendingRequests: 0,
+	pairingActiveLockouts: 0,
+};
+
+function pendingQueues(
+	overrides: Partial<HermesPendingQueueSummary> = {},
+): HermesPendingQueueSummary {
+	return { ...emptyPendingQueues, ...overrides };
+}
 
 async function runHermesCommand(args: string[]): Promise<{ exitCode: unknown; stdout: string }> {
 	const output: string[] = [];
@@ -171,6 +189,32 @@ async function closedProbeUrl(): Promise<string> {
 		server.close((error) => (error ? reject(error) : resolve()));
 	});
 	return url;
+}
+
+function minimalInventoryConfig(
+	options: { webhooksEnabled?: boolean } = {},
+): TelclaudeConfig {
+	return {
+		security: { profile: "simple", permissions: { defaultTier: "READ_ONLY", users: {} } },
+		telegram: { allowedChats: [], heartbeatSeconds: 60 },
+		profiles: [],
+		providers: [],
+		socialServices: [],
+		cron: { enabled: true, pollIntervalSeconds: 15, timeoutSeconds: 900 },
+		dashboard: { enabled: false, port: 3005 },
+		webhooks: { enabled: options.webhooksEnabled === true, port: 8788 },
+	} as unknown as TelclaudeConfig;
+}
+
+function emptyCronOverview() {
+	return {
+		enabled: true,
+		pollIntervalSeconds: 15,
+		timeoutSeconds: 900,
+		summary: { totalJobs: 0, enabledJobs: 0, runningJobs: 0, nextRunAtMs: null },
+		coverage: { allSocial: false, socialServiceIds: [], hasPrivateHeartbeat: false },
+		jobs: [],
+	};
 }
 
 function writeFirewallSentinel(tempDir: string): string {
@@ -399,14 +443,7 @@ function cliHeadlessCutoverBundle(
 			],
 			status: "complete",
 			summary: {
-				pendingQueues: {
-					approvals: 0,
-					planApprovals: 0,
-					cards: 0,
-					backgroundJobs: 0,
-					socialItems: 0,
-					curatorItems: 0,
-				},
+				pendingQueues: pendingQueues(),
 			},
 		},
 		scopeManifest: {
@@ -480,14 +517,7 @@ function approvalContinuationCutoverBundle(
 			],
 			status: "complete",
 			summary: {
-				pendingQueues: {
-					approvals: 0,
-					planApprovals: 0,
-					cards: 0,
-					backgroundJobs: 0,
-					socialItems: 0,
-					curatorItems: 0,
-				},
+				pendingQueues: pendingQueues(),
 			},
 		},
 		scopeManifest: {
@@ -698,14 +728,7 @@ describe("Hermes wrapper foundation", () => {
 				...source.inventory,
 				status: "complete",
 				summary: {
-					pendingQueues: {
-						approvals: 0,
-						planApprovals: 0,
-						cards: 0,
-						backgroundJobs: 0,
-						socialItems: 0,
-						curatorItems: 0,
-					},
+					pendingQueues: pendingQueues(),
 				},
 			},
 			scopeManifest: source.scopeManifest,
@@ -744,14 +767,7 @@ describe("Hermes wrapper foundation", () => {
 					...source.inventory,
 					status: "partial",
 					summary: {
-						pendingQueues: {
-							approvals: 0,
-							planApprovals: 0,
-							cards: 0,
-							backgroundJobs: 0,
-							socialItems: 0,
-							curatorItems: 0,
-						},
+						pendingQueues: pendingQueues(),
 					},
 				},
 				scopeManifest: source.scopeManifest,
@@ -773,14 +789,10 @@ describe("Hermes wrapper foundation", () => {
 				...source.inventory,
 				status: "complete",
 				summary: {
-					pendingQueues: {
+					pendingQueues: pendingQueues({
 						approvals: 1,
-						planApprovals: 0,
-						cards: 0,
 						backgroundJobs: 2,
-						socialItems: 0,
-						curatorItems: 0,
-					},
+					}),
 				},
 			},
 			scopeManifest: source.scopeManifest,
@@ -797,6 +809,125 @@ describe("Hermes wrapper foundation", () => {
 		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 3 });
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "queues.owned")?.status).toBe("fail");
+	});
+
+	it("blocks cutover on active pairing queues but not enabled webhooks", () => {
+		const source = safeCutoverBundle();
+		const withPairingQueues = buildCutoverInputBundleFromArtifacts({
+			inventory: {
+				...source.inventory,
+				status: "complete",
+				summary: {
+					pendingQueues: pendingQueues({
+						pairingPendingRequests: 1,
+						pairingActiveLockouts: 2,
+					}),
+				},
+			},
+			scopeManifest: source.scopeManifest,
+			decisionLog: source.decisionLog,
+			lockfile: source.lockfile,
+			featureProbeMatrix: source.featureProbeMatrix,
+			fixtureResults: source.fixtureResults,
+			noForkProof: source.noForkProof,
+			networkProbes: source.networkProbes,
+			rollbackRehearsal: source.rollbackRehearsal,
+		});
+
+		expect(withPairingQueues.queueSnapshot).toEqual({ unownedActiveCount: 3 });
+		expect(
+			evaluateCutoverCheck(withPairingQueues).gates.find((gate) => gate.name === "queues.owned"),
+		).toMatchObject({ status: "fail" });
+
+		const inventoryWithEnabledWebhook = buildHermesInventorySnapshot({
+			generatedAt: new Date("2026-05-29T00:00:00.000Z"),
+			redactionSalt: "test-only-redaction-salt",
+			source: {
+				configPath: "/tmp/telclaude.json",
+				runtimeConfigPath: "/tmp/telclaude.runtime.json",
+				privateConfigPresent: true,
+				dataDir: "/tmp/telclaude-data",
+			},
+			config: minimalInventoryConfig({ webhooksEnabled: true }),
+			sessions: [],
+			cron: emptyCronOverview(),
+			queues: {
+				...emptyQueues,
+				webhooks: { enabled: 1, total: 1 },
+			},
+			socialActivity: [],
+		});
+		const webhookOnlyBundle = buildCutoverInputBundleFromArtifacts({
+			inventory: inventoryWithEnabledWebhook,
+			scopeManifest: {
+				...source.scopeManifest,
+				workflows: [
+					...source.scopeManifest.workflows,
+					{
+						workflow_id: "webhooks.signed-inbound",
+						owner: "system:webhooks",
+						trust_domain: "system",
+						current_behavior: "Telclaude signed webhook receiver is enabled.",
+						hermes_target_behavior: "Webhook delivery stays edge-owned during cutover.",
+						cutover_class: "P1",
+						cutover_requirement: "Webhook delivery parity is warning-only for queue ownership.",
+						status: "excluded",
+						fixture_ids: [],
+						negative_fixture_ids: [],
+						required_surface_ids: [],
+						unresolved_decision_ids: [],
+					},
+				],
+			},
+			decisionLog: source.decisionLog,
+			lockfile: source.lockfile,
+			featureProbeMatrix: source.featureProbeMatrix,
+			fixtureResults: source.fixtureResults,
+			noForkProof: source.noForkProof,
+			networkProbes: source.networkProbes,
+			rollbackRehearsal: source.rollbackRehearsal,
+		});
+
+		expect(inventoryWithEnabledWebhook.summary.pendingQueues).toMatchObject(pendingQueues());
+		expect(inventoryWithEnabledWebhook.risks).toContain("enabled webhooks require cutover review");
+		expect(webhookOnlyBundle.queueSnapshot).toEqual({ unownedActiveCount: 0 });
+		expect(evaluateCutoverCheck(webhookOnlyBundle).status).toBe("safe");
+	});
+
+	it("marks inventory partial when live queue collection fails", () => {
+		const source = safeCutoverBundle();
+		const inventory = buildHermesInventorySnapshot({
+			generatedAt: new Date("2026-05-29T00:00:00.000Z"),
+			redactionSalt: "test-only-redaction-salt",
+			source: {
+				configPath: "/tmp/telclaude.json",
+				runtimeConfigPath: "/tmp/telclaude.runtime.json",
+				privateConfigPresent: true,
+				dataDir: "/tmp/telclaude-data",
+			},
+			config: minimalInventoryConfig(),
+			sessions: [],
+			cron: emptyCronOverview(),
+			queues: emptyQueues,
+			socialActivity: [],
+			collectorErrors: [{ collector: "queues", error: "database is locked" }],
+		});
+
+		expect(inventory.status).toBe("partial");
+		expect(inventory.summary.pendingQueues).toMatchObject(pendingQueues());
+		expect(() =>
+			buildCutoverInputBundleFromArtifacts({
+				inventory,
+				scopeManifest: source.scopeManifest,
+				decisionLog: source.decisionLog,
+				lockfile: source.lockfile,
+				featureProbeMatrix: source.featureProbeMatrix,
+				fixtureResults: source.fixtureResults,
+				noForkProof: source.noForkProof,
+				networkProbes: source.networkProbes,
+				rollbackRehearsal: source.rollbackRehearsal,
+			}),
+		).toThrow("inventory queue evidence is missing or incomplete");
 	});
 
 	it("generates a fail-closed cutover scope skeleton from inventory workflows", () => {
