@@ -1535,7 +1535,7 @@ function rollbackRelayTranscriptFailure(
 			expected.path,
 			expected.body,
 			transcript.responseBody,
-			{ scope: "operator" },
+			{ scope: "operator", allowStale: true },
 		)
 	) {
 		failures.push(`rollback ${label} relay transcript signature is invalid`);

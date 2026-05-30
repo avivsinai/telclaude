@@ -1704,6 +1704,25 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("accepts archived rollback transcript proofs outside the live RPC skew window", () => {
+		const base = safeCutoverBundle();
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
+			const rehearsal = writeRollbackRehearsal();
+			vi.useRealTimers();
+
+			const report = evaluateCutoverCheck({ ...base, rollbackRehearsal: rehearsal });
+
+			expect(report.status).toBe("safe");
+			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
+				status: "pass",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("fails strict cutover when evidence bundles are empty", () => {
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
@@ -2969,7 +2988,7 @@ echo should-not-run
 		const hermesBin = writeExecutable(
 			tempDir,
 			`#!/bin/sh
-echo "probe ok"
+echo "TELCLAUDE_HERMES_CLI_OK"
 exit 0
 `,
 		);
