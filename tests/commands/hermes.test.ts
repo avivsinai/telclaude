@@ -128,6 +128,11 @@ function readJson(filePath: string): unknown {
 	return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
 }
 
+function writeJson(filePath: string, value: unknown): void {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
 	return {
 		schemaVersion: 1,
@@ -199,6 +204,149 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 			passed: true,
 			evidence_path: "artifacts/hermes/rollback.json",
 		},
+		...overrides,
+	};
+}
+
+function cliHeadlessProbe(evidencePath: string, status: "pass" | "fail" | "skip" = "skip") {
+	return {
+		surface_id: "execution.cli_headless",
+		hermes_pin: hermesPin,
+		documented_seam: "Hermes top-level -z/--oneshot mode",
+		probe_command: "pnpm dev hermes probe execution.cli_headless --allow-run",
+		expected_result: "Wrapper launches pinned Hermes and receives a final response",
+		negative_probe: "Credential-shaped launch material is denied before spawn",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.execution.cliHeadless",
+		security_scope: "headless-availability-only" as const,
+		approval_equivalent: false,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function cliHeadlessCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "skip",
+) {
+	const probe = cliHeadlessProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: {
+					approvals: 0,
+					planApprovals: 0,
+					cards: 0,
+					backgroundJobs: 0,
+					socialItems: 0,
+					curatorItems: 0,
+				},
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["execution.cli_headless"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "execution.cli_headless",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"execution.cli_headless": "sha256:adapter-signature",
+			},
+		},
+	});
+}
+
+function writeCutoverBundleArtifacts(tempDir: string, bundle: CutoverInputBundle) {
+	const paths = {
+		inventory: path.join(tempDir, "inventory.json"),
+		scope: path.join(tempDir, "scope.json"),
+		decisions: path.join(tempDir, "decisions.json"),
+		featureProbes: path.join(tempDir, "feature-probes.json"),
+		lockfile: path.join(tempDir, "lockfile.json"),
+		fixtures: path.join(tempDir, "fixtures.json"),
+		networkProbes: path.join(tempDir, "network-probes.json"),
+		nofork: path.join(tempDir, "nofork.json"),
+		rollback: path.join(tempDir, "rollback.json"),
+	};
+	writeJson(paths.inventory, bundle.inventory);
+	writeJson(paths.scope, bundle.scopeManifest);
+	writeJson(paths.decisions, bundle.decisionLog);
+	writeJson(paths.featureProbes, bundle.featureProbeMatrix);
+	writeJson(paths.lockfile, bundle.lockfile);
+	writeJson(paths.fixtures, bundle.fixtureResults);
+	writeJson(paths.networkProbes, bundle.networkProbes);
+	writeJson(paths.nofork, bundle.noForkProof);
+	writeJson(paths.rollback, bundle.rollbackRehearsal);
+	return paths;
+}
+
+async function runCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-"));
+	const paths = writeCutoverBundleArtifacts(tempDir, bundle);
+	return runHermesCommand([
+		"hermes",
+		"cutover-check",
+		"--strict",
+		"--dry-run",
+		"--json",
+		"--inventory",
+		paths.inventory,
+		"--scope",
+		paths.scope,
+		"--decisions",
+		paths.decisions,
+		"--feature-probes",
+		paths.featureProbes,
+		"--lockfile",
+		paths.lockfile,
+		"--fixtures",
+		paths.fixtures,
+		"--network-probes",
+		paths.networkProbes,
+		"--nofork",
+		paths.nofork,
+		"--rollback",
+		paths.rollback,
+	]);
+}
+
+function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
+	return {
+		schemaVersion: "telclaude.hermes.probe-result.v1",
+		probeId: "execution.cli_headless",
+		status: "pass",
+		ran: true,
+		exitCode: 0,
+		summary: "Hermes CLI oneshot probe completed successfully",
 		...overrides,
 	};
 }
@@ -526,6 +674,142 @@ describe("Hermes wrapper foundation", () => {
 		expect(failed.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"status is missing",
 		);
+	});
+
+	it("passes the feature-probe gate from complete cli-headless evidence read by cutover-check", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeJson(evidencePath, cliHeadlessEvidence());
+
+		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(0);
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("does not let cli-headless evidence satisfy unrelated feature probes", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeJson(evidencePath, cliHeadlessEvidence());
+		const skippedOtherProbe = { ...featureProbeMatrix.probes[0], status: "skip" as const };
+		const mixedMatrix = {
+			schemaVersion: 1 as const,
+			probes: [cliHeadlessProbe(evidencePath), skippedOtherProbe],
+		};
+		const base = cliHeadlessCutoverBundle(evidencePath);
+
+		const result = await runCutoverCheckWithBundle({
+			...base,
+			featureProbeMatrix: mixedMatrix,
+			lockfile: {
+				...base.lockfile,
+				featureProbeMatrixDigest: computeHermesArtifactDigest(mixedMatrix),
+				featureProbes: [
+					...base.lockfile.featureProbes,
+					{
+						surface_id: skippedOtherProbe.surface_id,
+						status: "pass",
+						evidence_path: skippedOtherProbe.evidence_path,
+					},
+				],
+			},
+		});
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+		const featureGate = report.gates.find((gate) => gate.name === "featureProbes.pass");
+
+		expect(result.exitCode).toBe(1);
+		expect(featureGate).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("feature probe edge.whatsapp.plugin-adapter status is skip"),
+		});
+		expect(featureGate?.detail).not.toContain(
+			"feature probe execution.cli_headless status is skip",
+		);
+	});
+
+	it("fails the feature-probe gate when cli-headless evidence is missing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
+		const evidencePath = path.join(tempDir, "missing-execution-cli-headless.json");
+
+		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("missing feature probe evidence execution.cli_headless"),
+		});
+	});
+
+	it.each([
+		{
+			name: "pending",
+			evidence: cliHeadlessEvidence({ status: "pending", ran: false }),
+			detail: "status is pending",
+		},
+		{
+			name: "status fail",
+			evidence: cliHeadlessEvidence({ status: "fail", exitCode: 7 }),
+			detail: "status is fail",
+		},
+		{
+			name: "ran false",
+			evidence: cliHeadlessEvidence({ ran: false }),
+			detail: "ran is false",
+		},
+		{
+			name: "wrong schema",
+			evidence: cliHeadlessEvidence({ schemaVersion: "telclaude.hermes.probe-report.v1" }),
+			detail: "schemaVersion",
+		},
+		{
+			name: "wrong probe id",
+			evidence: cliHeadlessEvidence({ probeId: "execution.approval_continuation" }),
+			detail: "probeId",
+		},
+		{
+			name: "nonzero exit",
+			evidence: cliHeadlessEvidence({ exitCode: 7 }),
+			detail: "exitCode is 7",
+		},
+		{
+			name: "partial handwritten pass",
+			evidence: {
+				schemaVersion: "telclaude.hermes.probe-result.v1",
+				probeId: "execution.cli_headless",
+				status: "pass",
+			},
+			detail: "ran",
+		},
+	])("fails the feature-probe gate from invalid cli-headless evidence: $name", async ({
+		evidence,
+		detail,
+	}) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeJson(evidencePath, evidence);
+
+		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(detail),
+		});
 	});
 
 	it("fails strict cutover when active inventory workflows are not scoped", () => {

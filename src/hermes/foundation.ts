@@ -11,6 +11,7 @@ export const DEFAULT_FIXTURE_RESULTS_PATH = "docs/hermes/fixture-results.json";
 export const DEFAULT_NETWORK_PROBES_PATH = "docs/hermes/network-probes.json";
 export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
+export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
 export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 	"network.direct-provider-denied",
 	"network.direct-vault-denied",
@@ -67,6 +68,34 @@ export const FeatureProbeMatrixSchema = z
 	.strict();
 
 export type FeatureProbeMatrix = z.infer<typeof FeatureProbeMatrixSchema>;
+
+const FeatureProbeEvidenceResultSchema = z
+	.object({
+		surface_id: NonEmptyString,
+		status: z.enum(["pass", "fail"]),
+		evidence_path: NonEmptyString,
+		detail: NonEmptyString,
+	})
+	.strict();
+
+export const FeatureProbeEvidenceBundleSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		results: z.array(FeatureProbeEvidenceResultSchema),
+	})
+	.strict();
+
+export type FeatureProbeEvidenceBundle = z.infer<typeof FeatureProbeEvidenceBundleSchema>;
+
+const CliHeadlessProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(HERMES_PROBE_RESULT_SCHEMA_VERSION),
+		probeId: z.literal("execution.cli_headless"),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		exitCode: z.number().int(),
+	})
+	.passthrough();
 
 export const CompatibilityLockfileSchema = z
 	.object({
@@ -274,6 +303,7 @@ export const CutoverInputBundleSchema = z
 		decisionLog: DecisionLogSchema,
 		lockfile: CompatibilityLockfileSchema,
 		featureProbeMatrix: FeatureProbeMatrixSchema,
+		featureProbeEvidence: FeatureProbeEvidenceBundleSchema.optional(),
 		fixtureResults: FixtureResultBundleSchema,
 		noForkProof: NoForkProofSchema,
 		networkProbes: ProbeBundleSchema,
@@ -349,6 +379,7 @@ export function buildCutoverInputBundleFromArtifacts(input: {
 	decisionLog: unknown;
 	lockfile: unknown;
 	featureProbeMatrix: unknown;
+	featureProbeEvidence?: unknown;
 	fixtureResults: unknown;
 	noForkProof: unknown;
 	networkProbes: unknown;
@@ -362,6 +393,7 @@ export function buildCutoverInputBundleFromArtifacts(input: {
 		decisionLog: input.decisionLog,
 		lockfile: input.lockfile,
 		featureProbeMatrix: input.featureProbeMatrix,
+		featureProbeEvidence: input.featureProbeEvidence,
 		fixtureResults: input.fixtureResults,
 		noForkProof: input.noForkProof,
 		networkProbes: input.networkProbes,
@@ -373,6 +405,18 @@ export function buildCutoverInputBundleFromArtifacts(input: {
 		throw new Error(flattenZodError(parsed.error));
 	}
 	return parsed.data;
+}
+
+export function collectFeatureProbeEvidence(
+	featureProbeMatrix: unknown,
+): FeatureProbeEvidenceBundle | undefined {
+	const parsed = FeatureProbeMatrixSchema.safeParse(featureProbeMatrix);
+	if (!parsed.success) return undefined;
+	const results = parsed.data.probes.flatMap((probe) => {
+		if (probe.surface_id !== "execution.cli_headless") return [];
+		return [collectCliHeadlessProbeEvidence(probe)];
+	});
+	return { schemaVersion: 1, results };
 }
 
 export function buildCutoverScopeManifestFromInventory(inventory: unknown): CutoverScopeManifest {
@@ -659,22 +703,27 @@ export function evaluateCutoverCheck(
 	const probeBySurfaceId = new Map(
 		bundle.featureProbeMatrix.probes.map((probe) => [probe.surface_id, probe]),
 	);
+	const featureProbeEvidenceBySurfaceId = new Map(
+		(bundle.featureProbeEvidence?.results ?? []).map((result) => [result.surface_id, result]),
+	);
 	const requiredSurfaceFailures = requiredSurfaceIds.flatMap((surfaceId) => {
 		const probe = probeBySurfaceId.get(surfaceId);
 		if (!probe) return [`missing feature probe ${surfaceId}`];
-		if (probe.status !== "pass")
-			return [`feature probe ${surfaceId} status is ${probe.status ?? "missing"}`];
+		const failure = featureProbeFailure(probe, featureProbeEvidenceBySurfaceId.get(surfaceId));
+		if (failure) return [failure];
 		return [];
 	});
 	const featureProbeFailures = [
 		...(bundle.featureProbeMatrix.probes.length === 0 ? ["feature probe matrix is empty"] : []),
 		...(requiredSurfaceIds.length === 0 ? ["no required surfaces declared"] : []),
 		...requiredSurfaceFailures,
-		...bundle.featureProbeMatrix.probes.flatMap((probe) =>
-			probe.status === "pass"
-				? []
-				: [`feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`],
-		),
+		...bundle.featureProbeMatrix.probes.flatMap((probe) => {
+			const failure = featureProbeFailure(
+				probe,
+				featureProbeEvidenceBySurfaceId.get(probe.surface_id),
+			);
+			return failure ? [failure] : [];
+		}),
 	];
 	const lockfileProbeBySurfaceId = new Map(
 		bundle.lockfile.featureProbes.map((probe) => [probe.surface_id, probe]),
@@ -808,6 +857,82 @@ export function evaluateCutoverCheck(
 
 export function resolveHermesArtifactPath(relativePath: string): string {
 	return path.resolve(relativePath);
+}
+
+function collectCliHeadlessProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${String(
+				error instanceof Error ? error.message : error,
+			)}`,
+		);
+	}
+
+	const parsed = CliHeadlessProbeEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`invalid feature probe evidence ${probe.surface_id}: ${flattenZodError(parsed.error)}`,
+		);
+	}
+
+	const failures = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (parsed.data.exitCode !== 0) failures.push(`exitCode is ${parsed.data.exitCode}`);
+	if (failures.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
+		);
+	}
+
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed pass, ran=true, exitCode=0`,
+	};
+}
+
+function featureProbeEvidenceFailure(
+	probe: FeatureProbeMatrix["probes"][number],
+	detail: string,
+): FeatureProbeEvidenceBundle["results"][number] {
+	return {
+		surface_id: probe.surface_id,
+		status: "fail",
+		evidence_path: probe.evidence_path,
+		detail,
+	};
+}
+
+function featureProbeFailure(
+	probe: FeatureProbeMatrix["probes"][number],
+	evidence: FeatureProbeEvidenceBundle["results"][number] | undefined,
+): string | null {
+	if (evidence) {
+		return evidence.status === "pass"
+			? null
+			: `feature probe ${probe.surface_id} evidence failed: ${evidence.detail}`;
+	}
+	if (probe.status !== "pass") {
+		return `feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`;
+	}
+	return null;
 }
 
 function formatValidationResult(
