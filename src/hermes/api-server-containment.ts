@@ -172,6 +172,7 @@ export function buildHermesApiServerLaunchPlan(input: {
 		HOME: path.dirname(hermesHome),
 		TELCLAUDE_INTERNAL_HOSTS: relayInternalHost,
 		NO_COLOR: "1",
+		...dockerClientEnv(process.env),
 	};
 
 	return {
@@ -241,6 +242,15 @@ export function buildHermesApiServerLaunchPlan(input: {
 
 export function createEphemeralHermesApiServerKey(): string {
 	return randomBytes(32).toString("base64url");
+}
+
+function dockerClientEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const key of ["DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]) {
+		const value = env[key]?.trim();
+		if (value) result[key] = value;
+	}
+	return result;
 }
 
 export function findHermesApiServerLaunchSecretFindings(
