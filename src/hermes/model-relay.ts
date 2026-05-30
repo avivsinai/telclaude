@@ -89,21 +89,7 @@ const DIRECT_MODEL_PROVIDER_HOSTS = new Set([
 	"openrouter.ai",
 	"api.x.ai",
 ]);
-const PROFILE_SCAN_EXTENSIONS = new Set([
-	"",
-	".env",
-	".json",
-	".json5",
-	".yaml",
-	".yml",
-	".toml",
-	".md",
-	".txt",
-	".ini",
-	".cfg",
-	".conf",
-]);
-const MAX_PROFILE_FILES = 200;
+const MAX_PROFILE_FILES = 5_000;
 const MAX_PROFILE_FILE_BYTES = 1_000_000;
 
 export async function runHermesModelRelayProbe(
@@ -356,11 +342,6 @@ function listProfileFiles(root: string): { scannedFiles: string[]; skippedFiles:
 				continue;
 			}
 			if (!entry.isFile()) {
-				skippedFiles.push(path.relative(root, fullPath));
-				continue;
-			}
-			const extension = entry.name === ".env" ? ".env" : path.extname(entry.name).toLowerCase();
-			if (!PROFILE_SCAN_EXTENSIONS.has(extension)) {
 				skippedFiles.push(path.relative(root, fullPath));
 				continue;
 			}
