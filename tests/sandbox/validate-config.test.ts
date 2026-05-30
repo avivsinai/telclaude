@@ -161,6 +161,15 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS).toBe(
 			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-172.29.92.11}",
 		);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED).toBe(
+			"${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}",
+		);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET).toBe(
+			"${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET:-/run/telclaude/hermes-live-mcp-admin.sock}",
+		);
+		expect(telclaudeEnv.OPERATOR_RPC_AGENT_PUBLIC_KEY).toBe(
+			"${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}",
+		);
 		expect(hermesEnv).toEqual({
 			API_SERVER_ENABLED: "true",
 			API_SERVER_HOST: "0.0.0.0",
@@ -209,7 +218,9 @@ TELCLAUDE_LOG_LEVEL=info
 		for (const interpolation of compose.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)) {
 			const variableName = interpolation[1] ?? "";
 			if (/(KEY|SECRET|TOKEN|OAUTH|VAULT|PROVIDER)/.test(variableName)) {
-				expect(variableName).toBe("TELCLAUDE_HERMES_API_SERVER_KEY");
+				expect(["TELCLAUDE_HERMES_API_SERVER_KEY", "OPERATOR_RPC_AGENT_PUBLIC_KEY"]).toContain(
+					variableName,
+				);
 			}
 		}
 	});
