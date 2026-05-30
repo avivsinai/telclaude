@@ -15,6 +15,10 @@
 
 import { executeRemoteQuery } from "../agent/client.js";
 import type { TelclaudeConfig } from "../config/config.js";
+import {
+	executeHermesPrivateQuery,
+	shouldUseHermesPrivateRuntime,
+} from "../hermes/private-execute.js";
 import { getChildLogger } from "../logging.js";
 import {
 	buildTelegramMemoryBundle,
@@ -44,8 +48,9 @@ export async function handlePrivateHeartbeat(
 	logger.info("private heartbeat starting");
 
 	const agentUrl = process.env.TELCLAUDE_AGENT_URL;
-	if (!agentUrl) {
-		logger.warn("TELCLAUDE_AGENT_URL not configured — skipping private heartbeat");
+	const useHermesPrivateRuntime = shouldUseHermesPrivateRuntime();
+	if (!useHermesPrivateRuntime && !agentUrl) {
+		logger.warn("private runtime is not configured — skipping private heartbeat");
 		return { acted: false, summary: "" };
 	}
 
@@ -79,17 +84,29 @@ export async function handlePrivateHeartbeat(
 	].join("\n");
 
 	try {
-		const stream = executeRemoteQuery(prompt, {
-			agentUrl,
-			scope: "telegram",
-			cwd: process.cwd(),
-			tier: "WRITE_LOCAL",
-			poolKey: POOL_KEY,
-			userId: USER_ID,
-			enableSkills: true,
-			timeoutMs: PRIVATE_HEARTBEAT_TIMEOUT_MS,
-			compiledMemoryMd: memoryBundle.compiledMemoryMd,
-		});
+		const stream = useHermesPrivateRuntime
+			? executeHermesPrivateQuery(prompt, {
+					cwd: process.cwd(),
+					tier: "WRITE_LOCAL",
+					poolKey: POOL_KEY,
+					telclaudeSessionId: POOL_KEY,
+					profileId: "default",
+					userId: USER_ID,
+					enableSkills: true,
+					timeoutMs: PRIVATE_HEARTBEAT_TIMEOUT_MS,
+					compiledMemoryMd: memoryBundle.compiledMemoryMd,
+				})
+			: executeRemoteQuery(prompt, {
+					agentUrl,
+					scope: "telegram",
+					cwd: process.cwd(),
+					tier: "WRITE_LOCAL",
+					poolKey: POOL_KEY,
+					userId: USER_ID,
+					enableSkills: true,
+					timeoutMs: PRIVATE_HEARTBEAT_TIMEOUT_MS,
+					compiledMemoryMd: memoryBundle.compiledMemoryMd,
+				});
 
 		let responseText = "";
 		for await (const chunk of stream as AsyncGenerator<StreamChunk, void, unknown>) {

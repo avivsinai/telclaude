@@ -1,0 +1,76 @@
+# Hermes private-runtime live-run overlay.
+#
+# Usage:
+#   TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+#   TELCLAUDE_HERMES_PRIVATE_RUNTIME=1 \
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.hermes.yml up -d telclaude tc-hermes-contained
+#
+# The dedicated telclaude-hermes-relay network must contain exactly two
+# containers: telclaude and tc-hermes-contained. Do not attach sidecars,
+# providers, vault, Docker socket brokers, or egress helpers to this network.
+
+services:
+  telclaude:
+    depends_on:
+      tc-hermes-contained:
+        condition: service_healthy
+    environment:
+      # OFF by default. Set to 1 only for the explicit Hermes private-runtime live run.
+      - TELCLAUDE_HERMES_PRIVATE_RUNTIME=${TELCLAUDE_HERMES_PRIVATE_RUNTIME:-0}
+      - TELCLAUDE_HERMES_API_BASE_URL=http://tc-hermes-contained:8642
+      - TELCLAUDE_HERMES_API_KEY=${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}
+      - TELCLAUDE_HERMES_LIVE_MCP_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ENABLED:-0}
+      - TELCLAUDE_HERMES_LIVE_MCP_HOST=telclaude
+      - TELCLAUDE_HERMES_LIVE_MCP_PORT=8793
+      - TELCLAUDE_HERMES_LIVE_MCP_PATH=/mcp
+      - TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-relay
+      - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services,tc-hermes-contained}
+    networks:
+      - hermes-relay-net
+
+  tc-hermes-contained:
+    image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7}
+    container_name: tc-hermes-contained
+    command: ["gateway", "run"]
+    environment:
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_PORT=8642
+      - API_SERVER_KEY=${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}
+      - HERMES_HOME=/home/hermes/.hermes
+      - HOME=/home/hermes
+      - TELCLAUDE_INTERNAL_HOSTS=telclaude
+      - NO_COLOR=1
+    user: "10000:10000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M,mode=1777
+      - /home/hermes:size=512M,uid=10000,gid=10000,mode=0700
+    pids_limit: 256
+    mem_limit: 2G
+    cpus: 2
+    networks:
+      - hermes-relay-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/health', timeout=5).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+networks:
+  hermes-relay-net:
+    name: telclaude-hermes-relay
+    driver: bridge
+    internal: true

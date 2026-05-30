@@ -2,12 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	buildHermesApiServerLaunchPlan,
 	createEphemeralHermesApiServerKey,
+	DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
 	findHermesApiServerLaunchSecretFindings,
 	type HermesApiServerContainmentObservation,
 	runHermesApiServerContainmentProbe,
 } from "../../src/hermes/api-server-containment.js";
 
 describe("Hermes API-server containment", () => {
+	const pinnedHermesImage =
+		"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7";
+
 	it("builds a contained Docker launch with a fresh ephemeral API auth key only in env", () => {
 		const priorOpenAi = process.env.OPENAI_API_KEY;
 		try {
@@ -15,7 +19,7 @@ describe("Hermes API-server containment", () => {
 			const plan = buildHermesApiServerLaunchPlan({
 				apiKey: "ephemeral-api-key-for-test",
 				cwd: "/tmp/telclaude",
-				image: "hermes:test",
+				image: pinnedHermesImage,
 				containerName: "tc-hermes-test",
 				network: "relay-only",
 			});
@@ -24,15 +28,19 @@ describe("Hermes API-server containment", () => {
 			expect(plan.invocation.args).toContain("run");
 			expect(plan.invocation.args).toContain("--network");
 			expect(plan.invocation.args).toContain("relay-only");
+			expect(plan.invocation.args).toContain("--user");
+			expect(plan.invocation.args).toContain("10000:10000");
 			expect(plan.invocation.args).toContain("--cap-drop");
 			expect(plan.invocation.args).toContain("ALL");
-			expect(plan.invocation.args).toContain("--cap-add");
-			expect(plan.invocation.args).toContain("SETUID");
-			expect(plan.invocation.args).toContain("SETGID");
+			expect(plan.invocation.args).not.toContain("--cap-add");
 			expect(plan.invocation.args).toContain("--security-opt");
 			expect(plan.invocation.args).toContain("no-new-privileges");
+			expect(plan.invocation.args).toContain("--read-only");
+			expect(plan.invocation.args).toContain("--tmpfs");
+			expect(plan.invocation.args).toContain("/home/hermes:size=512m,uid=10000,gid=10000,mode=0700");
 			expect(plan.invocation.args).not.toContain("NET_ADMIN");
 			expect(plan.invocation.args.slice(-2)).toEqual(["gateway", "run"]);
+			expect(plan.invocation.args).toContain(pinnedHermesImage);
 			expect(plan.invocation.args).not.toContain("ephemeral-api-key-for-test");
 			expect(plan.invocation.env).toEqual({
 				API_SERVER_ENABLED: "true",
@@ -40,6 +48,7 @@ describe("Hermes API-server containment", () => {
 				API_SERVER_PORT: "8642",
 				API_SERVER_KEY: "ephemeral-api-key-for-test",
 				HERMES_HOME: "/home/hermes/.hermes",
+				HOME: "/home/hermes",
 				TELCLAUDE_INTERNAL_HOSTS: "telclaude",
 				NO_COLOR: "1",
 			});
@@ -54,6 +63,22 @@ describe("Hermes API-server containment", () => {
 				process.env.OPENAI_API_KEY = priorOpenAi;
 			}
 		}
+	});
+
+	it("defaults to the verified v0.15.1 image digest and rejects tags", () => {
+		expect(DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE).toBe(pinnedHermesImage);
+		expect(() =>
+			buildHermesApiServerLaunchPlan({
+				cwd: "/tmp/telclaude",
+				image: "nousresearch/hermes-agent:latest",
+			}),
+		).toThrow("Hermes API-server image must be pinned by sha256 digest");
+		expect(() =>
+			buildHermesApiServerLaunchPlan({
+				cwd: "/tmp/telclaude",
+				image: "nousresearch/hermes-agent:v2026.5.29@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
+			}),
+		).toThrow("Hermes API-server image must be pinned as repository@sha256:digest");
 	});
 
 	it("generates high-entropy launch keys per call", () => {
