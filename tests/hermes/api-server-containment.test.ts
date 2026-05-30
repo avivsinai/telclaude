@@ -14,8 +14,10 @@ describe("Hermes API-server containment", () => {
 
 	it("builds a contained Docker launch with a fresh ephemeral API auth key only in env", () => {
 		const priorOpenAi = process.env.OPENAI_API_KEY;
+		const priorDockerHost = process.env.DOCKER_HOST;
 		try {
 			process.env.OPENAI_API_KEY = "sk-process-env-must-not-leak";
+			process.env.DOCKER_HOST = "unix:///tmp/colima-test/docker.sock";
 			const plan = buildHermesApiServerLaunchPlan({
 				apiKey: "ephemeral-api-key-for-test",
 				cwd: "/tmp/telclaude",
@@ -38,9 +40,7 @@ describe("Hermes API-server containment", () => {
 			expect(plan.invocation.args).toContain("--read-only");
 			expect(plan.invocation.args).toContain("--tmpfs");
 			expect(plan.invocation.args).toContain("/tmp:size=128m,mode=1777,noexec");
-			expect(plan.invocation.args).toContain(
-				"/run:size=16m,uid=10000,gid=10000,mode=0755,noexec",
-			);
+			expect(plan.invocation.args).toContain("/run:size=16m,uid=10000,gid=10000,mode=0755,noexec");
 			expect(plan.invocation.args).toContain(
 				"/home/hermes:size=512m,uid=10000,gid=10000,mode=0700,noexec",
 			);
@@ -55,6 +55,7 @@ describe("Hermes API-server containment", () => {
 				API_SERVER_HOST: "0.0.0.0",
 				API_SERVER_PORT: "8642",
 				API_SERVER_KEY: "ephemeral-api-key-for-test",
+				DOCKER_HOST: "unix:///tmp/colima-test/docker.sock",
 				HERMES_HOME: "/home/hermes/.hermes",
 				HOME: "/home/hermes",
 				TELCLAUDE_INTERNAL_HOSTS: "telclaude",
@@ -62,6 +63,7 @@ describe("Hermes API-server containment", () => {
 			});
 			expect(plan.invocation.env).not.toHaveProperty("TELCLAUDE_FIREWALL");
 			expect(plan.invocation.env).not.toHaveProperty("TELCLAUDE_FIREWALL_SENTINEL");
+			expect(plan.invocation.args.join("\n")).not.toContain("DOCKER_HOST");
 			expect(JSON.stringify(plan.invocation.env)).not.toContain("sk-process-env-must-not-leak");
 			expect(findHermesApiServerLaunchSecretFindings(plan)).toEqual([]);
 		} finally {
@@ -69,6 +71,11 @@ describe("Hermes API-server containment", () => {
 				delete process.env.OPENAI_API_KEY;
 			} else {
 				process.env.OPENAI_API_KEY = priorOpenAi;
+			}
+			if (priorDockerHost === undefined) {
+				delete process.env.DOCKER_HOST;
+			} else {
+				process.env.DOCKER_HOST = priorDockerHost;
 			}
 		}
 	});
@@ -84,7 +91,8 @@ describe("Hermes API-server containment", () => {
 		expect(() =>
 			buildHermesApiServerLaunchPlan({
 				cwd: "/tmp/telclaude",
-				image: "nousresearch/hermes-agent:v2026.5.29@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
+				image:
+					"nousresearch/hermes-agent:v2026.5.29@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
 			}),
 		).toThrow("Hermes API-server image must be pinned as repository@sha256:digest");
 	});
