@@ -252,6 +252,8 @@ const InventoryQueueEvidenceSchema = z
 						backgroundJobs: z.number().int().min(0),
 						socialItems: z.number().int().min(0),
 						curatorItems: z.number().int().min(0),
+						pairingPendingRequests: z.number().int().min(0),
+						pairingActiveLockouts: z.number().int().min(0),
 					})
 					.strict(),
 			})
