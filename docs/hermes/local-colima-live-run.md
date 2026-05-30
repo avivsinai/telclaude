@@ -1,0 +1,341 @@
+# Hermes Local Colima Live-Run Playbook
+
+Status: prepared only. Do not start Colima or run `docker compose up` until Aviv explicitly gives the go for this machine.
+
+This playbook executes the contained Hermes private-runtime live run for the no-fork wrapper. It is intentionally local and operational: it records the commands, the expected evidence, and the places where the operator must choose whether live evidence becomes committed repo state or remains generated runtime proof.
+
+## Invariants
+
+- The committed default remains `TELCLAUDE_HERMES_PRIVATE_RUNTIME=0`.
+- The live run may set `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1` in the shell for this run only.
+- `TELCLAUDE_HERMES_API_SERVER_KEY` is generated for this compose-up and is not written to `docker/.env`.
+- The Hermes image is pinned by digest, not by tag:
+  `nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7`.
+- The dedicated Docker network `telclaude-hermes-relay` must be `Internal=true` and contain only `telclaude` and `tc-hermes-contained` during the production topology snapshot.
+- The contained Hermes runtime must start as uid `10000:10000`, with no added capabilities, `no-new-privileges`, read-only rootfs, tmpfs `/tmp`, and tmpfs `/home/hermes`.
+
+## 0. Shell Setup
+
+Run from the repo root:
+
+```bash
+cd /home/user/MyProjects/telclaude-hermes-wrapper-phase0
+export PATH="/opt/homebrew/opt/docker/bin:/opt/homebrew/bin:$PATH"
+export DOCKER_BIN="/opt/homebrew/opt/docker/bin/docker"
+
+export TELCLAUDE_HERMES_IMAGE="nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7"
+export TELCLAUDE_HERMES_IMAGE_TAG="nousresearch/hermes-agent:v2026.5.29"
+export TELCLAUDE_HERMES_PIN="0.15.1"
+export TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+export TELCLAUDE_HERMES_PRIVATE_RUNTIME=1
+export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1
+```
+
+Compose requires these base-stack values. For a local containment rehearsal without real accounts, use generated placeholders. For an operator smoke against real services, use the real local secret source instead.
+
+```bash
+export WORKSPACE_PATH="${WORKSPACE_PATH:-/home/user/MyProjects}"
+export TOTP_ENCRYPTION_KEY="${TOTP_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
+export VAULT_ENCRYPTION_KEY="${VAULT_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
+export ANTHROPIC_PROXY_TOKEN="${ANTHROPIC_PROXY_TOKEN:-local-probe-anthropic-proxy-token}"
+export TELEGRAM_RPC_AGENT_PRIVATE_KEY="${TELEGRAM_RPC_AGENT_PRIVATE_KEY:-local-probe-telegram-agent-private}"
+export TELEGRAM_RPC_AGENT_PUBLIC_KEY="${TELEGRAM_RPC_AGENT_PUBLIC_KEY:-local-probe-telegram-agent-public}"
+export TELEGRAM_RPC_RELAY_PRIVATE_KEY="${TELEGRAM_RPC_RELAY_PRIVATE_KEY:-local-probe-telegram-relay-private}"
+export TELEGRAM_RPC_RELAY_PUBLIC_KEY="${TELEGRAM_RPC_RELAY_PUBLIC_KEY:-local-probe-telegram-relay-public}"
+export SOCIAL_RPC_AGENT_PRIVATE_KEY="${SOCIAL_RPC_AGENT_PRIVATE_KEY:-local-probe-social-agent-private}"
+export SOCIAL_RPC_AGENT_PUBLIC_KEY="${SOCIAL_RPC_AGENT_PUBLIC_KEY:-local-probe-social-agent-public}"
+export SOCIAL_RPC_RELAY_PRIVATE_KEY="${SOCIAL_RPC_RELAY_PRIVATE_KEY:-local-probe-social-relay-private}"
+export SOCIAL_RPC_RELAY_PUBLIC_KEY="${SOCIAL_RPC_RELAY_PUBLIC_KEY:-local-probe-social-relay-public}"
+export TELCLAUDE_GIT_PROXY_SECRET="${TELCLAUDE_GIT_PROXY_SECRET:-local-probe-git-proxy-secret}"
+```
+
+## 1. Start Colima
+
+Only run this after the explicit go:
+
+```bash
+colima status || colima start --runtime docker --cpu 4 --memory 8 --disk 60
+docker context use colima
+docker version
+```
+
+Verify the published image digest before the stack uses it:
+
+```bash
+docker buildx imagetools inspect "$TELCLAUDE_HERMES_IMAGE_TAG"
+docker pull "$TELCLAUDE_HERMES_IMAGE"
+```
+
+Expected digest:
+
+```text
+sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7
+```
+
+## 2. Validate Compose
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  config --quiet
+```
+
+## 3. Stand Up The Local Stack
+
+This is the first command that actually starts the Hermes overlay:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  up -d telclaude tc-hermes-contained
+```
+
+Inspect the two relevant services:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  ps telclaude tc-hermes-contained
+
+docker inspect tc-hermes-contained --format '{{json .State.Health}}' | jq .
+docker logs --tail 120 tc-hermes-contained
+```
+
+The live-run blocker here is factual: if Hermes does not start with read-only rootfs plus only `/tmp` and `/home/hermes` tmpfs, add the smallest specific tmpfs mount needed. Do not relax to writable rootfs or add capabilities.
+
+## 4. Verify Network Topology
+
+The production topology snapshot must show exactly two containers on the internal network:
+
+```bash
+docker network inspect telclaude-hermes-relay --format '{{json .}}' \
+  | jq -e '
+      .Internal == true
+      and ([.Containers[]?.Name] | sort) == ["tc-hermes-contained", "telclaude"]
+    '
+```
+
+If this fails, stop. Do not run probes against a topology with extra peers.
+
+## 5. Probe Commands
+
+These commands are the evidence-generating commands. Use `--json` for machine-readable logs and keep stdout/stderr from the run in the operator notes.
+
+### 5.1 CLI Headless
+
+Use the local Hermes checkout pinned to `v2026.5.29` / `0.15.1` unless the operator chooses a different verified binary.
+
+```bash
+git -C /home/user/MyProjects/hermes-agent describe --tags --exact-match
+git -C /home/user/MyProjects/hermes-agent show v2026.5.29:pyproject.toml | rg -n '^version = "0.15.1"$'
+
+pnpm dev hermes probe execution.cli_headless \
+  --allow-run \
+  --json \
+  --hermes-bin /home/user/MyProjects/hermes-agent/hermes \
+  --hermes-home "$(mktemp -d /tmp/tc-hermes-cli.XXXXXX)" \
+  --cwd "$PWD" \
+  --timeout-ms 120000 \
+  --out artifacts/hermes/probes/execution-cli-headless.json
+```
+
+Expected green: exit code `0`, `status=pass`, `ran=true`, and evidence at `artifacts/hermes/probes/execution-cli-headless.json`.
+
+### 5.2 Approval Continuation
+
+```bash
+pnpm dev hermes probe execution.approval_continuation \
+  --allow-run \
+  --json \
+  --pin "$TELCLAUDE_HERMES_PIN" \
+  --out artifacts/hermes/probes/execution-approval-continuation.json
+```
+
+Expected green: exit code `0`, `status=pass`, fallback fixtures written next to the evidence, wrong-actor/stale/replay/mutated-decision denials proven.
+
+### 5.3 API Server Containment
+
+The API containment probe starts and removes its own `tc-hermes-contained` container. It cannot run while the compose-owned `tc-hermes-contained` container still exists on `telclaude-hermes-relay`, because the topology gate requires exactly the relay plus the probe container.
+
+After the production topology snapshot above, remove only the compose Hermes container and leave the relay running:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  rm -sf tc-hermes-contained
+```
+
+Then run the probe:
+
+```bash
+pnpm dev hermes probe execution.api_server_containment \
+  --allow-run \
+  --json \
+  --docker-bin "$DOCKER_BIN" \
+  --image "$TELCLAUDE_HERMES_IMAGE" \
+  --container-name tc-hermes-contained \
+  --network telclaude-hermes-relay \
+  --relay-container telclaude \
+  --relay-host telclaude \
+  --relay-url http://telclaude:8790/health \
+  --provider-url http://google-services:3002/v1/health \
+  --vault-socket /run/vault/vault.sock \
+  --model-url https://api.anthropic.com/v1/models \
+  --dns-url http://169.254.169.254/latest/meta-data/,http://10.0.0.1/,http://100.64.0.1/ \
+  --timeout-ms 120000 \
+  --out artifacts/hermes/probes/execution-api-server-containment.json
+```
+
+Expected green: all gates pass, including `lifecycle.started`, `readiness.health`, `readiness.capabilities`, `network.topology`, `network.relay_only`, and `network.tamper_resistant`. The runtime user is not a CLI flag; the command uses the code default `10000:10000` and the evidence should show non-root uid `10000`.
+
+Restore the compose Hermes service after the probe:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  up -d tc-hermes-contained
+```
+
+### 5.4 Network Probes
+
+Important: `telclaude hermes network-probes` measures the namespace where the command runs. A host run proves host networking only. For relay firewall evidence, run it inside the `telclaude` container and copy the produced artifacts back out.
+
+```bash
+docker exec telclaude mkdir -p /data/hermes/network
+
+docker exec telclaude telclaude hermes network-probes \
+  --allow-run \
+  --json \
+  --relay-url http://127.0.0.1:8790/health \
+  --provider-url http://google-services:3002/v1/health \
+  --vault-socket /run/vault/vault.sock \
+  --model-url https://api.anthropic.com/v1/models \
+  --dns-url http://169.254.169.254/latest/meta-data/,http://10.0.0.1/,http://100.64.0.1/ \
+  --firewall-sentinel /run/telclaude/firewall-active \
+  --timeout-ms 3000 \
+  --out /data/hermes/network-probes.json \
+  --evidence-dir /data/hermes/network
+
+docker cp telclaude:/data/hermes/network-probes.json docs/hermes/network-probes.json
+rm -rf artifacts/hermes/network
+docker cp telclaude:/data/hermes/network artifacts/hermes/network
+```
+
+Expected green: exit code `0`, all five required network probes pass, and every network evidence file includes a passing firewall sentinel attempt.
+
+### 5.5 Served MCP Containment
+
+This probe must target the relay-internal MCP HTTP endpoint. Do not publish the MCP port to the host to make this easier. Run the command in the relay container or another already-approved relay-internal namespace.
+
+Runtime inputs required before this command can be real:
+
+- `TC_MCP_ALLOWED_TOKEN`: a relay-issued `tc_mcp_conn_...` bearer token for the private authority.
+- `TC_MCP_FORGED_TOKEN`: an intentionally unregistered `tc_mcp_conn_...` token.
+- `TC_MCP_WRONG_CONNECTION_TOKEN`: a relay-issued token for a different registered connection.
+
+The current branch has the resolver/server code and probe command, but no committed operator CLI that prints these three live probe tokens. If the runtime cannot produce them through an approved relay-only path, stop and add that operator hook before claiming this probe is green.
+
+Command shape once the tokens exist:
+
+```bash
+docker exec telclaude telclaude hermes probe execution.served_mcp_containment \
+  --allow-run \
+  --json \
+  --mcp-url http://127.0.0.1:8793/mcp \
+  --mcp-auth "Authorization: Bearer ${TC_MCP_ALLOWED_TOKEN}" \
+  --mcp-forged-auth "Authorization: Bearer ${TC_MCP_FORGED_TOKEN}" \
+  --mcp-wrong-connection-auth "Authorization: Bearer ${TC_MCP_WRONG_CONNECTION_TOKEN}" \
+  --timeout-ms 30000 \
+  --out /data/hermes/execution-served-mcp-containment.json
+
+docker cp telclaude:/data/hermes/execution-served-mcp-containment.json \
+  artifacts/hermes/probes/execution-served-mcp-containment.json
+```
+
+Expected green: all required served-MCP properties pass, including exact tools list, empty resources/prompts/roots, sampling disabled, forged handle denied, wrong connection denied, cross-domain memory denied, out-of-scope provider/outbound denied, execute-without-ledger denied, malformed/unauthenticated/batch/prototype denial, and artifact redaction.
+
+## 6. Cutover Check
+
+`cutover-check` consumes docs/evidence files from the host checkout. Run it only after host-side files point at the live evidence paths chosen for this run:
+
+```bash
+pnpm dev hermes cutover-check \
+  --strict \
+  --dry-run \
+  --json \
+  --feature-probes docs/hermes/feature-probes.json \
+  --lockfile docs/hermes/hermes-compat.lock.json \
+  --network-probes docs/hermes/network-probes.json
+```
+
+Expected green: exit code `0`, `status=safe`, and all gates pass. If it fails only because placeholder docs still say `skip`, `fail`, `pending`, empty fixtures, no-fork not clean, or rollback not rehearsed, do not override the result. Update those artifacts from real evidence or keep the cutover blocked.
+
+## 7. Remaining Non-Probe Gates
+
+The five live probes are necessary, not sufficient. A green probe set does not authorize flipping `TELCLAUDE_HERMES_PRIVATE_RUNTIME` by itself.
+
+Before any flag flip, these non-probe gates also need real evidence:
+
+- Served-MCP token issuance: the live served-MCP probe needs a committed operator path to mint the allowed and wrong-connection `tc_mcp_conn_...` tokens. The current branch has resolver/server primitives, but no production token-issuance CLI or relay endpoint.
+- Workflow scope: `docs/hermes/cutover-scope.json` must name the included workflows and their required surfaces instead of the placeholder empty list.
+- Fixtures: `docs/hermes/fixture-results.json` must contain passing parity and negative fixture results for the workflows in scope.
+- Compatibility lockfile: `docs/hermes/hermes-compat.lock.json` must be regenerated from the real probe matrix and accepted evidence, with passing feature probes tied to the same Hermes pin.
+- No-fork proof: `docs/hermes/no-fork-proof.json` must prove the Hermes checkout stays clean/upstream rather than carrying wrapper changes as a fork.
+- Rollback rehearsal: `docs/hermes/rollback-rehearsal.json` must prove the operator can return traffic to the pre-Hermes path.
+- Decision log and queue ownership: unresolved decisions and pending operator queues must be closed or explicitly excluded by the cutover scope.
+
+Treat any placeholder `skip`, `fail`, `pending`, empty bundle, missing evidence file, stale lockfile digest, dirty no-fork proof, or failed rollback as a hard cutover block.
+
+## 8. Regenerate The Compatibility Lockfile Draft
+
+After evidence is accepted and `docs/hermes/feature-probes.json` reflects the live pass/fail status and evidence paths, regenerate a reviewable lockfile draft:
+
+```bash
+pnpm dev hermes compat-lock \
+  --dry-run \
+  --json \
+  --pin "$TELCLAUDE_HERMES_PIN" \
+  --feature-probes docs/hermes/feature-probes.json \
+  > artifacts/hermes/hermes-compat.lock.generated.json
+```
+
+Review the draft before replacing `docs/hermes/hermes-compat.lock.json`. There is no automatic write command by design; committing a lockfile update is an explicit evidence decision.
+
+## 9. Evidence Policy Decision
+
+Resolve this at live-run time before committing anything beyond this playbook.
+
+Option A: commit sanitized live evidence.
+
+- Pros: repeatable audit trail and cutover proof in git.
+- Cons: evidence may expose host/container metadata and requires redaction review.
+- Required before commit: inspect every artifact under `artifacts/hermes/**`, confirm no secrets, no tokens, no raw provider data, and no operator-sensitive paths beyond accepted local machine metadata.
+
+Option B: keep live evidence generated and untracked.
+
+- Pros: avoids committing machine-local artifacts.
+- Cons: cutover proof must be regenerated for every reviewer or release gate.
+- Required before cutover: document the exact run id, commit hash, command transcript, and artifact hashes outside git.
+
+Default for the first Colima run: keep `artifacts/` untracked until Aviv and Claude choose Option A or Option B.
+
+## 10. Cleanup
+
+When done:
+
+```bash
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.hermes.yml \
+  down
+
+unset TELCLAUDE_HERMES_API_SERVER_KEY
+unset TC_MCP_ALLOWED_TOKEN TC_MCP_FORGED_TOKEN TC_MCP_WRONG_CONNECTION_TOKEN
+```
+
+Do not remove Colima or Docker images as part of this playbook unless Aviv asks.
