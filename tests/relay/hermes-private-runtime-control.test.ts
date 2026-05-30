@@ -11,6 +11,8 @@ import { startCapabilityServer } from "../../src/relay/capabilities.js";
 const ORIGINAL_ENV = {
 	OPERATOR_RPC_AGENT_PRIVATE_KEY: process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY,
 	OPERATOR_RPC_AGENT_PUBLIC_KEY: process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY,
+	SOCIAL_RPC_AGENT_PRIVATE_KEY: process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY,
+	SOCIAL_RPC_AGENT_PUBLIC_KEY: process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY,
 	TELCLAUDE_HERMES_PRIVATE_RUNTIME: process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME,
 };
 
@@ -68,6 +70,17 @@ describe("relay Hermes private-runtime control surface", () => {
 				body: "{}",
 			});
 			expect(unauthenticated.status).toBe(401);
+
+			const socialKeys = generateKeyPair();
+			process.env.SOCIAL_RPC_AGENT_PRIVATE_KEY = socialKeys.privateKey;
+			process.env.SOCIAL_RPC_AGENT_PUBLIC_KEY = socialKeys.publicKey;
+			expect(
+				(await postWithScope(baseUrl, "/v1/hermes.private-runtime.status", {}, "social")).status,
+			).toBe(403);
+			expect(
+				(await postWithScope(baseUrl, "/v1/hermes.private-runtime.mode", { mode: "hermes" }, "social"))
+					.status,
+			).toBe(403);
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server.close((error) => (error ? reject(error) : resolve()));
@@ -116,12 +129,16 @@ describe("relay Hermes private-runtime control surface", () => {
 });
 
 function post(baseUrl: string, requestPath: string, body: unknown) {
+	return postWithScope(baseUrl, requestPath, body, "operator");
+}
+
+function postWithScope(baseUrl: string, requestPath: string, body: unknown, scope: string) {
 	const payload = JSON.stringify(body);
 	return fetch(`${baseUrl}${requestPath}`, {
 		method: "POST",
 		headers: {
 			"Content-Type": "application/json",
-			...buildInternalAuthHeaders("POST", requestPath, payload, { scope: "operator" }),
+			...buildInternalAuthHeaders("POST", requestPath, payload, { scope }),
 		},
 		body: payload,
 	});

@@ -334,6 +334,22 @@ Expected green: `passed=true`, `observedBeforeValue=1`,
 `observationSurface=relay.capabilities:/v1/hermes.private-runtime.status`,
 and `observedAfterControlSource=runtime-config`.
 
+The rehearsal intentionally leaves the durable mode at `legacy`. After the
+evidence file is copied to the host, re-enable Hermes through the same relay
+operator surface before the final cutover check and any real flag flip:
+
+```bash
+docker exec \
+  -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  telclaude telclaude hermes private-runtime set hermes --json
+
+docker exec \
+  -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  telclaude telclaude hermes private-runtime status --json
+```
+
 ## 7. Cutover Check
 
 `cutover-check` consumes docs/evidence files from the host checkout. Run it only after host-side files point at the live evidence paths chosen for this run:
