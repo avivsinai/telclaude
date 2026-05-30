@@ -44,6 +44,9 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain(
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		);
+		expect(compose).toMatch(
+			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-172\.29\.92\.10\}/,
+		);
 	});
 });
 
