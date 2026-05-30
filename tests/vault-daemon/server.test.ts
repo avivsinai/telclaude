@@ -1,8 +1,10 @@
+import { once } from "node:events";
 import fs from "node:fs";
+import { createConnection } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	CURATOR_PRODUCER_SIGNING_PREFIX,
 	GOOGLE_APPROVAL_SIGNING_PREFIX,
@@ -75,6 +77,52 @@ describe("vault daemon socket permissions", () => {
 			expect(mode).toBe(0o666);
 		} finally {
 			await handle.stop();
+		}
+	});
+
+	it("destroys connected clients without stop-time disconnect debug logs", async () => {
+		const debug = vi.fn();
+		const logger = {
+			debug,
+			error: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+		};
+
+		vi.resetModules();
+		vi.doMock("../../src/logging.js", () => ({
+			getChildLogger: () => logger,
+		}));
+
+		const { startServer: startServerWithMockedLogger } = await import(
+			"../../src/vault-daemon/server.js"
+		);
+		const { socketPath, vaultFilePath } = createTempPaths();
+		const handle = await startServerWithMockedLogger({
+			socketPath,
+			storeOptions: {
+				filePath: vaultFilePath,
+				encryptionKey: "test-vault-encryption-key-stop-race",
+			},
+		});
+		const socket = createConnection(socketPath);
+
+		try {
+			await once(socket, "connect");
+			debug.mockClear();
+
+			const closed = once(socket, "close");
+			await handle.stop();
+			await closed;
+
+			expect(socket.destroyed).toBe(true);
+			expect(debug.mock.calls.map((call) => call[1])).not.toContain("client disconnected");
+			expect(debug.mock.calls.map((call) => call[1])).not.toContain("socket error");
+		} finally {
+			socket.destroy();
+			if (handle.isRunning()) await handle.stop();
+			vi.doUnmock("../../src/logging.js");
+			vi.resetModules();
 		}
 	});
 });
