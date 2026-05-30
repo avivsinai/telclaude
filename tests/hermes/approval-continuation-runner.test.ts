@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { evaluateApprovalContinuationEvidence } from "../../src/hermes/approval-continuation.js";
 import {
 	runHermesApprovalContinuationProbe,
@@ -13,6 +13,8 @@ const cleanupDirs = new Set<string>();
 const hermes = { version: "0.15.1" };
 
 afterEach(() => {
+	vi.doUnmock("../../src/hermes/mcp/approval-token.js");
+	vi.resetModules();
 	for (const dir of cleanupDirs) {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
@@ -67,6 +69,8 @@ describe("Hermes approval-continuation live runner", () => {
 			"pass",
 			"pass",
 		]);
+		const recordedJtis = readRecordedJtis(tempDir);
+		const recordedJtiCounts = readRecordedJtiCounts(tempDir);
 		expect(observations).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "wrong_actor_denied", status: "pass" }),
@@ -75,7 +79,7 @@ describe("Hermes approval-continuation live runner", () => {
 				expect.objectContaining({ name: "mutated_decision_denied", status: "pass" }),
 			]),
 		);
-		expect(readRecordedJtis(tempDir)).toEqual(
+		expect(recordedJtis).toEqual(
 			expect.arrayContaining([
 				"jti-provider-fixture",
 				"jti-outbound-fixture",
@@ -86,9 +90,77 @@ describe("Hermes approval-continuation live runner", () => {
 				"jti-mutated-decision",
 			]),
 		);
+		expect(recordedJtis).not.toContain("jti-stale");
+		expect(recordedJtiCounts["jti-replay"]).toBe(1);
+		expect(recordedJtiCounts["jti-mutated-decision"]).toBe(1);
+		expect(recordedJtiCounts["jti-stale"]).toBeUndefined();
 		expect(serialized).not.toContain("v1.");
 		expect(serialized).not.toContain("approvalToken");
 		expect(serialized).not.toContain("signature");
+	});
+
+	it("fails closed when replay verification stops rejecting a reused JTI", async () => {
+		const tempDir = tempPath("approval-continuation-runner-");
+
+		vi.resetModules();
+		vi.doMock("../../src/hermes/mcp/approval-token.js", async (importOriginal) => {
+			const actual =
+				await importOriginal<typeof import("../../src/hermes/mcp/approval-token.js")>();
+			return {
+				...actual,
+				createTelclaudeMcpSideEffectApprovalVerifier: (
+					options: Parameters<typeof actual.createTelclaudeMcpSideEffectApprovalVerifier>[0],
+				) => {
+					const verify = actual.createTelclaudeMcpSideEffectApprovalVerifier(options);
+					return async (...args: Parameters<typeof verify>) => {
+						const result = await verify(...args);
+						if (!result.ok && result.code === "approval_replayed") {
+							return { ok: true, approvalId: "broken-replay-accepted" };
+						}
+						return result;
+					};
+				},
+			};
+		});
+
+		const { runHermesApprovalContinuationProbe: runWithBrokenVerifier } = await import(
+			"../../src/hermes/approval-continuation-runner.js"
+		);
+		const run = await runWithBrokenVerifier({
+			allowRun: true,
+			hermes,
+			jtiDataDir: tempDir,
+		});
+		const observations = run.fixtures.flatMap((fixture) => fixture.observations);
+		const replayObservation = observations.find(
+			(observation) => observation.name === "replay_denied",
+		);
+		const report = evaluateApprovalContinuationEvidence(run.evidence);
+
+		expect(run.status).toBe("fail");
+		expect(run.evidence?.native).toMatchObject({
+			wrong_actor_denied: true,
+			stale_request_denied: true,
+			replay_denied: false,
+			mutated_decision_denied: true,
+		});
+		expect(run.evidence?.fallback?.fixtures.map((fixture) => fixture.status)).toEqual([
+			"pass",
+			"pass",
+			"pass",
+			"pass",
+		]);
+		expect(replayObservation).toMatchObject({ name: "replay_denied", status: "fail" });
+		expect(replayObservation?.detail).toContain("expected approval_replayed");
+		expect(replayObservation?.detail).toContain("broken-replay-accepted");
+		expect(report).toMatchObject({
+			status: "fail",
+			mode: "blocked",
+			productionEnable: false,
+		});
+		expect(
+			report.gates.find((gate) => gate.name === "approvalContinuation.replayDefenses")?.detail,
+		).toContain("approval replay denial is unproven");
 	});
 
 	it("writes the existing approval-continuation evidence schema and fixture artifacts", async () => {
@@ -132,6 +204,22 @@ function readRecordedJtis(dataDir: string): string[] {
 			.prepare("SELECT jti FROM used_hermes_mcp_side_effect_approval_tokens ORDER BY jti")
 			.all() as Array<{ jti: string }>;
 		return rows.map((row) => row.jti);
+	} finally {
+		db.close();
+	}
+}
+
+function readRecordedJtiCounts(dataDir: string): Record<string, number> {
+	const db = new Database(path.join(dataDir, "jti", "hermes_mcp_side_effect_approval_jti.sqlite"), {
+		readonly: true,
+	});
+	try {
+		const rows = db
+			.prepare(
+				"SELECT jti, COUNT(*) as count FROM used_hermes_mcp_side_effect_approval_tokens GROUP BY jti",
+			)
+			.all() as Array<{ jti: string; count: number }>;
+		return Object.fromEntries(rows.map((row) => [row.jti, row.count]));
 	} finally {
 		db.close();
 	}

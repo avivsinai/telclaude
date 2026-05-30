@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	type ApprovalContinuationEvidence,
 	evaluateApprovalContinuationEvidence,
 	REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS,
 } from "../../src/hermes/approval-continuation.js";
@@ -100,27 +101,18 @@ describe("Hermes approval-continuation evidence", () => {
 		).toBe("pass");
 	});
 
-	it("blocks fallback production enablement when replay defenses are unproven", () => {
+	it.each([
+		["wrong_actor_denied", "wrong actor denial is unproven"],
+		["stale_request_denied", "stale request denial is unproven"],
+		["replay_denied", "approval replay denial is unproven"],
+		["mutated_decision_denied", "mutated decision denial is unproven"],
+	] as const)("blocks production enablement when %s is false in isolation", (defenseFlag, expectedDetail) => {
+		const evidence = passingApprovalContinuationEvidence();
 		const report = evaluateApprovalContinuationEvidence({
-			schemaVersion: 1,
-			hermes,
+			...evidence,
 			native: {
-				events_wait: false,
-				permissions_list_open: false,
-				permissions_respond: false,
-				responds_to_blocked_run: false,
-				wrong_actor_denied: true,
-				stale_request_denied: true,
-				replay_denied: false,
-				mutated_decision_denied: true,
-			},
-			fallback: {
-				strategy: "cross_turn_prepare_approve_execute",
-				fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
-					id,
-					status: "pass",
-					evidence_path: `artifacts/hermes/approval/${id}.json`,
-				})),
+				...evidence.native,
+				[defenseFlag]: false,
 			},
 		});
 
@@ -129,12 +121,15 @@ describe("Hermes approval-continuation evidence", () => {
 			mode: "blocked",
 			productionEnable: false,
 		});
+		expect(report.gates.find((gate) => gate.name === "approvalContinuation.native")?.status).toBe(
+			"pass",
+		);
 		expect(
 			report.gates.find((gate) => gate.name === "approvalContinuation.crossTurnFallback")?.status,
 		).toBe("pass");
 		expect(
 			report.gates.find((gate) => gate.name === "approvalContinuation.replayDefenses")?.detail,
-		).toContain("approval replay denial is unproven");
+		).toContain(expectedDetail);
 	});
 
 	it("keeps fallback blocked until every required workflow fixture passes", () => {
@@ -171,3 +166,28 @@ describe("Hermes approval-continuation evidence", () => {
 		).toContain(`fallback fixture ${firstFixture} status is fail`);
 	});
 });
+
+function passingApprovalContinuationEvidence(): ApprovalContinuationEvidence {
+	return {
+		schemaVersion: 1,
+		hermes,
+		native: {
+			events_wait: true,
+			permissions_list_open: true,
+			permissions_respond: true,
+			responds_to_blocked_run: true,
+			wrong_actor_denied: true,
+			stale_request_denied: true,
+			replay_denied: true,
+			mutated_decision_denied: true,
+		},
+		fallback: {
+			strategy: "cross_turn_prepare_approve_execute",
+			fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
+				id,
+				status: "pass",
+				evidence_path: `artifacts/hermes/approval/${id}.json`,
+			})),
+		},
+	};
+}
