@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
+	collectFeatureProbeEvidence,
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
@@ -343,6 +344,76 @@ function writeFixtureResults() {
 	return { schemaVersion: 1 as const, results };
 }
 
+function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
+	return {
+		schemaVersion: "telclaude.hermes.model-relay.v1",
+		probeId: "model.relay",
+		status: "pass",
+		ran: true,
+		summary: "Hermes model relay evidence passed",
+		generatedAt: "2026-05-30T00:00:00.000Z",
+		gates: [
+			{
+				name: "modelRelay.allowed",
+				status: "pass",
+				detail: "operator allowed live model-relay evidence",
+			},
+			{
+				name: "firewall.sentinel",
+				status: "pass",
+				detail: "firewall sentinel is present",
+			},
+			{
+				name: "modelRelay.origin",
+				status: "pass",
+				detail:
+					"model-relay evidence originated from tc-hermes-contained at the expected peer address",
+			},
+			{
+				name: "relay.reachable",
+				status: "pass",
+				detail: "model relay endpoint reached with HTTP status 204",
+			},
+			{
+				name: "directModel.denied",
+				status: "pass",
+				detail: "direct model-provider egress denied",
+			},
+			{
+				name: "profile.noRawModelCredentials",
+				status: "pass",
+				detail: "scanned profile files contain no raw model credentials",
+			},
+			{
+				name: "profile.noDirectModelHosts",
+				status: "pass",
+				detail: "scanned profile files contain no direct model hosts",
+			},
+			{
+				name: "profile.scanComplete",
+				status: "pass",
+				detail: "profile scan covered all profile files",
+			},
+		],
+		origin: {
+			kind: "contained-peer",
+			containerName: "tc-hermes-contained",
+			observedPeerAddress: "172.29.92.11",
+			observedPeerSource: "server-peer-echo",
+			expectedPeerAddress: "172.29.92.11",
+			expectedPeerSource: "configured-contained-ip",
+			detail: "model relay peer origin was observed by the relay endpoint",
+		},
+		observation: {
+			relayUrl: "http://telclaude:8790/v1/models",
+			directModelUrl: "https://api.anthropic.com/v1/models",
+			profileDir: "/home/hermes/.hermes",
+			scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
+		},
+		...overrides,
+	};
+}
+
 function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 	const noForkProof = writeNoForkProof();
 	return {
@@ -386,6 +457,56 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 		networkProbes,
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: writeRollbackRehearsal(),
+	};
+}
+
+function modelRelayCutoverBundle(evidencePath: string): CutoverInputBundle {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+	const matrix = {
+		schemaVersion: 1 as const,
+		probes: [
+			{
+				surface_id: "model.relay",
+				hermes_pin: hermesPin,
+				documented_seam: "Hermes model provider configuration is relay-owned",
+				probe_command: "pnpm dev hermes probe model.relay --allow-run",
+				expected_result: "Model traffic reaches only the Telclaude relay",
+				negative_probe: "Direct model provider egress and writable profile overrides fail",
+				evidence_path: evidencePath,
+				lockfile_key: "featureProbes.model.relay",
+				security_scope: "model-relay" as const,
+				approval_equivalent: false,
+				failure_outcome: "disable" as const,
+				status: "pass" as const,
+			},
+		],
+	};
+	const base = cutoverBundle(writeNetworkBundle(tempDir));
+	return {
+		...base,
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["model.relay"],
+				},
+			],
+		},
+		featureProbeMatrix: matrix,
+		featureProbeEvidence: collectFeatureProbeEvidence(matrix),
+		lockfile: {
+			...base.lockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(matrix),
+			featureProbes: [
+				{
+					surface_id: "model.relay",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: { "model.relay": `sha256:${"c".repeat(64)}` },
+		},
 	};
 }
 
@@ -586,5 +707,86 @@ describe("Hermes cutover network evidence validation", () => {
 		);
 		expect(firstDetail).toContain("[REDACTED:anthropic_api_key]");
 		expect(firstDetail).not.toContain("sk-ant-1234567890abcdef");
+	});
+});
+
+describe("Hermes cutover model-relay evidence validation", () => {
+	it("passes the model-relay feature probe only after reopening the observed evidence file", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(evidencePath, modelRelayEvidence());
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails when model-relay evidence omits a required live gate", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				gates: modelRelayEvidence().gates.filter((gate) => gate.name !== "directModel.denied"),
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"gate directModel.denied is missing",
+		);
+	});
+
+	it("fails when model-relay evidence used a fake direct-model URL", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				observation: {
+					relayUrl: "http://telclaude:8790/v1/models",
+					directModelUrl: "http://127.0.0.1:9/v1/models",
+					profileDir: "/home/hermes/.hermes",
+					scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"observation.directModelUrl is not a recognized direct model-provider URL",
+		);
+	});
+
+	it("fails when model-relay evidence omits firewall or contained-origin proof", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				gates: modelRelayEvidence().gates.filter(
+					(gate) => gate.name !== "firewall.sentinel" && gate.name !== "modelRelay.origin",
+				),
+				origin: {
+					kind: "unknown",
+					detail: "model relay response did not include a server-observed peer header",
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		const detail = report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail;
+		expect(detail).toContain("gate firewall.sentinel is missing");
+		expect(detail).toContain("gate modelRelay.origin is missing");
+		expect(detail).toContain("origin is not a server-observed tc-hermes-contained peer");
 	});
 });

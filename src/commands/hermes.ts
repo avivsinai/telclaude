@@ -56,6 +56,11 @@ import {
 	type TelclaudeLiveMcpRuntimeProbeTokenInput,
 } from "../hermes/mcp/live-runtime.js";
 import {
+	DEFAULT_MODEL_RELAY_EVIDENCE_PATH,
+	runHermesModelRelayProbe,
+	writeHermesModelRelayEvidence,
+} from "../hermes/model-relay.js";
+import {
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
@@ -112,6 +117,8 @@ type ProbeOption = JsonOption & {
 	dnsUrl?: string;
 	dockerBin?: string;
 	evidence: string;
+	expectedPeerAddress?: string;
+	firewallSentinel?: string;
 	hermesBin?: string;
 	hermesHome?: string;
 	mcpAuth?: string;
@@ -121,11 +128,13 @@ type ProbeOption = JsonOption & {
 	mcpWrongConnectionAuth?: string;
 	image?: string;
 	modelUrl?: string;
+	profileDir?: string;
 	network?: string;
 	out?: string;
 	prompt?: string;
 	providerUrl?: string;
 	relayContainer?: string;
+	relayPeerAddress?: string;
 	relayHost?: string;
 	relayUrl?: string;
 	timeoutMs?: string;
@@ -835,7 +844,7 @@ export function registerHermesCommand(program: Command): void {
 			"--mcp-wrong-connection-auth <header>",
 			"Wrong-connection served MCP context header as 'Name: value'",
 		)
-		.option("--container-name <name>", "Hermes API-server container name")
+		.option("--container-name <name>", "Hermes contained runtime container name")
 		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
 		.option("--api-port <port>", "Hermes API-server container port")
 		.option("--relay-host <host>", "Relay host allowed by the contained runtime topology")
@@ -850,6 +859,19 @@ export function registerHermesCommand(program: Command): void {
 		.option("--provider-url <csv>", "Direct provider URL(s) that must be denied")
 		.option("--vault-socket <path>", "Vault socket path that must be absent")
 		.option("--model-url <url>", "Direct model-provider URL that must be denied")
+		.option("--profile-dir <dir>", "Generated Hermes profile directory to scan for model secrets")
+		.option(
+			"--firewall-sentinel <path>",
+			"Firewall sentinel path required for production model-relay evidence",
+		)
+		.option(
+			"--expected-peer-address <ip>",
+			"Expected contained Hermes peer IP echoed by the relay endpoint",
+		)
+		.option(
+			"--relay-peer-address <ip>",
+			"Relay namespace peer IP; matching it marks evidence as relay-self smoke",
+		)
 		.option("--dns-url <csv>", "DNS/private egress URL(s) that must be denied")
 		.option(
 			"--evidence <path>",
@@ -1052,6 +1074,82 @@ export function registerHermesCommand(program: Command): void {
 					);
 					for (const check of report.checks) {
 						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+				return;
+			}
+
+			if (surface === "model.relay") {
+				let report: Awaited<ReturnType<typeof runHermesModelRelayProbe>>;
+				let outPath: string | undefined;
+				try {
+					report = await runHermesModelRelayProbe({
+						allowRun: options.allowRun === true,
+						relayUrl:
+							options.relayUrl?.trim() ||
+							process.env.TELCLAUDE_HERMES_MODEL_RELAY_URL?.trim() ||
+							undefined,
+						directModelUrl:
+							options.modelUrl?.trim() ||
+							process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
+							DEFAULT_MODEL_PROVIDER_PROBE_URL,
+						profileDir:
+							options.profileDir?.trim() ||
+							process.env.TELCLAUDE_HERMES_PROFILE_DIR?.trim() ||
+							undefined,
+						firewallSentinelPath:
+							options.firewallSentinel?.trim() ||
+							process.env.TELCLAUDE_HERMES_FIREWALL_SENTINEL?.trim() ||
+							DEFAULT_FIREWALL_SENTINEL_PATH,
+						containerName:
+							options.containerName?.trim() ||
+							process.env.TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME?.trim() ||
+							undefined,
+						expectedPeerAddress:
+							options.expectedPeerAddress?.trim() ||
+							process.env.TELCLAUDE_HERMES_CONTAINED_IP?.trim() ||
+							undefined,
+						relayPeerAddress:
+							options.relayPeerAddress?.trim() ||
+							process.env.TELCLAUDE_HERMES_RELAY_IP?.trim() ||
+							undefined,
+						timeoutMs: parseTimeoutMs(options.timeoutMs),
+					});
+					if (options.allowRun === true && report.status !== "pending") {
+						outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_MODEL_RELAY_EVIDENCE_PATH);
+						writeHermesModelRelayEvidence(report, outPath);
+					}
+				} catch (error) {
+					report = {
+						schemaVersion: "telclaude.hermes.model-relay.v1",
+						probeId: "model.relay",
+						status: "fail",
+						ran: false,
+						generatedAt: new Date().toISOString(),
+						summary: error instanceof Error ? error.message : String(error),
+						origin: {
+							kind: "unknown",
+							detail: "model-relay probe failed before origin observation",
+						},
+						gates: [
+							{
+								name: "modelRelay.exception",
+								status: "fail",
+								detail: error instanceof Error ? error.message : String(error),
+							},
+						],
+					};
+				}
+
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} model.relay: ${report.summary}`);
+					for (const gate of report.gates) {
+						console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
 					}
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}

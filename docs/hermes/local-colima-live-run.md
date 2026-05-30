@@ -246,7 +246,50 @@ docker cp telclaude:/data/hermes/network artifacts/hermes/network
 
 Expected green: exit code `0`, all five required network probes pass, and every network evidence file includes a passing firewall sentinel attempt.
 
-### 5.5 Served MCP Containment
+### 5.5 Model Relay
+
+The model-relay probe must run from the same namespace and generated profile
+that production Hermes uses for model calls. A host-side run proves only host
+networking and is not production evidence.
+
+The relay model endpoint used by this probe must echo the source peer IP in
+`x-telclaude-model-relay-observed-peer-address`. Do not count self-declared
+container or peer flags as proof; the cutover gate accepts only a server-observed
+peer address matching `TELCLAUDE_HERMES_CONTAINED_IP`.
+
+Production command shape once a contained-peer probe runner exists:
+
+```bash
+<contained-peer-runner> telclaude hermes probe model.relay \
+  --allow-run \
+  --json \
+  --relay-url http://telclaude:8790/v1/models \
+  --model-url https://api.anthropic.com/v1/models \
+  --profile-dir /home/hermes/.hermes \
+  --firewall-sentinel /run/telclaude/firewall-active \
+  --container-name tc-hermes-contained \
+  --expected-peer-address "$TELCLAUDE_HERMES_CONTAINED_IP" \
+  --relay-peer-address "$TELCLAUDE_HERMES_RELAY_IP" \
+  --timeout-ms 3000 \
+  --out /data/hermes/model-relay.json
+```
+
+Copy accepted evidence back to the host checkout:
+
+```bash
+docker cp tc-hermes-contained:/data/hermes/model-relay.json artifacts/hermes/probes/model-relay.json
+```
+
+Expected green: exit code `0`, `status=pass`, firewall sentinel present, relay
+endpoint reachable, origin gate reports `tc-hermes-contained` with a
+server-observed peer address equal to `TELCLAUDE_HERMES_CONTAINED_IP`, direct
+model-provider egress denied, and scanned profile files contain no raw model
+credentials or direct model-provider hosts. The profile scan must be complete:
+unsupported extensions, symlinks, files above the scan cap, or scan-limit skips
+fail the evidence instead of proving absence. Do not count this proof unless it
+was produced from the contained Hermes runtime namespace.
+
+### 5.6 Served MCP Containment
 
 This probe must target the relay-internal MCP HTTP endpoint. Do not publish the
 MCP port to the host to make this easier. The production cutover evidence must
@@ -374,7 +417,7 @@ Expected green: exit code `0`, `status=safe`, and all gates pass. If it fails on
 
 ## 8. Remaining Non-Probe Gates
 
-The five live probes are necessary, not sufficient. A green probe set does not authorize flipping `TELCLAUDE_HERMES_PRIVATE_RUNTIME` by itself.
+The live probes are necessary, not sufficient. A green probe set does not authorize flipping `TELCLAUDE_HERMES_PRIVATE_RUNTIME` by itself.
 
 Before any flag flip, these non-probe gates also need real evidence:
 

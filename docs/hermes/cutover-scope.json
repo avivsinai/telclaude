@@ -21,7 +21,8 @@
         "execution.cli_headless",
         "execution.approval_continuation",
         "execution.api_server_containment",
-        "execution.served_mcp_containment"
+        "execution.served_mcp_containment",
+        "model.relay"
       ],
       "unresolved_decision_ids": []
     }
