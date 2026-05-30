@@ -45,6 +45,12 @@ services:
     container_name: tc-hermes-contained
     entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]
     command: ["gateway", "run"]
+    extra_hosts:
+      - "api.anthropic.com:192.0.2.1"
+      - "api.openai.com:192.0.2.1"
+      - "generativelanguage.googleapis.com:192.0.2.1"
+      - "openrouter.ai:192.0.2.1"
+      - "api.x.ai:192.0.2.1"
     environment:
       - API_SERVER_ENABLED=true
       - API_SERVER_HOST=0.0.0.0

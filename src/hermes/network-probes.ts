@@ -4,6 +4,7 @@ import { cachedDNSLookup, isBlockedIP, isNonOverridableBlock } from "../sandbox/
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	DEFAULT_NETWORK_PROBES_PATH,
+	type NETWORK_PROBE_POSTURES,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	resolveHermesArtifactPath,
@@ -25,6 +26,7 @@ export const NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION = "telclaude.hermes.network-p
 type NetworkProbeId = (typeof REQUIRED_CUTOVER_NETWORK_PROBE_IDS)[number];
 
 type NetworkProbeStatus = "pass" | "fail" | "pending";
+export type NetworkProbePosture = (typeof NETWORK_PROBE_POSTURES)[number];
 
 type NetworkProbeAttempt = {
 	name: string;
@@ -44,6 +46,7 @@ type NetworkProbeAttempt = {
 export type NetworkProbeEvidence = {
 	schemaVersion: typeof NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION;
 	id: NetworkProbeId;
+	posture: NetworkProbePosture;
 	status: NetworkProbeStatus;
 	ran: boolean;
 	summary: string;
@@ -54,6 +57,7 @@ export type NetworkProbeEvidence = {
 
 export type NetworkProbeRunnerReport = {
 	schemaVersion: "telclaude.hermes.network-probe-run.v1";
+	posture: NetworkProbePosture;
 	status: NetworkProbeStatus;
 	ran: boolean;
 	summary: string;
@@ -65,6 +69,7 @@ export type NetworkProbeRunnerReport = {
 
 export type NetworkProbeRunnerOptions = {
 	allowRun: boolean;
+	posture?: NetworkProbePosture;
 	relayUrl?: string;
 	providerUrls: string[];
 	vaultUrl?: string;
@@ -94,11 +99,13 @@ const POLICY_DENIAL_HEADER = "x-telclaude-network-policy";
 export async function runHermesNetworkProbes(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeRunnerReport> {
+	const posture = options.posture ?? "agent-iptables";
 	if (!options.allowRun) {
 		const evidence = REQUIRED_CUTOVER_NETWORK_PROBE_IDS.map((id) =>
-			pendingNetworkProbeEvidence(id, evidencePathFor(id), options.now),
+			pendingNetworkProbeEvidence(id, evidencePathFor(id), posture, options.now),
 		);
 		return networkProbeReport({
+			posture,
 			status: "pending",
 			ran: false,
 			summary: "Hermes network probes require --allow-run",
@@ -115,6 +122,7 @@ export async function runHermesNetworkProbes(
 	]);
 	const status = evidence.every((probe) => probe.status === "pass") ? "pass" : "fail";
 	return networkProbeReport({
+		posture,
 		status,
 		ran: true,
 		summary:
@@ -150,6 +158,7 @@ export function writeHermesNetworkProbeArtifacts(
 }
 
 function networkProbeReport(input: {
+	posture: NetworkProbePosture;
 	status: NetworkProbeStatus;
 	ran: boolean;
 	summary: string;
@@ -157,6 +166,7 @@ function networkProbeReport(input: {
 }): NetworkProbeRunnerReport {
 	return {
 		schemaVersion: "telclaude.hermes.network-probe-run.v1",
+		posture: input.posture,
 		status: input.status,
 		ran: input.ran,
 		summary: input.summary,
@@ -180,56 +190,56 @@ async function runDirectProviderDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const attempts = [
-		firewallSentinelAttempt(options.firewallSentinelPath),
+		...boundaryProofAttempts(options),
 		...(options.providerUrls.length === 0
 			? [configurationAttempt("providerUrls", "TELCLAUDE_HERMES_NETWORK_PROVIDER_URL")]
 			: await Promise.all(
 					options.providerUrls.map((url) => attemptHttpDenied("provider", url, options.timeoutMs)),
 				)),
 	];
-	return networkProbeEvidence("network.direct-provider-denied", attempts, options.now);
+	return networkProbeEvidence("network.direct-provider-denied", attempts, options);
 }
 
 async function runRelayControlAllowed(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const attempts = [
-		firewallSentinelAttempt(options.firewallSentinelPath),
+		...boundaryProofAttempts(options),
 		options.relayUrl
 			? await attemptHttpAllowed("relay-control", options.relayUrl, options.timeoutMs)
 			: configurationAttempt("relayUrl", "TELCLAUDE_HERMES_NETWORK_RELAY_URL"),
 	];
-	return networkProbeEvidence("network.relay-control-allowed", attempts, options.now);
+	return networkProbeEvidence("network.relay-control-allowed", attempts, options);
 }
 
 async function runDirectVaultDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const attempts = [
-		firewallSentinelAttempt(options.firewallSentinelPath),
+		...boundaryProofAttempts(options),
 		attemptUnixSocketAbsent("vault-socket", options.vaultSocketPath),
 		...(options.vaultUrl
 			? [await attemptHttpDenied("vault-url", options.vaultUrl, options.timeoutMs)]
 			: []),
 	];
-	return networkProbeEvidence("network.direct-vault-denied", attempts, options.now);
+	return networkProbeEvidence("network.direct-vault-denied", attempts, options);
 }
 
 async function runDirectModelProviderDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const attempts = [
-		firewallSentinelAttempt(options.firewallSentinelPath),
+		...boundaryProofAttempts(options),
 		await attemptHttpDenied("model-provider", options.modelProviderUrl, options.timeoutMs),
 	];
-	return networkProbeEvidence("network.direct-model-provider-denied", attempts, options.now);
+	return networkProbeEvidence("network.direct-model-provider-denied", attempts, options);
 }
 
 async function runDnsExfilDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
 	const attempts = [
-		firewallSentinelAttempt(options.firewallSentinelPath),
+		...boundaryProofAttempts(options),
 		...(options.dnsExfilUrls.length === 0
 			? [configurationAttempt("dnsExfilUrls", "TELCLAUDE_HERMES_NETWORK_DNS_URL")]
 			: await Promise.all(
@@ -238,7 +248,12 @@ async function runDnsExfilDenied(
 					),
 				)),
 	];
-	return networkProbeEvidence("network.dns-exfil-denied", attempts, options.now);
+	return networkProbeEvidence("network.dns-exfil-denied", attempts, options);
+}
+
+function boundaryProofAttempts(options: NetworkProbeRunnerOptions): NetworkProbeAttempt[] {
+	if ((options.posture ?? "agent-iptables") === "contained-internal") return [];
+	return [firewallSentinelAttempt(options.firewallSentinelPath)];
 }
 
 function firewallSentinelAttempt(sentinelPath: string): NetworkProbeAttempt {
@@ -473,9 +488,10 @@ async function attemptDnsGuardDenied(
 function networkProbeEvidence(
 	id: NetworkProbeId,
 	attempts: NetworkProbeAttempt[],
-	now = new Date(),
+	options: NetworkProbeRunnerOptions,
 ): NetworkProbeEvidence {
 	const status = attempts.every((attempt) => attempt.status === "pass") ? "pass" : "fail";
+	const posture = options.posture ?? "agent-iptables";
 	const passSummary =
 		id === "network.relay-control-allowed"
 			? `${id} observed expected relay reachability`
@@ -483,13 +499,14 @@ function networkProbeEvidence(
 	return {
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 		id,
+		posture,
 		status,
 		ran: true,
 		summary:
 			status === "pass"
 				? passSummary
 				: `${id} observed unsafe network reachability or missing proof`,
-		generatedAt: now.toISOString(),
+		generatedAt: (options.now ?? new Date()).toISOString(),
 		evidence_path: evidencePathFor(id),
 		attempts,
 	};
@@ -498,11 +515,13 @@ function networkProbeEvidence(
 function pendingNetworkProbeEvidence(
 	id: NetworkProbeId,
 	evidencePath: string,
+	posture: NetworkProbePosture,
 	now = new Date(),
 ): NetworkProbeEvidence {
 	return {
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 		id,
+		posture,
 		status: "pending",
 		ran: false,
 		summary: "network probe requires --allow-run",
