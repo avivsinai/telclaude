@@ -986,8 +986,10 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
 			observedPeerAddress: "172.29.92.11",
+			observedPeerSource: "server-peer-echo",
 			expectedPeerAddress: "172.29.92.11",
-			detail: "probe originated from the contained Hermes peer",
+			expectedPeerSource: "configured-contained-ip",
+			detail: "probe peer origin was observed by live MCP server",
 		},
 		negativeControls: {
 			forgedAuthorityDenied: true,
@@ -2896,6 +2898,34 @@ sleep 5
 		});
 	});
 
+	it("fails the served-MCP cutover gate when contained-peer origin is only operator-typed", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
+		const evidencePath = path.join(tempDir, "operator-typed-served-mcp.json");
+		writeJson(
+			evidencePath,
+			servedMcpContainmentEvidence({
+				origin: {
+					kind: "contained-peer",
+					containerName: "tc-hermes-contained",
+					observedPeerAddress: "172.29.92.11",
+					expectedPeerAddress: "172.29.92.11",
+					detail: "operator declared contained peer origin",
+				},
+			}),
+		);
+
+		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("server-observed contained peer IP"),
+		});
+	});
+
 	it("fails the served-MCP cutover gate when evidence is relay-self smoke only", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-served-mcp-"));
 		const evidencePath = path.join(tempDir, "relay-self-served-mcp.json");
@@ -2906,8 +2936,10 @@ sleep 5
 					kind: "relay-self-smoke",
 					containerName: "telclaude",
 					observedPeerAddress: "172.29.92.10",
+					observedPeerSource: "server-peer-echo",
 					expectedPeerAddress: "172.29.92.11",
-					detail: "probe originated from relay namespace",
+					expectedPeerSource: "configured-contained-ip",
+					detail: "probe peer origin matched relay namespace",
 				},
 			}),
 		);

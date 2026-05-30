@@ -9,9 +9,6 @@ import type { TelclaudeLiveMcpConnectionContext } from "./live-server.js";
 
 export const TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX = "tc_mcp_conn_";
 export const DEFAULT_LIVE_MCP_CONNECTION_TTL_MS = 15 * 60 * 1_000;
-export const TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS: unique symbol = Symbol(
-	"telclaude.liveMcp.probeModePeerBypass",
-);
 
 export type TelclaudeLiveMcpConnectionGrant = {
 	readonly token: string;
@@ -22,15 +19,24 @@ export type TelclaudeLiveMcpConnectionGrant = {
 	readonly peerAddress?: string;
 };
 
+export type TelclaudeLiveMcpConnectionIssueInput = {
+	readonly authorityHandle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly nowMs?: number;
+	readonly ttlMs?: number;
+	readonly peerAddress?: string;
+};
+
+export type TelclaudeLiveMcpProbePeerBypassIssueInput = TelclaudeLiveMcpConnectionIssueInput & {
+	readonly peerAddress: string;
+	readonly probePurpose: "off-domain-peer-negative-control";
+};
+
 export type TelclaudeLiveMcpConnectionResolver = {
-	issue(input: {
-		readonly authorityHandle: string;
-		readonly connection: TelclaudeMcpAuthorityConnection;
-		readonly nowMs?: number;
-		readonly ttlMs?: number;
-		readonly peerAddress?: string;
-		readonly [TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS]?: true;
-	}): TelclaudeLiveMcpConnectionGrant;
+	issue(input: TelclaudeLiveMcpConnectionIssueInput): TelclaudeLiveMcpConnectionGrant;
+	issueProbePeerBypass(
+		input: TelclaudeLiveMcpProbePeerBypassIssueInput,
+	): TelclaudeLiveMcpConnectionGrant;
 	resolveConnection(request: http.IncomingMessage): TelclaudeLiveMcpConnectionContext | null;
 	revoke(token: string, reason?: string, nowMs?: number): boolean;
 	revokeConnection(
@@ -66,39 +72,48 @@ export function createTelclaudeLiveMcpConnectionResolver(
 	const allowedPeers = normalizedPeerSet(options.allowedPeerAddresses);
 	const now = () => normalizeNowMs(options.nowMs?.() ?? Date.now());
 
+	function issueConnectionGrant(
+		input: TelclaudeLiveMcpConnectionIssueInput,
+		allowDisallowedPeer: boolean,
+	): TelclaudeLiveMcpConnectionGrant {
+		const issuedAtMs = normalizeNowMs(input.nowMs ?? now());
+		const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_LIVE_MCP_CONNECTION_TTL_MS);
+		const token = createConnectionToken();
+		const tokenHash = hashToken(token);
+		const connection = normalizeConnection(input.connection);
+		const authorityHandle = requiredTrimmed(input.authorityHandle, "authorityHandle");
+		const peerAddress = normalizeOptionalIssuePeerAddress(input.peerAddress);
+		if (peerAddress && allowedPeers && !allowedPeers.has(peerAddress) && !allowDisallowedPeer) {
+			throw new Error("live MCP peerAddress is not in allowedPeerAddresses");
+		}
+		records.set(tokenHash, {
+			tokenHash,
+			authorityHandle,
+			connection,
+			issuedAtMs,
+			expiresAtMs: issuedAtMs + ttlMs,
+			...(peerAddress ? { peerAddress } : {}),
+		});
+		return {
+			token,
+			authorityHandle,
+			connection,
+			issuedAtMs,
+			expiresAtMs: issuedAtMs + ttlMs,
+			...(peerAddress ? { peerAddress } : {}),
+		};
+	}
+
 	return {
 		issue(input) {
-			const issuedAtMs = normalizeNowMs(input.nowMs ?? now());
-			const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_LIVE_MCP_CONNECTION_TTL_MS);
-			const token = createConnectionToken();
-			const tokenHash = hashToken(token);
-			const connection = normalizeConnection(input.connection);
-			const authorityHandle = requiredTrimmed(input.authorityHandle, "authorityHandle");
-			const peerAddress = normalizeOptionalIssuePeerAddress(input.peerAddress);
-			if (
-				peerAddress &&
-				allowedPeers &&
-				!allowedPeers.has(peerAddress) &&
-				input[TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS] !== true
-			) {
-				throw new Error("live MCP peerAddress is not in allowedPeerAddresses");
+			return issueConnectionGrant(input, false);
+		},
+
+		issueProbePeerBypass(input) {
+			if (input.probePurpose !== "off-domain-peer-negative-control") {
+				throw new Error("live MCP probe peer bypass requires off-domain negative-control purpose");
 			}
-			records.set(tokenHash, {
-				tokenHash,
-				authorityHandle,
-				connection,
-				issuedAtMs,
-				expiresAtMs: issuedAtMs + ttlMs,
-				...(peerAddress ? { peerAddress } : {}),
-			});
-			return {
-				token,
-				authorityHandle,
-				connection,
-				issuedAtMs,
-				expiresAtMs: issuedAtMs + ttlMs,
-				...(peerAddress ? { peerAddress } : {}),
-			};
+			return issueConnectionGrant(input, true);
 		},
 
 		resolveConnection(request) {

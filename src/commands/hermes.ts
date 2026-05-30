@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
@@ -79,6 +80,7 @@ import {
 	runHermesLaunchInvocation,
 } from "../hermes/private-runtime.js";
 import {
+	DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME,
 	DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
 	runServedMcpContainmentProbe,
 	type ServedMcpEndpoint,
@@ -108,10 +110,6 @@ type ProbeOption = JsonOption & {
 	mcpOffDomainPeerAuth?: string;
 	mcpUrl?: string;
 	mcpWrongConnectionAuth?: string;
-	originContainer?: string;
-	originExpectedPeerAddress?: string;
-	originKind?: string;
-	originPeerAddress?: string;
 	image?: string;
 	modelUrl?: string;
 	network?: string;
@@ -214,6 +212,52 @@ function parseCsvOption(value: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
+}
+
+function resolveServedMcpOriginConfig(): {
+	containerName: string;
+	expectedPeerAddress?: string;
+	relayPeerAddress?: string;
+} {
+	const expectedPeerAddress = resolveServedMcpExpectedPeerAddress();
+	const relayPeerAddress = optionalConfiguredIp(
+		process.env.TELCLAUDE_HERMES_RELAY_IP,
+		"TELCLAUDE_HERMES_RELAY_IP",
+	);
+	return {
+		containerName: DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME,
+		...(expectedPeerAddress ? { expectedPeerAddress } : {}),
+		...(relayPeerAddress ? { relayPeerAddress } : {}),
+	};
+}
+
+function resolveServedMcpExpectedPeerAddress(): string | undefined {
+	const containedIp = optionalConfiguredIp(
+		process.env.TELCLAUDE_HERMES_CONTAINED_IP,
+		"TELCLAUDE_HERMES_CONTAINED_IP",
+	);
+	if (containedIp) return containedIp;
+	const allowedPeers = parseCsvOption(process.env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS);
+	if (allowedPeers.length === 0) return undefined;
+	if (allowedPeers.length > 1) {
+		throw new Error(
+			"TELCLAUDE_HERMES_CONTAINED_IP is required when TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS contains multiple peers",
+		);
+	}
+	return requiredConfiguredIp(allowedPeers[0], "TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS");
+}
+
+function optionalConfiguredIp(value: string | undefined, name: string): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? requiredConfiguredIp(trimmed, name) : undefined;
+}
+
+function requiredConfiguredIp(value: string | undefined, name: string): string {
+	const trimmed = value?.trim();
+	if (!trimmed || net.isIP(trimmed) === 0) {
+		throw new Error(`${name} must be an IP address`);
+	}
+	return trimmed;
 }
 
 function parsePositiveIntegerOption(
@@ -774,13 +818,6 @@ export function registerHermesCommand(program: Command): void {
 			"--mcp-wrong-connection-auth <header>",
 			"Wrong-connection served MCP context header as 'Name: value'",
 		)
-		.option("--origin-kind <kind>", "served-MCP probe origin kind")
-		.option("--origin-container <name>", "served-MCP probe origin container name")
-		.option("--origin-peer-address <address>", "Observed MCP peer source address")
-		.option(
-			"--origin-expected-peer-address <address>",
-			"Expected MCP peer source address for the contained runtime",
-		)
 		.option("--container-name <name>", "Hermes API-server container name")
 		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
 		.option("--api-port <port>", "Hermes API-server container port")
@@ -950,12 +987,7 @@ export function registerHermesCommand(program: Command): void {
 							options.mcpWrongConnectionAuth,
 						),
 						unauthenticatedEndpoint: endpoint ? { url: endpoint.url } : undefined,
-						origin: {
-							kind: options.originKind,
-							containerName: options.originContainer,
-							observedPeerAddress: options.originPeerAddress,
-							expectedPeerAddress: options.originExpectedPeerAddress,
-						},
+						origin: options.allowRun === true ? resolveServedMcpOriginConfig() : undefined,
 						timeoutMs,
 					});
 					if (options.allowRun === true && report.status !== "pending") {

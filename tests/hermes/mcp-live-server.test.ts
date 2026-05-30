@@ -20,6 +20,8 @@ import {
 	createTelclaudeLiveMcpNodeHttpServer,
 	createTelclaudeLiveMcpRelayHttpServer,
 	TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE,
+	TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER,
+	TELCLAUDE_LIVE_MCP_PLACEMENT_SIDE_HEADER,
 	TELCLAUDE_LIVE_MCP_TRANSPORT,
 	type TelclaudeLiveMcpJsonRpcResponse,
 	type TelclaudeLiveMcpRelayClients,
@@ -163,6 +165,8 @@ describe("Telclaude live MCP relay-side server", () => {
 			}),
 		});
 		expect(response.status).toBe(200);
+		expect(response.headers.get(TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER)).toBe("127.0.0.1");
+		expect(response.headers.get(TELCLAUDE_LIVE_MCP_PLACEMENT_SIDE_HEADER)).toBe("relay");
 		expect(await response.json()).toMatchObject({
 			jsonrpc: "2.0",
 			id: "http-tools",
@@ -196,6 +200,7 @@ describe("Telclaude live MCP relay-side server", () => {
 			}),
 		});
 		expect(denied.status).toBe(403);
+		expect(denied.headers.get(TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER)).toBeNull();
 		expect(await denied.json()).toMatchObject({
 			id: "unauth-tools",
 			error: { code: -32001, message: "MCP connection is not authorized" },

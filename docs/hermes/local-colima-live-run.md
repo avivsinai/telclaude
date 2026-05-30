@@ -243,15 +243,20 @@ Expected green: exit code `0`, all five required network probes pass, and every 
 
 ### 5.5 Served MCP Containment
 
-This probe must target the relay-internal MCP HTTP endpoint. Do not publish the MCP port to the host to make this easier. Run the command in the relay container or another already-approved relay-internal namespace.
+This probe must target the relay-internal MCP HTTP endpoint. Do not publish the
+MCP port to the host to make this easier. The production cutover evidence must
+be produced from the contained Hermes peer namespace, not from the relay
+namespace; a relay-side run is useful only as smoke evidence and must fail the
+production origin gate.
 
 Runtime inputs required before this command can be real:
 
 - `TELCLAUDE_HERMES_SERVED_MCP_AUTH`: a relay-issued `Authorization: Bearer tc_mcp_conn_...` header for the private authority.
+- `TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH`: a relay-issued `Authorization: Bearer tc_mcp_conn_...` header bound to the off-domain negative-control peer.
 - `TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH`: an intentionally unregistered `Authorization: Bearer tc_mcp_conn_...` header.
 - `TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH`: a relay-issued `Authorization: Bearer tc_mcp_conn_...` header for a different registered connection.
 
-Mint those tokens from the relay-local admin Unix socket. This socket is created by the relay only when `TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1`, is chmod `0600`, and must not be mounted into the Hermes runtime or any agent container. The command below prints shell exports for the three probe tokens; do not commit the token values or command transcript with live values.
+Mint those tokens from the relay-local admin Unix socket. This socket is created by the relay only when `TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1`, is chmod `0600`, and must not be mounted into the Hermes runtime or any agent container. The command below prints shell exports for the probe tokens; do not commit the token values or command transcript with live values.
 
 ```bash
 eval "$(
@@ -259,7 +264,7 @@ eval "$(
     -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
     telclaude telclaude hermes live-mcp probe-tokens \
     --socket /run/telclaude/hermes-live-mcp-admin.sock \
-    --peer-address "$TELCLAUDE_HERMES_RELAY_IP"
+    --peer-address "$TELCLAUDE_HERMES_CONTAINED_IP"
 )"
 ```
 
@@ -270,32 +275,37 @@ docker exec \
   -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
   telclaude telclaude hermes live-mcp probe-tokens \
   --socket /run/telclaude/hermes-live-mcp-admin.sock \
-  --peer-address "$TELCLAUDE_HERMES_RELAY_IP" \
+  --peer-address "$TELCLAUDE_HERMES_CONTAINED_IP" \
   --json
 ```
 
-The served-MCP probe command below runs from the relay container, so these one-off
-probe tokens are bound to `TELCLAUDE_HERMES_RELAY_IP`. Production Hermes grants
-should either be peer-bound to `TELCLAUDE_HERMES_CONTAINED_IP` or rely on the
-relay's `TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS` allowlist, which defaults to
-that contained Hermes IP in the compose overlay.
+The one-off probe tokens above are bound to `TELCLAUDE_HERMES_CONTAINED_IP`.
+Production proof must run the probe from `tc-hermes-contained` or an equivalent
+contained-peer namespace whose source IP is that contained peer IP. The live MCP
+server echoes the observed source peer into the evidence; probe CLI flags cannot
+fake it. A relay-side run is not a substitute: under the production allowlist it
+should fail authorization, and without that allowlist it must still fail the
+production origin gate.
 
-Command shape once the tokens exist:
+Production command shape once a contained-peer probe runner exists:
 
 ```bash
-docker exec telclaude telclaude hermes probe execution.served_mcp_containment \
+<contained-peer-runner> telclaude hermes probe execution.served_mcp_containment \
   --allow-run \
   --json \
   --mcp-url http://telclaude:8793/mcp \
   --mcp-auth "${TELCLAUDE_HERMES_SERVED_MCP_AUTH}" \
+  --mcp-off-domain-peer-auth "${TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH}" \
   --mcp-forged-auth "${TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH}" \
   --mcp-wrong-connection-auth "${TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH}" \
   --timeout-ms 30000 \
   --out /data/hermes/execution-served-mcp-containment.json
-
-docker cp telclaude:/data/hermes/execution-served-mcp-containment.json \
-  artifacts/hermes/probes/execution-served-mcp-containment.json
 ```
+
+The contained-peer runner must have the Telclaude CLI or an equivalent packaged
+probe available inside the contained namespace. The resulting evidence must show
+`origin.observedPeerSource=server-peer-echo` with
+`origin.observedPeerAddress == TELCLAUDE_HERMES_CONTAINED_IP`.
 
 Expected green: all required served-MCP properties pass, including exact tools list, empty resources/prompts/roots, sampling disabled, forged handle denied, wrong connection denied, cross-domain memory denied, out-of-scope provider/outbound denied, execute-without-ledger denied, malformed/unauthenticated/batch/prototype denial, and artifact redaction.
 
