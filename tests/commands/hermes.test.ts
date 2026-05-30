@@ -2352,6 +2352,66 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
+	it("sets and observes private-runtime durable mode through relay operator RPC", async () => {
+		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
+		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const keys = generateKeyPair();
+		const requests: string[] = [];
+		shutdownTokenClient();
+		const relay = await startProbeServer((req, res) => {
+			const requestPath = req.url?.split("?")[0] ?? "";
+			requests.push(requestPath);
+			res.setHeader("Content-Type", "application/json");
+			if (requestPath === "/v1/hermes.private-runtime.status") {
+				res.end(JSON.stringify(hermesRuntimeState()));
+				return;
+			}
+			if (requestPath === "/v1/hermes.private-runtime.mode") {
+				res.end(JSON.stringify(hermesRuntimeState()));
+				return;
+			}
+			res.statusCode = 404;
+			res.end(JSON.stringify({ error: `not found: ${requestPath}` }));
+		});
+		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
+		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
+		try {
+			const setResult = await runHermesCommand([
+				"hermes",
+				"private-runtime",
+				"set",
+				"hermes",
+				"--json",
+			]);
+			const statusResult = await runHermesCommand([
+				"hermes",
+				"private-runtime",
+				"status",
+				"--json",
+			]);
+
+			expect(setResult.exitCode, setResult.stdout).toBe(0);
+			expect(JSON.parse(setResult.stdout)).toMatchObject({
+				effectiveMode: "hermes",
+				controlSource: "runtime-config",
+			});
+			expect(statusResult.exitCode, statusResult.stdout).toBe(0);
+			expect(JSON.parse(statusResult.stdout)).toMatchObject({ effectiveValue: "1" });
+			expect(requests).toEqual([
+				"/v1/hermes.private-runtime.mode",
+				"/v1/hermes.private-runtime.status",
+			]);
+		} finally {
+			await relay.close();
+			shutdownTokenClient();
+			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
+			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
+			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+		}
+	});
+
 	it("fails network-probes when a direct provider connection succeeds", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();

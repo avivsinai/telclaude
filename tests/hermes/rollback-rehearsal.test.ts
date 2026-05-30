@@ -100,6 +100,27 @@ describe("Hermes rollback rehearsal producer", () => {
 			detail: expect.stringContaining("observed 0"),
 		});
 	});
+
+	it("fails closed when the relay control surface is unreachable", async () => {
+		const client: HermesRollbackRelayClient = {
+			getStatus: async () => {
+				throw new Error("relay offline");
+			},
+			setMode: async () => legacyStatus(),
+		};
+
+		const report = await runHermesRollbackRehearsal({
+			allowRun: true,
+			evidencePath: "artifacts/hermes/rollback-rehearsal.json",
+			relay: client,
+		});
+
+		expect(report.passed).toBe(false);
+		expect(report.checks?.find((check) => check.name === "rollback.controlSurface")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("relay offline"),
+		});
+	});
 });
 
 function hermesStatus() {

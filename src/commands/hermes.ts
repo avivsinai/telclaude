@@ -91,6 +91,10 @@ import {
 	type ServedMcpEndpoint,
 	writeServedMcpContainmentEvidence,
 } from "../hermes/served-mcp-containment.js";
+import {
+	relayGetHermesPrivateRuntimeState,
+	relaySetHermesPrivateRuntimeMode,
+} from "../relay/capabilities-client.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -148,6 +152,8 @@ type RollbackRehearsalOption = JsonOption & {
 	out: string;
 	evidencePath?: string;
 };
+
+type PrivateRuntimeMode = "hermes" | "legacy";
 
 type LiveMcpProbeTokenOption = JsonOption & {
 	socket?: string;
@@ -1270,6 +1276,67 @@ export function registerHermesCommand(program: Command): void {
 				} else {
 					console.log("Hermes rollback-rehearsal: fail");
 					console.log(`- FAIL rollback.controlSurface: ${report.checks[0].detail}`);
+				}
+				process.exitCode = 1;
+			}
+		});
+
+	const privateRuntime = hermes
+		.command("private-runtime")
+		.description("Observe or drive Hermes private-runtime durable mode through relay operator RPC");
+
+	privateRuntime
+		.command("status")
+		.description("Show the relay-observed Hermes private-runtime effective state")
+		.option("--json", "Emit structured JSON")
+		.action(async (options: JsonOption) => {
+			try {
+				const state = await relayGetHermesPrivateRuntimeState();
+				if (options.json) {
+					printJson(state);
+				} else {
+					console.log(`Hermes private-runtime: ${state.effectiveMode}`);
+					console.log(`- effectiveValue: ${state.effectiveValue}`);
+					console.log(`- controlMode: ${state.controlMode}`);
+					console.log(`- controlSource: ${state.controlSource}`);
+					console.log(`- rolloutAllowed: ${String(state.rolloutAllowed)}`);
+				}
+				process.exitCode = 0;
+			} catch (error) {
+				if (options.json) {
+					printJson({ ok: false, error: String(error instanceof Error ? error.message : error) });
+				} else {
+					console.log(`Hermes private-runtime: fail`);
+					console.log(`- FAIL: ${String(error instanceof Error ? error.message : error)}`);
+				}
+				process.exitCode = 1;
+			}
+		});
+
+	privateRuntime
+		.command("set <mode>")
+		.description("Set Hermes private-runtime durable mode through relay operator RPC")
+		.option("--json", "Emit structured JSON")
+		.action(async (mode: string, options: JsonOption) => {
+			try {
+				if (mode !== "hermes" && mode !== "legacy") {
+					throw new Error("mode must be hermes or legacy");
+				}
+				const state = await relaySetHermesPrivateRuntimeMode({ mode: mode as PrivateRuntimeMode });
+				if (options.json) {
+					printJson(state);
+				} else {
+					console.log(`Hermes private-runtime: ${state.effectiveMode}`);
+					console.log(`- controlMode: ${state.controlMode}`);
+					console.log(`- controlSource: ${state.controlSource}`);
+				}
+				process.exitCode = 0;
+			} catch (error) {
+				if (options.json) {
+					printJson({ ok: false, error: String(error instanceof Error ? error.message : error) });
+				} else {
+					console.log(`Hermes private-runtime: fail`);
+					console.log(`- FAIL: ${String(error instanceof Error ? error.message : error)}`);
 				}
 				process.exitCode = 1;
 			}
