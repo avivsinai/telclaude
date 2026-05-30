@@ -74,6 +74,9 @@ export type TelclaudeLiveMcpRuntimeAdminStarter = {
 export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly config: TelclaudeLiveMcpRuntimeConfig;
 	readonly relayClients?: TelclaudeLiveMcpRelayClients;
+	readonly createRelayClients?: (context: {
+		readonly ledger: TelclaudeMcpSideEffectLedger;
+	}) => TelclaudeLiveMcpRelayClients;
 	readonly registry?: TelclaudeMcpAuthorityRegistry;
 	readonly ledger?: TelclaudeMcpSideEffectLedger;
 	readonly verifyApproval?: TelclaudeMcpSideEffectApprovalVerifier;
@@ -125,7 +128,10 @@ export async function startTelclaudeLiveMcpRuntime(
 			verifyApproval: options.verifyApproval ?? denyLiveMcpApproval,
 			nowMs: options.nowMs,
 		});
-	const relayClients = options.relayClients ?? createFailClosedTelclaudeLiveMcpRelayClients();
+	const relayClients =
+		options.relayClients ??
+		options.createRelayClients?.({ ledger }) ??
+		createFailClosedTelclaudeLiveMcpRelayClients();
 	const liveServer = createTelclaudeLiveMcpRelayHttpServer({
 		registry,
 		ledger,
