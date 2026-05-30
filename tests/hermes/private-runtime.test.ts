@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createTelclaudeMcpAuthorityRegistry } from "../../src/hermes/mcp/authority-registry.js";
 import {
 	buildHermesPrivateRuntimeAdapterFromEnv,
 	executeHermesPrivateQuery,
@@ -10,6 +11,7 @@ import {
 	executeHermesPrivateRuntime,
 	findHermesLaunchSecretFindings,
 	type HermesRuntimeAdapter,
+	type HermesRuntimeRequest,
 	redactHermesRuntimeText,
 	runHermesCliHeadlessProbe,
 } from "../../src/hermes/private-runtime.js";
@@ -54,6 +56,89 @@ describe("Hermes private runtime seam", () => {
 			},
 		]);
 		expect(sessions.get("tg:123", "ops")?.hermesSessionId).toBe("hermes-session-1");
+	});
+
+	it("mints private MCP authority out-of-band for the runtime and revokes it on completion", async () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		let seenAuthority: HermesRuntimeRequest["mcpAuthority"];
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* (request) {
+				seenAuthority = request.mcpAuthority;
+				expect(seenAuthority?.handle).toMatch(/^tc_mcp_/);
+				expect(
+					registry.resolve({
+						handle: seenAuthority?.handle ?? "",
+						connection: seenAuthority?.connection ?? {
+							sessionKey: "",
+							profileId: "",
+							endpointId: "",
+							networkNamespace: "",
+						},
+						nowMs: 1_001,
+					}),
+				).toMatchObject({
+					ok: true,
+					authority: {
+						actorId: "456",
+						profileId: "ops",
+						domain: "private",
+						memorySource: "telegram:ops",
+						writableNamespace: "private:ops",
+						providerScopes: ["calendar"],
+						outboundChannels: ["whatsapp"],
+						endpointId: "endpoint-private",
+						networkNamespace: "netns-private",
+					},
+				});
+				yield { type: "done", response: "ok" };
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				mcpAuthorityRegistry: registry,
+				request: baseRequest({
+					mcpAuthority: {
+						providerScopes: ["calendar"],
+						outboundChannels: ["whatsapp"],
+						endpointId: "endpoint-private",
+						networkNamespace: "netns-private",
+						ttlMs: 5_000,
+					},
+				}),
+				now: () => 1_000,
+			}),
+		);
+
+		expect(chunks.at(-1)).toEqual({
+			type: "done",
+			result: {
+				response: "ok",
+				success: true,
+				costUsd: 0,
+				numTurns: 1,
+				durationMs: expect.any(Number),
+			},
+		});
+		expect(seenAuthority).toBeDefined();
+		expect(
+			registry.resolve({
+				handle: seenAuthority?.handle ?? "",
+				connection: seenAuthority?.connection ?? {
+					sessionKey: "",
+					profileId: "",
+					endpointId: "",
+					networkNamespace: "",
+				},
+				nowMs: 1_001,
+			}),
+		).toMatchObject({
+			ok: false,
+			code: "mcp_authority_revoked",
+		});
 	});
 
 	it("resumes the mapped Hermes session and clears it for /new", async () => {

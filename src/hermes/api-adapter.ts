@@ -1,4 +1,11 @@
 import {
+	TELCLAUDE_MCP_AUTHORITY_ENDPOINT_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_NETWORK_NAMESPACE_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_PROFILE_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_SESSION_KEY_HEADER,
+} from "./mcp/authority-registry.js";
+import {
 	type HermesRuntimeAdapter,
 	type HermesRuntimeEvent,
 	type HermesRuntimeRequest,
@@ -159,6 +166,23 @@ export class HermesApiRuntimeAdapter implements HermesRuntimeAdapter {
 			Authorization: `Bearer ${this.apiKey}`,
 			"Content-Type": "application/json",
 			...(request ? { "X-Hermes-Session-Key": safeSessionKey(request.sessionKey) } : {}),
+			...(request?.mcpAuthority
+				? {
+						[TELCLAUDE_MCP_AUTHORITY_HEADER]: safeHeaderValue(request.mcpAuthority.handle),
+						[TELCLAUDE_MCP_AUTHORITY_SESSION_KEY_HEADER]: safeHeaderValue(
+							request.mcpAuthority.connection.sessionKey,
+						),
+						[TELCLAUDE_MCP_AUTHORITY_PROFILE_HEADER]: safeHeaderValue(
+							request.mcpAuthority.connection.profileId,
+						),
+						[TELCLAUDE_MCP_AUTHORITY_ENDPOINT_HEADER]: safeHeaderValue(
+							request.mcpAuthority.connection.endpointId,
+						),
+						[TELCLAUDE_MCP_AUTHORITY_NETWORK_NAMESPACE_HEADER]: safeHeaderValue(
+							request.mcpAuthority.connection.networkNamespace,
+						),
+					}
+				: {}),
 		};
 	}
 
@@ -351,6 +375,13 @@ function requireApiKey(raw: string): string {
 function safeSessionKey(value: string): string {
 	if (containsHeaderUnsafeChar(value) || value.length > 256) {
 		throw new Error("Hermes API session key is invalid");
+	}
+	return value;
+}
+
+function safeHeaderValue(value: string): string {
+	if (containsHeaderUnsafeChar(value) || value.length > 512) {
+		throw new Error("Hermes API header value is invalid");
 	}
 	return value;
 }

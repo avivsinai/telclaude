@@ -4,6 +4,13 @@ import {
 	type HermesApiResponse,
 	HermesApiRuntimeAdapter,
 } from "../../src/hermes/api-adapter.js";
+import {
+	TELCLAUDE_MCP_AUTHORITY_ENDPOINT_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_NETWORK_NAMESPACE_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_PROFILE_HEADER,
+	TELCLAUDE_MCP_AUTHORITY_SESSION_KEY_HEADER,
+} from "../../src/hermes/mcp/authority-registry.js";
 import type { HermesRuntimeRequest } from "../../src/hermes/private-runtime.js";
 
 describe("HermesApiRuntimeAdapter", () => {
@@ -73,6 +80,57 @@ describe("HermesApiRuntimeAdapter", () => {
 			input: promptCredential,
 			session_id: "hermes-session-1",
 		});
+	});
+
+	it("sends MCP authority only via transport headers, never prompt instructions or memory", async () => {
+		const calls: Array<{ url: string; init: Record<string, unknown> }> = [];
+		const fetcher: HermesApiFetch = async (url, init) => {
+			calls.push({ url, init });
+			if (url === "http://hermes.local/v1/runs") {
+				return jsonResponse({ run_id: "run-1", status: "started" }, 202);
+			}
+			if (url === "http://hermes.local/v1/runs/run-1/events") {
+				return sseResponse([sse({ event: "run.completed", output: "ok" })]);
+			}
+			throw new Error(`unexpected fetch: ${url}`);
+		};
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: fetcher,
+		});
+
+		await collect(
+			adapter.run(
+				baseRequest({
+					mcpAuthority: {
+						handle: "tc_mcp_secret_handle",
+						connection: {
+							sessionKey: "tg:123",
+							profileId: "ops",
+							endpointId: "endpoint-private",
+							networkNamespace: "netns-private",
+						},
+						expiresAtMs: 123_456,
+					},
+				}),
+			),
+		);
+
+		const [startCall] = calls;
+		expect(startCall?.init.headers).toMatchObject({
+			[TELCLAUDE_MCP_AUTHORITY_HEADER]: "tc_mcp_secret_handle",
+			[TELCLAUDE_MCP_AUTHORITY_SESSION_KEY_HEADER]: "tg:123",
+			[TELCLAUDE_MCP_AUTHORITY_PROFILE_HEADER]: "ops",
+			[TELCLAUDE_MCP_AUTHORITY_ENDPOINT_HEADER]: "endpoint-private",
+			[TELCLAUDE_MCP_AUTHORITY_NETWORK_NAMESPACE_HEADER]: "netns-private",
+		});
+		const startBody = JSON.parse(String(startCall?.init.body));
+		const serializedBody = JSON.stringify(startBody);
+		expect(serializedBody).not.toContain("tc_mcp_secret_handle");
+		expect(serializedBody).not.toContain("endpoint-private");
+		expect(serializedBody).not.toContain("netns-private");
+		expect(serializedBody).not.toContain(TELCLAUDE_MCP_AUTHORITY_HEADER);
 	});
 
 	it("redacts failed run-start responses", async () => {

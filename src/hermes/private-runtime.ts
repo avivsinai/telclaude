@@ -1,9 +1,19 @@
 import type { PermissionTier } from "../config/config.js";
+import { telegramMemorySource } from "../memory/source.js";
+import type { MemorySource } from "../memory/types.js";
 import type { StreamChunk } from "../sdk/client.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
+import {
+	hermesMcpAuthorityRegistry,
+	type TelclaudeMcpAuthorityConnection,
+	type TelclaudeMcpAuthorityRegistry,
+} from "./mcp/authority-registry.js";
+import type { TelclaudeMcpAuthority, TelclaudeMcpDomain } from "./mcp/bridge.js";
 import type { HermesSessionMap } from "./session-map.js";
 
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
+const DEFAULT_PRIVATE_MCP_ENDPOINT_ID = "telclaude-private-runtime";
+const DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE = "telclaude-private";
 
 export type HermesRuntimeRequest = {
 	prompt: string;
@@ -25,9 +35,27 @@ export type HermesRuntimeRequest = {
 	model?: string;
 	systemPromptAppend?: string;
 	allowedSkills?: readonly string[];
+	mcpAuthority?: HermesRuntimeMcpAuthorityGrant;
 	isNewSession: boolean;
 	timeoutMs: number;
 	signal: AbortSignal;
+};
+
+export type HermesRuntimeMcpAuthorityGrant = {
+	readonly handle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly expiresAtMs: number;
+};
+
+export type HermesPrivateMcpAuthorityOptions = {
+	readonly domain?: TelclaudeMcpDomain;
+	readonly memorySource?: MemorySource;
+	readonly writableNamespace?: string;
+	readonly providerScopes?: readonly string[];
+	readonly outboundChannels?: readonly string[];
+	readonly endpointId?: string;
+	readonly networkNamespace?: string;
+	readonly ttlMs?: number;
 };
 
 export type HermesRuntimeEvent =
@@ -51,9 +79,10 @@ export type HermesRuntimeAdapter = {
 
 export type HermesPrivateRuntimeRequest = Omit<
 	HermesRuntimeRequest,
-	"telclaudeSessionId" | "resumeHermesSessionId"
+	"telclaudeSessionId" | "resumeHermesSessionId" | "mcpAuthority"
 > & {
 	telclaudeSessionId?: string;
+	mcpAuthority?: HermesPrivateMcpAuthorityOptions;
 };
 
 export type HermesLaunchInvocation = {
@@ -84,9 +113,11 @@ export async function* executeHermesPrivateRuntime(input: {
 	runtime: HermesRuntimeAdapter;
 	sessions: HermesSessionMap;
 	request: HermesPrivateRuntimeRequest;
+	mcpAuthorityRegistry?: TelclaudeMcpAuthorityRegistry;
 	now?: () => number;
 }): AsyncGenerator<StreamChunk, void, unknown> {
 	const now = input.now ?? Date.now;
+	const registry = input.mcpAuthorityRegistry ?? hermesMcpAuthorityRegistry;
 	const startedAt = now();
 	const { record } = input.sessions.getOrCreate({
 		sessionKey: input.request.sessionKey,
@@ -94,11 +125,48 @@ export async function* executeHermesPrivateRuntime(input: {
 		now: startedAt,
 		telclaudeSessionId: input.request.telclaudeSessionId,
 	});
-	const runtimeRequest: HermesRuntimeRequest = {
-		...input.request,
-		telclaudeSessionId: record.telclaudeSessionId,
-		...(input.request.isNewSession ? {} : { resumeHermesSessionId: record.hermesSessionId }),
-	};
+	const { mcpAuthority: mcpAuthorityOptions, ...requestWithoutPrivateAuthority } = input.request;
+	let mcpAuthorityHandle: string | undefined;
+	let runtimeRequest: HermesRuntimeRequest;
+	try {
+		const mcpAuthority = buildPrivateMcpAuthority(input.request, mcpAuthorityOptions);
+		const connection: TelclaudeMcpAuthorityConnection = {
+			sessionKey: input.request.sessionKey,
+			profileId: input.request.profileId,
+			endpointId: mcpAuthority.endpointId,
+			networkNamespace: mcpAuthority.networkNamespace,
+		};
+		const grant = registry.register({
+			connection,
+			authority: mcpAuthority,
+			nowMs: startedAt,
+			ttlMs: mcpAuthorityOptions?.ttlMs,
+		});
+		mcpAuthorityHandle = grant.handle;
+		runtimeRequest = {
+			...requestWithoutPrivateAuthority,
+			telclaudeSessionId: record.telclaudeSessionId,
+			...(input.request.isNewSession ? {} : { resumeHermesSessionId: record.hermesSessionId }),
+			mcpAuthority: {
+				handle: grant.handle,
+				connection,
+				expiresAtMs: grant.expiresAtMs,
+			},
+		};
+	} catch (error) {
+		yield {
+			type: "done",
+			result: {
+				response: "",
+				success: false,
+				error: error instanceof Error ? error.message : String(error),
+				costUsd: 0,
+				numTurns: 1,
+				durationMs: Math.max(0, now() - startedAt),
+			},
+		};
+		return;
+	}
 
 	let response = "";
 	let sawDone = false;
@@ -164,7 +232,39 @@ export async function* executeHermesPrivateRuntime(input: {
 				durationMs: Math.max(0, now() - startedAt),
 			},
 		};
+	} finally {
+		if (mcpAuthorityHandle) {
+			registry.revoke(mcpAuthorityHandle, "Hermes private runtime completed", now());
+		}
 	}
+}
+
+function buildPrivateMcpAuthority(
+	request: HermesPrivateRuntimeRequest,
+	options: HermesPrivateMcpAuthorityOptions | undefined,
+): TelclaudeMcpAuthority {
+	const domain = options?.domain ?? "private";
+	const memorySource = options?.memorySource ?? defaultMemorySource(domain, request.profileId);
+	return {
+		actorId: runtimeActorId(request),
+		profileId: request.profileId,
+		domain,
+		memorySource,
+		writableNamespace: options?.writableNamespace ?? `${domain}:${request.profileId}`,
+		providerScopes: options?.providerScopes ?? [],
+		outboundChannels: options?.outboundChannels ?? [],
+		endpointId: options?.endpointId ?? DEFAULT_PRIVATE_MCP_ENDPOINT_ID,
+		networkNamespace: options?.networkNamespace ?? DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE,
+	};
+}
+
+function defaultMemorySource(domain: TelclaudeMcpDomain, profileId: string): MemorySource {
+	return domain === "social" || domain === "public" ? "social" : telegramMemorySource(profileId);
+}
+
+function runtimeActorId(request: HermesPrivateRuntimeRequest): string {
+	const identity = request.identity;
+	return String(identity.actorId ?? identity.userId ?? identity.chatId ?? request.sessionKey);
 }
 
 export function buildHermesCliProbeInvocation(input: {
