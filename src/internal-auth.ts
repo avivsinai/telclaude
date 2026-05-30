@@ -63,6 +63,10 @@ type InternalAuthOptions = {
 	scope?: InternalAuthScope;
 };
 
+type InternalResponseProofVerifyOptions = InternalAuthOptions & {
+	allowStale?: boolean;
+};
+
 function getHeader(req: http.IncomingMessage, name: string): string | undefined {
 	const value = req.headers[name];
 	if (Array.isArray(value)) return value[0];
@@ -296,7 +300,7 @@ export function verifyInternalResponseProof(
 	path: string,
 	requestBody: string,
 	responseBody: string,
-	options?: InternalAuthOptions,
+	options?: InternalResponseProofVerifyOptions,
 ): boolean {
 	const scope = options?.scope ?? proof.scope;
 	if (
@@ -310,7 +314,10 @@ export function verifyInternalResponseProof(
 		return false;
 	}
 	const timestampMs = Number.parseInt(proof.timestamp, 10);
-	if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > DEFAULT_SKEW_MS) {
+	if (
+		!Number.isFinite(timestampMs) ||
+		(options?.allowStale !== true && Math.abs(Date.now() - timestampMs) > DEFAULT_SKEW_MS)
+	) {
 		return false;
 	}
 	const vars = scopeEnvVarNames(scope);
