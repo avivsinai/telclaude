@@ -8,14 +8,16 @@ import {
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
-import type {
-	TelclaudeMcpOutboundApprovalBinding,
-	TelclaudeMcpProviderApprovalBinding,
-	TelclaudeMcpSideEffectApprovalBinding,
-	TelclaudeMcpSideEffectApprovalVerifier,
+import {
+	getTelclaudeMcpSideEffectApprovalBinding,
+	type TelclaudeMcpOutboundApprovalBinding,
+	type TelclaudeMcpProviderApprovalBinding,
+	type TelclaudeMcpSideEffectApprovalBinding,
+	type TelclaudeMcpSideEffectApprovalVerifier,
 } from "./side-effect-ledger.js";
 
 const DEFAULT_TOKEN_TTL_SECONDS = 60;
+const MAX_MINT_TOKEN_TTL_SECONDS = 60;
 const MAX_TOKEN_TTL_SECONDS = 300;
 const APPROVAL_AUDIENCE = "telclaude-hermes-mcp-side-effect";
 const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
@@ -30,6 +32,7 @@ const ProviderBindingSchema = z
 		ref: NonEmptyString,
 		kind: z.literal("provider"),
 		actorId: NonEmptyString,
+		approverActorId: NonEmptyString,
 		profileId: NonEmptyString,
 		domain: DomainSchema,
 		service: NonEmptyString,
@@ -50,6 +53,7 @@ const OutboundBindingSchema = z
 		ref: NonEmptyString,
 		kind: z.literal("outbound"),
 		actorId: NonEmptyString,
+		approverActorId: NonEmptyString,
 		profileId: NonEmptyString,
 		domain: DomainSchema,
 		channel: NonEmptyString,
@@ -181,9 +185,23 @@ export function createTelclaudeMcpSideEffectApprovalVerifier(
 	options: CreateTelclaudeMcpSideEffectApprovalVerifierOptions,
 ): TelclaudeMcpSideEffectApprovalVerifier {
 	return async (request) => {
-		const nowSeconds = normalizeNowSeconds(
-			options.nowSeconds?.() ?? Math.floor(request.nowMs / 1_000),
-		);
+		let nowSeconds: number;
+		try {
+			nowSeconds = normalizeNowSeconds(options.nowSeconds?.() ?? Math.floor(request.nowMs / 1_000));
+		} catch {
+			return failure("approval_required", "Invalid verifier clock");
+		}
+
+		let recordBinding: TelclaudeMcpSideEffectApprovalBinding;
+		try {
+			recordBinding = getTelclaudeMcpSideEffectApprovalBinding(request.record);
+		} catch {
+			return failure("approval_mismatch", "Approval record binding mismatch");
+		}
+		if (!sameBinding(request.binding, recordBinding)) {
+			return failure("approval_mismatch", "Approval request binding mismatch");
+		}
+
 		const parts = request.approvalToken.split(".");
 		if (parts.length !== 3 || parts[0] !== "v1") {
 			return failure("approval_required", "Invalid token format");
@@ -198,7 +216,7 @@ export function createTelclaudeMcpSideEffectApprovalVerifier(
 			const verifyResult = await options.vaultClient.verifyPayload(
 				claimsB64,
 				sigB64,
-				request.binding.domainSeparator,
+				recordBinding.domainSeparator,
 			);
 			signatureValid = verifyResult.type === "verify-payload" && verifyResult.valid === true;
 		} catch {
@@ -221,7 +239,7 @@ export function createTelclaudeMcpSideEffectApprovalVerifier(
 		if (claims.exp - claims.iat > MAX_TOKEN_TTL_SECONDS) {
 			return failure("approval_required", "Token TTL exceeds maximum (300s)");
 		}
-		if (!sameBinding(claims.binding, request.binding)) {
+		if (!sameBinding(claims.binding, recordBinding)) {
 			return failure("approval_mismatch", "Approval token binding mismatch");
 		}
 
@@ -286,8 +304,8 @@ function normalizeNowSeconds(value: number): number {
 }
 
 function normalizeTtlSeconds(value: number): number {
-	if (!Number.isInteger(value) || value <= 0 || value > MAX_TOKEN_TTL_SECONDS) {
-		throw new Error("ttlSeconds must be an integer between 1 and 300");
+	if (!Number.isInteger(value) || value <= 0 || value > MAX_MINT_TOKEN_TTL_SECONDS) {
+		throw new Error("ttlSeconds must be an integer between 1 and 60");
 	}
 	return value;
 }

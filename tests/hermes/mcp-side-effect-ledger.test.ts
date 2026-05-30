@@ -414,6 +414,7 @@ function providerInput(
 	return {
 		kind: "provider" as const,
 		actorId: "telegram:123",
+		approverActorId: "telegram:operator",
 		profileId: "private",
 		domain: "private" as const,
 		service: "calendar",
@@ -434,6 +435,7 @@ function outboundInput(
 	return {
 		kind: "outbound" as const,
 		actorId: "telegram:123",
+		approverActorId: "telegram:operator",
 		profileId: "private",
 		domain: "private" as const,
 		channel: "whatsapp",
