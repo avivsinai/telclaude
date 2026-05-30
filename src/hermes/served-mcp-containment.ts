@@ -1,12 +1,15 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { z } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
 import { TELCLAUDE_MCP_TOOL_NAMES } from "./mcp/bridge.js";
+import { TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER } from "./mcp/live-server.js";
 
 export const SERVED_MCP_CONTAINMENT_SCHEMA_VERSION = "telclaude.hermes.served-mcp-containment.v1";
 export const DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH =
 	"artifacts/hermes/probes/execution-served-mcp-containment.json";
+export const DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME = "tc-hermes-contained";
 
 export const SERVED_MCP_REQUIRED_PROPERTY_NAMES = [
 	"positive_initialize_tools_only",
@@ -75,7 +78,9 @@ const ServedMcpOriginSchema = z
 		kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
 		containerName: NonEmptyString.optional(),
 		observedPeerAddress: NonEmptyString.optional(),
+		observedPeerSource: z.literal("server-peer-echo").optional(),
 		expectedPeerAddress: NonEmptyString.optional(),
+		expectedPeerSource: z.literal("configured-contained-ip").optional(),
 		detail: NonEmptyString,
 	})
 	.strict();
@@ -124,10 +129,9 @@ export type ServedMcpEndpoint = {
 };
 
 export type ServedMcpProbeOriginInput = {
-	readonly kind?: string;
 	readonly containerName?: string;
-	readonly observedPeerAddress?: string;
 	readonly expectedPeerAddress?: string;
+	readonly relayPeerAddress?: string;
 };
 
 export type RunServedMcpContainmentProbeOptions = {
@@ -160,7 +164,20 @@ type RpcObservation = {
 	readonly httpStatus?: number;
 	readonly body?: unknown;
 	readonly transportError?: string;
+	readonly observedPeerAddress?: string;
+	readonly observedPeerSource?: "server-peer-echo";
 };
+
+type ServedMcpOriginObservation =
+	| {
+			readonly ok: true;
+			readonly observedPeerAddress: string;
+			readonly observedPeerSource: "server-peer-echo";
+	  }
+	| {
+			readonly ok: false;
+			readonly detail: string;
+	  };
 
 const PROVIDER_WITHOUT_LEDGER_TOKEN = "tc_probe_provider_without_ledger_token";
 const OUTBOUND_WITHOUT_LEDGER_TOKEN = "tc_probe_outbound_without_ledger_token";
@@ -217,6 +234,10 @@ export async function runServedMcpContainmentProbe(
 	};
 	const timeoutMs = options.timeoutMs;
 	const checks: ServedMcpContainmentCheck[] = [];
+	const origin = normalizeOrigin(
+		options.origin,
+		await observeServedMcpOrigin(fetcher, endpoint, timeoutMs),
+	);
 
 	const initialize = await postJson(
 		fetcher,
@@ -499,7 +520,7 @@ export async function runServedMcpContainmentProbe(
 		summary: checks.every((check) => check.status === "pass")
 			? "Served MCP containment probe passed"
 			: "Served MCP containment probe failed",
-		origin: normalizeOrigin(options.origin),
+		origin,
 		checks,
 		properties: { ...nonRedactionProperties, artifact_redacted: true },
 	});
@@ -529,7 +550,7 @@ export async function runServedMcpContainmentProbe(
 			status === "pass"
 				? "Served MCP containment probe passed"
 				: "Served MCP containment probe failed",
-		origin: normalizeOrigin(options.origin),
+		origin,
 		checks,
 		properties,
 	});
@@ -684,6 +705,43 @@ function requiredEndpoint(
 	return endpoint;
 }
 
+async function observeServedMcpOrigin(
+	fetcher: typeof fetch,
+	endpoint: ServedMcpEndpoint,
+	timeoutMs: number | undefined,
+): Promise<ServedMcpOriginObservation> {
+	const observation = await postJson(
+		fetcher,
+		endpoint,
+		rpc("initialize", { protocolVersion: "2024-11-05" }),
+		timeoutMs,
+	);
+	if (observation.transportError) {
+		return {
+			ok: false,
+			detail: `served-MCP peer origin probe transport failed: ${observation.transportError}`,
+		};
+	}
+	const observedPeerAddress = normalizeObservedPeerAddress(observation.observedPeerAddress);
+	if (observedPeerAddress) {
+		if (net.isIP(observedPeerAddress) !== 0) {
+			return {
+				ok: true,
+				observedPeerAddress,
+				observedPeerSource: "server-peer-echo",
+			};
+		}
+		return { ok: false, detail: "served-MCP peer origin header returned a non-IP peer address" };
+	}
+	const error = rpcError(observation);
+	return {
+		ok: false,
+		detail: error
+			? `served-MCP peer origin observation failed: ${error.message}`
+			: "served-MCP peer origin observation did not include the live server peer header",
+	};
+}
+
 async function postJson(
 	fetcher: typeof fetch,
 	endpoint: ServedMcpEndpoint,
@@ -723,7 +781,15 @@ async function postRaw(
 		} catch {
 			parsed = { parseError: "response JSON parse error" };
 		}
-		return { httpStatus: response.status, body: parsed };
+		const observedPeerAddress =
+			response.headers.get(TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER) ?? undefined;
+		return {
+			httpStatus: response.status,
+			body: parsed,
+			...(observedPeerAddress
+				? { observedPeerAddress, observedPeerSource: "server-peer-echo" as const }
+				: {}),
+		};
 	} catch (error) {
 		return { transportError: redactDetail(error instanceof Error ? error.message : String(error)) };
 	} finally {
@@ -892,23 +958,33 @@ function falseProperties(): Record<ServedMcpPropertyName, boolean> {
 
 function normalizeOrigin(
 	input: ServedMcpProbeOriginInput | undefined,
+	observation?: ServedMcpOriginObservation,
 ): ServedMcpContainmentEvidence["origin"] {
-	const kind =
-		input?.kind === "contained-peer" || input?.kind === "relay-self-smoke" ? input.kind : "unknown";
 	const containerName = clean(input?.containerName);
-	const observedPeerAddress = clean(input?.observedPeerAddress);
+	const observedPeerAddress =
+		observation?.ok === true ? observation.observedPeerAddress : undefined;
 	const expectedPeerAddress = clean(input?.expectedPeerAddress);
+	const relayPeerAddress = clean(input?.relayPeerAddress);
+	const kind = observedPeerAddress
+		? relayPeerAddress && observedPeerAddress === relayPeerAddress
+			? "relay-self-smoke"
+			: "contained-peer"
+		: "unknown";
 	return {
 		kind,
 		...(containerName ? { containerName } : {}),
 		...(observedPeerAddress ? { observedPeerAddress } : {}),
+		...(observation?.ok === true ? { observedPeerSource: observation.observedPeerSource } : {}),
 		...(expectedPeerAddress ? { expectedPeerAddress } : {}),
+		...(expectedPeerAddress ? { expectedPeerSource: "configured-contained-ip" as const } : {}),
 		detail:
 			kind === "contained-peer"
-				? "probe originated from the contained Hermes peer"
+				? "probe peer origin was observed by live MCP server"
 				: kind === "relay-self-smoke"
-					? "probe originated from the relay namespace and is smoke-only"
-					: "probe origin was not declared",
+					? "probe peer origin matched the relay namespace and is smoke-only"
+					: observation?.ok === false
+						? observation.detail
+						: "probe origin was not observed",
 	};
 }
 
@@ -924,10 +1000,14 @@ function originGateFor(origin: ServedMcpContainmentEvidence["origin"]): ServedMc
 	const matchesPeer =
 		origin.observedPeerAddress !== undefined &&
 		origin.expectedPeerAddress !== undefined &&
+		origin.observedPeerSource === "server-peer-echo" &&
+		origin.expectedPeerSource === "configured-contained-ip" &&
+		net.isIP(origin.observedPeerAddress) !== 0 &&
+		net.isIP(origin.expectedPeerAddress) !== 0 &&
 		origin.observedPeerAddress === origin.expectedPeerAddress;
 	if (
 		origin.kind === "contained-peer" &&
-		origin.containerName === "tc-hermes-contained" &&
+		origin.containerName === DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME &&
 		matchesPeer
 	) {
 		return {
@@ -941,7 +1021,7 @@ function originGateFor(origin: ServedMcpContainmentEvidence["origin"]): ServedMc
 		name: "servedMcp.origin",
 		status: "fail",
 		detail:
-			"served-MCP evidence must declare contained-peer origin from tc-hermes-contained with matching observed and expected peer address",
+			"served-MCP evidence must include a server-observed contained peer IP from tc-hermes-contained matching the configured contained IP",
 	};
 }
 
@@ -959,6 +1039,13 @@ function negativeControlsFromChecks(
 function clean(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : undefined;
+}
+
+function normalizeObservedPeerAddress(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	const normalized = trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
+	return normalized || undefined;
 }
 
 function sensitiveNeedles(options: RunServedMcpContainmentProbeOptions): string[] {

@@ -48,6 +48,14 @@ describe("Hermes served-MCP containment probe", () => {
 			status: "pass",
 			ran: true,
 			probeId: "execution.served_mcp_containment",
+			origin: {
+				kind: "contained-peer",
+				containerName: "tc-hermes-contained",
+				observedPeerAddress: "127.0.0.1",
+				observedPeerSource: "server-peer-echo",
+				expectedPeerAddress: "127.0.0.1",
+				expectedPeerSource: "configured-contained-ip",
+			},
 		});
 		for (const property of SERVED_MCP_REQUIRED_PROPERTY_NAMES) {
 			expect(report.properties[property]).toBe(true);
@@ -154,10 +162,9 @@ describe("Hermes served-MCP containment probe", () => {
 			wrongConnectionEndpoint: harness.endpoint("wrong"),
 			unauthenticatedEndpoint: { url: harness.url },
 			origin: {
-				kind: "relay-self-smoke",
 				containerName: "telclaude",
-				observedPeerAddress: "172.29.92.10",
 				expectedPeerAddress: "172.29.92.11",
+				relayPeerAddress: "127.0.0.1",
 			},
 		});
 
@@ -169,6 +176,40 @@ describe("Hermes served-MCP containment probe", () => {
 			status: "fail",
 			detail: expect.stringContaining("smoke"),
 		});
+	});
+
+	it("rejects self-declared or malformed contained-peer origin evidence", async () => {
+		const harness = await startHarness(cleanup);
+		const evidence = await runServedMcpContainmentProbe({
+			allowRun: true,
+			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
+			forgedAuthorityEndpoint: harness.endpoint("forged"),
+			wrongConnectionEndpoint: harness.endpoint("wrong"),
+			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
+		});
+		const selfDeclaredOrigin = {
+			kind: evidence.origin.kind,
+			containerName: evidence.origin.containerName,
+			observedPeerAddress: evidence.origin.observedPeerAddress,
+			expectedPeerAddress: evidence.origin.expectedPeerAddress,
+			expectedPeerSource: evidence.origin.expectedPeerSource,
+			detail: evidence.origin.detail,
+		};
+
+		for (const origin of [
+			selfDeclaredOrigin,
+			{ ...evidence.origin, observedPeerAddress: "tc-hermes-contained" },
+			{ ...evidence.origin, observedPeerAddress: "127.0.0.1", expectedPeerAddress: "127.0.0.2" },
+		]) {
+			const report = evaluateServedMcpContainmentEvidence({ ...evidence, origin });
+			expect(report.productionEnable).toBe(false);
+			expect(report.gates.find((gate) => gate.name === "servedMcp.origin")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("server-observed contained peer IP"),
+			});
+		}
 	});
 
 	it("fails production evaluation when negative controls are absent or false", async () => {
@@ -252,6 +293,7 @@ async function startHarness(
 	const privateContext = {
 		authorityHandle: privateGrant.handle,
 		connection: privateConnection,
+		observedPeerAddress: "127.0.0.1",
 	};
 	const nodeServer = createTelclaudeLiveMcpNodeHttpServer(server, {
 		resolveConnection: (request) => {
@@ -355,10 +397,8 @@ async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
 
 function containedPeerOrigin() {
 	return {
-		kind: "contained-peer",
 		containerName: "tc-hermes-contained",
-		observedPeerAddress: "172.29.92.11",
-		expectedPeerAddress: "172.29.92.11",
+		expectedPeerAddress: "127.0.0.1",
 	};
 }
 

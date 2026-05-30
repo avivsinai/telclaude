@@ -7,7 +7,6 @@ import type { TelclaudeMcpAuthority } from "./bridge.js";
 import {
 	DEFAULT_LIVE_MCP_CONNECTION_TTL_MS,
 	TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX,
-	TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS,
 	type TelclaudeLiveMcpConnectionGrant,
 	type TelclaudeLiveMcpConnectionResolver,
 } from "./live-connection-resolver.js";
@@ -87,13 +86,13 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 		ttlMs,
 		...(options.peerAddress ? { peerAddress: options.peerAddress } : {}),
 	});
-	const offDomainPeer = options.resolver.issue({
+	const offDomainPeer = options.resolver.issueProbePeerBypass({
 		authorityHandle: privateGrant.handle,
 		connection: privateConnection,
 		nowMs,
 		ttlMs,
 		peerAddress: offDomainPeerAddress,
-		[TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS]: true,
+		probePurpose: "off-domain-peer-negative-control",
 	});
 	const wrong = options.resolver.issue({
 		authorityHandle: privateGrant.handle,

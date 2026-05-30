@@ -128,6 +128,12 @@ function tokenBundle(): TelclaudeLiveMcpProbeTokenBundle {
 			issuedAtMs: 1_000,
 			expiresAtMs: 61_000,
 		},
+		offDomainPeer: {
+			token: "tc_mcp_conn_OFFDOMAINSECRET",
+			authorizationHeader: "Bearer tc_mcp_conn_OFFDOMAINSECRET",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+		},
 		forged: {
 			token: "tc_mcp_conn_FORGEDSECRET",
 			authorizationHeader: "Bearer tc_mcp_conn_FORGEDSECRET",

@@ -14,6 +14,8 @@ import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js
 import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
 
 export const TELCLAUDE_LIVE_MCP_TRANSPORT = "http_relay_internal_network";
+export const TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER = "x-telclaude-live-mcp-observed-peer-address";
+export const TELCLAUDE_LIVE_MCP_PLACEMENT_SIDE_HEADER = "x-telclaude-live-mcp-placement-side";
 
 export const TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE = [
 	"providerRead",
@@ -34,6 +36,7 @@ export type TelclaudeLiveMcpRelayClients = Omit<
 export type TelclaudeLiveMcpConnectionContext = {
 	readonly authorityHandle: string;
 	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly observedPeerAddress?: string;
 };
 
 type JsonRpcId = string | number | null;
@@ -257,8 +260,13 @@ export function createTelclaudeLiveMcpNodeHttpServer(
 			return;
 		}
 
-		const rpcResponse = await server.handleJsonRpc(payload, context);
-		writeHttpJson(response, httpStatusForRpcResponse(rpcResponse), rpcResponse);
+		const observedPeerAddress = normalizeObservedPeerAddress(request.socket.remoteAddress);
+		const rpcResponse = await server.handleJsonRpc(payload, {
+			...context,
+			...(observedPeerAddress ? { observedPeerAddress } : {}),
+		});
+		const observationHeaders = liveMcpObservationHeaders(request, server);
+		writeHttpJson(response, httpStatusForRpcResponse(rpcResponse), rpcResponse, observationHeaders);
 	});
 }
 
@@ -411,12 +419,31 @@ function writeHttpJson(
 	response: http.ServerResponse,
 	statusCode: number,
 	body: TelclaudeLiveMcpJsonRpcResponse,
+	headers: Readonly<Record<string, string>> = {},
 ): void {
 	response.writeHead(statusCode, {
 		"Content-Type": "application/json; charset=utf-8",
 		"Cache-Control": "no-store",
+		...headers,
 	});
 	response.end(`${JSON.stringify(body)}\n`);
+}
+
+function liveMcpObservationHeaders(
+	request: http.IncomingMessage,
+	server: TelclaudeLiveMcpRelayHttpServer,
+): Record<string, string> {
+	const peerAddress = normalizeObservedPeerAddress(request.socket.remoteAddress);
+	return {
+		[TELCLAUDE_LIVE_MCP_PLACEMENT_SIDE_HEADER]: server.placement.side,
+		...(peerAddress ? { [TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER]: peerAddress } : {}),
+	};
+}
+
+function normalizeObservedPeerAddress(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
 }
 
 async function readHttpBody(request: http.IncomingMessage): Promise<string> {
