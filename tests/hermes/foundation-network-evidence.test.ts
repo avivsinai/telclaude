@@ -79,20 +79,55 @@ function networkEvidence(
 		summary: `${id} observed expected network isolation`,
 		generatedAt: "2026-05-30T00:00:00.000Z",
 		evidence_path: evidencePath,
-		attempts: [
-			{
-				name: "policy-check",
-				kind: "http",
-				target: "http://relay/probe",
-				expectation: id === "network.relay-control-allowed" ? "allow" : "deny",
-				status: "pass",
-				observed: "expected",
-				detail: "observed expected network policy result",
-				durationMs: 1,
-				httpStatus: 204,
-			},
-		],
+		attempts: [firewallSentinelAttempt(), networkPolicyAttempt(id)],
 		...overrides,
+	};
+}
+
+function firewallSentinelAttempt() {
+	return {
+		name: "firewall-sentinel",
+		kind: "firewall_sentinel",
+		target: "/run/telclaude/firewall-active",
+		expectation: "present",
+		status: "pass",
+		observed: "present",
+		detail: "firewall sentinel is present",
+	};
+}
+
+function networkPolicyAttempt(id: string) {
+	if (id === "network.dns-exfil-denied") {
+		return {
+			name: "dns-exfil-guard",
+			kind: "dns_guard",
+			target: "http://169.254.169.254/latest/meta-data/",
+			expectation: "deny",
+			status: "pass",
+			observed: "denied",
+			detail: "DNS guard denied the forbidden target before egress",
+			durationMs: 1,
+			errorName: "TypeError",
+			errorCode: "ECONNREFUSED",
+			resolvedAddresses: [
+				{
+					address: "169.254.169.254",
+					blocked: true,
+					nonOverridable: true,
+				},
+			],
+		};
+	}
+	return {
+		name: "policy-check",
+		kind: "http",
+		target: "http://relay/probe",
+		expectation: id === "network.relay-control-allowed" ? "allow" : "deny",
+		status: "pass",
+		observed: "expected",
+		detail: "observed expected network policy result",
+		durationMs: 1,
+		httpStatus: 204,
 	};
 }
 
@@ -195,6 +230,57 @@ describe("Hermes cutover network evidence validation", () => {
 		expect(report.gates.find((gate) => gate.name === "networkProbes.pass")).toMatchObject({
 			status: "pass",
 		});
+	});
+
+	it("fails when required network evidence lacks a passing firewall sentinel", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir);
+		const probe = networkProbes.probes[0];
+		writeJson(
+			probe.evidence_path,
+			networkEvidence(probe.id, probe.evidence_path, {
+				attempts: [networkPolicyAttempt(probe.id)],
+			}),
+		);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.relay-control-allowed firewall_sentinel attempt is missing or not pass",
+		);
+	});
+
+	it("fails dns-exfil evidence when dns_guard has no non-overridable resolved address", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir);
+		const probe = networkProbes.probes.find((candidate) => candidate.id === "network.dns-exfil-denied");
+		if (!probe) throw new Error("missing dns-exfil probe");
+		writeJson(
+			probe.evidence_path,
+			networkEvidence(probe.id, probe.evidence_path, {
+				attempts: [
+					firewallSentinelAttempt(),
+					{
+						name: "dns-exfil-guard",
+						kind: "dns_guard",
+						target: "http://169.254.169.254/latest/meta-data/",
+						expectation: "deny",
+						status: "pass",
+						observed: "denied",
+						detail: "DNS guard blocked the target but remains overridable",
+						resolvedAddresses: [
+							{
+								address: "169.254.169.254",
+								blocked: true,
+								nonOverridable: false,
+							},
+						],
+					},
+				],
+			}),
+		);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.dns-exfil-denied dns_guard lacks nonOverridable resolved address",
+		);
 	});
 
 	it("fails when a passing bundle references missing per-probe evidence", () => {

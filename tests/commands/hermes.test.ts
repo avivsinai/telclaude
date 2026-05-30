@@ -579,6 +579,13 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
 		ran: true,
 		exitCode: 0,
 		summary: "Hermes CLI oneshot probe completed successfully",
+		invocation: {
+			command: "/usr/local/bin/hermes",
+			args: ["-z", "telclaude probe ok"],
+			cwd: "/repo",
+			envKeys: ["HERMES_HOME", "NO_COLOR"],
+		},
+		findings: [],
 		...overrides,
 	};
 }
@@ -1014,6 +1021,30 @@ describe("Hermes wrapper foundation", () => {
 			name: "nonzero exit",
 			evidence: cliHeadlessEvidence({ exitCode: 7 }),
 			detail: "exitCode is 7",
+		},
+		{
+			name: "non-empty findings",
+			evidence: cliHeadlessEvidence({
+				findings: [
+					{
+						location: "env.OPENAI_API_KEY",
+						reason: "forbidden credential environment key",
+					},
+				],
+			}),
+			detail: "findings are not empty",
+		},
+		{
+			name: "forbidden env key",
+			evidence: cliHeadlessEvidence({
+				invocation: {
+					command: "/usr/local/bin/hermes",
+					args: ["-z", "telclaude probe ok"],
+					cwd: "/repo",
+					envKeys: ["HERMES_HOME", "OPENAI_API_KEY"],
+				},
+			}),
+			detail: "forbidden credential envKeys: OPENAI_API_KEY",
 		},
 		{
 			name: "partial handwritten pass",
