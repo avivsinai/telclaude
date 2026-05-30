@@ -13,7 +13,8 @@ This playbook executes the contained Hermes private-runtime live run for the no-
   `nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7`.
 - The dedicated Docker network `telclaude-hermes-relay` must be `Internal=true` and contain only `telclaude` and `tc-hermes-contained` during the production topology snapshot.
 - The relay overlay assigns stable internal IPs so live MCP bearer tokens are peer-bound or accepted only from the contained Hermes peer IP.
-- The contained Hermes runtime must start as uid `10000:10000`, with no added capabilities, `no-new-privileges`, read-only rootfs, tmpfs `/tmp`, and tmpfs `/home/hermes`.
+- The contained Hermes runtime must start as uid `10000:10000`, with no added capabilities, `no-new-privileges`, read-only rootfs, and `noexec` tmpfs mounts for `/tmp`, `/run`, and `/home/hermes`.
+- The contained Hermes runtime uses `/opt/hermes/hermes` as the direct entrypoint. The pinned image's default s6 wrapper drops privileges internally and is incompatible with starting the container itself as uid `10000` with all capabilities dropped.
 
 ## 0. Shell Setup
 
@@ -120,7 +121,7 @@ docker inspect tc-hermes-contained --format '{{json .State.Health}}' | jq .
 docker logs --tail 120 tc-hermes-contained
 ```
 
-The live-run blocker here is factual: if Hermes does not start with read-only rootfs plus only `/tmp` and `/home/hermes` tmpfs, add the smallest specific tmpfs mount needed. Do not relax to writable rootfs or add capabilities.
+The live-run blocker here is factual: if Hermes does not start with read-only rootfs plus only non-executable `/tmp`, `/run`, and `/home/hermes` tmpfs mounts, add the smallest specific tmpfs mount needed. Do not relax to writable rootfs, executable tmpfs, or added capabilities.
 
 ## 4. Verify Network Topology
 

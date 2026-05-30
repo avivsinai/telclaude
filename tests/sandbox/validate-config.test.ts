@@ -179,6 +179,7 @@ TELCLAUDE_LOG_LEVEL=info
 		});
 
 		expect(hermes).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
+		expect(hermes).toContain('entrypoint: ["/opt/hermes/hermes"]');
 		expect(hermes).not.toMatch(/image:.*:latest\b/);
 		expect(hermes).toContain('user: "10000:10000"');
 		expect(listValues(hermes, "cap_drop")).toEqual(["ALL"]);
@@ -191,8 +192,9 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(hermes).not.toMatch(/^\s+volumes:/m);
 		expect(hermes).not.toMatch(/^\s+env_file:/m);
 		expect(listValues(hermes, "tmpfs")).toEqual([
-			"/tmp:size=128M,mode=1777",
-			"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700",
+			"/tmp:size=128M,mode=1777,noexec",
+			"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
+			"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
 		]);
 		expect(hermes).toContain("http://127.0.0.1:8642/health");
 
