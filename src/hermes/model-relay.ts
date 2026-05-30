@@ -2,15 +2,17 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { redactSecrets } from "../security/output-filter.js";
-import { resolveHermesArtifactPath } from "./foundation.js";
+import { type NETWORK_PROBE_POSTURES, resolveHermesArtifactPath } from "./foundation.js";
 import { DEFAULT_MODEL_PROVIDER_PROBE_URL } from "./network-probes.js";
 
 export const HERMES_MODEL_RELAY_SCHEMA_VERSION = "telclaude.hermes.model-relay.v1";
 export const DEFAULT_MODEL_RELAY_EVIDENCE_PATH = "artifacts/hermes/probes/model-relay.json";
 export const MODEL_RELAY_OBSERVED_PEER_HEADER = "x-telclaude-model-relay-observed-peer-address";
 export const DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME = "tc-hermes-contained";
+export const DEFAULT_MODEL_RELAY_POSTURE = "agent-iptables" as const;
 
 type ModelRelayStatus = "pass" | "fail" | "pending";
+export type ModelRelayPosture = (typeof NETWORK_PROBE_POSTURES)[number];
 
 type ModelRelayGate = {
 	readonly name: string;
@@ -34,6 +36,7 @@ type ModelRelayOrigin = {
 export type HermesModelRelayReport = {
 	readonly schemaVersion: typeof HERMES_MODEL_RELAY_SCHEMA_VERSION;
 	readonly probeId: "model.relay";
+	readonly posture: ModelRelayPosture;
 	readonly status: ModelRelayStatus;
 	readonly ran: boolean;
 	readonly summary: string;
@@ -54,6 +57,7 @@ export type HermesModelRelayProbeOptions = {
 	readonly directModelUrl?: string;
 	readonly profileDir?: string;
 	readonly firewallSentinelPath?: string;
+	readonly posture?: ModelRelayPosture;
 	readonly containerName?: string;
 	readonly expectedPeerAddress?: string;
 	readonly relayPeerAddress?: string;
@@ -96,11 +100,13 @@ export async function runHermesModelRelayProbe(
 	options: HermesModelRelayProbeOptions,
 ): Promise<HermesModelRelayReport> {
 	const generatedAt = (options.now ?? new Date()).toISOString();
+	const posture = options.posture ?? DEFAULT_MODEL_RELAY_POSTURE;
 	const directModelUrl = options.directModelUrl?.trim() || DEFAULT_MODEL_PROVIDER_PROBE_URL;
 	if (!options.allowRun) {
 		return {
 			schemaVersion: HERMES_MODEL_RELAY_SCHEMA_VERSION,
 			probeId: "model.relay",
+			posture,
 			status: "pending",
 			ran: false,
 			generatedAt,
@@ -115,7 +121,9 @@ export async function runHermesModelRelayProbe(
 	const profileDir = options.profileDir?.trim();
 	const gates: ModelRelayGate[] = [];
 	gates.push(pass("modelRelay.allowed", "operator allowed live model-relay evidence"));
-	gates.push(firewallSentinelGate(options.firewallSentinelPath));
+	if (posture === "agent-iptables") {
+		gates.push(firewallSentinelGate(options.firewallSentinelPath));
+	}
 	const relay = await relayReachableGate(relayUrl, options.timeoutMs, options.fetchImpl);
 	gates.push(relay.gate);
 	const origin = modelRelayOrigin({
@@ -133,6 +141,7 @@ export async function runHermesModelRelayProbe(
 	return {
 		schemaVersion: HERMES_MODEL_RELAY_SCHEMA_VERSION,
 		probeId: "model.relay",
+		posture,
 		status,
 		ran: true,
 		generatedAt,

@@ -425,6 +425,7 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 	return {
 		schemaVersion: "telclaude.hermes.model-relay.v1",
 		probeId: "model.relay",
+		posture: "contained-internal",
 		status: "pass",
 		ran: true,
 		summary: "Hermes model relay evidence passed",
@@ -434,11 +435,6 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 				name: "modelRelay.allowed",
 				status: "pass",
 				detail: "operator allowed live model-relay evidence",
-			},
-			{
-				name: "firewall.sentinel",
-				status: "pass",
-				detail: "firewall sentinel is present",
 			},
 			{
 				name: "modelRelay.origin",
@@ -906,14 +902,14 @@ describe("Hermes cutover model-relay evidence validation", () => {
 		);
 	});
 
-	it("fails when model-relay evidence omits firewall or contained-origin proof", () => {
+	it("fails when model-relay evidence omits contained-origin proof", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
 		const evidencePath = path.join(tempDir, "model-relay.json");
 		writeJson(
 			evidencePath,
 			modelRelayEvidence({
 				gates: modelRelayEvidence().gates.filter(
-					(gate) => gate.name !== "firewall.sentinel" && gate.name !== "modelRelay.origin",
+					(gate) => gate.name !== "modelRelay.origin",
 				),
 				origin: {
 					kind: "unknown",
@@ -926,8 +922,48 @@ describe("Hermes cutover model-relay evidence validation", () => {
 
 		expect(report.status).toBe("fail");
 		const detail = report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail;
-		expect(detail).toContain("gate firewall.sentinel is missing");
 		expect(detail).toContain("gate modelRelay.origin is missing");
 		expect(detail).toContain("origin is not a server-observed tc-hermes-contained peer");
+	});
+
+	it("fails when model-relay evidence selects the agent-iptables posture", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				posture: "agent-iptables",
+				gates: [
+					...modelRelayEvidence().gates,
+					{
+						name: "firewall.sentinel",
+						status: "pass",
+						detail: "firewall sentinel is present",
+					},
+				],
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"posture is agent-iptables; expected contained-internal",
+		);
+	});
+
+	it("fails when model-relay evidence omits the pinned posture", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		const evidence = modelRelayEvidence();
+		delete (evidence as Record<string, unknown>).posture;
+		writeJson(evidencePath, evidence);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"posture is missing; expected contained-internal",
+		);
 	});
 });

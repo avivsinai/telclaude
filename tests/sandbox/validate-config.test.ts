@@ -180,11 +180,14 @@ TELCLAUDE_LOG_LEVEL=info
 			HERMES_HOME: "/home/hermes/.hermes",
 			HOME: "/home/hermes",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
+			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-contained-skills.allowlist",
+			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
 			NO_COLOR: "1",
 		});
 
 		expect(hermes).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
-		expect(hermes).toContain('entrypoint: ["/opt/hermes/hermes"]');
+		expect(hermes).toContain('entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]');
+		expect(hermes).toContain('command: ["gateway", "run"]');
 		expect(hermes).not.toMatch(/image:.*:latest\b/);
 		expect(hermes).toContain('user: "10000:10000"');
 		expect(listValues(hermes, "cap_drop")).toEqual(["ALL"]);
@@ -194,7 +197,10 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(hermes).not.toContain("seccomp:unconfined");
 		expect(hermes).not.toContain("apparmor:unconfined");
 		expect(hermes).toContain("read_only: true");
-		expect(hermes).not.toMatch(/^\s+volumes:/m);
+		expect(listValues(hermes, "volumes")).toEqual([
+			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
+			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
+		]);
 		expect(hermes).not.toMatch(/^\s+env_file:/m);
 		expect(listValues(hermes, "tmpfs")).toEqual([
 			"/tmp:size=128M,mode=1777,noexec",

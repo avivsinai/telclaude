@@ -42,7 +42,7 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "modelRelay.allowed")).toMatchObject({ status: "pending" });
 	});
 
-	it("passes only when relay is reachable, direct model egress is denied, and profile has no model secrets", async () => {
+	it("keeps the firewall sentinel gate for agent-iptables posture", async () => {
 		const relayUrl = await startServer((_req, res) => {
 			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
 			res.writeHead(204).end();
@@ -71,9 +71,40 @@ describe("Hermes model-relay probe", () => {
 		});
 
 		expect(report.status).toBe("pass");
+		expect(report.posture).toBe("agent-iptables");
 		expect(gate(report, "firewall.sentinel")).toMatchObject({ status: "pass" });
 		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
 		expect(gate(report, "relay.reachable")).toMatchObject({ status: "pass" });
+		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
+	it("passes contained-internal posture without a fake firewall sentinel", async () => {
+		const relayUrl = await startServer((_req, res) => {
+			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
+			res.writeHead(204).end();
+		});
+		const { profileDir } = makeCleanProfile();
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: directModelFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(report.posture).toBe("contained-internal");
+		expect(report.gates.some((candidate) => candidate.name === "firewall.sentinel")).toBe(false);
+		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
 		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
 		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
 		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
