@@ -2,6 +2,10 @@ import { executeRemoteQuery } from "../agent/client.js";
 import type { TelclaudeConfig } from "../config/config.js";
 import { resolveChatProfile } from "../config/profiles.js";
 import { formatHomeTarget, getHomeTarget } from "../config/sessions.js";
+import {
+	executeHermesPrivateQuery,
+	shouldUseHermesPrivateRuntime,
+} from "../hermes/private-execute.js";
 import { getChildLogger } from "../logging.js";
 import {
 	buildTelegramMemoryBundle,
@@ -21,6 +25,7 @@ export type CronTelegramDestination = {
 };
 
 type ScheduledAgentActionDeps = {
+	executeHermes?: typeof executeHermesPrivateQuery;
 	executeRemote?: (
 		prompt: string,
 		options: PooledQueryOptions,
@@ -199,9 +204,10 @@ export async function executeScheduledAgentPromptAction(
 		"Keep the response concise and user-facing. Do not mention internal job ids unless relevant.",
 		"</scheduled-task>",
 	].join("\n");
+	const activeProfile = resolveChatProfile(destination.chatId, cfg);
 	const memoryBundle = buildTelegramMemoryBundle({
 		chatId: String(destination.chatId),
-		profileId: resolveChatProfile(destination.chatId, cfg).profile.id,
+		profileId: activeProfile.profile.id,
 		query: job.action.prompt,
 		includeRecentHistory: true,
 	});
@@ -233,12 +239,28 @@ export async function executeScheduledAgentPromptAction(
 		queryOptions.allowedSkills = job.action.allowedSkills;
 	}
 
-	const queryStream = process.env.TELCLAUDE_AGENT_URL
-		? (deps.executeRemote ?? executeRemoteQuery)(job.action.prompt, {
-				...queryOptions,
-				scope: "telegram",
+	const queryStream = shouldUseHermesPrivateRuntime()
+		? (deps.executeHermes ?? executeHermesPrivateQuery)(job.action.prompt, {
+				cwd: queryOptions.cwd,
+				tier: queryOptions.tier,
+				poolKey: queryOptions.poolKey,
+				telclaudeSessionId: `cron:${job.id}`,
+				profileId: activeProfile.profile.id,
+				enableSkills: true,
+				allowedSkills: queryOptions.allowedSkills,
+				timeoutMs: cfg.cron.timeoutSeconds * 1000,
+				userId: queryOptions.userId,
+				chatId: destination.chatId,
+				threadId: destination.threadId,
+				systemPromptAppend,
+				compiledMemoryMd: memoryBundle.compiledMemoryMd,
 			})
-		: (deps.executeLocal ?? executePooledQuery)(job.action.prompt, queryOptions);
+		: process.env.TELCLAUDE_AGENT_URL
+			? (deps.executeRemote ?? executeRemoteQuery)(job.action.prompt, {
+					...queryOptions,
+					scope: "telegram",
+				})
+			: (deps.executeLocal ?? executePooledQuery)(job.action.prompt, queryOptions);
 
 	const queryResult = await collectQueryResponse(queryStream);
 	if (!queryResult.success) {

@@ -15,14 +15,15 @@ export const HERMES_API_SERVER_CONTAINMENT_SCHEMA_VERSION =
 	"telclaude.hermes.api-server-containment.v1";
 export const DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH =
 	"artifacts/hermes/probes/execution-api-server-containment.json";
-export const DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE = "nousresearch/hermes-agent:latest";
+export const DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE =
+	"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7";
 export const DEFAULT_HERMES_API_SERVER_CONTAINER_NAME = "tc-hermes-contained";
 export const DEFAULT_HERMES_API_SERVER_NETWORK = "telclaude-hermes-relay";
 export const DEFAULT_HERMES_API_SERVER_PORT = 8642;
 export const DEFAULT_HERMES_API_SERVER_HERMES_HOME = "/home/hermes/.hermes";
 export const DEFAULT_HERMES_RELAY_INTERNAL_HOST = "telclaude";
 export const DEFAULT_HERMES_RELAY_CONTAINER_NAME = "telclaude";
-export const DEFAULT_HERMES_API_SERVER_RUNTIME_USER = "hermes";
+export const DEFAULT_HERMES_API_SERVER_RUNTIME_USER = "10000:10000";
 
 type ApiServerContainmentStatus = "pass" | "fail" | "pending";
 
@@ -144,6 +145,10 @@ export function buildHermesApiServerLaunchPlan(input: {
 		DEFAULT_HERMES_RELAY_CONTAINER_NAME,
 	);
 	const runtimeUser = cleanNonEmpty(input.runtimeUser, DEFAULT_HERMES_API_SERVER_RUNTIME_USER);
+	const hermesHome = cleanNonEmpty(input.hermesHome, DEFAULT_HERMES_API_SERVER_HERMES_HOME);
+	const image = normalizeDigestPinnedImage(
+		cleanNonEmpty(input.image, DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE),
+	);
 	// API_SERVER_KEY is a fresh relay-to-contained-Hermes bearer token, not a
 	// provider/model/vault credential. It is generated for this launch only,
 	// passed through process env instead of argv, and omitted from artifacts.
@@ -152,7 +157,8 @@ export function buildHermesApiServerLaunchPlan(input: {
 		API_SERVER_HOST: "0.0.0.0",
 		API_SERVER_PORT: String(apiPort),
 		API_SERVER_KEY: apiKey,
-		HERMES_HOME: cleanNonEmpty(input.hermesHome, DEFAULT_HERMES_API_SERVER_HERMES_HOME),
+		HERMES_HOME: hermesHome,
+		HOME: path.dirname(hermesHome),
 		TELCLAUDE_INTERNAL_HOSTS: relayInternalHost,
 		NO_COLOR: "1",
 	};
@@ -168,20 +174,23 @@ export function buildHermesApiServerLaunchPlan(input: {
 				containerName,
 				"--network",
 				network,
+				"--user",
+				runtimeUser,
 				"--cap-drop",
 				"ALL",
-				"--cap-add",
-				"CHOWN",
-				"--cap-add",
-				"DAC_OVERRIDE",
-				"--cap-add",
-				"FOWNER",
-				"--cap-add",
-				"SETUID",
-				"--cap-add",
-				"SETGID",
 				"--security-opt",
 				"no-new-privileges",
+				"--read-only",
+				"--tmpfs",
+				"/tmp:size=128m,mode=1777",
+				"--tmpfs",
+				`${path.dirname(hermesHome)}:size=512m,uid=10000,gid=10000,mode=0700`,
+				"--pids-limit",
+				"256",
+				"--memory",
+				"2g",
+				"--cpus",
+				"2",
 				"--env",
 				"API_SERVER_ENABLED",
 				"--env",
@@ -193,10 +202,12 @@ export function buildHermesApiServerLaunchPlan(input: {
 				"--env",
 				"HERMES_HOME",
 				"--env",
+				"HOME",
+				"--env",
 				"TELCLAUDE_INTERNAL_HOSTS",
 				"--env",
 				"NO_COLOR",
-				cleanNonEmpty(input.image, DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE),
+				image,
 				"gateway",
 				"run",
 			],
@@ -774,7 +785,7 @@ async function runTamperResistanceProbe(
 			plan.containerName,
 			"sh",
 			"-lc",
-			'printf \'%s:%s\' "$(id -u)" "$(id -un)"',
+			'printf \'%s:%s\' "$(id -u)" "$(id -un 2>/dev/null || printf unknown)"',
 		],
 		options.timeoutMs,
 	);
@@ -891,6 +902,20 @@ function normalizePort(value: number | undefined): number {
 		throw new Error(`Invalid Hermes API-server port: ${value}`);
 	}
 	return Math.trunc(value);
+}
+
+function normalizeDigestPinnedImage(image: string): string {
+	const trimmed = image.trim();
+	const match = trimmed.match(/^([^\s@]+)@sha256:([a-f0-9]{64})$/i);
+	if (!match) {
+		throw new Error("Hermes API-server image must be pinned by sha256 digest");
+	}
+	const repository = match[1] ?? "";
+	const lastComponent = repository.slice(repository.lastIndexOf("/") + 1);
+	if (!repository || lastComponent.includes(":")) {
+		throw new Error("Hermes API-server image must be pinned as repository@sha256:digest");
+	}
+	return trimmed;
 }
 
 function redactApiServerText(value: string, plan: HermesApiServerLaunchPlan): string {

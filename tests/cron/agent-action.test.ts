@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_DATA_DIR = process.env.TELCLAUDE_DATA_DIR;
+const ORIGINAL_AGENT_URL = process.env.TELCLAUDE_AGENT_URL;
+const ORIGINAL_HERMES_PRIVATE_RUNTIME = process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME;
 
 describe("scheduled agent cron action", () => {
 	let tempDir: string;
@@ -11,6 +13,8 @@ describe("scheduled agent cron action", () => {
 	beforeEach(async () => {
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "telclaude-cron-agent-"));
 		process.env.TELCLAUDE_DATA_DIR = tempDir;
+		delete process.env.TELCLAUDE_AGENT_URL;
+		delete process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME;
 		vi.resetModules();
 		const { resetDatabase } = await import("../../src/storage/db.js");
 		resetDatabase();
@@ -22,6 +26,16 @@ describe("scheduled agent cron action", () => {
 			delete process.env.TELCLAUDE_DATA_DIR;
 		} else {
 			process.env.TELCLAUDE_DATA_DIR = ORIGINAL_DATA_DIR;
+		}
+		if (ORIGINAL_AGENT_URL === undefined) {
+			delete process.env.TELCLAUDE_AGENT_URL;
+		} else {
+			process.env.TELCLAUDE_AGENT_URL = ORIGINAL_AGENT_URL;
+		}
+		if (ORIGINAL_HERMES_PRIVATE_RUNTIME === undefined) {
+			delete process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME;
+		} else {
+			process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = ORIGINAL_HERMES_PRIVATE_RUNTIME;
 		}
 	});
 
@@ -468,6 +482,171 @@ describe("scheduled agent cron action", () => {
 		});
 		expect(executeLocal).not.toHaveBeenCalled();
 		expect(sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("keeps the remote agent path when Hermes private runtime is off", async () => {
+		process.env.TELCLAUDE_AGENT_URL = "http://agent:8788";
+		process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = "0";
+		const { executeScheduledAgentPromptAction } = await import("../../src/cron/agent-action.js");
+
+		const executeHermes = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "wrong runtime",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const executeRemote = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "remote path",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const executeLocal = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "local path",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const sendMessage = vi.fn(async () => ({ success: true, messageId: 42 }));
+
+		const result = await executeScheduledAgentPromptAction(
+			{
+				id: "cron-remote",
+				name: "remote routine",
+				enabled: true,
+				running: false,
+				ownerId: null,
+				deliveryTarget: { kind: "chat", chatId: 123 },
+				schedule: { kind: "every", everyMs: 60_000 },
+				action: { kind: "agent-prompt", prompt: "use configured remote" },
+				nextRunAtMs: null,
+				lastRunAtMs: null,
+				lastStatus: null,
+				lastError: null,
+				createdAtMs: 0,
+				updatedAtMs: 0,
+			},
+			{
+				telegram: { botToken: "token" },
+				cron: { timeoutSeconds: 30 },
+				security: {},
+			} as never,
+			new AbortController().signal,
+			{
+				executeHermes,
+				executeRemote,
+				executeLocal,
+				sendMessage,
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect(executeHermes).not.toHaveBeenCalled();
+		expect(executeLocal).not.toHaveBeenCalled();
+		expect(executeRemote).toHaveBeenCalledWith(
+			"use configured remote",
+			expect.objectContaining({ scope: "telegram", poolKey: "cron:cron-remote" }),
+		);
+		expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "remote path" }));
+	});
+
+	it("routes scheduled private prompts to Hermes only when the Hermes flag is on", async () => {
+		process.env.TELCLAUDE_AGENT_URL = "http://agent:8788";
+		process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME = "1";
+		const { setChatActiveProfileId } = await import("../../src/config/sessions.js");
+		const { executeScheduledAgentPromptAction } = await import("../../src/cron/agent-action.js");
+
+		setChatActiveProfileId(123, "engineer");
+		const executeHermes = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "hermes path",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const executeRemote = vi.fn(async function* () {
+			yield {
+				type: "done",
+				result: {
+					response: "remote path",
+					success: true,
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 1,
+				},
+			} as const;
+		});
+		const sendMessage = vi.fn(async () => ({ success: true, messageId: 42 }));
+
+		const result = await executeScheduledAgentPromptAction(
+			{
+				id: "cron-hermes",
+				name: "hermes routine",
+				enabled: true,
+				running: false,
+				ownerId: "alice",
+				deliveryTarget: { kind: "chat", chatId: 123, threadId: 7 },
+				schedule: { kind: "every", everyMs: 60_000 },
+				action: { kind: "agent-prompt", prompt: "use Hermes", allowedSkills: ["summarize"] },
+				nextRunAtMs: null,
+				lastRunAtMs: null,
+				lastStatus: null,
+				lastError: null,
+				createdAtMs: 0,
+				updatedAtMs: 0,
+			},
+			{
+				profiles: [{ id: "engineer", label: "Engineer" }],
+				telegram: { botToken: "token" },
+				cron: { timeoutSeconds: 30 },
+				security: {},
+			} as never,
+			new AbortController().signal,
+			{
+				executeHermes,
+				executeRemote,
+				sendMessage,
+			},
+		);
+
+		expect(result.ok).toBe(true);
+		expect(executeRemote).not.toHaveBeenCalled();
+		expect(executeHermes).toHaveBeenCalledWith(
+			"use Hermes",
+			expect.objectContaining({
+				poolKey: "cron:cron-hermes",
+				telclaudeSessionId: "cron:cron-hermes",
+				profileId: "engineer",
+				allowedSkills: ["summarize"],
+				chatId: 123,
+				threadId: 7,
+				userId: "alice",
+			}),
+		);
+		expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "hermes path" }));
 	});
 
 	it("fails cleanly when home delivery is requested without a stored home target", async () => {
