@@ -3,6 +3,7 @@ import type { StreamChunk } from "../sdk/client.js";
 import { HermesApiRuntimeAdapter } from "./api-adapter.js";
 import {
 	executeHermesPrivateRuntime,
+	type HermesPrivateMcpAuthorityOptions,
 	type HermesPrivateRuntimeRequest,
 	type HermesRuntimeAdapter,
 } from "./private-runtime.js";
@@ -25,6 +26,7 @@ export type HermesPrivateQueryOptions = {
 	threadId?: number;
 	systemPromptAppend?: string;
 	compiledMemoryMd?: string;
+	mcpAuthority?: HermesPrivateMcpAuthorityOptions;
 };
 
 let privateRuntimeAdapter: HermesRuntimeAdapter | null = null;
@@ -113,6 +115,7 @@ export async function* executeHermesPrivateQuery(
 			model: options.model,
 			systemPromptAppend: options.systemPromptAppend,
 			allowedSkills: options.enableSkills ? options.allowedSkills : [],
+			mcpAuthority: options.mcpAuthority,
 			isNewSession: !options.resumeSessionId,
 			timeoutMs: options.timeoutMs,
 			signal: controller.signal,
