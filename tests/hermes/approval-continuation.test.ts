@@ -75,6 +75,10 @@ describe("Hermes approval-continuation evidence", () => {
 				permissions_list_open: true,
 				permissions_respond: true,
 				responds_to_blocked_run: false,
+				wrong_actor_denied: true,
+				stale_request_denied: true,
+				replay_denied: true,
+				mutated_decision_denied: true,
 			},
 			fallback: {
 				strategy: "cross_turn_prepare_approve_execute",
@@ -96,6 +100,43 @@ describe("Hermes approval-continuation evidence", () => {
 		).toBe("pass");
 	});
 
+	it("blocks fallback production enablement when replay defenses are unproven", () => {
+		const report = evaluateApprovalContinuationEvidence({
+			schemaVersion: 1,
+			hermes,
+			native: {
+				events_wait: false,
+				permissions_list_open: false,
+				permissions_respond: false,
+				responds_to_blocked_run: false,
+				wrong_actor_denied: true,
+				stale_request_denied: true,
+				replay_denied: false,
+				mutated_decision_denied: true,
+			},
+			fallback: {
+				strategy: "cross_turn_prepare_approve_execute",
+				fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
+					id,
+					status: "pass",
+					evidence_path: `artifacts/hermes/approval/${id}.json`,
+				})),
+			},
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			mode: "blocked",
+			productionEnable: false,
+		});
+		expect(
+			report.gates.find((gate) => gate.name === "approvalContinuation.crossTurnFallback")?.status,
+		).toBe("pass");
+		expect(
+			report.gates.find((gate) => gate.name === "approvalContinuation.replayDefenses")?.detail,
+		).toContain("approval replay denial is unproven");
+	});
+
 	it("keeps fallback blocked until every required workflow fixture passes", () => {
 		const [firstFixture] = REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS;
 		const report = evaluateApprovalContinuationEvidence({
@@ -106,6 +147,10 @@ describe("Hermes approval-continuation evidence", () => {
 				permissions_list_open: true,
 				permissions_respond: true,
 				responds_to_blocked_run: false,
+				wrong_actor_denied: true,
+				stale_request_denied: true,
+				replay_denied: true,
+				mutated_decision_denied: true,
 			},
 			fallback: {
 				strategy: "cross_turn_prepare_approve_execute",

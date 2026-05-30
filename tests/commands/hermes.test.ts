@@ -330,6 +330,87 @@ function cliHeadlessCutoverBundle(
 	});
 }
 
+function approvalContinuationProbe(
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "skip",
+) {
+	return {
+		surface_id: "execution.approval_continuation",
+		hermes_pin: hermesPin,
+		documented_seam: "Hermes MCP approval fallback through Telclaude MCP bridge",
+		probe_command: "pnpm dev hermes probe execution.approval_continuation --allow-run",
+		expected_result:
+			"Prepare/approve/execute fallback traverses registry, bridge, ledger, verifier, and JTI",
+		negative_probe: "Wrong actor, stale request, replay, and mutated binding are denied",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.execution.approvalContinuation",
+		security_scope: "approval-continuation" as const,
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function approvalContinuationCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "skip",
+) {
+	const probe = approvalContinuationProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: {
+					approvals: 0,
+					planApprovals: 0,
+					cards: 0,
+					backgroundJobs: 0,
+					socialItems: 0,
+					curatorItems: 0,
+				},
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["execution.approval_continuation"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "execution.approval_continuation",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"execution.approval_continuation": "sha256:adapter-signature",
+			},
+		},
+	});
+}
+
 function writeCutoverBundleArtifacts(tempDir: string, bundle: CutoverInputBundle) {
 	const paths = {
 		inventory: path.join(tempDir, "inventory.json"),
@@ -1314,9 +1395,9 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
-	it("fails the approval-continuation probe closed when evidence is missing", async () => {
-		const missingEvidence = path.join(os.tmpdir(), `missing-hermes-probe-${process.pid}.json`);
-		fs.rmSync(missingEvidence, { force: true });
+	it("does not run or write approval-continuation evidence without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-approval-probe-"));
+		const evidencePath = path.join(tempDir, "approval-continuation.json");
 
 		const result = await runHermesCommand([
 			"hermes",
@@ -1324,12 +1405,61 @@ describe("Hermes wrapper foundation", () => {
 			"execution.approval_continuation",
 			"--json",
 			"--evidence",
-			missingEvidence,
+			evidencePath,
 		]);
-		const report = JSON.parse(result.stdout) as { status: string; productionEnable: boolean };
+		const report = JSON.parse(result.stdout) as { status: string; ran: boolean };
 
 		expect(result.exitCode).toBe(2);
-		expect(report).toMatchObject({ status: "input_error", productionEnable: false });
+		expect(report).toMatchObject({ status: "pending", ran: false });
+		expect(fs.existsSync(evidencePath)).toBe(false);
+	});
+
+	it("writes passing approval-continuation evidence only after an allowed live run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-approval-probe-"));
+		const evidencePath = path.join(tempDir, "approval-continuation.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.approval_continuation",
+			"--allow-run",
+			"--pin",
+			"0.15.1",
+			"--json",
+			"--evidence",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			ran: boolean;
+			evidencePath: string;
+		};
+		const evidence = readJson(evidencePath) as {
+			native: Record<string, unknown>;
+			fallback: { fixtures: Array<{ status: string; evidence_path: string }> };
+		};
+		const serializedEvidence = JSON.stringify(evidence);
+
+		expect(result.exitCode).toBe(0);
+		expect(report).toMatchObject({ status: "pass", ran: true, evidencePath });
+		expect(evidence.native).toMatchObject({
+			wrong_actor_denied: true,
+			stale_request_denied: true,
+			replay_denied: true,
+			mutated_decision_denied: true,
+		});
+		expect(evidence.fallback.fixtures.map((fixture) => fixture.status)).toEqual([
+			"pass",
+			"pass",
+			"pass",
+			"pass",
+		]);
+		for (const fixture of evidence.fallback.fixtures) {
+			expect(fs.existsSync(fixture.evidence_path)).toBe(true);
+		}
+		expect(serializedEvidence).not.toContain("v1.");
+		expect(serializedEvidence).not.toContain("approvalToken");
+		expect(serializedEvidence).not.toContain("signature");
 	});
 
 	it("does not execute or write cli-headless evidence without --allow-run", async () => {
@@ -1510,43 +1640,113 @@ sleep 5
 		expect(artifact.stderrPreview).toContain("Hermes probe timed out after 20ms");
 	});
 
-	it("passes the approval-continuation probe only from explicit evidence", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-probe-"));
-		const evidencePath = path.join(tempDir, "approval-continuation.json");
-		fs.writeFileSync(
-			evidencePath,
-			JSON.stringify({
-				schemaVersion: 1,
-				hermes: hermesPin,
-				native: {
-					events_wait: false,
-					permissions_list_open: false,
-					permissions_respond: false,
-					responds_to_blocked_run: false,
-				},
-				fallback: {
-					strategy: "cross_turn_prepare_approve_execute",
-					fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
-						id,
-						status: "pass",
-						evidence_path: `artifacts/hermes/approval/${id}.json`,
-					})),
-				},
-			}),
-		);
-
-		const result = await runHermesCommand([
+	it("passes the approval-continuation cutover gate from the existing evidence schema", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
+		const evidencePath = path.join(tempDir, "execution-approval-continuation.json");
+		const probeResult = await runHermesCommand([
 			"hermes",
 			"probe",
 			"execution.approval_continuation",
+			"--allow-run",
+			"--pin",
+			"0.15.1",
 			"--json",
 			"--evidence",
 			evidencePath,
 		]);
-		const report = JSON.parse(result.stdout) as { status: string; mode: string };
+		expect(probeResult.exitCode).toBe(0);
+
+		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
 
 		expect(result.exitCode).toBe(0);
-		expect(report).toMatchObject({ status: "pass", mode: "cross_turn_fallback" });
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the approval-continuation cutover gate when evidence is missing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
+		const evidencePath = path.join(tempDir, "missing-approval-continuation.json");
+
+		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				"feature probe execution.approval_continuation evidence failed",
+			),
+		});
+	});
+
+	it("fails the approval-continuation cutover gate when evidence has the wrong schema", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
+		const evidencePath = path.join(tempDir, "bad-approval-continuation.json");
+		writeJson(evidencePath, {
+			schemaVersion: 1,
+			hermes: hermesPin,
+			native: {
+				events_wait: false,
+				permissions_list_open: false,
+				permissions_respond: false,
+				responds_to_blocked_run: false,
+			},
+		});
+
+		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("wrong actor denial is unproven"),
+		});
+	});
+
+	it("fails the approval-continuation cutover gate when positive fixtures pass but replay defense is unproven", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
+		const evidencePath = path.join(tempDir, "bad-replay-approval-continuation.json");
+		writeJson(evidencePath, {
+			schemaVersion: 1,
+			hermes: hermesPin,
+			native: {
+				events_wait: false,
+				permissions_list_open: false,
+				permissions_respond: false,
+				responds_to_blocked_run: false,
+				wrong_actor_denied: true,
+				stale_request_denied: true,
+				replay_denied: false,
+				mutated_decision_denied: true,
+			},
+			fallback: {
+				strategy: "cross_turn_prepare_approve_execute",
+				fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
+					id,
+					status: "pass",
+					evidence_path: `artifacts/hermes/approval/${id}.json`,
+				})),
+			},
+		});
+
+		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("approval replay denial is unproven"),
+		});
 	});
 
 	it("builds a real sanitized inventory snapshot with deterministic workflows", () => {
