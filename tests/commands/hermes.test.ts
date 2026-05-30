@@ -30,10 +30,13 @@ import {
 	type HermesPendingQueueSummary,
 	type HermesQueueSnapshot,
 } from "../../src/hermes/inventory.js";
+import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
+import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
@@ -193,6 +196,46 @@ async function closedProbeUrl(): Promise<string> {
 		server.close((error) => (error ? reject(error) : resolve()));
 	});
 	return url;
+}
+
+async function startLiveMcpAdminSocket(response: TelclaudeLiveMcpProbeTokenBundle): Promise<{
+	socketPath: string;
+	requests: unknown[];
+	close: () => Promise<void>;
+}> {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-live-admin-cli-"));
+	const socketPath = path.join(tempDir, "admin.sock");
+	const requests: unknown[] = [];
+	const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
+	const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+	const keys = generateKeyPair();
+	process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
+	process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+	const handle = await startTelclaudeLiveMcpAdminServer({
+		socketPath,
+		issueProbeTokenBundle: (request) => {
+			requests.push(request);
+			return response;
+		},
+	});
+	return {
+		socketPath,
+		requests,
+		close: async () => {
+			await handle.stop();
+			fs.rmSync(tempDir, { recursive: true, force: true });
+			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
+			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+		},
+	};
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name];
+	} else {
+		process.env[name] = value;
+	}
 }
 
 function minimalInventoryConfig(options: { webhooksEnabled?: boolean } = {}): TelclaudeConfig {
@@ -723,6 +766,48 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 			detail: `${property} observed`,
 		})),
 		...overrides,
+	};
+}
+
+function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
+	return {
+		allowed: {
+			token: "tc_mcp_conn_allowed",
+			authorizationHeader: "Bearer tc_mcp_conn_allowed",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+		},
+		forged: {
+			token: "tc_mcp_conn_forged",
+			authorizationHeader: "Bearer tc_mcp_conn_forged",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+		},
+		wrongConnection: {
+			token: "tc_mcp_conn_wrong",
+			authorizationHeader: "Bearer tc_mcp_conn_wrong",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+		},
+		metadata: {
+			schemaVersion: "telclaude.hermes.live-mcp.probe-token-metadata.v1",
+			issuedAtMs: 1_000,
+			expiresAtMs: 61_000,
+			ttlMs: 60_000,
+			tokenPrefix: "tc_mcp_conn_",
+			tokenMaterial: "omitted",
+			peerBound: false,
+			privateConnection: {
+				profileId: "default",
+				endpointId: "tc-hermes-private",
+				networkNamespace: "telclaude-hermes-relay",
+			},
+			wrongConnection: {
+				profileId: "social",
+				endpointId: "tc-hermes-wrong",
+				networkNamespace: "telclaude-hermes-relay",
+			},
+		},
 	};
 }
 
@@ -2247,6 +2332,83 @@ sleep 5
 			status: "fail",
 			detail: expect.stringContaining(`served-MCP property ${property} is false`),
 		});
+	});
+
+	it("requests live-MCP probe tokens from the relay admin socket", async () => {
+		const admin = await startLiveMcpAdminSocket(liveMcpProbeTokenResponse());
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"live-mcp",
+				"probe-tokens",
+				"--socket",
+				admin.socketPath,
+				"--json",
+				"--ttl-ms",
+				"60000",
+			]);
+			const response = JSON.parse(result.stdout) as {
+				type: string;
+				env: Record<string, string>;
+				tokens: { allowed: { token: string } };
+			};
+
+			expect(result.exitCode).toBeUndefined();
+			expect(response.type).toBe("probe_tokens");
+			expect(response.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH).toBe(
+				"Authorization: Bearer tc_mcp_conn_allowed",
+			);
+			expect(response.tokens.allowed.token).toBe("tc_mcp_conn_allowed");
+			expect(admin.requests[0]).toMatchObject({
+				ttlMs: 60000,
+				privateConnection: {
+					sessionKey: "probe:private",
+					profileId: "default",
+					endpointId: "tc-hermes-private",
+					networkNamespace: "telclaude-hermes-relay",
+				},
+				wrongConnection: {
+					sessionKey: "probe:wrong",
+					profileId: "social",
+					endpointId: "tc-hermes-wrong",
+					networkNamespace: "telclaude-hermes-relay",
+				},
+				privateAuthority: {
+					actorId: "operator:probe",
+					memorySource: "telegram:default",
+					providerScopes: ["bank"],
+					outboundChannels: ["whatsapp"],
+				},
+			});
+		} finally {
+			await admin.close();
+		}
+	});
+
+	it("prints shell exports for live-MCP probe tokens by default", async () => {
+		const admin = await startLiveMcpAdminSocket(liveMcpProbeTokenResponse());
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"live-mcp",
+				"probe-tokens",
+				"--socket",
+				admin.socketPath,
+			]);
+
+			expect(result.exitCode).toBeUndefined();
+			expect(result.stdout).toContain(
+				"export TELCLAUDE_HERMES_SERVED_MCP_AUTH='Authorization: Bearer tc_mcp_conn_allowed'",
+			);
+			expect(result.stdout).toContain(
+				"export TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH='Authorization: Bearer tc_mcp_conn_forged'",
+			);
+			expect(result.stdout).toContain(
+				"export TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH='Authorization: Bearer tc_mcp_conn_wrong'",
+			);
+		} finally {
+			await admin.close();
+		}
 	});
 
 	it("builds a real sanitized inventory snapshot with deterministic workflows", () => {

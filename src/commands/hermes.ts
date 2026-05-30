@@ -46,6 +46,15 @@ import {
 } from "../hermes/foundation.js";
 import { collectHermesInventory } from "../hermes/inventory.js";
 import {
+	DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET,
+	requestTelclaudeLiveMcpProbeTokens,
+} from "../hermes/mcp/live-admin.js";
+import type { TelclaudeLiveMcpProbeTokenBundle } from "../hermes/mcp/live-probe-tokens.js";
+import {
+	DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
+	type TelclaudeLiveMcpRuntimeProbeTokenInput,
+} from "../hermes/mcp/live-runtime.js";
+import {
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
@@ -118,6 +127,29 @@ type NetworkProbeOption = JsonOption & {
 	timeoutMs?: string;
 };
 
+type LiveMcpProbeTokenOption = JsonOption & {
+	socket?: string;
+	sessionKey?: string;
+	profile?: string;
+	profileId?: string;
+	endpointId?: string;
+	networkNamespace?: string;
+	wrongSessionKey?: string;
+	wrongProfile?: string;
+	wrongEndpointId?: string;
+	wrongNetworkNamespace?: string;
+	actor?: string;
+	memorySource?: string;
+	writableNamespace?: string;
+	providerScope?: string;
+	providerScopes?: string;
+	outboundChannel?: string;
+	outboundChannels?: string;
+	ttlMs?: string;
+	peerAddress?: string;
+	timeoutMs?: string;
+};
+
 function printJson(value: unknown): void {
 	console.log(JSON.stringify(value, null, 2));
 }
@@ -170,6 +202,18 @@ function parseCsvOption(value: string | undefined): string[] {
 		.filter((entry) => entry.length > 0);
 }
 
+function parsePositiveIntegerOption(
+	value: string | undefined,
+	optionName: string,
+): number | undefined {
+	if (!value?.trim()) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`Invalid ${optionName} value: ${value}`);
+	}
+	return parsed;
+}
+
 function parseHeaderOption(value: string | undefined): Record<string, string> | undefined {
 	if (!value?.trim()) return undefined;
 	const separatorIndex = value.indexOf(":");
@@ -182,6 +226,102 @@ function parseHeaderOption(value: string | undefined): Record<string, string> | 
 		throw new Error("MCP auth header must include a non-empty name and value");
 	}
 	return { [name]: headerValue };
+}
+
+function resolveLiveMcpAdminSocket(value: string | undefined): string {
+	return (
+		value?.trim() ||
+		process.env.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET?.trim() ||
+		DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET
+	);
+}
+
+function buildLiveMcpProbeTokenRequest(
+	options: LiveMcpProbeTokenOption,
+): TelclaudeLiveMcpRuntimeProbeTokenInput {
+	const profileId = nonEmptyOption(options.profileId ?? options.profile, "default");
+	const endpointId = nonEmptyOption(options.endpointId, "tc-hermes-private");
+	const networkNamespace = nonEmptyOption(
+		options.networkNamespace,
+		process.env.TELCLAUDE_HERMES_LIVE_MCP_NETWORK?.trim() || DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
+	);
+	const wrongProfileId = nonEmptyOption(
+		options.wrongProfile,
+		profileId === "social" ? "default" : "social",
+	);
+	const wrongEndpointId = nonEmptyOption(options.wrongEndpointId, "tc-hermes-wrong");
+	const wrongNetworkNamespace = nonEmptyOption(options.wrongNetworkNamespace, networkNamespace);
+	const providerScopes = parseCsvOption(options.providerScopes ?? options.providerScope ?? "bank");
+	const outboundChannels = parseCsvOption(
+		options.outboundChannels ?? options.outboundChannel ?? "whatsapp",
+	);
+
+	return {
+		privateConnection: {
+			sessionKey: nonEmptyOption(options.sessionKey, "probe:private"),
+			profileId,
+			endpointId,
+			networkNamespace,
+		},
+		wrongConnection: {
+			sessionKey: nonEmptyOption(options.wrongSessionKey, "probe:wrong"),
+			profileId: wrongProfileId,
+			endpointId: wrongEndpointId,
+			networkNamespace: wrongNetworkNamespace,
+		},
+		privateAuthority: {
+			actorId: nonEmptyOption(options.actor, "operator:probe"),
+			profileId,
+			domain: "private",
+			memorySource: nonEmptyOption(options.memorySource, `telegram:${profileId}`),
+			writableNamespace: nonEmptyOption(options.writableNamespace, `private:${profileId}`),
+			providerScopes,
+			outboundChannels,
+			endpointId,
+			networkNamespace,
+		},
+		ttlMs: parsePositiveIntegerOption(options.ttlMs, "--ttl-ms"),
+		peerAddress: options.peerAddress?.trim() || undefined,
+	};
+}
+
+function nonEmptyOption(value: string | undefined, fallback: string): string {
+	const resolved = value?.trim() || fallback;
+	if (!resolved.trim()) throw new Error("Hermes live-MCP probe-token option resolved empty");
+	return resolved;
+}
+
+function formatLiveMcpProbeTokenExports(response: TelclaudeLiveMcpProbeTokenBundle): string {
+	return [
+		`export TELCLAUDE_HERMES_SERVED_MCP_AUTH=${shellQuote(
+			`Authorization: ${response.allowed.authorizationHeader}`,
+		)}`,
+		`export TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH=${shellQuote(
+			`Authorization: ${response.wrongConnection.authorizationHeader}`,
+		)}`,
+		`export TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH=${shellQuote(
+			`Authorization: ${response.forged.authorizationHeader}`,
+		)}`,
+		`# expires_at_ms=${response.metadata.expiresAtMs}`,
+	].join("\n");
+}
+
+function formatLiveMcpProbeTokenJson(response: TelclaudeLiveMcpProbeTokenBundle): unknown {
+	return {
+		schemaVersion: "telclaude.hermes.live-mcp.probe-token-cli.v1",
+		type: "probe_tokens",
+		env: {
+			TELCLAUDE_HERMES_SERVED_MCP_AUTH: `Authorization: ${response.allowed.authorizationHeader}`,
+			TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH: `Authorization: ${response.wrongConnection.authorizationHeader}`,
+			TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH: `Authorization: ${response.forged.authorizationHeader}`,
+		},
+		tokens: response,
+		metadata: response.metadata,
+	};
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function servedMcpEndpoint(
@@ -359,6 +499,56 @@ export function registerHermesCommand(program: Command): void {
 				console.log(
 					`Hermes inventory: ${inventory.status}, ${inventory.summary.workflows} workflow(s), ${inventory.summary.issues} issue(s)`,
 				);
+			}
+		});
+
+	const liveMcp = hermes
+		.command("live-mcp")
+		.description("Operate relay-local Hermes live MCP helpers");
+
+	liveMcp
+		.command("probe-tokens")
+		.description("Issue served-MCP containment probe tokens through the relay admin socket")
+		.option("--json", "Emit structured JSON with the token bundle")
+		.option(
+			"--socket <path>",
+			`Relay-local admin Unix socket path (default: ${DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET})`,
+		)
+		.option("--session-key <key>", "Private probe connection session key")
+		.option("--profile <id>", "Private probe profile id")
+		.option("--profile-id <id>", "Private probe profile id")
+		.option("--endpoint-id <id>", "Private probe MCP endpoint id")
+		.option("--network-namespace <id>", "Private probe network namespace")
+		.option("--wrong-session-key <key>", "Wrong-connection probe session key")
+		.option("--wrong-profile <id>", "Wrong-connection probe profile id")
+		.option("--wrong-endpoint-id <id>", "Wrong-connection probe endpoint id")
+		.option("--wrong-network-namespace <id>", "Wrong-connection probe network namespace")
+		.option("--actor <id>", "Private authority actor id")
+		.option("--memory-source <source>", "Private authority memory source")
+		.option("--writable-namespace <namespace>", "Private authority writable namespace")
+		.option("--provider-scope <csv>", "Private authority provider scopes")
+		.option("--provider-scopes <csv>", "Private authority provider scopes")
+		.option("--outbound-channel <csv>", "Private authority outbound channels")
+		.option("--outbound-channels <csv>", "Private authority outbound channels")
+		.option("--ttl-ms <ms>", "Token TTL in milliseconds")
+		.option("--peer-address <address>", "Bind issued tokens to a specific MCP peer address")
+		.option("--timeout-ms <ms>", "Admin socket request timeout in milliseconds")
+		.action(async (options: LiveMcpProbeTokenOption) => {
+			try {
+				const response = await requestTelclaudeLiveMcpProbeTokens({
+					socketPath: resolveLiveMcpAdminSocket(options.socket),
+					input: buildLiveMcpProbeTokenRequest(options),
+					timeoutMs: parseTimeoutMs(options.timeoutMs),
+				});
+				if (options.json) {
+					printJson(formatLiveMcpProbeTokenJson(response));
+				} else {
+					console.log(formatLiveMcpProbeTokenExports(response));
+				}
+			} catch (error) {
+				const message = String(error instanceof Error ? error.message : error);
+				console.error(`Error: ${message}`);
+				process.exitCode = 1;
 			}
 		});
 

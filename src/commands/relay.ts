@@ -8,6 +8,10 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import {
+	createTelclaudeLiveMcpProbeAdminStarter,
+	readTelclaudeLiveMcpAdminConfig,
+} from "../hermes/mcp/live-admin.js";
 import { createTelclaudeLiveMcpRelayClients } from "../hermes/mcp/live-relay-clients.js";
 import {
 	readTelclaudeLiveMcpRuntimeConfig,
@@ -224,13 +228,18 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Capabilities: disabled");
 				}
 
+				const liveMcpAdminConfig = readTelclaudeLiveMcpAdminConfig();
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: readTelclaudeLiveMcpRuntimeConfig(),
 					createRelayClients: ({ ledger }) => createTelclaudeLiveMcpRelayClients({ ledger }),
+					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
 				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
 					schedulerHandles.push({ stop: () => liveMcpRuntime.stop() });
 					console.log(`  Hermes live MCP: enabled (${liveMcpRuntime.endpoint.url})`);
+					if (liveMcpAdminConfig.enabled) {
+						console.log(`  Hermes live MCP admin: enabled (${liveMcpAdminConfig.socketPath})`);
+					}
 				} else {
 					console.log("  Hermes live MCP: disabled");
 				}

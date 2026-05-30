@@ -29,6 +29,8 @@ export TELCLAUDE_HERMES_PIN="0.15.1"
 export TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
 export TELCLAUDE_HERMES_PRIVATE_RUNTIME=1
 export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1
+export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1
+export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-admin.sock
 ```
 
 Compose requires these base-stack values. For a local containment rehearsal without real accounts, use generated placeholders. For an operator smoke against real services, use the real local secret source instead.
@@ -234,11 +236,26 @@ This probe must target the relay-internal MCP HTTP endpoint. Do not publish the 
 
 Runtime inputs required before this command can be real:
 
-- `TC_MCP_ALLOWED_TOKEN`: a relay-issued `tc_mcp_conn_...` bearer token for the private authority.
-- `TC_MCP_FORGED_TOKEN`: an intentionally unregistered `tc_mcp_conn_...` token.
-- `TC_MCP_WRONG_CONNECTION_TOKEN`: a relay-issued token for a different registered connection.
+- `TELCLAUDE_HERMES_SERVED_MCP_AUTH`: a relay-issued `Authorization: Bearer tc_mcp_conn_...` header for the private authority.
+- `TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH`: an intentionally unregistered `Authorization: Bearer tc_mcp_conn_...` header.
+- `TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH`: a relay-issued `Authorization: Bearer tc_mcp_conn_...` header for a different registered connection.
 
-The current branch has the resolver/server code and probe command, but no committed operator CLI that prints these three live probe tokens. If the runtime cannot produce them through an approved relay-only path, stop and add that operator hook before claiming this probe is green.
+Mint those tokens from the relay-local admin Unix socket. This socket is created by the relay only when `TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1`, is chmod `0600`, and must not be mounted into the Hermes runtime or any agent container. The command below prints shell exports for the three probe tokens; do not commit the token values or command transcript with live values.
+
+```bash
+eval "$(
+  docker exec telclaude telclaude hermes live-mcp probe-tokens \
+    --socket /run/telclaude/hermes-live-mcp-admin.sock
+)"
+```
+
+Optional audit view without shell export:
+
+```bash
+docker exec telclaude telclaude hermes live-mcp probe-tokens \
+  --socket /run/telclaude/hermes-live-mcp-admin.sock \
+  --json
+```
 
 Command shape once the tokens exist:
 
@@ -247,9 +264,9 @@ docker exec telclaude telclaude hermes probe execution.served_mcp_containment \
   --allow-run \
   --json \
   --mcp-url http://telclaude:8793/mcp \
-  --mcp-auth "Authorization: Bearer ${TC_MCP_ALLOWED_TOKEN}" \
-  --mcp-forged-auth "Authorization: Bearer ${TC_MCP_FORGED_TOKEN}" \
-  --mcp-wrong-connection-auth "Authorization: Bearer ${TC_MCP_WRONG_CONNECTION_TOKEN}" \
+  --mcp-auth "${TELCLAUDE_HERMES_SERVED_MCP_AUTH}" \
+  --mcp-forged-auth "${TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH}" \
+  --mcp-wrong-connection-auth "${TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH}" \
   --timeout-ms 30000 \
   --out /data/hermes/execution-served-mcp-containment.json
 
@@ -281,7 +298,7 @@ The five live probes are necessary, not sufficient. A green probe set does not a
 
 Before any flag flip, these non-probe gates also need real evidence:
 
-- Served-MCP token issuance: the live served-MCP probe needs a committed operator path to mint the allowed and wrong-connection `tc_mcp_conn_...` tokens. The current branch has resolver/server primitives, but no production token-issuance CLI or relay endpoint.
+- Served-MCP token issuance: the live served-MCP probe must mint the allowed, forged, and wrong-connection `tc_mcp_conn_...` tokens through `telclaude hermes live-mcp probe-tokens` over the relay-local admin Unix socket, not through a host-published HTTP endpoint.
 - Workflow scope: `docs/hermes/cutover-scope.json` must name the included workflows and their required surfaces instead of the placeholder empty list.
 - Fixtures: `docs/hermes/fixture-results.json` must contain passing parity and negative fixture results for the workflows in scope.
 - Compatibility lockfile: `docs/hermes/hermes-compat.lock.json` must be regenerated from the real probe matrix and accepted evidence, with passing feature probes tied to the same Hermes pin.
@@ -335,7 +352,9 @@ docker compose \
   down
 
 unset TELCLAUDE_HERMES_API_SERVER_KEY
-unset TC_MCP_ALLOWED_TOKEN TC_MCP_FORGED_TOKEN TC_MCP_WRONG_CONNECTION_TOKEN
+unset TELCLAUDE_HERMES_SERVED_MCP_AUTH
+unset TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH
+unset TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH
 ```
 
 Do not remove Colima or Docker images as part of this playbook unless Aviv asks.
