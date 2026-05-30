@@ -105,14 +105,44 @@ function checkNativeSandboxDeps(): SandboxDepsCheck {
 export type RelayOptions = {
 	verbose?: boolean;
 	dryRun?: boolean;
+	probeNoTelegram?: boolean;
 	profile?: "simple" | "strict" | "test";
 };
+
+export function shouldValidateTelegramEnv(input: { readonly probeNoTelegram?: boolean }): boolean {
+	return !input.probeNoTelegram;
+}
+
+export function validateProbeNoTelegramRelayMode(input: {
+	readonly probeNoTelegram?: boolean;
+	readonly dryRun?: boolean;
+	readonly privateRuntimeEnabled?: boolean;
+	readonly liveMcpEnabled?: boolean;
+	readonly liveMcpAdminEnabled?: boolean;
+}): string | null {
+	if (!input.probeNoTelegram) return null;
+	if (!input.dryRun) return "--probe-no-telegram requires --dry-run";
+	if (!input.privateRuntimeEnabled) {
+		return "--probe-no-telegram requires TELCLAUDE_HERMES_PRIVATE_RUNTIME=1";
+	}
+	if (!input.liveMcpEnabled) {
+		return "--probe-no-telegram requires TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1";
+	}
+	if (!input.liveMcpAdminEnabled) {
+		return "--probe-no-telegram requires TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1";
+	}
+	return null;
+}
 
 export function registerRelayCommand(program: Command): void {
 	program
 		.command("relay")
 		.description("Start the Telegram relay with auto-reply")
 		.option("--dry-run", "Don't actually send replies (for testing)")
+		.option(
+			"--probe-no-telegram",
+			"Local Hermes live-probe mode: keep relay/MCP services up without connecting to Telegram",
+		)
 		.option("--profile <profile>", "Security profile: simple, strict, or test (overrides config)")
 		.action(async (opts: RelayOptions) => {
 			installUnhandledRejectionHandler("relay");
@@ -128,8 +158,26 @@ export function registerRelayCommand(program: Command): void {
 				const additionalDomains = cfg.security?.network?.additionalDomains ?? [];
 				const allowedDomainNames = buildAllowedDomainNames(additionalDomains);
 				const allowedDomains = buildAllowedDomains(additionalDomains);
-				await readEnv(); // Validates environment variables
+				if (shouldValidateTelegramEnv(opts)) {
+					await readEnv(); // Validates Telegram environment variables for normal relay mode.
+				}
 				const schedulerHandles: Array<{ stop: () => void | Promise<void> }> = [];
+				const liveMcpAdminConfig = readTelclaudeLiveMcpAdminConfig();
+				const liveMcpRuntimeConfig = readTelclaudeLiveMcpRuntimeConfig();
+				const probeNoTelegramError = validateProbeNoTelegramRelayMode({
+					probeNoTelegram: opts.probeNoTelegram,
+					dryRun: opts.dryRun ?? false,
+					privateRuntimeEnabled: process.env.TELCLAUDE_HERMES_PRIVATE_RUNTIME === "1",
+					liveMcpEnabled: liveMcpRuntimeConfig.enabled,
+					liveMcpAdminEnabled: liveMcpAdminConfig.enabled,
+				});
+				if (probeNoTelegramError) {
+					console.error(`\n❌ HERMES LIVE-PROBE ERROR: ${probeNoTelegramError}.\n`);
+					console.error(
+						"--probe-no-telegram is a local evidence harness only. It does not prove Telegram connectivity.",
+					);
+					process.exit(1);
+				}
 
 				// SECURITY: Block dangerous defaultTier=FULL_ACCESS config
 				if (cfg.security?.permissions?.defaultTier === "FULL_ACCESS") {
@@ -228,9 +276,8 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Capabilities: disabled");
 				}
 
-				const liveMcpAdminConfig = readTelclaudeLiveMcpAdminConfig();
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
-					config: readTelclaudeLiveMcpRuntimeConfig(),
+					config: liveMcpRuntimeConfig,
 					createRelayClients: ({ ledger }) => createTelclaudeLiveMcpRelayClients({ ledger }),
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
@@ -552,6 +599,24 @@ export function registerRelayCommand(program: Command): void {
 
 				process.on("SIGINT", () => void shutdown());
 				process.on("SIGTERM", () => void shutdown());
+
+				if (opts.probeNoTelegram) {
+					console.warn("  Hermes live-probe: Telegram connection skipped (--probe-no-telegram).");
+					console.warn("  This is local dry-run evidence only, not Telegram cutover proof.");
+					bufferStartupReady({
+						label: "relay-probe-no-telegram",
+						version: getServiceVersion(),
+						revision: getServiceRevision(),
+					});
+					await new Promise<void>((resolve) => {
+						if (abortController.signal.aborted) {
+							resolve();
+							return;
+						}
+						abortController.signal.addEventListener("abort", () => resolve(), { once: true });
+					});
+					return;
+				}
 
 				await monitorTelegramProvider({
 					verbose,
