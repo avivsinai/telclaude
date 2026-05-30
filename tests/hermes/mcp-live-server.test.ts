@@ -74,16 +74,16 @@ describe("Telclaude live MCP relay-side server", () => {
 		);
 		expect(tools.tools.map((tool) => tool.name)).toEqual([...TELCLAUDE_MCP_TOOL_NAMES]);
 
-		await expectEmptySurface(harness.server.handleJsonRpc({ method: "resources/list" }));
-		await expectEmptySurface(harness.server.handleJsonRpc({ method: "prompts/list" }));
-		await expectEmptySurface(harness.server.handleJsonRpc({ method: "roots/list" }));
+		await expectEmptySurface(harness.server.handleJsonRpc(rpc("resources/list")));
+		await expectEmptySurface(harness.server.handleJsonRpc(rpc("prompts/list")));
+		await expectEmptySurface(harness.server.handleJsonRpc(rpc("roots/list")));
 		expect(
-			await harness.server.handleJsonRpc({ method: "sampling/createMessage", id: "sample" }),
+			await harness.server.handleJsonRpc(rpc("sampling/createMessage", undefined, "sample")),
 		).toMatchObject({
 			id: "sample",
 			error: { code: -32001, message: "MCP sampling is disabled" },
 		});
-		expect(await harness.server.handleJsonRpc({ method: "unknown/method" })).toMatchObject({
+		expect(await harness.server.handleJsonRpc(rpc("unknown/method"))).toMatchObject({
 			error: { code: -32601, message: "MCP method denied" },
 		});
 		expect(
@@ -93,6 +93,55 @@ describe("Telclaude live MCP relay-side server", () => {
 			),
 		).toMatchObject({
 			error: { code: -32601, message: "MCP tool denied" },
+		});
+	});
+
+	it("rejects malformed JSON-RPC envelopes before method dispatch", async () => {
+		const harness = createHarness(cleanup);
+
+		expect(
+			await harness.server.handleJsonRpc({
+				id: "missing-jsonrpc",
+				method: "tools/list",
+			}),
+		).toMatchObject({
+			id: "missing-jsonrpc",
+			error: { code: -32600, message: "MCP JSON-RPC version must be 2.0" },
+		});
+		expect(
+			await harness.server.handleJsonRpc({
+				jsonrpc: "1.0",
+				id: "wrong-jsonrpc",
+				method: "tools/list",
+			}),
+		).toMatchObject({
+			id: "wrong-jsonrpc",
+			error: { code: -32600, message: "MCP JSON-RPC version must be 2.0" },
+		});
+		expect(
+			await harness.server.handleJsonRpc({
+				jsonrpc: "2.0",
+				id: { nested: true },
+				method: "tools/list",
+			}),
+		).toMatchObject({
+			error: { code: -32600, message: "MCP JSON-RPC id is invalid" },
+		});
+		expect(await harness.server.handleJsonRpc([])).toMatchObject({
+			error: { code: -32600, message: "MCP JSON-RPC batch requests are not supported" },
+		});
+
+		for (const method of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
+			expect(await harness.server.handleJsonRpc(rpc(method, undefined, `method-${method}`))).toMatchObject({
+				id: `method-${method}`,
+				error: { code: -32601, message: "MCP method denied" },
+			});
+		}
+
+		expect(
+			resultOf<{ tools: Array<{ name: string }> }>(await harness.server.handleJsonRpc(rpc("tools/list"))),
+		).toEqual({
+			tools: expect.arrayContaining([expect.objectContaining({ name: "tc_provider_read" })]),
 		});
 	});
 
@@ -241,6 +290,53 @@ describe("Telclaude live MCP relay-side server", () => {
 		expect(harness.calls.memorySearch).toEqual([]);
 		expect(harness.calls.providerRead).toEqual([]);
 		expect(harness.calls.outboundPrepare).toEqual([]);
+	});
+
+	it("rejects prototype-pollution keys in tool arguments before bridge dispatch", async () => {
+		const harness = createHarness(cleanup);
+
+		const forbiddenArgs = [
+			JSON.parse(
+				'{"service":"bank","action":"balances.list","params":{},"__proto__":{"polluted":true}}',
+			),
+			{ service: "bank", action: "balances.list", params: {}, constructor: { polluted: true } },
+			{ service: "bank", action: "balances.list", params: {}, prototype: { polluted: true } },
+			JSON.parse(
+				'{"service":"bank","action":"balances.list","params":{"nested":{"__proto__":{"polluted":true}}}}',
+			),
+			{
+				service: "bank",
+				action: "balances.list",
+				params: { nested: { constructor: { polluted: true } } },
+			},
+			{
+				service: "bank",
+				action: "balances.list",
+				params: { nested: { prototype: { polluted: true } } },
+			},
+		];
+
+		for (const args of forbiddenArgs) {
+			expect(
+				await harness.server.handleJsonRpc(toolCall("tc_provider_read", args), harness.privateContext),
+			).toMatchObject({
+				error: {
+					code: -32602,
+					message: "MCP tools/call arguments contain forbidden prototype key",
+				},
+			});
+		}
+
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(harness.calls.providerRead).toEqual([]);
+		expect(
+			resultOf(
+				await harness.server.handleJsonRpc(
+					toolCall("tc_provider_read", { service: "bank", action: "balances.list", params: {} }),
+					harness.privateContext,
+				),
+			),
+		).toEqual({ balances: [] });
 	});
 
 	it("executes provider side effects only through the ledger and preserves JTI on denials", async () => {
@@ -508,6 +604,15 @@ function toolCall(name: string, args: Record<string, unknown>) {
 		id: `call-${name}`,
 		method: "tools/call",
 		params: { name, arguments: args },
+	};
+}
+
+function rpc(method: string, params?: unknown, id = `rpc-${method}`) {
+	return {
+		jsonrpc: "2.0",
+		id,
+		method,
+		...(params !== undefined ? { params } : {}),
 	};
 }
 
