@@ -131,8 +131,14 @@ describe("Telclaude live MCP probe tokens", () => {
 			privateAuthority: authority(),
 			nowMs: 3_000,
 			ttlMs: 10_000,
+			peerAddress: "10.0.0.2",
 		});
 
+		expect(
+			revocationResolver.resolveConnection(
+				request({ authorization: revocationBundle.allowed.authorizationHeader }, "10.0.0.2"),
+			),
+		).not.toBeNull();
 		expect(revocationResolver.revoke(revocationBundle.allowed.token, "probe closed", 3_100)).toBe(
 			true,
 		);

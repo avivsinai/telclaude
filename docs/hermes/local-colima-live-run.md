@@ -12,6 +12,7 @@ This playbook executes the contained Hermes private-runtime live run for the no-
 - The Hermes image is pinned by digest, not by tag:
   `nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7`.
 - The dedicated Docker network `telclaude-hermes-relay` must be `Internal=true` and contain only `telclaude` and `tc-hermes-contained` during the production topology snapshot.
+- The relay overlay assigns stable internal IPs so live MCP bearer tokens are peer-bound or accepted only from the contained Hermes peer IP.
 - The contained Hermes runtime must start as uid `10000:10000`, with no added capabilities, `no-new-privileges`, read-only rootfs, tmpfs `/tmp`, and tmpfs `/home/hermes`.
 
 ## 0. Shell Setup
@@ -28,7 +29,11 @@ export TELCLAUDE_HERMES_IMAGE_TAG="nousresearch/hermes-agent:v2026.5.29"
 export TELCLAUDE_HERMES_PIN="0.15.1"
 export TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
 export TELCLAUDE_HERMES_PRIVATE_RUNTIME=1
+export TELCLAUDE_HERMES_RELAY_SUBNET=172.29.92.0/24
+export TELCLAUDE_HERMES_RELAY_IP=172.29.92.10
+export TELCLAUDE_HERMES_CONTAINED_IP=172.29.92.11
 export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1
+export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS="$TELCLAUDE_HERMES_CONTAINED_IP"
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-admin.sock
 
@@ -253,7 +258,8 @@ eval "$(
   docker exec \
     -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
     telclaude telclaude hermes live-mcp probe-tokens \
-    --socket /run/telclaude/hermes-live-mcp-admin.sock
+    --socket /run/telclaude/hermes-live-mcp-admin.sock \
+    --peer-address "$TELCLAUDE_HERMES_RELAY_IP"
 )"
 ```
 
@@ -264,8 +270,15 @@ docker exec \
   -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
   telclaude telclaude hermes live-mcp probe-tokens \
   --socket /run/telclaude/hermes-live-mcp-admin.sock \
+  --peer-address "$TELCLAUDE_HERMES_RELAY_IP" \
   --json
 ```
+
+The served-MCP probe command below runs from the relay container, so these one-off
+probe tokens are bound to `TELCLAUDE_HERMES_RELAY_IP`. Production Hermes grants
+should either be peer-bound to `TELCLAUDE_HERMES_CONTAINED_IP` or rely on the
+relay's `TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS` allowlist, which defaults to
+that contained Hermes IP in the compose overlay.
 
 Command shape once the tokens exist:
 

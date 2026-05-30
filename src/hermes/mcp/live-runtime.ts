@@ -1,3 +1,4 @@
+import net from "node:net";
 import type {
 	TelclaudeMcpAuthorityConnection,
 	TelclaudeMcpAuthorityRegistry,
@@ -98,7 +99,7 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			allowedPeerAddresses: undefined,
 		};
 	}
-	return {
+	const config = {
 		enabled,
 		host: nonEmptyEnv(env.TELCLAUDE_HERMES_LIVE_MCP_HOST, DEFAULT_TELCLAUDE_LIVE_MCP_HOST),
 		port: parsePort(env.TELCLAUDE_HERMES_LIVE_MCP_PORT, DEFAULT_TELCLAUDE_LIVE_MCP_PORT),
@@ -107,8 +108,10 @@ export function readTelclaudeLiveMcpRuntimeConfig(
 			env.TELCLAUDE_HERMES_LIVE_MCP_NETWORK,
 			DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
 		),
-		allowedPeerAddresses: csv(env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS),
+		allowedPeerAddresses: parsePeerAllowlist(env.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS),
 	};
+	assertPeerAllowlistForBindHost(config);
+	return config;
 }
 
 export async function startTelclaudeLiveMcpRuntime(
@@ -264,4 +267,44 @@ function csv(value: string | undefined): string[] | undefined {
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
 	return entries.length > 0 ? entries : undefined;
+}
+
+function parsePeerAllowlist(value: string | undefined): string[] | undefined {
+	const entries = csv(value);
+	if (!entries) return undefined;
+	return entries.map((entry) => {
+		const peerAddress = normalizePeerAddress(entry);
+		if (net.isIP(peerAddress) === 0) {
+			throw new Error("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS must contain IP addresses");
+		}
+		return peerAddress;
+	});
+}
+
+function assertPeerAllowlistForBindHost(config: TelclaudeLiveMcpRuntimeConfig): void {
+	if (!config.enabled || !requiresPeerAllowlist(config.host)) return;
+	if (config.allowedPeerAddresses && config.allowedPeerAddresses.length > 0) return;
+	throw new Error(
+		"TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required when live MCP binds outside loopback",
+	);
+}
+
+function requiresPeerAllowlist(host: string): boolean {
+	const normalized = normalizeHostAddress(host);
+	if (normalized === "localhost") return false;
+	if (normalized === "0.0.0.0" || normalized === "::" || normalized === "") return false;
+	if (normalized === "127.0.0.1" || normalized === "::1") return false;
+	if (/^127\./.test(normalized)) return false;
+	return true;
+}
+
+function normalizeHostAddress(host: string): string {
+	return normalizePeerAddress(host.trim().replace(/^\[(.*)\]$/, "$1"));
+}
+
+function normalizePeerAddress(value: string): string {
+	const trimmed = value.trim();
+	if (trimmed.startsWith("::ffff:")) return trimmed.slice("::ffff:".length);
+	if (trimmed === "::1") return "127.0.0.1";
+	return trimmed;
 }
