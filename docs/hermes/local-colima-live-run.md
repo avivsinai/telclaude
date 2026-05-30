@@ -31,6 +31,12 @@ export TELCLAUDE_HERMES_PRIVATE_RUNTIME=1
 export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-admin.sock
+
+# Required for the one-off operator CLI that talks to the relay-local admin socket.
+# Generate once with `pnpm dev keygen operator`; keep the private key on the host,
+# and pass only OPERATOR_RPC_AGENT_PUBLIC_KEY into the relay compose environment.
+export OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}"
+export OPERATOR_RPC_AGENT_PUBLIC_KEY="${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}"
 ```
 
 Compose requires these base-stack values. For a local containment rehearsal without real accounts, use generated placeholders. For an operator smoke against real services, use the real local secret source instead.
@@ -244,7 +250,9 @@ Mint those tokens from the relay-local admin Unix socket. This socket is created
 
 ```bash
 eval "$(
-  docker exec telclaude telclaude hermes live-mcp probe-tokens \
+  docker exec \
+    -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
+    telclaude telclaude hermes live-mcp probe-tokens \
     --socket /run/telclaude/hermes-live-mcp-admin.sock
 )"
 ```
@@ -252,7 +260,9 @@ eval "$(
 Optional audit view without shell export:
 
 ```bash
-docker exec telclaude telclaude hermes live-mcp probe-tokens \
+docker exec \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="$OPERATOR_RPC_AGENT_PRIVATE_KEY" \
+  telclaude telclaude hermes live-mcp probe-tokens \
   --socket /run/telclaude/hermes-live-mcp-admin.sock \
   --json
 ```
