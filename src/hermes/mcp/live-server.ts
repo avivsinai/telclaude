@@ -1,0 +1,385 @@
+import http from "node:http";
+import {
+	createTelclaudeMcpBridgeForRegisteredConnection,
+	type TelclaudeMcpAuthorityConnection,
+	type TelclaudeMcpAuthorityRegistry,
+} from "./authority-registry.js";
+import {
+	TELCLAUDE_MCP_TOOL_NAMES,
+	type TelclaudeMcpBridge,
+	type TelclaudeMcpBridgeDependencies,
+	type TelclaudeMcpToolName,
+} from "./bridge.js";
+import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
+import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
+
+export const TELCLAUDE_LIVE_MCP_TRANSPORT = "http_relay_internal_network";
+
+export const TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE = [
+	"providerRead",
+	"providerPrepareWrite",
+	"memorySearch",
+	"memoryWrite",
+	"attachmentGet",
+	"outboundPrepare",
+	"auditNote",
+	"sideEffectLedger",
+] as const;
+
+export type TelclaudeLiveMcpRelayClients = Omit<
+	TelclaudeMcpBridgeDependencies,
+	"providerExecuteWrite" | "outboundExecute"
+>;
+
+export type TelclaudeLiveMcpConnectionContext = {
+	readonly authorityHandle: string;
+	readonly connection: TelclaudeMcpAuthorityConnection;
+};
+
+type JsonRpcId = string | number | null;
+
+export type TelclaudeLiveMcpJsonRpcRequest = {
+	readonly jsonrpc?: unknown;
+	readonly id?: unknown;
+	readonly method?: unknown;
+	readonly params?: unknown;
+};
+
+export type TelclaudeLiveMcpJsonRpcResponse =
+	| {
+			readonly jsonrpc: "2.0";
+			readonly id?: JsonRpcId;
+			readonly result: unknown;
+	  }
+	| {
+			readonly jsonrpc: "2.0";
+			readonly id?: JsonRpcId;
+			readonly error: {
+				readonly code: number;
+				readonly message: string;
+				readonly data?: unknown;
+			};
+	  };
+
+export type TelclaudeLiveMcpRelayHttpServer = {
+	readonly transport: typeof TELCLAUDE_LIVE_MCP_TRANSPORT;
+	readonly placement: {
+		readonly side: "relay";
+		readonly runsInHermesContainer: false;
+		readonly transport: "http";
+		readonly networkExposure: "relay_internal_only";
+		readonly bindHost: string;
+		readonly networkName: string;
+	};
+	readonly dependencySurface: typeof TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE;
+	handleJsonRpc(
+		request: TelclaudeLiveMcpJsonRpcRequest,
+		context?: TelclaudeLiveMcpConnectionContext | null,
+	): Promise<TelclaudeLiveMcpJsonRpcResponse>;
+};
+
+export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
+	readonly registry: TelclaudeMcpAuthorityRegistry;
+	readonly ledger: TelclaudeMcpSideEffectLedger;
+	readonly relayClients: TelclaudeLiveMcpRelayClients;
+	readonly bindHost: string;
+	readonly networkName: string;
+	readonly nowMs?: () => number;
+};
+
+export type CreateTelclaudeLiveMcpNodeHttpServerOptions = {
+	readonly resolveConnection: (
+		request: http.IncomingMessage,
+	) => TelclaudeLiveMcpConnectionContext | null | Promise<TelclaudeLiveMcpConnectionContext | null>;
+	readonly path?: string;
+};
+
+const EMPTY_SURFACES: Record<string, { readonly [key: string]: readonly unknown[] }> = {
+	"resources/list": { resources: [] },
+	"prompts/list": { prompts: [] },
+	"roots/list": { roots: [] },
+};
+
+const CLIENT_AUTHORITY_KEYS = new Set([
+	"authority",
+	"authorityHandle",
+	"connection",
+	"sessionKey",
+	"actorId",
+	"profileId",
+	"domain",
+	"memorySource",
+	"source",
+	"trust",
+	"writableNamespace",
+	"providerAuthority",
+	"endpointId",
+	"networkNamespace",
+]);
+
+const MAX_HTTP_BODY_BYTES = 1024 * 1024;
+
+export function createTelclaudeLiveMcpRelayHttpServer(
+	options: CreateTelclaudeLiveMcpRelayHttpServerOptions,
+): TelclaudeLiveMcpRelayHttpServer {
+	const dependencies: TelclaudeMcpBridgeDependencies = {
+		...options.relayClients,
+		...createTelclaudeMcpLedgerExecuteDependencies({ ledger: options.ledger }),
+	};
+
+	return {
+		transport: TELCLAUDE_LIVE_MCP_TRANSPORT,
+		placement: {
+			side: "relay",
+			runsInHermesContainer: false,
+			transport: "http",
+			networkExposure: "relay_internal_only",
+			bindHost: requiredTrimmed(options.bindHost, "bindHost"),
+			networkName: requiredTrimmed(options.networkName, "networkName"),
+		},
+		dependencySurface: TELCLAUDE_LIVE_MCP_DEPENDENCY_SURFACE,
+
+		async handleJsonRpc(request, context) {
+			const id = jsonRpcId(request.id);
+			if (typeof request.method !== "string" || !request.method.trim()) {
+				return jsonError(id, -32600, "MCP JSON-RPC method is required");
+			}
+			const method = request.method.trim();
+
+			if (method === "initialize") {
+				return jsonResult(id, {
+					protocolVersion: "2024-11-05",
+					serverInfo: {
+						name: "telclaude-live-mcp-relay",
+						version: "1",
+					},
+					capabilities: {
+						tools: { listChanged: false },
+					},
+				});
+			}
+
+			if (method === "tools/list") {
+				return jsonResult(id, {
+					tools: TELCLAUDE_MCP_TOOL_NAMES.map((name) => ({ name })),
+				});
+			}
+
+			if (method in EMPTY_SURFACES) {
+				return jsonResult(id, EMPTY_SURFACES[method]);
+			}
+
+			if (method.startsWith("sampling/")) {
+				return jsonError(id, -32001, "MCP sampling is disabled");
+			}
+
+			if (method !== "tools/call") {
+				return jsonError(id, -32601, "MCP method denied");
+			}
+
+			if (!context) {
+				return jsonError(id, -32001, "MCP connection is not authorized");
+			}
+
+			const call = parseToolCall(request.params);
+			if (!call.ok) return jsonError(id, call.code, call.reason);
+			if (!isTelclaudeToolName(call.name)) {
+				return jsonError(id, -32601, "MCP tool denied");
+			}
+			if (isMemoryTool(call.name) && containsClientAuthorityField(call.args)) {
+				return jsonError(id, -32001, "MCP client cannot supply memory authority fields");
+			}
+
+			const registered = createTelclaudeMcpBridgeForRegisteredConnection({
+				registry: options.registry,
+				handle: context.authorityHandle,
+				connection: context.connection,
+				dependencies,
+				nowMs: options.nowMs?.(),
+			});
+			if (!registered.ok) return jsonError(id, -32001, registered.reason);
+
+			try {
+				const result = await callBridgeTool(
+					registered.bridge,
+					call.name,
+					stripClientAuthorityEnvelope(call.args),
+				);
+				return jsonResult(id, result);
+			} catch (error) {
+				return jsonError(id, -32001, errorMessage(error));
+			}
+		},
+	};
+}
+
+export function createTelclaudeLiveMcpNodeHttpServer(
+	server: TelclaudeLiveMcpRelayHttpServer,
+	options: CreateTelclaudeLiveMcpNodeHttpServerOptions,
+): http.Server {
+	const path = options.path ?? "/mcp";
+	return http.createServer(async (request, response) => {
+		if (request.method !== "POST" || request.url?.split("?")[0] !== path) {
+			writeHttpJson(response, 404, jsonError(null, -32601, "MCP endpoint denied"));
+			return;
+		}
+
+		let payload: unknown;
+		try {
+			payload = JSON.parse(await readHttpBody(request));
+		} catch {
+			writeHttpJson(response, 400, jsonError(null, -32700, "MCP JSON parse error"));
+			return;
+		}
+
+		let context: TelclaudeLiveMcpConnectionContext | null;
+		try {
+			context = await options.resolveConnection(request);
+		} catch {
+			context = null;
+		}
+		if (!context) {
+			writeHttpJson(
+				response,
+				403,
+				jsonError(
+					jsonRpcId(isRecord(payload) ? payload.id : undefined),
+					-32001,
+					"MCP connection is not authorized",
+				),
+			);
+			return;
+		}
+
+		const rpcResponse = await server.handleJsonRpc(
+			isRecord(payload) ? (payload as TelclaudeLiveMcpJsonRpcRequest) : {},
+			context,
+		);
+		writeHttpJson(response, httpStatusForRpcResponse(rpcResponse), rpcResponse);
+	});
+}
+
+function parseToolCall(
+	params: unknown,
+):
+	| { readonly ok: true; readonly name: string; readonly args: Record<string, unknown> }
+	| { readonly ok: false; readonly code: number; readonly reason: string } {
+	if (!isRecord(params)) {
+		return { ok: false, code: -32602, reason: "MCP tools/call params must be an object" };
+	}
+	const name = params.name;
+	if (typeof name !== "string" || !name.trim()) {
+		return { ok: false, code: -32602, reason: "MCP tools/call name is required" };
+	}
+	const args = params.arguments;
+	if (args === undefined) return { ok: true, name: name.trim(), args: {} };
+	if (!isRecord(args)) {
+		return { ok: false, code: -32602, reason: "MCP tools/call arguments must be an object" };
+	}
+	return { ok: true, name: name.trim(), args };
+}
+
+async function callBridgeTool(
+	bridge: TelclaudeMcpBridge,
+	name: TelclaudeMcpToolName,
+	args: Record<string, unknown>,
+): Promise<unknown> {
+	return bridge[name](args);
+}
+
+function isTelclaudeToolName(name: string): name is TelclaudeMcpToolName {
+	return (TELCLAUDE_MCP_TOOL_NAMES as readonly string[]).includes(name);
+}
+
+function isMemoryTool(name: TelclaudeMcpToolName): boolean {
+	return name === "tc_memory_search" || name === "tc_memory_write";
+}
+
+function containsClientAuthorityField(value: unknown): boolean {
+	if (Array.isArray(value)) {
+		return value.some(containsClientAuthorityField);
+	}
+	if (!isRecord(value)) return false;
+	return Object.entries(value).some(
+		([key, child]) => CLIENT_AUTHORITY_KEYS.has(key) || containsClientAuthorityField(child),
+	);
+}
+
+function stripClientAuthorityEnvelope(input: Record<string, unknown>): Record<string, unknown> {
+	const stripped: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(input)) {
+		if (!CLIENT_AUTHORITY_KEYS.has(key)) stripped[key] = value;
+	}
+	return stripped;
+}
+
+function jsonResult(id: JsonRpcId | undefined, result: unknown): TelclaudeLiveMcpJsonRpcResponse {
+	return { jsonrpc: "2.0", ...(id !== undefined ? { id } : {}), result };
+}
+
+function jsonError(
+	id: JsonRpcId | undefined,
+	code: number,
+	message: string,
+	data?: unknown,
+): TelclaudeLiveMcpJsonRpcResponse {
+	return {
+		jsonrpc: "2.0",
+		...(id !== undefined ? { id } : {}),
+		error: {
+			code,
+			message,
+			...(data !== undefined ? { data } : {}),
+		},
+	};
+}
+
+function jsonRpcId(value: unknown): JsonRpcId | undefined {
+	return typeof value === "string" || typeof value === "number" || value === null
+		? value
+		: undefined;
+}
+
+function httpStatusForRpcResponse(response: TelclaudeLiveMcpJsonRpcResponse): number {
+	if (!("error" in response)) return 200;
+	if (response.error.code === -32700) return 400;
+	if (response.error.message === "MCP connection is not authorized") return 403;
+	return 200;
+}
+
+function writeHttpJson(
+	response: http.ServerResponse,
+	statusCode: number,
+	body: TelclaudeLiveMcpJsonRpcResponse,
+): void {
+	response.writeHead(statusCode, {
+		"Content-Type": "application/json; charset=utf-8",
+		"Cache-Control": "no-store",
+	});
+	response.end(`${JSON.stringify(body)}\n`);
+}
+
+async function readHttpBody(request: http.IncomingMessage): Promise<string> {
+	let body = "";
+	for await (const chunk of request) {
+		body += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+		if (Buffer.byteLength(body, "utf8") > MAX_HTTP_BODY_BYTES) {
+			throw new Error("MCP HTTP body is too large");
+		}
+	}
+	return body;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredTrimmed(value: string, field: string): string {
+	const trimmed = value.trim();
+	if (!trimmed) throw new Error(`Telclaude live MCP ${field} is required`);
+	return trimmed;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
