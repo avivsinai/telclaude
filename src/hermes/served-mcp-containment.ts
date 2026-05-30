@@ -1,0 +1,858 @@
+import fs from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+import { redactSecrets } from "../security/output-filter.js";
+import { TELCLAUDE_MCP_TOOL_NAMES } from "./mcp/bridge.js";
+
+export const SERVED_MCP_CONTAINMENT_SCHEMA_VERSION = "telclaude.hermes.served-mcp-containment.v1";
+export const DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH =
+	"artifacts/hermes/probes/execution-served-mcp-containment.json";
+
+export const SERVED_MCP_REQUIRED_PROPERTY_NAMES = [
+	"positive_initialize_tools_only",
+	"positive_tools_list_exact",
+	"positive_resources_empty",
+	"positive_prompts_empty",
+	"positive_roots_empty",
+	"sampling_disabled",
+	"handle_forgery_denied",
+	"wrong_connection_denied",
+	"cross_domain_memory_denied",
+	"out_of_scope_provider_denied",
+	"out_of_scope_outbound_denied",
+	"provider_execute_without_ledger_denied",
+	"outbound_execute_without_ledger_denied",
+	"malformed_json_denied",
+	"unauthenticated_denied",
+	"batch_denied",
+	"prototype_key_denied",
+	"artifact_redacted",
+] as const;
+
+export type ServedMcpPropertyName = (typeof SERVED_MCP_REQUIRED_PROPERTY_NAMES)[number];
+
+const NonEmptyString = z.string().trim().min(1);
+const ServedMcpPropertyNameSchema = z.enum(SERVED_MCP_REQUIRED_PROPERTY_NAMES);
+
+const ServedMcpPropertiesSchema = z
+	.object({
+		positive_initialize_tools_only: z.boolean().optional(),
+		positive_tools_list_exact: z.boolean().optional(),
+		positive_resources_empty: z.boolean().optional(),
+		positive_prompts_empty: z.boolean().optional(),
+		positive_roots_empty: z.boolean().optional(),
+		sampling_disabled: z.boolean().optional(),
+		handle_forgery_denied: z.boolean().optional(),
+		wrong_connection_denied: z.boolean().optional(),
+		cross_domain_memory_denied: z.boolean().optional(),
+		out_of_scope_provider_denied: z.boolean().optional(),
+		out_of_scope_outbound_denied: z.boolean().optional(),
+		provider_execute_without_ledger_denied: z.boolean().optional(),
+		outbound_execute_without_ledger_denied: z.boolean().optional(),
+		malformed_json_denied: z.boolean().optional(),
+		unauthenticated_denied: z.boolean().optional(),
+		batch_denied: z.boolean().optional(),
+		prototype_key_denied: z.boolean().optional(),
+		artifact_redacted: z.boolean().optional(),
+	})
+	.strict();
+
+const ServedMcpCheckSchema = z
+	.object({
+		name: ServedMcpPropertyNameSchema,
+		status: z.enum(["pass", "fail"]),
+		detail: NonEmptyString,
+		httpStatus: z.number().int().nonnegative().optional(),
+		rpcErrorCode: z.number().int().optional(),
+		rpcErrorMessage: NonEmptyString.optional(),
+	})
+	.strict();
+
+export const ServedMcpContainmentEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(SERVED_MCP_CONTAINMENT_SCHEMA_VERSION),
+		probeId: z.literal("execution.served_mcp_containment"),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		generatedAt: NonEmptyString,
+		summary: NonEmptyString,
+		endpoint: z
+			.object({
+				transport: z.literal("http"),
+				target: z.literal("redacted-http-mcp-endpoint"),
+			})
+			.strict(),
+		placement: z
+			.object({
+				loadBearing: z.literal(false),
+				detail: NonEmptyString,
+			})
+			.strict(),
+		properties: ServedMcpPropertiesSchema,
+		checks: z.array(ServedMcpCheckSchema),
+	})
+	.strict();
+
+export type ServedMcpContainmentEvidence = z.infer<typeof ServedMcpContainmentEvidenceSchema>;
+export type ServedMcpContainmentCheck = ServedMcpContainmentEvidence["checks"][number];
+
+export type ServedMcpEndpoint = {
+	readonly url: string;
+	readonly headers?: Readonly<Record<string, string>>;
+};
+
+export type RunServedMcpContainmentProbeOptions = {
+	readonly allowRun: boolean;
+	readonly endpoint?: ServedMcpEndpoint;
+	readonly forgedAuthorityEndpoint?: ServedMcpEndpoint;
+	readonly wrongConnectionEndpoint?: ServedMcpEndpoint;
+	readonly unauthenticatedEndpoint?: ServedMcpEndpoint;
+	readonly now?: Date;
+	readonly fetchImpl?: typeof fetch;
+	readonly timeoutMs?: number;
+};
+
+export type ServedMcpContainmentGate = {
+	readonly name: string;
+	readonly status: "pass" | "fail";
+	readonly detail: string;
+};
+
+export type ServedMcpContainmentReport = {
+	readonly schemaVersion: "telclaude.hermes.served-mcp-containment-report.v1";
+	readonly status: "pass" | "fail" | "input_error";
+	readonly productionEnable: boolean;
+	readonly gates: ServedMcpContainmentGate[];
+};
+
+type RpcObservation = {
+	readonly httpStatus?: number;
+	readonly body?: unknown;
+	readonly transportError?: string;
+};
+
+const PROVIDER_WITHOUT_LEDGER_TOKEN = "tc_probe_provider_without_ledger_token";
+const OUTBOUND_WITHOUT_LEDGER_TOKEN = "tc_probe_outbound_without_ledger_token";
+
+export async function runServedMcpContainmentProbe(
+	options: RunServedMcpContainmentProbeOptions,
+): Promise<ServedMcpContainmentEvidence> {
+	if (!options.allowRun) {
+		return buildEvidence({
+			status: "pending",
+			ran: false,
+			generatedAt: generatedAt(options.now),
+			summary: "Hermes served-MCP containment probe requires --allow-run",
+			checks: [],
+			properties: falseProperties(),
+		});
+	}
+
+	const missingConfig = missingEndpointConfig(options);
+	if (missingConfig.length > 0) {
+		return buildEvidence({
+			status: "fail",
+			ran: false,
+			generatedAt: generatedAt(options.now),
+			summary: `Served MCP containment probe is not fully configured: ${missingConfig.join(", ")}`,
+			checks: SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((name) =>
+				failCheck(
+					name,
+					`served-MCP probe endpoint configuration is missing: ${missingConfig.join(", ")}`,
+				),
+			),
+			properties: falseProperties(),
+		});
+	}
+
+	const fetcher = options.fetchImpl ?? fetch;
+	const endpoint = requiredEndpoint(options.endpoint, "endpoint");
+	const forgedEndpoint = requiredEndpoint(
+		options.forgedAuthorityEndpoint,
+		"forgedAuthorityEndpoint",
+	);
+	const wrongEndpoint = requiredEndpoint(
+		options.wrongConnectionEndpoint,
+		"wrongConnectionEndpoint",
+	);
+	const unauthenticatedEndpoint = options.unauthenticatedEndpoint ?? {
+		url: endpoint.url,
+	};
+	const timeoutMs = options.timeoutMs;
+	const checks: ServedMcpContainmentCheck[] = [];
+
+	const initialize = await postJson(
+		fetcher,
+		endpoint,
+		rpc("initialize", { protocolVersion: "2024-11-05" }),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"positive_initialize_tools_only",
+			initializeToolsOnly(initialize),
+			"initialize returned only the MCP tools capability set",
+			"initialize did not return the tools-only capability set",
+			initialize,
+		),
+	);
+
+	const toolsList = await postJson(fetcher, endpoint, rpc("tools/list"), timeoutMs);
+	checks.push(
+		passIf(
+			"positive_tools_list_exact",
+			exactToolsList(toolsList),
+			"tools/list returned the exact Telclaude tc_ tool set",
+			"tools/list did not return the exact Telclaude tc_ tool set",
+			toolsList,
+		),
+	);
+
+	for (const [property, method, resultKey] of [
+		["positive_resources_empty", "resources/list", "resources"],
+		["positive_prompts_empty", "prompts/list", "prompts"],
+		["positive_roots_empty", "roots/list", "roots"],
+	] as const) {
+		const observed = await postJson(fetcher, endpoint, rpc(method), timeoutMs);
+		checks.push(
+			passIf(
+				property,
+				emptyArrayResult(observed, resultKey),
+				`${method} returned an empty surface`,
+				`${method} did not return an empty surface`,
+				observed,
+			),
+		);
+	}
+
+	const sampling = await postJson(fetcher, endpoint, rpc("sampling/createMessage"), timeoutMs);
+	checks.push(
+		passIf(
+			"sampling_disabled",
+			expectedRpcError(sampling, -32001, "disabled"),
+			"sampling/createMessage was specifically refused",
+			"sampling/createMessage did not return the expected disabled denial",
+			sampling,
+		),
+	);
+
+	const forgedAuthority = await postJson(
+		fetcher,
+		forgedEndpoint,
+		toolCall("tc_provider_read", {
+			service: "bank",
+			action: "balances.list",
+			params: {},
+		}),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"handle_forgery_denied",
+			expectedRpcError(forgedAuthority, -32001, "not registered"),
+			"forged transport authority was specifically denied as unregistered",
+			"forged transport authority was not specifically denied as unregistered",
+			forgedAuthority,
+		),
+	);
+
+	const wrongConnection = await postJson(
+		fetcher,
+		wrongEndpoint,
+		toolCall("tc_provider_read", {
+			service: "bank",
+			action: "balances.list",
+			params: {},
+		}),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"wrong_connection_denied",
+			expectedRpcError(wrongConnection, -32001, "connection mismatch"),
+			"wrong-connection authority was specifically denied",
+			"wrong-connection authority was not specifically denied",
+			wrongConnection,
+		),
+	);
+
+	const crossDomainMemory = await postJson(
+		fetcher,
+		endpoint,
+		toolCall("tc_memory_search", {
+			query: "family",
+			filters: { source: "social", profileId: "social" },
+		}),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"cross_domain_memory_denied",
+			expectedRpcError(crossDomainMemory, -32001, "memory authority fields"),
+			"cross-domain memory authority injection was specifically denied",
+			"cross-domain memory authority injection was not specifically denied",
+			crossDomainMemory,
+		),
+	);
+
+	const outOfScopeProvider = await postJson(
+		fetcher,
+		endpoint,
+		toolCall("tc_provider_read", {
+			service: "clalit",
+			action: "appointments.list",
+			params: {},
+		}),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"out_of_scope_provider_denied",
+			expectedRpcError(outOfScopeProvider, -32001, "provider scope denied"),
+			"out-of-scope provider read was specifically denied",
+			"out-of-scope provider read was not specifically denied",
+			outOfScopeProvider,
+		),
+	);
+
+	const outOfScopeOutbound = await postJson(
+		fetcher,
+		endpoint,
+		toolCall("tc_outbound_prepare", {
+			channel: "telegram",
+			recipient: "family",
+			content: "hello",
+		}),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"out_of_scope_outbound_denied",
+			expectedRpcError(outOfScopeOutbound, -32001, "outbound channel denied"),
+			"out-of-scope outbound prepare was specifically denied",
+			"out-of-scope outbound prepare was not specifically denied",
+			outOfScopeOutbound,
+		),
+	);
+
+	const providerExecuteWithoutLedger = await postJson(
+		fetcher,
+		endpoint,
+		toolCall("tc_provider_execute_write", {
+			actionRef: "tc_probe_missing_provider_ref",
+			approvalToken: PROVIDER_WITHOUT_LEDGER_TOKEN,
+		}),
+		timeoutMs,
+	);
+	const providerLedgerDenialCode = ledgerDenialCode(providerExecuteWithoutLedger);
+	checks.push(
+		passIf(
+			"provider_execute_without_ledger_denied",
+			providerLedgerDenialCode !== null,
+			providerLedgerDenialCode
+				? `provider execute without a prepared ledger record was specifically denied with ${providerLedgerDenialCode}`
+				: "provider execute without a prepared ledger record was specifically denied",
+			"provider execute without a prepared ledger record was not specifically denied",
+			providerExecuteWithoutLedger,
+		),
+	);
+
+	const outboundExecuteWithoutLedger = await postJson(
+		fetcher,
+		endpoint,
+		toolCall("tc_outbound_execute", {
+			outboundRef: "tc_probe_missing_outbound_ref",
+			approvalToken: OUTBOUND_WITHOUT_LEDGER_TOKEN,
+		}),
+		timeoutMs,
+	);
+	const outboundLedgerDenialCode = ledgerDenialCode(outboundExecuteWithoutLedger);
+	checks.push(
+		passIf(
+			"outbound_execute_without_ledger_denied",
+			outboundLedgerDenialCode !== null,
+			outboundLedgerDenialCode
+				? `outbound execute without a prepared ledger record was specifically denied with ${outboundLedgerDenialCode}`
+				: "outbound execute without a prepared ledger record was specifically denied",
+			"outbound execute without a prepared ledger record was not specifically denied",
+			outboundExecuteWithoutLedger,
+		),
+	);
+
+	const malformed = await postRaw(fetcher, endpoint, "{not-json", timeoutMs);
+	checks.push(
+		passIf(
+			"malformed_json_denied",
+			expectedRpcError(malformed, -32700, "parse error", 400),
+			"malformed JSON was specifically denied with parse error",
+			"malformed JSON was not specifically denied with parse error",
+			malformed,
+		),
+	);
+
+	const unauthenticated = await postJson(
+		fetcher,
+		unauthenticatedEndpoint,
+		rpc("tools/list"),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"unauthenticated_denied",
+			expectedRpcError(unauthenticated, -32001, "not authorized", 403),
+			"unauthenticated HTTP request was specifically denied",
+			"unauthenticated HTTP request was not specifically denied",
+			unauthenticated,
+		),
+	);
+
+	const batch = await postJson(fetcher, endpoint, [], timeoutMs);
+	checks.push(
+		passIf(
+			"batch_denied",
+			expectedRpcError(batch, -32600, "batch"),
+			"JSON-RPC batch request was specifically denied",
+			"JSON-RPC batch request was not specifically denied",
+			batch,
+		),
+	);
+
+	const prototypeKey = await postJson(
+		fetcher,
+		endpoint,
+		toolCall(
+			"tc_provider_read",
+			JSON.parse(
+				'{"service":"bank","action":"balances.list","params":{"nested":{"__proto__":{"polluted":true}}}}',
+			) as Record<string, unknown>,
+		),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"prototype_key_denied",
+			expectedRpcError(prototypeKey, -32602, "prototype key"),
+			"prototype-pollution key was specifically denied before bridge dispatch",
+			"prototype-pollution key was not specifically denied before bridge dispatch",
+			prototypeKey,
+		),
+	);
+
+	const nonRedactionProperties = propertiesFromChecks(checks);
+	const candidate = buildEvidence({
+		status: checks.every((check) => check.status === "pass") ? "pass" : "fail",
+		ran: true,
+		generatedAt: generatedAt(options.now),
+		summary: checks.every((check) => check.status === "pass")
+			? "Served MCP containment probe passed"
+			: "Served MCP containment probe failed",
+		checks,
+		properties: { ...nonRedactionProperties, artifact_redacted: true },
+	});
+	const redactionPass = !containsSensitiveNeedle(
+		JSON.stringify(candidate),
+		sensitiveNeedles(options),
+	);
+	checks.push(
+		redactionPass
+			? passCheck(
+					"artifact_redacted",
+					"persisted evidence omits raw endpoint, handle, header, token, and signature material",
+				)
+			: failCheck(
+					"artifact_redacted",
+					"persisted evidence contains raw endpoint, handle, header, token, or signature material",
+				),
+	);
+
+	const properties = propertiesFromChecks(checks);
+	const status = checks.every((check) => check.status === "pass") ? "pass" : "fail";
+	return buildEvidence({
+		status,
+		ran: true,
+		generatedAt: generatedAt(options.now),
+		summary:
+			status === "pass"
+				? "Served MCP containment probe passed"
+				: "Served MCP containment probe failed",
+		checks,
+		properties,
+	});
+}
+
+export function evaluateServedMcpContainmentEvidence(
+	evidence: unknown,
+	options: { missingPath?: string } = {},
+): ServedMcpContainmentReport {
+	if (evidence === undefined) {
+		return {
+			schemaVersion: "telclaude.hermes.served-mcp-containment-report.v1",
+			status: "input_error",
+			productionEnable: false,
+			gates: [
+				{
+					name: "servedMcp.evidence",
+					status: "fail",
+					detail: `required served-MCP containment evidence is missing: ${options.missingPath ?? DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH}`,
+				},
+			],
+		};
+	}
+	const parsed = ServedMcpContainmentEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return {
+			schemaVersion: "telclaude.hermes.served-mcp-containment-report.v1",
+			status: "input_error",
+			productionEnable: false,
+			gates: [
+				{
+					name: "servedMcp.evidence",
+					status: "fail",
+					detail: flattenZodError(parsed.error),
+				},
+			],
+		};
+	}
+
+	const gates: ServedMcpContainmentGate[] = [];
+	if (parsed.data.status !== "pass") {
+		gates.push({
+			name: "servedMcp.status",
+			status: "fail",
+			detail: `served-MCP evidence status is ${parsed.data.status}`,
+		});
+	}
+	if (parsed.data.ran !== true) {
+		gates.push({
+			name: "servedMcp.ran",
+			status: "fail",
+			detail: `served-MCP evidence ran is ${String(parsed.data.ran)}`,
+		});
+	}
+	for (const property of SERVED_MCP_REQUIRED_PROPERTY_NAMES) {
+		const value = parsed.data.properties[property];
+		gates.push({
+			name: `servedMcp.property.${property}`,
+			status: value === true ? "pass" : "fail",
+			detail:
+				value === true
+					? `served-MCP property ${property} is proven`
+					: `served-MCP property ${property} is ${value === undefined ? "missing" : "false"}`,
+		});
+	}
+	const productionEnable = gates.every((gate) => gate.status === "pass");
+	return {
+		schemaVersion: "telclaude.hermes.served-mcp-containment-report.v1",
+		status: productionEnable ? "pass" : "fail",
+		productionEnable,
+		gates,
+	};
+}
+
+export function writeServedMcpContainmentEvidence(
+	evidence: ServedMcpContainmentEvidence,
+	filePath: string,
+): void {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const tmpPath = `${filePath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+	fs.renameSync(tmpPath, filePath);
+}
+
+function buildEvidence(input: {
+	status: ServedMcpContainmentEvidence["status"];
+	ran: boolean;
+	generatedAt: string;
+	summary: string;
+	checks: ServedMcpContainmentCheck[];
+	properties: ServedMcpContainmentEvidence["properties"];
+}): ServedMcpContainmentEvidence {
+	return {
+		schemaVersion: SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
+		probeId: "execution.served_mcp_containment",
+		status: input.status,
+		ran: input.ran,
+		generatedAt: input.generatedAt,
+		summary: redactDetail(input.summary),
+		endpoint: {
+			transport: "http",
+			target: "redacted-http-mcp-endpoint",
+		},
+		placement: {
+			loadBearing: false,
+			detail:
+				"Placement metadata is informational; relay-internal bind enforcement remains a deployment live-run gate.",
+		},
+		properties: input.properties,
+		checks: input.checks.map((check) => ({
+			...check,
+			detail: redactDetail(check.detail),
+			...(check.rpcErrorMessage ? { rpcErrorMessage: redactDetail(check.rpcErrorMessage) } : {}),
+		})),
+	};
+}
+
+function missingEndpointConfig(options: RunServedMcpContainmentProbeOptions): string[] {
+	const missing = [];
+	if (!options.endpoint?.url.trim()) missing.push("endpoint");
+	if (!options.forgedAuthorityEndpoint?.url.trim()) missing.push("forgedAuthorityEndpoint");
+	if (!options.wrongConnectionEndpoint?.url.trim()) missing.push("wrongConnectionEndpoint");
+	return missing;
+}
+
+function requiredEndpoint(
+	endpoint: ServedMcpEndpoint | undefined,
+	name: string,
+): ServedMcpEndpoint {
+	if (!endpoint) throw new Error(`served-MCP probe ${name} is missing after validation`);
+	return endpoint;
+}
+
+async function postJson(
+	fetcher: typeof fetch,
+	endpoint: ServedMcpEndpoint,
+	payload: unknown,
+	timeoutMs: number | undefined,
+): Promise<RpcObservation> {
+	return postRaw(fetcher, endpoint, JSON.stringify(payload), timeoutMs);
+}
+
+async function postRaw(
+	fetcher: typeof fetch,
+	endpoint: ServedMcpEndpoint,
+	body: string,
+	timeoutMs: number | undefined,
+): Promise<RpcObservation> {
+	const controller = timeoutMs ? new AbortController() : undefined;
+	const timeout = controller
+		? setTimeout(
+				() => controller.abort(new Error(`served-MCP probe timed out after ${timeoutMs}ms`)),
+				timeoutMs,
+			)
+		: undefined;
+	try {
+		const response = await fetcher(endpoint.url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...(endpoint.headers ?? {}),
+			},
+			body,
+			signal: controller?.signal,
+		});
+		const text = await response.text();
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text) as unknown;
+		} catch {
+			parsed = { parseError: "response JSON parse error" };
+		}
+		return { httpStatus: response.status, body: parsed };
+	} catch (error) {
+		return { transportError: redactDetail(error instanceof Error ? error.message : String(error)) };
+	} finally {
+		if (timeout) clearTimeout(timeout);
+	}
+}
+
+function rpc(method: string, params?: unknown): Record<string, unknown> {
+	return {
+		jsonrpc: "2.0",
+		id: `probe-${method}`,
+		method,
+		...(params !== undefined ? { params } : {}),
+	};
+}
+
+function toolCall(name: string, args: Record<string, unknown>): Record<string, unknown> {
+	return rpc("tools/call", { name, arguments: args });
+}
+
+function initializeToolsOnly(observation: RpcObservation): boolean {
+	const result = rpcResult(observation);
+	if (!isRecord(result)) return false;
+	const capabilities = result.capabilities;
+	if (!isRecord(capabilities)) return false;
+	return sameJson(capabilities, { tools: { listChanged: false } });
+}
+
+function exactToolsList(observation: RpcObservation): boolean {
+	const result = rpcResult(observation);
+	if (!isRecord(result) || !Array.isArray(result.tools)) return false;
+	const names = result.tools.map((tool) =>
+		isRecord(tool) && typeof tool.name === "string" ? tool.name : null,
+	);
+	return (
+		names.every((name): name is string => typeof name === "string") &&
+		sameJson(names, [...TELCLAUDE_MCP_TOOL_NAMES])
+	);
+}
+
+function emptyArrayResult(observation: RpcObservation, key: string): boolean {
+	const result = rpcResult(observation);
+	return isRecord(result) && Array.isArray(result[key]) && result[key].length === 0;
+}
+
+function expectedRpcError(
+	observation: RpcObservation,
+	code: number,
+	messageIncludes: string,
+	httpStatus?: number,
+): boolean {
+	if (httpStatus !== undefined && observation.httpStatus !== httpStatus) return false;
+	const error = rpcError(observation);
+	return (
+		error?.code === code &&
+		typeof error.message === "string" &&
+		error.message.toLowerCase().includes(messageIncludes.toLowerCase())
+	);
+}
+
+function ledgerDenialCode(observation: RpcObservation): string | null {
+	const result = rpcResult(observation);
+	if (!isRecord(result) || result.ok !== false || typeof result.code !== "string") return null;
+	return result.code === "effect_not_found" || result.code === "approval_required"
+		? result.code
+		: null;
+}
+
+function passIf(
+	name: ServedMcpPropertyName,
+	condition: boolean,
+	passDetail: string,
+	failDetail: string,
+	observation?: RpcObservation,
+): ServedMcpContainmentCheck {
+	if (condition) return passCheck(name, passDetail, observation);
+	return failCheck(name, `${failDetail}; observed ${observedSummary(observation)}`, observation);
+}
+
+function passCheck(
+	name: ServedMcpPropertyName,
+	detail: string,
+	observation?: RpcObservation,
+): ServedMcpContainmentCheck {
+	return withObservation({ name, status: "pass", detail }, observation);
+}
+
+function failCheck(
+	name: ServedMcpPropertyName,
+	detail: string,
+	observation?: RpcObservation,
+): ServedMcpContainmentCheck {
+	return withObservation({ name, status: "fail", detail }, observation);
+}
+
+function withObservation(
+	check: Pick<ServedMcpContainmentCheck, "name" | "status" | "detail">,
+	observation?: RpcObservation,
+): ServedMcpContainmentCheck {
+	const error = observation ? rpcError(observation) : undefined;
+	return {
+		...check,
+		detail: redactDetail(check.detail),
+		...(observation?.httpStatus !== undefined ? { httpStatus: observation.httpStatus } : {}),
+		...(error?.code !== undefined ? { rpcErrorCode: error.code } : {}),
+		...(error?.message ? { rpcErrorMessage: redactDetail(error.message) } : {}),
+	};
+}
+
+function observedSummary(observation: RpcObservation | undefined): string {
+	if (!observation) return "no observation";
+	if (observation.transportError)
+		return `transportError=${redactDetail(observation.transportError)}`;
+	const error = rpcError(observation);
+	if (error) {
+		return `http=${observation.httpStatus ?? "missing"} rpcError=${error.code} ${redactDetail(error.message)}`;
+	}
+	const result = rpcResult(observation);
+	return `http=${observation.httpStatus ?? "missing"} result=${result === undefined ? "missing" : "present"}`;
+}
+
+function rpcResult(observation: RpcObservation): unknown {
+	if (observation.httpStatus === undefined || !isRecord(observation.body)) return undefined;
+	if (observation.body.jsonrpc !== "2.0" || !Object.hasOwn(observation.body, "result")) {
+		return undefined;
+	}
+	return observation.body.result;
+}
+
+function rpcError(
+	observation: RpcObservation,
+): { readonly code: number; readonly message: string } | undefined {
+	if (!isRecord(observation.body)) return undefined;
+	const error = observation.body.error;
+	if (!isRecord(error) || typeof error.code !== "number" || typeof error.message !== "string") {
+		return undefined;
+	}
+	return { code: error.code, message: error.message };
+}
+
+function propertiesFromChecks(
+	checks: readonly ServedMcpContainmentCheck[],
+): ServedMcpContainmentEvidence["properties"] {
+	const properties = falseProperties();
+	for (const check of checks) {
+		properties[check.name] = check.status === "pass";
+	}
+	return properties;
+}
+
+function falseProperties(): Record<ServedMcpPropertyName, boolean> {
+	return Object.fromEntries(
+		SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((property) => [property, false]),
+	) as Record<ServedMcpPropertyName, boolean>;
+}
+
+function sensitiveNeedles(options: RunServedMcpContainmentProbeOptions): string[] {
+	const endpoints = [
+		options.endpoint,
+		options.forgedAuthorityEndpoint,
+		options.wrongConnectionEndpoint,
+		options.unauthenticatedEndpoint,
+	].filter((endpoint): endpoint is ServedMcpEndpoint => endpoint !== undefined);
+	const endpointNeedles = endpoints.flatMap((endpoint) => {
+		const needles = Object.values(endpoint.headers ?? {});
+		try {
+			const url = new URL(endpoint.url);
+			needles.push(url.host);
+		} catch {
+			needles.push(endpoint.url);
+		}
+		return needles;
+	});
+	return [
+		PROVIDER_WITHOUT_LEDGER_TOKEN,
+		OUTBOUND_WITHOUT_LEDGER_TOKEN,
+		"approvalToken",
+		"signature",
+		"tc_mcp_",
+		...endpointNeedles,
+	].filter((needle) => needle.trim().length >= 3);
+}
+
+function containsSensitiveNeedle(serialized: string, needles: readonly string[]): boolean {
+	return needles.some((needle) => serialized.includes(needle));
+}
+
+function generatedAt(now: Date | undefined): string {
+	return (now ?? new Date()).toISOString();
+}
+
+function redactDetail(detail: string): string {
+	return redactSecrets(detail).replace(/\s+/g, " ").trim();
+}
+
+function flattenZodError(error: z.ZodError): string {
+	return error.issues
+		.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+		.join("; ");
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}

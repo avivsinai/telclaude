@@ -61,6 +61,12 @@ import {
 	runHermesCliHeadlessProbe,
 	runHermesLaunchInvocation,
 } from "../hermes/private-runtime.js";
+import {
+	DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
+	runServedMcpContainmentProbe,
+	type ServedMcpEndpoint,
+	writeServedMcpContainmentEvidence,
+} from "../hermes/served-mcp-containment.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -80,6 +86,10 @@ type ProbeOption = JsonOption & {
 	evidence: string;
 	hermesBin?: string;
 	hermesHome?: string;
+	mcpAuth?: string;
+	mcpForgedAuth?: string;
+	mcpUrl?: string;
+	mcpWrongConnectionAuth?: string;
 	image?: string;
 	modelUrl?: string;
 	network?: string;
@@ -158,6 +168,29 @@ function parseCsvOption(value: string | undefined): string[] {
 		.split(",")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
+}
+
+function parseHeaderOption(value: string | undefined): Record<string, string> | undefined {
+	if (!value?.trim()) return undefined;
+	const separatorIndex = value.indexOf(":");
+	if (separatorIndex <= 0) {
+		throw new Error("MCP auth header must use 'Name: value' format");
+	}
+	const name = value.slice(0, separatorIndex).trim();
+	const headerValue = value.slice(separatorIndex + 1).trim();
+	if (!name || !headerValue) {
+		throw new Error("MCP auth header must include a non-empty name and value");
+	}
+	return { [name]: headerValue };
+}
+
+function servedMcpEndpoint(
+	url: string | undefined,
+	header: string | undefined,
+): ServedMcpEndpoint | undefined {
+	const resolvedUrl = url?.trim() || process.env.TELCLAUDE_HERMES_SERVED_MCP_URL?.trim();
+	if (!resolvedUrl) return undefined;
+	return { url: resolvedUrl, headers: parseHeaderOption(header) };
 }
 
 function collectHermesFeatureProbeEvidence(featureProbeMatrix: unknown) {
@@ -344,6 +377,16 @@ export function registerHermesCommand(program: Command): void {
 		.option("--prompt <prompt>", "Prompt for execution.cli_headless")
 		.option("--timeout-ms <ms>", "Maximum executable probe runtime in milliseconds")
 		.option("--image <image>", "Hermes Docker image for execution.api_server_containment")
+		.option("--mcp-url <url>", "Relay-only served MCP HTTP endpoint URL")
+		.option("--mcp-auth <header>", "Authorized served MCP context header as 'Name: value'")
+		.option(
+			"--mcp-forged-auth <header>",
+			"Forged/unregistered served MCP context header as 'Name: value'",
+		)
+		.option(
+			"--mcp-wrong-connection-auth <header>",
+			"Wrong-connection served MCP context header as 'Name: value'",
+		)
 		.option("--container-name <name>", "Hermes API-server container name")
 		.option("--network <name>", "Relay-only Docker network for the contained Hermes server")
 		.option("--api-port <port>", "Hermes API-server container port")
@@ -490,6 +533,66 @@ export function registerHermesCommand(program: Command): void {
 					);
 					for (const gate of report.gates) {
 						console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+				return;
+			}
+
+			if (surface === "execution.served_mcp_containment") {
+				let report: Awaited<ReturnType<typeof runServedMcpContainmentProbe>>;
+				let outPath: string | undefined;
+				try {
+					const timeoutMs = parseTimeoutMs(options.timeoutMs);
+					const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth);
+					report = await runServedMcpContainmentProbe({
+						allowRun: options.allowRun === true,
+						endpoint,
+						forgedAuthorityEndpoint: servedMcpEndpoint(options.mcpUrl, options.mcpForgedAuth),
+						wrongConnectionEndpoint: servedMcpEndpoint(
+							options.mcpUrl,
+							options.mcpWrongConnectionAuth,
+						),
+						unauthenticatedEndpoint: endpoint ? { url: endpoint.url } : undefined,
+						timeoutMs,
+					});
+					if (options.allowRun === true && report.status !== "pending") {
+						outPath = resolveHermesArtifactPath(
+							options.out ?? DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
+						);
+						writeServedMcpContainmentEvidence(report, outPath);
+					}
+				} catch (error) {
+					report = {
+						schemaVersion: "telclaude.hermes.served-mcp-containment.v1",
+						probeId: "execution.served_mcp_containment",
+						status: "fail",
+						ran: false,
+						generatedAt: new Date().toISOString(),
+						summary: error instanceof Error ? error.message : String(error),
+						endpoint: {
+							transport: "http",
+							target: "redacted-http-mcp-endpoint",
+						},
+						placement: {
+							loadBearing: false,
+							detail:
+								"Placement metadata is informational; relay-internal bind enforcement remains a deployment live-run gate.",
+						},
+						properties: {},
+						checks: [],
+					};
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(
+						`- ${report.status.toUpperCase()} execution.served_mcp_containment: ${report.summary}`,
+					);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
 					}
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
+import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 
 export const DEFAULT_FEATURE_PROBE_MATRIX_PATH = "docs/hermes/feature-probes.json";
 export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json";
@@ -55,6 +56,7 @@ export const FeatureProbeSchema = z
 				"edge-adapter",
 				"model-relay",
 				"nofork-proof",
+				"served-mcp-containment",
 			])
 			.optional(),
 		approval_equivalent: z.boolean().optional(),
@@ -476,8 +478,13 @@ export function collectFeatureProbeEvidence(
 	const parsed = FeatureProbeMatrixSchema.safeParse(featureProbeMatrix);
 	if (!parsed.success) return undefined;
 	const results = parsed.data.probes.flatMap((probe) => {
-		if (probe.surface_id !== "execution.cli_headless") return [];
-		return [collectCliHeadlessProbeEvidence(probe)];
+		if (probe.surface_id === "execution.cli_headless") {
+			return [collectCliHeadlessProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "execution.served_mcp_containment") {
+			return [collectServedMcpContainmentProbeEvidence(probe)];
+		}
+		return [];
 	});
 	return { schemaVersion: 1, results };
 }
@@ -1084,6 +1091,38 @@ function collectCliHeadlessProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed pass, ran=true, exitCode=0`,
+	};
+}
+
+function collectServedMcpContainmentProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	const report = evaluateServedMcpContainmentEvidence(evidence, { missingPath: resolvedPath });
+	const failingGates = report.gates.filter((gate) => gate.status !== "pass");
+	if (report.status !== "pass" || !report.productionEnable || failingGates.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			failingGates.map((gate) => gate.detail).join("; ") ||
+				`served-MCP containment evidence status is ${report.status}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed all served-MCP containment properties`,
 	};
 }
 
