@@ -36,11 +36,17 @@ describe("Telclaude live MCP probe tokens", () => {
 		});
 
 		expect(bundle.allowed.token).toMatch(/^tc_mcp_conn_/);
+		expect(bundle.offDomainPeer.token).toMatch(/^tc_mcp_conn_/);
 		expect(bundle.wrongConnection.token).toMatch(/^tc_mcp_conn_/);
 		expect(bundle.forged.token).toMatch(/^tc_mcp_conn_/);
 		expect(
-			new Set([bundle.allowed.token, bundle.wrongConnection.token, bundle.forged.token]).size,
-		).toBe(3);
+			new Set([
+				bundle.allowed.token,
+				bundle.offDomainPeer.token,
+				bundle.wrongConnection.token,
+				bundle.forged.token,
+			]).size,
+		).toBe(4);
 
 		expect(
 			resolver.resolveConnection(
@@ -55,6 +61,19 @@ describe("Telclaude live MCP probe tokens", () => {
 				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.3"),
 			),
 		).toBeNull();
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.0.0.2"),
+			),
+		).toBeNull();
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.255.255.254"),
+			),
+		).toEqual({
+			authorityHandle: expect.stringMatching(/^tc_mcp_/),
+			connection: privateConnection,
+		});
 		expect(
 			resolver.resolveConnection(
 				request({ authorization: bundle.wrongConnection.authorizationHeader }, "10.0.0.2"),
@@ -73,6 +92,77 @@ describe("Telclaude live MCP probe tokens", () => {
 		}
 		expect(bundle.metadata.tokenMaterial).toBe("omitted");
 		expect(bundle.metadata.peerBound).toBe(true);
+		expect(bundle.metadata.offDomainPeerBound).toBe(true);
+	});
+
+	it("uses a probe-only bypass only for off-domain peer-bound smoke tokens", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+		const resolver = createTelclaudeLiveMcpConnectionResolver({
+			registry,
+			nowMs: () => 2_000,
+			allowedPeerAddresses: ["10.0.0.2"],
+		});
+		const privateConnection = connection();
+		const bundle = createTelclaudeLiveMcpProbeTokenBundle({
+			registry,
+			resolver,
+			privateConnection,
+			wrongConnection: connection({
+				sessionKey: "telegram:social",
+				profileId: "social",
+				endpointId: "endpoint-social",
+				networkNamespace: "netns-social",
+			}),
+			privateAuthority: authority(),
+			nowMs: 1_000,
+			ttlMs: 10_000,
+			peerAddress: "10.0.0.2",
+			offDomainPeerAddress: "10.0.0.4",
+		});
+
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.2"),
+			),
+		).toEqual({
+			authorityHandle: expect.stringMatching(/^tc_mcp_/),
+			connection: privateConnection,
+		});
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.3"),
+			),
+		).toBeNull();
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.0.0.3"),
+			),
+		).toBeNull();
+		expect(
+			resolver.resolveConnection(
+				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.0.0.4"),
+			),
+		).toEqual({
+			authorityHandle: expect.stringMatching(/^tc_mcp_/),
+			connection: privateConnection,
+		});
+		expect(() =>
+			createTelclaudeLiveMcpProbeTokenBundle({
+				registry,
+				resolver,
+				privateConnection,
+				wrongConnection: connection({
+					sessionKey: "telegram:social-2",
+					profileId: "social",
+					endpointId: "endpoint-social-2",
+					networkNamespace: "netns-social",
+				}),
+				privateAuthority: authority(),
+				nowMs: 1_000,
+				ttlMs: 10_000,
+				peerAddress: "10.0.0.3",
+			}),
+		).toThrow("peerAddress is not in allowedPeerAddresses");
 	});
 
 	it("keeps expiry and revocation behavior delegated to the shared resolver", () => {
@@ -111,7 +201,7 @@ describe("Telclaude live MCP probe tokens", () => {
 				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.2"),
 			),
 		).toBeNull();
-		expect(resolver.cleanupExpired(nowMs)).toBe(2);
+		expect(resolver.cleanupExpired(nowMs)).toBe(3);
 
 		const revocationRegistry = createTelclaudeMcpAuthorityRegistry();
 		const revocationResolver = createTelclaudeLiveMcpConnectionResolver({

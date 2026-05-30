@@ -7,6 +7,7 @@ import type { TelclaudeMcpAuthority } from "./bridge.js";
 import {
 	DEFAULT_LIVE_MCP_CONNECTION_TTL_MS,
 	TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX,
+	TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS,
 	type TelclaudeLiveMcpConnectionGrant,
 	type TelclaudeLiveMcpConnectionResolver,
 } from "./live-connection-resolver.js";
@@ -29,6 +30,7 @@ export type TelclaudeLiveMcpProbeTokenMetadata = {
 	readonly tokenPrefix: typeof TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX;
 	readonly tokenMaterial: "omitted";
 	readonly peerBound: boolean;
+	readonly offDomainPeerBound: boolean;
 	readonly privateConnection: TelclaudeLiveMcpProbeConnectionMetadata;
 	readonly wrongConnection: TelclaudeLiveMcpProbeConnectionMetadata;
 };
@@ -41,6 +43,7 @@ export type TelclaudeLiveMcpProbeConnectionMetadata = {
 
 export type TelclaudeLiveMcpProbeTokenBundle = {
 	readonly allowed: TelclaudeLiveMcpProbeTokenSecret;
+	readonly offDomainPeer: TelclaudeLiveMcpProbeTokenSecret;
 	readonly wrongConnection: TelclaudeLiveMcpProbeTokenSecret;
 	readonly forged: TelclaudeLiveMcpProbeTokenSecret;
 	readonly metadata: TelclaudeLiveMcpProbeTokenMetadata;
@@ -55,6 +58,7 @@ export type CreateTelclaudeLiveMcpProbeTokenBundleOptions = {
 	readonly nowMs?: number;
 	readonly ttlMs?: number;
 	readonly peerAddress?: string;
+	readonly offDomainPeerAddress?: string;
 	readonly randomBytes?: (size: number) => Buffer;
 };
 
@@ -68,6 +72,7 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 	if (sameConnection(privateConnection, wrongConnection)) {
 		throw new Error("live MCP probe wrongConnection must differ from privateConnection");
 	}
+	const offDomainPeerAddress = options.offDomainPeerAddress ?? "10.255.255.254";
 
 	const privateGrant = options.registry.register({
 		connection: privateConnection,
@@ -82,6 +87,14 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 		ttlMs,
 		...(options.peerAddress ? { peerAddress: options.peerAddress } : {}),
 	});
+	const offDomainPeer = options.resolver.issue({
+		authorityHandle: privateGrant.handle,
+		connection: privateConnection,
+		nowMs,
+		ttlMs,
+		peerAddress: offDomainPeerAddress,
+		[TELCLAUDE_LIVE_MCP_PROBE_MODE_PEER_BYPASS]: true,
+	});
 	const wrong = options.resolver.issue({
 		authorityHandle: privateGrant.handle,
 		connection: wrongConnection,
@@ -94,6 +107,7 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 
 	return {
 		allowed: tokenSecret(allowed),
+		offDomainPeer: tokenSecret(offDomainPeer),
 		wrongConnection: tokenSecret(wrong),
 		forged: {
 			token: forgedToken,
@@ -109,6 +123,7 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 			tokenPrefix: TELCLAUDE_LIVE_MCP_CONNECTION_TOKEN_PREFIX,
 			tokenMaterial: "omitted",
 			peerBound: Boolean(options.peerAddress?.trim()),
+			offDomainPeerBound: true,
 			privateConnection: connectionMetadata(privateConnection),
 			wrongConnection: connectionMetadata(wrongConnection),
 		},

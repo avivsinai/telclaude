@@ -17,6 +17,7 @@ import {
 } from "../../src/hermes/mcp/live-server.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
 import {
+	evaluateServedMcpContainmentEvidence,
 	runServedMcpContainmentProbe,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 	writeServedMcpContainmentEvidence,
@@ -36,9 +37,11 @@ describe("Hermes served-MCP containment probe", () => {
 		const report = await runServedMcpContainmentProbe({
 			allowRun: true,
 			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
 			forgedAuthorityEndpoint: harness.endpoint("forged"),
 			wrongConnectionEndpoint: harness.endpoint("wrong"),
 			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
 		});
 
 		expect(report).toMatchObject({
@@ -63,14 +66,17 @@ describe("Hermes served-MCP containment probe", () => {
 		const report = await runServedMcpContainmentProbe({
 			allowRun: true,
 			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
 			forgedAuthorityEndpoint: harness.endpoint("forged"),
 			wrongConnectionEndpoint: harness.endpoint("wrong"),
 			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
 		});
 
 		expect(report.status).toBe("pass");
 		expect(report.properties.handle_forgery_denied).toBe(true);
 		expect(report.properties.wrong_connection_denied).toBe(true);
+		expect(report.properties.off_domain_peer_denied).toBe(true);
 		expect(report.checks.find((check) => check.name === "handle_forgery_denied")).toMatchObject({
 			status: "pass",
 			httpStatus: 403,
@@ -95,9 +101,11 @@ describe("Hermes served-MCP containment probe", () => {
 		const report = await runServedMcpContainmentProbe({
 			allowRun: true,
 			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
 			forgedAuthorityEndpoint: harness.endpoint("forged"),
 			wrongConnectionEndpoint: harness.endpoint("wrong"),
 			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
 		});
 
 		expect(report.status).toBe("fail");
@@ -115,9 +123,11 @@ describe("Hermes served-MCP containment probe", () => {
 		const report = await runServedMcpContainmentProbe({
 			allowRun: true,
 			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
 			forgedAuthorityEndpoint: harness.endpoint("forged"),
 			wrongConnectionEndpoint: harness.endpoint("wrong"),
 			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
 		});
 
 		writeServedMcpContainmentEvidence(report, evidencePath);
@@ -126,11 +136,74 @@ describe("Hermes served-MCP containment probe", () => {
 		expect(JSON.parse(artifact)).toMatchObject({ status: "pass", ran: true });
 		expect(artifact).not.toContain(harness.privateHandle);
 		expect(artifact).not.toContain("probe-private");
+		expect(artifact).not.toContain("probe-off-domain");
 		expect(artifact).not.toContain("probe-forged");
 		expect(artifact).not.toContain("probe-wrong");
 		expect(artifact).not.toContain("tc_probe_provider_without_ledger_token");
 		expect(artifact).not.toContain("tc_probe_outbound_without_ledger_token");
 		expect(artifact).not.toContain(new URL(harness.url).host);
+	});
+
+	it("classifies relay-self evidence as smoke-only and not production containment", async () => {
+		const harness = await startHarness(cleanup);
+		const evidence = await runServedMcpContainmentProbe({
+			allowRun: true,
+			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
+			forgedAuthorityEndpoint: harness.endpoint("forged"),
+			wrongConnectionEndpoint: harness.endpoint("wrong"),
+			unauthenticatedEndpoint: { url: harness.url },
+			origin: {
+				kind: "relay-self-smoke",
+				containerName: "telclaude",
+				observedPeerAddress: "172.29.92.10",
+				expectedPeerAddress: "172.29.92.11",
+			},
+		});
+
+		const report = evaluateServedMcpContainmentEvidence(evidence);
+
+		expect(evidence.status).toBe("pass");
+		expect(report.productionEnable).toBe(false);
+		expect(report.gates.find((gate) => gate.name === "servedMcp.origin")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("smoke"),
+		});
+	});
+
+	it("fails production evaluation when negative controls are absent or false", async () => {
+		const harness = await startHarness(cleanup);
+		const evidence = await runServedMcpContainmentProbe({
+			allowRun: true,
+			endpoint: harness.endpoint("private"),
+			offDomainPeerEndpoint: harness.endpoint("off-domain"),
+			forgedAuthorityEndpoint: harness.endpoint("forged"),
+			wrongConnectionEndpoint: harness.endpoint("wrong"),
+			unauthenticatedEndpoint: { url: harness.url },
+			origin: containedPeerOrigin(),
+		});
+
+		const absent = evaluateServedMcpContainmentEvidence({
+			...evidence,
+			negativeControls: {},
+		});
+		const falseControl = evaluateServedMcpContainmentEvidence({
+			...evidence,
+			negativeControls: {
+				...evidence.negativeControls,
+				offDomainPeerDenied: false,
+			},
+		});
+
+		expect(absent.productionEnable).toBe(false);
+		expect(
+			absent.gates.find((gate) => gate.name === "servedMcp.negative.offDomainPeerDenied")?.detail,
+		).toContain("missing");
+		expect(falseControl.productionEnable).toBe(false);
+		expect(
+			falseControl.gates.find((gate) => gate.name === "servedMcp.negative.offDomainPeerDenied")
+				?.detail,
+		).toContain("false");
 	});
 });
 
@@ -198,6 +271,7 @@ async function startHarness(
 					connection: socialConnection,
 				};
 			}
+			if (context === "probe-off-domain") return null;
 			return null;
 		},
 	});
@@ -206,7 +280,7 @@ async function startHarness(
 	return {
 		url,
 		privateHandle: privateGrant.handle,
-		endpoint: (context: "private" | "forged" | "wrong") => ({
+		endpoint: (context: "private" | "forged" | "wrong" | "off-domain") => ({
 			url,
 			headers: { "x-tc-probe-context": `probe-${context}` },
 		}),
@@ -265,16 +339,26 @@ async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
 	cleanup.push(close);
 	const tokens = {
 		private: tokenBundle.allowed.token,
+		"off-domain": tokenBundle.offDomainPeer.token,
 		forged: tokenBundle.forged.token,
 		wrong: tokenBundle.wrongConnection.token,
 	};
 	return {
 		url,
 		tokens: Object.values(tokens),
-		endpoint: (context: "private" | "forged" | "wrong") => ({
+		endpoint: (context: "private" | "forged" | "wrong" | "off-domain") => ({
 			url,
 			headers: { Authorization: `Bearer ${tokens[context]}` },
 		}),
+	};
+}
+
+function containedPeerOrigin() {
+	return {
+		kind: "contained-peer",
+		containerName: "tc-hermes-contained",
+		observedPeerAddress: "172.29.92.11",
+		expectedPeerAddress: "172.29.92.11",
 	};
 }
 

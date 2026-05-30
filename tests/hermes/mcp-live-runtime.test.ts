@@ -178,13 +178,19 @@ describe("Telclaude live MCP runtime", () => {
 			startTelclaudeLiveMcpRuntime({
 				config: config({ host: "0.0.0.0" }),
 			}),
-		).rejects.toThrow("must not bind an unspecified interface");
+		).rejects.toThrow("TELCLAUDE_HERMES_LIVE_MCP_HOST must not bind");
 
 		await expect(
 			startTelclaudeLiveMcpRuntime({
 				config: config({ host: "localhost" }),
 			}),
-		).rejects.toThrow("must be explicit");
+		).rejects.toThrow("TELCLAUDE_HERMES_LIVE_MCP_HOST must be explicit");
+
+		await expect(
+			startTelclaudeLiveMcpRuntime({
+				config: config({ host: "10.0.0.4", allowedPeerAddresses: undefined }),
+			}),
+		).rejects.toThrow("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required");
 	});
 
 	it("parses environment defaults and overrides without enabling by default", () => {
@@ -233,6 +239,15 @@ describe("Telclaude live MCP runtime", () => {
 				TELCLAUDE_HERMES_LIVE_MCP_HOST: "10.0.0.4",
 			}),
 		).toThrow("TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS is required");
+		for (const host of ["0.0.0.0", "::", "[::]"]) {
+			expect(() =>
+				readTelclaudeLiveMcpRuntimeConfig({
+					TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",
+					TELCLAUDE_HERMES_LIVE_MCP_HOST: host,
+					TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS: "10.0.0.5",
+				}),
+			).toThrow("TELCLAUDE_HERMES_LIVE_MCP_HOST must not bind");
+		}
 		expect(() =>
 			readTelclaudeLiveMcpRuntimeConfig({
 				TELCLAUDE_HERMES_LIVE_MCP_ENABLED: "1",

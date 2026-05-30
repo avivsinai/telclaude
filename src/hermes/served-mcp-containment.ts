@@ -17,6 +17,7 @@ export const SERVED_MCP_REQUIRED_PROPERTY_NAMES = [
 	"sampling_disabled",
 	"handle_forgery_denied",
 	"wrong_connection_denied",
+	"off_domain_peer_denied",
 	"cross_domain_memory_denied",
 	"out_of_scope_provider_denied",
 	"out_of_scope_outbound_denied",
@@ -44,6 +45,7 @@ const ServedMcpPropertiesSchema = z
 		sampling_disabled: z.boolean().optional(),
 		handle_forgery_denied: z.boolean().optional(),
 		wrong_connection_denied: z.boolean().optional(),
+		off_domain_peer_denied: z.boolean().optional(),
 		cross_domain_memory_denied: z.boolean().optional(),
 		out_of_scope_provider_denied: z.boolean().optional(),
 		out_of_scope_outbound_denied: z.boolean().optional(),
@@ -68,6 +70,24 @@ const ServedMcpCheckSchema = z
 	})
 	.strict();
 
+const ServedMcpOriginSchema = z
+	.object({
+		kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
+		containerName: NonEmptyString.optional(),
+		observedPeerAddress: NonEmptyString.optional(),
+		expectedPeerAddress: NonEmptyString.optional(),
+		detail: NonEmptyString,
+	})
+	.strict();
+
+const ServedMcpNegativeControlsSchema = z
+	.object({
+		forgedAuthorityDenied: z.boolean().optional(),
+		wrongConnectionDenied: z.boolean().optional(),
+		offDomainPeerDenied: z.boolean().optional(),
+	})
+	.strict();
+
 export const ServedMcpContainmentEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(SERVED_MCP_CONTAINMENT_SCHEMA_VERSION),
@@ -88,6 +108,8 @@ export const ServedMcpContainmentEvidenceSchema = z
 				detail: NonEmptyString,
 			})
 			.strict(),
+		origin: ServedMcpOriginSchema,
+		negativeControls: ServedMcpNegativeControlsSchema,
 		properties: ServedMcpPropertiesSchema,
 		checks: z.array(ServedMcpCheckSchema),
 	})
@@ -101,12 +123,21 @@ export type ServedMcpEndpoint = {
 	readonly headers?: Readonly<Record<string, string>>;
 };
 
+export type ServedMcpProbeOriginInput = {
+	readonly kind?: string;
+	readonly containerName?: string;
+	readonly observedPeerAddress?: string;
+	readonly expectedPeerAddress?: string;
+};
+
 export type RunServedMcpContainmentProbeOptions = {
 	readonly allowRun: boolean;
 	readonly endpoint?: ServedMcpEndpoint;
+	readonly offDomainPeerEndpoint?: ServedMcpEndpoint;
 	readonly forgedAuthorityEndpoint?: ServedMcpEndpoint;
 	readonly wrongConnectionEndpoint?: ServedMcpEndpoint;
 	readonly unauthenticatedEndpoint?: ServedMcpEndpoint;
+	readonly origin?: ServedMcpProbeOriginInput;
 	readonly now?: Date;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeoutMs?: number;
@@ -143,6 +174,7 @@ export async function runServedMcpContainmentProbe(
 			ran: false,
 			generatedAt: generatedAt(options.now),
 			summary: "Hermes served-MCP containment probe requires --allow-run",
+			origin: normalizeOrigin(options.origin),
 			checks: [],
 			properties: falseProperties(),
 		});
@@ -155,6 +187,7 @@ export async function runServedMcpContainmentProbe(
 			ran: false,
 			generatedAt: generatedAt(options.now),
 			summary: `Served MCP containment probe is not fully configured: ${missingConfig.join(", ")}`,
+			origin: normalizeOrigin(options.origin),
 			checks: SERVED_MCP_REQUIRED_PROPERTY_NAMES.map((name) =>
 				failCheck(
 					name,
@@ -167,6 +200,10 @@ export async function runServedMcpContainmentProbe(
 
 	const fetcher = options.fetchImpl ?? fetch;
 	const endpoint = requiredEndpoint(options.endpoint, "endpoint");
+	const offDomainPeerEndpoint = requiredEndpoint(
+		options.offDomainPeerEndpoint,
+		"offDomainPeerEndpoint",
+	);
 	const forgedEndpoint = requiredEndpoint(
 		options.forgedAuthorityEndpoint,
 		"forgedAuthorityEndpoint",
@@ -273,6 +310,22 @@ export async function runServedMcpContainmentProbe(
 			"wrong-connection authority was specifically denied",
 			"wrong-connection authority was not specifically denied",
 			wrongConnection,
+		),
+	);
+
+	const offDomainPeer = await postJson(
+		fetcher,
+		offDomainPeerEndpoint,
+		rpc("tools/list"),
+		timeoutMs,
+	);
+	checks.push(
+		passIf(
+			"off_domain_peer_denied",
+			expectedRpcError(offDomainPeer, -32001, "not authorized", 403),
+			"off-domain peer-bound token was denied at HTTP auth",
+			"off-domain peer-bound token was not denied at HTTP auth",
+			offDomainPeer,
 		),
 	);
 
@@ -446,6 +499,7 @@ export async function runServedMcpContainmentProbe(
 		summary: checks.every((check) => check.status === "pass")
 			? "Served MCP containment probe passed"
 			: "Served MCP containment probe failed",
+		origin: normalizeOrigin(options.origin),
 		checks,
 		properties: { ...nonRedactionProperties, artifact_redacted: true },
 	});
@@ -475,6 +529,7 @@ export async function runServedMcpContainmentProbe(
 			status === "pass"
 				? "Served MCP containment probe passed"
 				: "Served MCP containment probe failed",
+		origin: normalizeOrigin(options.origin),
 		checks,
 		properties,
 	});
@@ -515,6 +570,23 @@ export function evaluateServedMcpContainmentEvidence(
 	}
 
 	const gates: ServedMcpContainmentGate[] = [];
+	const originGate = originGateFor(parsed.data.origin);
+	gates.push(originGate);
+	const negativeControls = [
+		["forgedAuthorityDenied", parsed.data.negativeControls.forgedAuthorityDenied],
+		["wrongConnectionDenied", parsed.data.negativeControls.wrongConnectionDenied],
+		["offDomainPeerDenied", parsed.data.negativeControls.offDomainPeerDenied],
+	] as const;
+	for (const [name, value] of negativeControls) {
+		gates.push({
+			name: `servedMcp.negative.${name}`,
+			status: value === true ? "pass" : "fail",
+			detail:
+				value === true
+					? `served-MCP negative control ${name} is proven`
+					: `served-MCP negative control ${name} is ${value === undefined ? "missing" : "false"}`,
+		});
+	}
 	if (parsed.data.status !== "pass") {
 		gates.push({
 			name: "servedMcp.status",
@@ -564,6 +636,7 @@ function buildEvidence(input: {
 	ran: boolean;
 	generatedAt: string;
 	summary: string;
+	origin: ServedMcpContainmentEvidence["origin"];
 	checks: ServedMcpContainmentCheck[];
 	properties: ServedMcpContainmentEvidence["properties"];
 }): ServedMcpContainmentEvidence {
@@ -583,6 +656,8 @@ function buildEvidence(input: {
 			detail:
 				"Placement metadata is informational; relay-internal bind enforcement remains a deployment live-run gate.",
 		},
+		origin: input.origin,
+		negativeControls: negativeControlsFromChecks(input.checks),
 		properties: input.properties,
 		checks: input.checks.map((check) => ({
 			...check,
@@ -595,6 +670,7 @@ function buildEvidence(input: {
 function missingEndpointConfig(options: RunServedMcpContainmentProbeOptions): string[] {
 	const missing = [];
 	if (!options.endpoint?.url.trim()) missing.push("endpoint");
+	if (!options.offDomainPeerEndpoint?.url.trim()) missing.push("offDomainPeerEndpoint");
 	if (!options.forgedAuthorityEndpoint?.url.trim()) missing.push("forgedAuthorityEndpoint");
 	if (!options.wrongConnectionEndpoint?.url.trim()) missing.push("wrongConnectionEndpoint");
 	return missing;
@@ -814,9 +890,81 @@ function falseProperties(): Record<ServedMcpPropertyName, boolean> {
 	) as Record<ServedMcpPropertyName, boolean>;
 }
 
+function normalizeOrigin(
+	input: ServedMcpProbeOriginInput | undefined,
+): ServedMcpContainmentEvidence["origin"] {
+	const kind =
+		input?.kind === "contained-peer" || input?.kind === "relay-self-smoke" ? input.kind : "unknown";
+	const containerName = clean(input?.containerName);
+	const observedPeerAddress = clean(input?.observedPeerAddress);
+	const expectedPeerAddress = clean(input?.expectedPeerAddress);
+	return {
+		kind,
+		...(containerName ? { containerName } : {}),
+		...(observedPeerAddress ? { observedPeerAddress } : {}),
+		...(expectedPeerAddress ? { expectedPeerAddress } : {}),
+		detail:
+			kind === "contained-peer"
+				? "probe originated from the contained Hermes peer"
+				: kind === "relay-self-smoke"
+					? "probe originated from the relay namespace and is smoke-only"
+					: "probe origin was not declared",
+	};
+}
+
+function originGateFor(origin: ServedMcpContainmentEvidence["origin"]): ServedMcpContainmentGate {
+	if (origin.kind === "relay-self-smoke") {
+		return {
+			name: "servedMcp.origin",
+			status: "fail",
+			detail:
+				"served-MCP evidence originated from relay-self smoke and is not production containment evidence",
+		};
+	}
+	const matchesPeer =
+		origin.observedPeerAddress !== undefined &&
+		origin.expectedPeerAddress !== undefined &&
+		origin.observedPeerAddress === origin.expectedPeerAddress;
+	if (
+		origin.kind === "contained-peer" &&
+		origin.containerName === "tc-hermes-contained" &&
+		matchesPeer
+	) {
+		return {
+			name: "servedMcp.origin",
+			status: "pass",
+			detail:
+				"served-MCP evidence originated from tc-hermes-contained at the expected peer address",
+		};
+	}
+	return {
+		name: "servedMcp.origin",
+		status: "fail",
+		detail:
+			"served-MCP evidence must declare contained-peer origin from tc-hermes-contained with matching observed and expected peer address",
+	};
+}
+
+function negativeControlsFromChecks(
+	checks: readonly ServedMcpContainmentCheck[],
+): ServedMcpContainmentEvidence["negativeControls"] {
+	const byName = new Map(checks.map((check) => [check.name, check.status === "pass"]));
+	return {
+		forgedAuthorityDenied: byName.get("handle_forgery_denied") === true,
+		wrongConnectionDenied: byName.get("wrong_connection_denied") === true,
+		offDomainPeerDenied: byName.get("off_domain_peer_denied") === true,
+	};
+}
+
+function clean(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
 function sensitiveNeedles(options: RunServedMcpContainmentProbeOptions): string[] {
 	const endpoints = [
 		options.endpoint,
+		options.offDomainPeerEndpoint,
 		options.forgedAuthorityEndpoint,
 		options.wrongConnectionEndpoint,
 		options.unauthenticatedEndpoint,

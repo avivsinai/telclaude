@@ -164,9 +164,11 @@ describe("Telclaude live MCP admin socket", () => {
 				metadata: {
 					tokenMaterial: "omitted",
 					peerBound: true,
+					offDomainPeerBound: true,
 				},
 			});
 			expect(response.allowed.token).toMatch(/^tc_mcp_conn_/);
+			expect(response.offDomainPeer.token).toMatch(/^tc_mcp_conn_/);
 			expect(response.forged.token).toMatch(/^tc_mcp_conn_/);
 			expect(response.wrongConnection.token).toMatch(/^tc_mcp_conn_/);
 
