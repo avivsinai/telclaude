@@ -37,9 +37,17 @@ describe("Hermes API-server containment", () => {
 			expect(plan.invocation.args).toContain("no-new-privileges");
 			expect(plan.invocation.args).toContain("--read-only");
 			expect(plan.invocation.args).toContain("--tmpfs");
-			expect(plan.invocation.args).toContain("/home/hermes:size=512m,uid=10000,gid=10000,mode=0700");
+			expect(plan.invocation.args).toContain("/tmp:size=128m,mode=1777,noexec");
+			expect(plan.invocation.args).toContain(
+				"/run:size=16m,uid=10000,gid=10000,mode=0755,noexec",
+			);
+			expect(plan.invocation.args).toContain(
+				"/home/hermes:size=512m,uid=10000,gid=10000,mode=0700,noexec",
+			);
 			expect(plan.invocation.args).not.toContain("NET_ADMIN");
 			expect(plan.invocation.args.slice(-2)).toEqual(["gateway", "run"]);
+			expect(plan.invocation.args).toContain("--entrypoint");
+			expect(plan.invocation.args).toContain("/opt/hermes/hermes");
 			expect(plan.invocation.args).toContain(pinnedHermesImage);
 			expect(plan.invocation.args).not.toContain("ephemeral-api-key-for-test");
 			expect(plan.invocation.env).toEqual({
@@ -183,8 +191,52 @@ describe("Hermes API-server containment", () => {
 		expect(report.status).toBe("pass");
 		expect(report.ran).toBe(true);
 		expect(report.gates.every((gate) => gate.status === "pass")).toBe(true);
+		expect(report.observation?.posture).toMatchObject({
+			appArmorApplied: true,
+			appArmorProfile: "docker-default",
+			appArmorEvidence: "docker_inspect.AppArmorProfile",
+			noNewPrivileges: true,
+			readOnlyRootfs: true,
+			capDropAll: true,
+			tmpfsRun: "size=16m,uid=10000,gid=10000,mode=0755,noexec",
+		});
 		expect(JSON.stringify(report)).not.toContain("ephemeral-api-key-for-test");
 		expect(JSON.stringify(report)).toContain("[REDACTED:ephemeral_api_auth]");
+	});
+
+	it("records no-AppArmor posture without turning local dry-run evidence into production proof", async () => {
+		const plan = buildHermesApiServerLaunchPlan({
+			apiKey: "ephemeral-api-key-for-test",
+			cwd: "/tmp/telclaude",
+		});
+
+		const report = await runHermesApiServerContainmentProbe({
+			allowRun: true,
+			launch: plan,
+			runner: async () => ({
+				...passingObservation(),
+				posture: {
+					appArmorApplied: false,
+					appArmorEvidence: "docker_inspect.AppArmorProfile",
+					securityOptions: ["no-new-privileges:true"],
+					noNewPrivileges: true,
+					readOnlyRootfs: true,
+					capDropAll: true,
+					tmpfsRun: "size=16m,uid=10000,gid=10000,mode=0755,noexec",
+					detail:
+						"AppArmor profile not observed; evidence is local/dry-run posture, not production-posture proof",
+				},
+			}),
+		});
+
+		expect(report.status).toBe("pass");
+		expect(report.observation?.posture).toMatchObject({
+			appArmorApplied: false,
+			noNewPrivileges: true,
+			readOnlyRootfs: true,
+			capDropAll: true,
+		});
+		expect(report.observation?.posture?.detail).toContain("not production-posture proof");
 	});
 
 	it("fails closed when any containment evidence is missing", async () => {
@@ -291,6 +343,17 @@ function passingObservation(): HermesApiServerContainmentObservation {
 			ok: true,
 			status: "ok",
 			detail: "GET /health returned ok",
+		},
+		posture: {
+			appArmorApplied: true,
+			appArmorProfile: "docker-default",
+			appArmorEvidence: "docker_inspect.AppArmorProfile",
+			securityOptions: ["no-new-privileges:true"],
+			noNewPrivileges: true,
+			readOnlyRootfs: true,
+			capDropAll: true,
+			tmpfsRun: "size=16m,uid=10000,gid=10000,mode=0755,noexec",
+			detail: "AppArmor profile observed: docker-default",
 		},
 		capabilities: {
 			ok: true,

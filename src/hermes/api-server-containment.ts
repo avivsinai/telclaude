@@ -45,6 +45,17 @@ export type HermesApiServerContainmentObservation = {
 		readonly containerId?: string;
 		readonly detail?: string;
 	};
+	readonly posture?: {
+		readonly appArmorApplied: boolean;
+		readonly appArmorProfile?: string;
+		readonly appArmorEvidence: "docker_inspect.AppArmorProfile";
+		readonly securityOptions: readonly string[];
+		readonly noNewPrivileges: boolean;
+		readonly readOnlyRootfs: boolean;
+		readonly capDropAll: boolean;
+		readonly tmpfsRun?: string;
+		readonly detail: string;
+	};
 	readonly health?: {
 		readonly ok: boolean;
 		readonly status?: string;
@@ -182,9 +193,11 @@ export function buildHermesApiServerLaunchPlan(input: {
 				"no-new-privileges",
 				"--read-only",
 				"--tmpfs",
-				"/tmp:size=128m,mode=1777",
+				"/tmp:size=128m,mode=1777,noexec",
 				"--tmpfs",
-				`${path.dirname(hermesHome)}:size=512m,uid=10000,gid=10000,mode=0700`,
+				"/run:size=16m,uid=10000,gid=10000,mode=0755,noexec",
+				"--tmpfs",
+				`${path.dirname(hermesHome)}:size=512m,uid=10000,gid=10000,mode=0700,noexec`,
 				"--pids-limit",
 				"256",
 				"--memory",
@@ -207,6 +220,8 @@ export function buildHermesApiServerLaunchPlan(input: {
 				"TELCLAUDE_INTERNAL_HOSTS",
 				"--env",
 				"NO_COLOR",
+				"--entrypoint",
+				"/opt/hermes/hermes",
 				image,
 				"gateway",
 				"run",
@@ -365,6 +380,7 @@ export async function runHermesApiServerDockerContainment(
 		},
 	};
 	try {
+		const posture = await readRuntimePosture(plan, options.timeoutMs);
 		const health = await waitForHealth(plan, options.timeoutMs);
 		const capabilities = await readCapabilities(plan, options.timeoutMs);
 		const network = await readContainerNetworkEvidence(plan, options);
@@ -375,6 +391,7 @@ export async function runHermesApiServerDockerContainment(
 				containerId: redactSecrets(containerId),
 				detail: "contained Hermes API-server container started",
 			},
+			posture,
 			health,
 			capabilities,
 			network,
@@ -403,6 +420,85 @@ export async function runHermesApiServerDockerContainment(
 		};
 	}
 	return observation;
+}
+
+async function readRuntimePosture(
+	plan: HermesApiServerLaunchPlan,
+	timeoutMs: number | undefined,
+): Promise<NonNullable<HermesApiServerContainmentObservation["posture"]>> {
+	const result = await runDockerCommand(
+		plan,
+		["inspect", plan.containerName, "--format", "{{json .}}"],
+		timeoutMs,
+	);
+	if (result.exitCode !== 0) {
+		return {
+			appArmorApplied: false,
+			appArmorEvidence: "docker_inspect.AppArmorProfile",
+			securityOptions: [],
+			noNewPrivileges: false,
+			readOnlyRootfs: false,
+			capDropAll: false,
+			detail: `docker inspect posture unavailable: ${redactHermesRuntimeText(
+				result.stderr || result.stdout,
+			)}`,
+		};
+	}
+	try {
+		const inspected = JSON.parse(result.stdout) as {
+			AppArmorProfile?: unknown;
+			HostConfig?: {
+				SecurityOpt?: unknown;
+				ReadonlyRootfs?: unknown;
+				CapDrop?: unknown;
+				Tmpfs?: unknown;
+			};
+		};
+		const securityOptions = Array.isArray(inspected.HostConfig?.SecurityOpt)
+			? inspected.HostConfig.SecurityOpt.filter((item): item is string => typeof item === "string")
+			: [];
+		const appArmorFromSecurityOpt = securityOptions
+			.find((option) => option.startsWith("apparmor:"))
+			?.slice("apparmor:".length);
+		const appArmorProfile =
+			typeof inspected.AppArmorProfile === "string" && inspected.AppArmorProfile
+				? inspected.AppArmorProfile
+				: appArmorFromSecurityOpt;
+		const appArmorApplied = Boolean(appArmorProfile && appArmorProfile !== "unconfined");
+		const capDrop = Array.isArray(inspected.HostConfig?.CapDrop)
+			? inspected.HostConfig.CapDrop.filter((item): item is string => typeof item === "string")
+			: [];
+		const tmpfs =
+			typeof inspected.HostConfig?.Tmpfs === "object" && inspected.HostConfig.Tmpfs !== null
+				? (inspected.HostConfig.Tmpfs as Record<string, unknown>)
+				: {};
+		const tmpfsRun = typeof tmpfs["/run"] === "string" ? tmpfs["/run"] : undefined;
+		return {
+			appArmorApplied,
+			...(appArmorProfile ? { appArmorProfile } : {}),
+			appArmorEvidence: "docker_inspect.AppArmorProfile",
+			securityOptions,
+			noNewPrivileges: securityOptions.some((option) =>
+				/^no-new-privileges(?::true)?$/.test(option),
+			),
+			readOnlyRootfs: inspected.HostConfig?.ReadonlyRootfs === true,
+			capDropAll: capDrop.includes("ALL"),
+			...(tmpfsRun ? { tmpfsRun } : {}),
+			detail: appArmorApplied
+				? `AppArmor profile observed: ${appArmorProfile}`
+				: "AppArmor profile not observed; evidence is local/dry-run posture, not production-posture proof",
+		};
+	} catch {
+		return {
+			appArmorApplied: false,
+			appArmorEvidence: "docker_inspect.AppArmorProfile",
+			securityOptions: [],
+			noNewPrivileges: false,
+			readOnlyRootfs: false,
+			capDropAll: false,
+			detail: "docker inspect posture returned malformed JSON",
+		};
+	}
 }
 
 export function writeHermesApiServerContainmentEvidence(
