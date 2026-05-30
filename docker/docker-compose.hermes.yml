@@ -33,6 +33,12 @@ services:
     networks:
       hermes-relay-net:
         ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}
+    # The live MCP admin socket is created after the entrypoint drops to uid
+    # 1000, so the relay runtime dir must be node-owned and private.
+    tmpfs: !override
+      - /tmp:size=512M,mode=1777
+      - /home/node:size=256M,uid=1000,gid=1000,mode=0755
+      - /run/telclaude:size=1M,uid=1000,gid=1000,mode=0700,noexec
 
   tc-hermes-contained:
     image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7}

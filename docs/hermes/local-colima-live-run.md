@@ -15,6 +15,7 @@ This playbook executes the contained Hermes private-runtime live run for the no-
 - The relay overlay assigns stable internal IPs so live MCP bearer tokens are peer-bound or accepted only from the contained Hermes peer IP.
 - The contained Hermes runtime must start as uid `10000:10000`, with no added capabilities, `no-new-privileges`, read-only rootfs, and `noexec` tmpfs mounts for `/tmp`, `/run`, and `/home/hermes`.
 - The contained Hermes runtime uses `/opt/hermes/hermes` as the direct entrypoint. The pinned image's default s6 wrapper drops privileges internally and is incompatible with starting the container itself as uid `10000` with all capabilities dropped.
+- The relay `/run/telclaude` tmpfs must be owned by uid `1000` with mode `0700`; live MCP admin creates its `0600` Unix socket after the relay entrypoint drops privileges.
 
 ## 0. Shell Setup
 

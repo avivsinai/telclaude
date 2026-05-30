@@ -145,6 +145,11 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaude).toContain("condition: service_healthy");
 		expect(telclaude).toContain("hermes-relay-net:");
 		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}");
+		expect(listValues(telclaude, "tmpfs")).toEqual([
+			"/tmp:size=512M,mode=1777",
+			"/home/node:size=256M,uid=1000,gid=1000,mode=0755",
+			"/run/telclaude:size=1M,uid=1000,gid=1000,mode=0700,noexec",
+		]);
 		expect(hermes).toContain("hermes-relay-net:");
 		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.29.92.11}");
 		expect(compose).toContain("name: telclaude-hermes-relay");
@@ -245,7 +250,10 @@ function serviceBlock(compose: string, serviceName: string): string {
 
 function listValues(block: string, key: string): string[] {
 	const lines = block.split(/\r?\n/);
-	const keyIndex = lines.findIndex((line) => line.trim() === `${key}:`);
+	const keyIndex = lines.findIndex((line) => {
+		const trimmed = line.trim();
+		return trimmed === `${key}:` || trimmed.startsWith(`${key}: `);
+	});
 	if (keyIndex < 0) return [];
 	const values: string[] = [];
 	for (let index = keyIndex + 1; index < lines.length; index += 1) {
