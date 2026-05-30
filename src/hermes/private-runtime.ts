@@ -15,6 +15,7 @@ import type { HermesSessionMap } from "./session-map.js";
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
 export const DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH =
 	"artifacts/hermes/probes/execution-cli-headless.json";
+const DEFAULT_HERMES_CLI_PROBE_TOKEN = "TELCLAUDE_HERMES_CLI_OK";
 const DEFAULT_PRIVATE_MCP_ENDPOINT_ID = "telclaude-private-runtime";
 const DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE = "telclaude-private";
 const DEFAULT_HERMES_PROBE_TIMEOUT_MS = 120_000;
@@ -286,7 +287,7 @@ export function buildHermesCliProbeInvocation(input: {
 }): HermesLaunchInvocation {
 	return {
 		command: input.hermesBin,
-		args: ["-z", input.prompt ?? "telclaude probe ok"],
+		args: ["-z", input.prompt ?? `Reply with exactly ${DEFAULT_HERMES_CLI_PROBE_TOKEN}`],
 		cwd: input.cwd,
 		env: {
 			HERMES_HOME: input.hermesHome,
@@ -332,14 +333,21 @@ export async function runHermesCliHeadlessProbe(input: {
 	}
 
 	const result = await input.runProcess(input.invocation);
-	const status = result.exitCode === 0 ? "pass" : "fail";
+	const runtimeFailure = hermesCliRuntimeFailure(result.stdout, result.stderr);
+	const expectedToken = hermesCliExpectedProofToken(input.invocation);
+	const hasPositiveProof = expectedToken ? result.stdout.includes(expectedToken) : false;
+	const status = result.exitCode === 0 && !runtimeFailure && hasPositiveProof ? "pass" : "fail";
 	return probeReport({
 		status,
 		ran: true,
 		summary:
 			status === "pass"
 				? "Hermes CLI oneshot probe completed successfully"
-				: "Hermes CLI oneshot probe failed",
+				: runtimeFailure
+					? `Hermes CLI oneshot probe reported runtime failure: ${runtimeFailure}`
+					: result.exitCode === 0 && !hasPositiveProof
+						? `Hermes CLI oneshot probe did not return expected proof token: ${expectedToken ?? DEFAULT_HERMES_CLI_PROBE_TOKEN}`
+						: "Hermes CLI oneshot probe failed",
 		invocation: probeInvocation(input.invocation),
 		exitCode: result.exitCode,
 		stdoutPreview: preview(redactHermesRuntimeText(result.stdout)),
@@ -441,6 +449,25 @@ export function findHermesLaunchSecretFindings(
 
 export function redactHermesRuntimeText(value: string): string {
 	return redactSecrets(value);
+}
+
+function hermesCliRuntimeFailure(stdout: string, stderr: string): string | null {
+	const combined = `${stdout}\n${stderr}`;
+	const patterns: ReadonlyArray<[RegExp, string]> = [
+		[/API call failed after \d+ retries/i, "model API call failed"],
+		[/No inference provider configured/i, "inference provider is not configured"],
+		[/Anthropic credentials not configured/i, "relay Anthropic credentials are not configured"],
+	];
+	for (const [pattern, reason] of patterns) {
+		if (pattern.test(combined)) return reason;
+	}
+	return null;
+}
+
+function hermesCliExpectedProofToken(invocation: HermesLaunchInvocation): string | null {
+	const prompt = invocation.args[1] ?? "";
+	const match = prompt.match(/TELCLAUDE_HERMES_CLI_OK|HERMES_OK_[A-Za-z0-9_-]+/);
+	return match?.[0] ?? DEFAULT_HERMES_CLI_PROBE_TOKEN;
 }
 
 function probeReport(

@@ -431,17 +431,17 @@ describe("Hermes private runtime seam", () => {
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
 			cwd: "/repo",
-			prompt: "telclaude probe ok",
+			prompt: "Reply with exactly TELCLAUDE_HERMES_CLI_OK",
 		});
 		const report = await runHermesCliHeadlessProbe({
 			allowRun: true,
 			invocation,
 			runProcess: async (launch) => {
-				expect(launch.args).toEqual(["-z", "telclaude probe ok"]);
+				expect(launch.args).toEqual(["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"]);
 				expect(launch.env).toEqual({ HERMES_HOME: "/tmp/tc-hermes-probe", NO_COLOR: "1" });
 				return {
 					exitCode: 0,
-					stdout: "ok",
+					stdout: "TELCLAUDE_HERMES_CLI_OK\n",
 					stderr: "token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
 				};
 			},
@@ -455,13 +455,68 @@ describe("Hermes private runtime seam", () => {
 			summary: "Hermes CLI oneshot probe completed successfully",
 			invocation: {
 				command: "/usr/local/bin/hermes",
-				args: ["-z", "telclaude probe ok"],
+				args: ["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"],
 				cwd: "/repo",
 				envKeys: ["HERMES_HOME", "NO_COLOR"],
 			},
 			exitCode: 0,
-			stdoutPreview: "ok",
+			stdoutPreview: "TELCLAUDE_HERMES_CLI_OK\n",
 			stderrPreview: "token [REDACTED:telegram_bot_token]",
+			findings: [],
+		});
+	});
+
+	it("fails a CLI headless probe when Hermes exits zero with runtime failure text", async () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+			prompt: "Reply with exactly TELCLAUDE_HERMES_CLI_OK",
+		});
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout:
+					"API call failed after 3 retries: HTTP 500: {'error': 'Anthropic credentials not configured.'}\n",
+				stderr: "",
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			ran: true,
+			summary: "Hermes CLI oneshot probe reported runtime failure: model API call failed",
+			exitCode: 0,
+			stdoutPreview: expect.stringContaining("API call failed after 3 retries"),
+			findings: [],
+		});
+	});
+
+	it("fails a CLI headless probe that exits zero without the expected proof token", async () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+		});
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "generic assistant response\n",
+				stderr: "",
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			ran: true,
+			summary:
+				"Hermes CLI oneshot probe did not return expected proof token: TELCLAUDE_HERMES_CLI_OK",
+			exitCode: 0,
+			stdoutPreview: "generic assistant response\n",
 			findings: [],
 		});
 	});
