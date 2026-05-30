@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { Command } from "commander";
 import {
 	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
@@ -24,6 +27,12 @@ import {
 	resolveHermesArtifactPath,
 } from "../hermes/foundation.js";
 import { collectHermesInventory } from "../hermes/inventory.js";
+import {
+	buildHermesCliProbeInvocation,
+	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
+	runHermesCliHeadlessProbe,
+	runHermesLaunchInvocation,
+} from "../hermes/private-runtime.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -33,12 +42,51 @@ type PinOption = {
 	pin?: string;
 };
 
+type ProbeOption = JsonOption & {
+	allowRun?: boolean;
+	cwd?: string;
+	evidence: string;
+	hermesBin?: string;
+	hermesHome?: string;
+	out?: string;
+	prompt?: string;
+	timeoutMs?: string;
+};
+
 function printJson(value: unknown): void {
 	console.log(JSON.stringify(value, null, 2));
 }
 
 function resolvePin(options: PinOption) {
 	return parseHermesPin(options.pin ?? process.env.TELCLAUDE_HERMES_PIN);
+}
+
+function writeJsonArtifact(filePath: string, value: unknown): void {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const tmpPath = `${filePath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+	fs.renameSync(tmpPath, filePath);
+}
+
+function resolveHermesBin(value: string | undefined): string {
+	return value?.trim() || process.env.TELCLAUDE_HERMES_BIN?.trim() || "hermes";
+}
+
+function resolveHermesHome(value: string | undefined): string {
+	return path.resolve(
+		value?.trim() ||
+			process.env.TELCLAUDE_HERMES_HOME?.trim() ||
+			path.join(os.tmpdir(), "telclaude-hermes-cli-headless"),
+	);
+}
+
+function parseTimeoutMs(value: string | undefined): number | undefined {
+	if (!value?.trim()) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`Invalid --timeout-ms value: ${value}`);
+	}
+	return parsed;
 }
 
 function readWrapperPackageVersion(): string {
@@ -168,12 +216,66 @@ export function registerHermesCommand(program: Command): void {
 		.description("Evaluate a single Hermes wrapper feature probe")
 		.argument("<surface>", "Feature surface id")
 		.option("--json", "Emit structured JSON")
+		.option("--allow-run", "Permit the probe to execute a real pinned-Hermes command")
+		.option("--hermes-bin <path>", "Hermes executable path for executable probes")
+		.option("--hermes-home <dir>", "HERMES_HOME for executable probes")
+		.option("--cwd <dir>", "Working directory for executable probes", process.cwd())
+		.option("--out <path>", "Write executable probe evidence to this path")
+		.option("--prompt <prompt>", "Prompt for execution.cli_headless")
+		.option("--timeout-ms <ms>", "Maximum executable probe runtime in milliseconds")
 		.option(
 			"--evidence <path>",
 			"Approval-continuation evidence JSON path",
 			DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 		)
-		.action((surface: string, options: JsonOption & { evidence: string }) => {
+		.action(async (surface: string, options: ProbeOption) => {
+			if (surface === "execution.cli_headless") {
+				let report: Awaited<ReturnType<typeof runHermesCliHeadlessProbe>>;
+				try {
+					const invocation = buildHermesCliProbeInvocation({
+						hermesBin: resolveHermesBin(options.hermesBin),
+						hermesHome: resolveHermesHome(options.hermesHome),
+						cwd: path.resolve(options.cwd ?? process.cwd()),
+						prompt: options.prompt,
+					});
+					const timeoutMs = parseTimeoutMs(options.timeoutMs);
+					report = await runHermesCliHeadlessProbe({
+						allowRun: options.allowRun === true,
+						invocation,
+						runProcess: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
+					});
+				} catch (error) {
+					report = {
+						schemaVersion: "telclaude.hermes.probe-result.v1",
+						probeId: "execution.cli_headless",
+						status: "fail",
+						ran: false,
+						summary: error instanceof Error ? error.message : String(error),
+						findings: [],
+					};
+				}
+
+				const outPath =
+					options.allowRun === true
+						? resolveHermesArtifactPath(options.out ?? DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH)
+						: options.out
+							? resolveHermesArtifactPath(options.out)
+							: undefined;
+				if (outPath && report.status !== "pending") {
+					writeJsonArtifact(outPath, report);
+				}
+
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} execution.cli_headless: ${report.summary}`);
+					if (outPath && report.status !== "pending") console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+				return;
+			}
+
 			if (surface !== "execution.approval_continuation") {
 				const report = {
 					schemaVersion: "telclaude.hermes.probe-report.v1",
