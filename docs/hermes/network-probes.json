@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "probes": [
     {
+      "id": "network.relay-control-allowed",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/network/relay-control-allowed.json"
+    },
+    {
       "id": "network.direct-provider-denied",
       "status": "fail",
       "evidence_path": "artifacts/hermes/network/direct-provider-denied.json"
