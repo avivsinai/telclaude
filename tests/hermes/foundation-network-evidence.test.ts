@@ -88,6 +88,18 @@ function networkEvidence(
 	};
 }
 
+function containedInternalNetworkEvidence(
+	id: string,
+	evidencePath: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return networkEvidence(id, evidencePath, {
+		posture: "contained-internal",
+		attempts: [containedInternalAttempt(id)],
+		...overrides,
+	});
+}
+
 function firewallSentinelAttempt() {
 	return {
 		name: "firewall-sentinel",
@@ -97,6 +109,66 @@ function firewallSentinelAttempt() {
 		status: "pass",
 		observed: "present",
 		detail: "firewall sentinel is present",
+	};
+}
+
+function containedInternalAttempt(id: string) {
+	if (id === "network.relay-control-allowed") {
+		return {
+			name: "relay-control",
+			kind: "http",
+			target: "http://telclaude:8790/health",
+			expectation: "allow",
+			status: "pass",
+			observed: "reachable",
+			detail: "allowed control reached relay with HTTP status 200",
+			durationMs: 1,
+			httpStatus: 200,
+		};
+	}
+	if (id === "network.direct-vault-denied") {
+		return {
+			name: "vault-socket",
+			kind: "unix_socket",
+			target: "/run/vault/vault.sock",
+			expectation: "deny",
+			status: "pass",
+			observed: "absent",
+			detail: "vault socket path is absent from the probe environment",
+		};
+	}
+	if (id === "network.dns-exfil-denied") {
+		return {
+			name: "dns-exfil-1",
+			kind: "dns_guard",
+			target: "http://169.254.169.254/latest/meta-data/",
+			expectation: "deny",
+			status: "pass",
+			observed: "denied",
+			detail: "target was actively denied with ENETUNREACH",
+			durationMs: 1,
+			errorName: "TypeError",
+			errorCode: "ENETUNREACH",
+			resolvedAddresses: [
+				{
+					address: "169.254.169.254",
+					blocked: true,
+					nonOverridable: true,
+				},
+			],
+		};
+	}
+	return {
+		name: "contained-egress",
+		kind: "http",
+		target: "https://api.anthropic.com/v1/models",
+		expectation: "deny",
+		status: "pass",
+		observed: "denied",
+		detail: "target was actively denied with ENETUNREACH",
+		durationMs: 1,
+		errorName: "TypeError",
+		errorCode: "ENETUNREACH",
 	};
 }
 
@@ -138,10 +210,15 @@ function networkPolicyAttempt(id: string) {
 function writeNetworkBundle(
 	tempDir: string,
 	ids: string[] = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS],
+	evidenceFactory: (
+		id: string,
+		evidencePath: string,
+		overrides?: Record<string, unknown>,
+	) => Record<string, unknown> = networkEvidence,
 ) {
 	const probes = ids.map((id) => {
 		const evidencePath = path.join(tempDir, `${id.replace(/^network\./, "")}.json`);
-		writeJson(evidencePath, networkEvidence(id, evidencePath));
+		writeJson(evidencePath, evidenceFactory(id, evidencePath));
 		return { id, status: "pass" as const, evidence_path: evidencePath };
 	});
 	return { schemaVersion: 1 as const, probes };
@@ -481,7 +558,7 @@ function modelRelayCutoverBundle(evidencePath: string): CutoverInputBundle {
 			},
 		],
 	};
-	const base = cutoverBundle(writeNetworkBundle(tempDir));
+	const base = cutoverBundle(writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence));
 	return {
 		...base,
 		scopeManifest: {
@@ -518,10 +595,11 @@ function networkGateDetail(networkProbes: ProbeBundle): string {
 describe("Hermes cutover network evidence validation", () => {
 	it("passes only after reopening every required and extra network evidence file", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
-		const networkProbes = writeNetworkBundle(tempDir, [
-			...REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
-			"network.extra-provider-denied",
-		]);
+		const networkProbes = writeNetworkBundle(
+			tempDir,
+			[...REQUIRED_CUTOVER_NETWORK_PROBE_IDS, "network.extra-provider-denied"],
+			containedInternalNetworkEvidence,
+		);
 
 		const report = evaluateCutoverCheck(cutoverBundle(networkProbes));
 
@@ -545,6 +623,69 @@ describe("Hermes cutover network evidence validation", () => {
 
 		expect(networkGateDetail(networkProbes)).toContain(
 			"network probe evidence network.relay-control-allowed firewall_sentinel attempt is missing or not pass",
+		);
+	});
+
+	it("accepts contained-internal network evidence without a firewall sentinel", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence);
+
+		const report = evaluateCutoverCheck(cutoverBundle(networkProbes));
+
+		expect(report.exitCode).toBe(0);
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "networkProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails Hermes cutover network evidence that selects the agent-iptables posture", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, (id, evidencePath) =>
+			networkEvidence(id, evidencePath, { posture: "agent-iptables" }),
+		);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.relay-control-allowed posture is agent-iptables; expected contained-internal",
+		);
+	});
+
+	it("fails Hermes cutover network evidence that omits the pinned posture", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.relay-control-allowed posture is missing; expected contained-internal",
+		);
+	});
+
+	it("fails contained-internal evidence without connection-layer denial proof", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence);
+		const probe = networkProbes.probes.find(
+			(candidate) => candidate.id === "network.direct-model-provider-denied",
+		);
+		if (!probe) throw new Error("missing direct-model probe");
+		writeJson(
+			probe.evidence_path,
+			containedInternalNetworkEvidence(probe.id, probe.evidence_path, {
+				attempts: [
+					{
+						name: "model-provider",
+						kind: "http",
+						target: "https://api.anthropic.com/v1/models",
+						expectation: "deny",
+						status: "pass",
+						observed: "policy_denied",
+						detail: "target was denied by an in-process policy hook",
+						httpStatus: 403,
+					},
+				],
+			}),
+		);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.direct-model-provider-denied contained-internal denial proof is missing or not pass",
 		);
 	});
 

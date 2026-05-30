@@ -17,6 +17,7 @@ export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
 export const NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION = "telclaude.hermes.network-probe.v1";
+export const NETWORK_PROBE_POSTURES = ["agent-iptables", "contained-internal"] as const;
 export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 	"network.relay-control-allowed",
 	"network.direct-provider-denied",
@@ -24,6 +25,7 @@ export const REQUIRED_CUTOVER_NETWORK_PROBE_IDS = [
 	"network.direct-model-provider-denied",
 	"network.dns-exfil-denied",
 ] as const;
+export const REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE = "contained-internal" as const;
 
 const NonEmptyString = z.string().trim().min(1);
 const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/i;
@@ -272,10 +274,13 @@ const NetworkProbeAttemptSchema = z
 	})
 	.strict();
 
+const NetworkProbePostureSchema = z.enum(NETWORK_PROBE_POSTURES);
+
 const NetworkProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION),
 		id: NonEmptyString,
+		posture: NetworkProbePostureSchema.optional(),
 		status: z.enum(["pass", "fail", "pending"]),
 		ran: z.boolean(),
 		summary: NonEmptyString,
@@ -286,6 +291,13 @@ const NetworkProbeEvidenceSchema = z
 	.strict();
 
 const REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET = new Set<string>(REQUIRED_CUTOVER_NETWORK_PROBE_IDS);
+const POSITIVE_CONTAINED_DENIAL_ERROR_CODES = new Set([
+	"ECONNREFUSED",
+	"EHOSTUNREACH",
+	"ENETUNREACH",
+	"EACCES",
+	"EPERM",
+]);
 
 export const CompatibilityLockfileSchema = z
 	.object({
@@ -1648,10 +1660,20 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 	}
 	if (
 		REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET.has(probe.id) &&
-		!hasPassingFirewallSentinel(evidence)
+		evidence.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE
 	) {
 		failures.push(
-			`network probe evidence ${probe.id} firewall_sentinel attempt is missing or not pass`,
+			`network probe evidence ${probe.id} posture is ${
+				evidence.posture ?? "missing"
+			}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
+		);
+	}
+	if (REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET.has(probe.id) && !hasNetworkBoundaryProof(evidence)) {
+		const posture = networkProbePosture(evidence);
+		failures.push(
+			posture === "contained-internal"
+				? `network probe evidence ${probe.id} contained-internal denial proof is missing or not pass`
+				: `network probe evidence ${probe.id} firewall_sentinel attempt is missing or not pass`,
 		);
 	}
 	if (probe.id === "network.dns-exfil-denied" && !hasNonOverridableDnsGuard(evidence)) {
@@ -1673,6 +1695,52 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 function hasPassingFirewallSentinel(evidence: z.infer<typeof NetworkProbeEvidenceSchema>): boolean {
 	return evidence.attempts.some(
 		(attempt) => attempt.kind === "firewall_sentinel" && attempt.status === "pass",
+	);
+}
+
+function networkProbePosture(
+	evidence: z.infer<typeof NetworkProbeEvidenceSchema>,
+): (typeof NETWORK_PROBE_POSTURES)[number] {
+	return evidence.posture ?? "agent-iptables";
+}
+
+function hasNetworkBoundaryProof(evidence: z.infer<typeof NetworkProbeEvidenceSchema>): boolean {
+	if (networkProbePosture(evidence) === "contained-internal") {
+		return hasContainedInternalProof(evidence);
+	}
+	return hasPassingFirewallSentinel(evidence);
+}
+
+function hasContainedInternalProof(evidence: z.infer<typeof NetworkProbeEvidenceSchema>): boolean {
+	switch (evidence.id) {
+		case "network.relay-control-allowed":
+			return evidence.attempts.some(
+				(attempt) =>
+					attempt.kind === "http" && attempt.expectation === "allow" && attempt.status === "pass",
+			);
+		case "network.direct-vault-denied":
+			return evidence.attempts.some(
+				(attempt) =>
+					attempt.expectation === "deny" &&
+					attempt.status === "pass" &&
+					((attempt.kind === "unix_socket" && attempt.observed === "absent") ||
+						hasPositiveContainedHttpDenial(attempt)),
+			);
+		default:
+			return evidence.attempts.some(hasPositiveContainedHttpDenial);
+	}
+}
+
+function hasPositiveContainedHttpDenial(
+	attempt: z.infer<typeof NetworkProbeAttemptSchema>,
+): boolean {
+	return (
+		(attempt.kind === "http" || attempt.kind === "dns_guard") &&
+		attempt.expectation === "deny" &&
+		attempt.status === "pass" &&
+		attempt.observed === "denied" &&
+		attempt.errorCode !== undefined &&
+		POSITIVE_CONTAINED_DENIAL_ERROR_CODES.has(attempt.errorCode)
 	);
 }
 

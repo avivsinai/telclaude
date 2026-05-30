@@ -510,6 +510,7 @@ function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 	return {
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 		id,
+		posture: "contained-internal",
 		status: "pass",
 		ran: true,
 		summary:
@@ -2428,6 +2429,54 @@ describe("Hermes wrapper foundation", () => {
 					.find((probe) => probe.id === "network.relay-control-allowed")
 					?.attempts.find((attempt) => attempt.name === "relay-control"),
 			).toMatchObject({ observed: "reachable" });
+		} finally {
+			await relay.close();
+		}
+	});
+
+	it("writes contained-internal network-probe artifacts without a firewall sentinel", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--posture",
+				"contained-internal",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				await closedProbeUrl(),
+				"--model-url",
+				await closedProbeUrl(),
+				"--dns-url",
+				await closedProbeUrl(),
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				posture: string;
+				status: string;
+				evidence: Array<{
+					posture: string;
+					attempts: Array<{ kind: string; name: string }>;
+				}>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({ posture: "contained-internal", status: "pass" });
+			expect(report.evidence.every((probe) => probe.posture === "contained-internal")).toBe(true);
+			expect(
+				report.evidence.flatMap((probe) =>
+					probe.attempts.filter((attempt) => attempt.kind === "firewall_sentinel"),
+				),
+			).toEqual([]);
 		} finally {
 			await relay.close();
 		}

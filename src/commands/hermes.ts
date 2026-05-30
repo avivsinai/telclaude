@@ -67,6 +67,7 @@ import {
 	DEFAULT_NETWORK_PROBE_BUNDLE_PATH,
 	DEFAULT_NETWORK_PROBE_EVIDENCE_DIR,
 	DEFAULT_VAULT_SOCKET_PATH,
+	type NetworkProbePosture,
 	runHermesNetworkProbes,
 	writeHermesNetworkProbeArtifacts,
 } from "../hermes/network-probes.js";
@@ -153,6 +154,7 @@ type NetworkProbeOption = JsonOption & {
 	modelUrl: string;
 	dnsUrl: string;
 	firewallSentinel: string;
+	posture?: string;
 	timeoutMs?: string;
 };
 
@@ -222,6 +224,13 @@ function parseTimeoutMs(value: string | undefined): number | undefined {
 		throw new Error(`Invalid --timeout-ms value: ${value}`);
 	}
 	return parsed;
+}
+
+function parseNetworkProbePosture(value: string | undefined): NetworkProbePosture {
+	const posture =
+		value?.trim() || process.env.TELCLAUDE_HERMES_NETWORK_PROBE_POSTURE?.trim() || "agent-iptables";
+	if (posture === "agent-iptables" || posture === "contained-internal") return posture;
+	throw new Error(`Invalid network probe posture: ${posture}`);
 }
 
 function parsePort(value: string | undefined): number | undefined {
@@ -1253,14 +1262,16 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option(
 			"--firewall-sentinel <path>",
-			"Firewall sentinel that must exist before network evidence can be trusted",
+			"Firewall sentinel required for agent-iptables network evidence",
 			DEFAULT_FIREWALL_SENTINEL_PATH,
 		)
+		.option("--posture <posture>", "Network boundary posture: agent-iptables or contained-internal")
 		.option("--timeout-ms <ms>", "Maximum time per HTTP probe in milliseconds")
 		.action(async (options: NetworkProbeOption) => {
 			try {
 				let report = await runHermesNetworkProbes({
 					allowRun: options.allowRun === true,
+					posture: parseNetworkProbePosture(options.posture),
 					relayUrl:
 						options.relayUrl?.trim() ||
 						process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
