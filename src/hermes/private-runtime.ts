@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import type { PermissionTier } from "../config/config.js";
 import { telegramMemorySource } from "../memory/source.js";
 import type { MemorySource } from "../memory/types.js";
@@ -12,8 +13,12 @@ import type { TelclaudeMcpAuthority, TelclaudeMcpDomain } from "./mcp/bridge.js"
 import type { HermesSessionMap } from "./session-map.js";
 
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
+export const DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH =
+	"artifacts/hermes/probes/execution-cli-headless.json";
 const DEFAULT_PRIVATE_MCP_ENDPOINT_ID = "telclaude-private-runtime";
 const DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE = "telclaude-private";
+const DEFAULT_HERMES_PROBE_TIMEOUT_MS = 120_000;
+const MAX_CAPTURED_PROCESS_OUTPUT_BYTES = 1_000_000;
 
 export type HermesRuntimeRequest = {
 	prompt: string;
@@ -103,6 +108,12 @@ export type HermesCliProbeReport = {
 	status: "pass" | "fail" | "pending";
 	ran: boolean;
 	summary: string;
+	invocation?: {
+		command: string;
+		args: string[];
+		cwd: string;
+		envKeys: string[];
+	};
 	exitCode?: number;
 	stdoutPreview?: string;
 	stderrPreview?: string;
@@ -297,6 +308,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			status: "fail",
 			ran: false,
 			summary: "Hermes CLI probe launch contains forbidden credential material",
+			invocation: probeInvocation(input.invocation),
 			findings,
 		});
 	}
@@ -305,6 +317,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			status: "pending",
 			ran: false,
 			summary: "Hermes CLI probe requires --allow-run",
+			invocation: probeInvocation(input.invocation),
 			findings,
 		});
 	}
@@ -313,6 +326,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			status: "pending",
 			ran: false,
 			summary: "Hermes CLI probe runner is not configured",
+			invocation: probeInvocation(input.invocation),
 			findings,
 		});
 	}
@@ -326,10 +340,72 @@ export async function runHermesCliHeadlessProbe(input: {
 			status === "pass"
 				? "Hermes CLI oneshot probe completed successfully"
 				: "Hermes CLI oneshot probe failed",
+		invocation: probeInvocation(input.invocation),
 		exitCode: result.exitCode,
 		stdoutPreview: preview(redactHermesRuntimeText(result.stdout)),
 		stderrPreview: preview(redactHermesRuntimeText(result.stderr)),
 		findings,
+	});
+}
+
+export async function runHermesLaunchInvocation(
+	invocation: HermesLaunchInvocation,
+	options: { timeoutMs?: number } = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+	const timeoutMs = normalizeProbeTimeoutMs(options.timeoutMs);
+	return new Promise((resolve) => {
+		let settled = false;
+		let timedOut = false;
+		let stdout = "";
+		let stderr = "";
+		const child = spawn(invocation.command, invocation.args, {
+			cwd: invocation.cwd,
+			env: {
+				PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+				...invocation.env,
+			},
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill("SIGTERM");
+			setTimeout(() => {
+				if (!settled) child.kill("SIGKILL");
+			}, 2_000).unref();
+		}, timeoutMs);
+		timer.unref();
+
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = appendBoundedOutput(stdout, chunk);
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr = appendBoundedOutput(stderr, chunk);
+		});
+		child.on("error", (error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve({
+				exitCode: 127,
+				stdout,
+				stderr: appendLine(stderr, `failed to launch Hermes probe: ${error.message}`),
+			});
+		});
+		child.on("close", (code, signal) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve({
+				exitCode: timedOut ? 124 : (code ?? 1),
+				stdout,
+				stderr: timedOut
+					? appendLine(stderr, `Hermes probe timed out after ${timeoutMs}ms`)
+					: signal
+						? appendLine(stderr, `Hermes probe terminated by ${signal}`)
+						: stderr,
+			});
+		});
 	});
 }
 
@@ -377,6 +453,17 @@ function probeReport(
 	};
 }
 
+function probeInvocation(
+	invocation: HermesLaunchInvocation,
+): NonNullable<HermesCliProbeReport["invocation"]> {
+	return {
+		command: redactHermesRuntimeText(invocation.command),
+		args: invocation.args.map((arg) => redactHermesRuntimeText(arg)),
+		cwd: redactHermesRuntimeText(invocation.cwd),
+		envKeys: Object.keys(invocation.env).sort(),
+	};
+}
+
 function isForbiddenCredentialKey(key: string): boolean {
 	return /(^|_)(API_KEY|AUTH_TOKEN|OAUTH_TOKEN|TOKEN|KEY|PASSWORD|SECRET|COOKIE|CREDENTIALS?)(_|$)/i.test(
 		key,
@@ -389,4 +476,22 @@ function containsCredentialValue(value: string): boolean {
 
 function preview(value: string, maxLength = 400): string {
 	return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
+}
+
+function normalizeProbeTimeoutMs(value: number | undefined): number {
+	if (value === undefined) return DEFAULT_HERMES_PROBE_TIMEOUT_MS;
+	if (!Number.isFinite(value) || value <= 0) return DEFAULT_HERMES_PROBE_TIMEOUT_MS;
+	return Math.min(Math.trunc(value), DEFAULT_HERMES_PROBE_TIMEOUT_MS);
+}
+
+function appendBoundedOutput(current: string, chunk: Buffer): string {
+	if (current.length >= MAX_CAPTURED_PROCESS_OUTPUT_BYTES) return current;
+	const next = `${current}${chunk.toString("utf8")}`;
+	return next.length <= MAX_CAPTURED_PROCESS_OUTPUT_BYTES
+		? next
+		: next.slice(0, MAX_CAPTURED_PROCESS_OUTPUT_BYTES);
+}
+
+function appendLine(current: string, line: string): string {
+	return current ? `${current}\n${line}` : line;
 }

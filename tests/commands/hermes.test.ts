@@ -1,7 +1,7 @@
-import { Command } from "commander";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
@@ -115,6 +115,17 @@ async function runHermesCommand(args: string[]): Promise<{ exitCode: unknown; st
 		process.exitCode = undefined;
 		logSpy.mockRestore();
 	}
+}
+
+function writeExecutable(tempDir: string, body: string): string {
+	const filePath = path.join(tempDir, "fake-hermes.sh");
+	fs.writeFileSync(filePath, body, "utf8");
+	fs.chmodSync(filePath, 0o755);
+	return filePath;
+}
+
+function readJson(filePath: string): unknown {
+	return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
 }
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
@@ -717,6 +728,184 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(result.exitCode).toBe(2);
 		expect(report).toMatchObject({ status: "input_error", productionEnable: false });
+	});
+
+	it("does not execute or write cli-headless evidence without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const markerPath = path.join(tempDir, "ran");
+		const hermesBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+touch "${markerPath}"
+echo should-not-run
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.cli_headless",
+			"--json",
+			"--hermes-bin",
+			hermesBin,
+			"--hermes-home",
+			path.join(tempDir, "home"),
+			"--cwd",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; ran: boolean };
+
+		expect(result.exitCode).toBe(2);
+		expect(report).toMatchObject({ status: "pending", ran: false });
+		expect(fs.existsSync(markerPath)).toBe(false);
+		expect(fs.existsSync(evidencePath)).toBe(false);
+	});
+
+	it("writes a passing cli-headless artifact only after observed child exit zero", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const hermesBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+echo "probe ok"
+exit 0
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.cli_headless",
+			"--allow-run",
+			"--json",
+			"--hermes-bin",
+			hermesBin,
+			"--hermes-home",
+			path.join(tempDir, "home"),
+			"--cwd",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; exitCode: number };
+		const artifact = readJson(evidencePath) as { status: string; exitCode: number };
+
+		expect(result.exitCode).toBe(0);
+		expect(report).toMatchObject({ status: "pass", exitCode: 0 });
+		expect(artifact).toMatchObject({ status: "pass", exitCode: 0 });
+	});
+
+	it("writes a failing cli-headless artifact from a nonzero child exit", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const hermesBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+echo "probe failed" >&2
+exit 7
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.cli_headless",
+			"--allow-run",
+			"--json",
+			"--hermes-bin",
+			hermesBin,
+			"--hermes-home",
+			path.join(tempDir, "home"),
+			"--cwd",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			status: string;
+			exitCode: number;
+			stderrPreview: string;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(artifact).toMatchObject({
+			status: "fail",
+			exitCode: 7,
+			stderrPreview: "probe failed\n",
+		});
+	});
+
+	it("writes a failing cli-headless artifact from a spawn error", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.cli_headless",
+			"--allow-run",
+			"--json",
+			"--hermes-bin",
+			path.join(tempDir, "missing-hermes"),
+			"--hermes-home",
+			path.join(tempDir, "home"),
+			"--cwd",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			status: string;
+			exitCode: number;
+			stderrPreview: string;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(artifact.status).toBe("fail");
+		expect(artifact.exitCode).toBe(127);
+		expect(artifact.stderrPreview).toContain("failed to launch Hermes probe");
+	});
+
+	it("writes a failing cli-headless artifact from a timed-out child", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const hermesBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+sleep 5
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.cli_headless",
+			"--allow-run",
+			"--json",
+			"--hermes-bin",
+			hermesBin,
+			"--hermes-home",
+			path.join(tempDir, "home"),
+			"--cwd",
+			tempDir,
+			"--timeout-ms",
+			"20",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			status: string;
+			exitCode: number;
+			stderrPreview: string;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(artifact.status).toBe("fail");
+		expect(artifact.exitCode).toBe(124);
+		expect(artifact.stderrPreview).toContain("Hermes probe timed out after 20ms");
 	});
 
 	it("passes the approval-continuation probe only from explicit evidence", async () => {

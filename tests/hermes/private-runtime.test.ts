@@ -453,6 +453,12 @@ describe("Hermes private runtime seam", () => {
 			status: "pass",
 			ran: true,
 			summary: "Hermes CLI oneshot probe completed successfully",
+			invocation: {
+				command: "/usr/local/bin/hermes",
+				args: ["-z", "telclaude probe ok"],
+				cwd: "/repo",
+				envKeys: ["HERMES_HOME", "NO_COLOR"],
+			},
 			exitCode: 0,
 			stdoutPreview: "ok",
 			stderrPreview: "token [REDACTED:telegram_bot_token]",
