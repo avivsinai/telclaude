@@ -97,6 +97,22 @@ const CliHeadlessProbeEvidenceSchema = z
 		status: z.enum(["pass", "fail", "pending"]),
 		ran: z.boolean(),
 		exitCode: z.number().int(),
+		invocation: z
+			.object({
+				command: NonEmptyString,
+				args: z.array(z.string()),
+				cwd: NonEmptyString,
+				envKeys: z.array(NonEmptyString),
+			})
+			.passthrough(),
+		findings: z.array(
+			z
+				.object({
+					location: NonEmptyString,
+					reason: NonEmptyString,
+				})
+				.passthrough(),
+		),
 	})
 	.passthrough();
 
@@ -139,6 +155,8 @@ const NetworkProbeEvidenceSchema = z
 		attempts: z.array(NetworkProbeAttemptSchema),
 	})
 	.strict();
+
+const REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET = new Set<string>(REQUIRED_CUTOVER_NETWORK_PROBE_IDS);
 
 export const CompatibilityLockfileSchema = z
 	.object({
@@ -926,6 +944,19 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 	if (evidence.attempts.length === 0) {
 		failures.push(`network probe evidence ${probe.id} attempts are empty`);
 	}
+	if (
+		REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET.has(probe.id) &&
+		!hasPassingFirewallSentinel(evidence)
+	) {
+		failures.push(
+			`network probe evidence ${probe.id} firewall_sentinel attempt is missing or not pass`,
+		);
+	}
+	if (probe.id === "network.dns-exfil-denied" && !hasNonOverridableDnsGuard(evidence)) {
+		failures.push(
+			`network probe evidence ${probe.id} dns_guard lacks nonOverridable resolved address`,
+		);
+	}
 	for (const attempt of evidence.attempts) {
 		if (attempt.status === "pass") continue;
 		failures.push(
@@ -935,6 +966,20 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 		);
 	}
 	return failures;
+}
+
+function hasPassingFirewallSentinel(evidence: z.infer<typeof NetworkProbeEvidenceSchema>): boolean {
+	return evidence.attempts.some(
+		(attempt) => attempt.kind === "firewall_sentinel" && attempt.status === "pass",
+	);
+}
+
+function hasNonOverridableDnsGuard(evidence: z.infer<typeof NetworkProbeEvidenceSchema>): boolean {
+	return evidence.attempts.some(
+		(attempt) =>
+			attempt.kind === "dns_guard" &&
+			attempt.resolvedAddresses?.some((address) => address.nonOverridable) === true,
+	);
 }
 
 function readNetworkProbeEvidence(
@@ -1016,6 +1061,15 @@ function collectCliHeadlessProbeEvidence(
 	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
 	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
 	if (parsed.data.exitCode !== 0) failures.push(`exitCode is ${parsed.data.exitCode}`);
+	if (parsed.data.findings.length > 0) {
+		failures.push(`findings are not empty (${parsed.data.findings.length})`);
+	}
+	const forbiddenEnvKeys = parsed.data.invocation.envKeys
+		.filter(isForbiddenCredentialKey)
+		.sort((left, right) => left.localeCompare(right));
+	if (forbiddenEnvKeys.length > 0) {
+		failures.push(`forbidden credential envKeys: ${redactDetail(forbiddenEnvKeys.join(", "))}`);
+	}
 	if (failures.length > 0) {
 		return featureProbeEvidenceFailure(
 			probe,
@@ -1029,6 +1083,12 @@ function collectCliHeadlessProbeEvidence(
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed pass, ran=true, exitCode=0`,
 	};
+}
+
+function isForbiddenCredentialKey(key: string): boolean {
+	return /(^|_)(API_KEY|AUTH_TOKEN|OAUTH_TOKEN|TOKEN|KEY|PASSWORD|SECRET|COOKIE|CREDENTIALS?)(_|$)/i.test(
+		key,
+	);
 }
 
 function featureProbeEvidenceFailure(
