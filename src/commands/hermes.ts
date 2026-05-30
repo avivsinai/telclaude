@@ -65,6 +65,14 @@ import {
 	writeHermesNetworkProbeArtifacts,
 } from "../hermes/network-probes.js";
 import {
+	buildNoForkProof,
+	DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH,
+	DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH,
+	DEFAULT_HERMES_UPSTREAM_REF,
+	DEFAULT_HERMES_UPSTREAM_VERSION,
+	writeNoForkProofReport,
+} from "../hermes/no-fork-proof.js";
+import {
 	buildHermesCliProbeInvocation,
 	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
 	runHermesCliHeadlessProbe,
@@ -315,7 +323,6 @@ function formatLiveMcpProbeTokenJson(response: TelclaudeLiveMcpProbeTokenBundle)
 			TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH: `Authorization: ${response.wrongConnection.authorizationHeader}`,
 			TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH: `Authorization: ${response.forged.authorizationHeader}`,
 		},
-		tokens: response,
 		metadata: response.metadata,
 	};
 }
@@ -486,6 +493,177 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 			}
 		});
+
+	hermes
+		.command("prove")
+		.description("Generate fail-closed Hermes wrapper proof artifacts")
+		.option("--json", "Emit structured JSON")
+		.option("--upstream-clean", "Prove the pinned upstream Hermes checkout is clean")
+		.option("--p0", "Evaluate P0 migration proof gates")
+		.option(
+			"--checkout <path>",
+			"Upstream Hermes checkout path",
+			DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH,
+		)
+		.option("--expected-ref <ref>", "Pinned upstream Hermes ref", DEFAULT_HERMES_UPSTREAM_REF)
+		.option(
+			"--expected-version <version>",
+			"Pinned upstream Hermes package version",
+			DEFAULT_HERMES_UPSTREAM_VERSION,
+		)
+		.option("--out <path>", "No-fork proof evidence path", DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH)
+		.option(
+			"--inventory <path>",
+			"P0 inventory snapshot JSON path; collects live inventory when omitted",
+		)
+		.option("--scope <path>", "P0 cutover scope manifest JSON path", DEFAULT_CUTOVER_SCOPE_PATH)
+		.option("--decisions <path>", "P0 decision log JSON path", DEFAULT_DECISION_LOG_PATH)
+		.option(
+			"--feature-probes <path>",
+			"P0 feature-probe matrix JSON path",
+			DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+		)
+		.option(
+			"--lockfile <path>",
+			"P0 compatibility lockfile JSON path",
+			DEFAULT_COMPAT_LOCKFILE_PATH,
+		)
+		.option("--fixtures <path>", "P0 fixture result bundle JSON path", DEFAULT_FIXTURE_RESULTS_PATH)
+		.option(
+			"--network-probes <path>",
+			"P0 network probe bundle JSON path",
+			DEFAULT_NETWORK_PROBES_PATH,
+		)
+		.option(
+			"--rollback <path>",
+			"P0 rollback rehearsal evidence JSON path",
+			DEFAULT_ROLLBACK_REHEARSAL_PATH,
+		)
+		.action(
+			(
+				options: JsonOption & {
+					upstreamClean?: boolean;
+					p0?: boolean;
+					checkout: string;
+					expectedRef: string;
+					expectedVersion: string;
+					out: string;
+					inventory?: string;
+					scope: string;
+					decisions: string;
+					featureProbes: string;
+					lockfile: string;
+					fixtures: string;
+					networkProbes: string;
+					rollback: string;
+				},
+			) => {
+				if (!options.upstreamClean) {
+					const report = {
+						schemaVersion: 1,
+						hermesCheckoutClean: false,
+						evidence_path: options.out,
+						checks: [
+							{
+								name: "prove.upstreamClean",
+								status: "fail",
+								detail: "pass --upstream-clean to prove the pinned Hermes checkout",
+							},
+						],
+					};
+					if (options.json) {
+						printJson(report);
+					} else {
+						console.log("Hermes prove: fail");
+						console.log("- FAIL prove.upstreamClean: pass --upstream-clean");
+					}
+					process.exitCode = 2;
+					return;
+				}
+				const report = writeNoForkProofReport(
+					buildNoForkProof({
+						checkoutPath: options.checkout,
+						expectedRef: options.expectedRef,
+						expectedVersion: options.expectedVersion,
+						evidencePath: options.out,
+					}),
+				);
+				if (options.p0) {
+					const strict = true;
+					const dryRun = true;
+					try {
+						const featureProbeMatrix = readJsonFile(
+							resolveHermesArtifactPath(options.featureProbes),
+						);
+						const cutover = evaluateCutoverCheck(
+							buildCutoverInputBundleFromArtifacts({
+								inventory: options.inventory
+									? readJsonFile(resolveHermesArtifactPath(options.inventory))
+									: collectHermesInventory(),
+								scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
+								decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
+								lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
+								featureProbeMatrix,
+								featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
+								fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
+								noForkProof: readJsonFile(resolveHermesArtifactPath(options.out)),
+								networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
+								rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
+							}),
+							{ strict, dryRun },
+						);
+						const proveReport = { schemaVersion: 1, noForkProof: report, p0: cutover };
+						if (options.json) {
+							printJson(proveReport);
+						} else {
+							console.log(`Hermes prove: ${cutover.status}`);
+							for (const check of report.checks) {
+								console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+							}
+							for (const gate of cutover.gates) {
+								console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+							}
+							console.log(`- evidence: ${report.evidence_path}`);
+						}
+						process.exitCode =
+							report.hermesCheckoutClean && cutover.exitCode === 0 ? 0 : cutover.exitCode || 1;
+						return;
+					} catch (error) {
+						const cutover = {
+							status: "input_error",
+							exitCode: 2,
+							mode: { strict, dryRun },
+							gates: [
+								{
+									name: "inputs.readable",
+									status: "fail",
+									detail: String(error instanceof Error ? error.message : error),
+								},
+							],
+						};
+						const proveReport = { schemaVersion: 1, noForkProof: report, p0: cutover };
+						if (options.json) {
+							printJson(proveReport);
+						} else {
+							console.log("Hermes prove: input_error");
+							console.log(`- FAIL ${cutover.gates[0].name}: ${cutover.gates[0].detail}`);
+						}
+						process.exitCode = cutover.exitCode;
+						return;
+					}
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes prove: ${report.hermesCheckoutClean ? "pass" : "fail"}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					console.log(`- evidence: ${report.evidence_path}`);
+				}
+				process.exitCode = report.hermesCheckoutClean ? 0 : 1;
+			},
+		);
 
 	hermes
 		.command("inventory")

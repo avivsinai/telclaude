@@ -34,6 +34,22 @@
       "status": "skip"
     },
     {
+      "surface_id": "execution.api_server_containment",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "documented_seam": "Pinned Hermes API server runs as a contained process behind Telclaude relay control",
+      "probe_command": "pnpm dev hermes probe execution.api_server_containment --allow-run",
+      "expected_result": "Contained Hermes API server starts with ephemeral bearer auth, advertises required run/approval/stop capabilities, and proves relay-only network containment",
+      "negative_probe": "Direct provider, vault, model-provider, private DNS, firewall flush, route add, and privileged runtime tamper attempts fail closed",
+      "evidence_path": "artifacts/hermes/probes/execution-api-server-containment.json",
+      "lockfile_key": "featureProbes.execution.apiServerContainment",
+      "security_scope": "api-server-containment",
+      "approval_equivalent": false,
+      "failure_outcome": "disable",
+      "status": "skip"
+    },
+    {
       "surface_id": "execution.served_mcp_containment",
       "hermes_pin": {
         "version": "0.15.1"

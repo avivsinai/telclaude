@@ -53,6 +53,7 @@ export const FeatureProbeSchema = z
 			.enum([
 				"headless-availability-only",
 				"approval-continuation",
+				"api-server-containment",
 				"edge-adapter",
 				"model-relay",
 				"nofork-proof",
@@ -115,6 +116,57 @@ const CliHeadlessProbeEvidenceSchema = z
 				})
 				.passthrough(),
 		),
+	})
+	.passthrough();
+
+const API_SERVER_CONTAINMENT_SCHEMA_VERSION = "telclaude.hermes.api-server-containment.v1";
+const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
+	"lifecycle.started",
+	"readiness.health",
+	"readiness.capabilities",
+	"network.topology",
+	"network.relay_only",
+	"network.tamper_resistant",
+] as const;
+const FEATURE_PROBE_SURFACES_REQUIRING_OBSERVED_EVIDENCE = new Set([
+	"execution.cli_headless",
+	"execution.approval_continuation",
+	"execution.api_server_containment",
+	"execution.served_mcp_containment",
+	"model.relay",
+]);
+const REQUIRED_NO_FORK_CHECK_NAMES = [
+	"checkout.present",
+	"checkout.head",
+	"checkout.expectedRef",
+	"checkout.pinned",
+	"checkout.statusClean",
+	"checkout.diffClean",
+	"checkout.indexClean",
+] as const;
+const REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES = [
+	"rollback.allowed",
+	"rollback.flagBefore",
+	"rollback.flagAfter",
+	"rollback.fallbackPath",
+] as const;
+
+const ApiServerContainmentProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(API_SERVER_CONTAINMENT_SCHEMA_VERSION),
+		probeId: z.literal("execution.api_server_containment"),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		gates: z.array(
+			z
+				.object({
+					name: NonEmptyString,
+					status: z.enum(["pass", "fail", "pending"]),
+					detail: NonEmptyString,
+				})
+				.passthrough(),
+		),
+		findings: z.array(z.unknown()),
 	})
 	.passthrough();
 
@@ -337,6 +389,27 @@ export const NoForkProofSchema = z
 		schemaVersion: z.literal(1),
 		hermesCheckoutClean: z.boolean(),
 		evidence_path: NonEmptyString,
+		checkoutPath: NonEmptyString.optional(),
+		expectedRef: NonEmptyString.optional(),
+		expectedVersion: NonEmptyString.optional(),
+		head: NonEmptyString.optional(),
+		expectedRefCommit: NonEmptyString.optional(),
+		currentBranch: NonEmptyString.optional(),
+		exactTags: z.array(NonEmptyString).optional(),
+		statusPorcelain: z.string().optional(),
+		diffExitCode: z.number().int().optional(),
+		cachedDiffExitCode: z.number().int().optional(),
+		checks: z
+			.array(
+				z
+					.object({
+						name: NonEmptyString,
+						status: z.enum(["pass", "fail"]),
+						detail: NonEmptyString,
+					})
+					.strict(),
+			)
+			.optional(),
 	})
 	.strict();
 
@@ -355,6 +428,22 @@ export const RollbackRehearsalSchema = z
 		schemaVersion: z.literal(1),
 		passed: z.boolean(),
 		evidence_path: NonEmptyString,
+		allowedToRun: z.boolean().optional(),
+		observedBeforeValue: NonEmptyString.optional(),
+		observedAfterValue: NonEmptyString.optional(),
+		observedFallbackPath: NonEmptyString.optional(),
+		observedAt: NonEmptyString.optional(),
+		checks: z
+			.array(
+				z
+					.object({
+						name: NonEmptyString,
+						status: z.enum(["pass", "fail"]),
+						detail: NonEmptyString,
+					})
+					.strict(),
+			)
+			.optional(),
 	})
 	.strict();
 
@@ -483,6 +572,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "execution.served_mcp_containment") {
 			return [collectServedMcpContainmentProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "execution.api_server_containment") {
+			return [collectApiServerContainmentProbeEvidence(probe)];
 		}
 		return [];
 	});
@@ -762,6 +854,11 @@ export function evaluateCutoverCheck(
 			),
 		),
 		...bundle.decisionLog.decisions.flatMap((decision) =>
+			decision.status === "unresolved" && decision.affected_workflows.length === 0
+				? [`unresolved decision ${decision.id} has no affected workflows and is treated as global`]
+				: [],
+		),
+		...bundle.decisionLog.decisions.flatMap((decision) =>
 			decision.status === "unresolved"
 				? decision.affected_workflows
 						.filter((workflowId) => includedWorkflowIds.has(workflowId))
@@ -838,6 +935,8 @@ export function evaluateCutoverCheck(
 			result.status === "pass" ? [] : [`fixture ${result.id} status is ${result.status}`],
 		),
 	];
+	const noForkFailures = noForkProofEvidenceFailures(bundle.noForkProof);
+	const rollbackRehearsalFailures = rollbackRehearsalEvidenceFailures(bundle.rollbackRehearsal);
 	const networkProbeById = new Map(bundle.networkProbes.probes.map((probe) => [probe.id, probe]));
 	const networkProbeFailures = [
 		...(bundle.networkProbes.probes.length === 0 ? ["network probe bundle is empty"] : []),
@@ -894,8 +993,11 @@ export function evaluateCutoverCheck(
 	});
 	gates.push({
 		name: "nofork.clean",
-		status: bundle.noForkProof.hermesCheckoutClean ? "pass" : "fail",
-		detail: "pinned Hermes checkout must remain clean",
+		status: noForkFailures.length === 0 ? "pass" : "fail",
+		detail:
+			noForkFailures.length === 0
+				? "pinned Hermes checkout proof passed from schema-valid evidence"
+				: unique(noForkFailures).join("; "),
 	});
 	gates.push({
 		name: "networkProbes.pass",
@@ -912,8 +1014,11 @@ export function evaluateCutoverCheck(
 	});
 	gates.push({
 		name: "rollback.rehearsed",
-		status: bundle.rollbackRehearsal.passed ? "pass" : "fail",
-		detail: "rollback rehearsal evidence is required",
+		status: rollbackRehearsalFailures.length === 0 ? "pass" : "fail",
+		detail:
+			rollbackRehearsalFailures.length === 0
+				? "rollback rehearsal passed from schema-valid evidence"
+				: unique(rollbackRehearsalFailures).join("; "),
 	});
 
 	const safe = gates.every((gate) => gate.status === "pass");
@@ -927,6 +1032,199 @@ export function evaluateCutoverCheck(
 
 export function resolveHermesArtifactPath(relativePath: string): string {
 	return path.resolve(relativePath);
+}
+
+function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
+	const failures = noForkProof.hermesCheckoutClean
+		? []
+		: ["no-fork proof summary hermesCheckoutClean is false"];
+	const loaded = readNoForkProofEvidence(noForkProof);
+	if (!loaded.valid) return [...failures, loaded.failure];
+
+	const evidence = loaded.evidence;
+	if (!sameResolvedArtifactPath(evidence.evidence_path, noForkProof.evidence_path)) {
+		failures.push(`no-fork evidence_path is ${redactDetail(evidence.evidence_path)}`);
+	}
+	if (evidence.hermesCheckoutClean !== true) {
+		failures.push("no-fork evidence hermesCheckoutClean is false");
+	}
+	if (evidence.checks === undefined || evidence.checks.length === 0) {
+		failures.push("no-fork evidence checks are empty");
+	}
+	for (const field of [
+		"checkoutPath",
+		"expectedRef",
+		"expectedVersion",
+		"head",
+		"expectedRefCommit",
+	]) {
+		if (typeof evidence[field as keyof NoForkProof] !== "string") {
+			failures.push(`no-fork evidence ${field} is missing`);
+		}
+	}
+	if (
+		typeof evidence.head === "string" &&
+		typeof evidence.expectedRefCommit === "string" &&
+		evidence.head !== evidence.expectedRefCommit
+	) {
+		failures.push("no-fork evidence HEAD does not match expectedRefCommit");
+	}
+	if (
+		typeof evidence.expectedRef === "string" &&
+		!(evidence.exactTags ?? []).includes(evidence.expectedRef)
+	) {
+		failures.push(
+			`no-fork evidence exactTags does not include ${redactDetail(evidence.expectedRef)}`,
+		);
+	}
+	if (evidence.statusPorcelain !== "") {
+		failures.push("no-fork evidence statusPorcelain is not clean");
+	}
+	if (evidence.diffExitCode !== 0) {
+		failures.push(`no-fork evidence diffExitCode is ${String(evidence.diffExitCode)}`);
+	}
+	if (evidence.cachedDiffExitCode !== 0) {
+		failures.push(`no-fork evidence cachedDiffExitCode is ${String(evidence.cachedDiffExitCode)}`);
+	}
+	const checkByName = new Map((evidence.checks ?? []).map((check) => [check.name, check]));
+	for (const duplicate of findDuplicates((evidence.checks ?? []).map((check) => check.name))) {
+		failures.push(`duplicate no-fork evidence check ${redactDetail(duplicate)}`);
+	}
+	for (const checkName of REQUIRED_NO_FORK_CHECK_NAMES) {
+		const check = checkByName.get(checkName);
+		if (!check) {
+			failures.push(`missing no-fork evidence check ${checkName}`);
+		} else if (check.status !== "pass") {
+			failures.push(
+				`no-fork evidence required check ${redactDetail(checkName)} is fail: ${redactDetail(check.detail)}`,
+			);
+		}
+	}
+	for (const check of evidence.checks ?? []) {
+		if (check.status === "pass") continue;
+		failures.push(
+			`no-fork evidence check ${redactDetail(check.name)} is fail: ${redactDetail(check.detail)}`,
+		);
+	}
+	return failures;
+}
+
+function readNoForkProofEvidence(
+	noForkProof: NoForkProof,
+): { valid: true; evidence: NoForkProof } | { valid: false; failure: string } {
+	const resolvedPath = resolveHermesArtifactPath(noForkProof.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return {
+			valid: false,
+			failure: `missing no-fork proof evidence: ${redactDetail(resolvedPath)}`,
+		};
+	}
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return {
+			valid: false,
+			failure: `unreadable no-fork proof evidence: ${redactDetail(
+				error instanceof Error ? error.message : String(error),
+			)}`,
+		};
+	}
+	const parsed = NoForkProofSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return {
+			valid: false,
+			failure: `invalid no-fork proof evidence: ${redactDetail(flattenZodError(parsed.error))}`,
+		};
+	}
+	return { valid: true, evidence: parsed.data };
+}
+
+function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal): string[] {
+	const failures = rollbackRehearsal.passed ? [] : ["rollback rehearsal summary passed is false"];
+	const loaded = readRollbackRehearsalEvidence(rollbackRehearsal);
+	if (!loaded.valid) return [...failures, loaded.failure];
+
+	const evidence = loaded.evidence;
+	if (!sameResolvedArtifactPath(evidence.evidence_path, rollbackRehearsal.evidence_path)) {
+		failures.push(`rollback rehearsal evidence_path is ${redactDetail(evidence.evidence_path)}`);
+	}
+	if (evidence.passed !== true) {
+		failures.push("rollback rehearsal evidence passed is false");
+	}
+	if (evidence.allowedToRun !== true) {
+		failures.push("rollback rehearsal evidence allowedToRun is not true");
+	}
+	if (evidence.observedBeforeValue !== "1") {
+		failures.push("rollback rehearsal evidence observedBeforeValue is not 1");
+	}
+	if (evidence.observedAfterValue !== "0") {
+		failures.push("rollback rehearsal evidence observedAfterValue is not 0");
+	}
+	if (typeof evidence.observedFallbackPath !== "string") {
+		failures.push("rollback rehearsal evidence observedFallbackPath is missing");
+	}
+	if (typeof evidence.observedAt !== "string") {
+		failures.push("rollback rehearsal evidence observedAt is missing");
+	}
+	if (evidence.checks === undefined || evidence.checks.length === 0) {
+		failures.push("rollback rehearsal evidence checks are empty");
+	}
+	const checkNames = (evidence.checks ?? []).map((check) => check.name);
+	const checkByName = new Map((evidence.checks ?? []).map((check) => [check.name, check]));
+	for (const duplicate of findDuplicates(checkNames)) {
+		failures.push(`duplicate rollback rehearsal evidence check ${redactDetail(duplicate)}`);
+	}
+	for (const checkName of REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES) {
+		const check = checkByName.get(checkName);
+		if (!check) {
+			failures.push(`missing rollback rehearsal evidence check ${checkName}`);
+		} else if (check.status !== "pass") {
+			failures.push(
+				`rollback rehearsal required check ${redactDetail(checkName)} is fail: ${redactDetail(check.detail)}`,
+			);
+		}
+	}
+	for (const check of evidence.checks ?? []) {
+		if (check.status === "pass") continue;
+		failures.push(
+			`rollback rehearsal evidence check ${redactDetail(check.name)} is fail: ${redactDetail(check.detail)}`,
+		);
+	}
+	return failures;
+}
+
+function readRollbackRehearsalEvidence(
+	rollbackRehearsal: RollbackRehearsal,
+): { valid: true; evidence: RollbackRehearsal } | { valid: false; failure: string } {
+	const resolvedPath = resolveHermesArtifactPath(rollbackRehearsal.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return {
+			valid: false,
+			failure: `missing rollback rehearsal evidence: ${redactDetail(resolvedPath)}`,
+		};
+	}
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return {
+			valid: false,
+			failure: `unreadable rollback rehearsal evidence: ${redactDetail(
+				error instanceof Error ? error.message : String(error),
+			)}`,
+		};
+	}
+	const parsed = RollbackRehearsalSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return {
+			valid: false,
+			failure: `invalid rollback rehearsal evidence: ${redactDetail(
+				flattenZodError(parsed.error),
+			)}`,
+		};
+	}
+	return { valid: true, evidence: parsed.data };
 }
 
 function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): string[] {
@@ -1126,6 +1424,67 @@ function collectServedMcpContainmentProbeEvidence(
 	};
 }
 
+function collectApiServerContainmentProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+
+	const parsed = ApiServerContainmentProbeEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`invalid feature probe evidence ${probe.surface_id}: ${flattenZodError(parsed.error)}`,
+		);
+	}
+
+	const failures: string[] = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (parsed.data.findings.length > 0) {
+		failures.push(`findings are not empty (${parsed.data.findings.length})`);
+	}
+
+	const gateByName = new Map(parsed.data.gates.map((gate) => [gate.name, gate]));
+	for (const gateName of REQUIRED_API_SERVER_CONTAINMENT_GATES) {
+		const gate = gateByName.get(gateName);
+		if (!gate) {
+			failures.push(`gate ${gateName} is missing`);
+		} else if (gate.status !== "pass") {
+			failures.push(`gate ${gateName} is ${gate.status}: ${redactDetail(gate.detail)}`);
+		}
+	}
+	if (failures.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
+		);
+	}
+
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed live API-server containment gates`,
+	};
+}
+
 function isForbiddenCredentialKey(key: string): boolean {
 	return /(^|_)(API_KEY|AUTH_TOKEN|OAUTH_TOKEN|TOKEN|KEY|PASSWORD|SECRET|COOKIE|CREDENTIALS?)(_|$)/i.test(
 		key,
@@ -1152,6 +1511,9 @@ function featureProbeFailure(
 		return evidence.status === "pass"
 			? null
 			: `feature probe ${probe.surface_id} evidence failed: ${evidence.detail}`;
+	}
+	if (FEATURE_PROBE_SURFACES_REQUIRING_OBSERVED_EVIDENCE.has(probe.surface_id)) {
+		return `feature probe ${probe.surface_id} requires observed evidence`;
 	}
 	if (probe.status !== "pass") {
 		return `feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`;

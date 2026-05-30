@@ -284,6 +284,111 @@ function writePassingNetworkProbeBundle() {
 	};
 }
 
+function writeNoForkProof(overrides: Record<string, unknown> = {}) {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-nofork-"));
+	const evidencePath =
+		typeof overrides.evidence_path === "string"
+			? overrides.evidence_path
+			: path.join(tempDir, "no-fork.json");
+	const proof = {
+		schemaVersion: 1,
+		hermesCheckoutClean: true,
+		evidence_path: evidencePath,
+		checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
+		expectedRef: "v2026.5.29",
+		expectedVersion: "0.15.1",
+		head: "a".repeat(40),
+		expectedRefCommit: "a".repeat(40),
+		exactTags: ["v2026.5.29"],
+		statusPorcelain: "",
+		diffExitCode: 0,
+		cachedDiffExitCode: 0,
+		checks: [
+			{
+				name: "checkout.present",
+				status: "pass",
+				detail: "Hermes checkout found at pinned tag",
+			},
+			{
+				name: "checkout.head",
+				status: "pass",
+				detail: "HEAD is pinned commit",
+			},
+			{
+				name: "checkout.expectedRef",
+				status: "pass",
+				detail: "v2026.5.29 resolves to pinned commit",
+			},
+			{
+				name: "checkout.pinned",
+				status: "pass",
+				detail: "HEAD matches pinned Hermes ref v2026.5.29",
+			},
+			{
+				name: "checkout.statusClean",
+				status: "pass",
+				detail: "git status porcelain is clean",
+			},
+			{
+				name: "checkout.diffClean",
+				status: "pass",
+				detail: "git diff --quiet is clean",
+			},
+			{
+				name: "checkout.indexClean",
+				status: "pass",
+				detail: "git diff --cached --quiet is clean",
+			},
+		],
+		...overrides,
+	};
+	writeJson(evidencePath, proof);
+	return proof;
+}
+
+function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-rollback-"));
+	const evidencePath =
+		typeof overrides.evidence_path === "string"
+			? overrides.evidence_path
+			: path.join(tempDir, "rollback-rehearsal.json");
+	const rehearsal = {
+		schemaVersion: 1,
+		passed: true,
+		evidence_path: evidencePath,
+		allowedToRun: true,
+		observedBeforeValue: "1",
+		observedAfterValue: "0",
+		observedFallbackPath: "telclaude.private-runtime.legacy",
+		observedAt: "2026-05-30T00:00:00.000Z",
+		checks: [
+			{
+				name: "rollback.allowed",
+				status: "pass",
+				detail: "operator allowed a real rollback rehearsal",
+			},
+			{
+				name: "rollback.flagBefore",
+				status: "pass",
+				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed enabled before rollback",
+			},
+			{
+				name: "rollback.flagAfter",
+				status: "pass",
+				detail: "TELCLAUDE_HERMES_PRIVATE_RUNTIME was observed disabled after rollback",
+			},
+			{
+				name: "rollback.fallbackPath",
+				status: "pass",
+				detail: "pre-Hermes fallback path observed",
+			},
+		],
+		...overrides,
+	};
+	writeJson(evidencePath, rehearsal);
+	return rehearsal;
+}
+
 function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 	return {
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
@@ -432,18 +537,10 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 				},
 			],
 		},
-		noForkProof: {
-			schemaVersion: 1,
-			hermesCheckoutClean: true,
-			evidence_path: "artifacts/hermes/no-fork.json",
-		},
+		noForkProof: writeNoForkProof(),
 		networkProbes: writePassingNetworkProbeBundle(),
 		queueSnapshot: { unownedActiveCount: 0 },
-		rollbackRehearsal: {
-			schemaVersion: 1,
-			passed: true,
-			evidence_path: "artifacts/hermes/rollback.json",
-		},
+		rollbackRehearsal: writeRollbackRehearsal(),
 		...overrides,
 	};
 }
@@ -614,6 +711,81 @@ function servedMcpContainmentProbe(
 	};
 }
 
+function apiServerContainmentProbe(
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "skip",
+) {
+	return {
+		surface_id: "execution.api_server_containment",
+		hermes_pin: hermesPin,
+		documented_seam: "Pinned Hermes API server behind Telclaude relay control",
+		probe_command: "pnpm dev hermes probe execution.api_server_containment --allow-run",
+		expected_result:
+			"Contained Hermes API server starts with ephemeral auth and proves relay-only network containment",
+		negative_probe:
+			"Direct provider, vault, model-provider, private DNS, firewall, route, and runtime tamper attempts fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.execution.apiServerContainment",
+		security_scope: "api-server-containment" as const,
+		approval_equivalent: false,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function apiServerContainmentCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "skip",
+) {
+	const probe = apiServerContainmentProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["execution.api_server_containment"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "execution.api_server_containment",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"execution.api_server_containment": "sha256:adapter-signature",
+			},
+		},
+	});
+}
+
 function servedMcpContainmentCutoverBundle(
 	evidencePath: string,
 	matrixStatus: "pass" | "fail" | "skip" = "skip",
@@ -735,6 +907,57 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
 			cwd: "/repo",
 			envKeys: ["HERMES_HOME", "NO_COLOR"],
 		},
+		findings: [],
+		...overrides,
+	};
+}
+
+function apiServerContainmentEvidence(overrides: Record<string, unknown> = {}) {
+	return {
+		schemaVersion: "telclaude.hermes.api-server-containment.v1",
+		probeId: "execution.api_server_containment",
+		status: "pass",
+		ran: true,
+		summary: "Hermes API-server containment probe passed",
+		gates: [
+			{
+				name: "lifecycle.started",
+				status: "pass",
+				detail: "container started",
+			},
+			{
+				name: "lifecycle.stopped",
+				status: "pass",
+				detail: "probe container was explicitly stopped",
+			},
+			{
+				name: "readiness.health",
+				status: "pass",
+				detail: "GET /health returned ok",
+			},
+			{
+				name: "readiness.capabilities",
+				status: "pass",
+				detail:
+					"capabilities advertise runs, approvals, stop, bearer auth, and server-side tool execution",
+			},
+			{
+				name: "network.topology",
+				status: "pass",
+				detail: "Docker internal network contains only the contained Hermes server and relay",
+			},
+			{
+				name: "network.relay_only",
+				status: "pass",
+				detail:
+					"relay control reachable and direct provider, vault, model provider, and private DNS denied",
+			},
+			{
+				name: "network.tamper_resistant",
+				status: "pass",
+				detail: "non-root runtime could not bypass containment",
+			},
+		],
 		findings: [],
 		...overrides,
 	};
@@ -1049,7 +1272,10 @@ describe("Hermes wrapper foundation", () => {
 			socialActivity: [],
 		});
 		const webhookOnlyBundle = buildCutoverInputBundleFromArtifacts({
-			inventory: inventoryWithEnabledWebhook,
+			inventory: {
+				...inventoryWithEnabledWebhook,
+				workflows: [...source.inventory.workflows, ...inventoryWithEnabledWebhook.workflows],
+			},
 			scopeManifest: {
 				...source.scopeManifest,
 				workflows: [
@@ -1192,16 +1418,116 @@ describe("Hermes wrapper foundation", () => {
 
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
-				noForkProof: {
-					schemaVersion: 1,
+				noForkProof: writeNoForkProof({
 					hermesCheckoutClean: false,
-					evidence_path: "artifacts/hermes/no-fork.json",
-				},
+					checks: [
+						{
+							name: "checkout.pinned",
+							status: "fail",
+							detail: "HEAD does not match v2026.5.29",
+						},
+					],
+				}),
 			}),
 		);
 		expect(failed.status).toBe("fail");
 		expect(failed.exitCode).toBe(1);
 		expect(failed.gates.find((gate) => gate.name === "nofork.clean")?.status).toBe("fail");
+	});
+
+	it("fails strict cutover when no-fork proof evidence is missing", () => {
+		const missingEvidence = path.join(
+			fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-nofork-missing-")),
+			"missing-no-fork.json",
+		);
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				noForkProof: {
+					schemaVersion: 1,
+					hermesCheckoutClean: true,
+					evidence_path: missingEvidence,
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "nofork.clean")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("missing no-fork proof evidence"),
+		});
+	});
+
+	it("fails strict cutover when no-fork proof evidence omits required checks", () => {
+		const proof = writeNoForkProof({
+			checks: [
+				{
+					name: "checkout.present",
+					status: "pass",
+					detail: "Hermes checkout found at pinned tag",
+				},
+			],
+		});
+
+		const failed = evaluateCutoverCheck(safeCutoverBundle({ noForkProof: proof }));
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"missing no-fork evidence check checkout.expectedRef",
+		);
+	});
+
+	it("fails strict cutover when no-fork proof fields contradict passing checks", () => {
+		const proof = writeNoForkProof({
+			expectedRefCommit: "b".repeat(40),
+		});
+
+		const failed = evaluateCutoverCheck(safeCutoverBundle({ noForkProof: proof }));
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"no-fork evidence HEAD does not match expectedRefCommit",
+		);
+	});
+
+	it("fails strict cutover when rollback rehearsal evidence is missing", () => {
+		const missingEvidence = path.join(
+			fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-rollback-missing-")),
+			"missing-rollback.json",
+		);
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				rollbackRehearsal: {
+					schemaVersion: 1,
+					passed: true,
+					evidence_path: missingEvidence,
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("missing rollback rehearsal evidence"),
+		});
+	});
+
+	it("fails strict cutover when rollback rehearsal proof omits required checks", () => {
+		const rehearsal = writeRollbackRehearsal({
+			checks: [
+				{
+					name: "rollback.allowed",
+					status: "pass",
+					detail: "operator allowed a real rollback rehearsal",
+				},
+			],
+		});
+
+		const failed = evaluateCutoverCheck(safeCutoverBundle({ rollbackRehearsal: rehearsal }));
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+			"missing rollback rehearsal evidence check rollback.flagBefore",
+		);
 	});
 
 	it("fails strict cutover when evidence bundles are empty", () => {
@@ -1287,13 +1613,65 @@ describe("Hermes wrapper foundation", () => {
 		};
 		const featureGate = report.gates.find((gate) => gate.name === "featureProbes.pass");
 
-		expect(result.exitCode).toBe(1);
+		expect(result.exitCode, result.stdout).toBe(1);
 		expect(featureGate).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("feature probe edge.whatsapp.plugin-adapter status is skip"),
 		});
 		expect(featureGate?.detail).not.toContain(
 			"feature probe execution.cli_headless status is skip",
+		);
+	});
+
+	it("does not let model-relay pass from matrix and lockfile status alone", () => {
+		const modelRelayProbe = {
+			surface_id: "model.relay",
+			hermes_pin: hermesPin,
+			documented_seam: "Hermes model provider configuration is relay-owned",
+			probe_command: "pnpm dev hermes probe model.relay --allow-run",
+			expected_result: "Model traffic reaches only the Telclaude relay",
+			negative_probe: "Direct model provider egress and writable profile overrides fail",
+			evidence_path: "artifacts/hermes/probes/model-relay.json",
+			lockfile_key: "featureProbes.model.relay",
+			security_scope: "model-relay" as const,
+			approval_equivalent: false,
+			failure_outcome: "disable" as const,
+			status: "pass" as const,
+		};
+		const featureProbeMatrix = {
+			schemaVersion: 1 as const,
+			probes: [modelRelayProbe],
+		};
+		const base = safeCutoverBundle();
+		const report = evaluateCutoverCheck(
+			safeCutoverBundle({
+				scopeManifest: {
+					schemaVersion: 1,
+					workflows: [
+						{
+							...base.scopeManifest.workflows[0],
+							required_surface_ids: ["model.relay"],
+						},
+					],
+				},
+				featureProbeMatrix,
+				lockfile: {
+					...base.lockfile,
+					featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+					featureProbes: [
+						{
+							surface_id: "model.relay",
+							status: "pass",
+							evidence_path: "artifacts/hermes/probes/model-relay.json",
+						},
+					],
+				},
+			}),
+		);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"feature probe model.relay requires observed evidence",
 		);
 	});
 
@@ -1306,7 +1684,7 @@ describe("Hermes wrapper foundation", () => {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
 
-		expect(result.exitCode).toBe(1);
+		expect(result.exitCode, result.stdout).toBe(1);
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("missing feature probe evidence execution.cli_headless"),
@@ -1517,6 +1895,32 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("fails strict cutover when unresolved decisions have no workflow scope", () => {
+		const failed = evaluateCutoverCheck(
+			safeCutoverBundle({
+				decisionLog: {
+					schemaVersion: 1,
+					decisions: [
+						{
+							id: "D-model-relay-seam",
+							status: "unresolved",
+							owner: "operator",
+							deadline_phase: "Phase 1",
+							affected_workflows: [],
+							cutover_impact:
+								"Model relay seam cannot be treated as resolved by omission.",
+						},
+					],
+				},
+			}),
+		);
+
+		expect(failed.status).toBe("fail");
+		expect(failed.gates.find((gate) => gate.name === "decisions.resolved")?.detail).toContain(
+			"D-model-relay-seam",
+		);
+	});
+
 	it("fails strict cutover when feature probes are not tied to the lockfile pin", () => {
 		const [probe] = featureProbeMatrix.probes;
 		const failed = evaluateCutoverCheck(
@@ -1586,6 +1990,111 @@ describe("Hermes wrapper foundation", () => {
 		registerHermesCommand(program);
 		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("network-probes");
+	});
+
+	it("does not write no-fork proof evidence without --upstream-clean", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-"));
+		const evidencePath = path.join(tempDir, "no-fork.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--json",
+			"--checkout",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			hermesCheckoutClean: boolean;
+			checks: Array<{ name: string; status: string }>;
+		};
+
+		expect(result.exitCode).toBe(2);
+		expect(report.hermesCheckoutClean).toBe(false);
+		expect(report.checks[0]).toMatchObject({
+			name: "prove.upstreamClean",
+			status: "fail",
+		});
+		expect(fs.existsSync(evidencePath)).toBe(false);
+	});
+
+	it("writes failing no-fork proof evidence from a non-Hermes checkout", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-"));
+		const evidencePath = path.join(tempDir, "no-fork.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--json",
+			"--checkout",
+			tempDir,
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as { hermesCheckoutClean: boolean };
+		const artifact = readJson(evidencePath) as { hermesCheckoutClean: boolean };
+
+		expect(result.exitCode).toBe(1);
+		expect(report.hermesCheckoutClean).toBe(false);
+		expect(artifact.hermesCheckoutClean).toBe(false);
+	});
+
+	it("evaluates P0 cutover gates when prove is run with --p0", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-"));
+		const base = safeCutoverBundle();
+		const paths = writeCutoverBundleArtifacts(
+			tempDir,
+			safeCutoverBundle({
+				inventory: {
+					...base.inventory,
+					status: "complete",
+					summary: {
+						pendingQueues: pendingQueues(),
+					},
+				},
+			}),
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--p0",
+			"--json",
+			"--checkout",
+			tempDir,
+			"--out",
+			paths.nofork,
+			"--inventory",
+			paths.inventory,
+			"--scope",
+			paths.scope,
+			"--decisions",
+			paths.decisions,
+			"--feature-probes",
+			paths.featureProbes,
+			"--lockfile",
+			paths.lockfile,
+			"--fixtures",
+			paths.fixtures,
+			"--network-probes",
+			paths.networkProbes,
+			"--rollback",
+			paths.rollback,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			noForkProof: { hermesCheckoutClean: boolean };
+			p0: { status: string; gates: Array<{ name: string; status: string }> };
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.noForkProof.hermesCheckoutClean).toBe(false);
+		expect(report.p0.status).toBe("fail");
+		expect(report.p0.gates.find((gate) => gate.name === "nofork.clean")).toMatchObject({
+			status: "fail",
+		});
 	});
 
 	it("does not execute or write network-probe artifacts without --allow-run", async () => {
@@ -2246,6 +2755,87 @@ sleep 5
 		});
 	});
 
+	it("passes the API-server containment cutover gate from complete observed evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
+		const evidencePath = path.join(tempDir, "execution-api-server-containment.json");
+		writeJson(evidencePath, apiServerContainmentEvidence());
+
+		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the API-server containment cutover gate when evidence is missing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
+		const evidencePath = path.join(tempDir, "missing-api-server-containment.json");
+
+		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				"missing feature probe evidence execution.api_server_containment",
+			),
+		});
+	});
+
+	it("fails the API-server containment cutover gate when a required gate is not passing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
+		const evidencePath = path.join(tempDir, "bad-api-server-containment.json");
+		const evidence = apiServerContainmentEvidence({
+			gates: apiServerContainmentEvidence().gates.map((gate) =>
+				gate.name === "network.relay_only"
+					? { ...gate, status: "fail", detail: "direct model provider was reachable" }
+					: gate,
+			),
+		});
+		writeJson(evidencePath, evidence);
+
+		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("gate network.relay_only is fail"),
+		});
+	});
+
+	it("fails the API-server containment cutover gate when the report did not run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
+		const evidencePath = path.join(tempDir, "pending-api-server-containment.json");
+		writeJson(
+			evidencePath,
+			apiServerContainmentEvidence({
+				status: "pending",
+				ran: false,
+			}),
+		);
+
+		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("status is pending; ran is false"),
+		});
+	});
+
 	it("does not connect or write served-MCP evidence without --allow-run", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-served-mcp-probe-"));
 		const evidencePath = path.join(tempDir, "served-mcp-containment.json");
@@ -2350,7 +2940,7 @@ sleep 5
 			const response = JSON.parse(result.stdout) as {
 				type: string;
 				env: Record<string, string>;
-				tokens: { allowed: { token: string } };
+				tokens?: unknown;
 			};
 
 			expect(result.exitCode).toBeUndefined();
@@ -2358,7 +2948,7 @@ sleep 5
 			expect(response.env.TELCLAUDE_HERMES_SERVED_MCP_AUTH).toBe(
 				"Authorization: Bearer tc_mcp_conn_allowed",
 			);
-			expect(response.tokens.allowed.token).toBe("tc_mcp_conn_allowed");
+			expect(response.tokens).toBeUndefined();
 			expect(admin.requests[0]).toMatchObject({
 				ttlMs: 60000,
 				privateConnection: {
