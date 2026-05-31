@@ -1,11 +1,18 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
+import { JtiStore, verifyApprovalToken } from "../../src/google-services/approval.js";
+import type { FetchRequest } from "../../src/google-services/types.js";
 import {
 	createTelclaudeMcpBridge,
 	type TelclaudeMcpAuthority,
 	type TelclaudeMcpBridgeDependencies,
 } from "../../src/hermes/mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "../../src/hermes/mcp/ledger-execute.js";
+import { createGoogleProviderSidecarApprovalTokenIssuer } from "../../src/hermes/mcp/provider-sidecar-token.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
@@ -15,6 +22,7 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
+import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
 	it("authorizes provider and outbound executes through the ledger", async () => {
@@ -190,57 +198,77 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		expect(harness.verifierCalls).toHaveLength(1);
 	});
 
-	it("executes provider sidecars through the relay proxy after ledger authorization", async () => {
+	it("executes provider sidecars through the relay proxy with a sidecar-verifiable token after ledger authorization", async () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(
 			providerPrepareInput({
 				providerId: "google",
 				service: "gmail",
 				action: "create_draft",
-				params: { to: "a@example.com", body: "hello" },
+				params: { to: "a@example.com", subject: "hello", body: "hello" },
 				providerAccountRef: "google:gmail:primary",
 			}),
 		);
 		harness.accept("provider-token", provider);
 		const providerCalls: unknown[] = [];
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-ledger-sidecar-"));
+		const jtiStore = new JtiStore(tempDir);
+		const vault = new PrefixSigningVault();
 		const bridge = createBridge(harness.ledger, {
 			providerProxy: async (request) => {
 				providerCalls.push(request);
+				expect(request.approvalToken).toMatch(/^v1\./);
+				expect(request.approvalToken).not.toBe("provider-token");
+				const sidecarResult = verifyApprovalToken(
+					request.approvalToken ?? "",
+					JSON.parse(String(request.body)) as FetchRequest,
+					request.userId ?? "",
+					(payload, signature) =>
+						vault.verifySignature(payload, signature, GOOGLE_APPROVAL_SIGNING_PREFIX),
+					jtiStore,
+				);
+				expect(sidecarResult).toEqual({ ok: true });
 				return { status: "ok", data: { draftId: "draft_123" } };
 			},
-			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
-				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
+				vaultClient: vault,
+			}),
 		});
 
-		await expect(
-			bridge.tc_provider_execute_write({
-				actionRef: provider.ref,
-				approvalToken: "provider-token",
-			}),
-		).resolves.toEqual({
-			ok: true,
-			record: expect.objectContaining({
-				ref: provider.ref,
-				status: "executed",
-				approvalId: "provider-token",
-			}),
-		});
-		expect(providerCalls).toEqual([
-			{
-				providerId: "google",
-				path: "/v1/fetch",
-				method: "POST",
-				body: JSON.stringify({
-					service: "gmail",
-					action: "create_draft",
-					params: { to: "a@example.com", body: "hello" },
+		try {
+			await expect(
+				bridge.tc_provider_execute_write({
+					actionRef: provider.ref,
+					approvalToken: "provider-token",
 				}),
-				userId: "operator",
-				approvalToken: "sidecar:google:gmail:create_draft:approval-provider-1",
-				approvalMode: "preapproved-ledger",
-			},
-		]);
-		expect(JSON.stringify(providerCalls)).not.toContain("provider-token");
+			).resolves.toEqual({
+				ok: true,
+				record: expect.objectContaining({
+					ref: provider.ref,
+					status: "executed",
+					approvalId: "provider-token",
+				}),
+			});
+			expect(providerCalls).toEqual([
+				expect.objectContaining({
+					providerId: "google",
+					path: "/v1/fetch",
+					method: "POST",
+					body: JSON.stringify({
+						service: "gmail",
+						action: "create_draft",
+						params: { to: "a@example.com", subject: "hello", body: "hello" },
+					}),
+					userId: "operator",
+					approvalToken: expect.stringMatching(/^v1\./),
+					approvalMode: "preapproved-ledger",
+				}),
+			]);
+			expect(JSON.stringify(providerCalls)).not.toContain("provider-token");
+		} finally {
+			jtiStore.close();
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("fails closed before provider sidecar execution when no sidecar token issuer is configured", async () => {
@@ -424,4 +452,18 @@ function outboundPrepareInput() {
 
 function canonicalBinding(binding: TelclaudeMcpSideEffectApprovalBinding): string {
 	return JSON.stringify(sortKeysDeep(binding));
+}
+
+class PrefixSigningVault {
+	async signPayload(payload: string, prefix: string): Promise<{ type: string; signature: string }> {
+		return { type: "sign-payload", signature: this.signatureFor(payload, prefix) };
+	}
+
+	verifySignature(payload: string, signature: string, prefix: string): boolean {
+		return signature === this.signatureFor(payload, prefix);
+	}
+
+	private signatureFor(payload: string, prefix: string): string {
+		return crypto.createHash("sha256").update(`${prefix}\n${payload}`).digest("base64url");
+	}
 }

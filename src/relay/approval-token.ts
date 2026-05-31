@@ -16,6 +16,8 @@ import type { VaultClient } from "../vault-daemon/client.js";
 
 const TOKEN_TTL_SECONDS = 60; // 1 minute — short-lived by design
 
+export type ApprovalTokenSigner = Pick<VaultClient, "signPayload">;
+
 export interface ApprovalTokenInput {
 	/** Actor user ID (e.g., "telegram:123") */
 	actorUserId: string;
@@ -42,7 +44,7 @@ export interface ApprovalTokenInput {
  */
 export async function generateApprovalToken(
 	input: ApprovalTokenInput,
-	vaultClient: VaultClient,
+	vaultClient: ApprovalTokenSigner,
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000);
 

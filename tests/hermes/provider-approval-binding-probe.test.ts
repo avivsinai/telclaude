@@ -57,8 +57,6 @@ describe("Hermes provider approval-binding probe", () => {
 		});
 
 		expect(evidence.status).toBe("fail");
-		expect(providerApprovalBindingProbeEvidenceFailure(evidence)).toContain(
-			"harness did not run",
-		);
+		expect(providerApprovalBindingProbeEvidenceFailure(evidence)).toContain("harness did not run");
 	});
 });
