@@ -127,6 +127,8 @@ const CliHeadlessProbeEvidenceSchema = z
 			.object({
 				baseUrl: NonEmptyString,
 				baseUrlHost: NonEmptyString,
+				model: z.string(),
+				modelSource: z.enum(["env:HERMES_INFERENCE_MODEL", "missing"]),
 				authEnvKey: z.literal("ANTHROPIC_API_KEY"),
 				authScope: z.literal("relay-anthropic-proxy"),
 				tokenScoping: z.enum(["static-shared", "peer-bound"]),
@@ -1884,6 +1886,15 @@ function collectCliHeadlessProbeEvidence(
 	}
 	if (!parsed.data.invocation.envKeys.includes("ANTHROPIC_API_KEY")) {
 		failures.push("ANTHROPIC_API_KEY envKey is missing");
+	}
+	if (!parsed.data.invocation.envKeys.includes("HERMES_INFERENCE_MODEL")) {
+		failures.push("HERMES_INFERENCE_MODEL envKey is missing");
+	}
+	if (!parsed.data.modelProvider.model.trim()) {
+		failures.push("modelProvider.model is missing");
+	}
+	if (parsed.data.modelProvider.modelSource !== "env:HERMES_INFERENCE_MODEL") {
+		failures.push("modelProvider.modelSource is not env:HERMES_INFERENCE_MODEL");
 	}
 	if (!isRelayAnthropicProxyUrl(parsed.data.modelProvider.baseUrl)) {
 		failures.push("modelProvider.baseUrl is not a relay Anthropic proxy URL");

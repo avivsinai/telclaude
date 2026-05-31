@@ -432,13 +432,20 @@ describe("Hermes private runtime seam", () => {
 			hermesHome: "/tmp/tc-hermes-probe",
 			cwd: "/repo",
 			prompt: "Reply with exactly TELCLAUDE_HERMES_CLI_OK",
+			env: {
+				HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
+			},
 		});
 		const report = await runHermesCliHeadlessProbe({
 			allowRun: true,
 			invocation,
 			runProcess: async (launch) => {
 				expect(launch.args).toEqual(["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"]);
-				expect(launch.env).toEqual({ HERMES_HOME: "/tmp/tc-hermes-probe", NO_COLOR: "1" });
+				expect(launch.env).toEqual({
+					HERMES_HOME: "/tmp/tc-hermes-probe",
+					NO_COLOR: "1",
+					HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
+				});
 				return {
 					exitCode: 0,
 					stdout: "TELCLAUDE_HERMES_CLI_OK\n",
@@ -457,7 +464,7 @@ describe("Hermes private runtime seam", () => {
 				command: "/usr/local/bin/hermes",
 				args: ["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"],
 				cwd: "/repo",
-				envKeys: ["HERMES_HOME", "NO_COLOR"],
+				envKeys: ["HERMES_HOME", "HERMES_INFERENCE_MODEL", "NO_COLOR"],
 			},
 			exitCode: 0,
 			stdoutPreview: "TELCLAUDE_HERMES_CLI_OK\n",
@@ -475,6 +482,7 @@ describe("Hermes private runtime seam", () => {
 			env: {
 				ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
 				ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+				HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
 				OPENAI_API_KEY: "sk-proj-raw-provider-key",
 			},
 		});
@@ -482,11 +490,13 @@ describe("Hermes private runtime seam", () => {
 			allowRun: true,
 			invocation,
 			runProcess: async (launch) => {
+				expect(launch.args).toEqual(["-z", "Reply with exactly HERMES_OK_53822847"]);
 				expect(launch.env).toEqual({
 					HERMES_HOME: "/tmp/tc-hermes-probe",
 					NO_COLOR: "1",
 					ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
 					ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+					HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
 				});
 				return {
 					exitCode: 0,
@@ -504,12 +514,15 @@ describe("Hermes private runtime seam", () => {
 					"ANTHROPIC_API_KEY",
 					"ANTHROPIC_BASE_URL",
 					"HERMES_HOME",
+					"HERMES_INFERENCE_MODEL",
 					"NO_COLOR",
 				],
 			},
 			modelProvider: {
 				baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
 				baseUrlHost: "telclaude",
+				model: "claude-sonnet-4-6",
+				modelSource: "env:HERMES_INFERENCE_MODEL",
 				authEnvKey: "ANTHROPIC_API_KEY",
 				authScope: "relay-anthropic-proxy",
 				tokenScoping: "static-shared",
