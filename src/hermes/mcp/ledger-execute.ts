@@ -92,6 +92,9 @@ async function authorizeLedgerEffect(
 	if (!sameAuthority(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
+	if (!sameProviderScope(record, request)) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
+	}
 	return ledger.authorize(ref, request.approvalToken);
 }
 
@@ -112,6 +115,9 @@ async function verifyLedgerEffect(
 		);
 	}
 	if (!sameAuthority(record, request)) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
+	}
+	if (!sameProviderScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
 	return ledger.verify(ref, request.approvalToken);
@@ -199,6 +205,17 @@ function sameAuthority(
 		record.actorId === request.actorId &&
 		record.profileId === request.profileId &&
 		record.domain === request.domain
+	);
+}
+
+function sameProviderScope(
+	record: TelclaudeMcpSideEffectRecord,
+	request: TelclaudeMcpProviderExecuteWriteRequest | TelclaudeMcpOutboundExecuteRequest,
+): boolean {
+	if (record.kind !== "provider") return true;
+	return (
+		"providerScopes" in request &&
+		request.providerScopes.some((providerId) => providerId === record.providerId)
 	);
 }
 
