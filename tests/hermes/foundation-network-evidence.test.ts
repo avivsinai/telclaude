@@ -1,8 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { buildEdgeAdapterProbeEvidence } from "../../src/hermes/edge-adapter-probes.js";
 import {
+	buildCutoverProofBundle,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
 	collectFeatureProbeEvidence,
@@ -11,13 +14,18 @@ import {
 	type FeatureProbeMatrix,
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
+	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
+	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 
 const hermesPin = { version: "0.15.1" };
+type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
 
 const featureProbeMatrix: FeatureProbeMatrix = {
 	schemaVersion: 1,
@@ -68,6 +76,32 @@ const compatLockfile: CompatibilityLockfile = {
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function writeProfileProof(lockfile: CompatibilityLockfile) {
+	return writeHermesProfileGenerationProof({
+		pin: lockfile.hermes,
+		outDir: fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-fixture-")),
+		lockfile,
+		evidencePath: path.join(
+			fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-proof-")),
+			"profile-generation-proof.json",
+		),
+		now: "2026-05-30T00:00:00Z",
+	});
+}
+
+function profileDecision(evidencePath: string) {
+	return {
+		id: "D-profile-generation",
+		status: "accepted" as const,
+		owner: "operator",
+		deadline_phase: "Phase 1",
+		accepted_answer: "Generated Hermes profiles are produced by the checked profile generator.",
+		evidence_path: evidencePath,
+		affected_workflows: ["private.telegram.basic"],
+		cutover_impact: "Profile generation proof is required before private cutover.",
+	};
 }
 
 function networkEvidence(
@@ -161,7 +195,7 @@ function containedInternalAttempt(id: string) {
 	return {
 		name: "contained-egress",
 		kind: "http",
-		target: "https://api.anthropic.com/v1/models",
+		target: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 		expectation: "deny",
 		status: "pass",
 		observed: "denied",
@@ -288,6 +322,13 @@ function writeRollbackRehearsal() {
 	const relayKeys = generateKeyPair();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	const relayPublicKey = {
+		scope: "operator",
+		envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+		value: relayKeys.publicKey,
+		sha256: `sha256:${crypto.createHash("sha256").update(relayKeys.publicKey).digest("hex")}`,
+		source: "test-fixture",
+	};
 	const rehearsal = {
 		schemaVersion: 1,
 		passed: true,
@@ -302,6 +343,7 @@ function writeRollbackRehearsal() {
 		observedBeforeSource: "relay-effective-mode",
 		observedAfterSource: "relay-effective-mode",
 		observedAfterControlSource: "runtime-config",
+		relayPublicKey,
 		signedRelayTranscripts: {
 			before: signedRelayTranscript(
 				"/v1/hermes.private-runtime.status",
@@ -400,25 +442,96 @@ function signedRelayTranscript(
 
 function writeFixtureResults() {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-fixtures-"));
-	const results = ["fixture.private.telegram.basic", "fixture.private.telegram.basic.deny"].map(
-		(id) => {
-			const evidencePath = path.join(tempDir, `${id}.json`);
-			writeJson(evidencePath, {
-				schemaVersion: "telclaude.hermes.fixture-evidence.v1",
-				id,
+	const reportPath = path.join(tempDir, "private-telegram-vitest.json");
+	writeJson(reportPath, privateTelegramVitestReport());
+	const reportDigest = `sha256:${crypto
+		.createHash("sha256")
+		.update(fs.readFileSync(reportPath))
+		.digest("hex")}`;
+	const invocation = privateTelegramFixtureInvocation(reportPath, reportDigest);
+	const results = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((requirement) => {
+		const evidencePath = path.join(tempDir, `${requirement.id}.json`);
+		writeJson(evidencePath, {
+			schemaVersion: "telclaude.hermes.fixture-evidence.v1",
+			id: requirement.id,
+			status: "pass",
+			ran: true,
+			evidence_path: evidencePath,
+			observedAt: "2026-05-30T00:00:00.000Z",
+			provenance: {
+				runner: "vitest-json",
+				source: "machine-observed-test-report",
+			},
+			testReport: {
+				path: reportPath,
+				sha256: reportDigest,
+				requiredTests: requirement.requiredTests,
+				requiredAssertions: requirement.requiredAssertions,
+			},
+			invocation,
+			checks: requirement.requiredTests.map((testName) => ({
+				name: testName,
 				status: "pass",
-				ran: true,
-				evidence_path: evidencePath,
-				observedAt: "2026-05-30T00:00:00.000Z",
-				provenance: {
-					runner: "vitest",
-					source: "unit-fixture",
-				},
-			});
-			return { id, status: "pass" as const, evidence_path: evidencePath };
-		},
-	);
+				detail: "required fixture assertion passed in machine-observed Vitest report",
+			})),
+		});
+		return { id: requirement.id, status: "pass" as const, evidence_path: evidencePath };
+	});
 	return { schemaVersion: 1 as const, results };
+}
+
+function privateTelegramFixtureInvocation(reportPath: string, reportDigest: string) {
+	return {
+		command: [
+			"pnpm",
+			"exec",
+			"vitest",
+			"run",
+			"tests/integration/telegram-control-plane.replay.test.ts",
+			"tests/telegram/command-gating.test.ts",
+			"--reporter=json",
+			`--outputFile=${reportPath}`,
+		],
+		cwd: process.cwd(),
+		exitCode: 0,
+		startedAt: "2026-05-30T00:00:00.000Z",
+		endedAt: "2026-05-30T00:00:01.000Z",
+		reportPath,
+		reportSha256: reportDigest,
+		sourceDigests: Object.fromEntries(
+			PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS.map((sourcePath) => [
+				sourcePath,
+				`sha256:${crypto
+					.createHash("sha256")
+					.update(fs.readFileSync(path.resolve(sourcePath)))
+					.digest("hex")}`,
+			]),
+		),
+	};
+}
+
+function privateTelegramVitestReport() {
+	return {
+		success: true,
+		numFailedTests: 0,
+		numFailedTestSuites: 0,
+		testResults: [
+			{
+				name: "tests/integration/telegram-control-plane.replay.test.ts",
+				status: "passed",
+				assertionResults: PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS[0].requiredTests.map(
+					(testName) => ({ fullName: testName, status: "passed" }),
+				),
+			},
+			{
+				name: "tests/telegram/command-gating.test.ts",
+				status: "passed",
+				assertionResults: PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS[1].requiredTests.map(
+					(testName) => ({ fullName: testName, status: "passed" }),
+				),
+			},
+		],
+	};
 }
 
 function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
@@ -479,7 +592,7 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 		},
 		observation: {
 			relayUrl: "http://telclaude:8790/v1/models",
-			directModelUrl: "https://api.anthropic.com/v1/models",
+			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			profileDir: "/home/hermes/.hermes",
 			scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
 		},
@@ -487,9 +600,96 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function makeCutoverProofBundle(bundle: CutoverBundleWithoutProof) {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-proof-bundle-"));
+	const paths = writeCutoverProofSourceArtifacts(tempDir, bundle);
+	return buildCutoverProofBundle({
+		hermes: bundle.lockfile.hermes,
+		wrapperVersion: bundle.lockfile.wrapperPackageVersion,
+		now: new Date("2026-05-31T00:00:00.000Z"),
+		artifacts: {
+			inventory: proofArtifact(paths.inventory, "pnpm dev hermes inventory --json", [
+				"inputs.inventory",
+			]),
+			scopeManifest: proofArtifact(paths.scopeManifest, "pnpm dev hermes cutover-scope --json", [
+				"inputs.scopeManifest",
+				"workflow.scope",
+			]),
+			decisionLog: proofArtifact(paths.decisionLog, "pnpm dev hermes decision-log --json", [
+				"inputs.decisionLog",
+				"decisions.resolved",
+			]),
+			compatibilityLockfile: proofArtifact(
+				paths.compatibilityLockfile,
+				"pnpm dev hermes compat-lock --dry-run --json",
+				["inputs.lockfile", "lockfile.consistent"],
+			),
+			featureProbeMatrix: proofArtifact(paths.featureProbeMatrix, "pnpm dev hermes probes --json", [
+				"inputs.featureProbeMatrix",
+				"featureProbes.pass",
+			]),
+			fixtureResults: proofArtifact(paths.fixtureResults, "pnpm dev hermes fixtures --json", [
+				"inputs.fixtureResults",
+				"fixtures.pass",
+			]),
+			noForkProof: proofArtifact(
+				paths.noForkProof,
+				"pnpm dev hermes prove --upstream-clean --p0 --json",
+				["inputs.noForkProof", "nofork.clean"],
+			),
+			networkProbeBundle: proofArtifact(
+				paths.networkProbeBundle,
+				"pnpm dev hermes network-probes --json",
+				["inputs.networkProbes", "networkProbes.pass"],
+			),
+			queueSnapshot: proofArtifact(paths.queueSnapshot, "pnpm dev hermes queue-snapshot --json", [
+				"inputs.queueSnapshot",
+				"queues.owned",
+			]),
+			rollbackEvidence: proofArtifact(
+				paths.rollbackEvidence,
+				"pnpm dev hermes rollback-rehearsal --json",
+				["inputs.rollbackRehearsal", "rollback.rehearsed"],
+			),
+		},
+	});
+}
+
+function writeCutoverProofSourceArtifacts(tempDir: string, bundle: CutoverBundleWithoutProof) {
+	const paths = {
+		inventory: path.join(tempDir, "inventory.json"),
+		scopeManifest: path.join(tempDir, "scope.json"),
+		decisionLog: path.join(tempDir, "decisions.json"),
+		compatibilityLockfile: path.join(tempDir, "lockfile.json"),
+		featureProbeMatrix: path.join(tempDir, "feature-probes.json"),
+		fixtureResults: path.join(tempDir, "fixtures.json"),
+		noForkProof: path.join(tempDir, "nofork.json"),
+		networkProbeBundle: path.join(tempDir, "network-probes.json"),
+		queueSnapshot: path.join(tempDir, "queue.json"),
+		rollbackEvidence: path.join(tempDir, "rollback.json"),
+	};
+	writeJson(paths.inventory, bundle.inventory);
+	writeJson(paths.scopeManifest, bundle.scopeManifest);
+	writeJson(paths.decisionLog, bundle.decisionLog);
+	writeJson(paths.compatibilityLockfile, bundle.lockfile);
+	writeJson(paths.featureProbeMatrix, bundle.featureProbeMatrix);
+	writeJson(paths.fixtureResults, bundle.fixtureResults);
+	writeJson(paths.noForkProof, bundle.noForkProof);
+	writeJson(paths.networkProbeBundle, bundle.networkProbes);
+	writeJson(paths.queueSnapshot, bundle.queueSnapshot);
+	writeJson(paths.rollbackEvidence, bundle.rollbackRehearsal);
+	return paths;
+}
+
+function proofArtifact(artifactPath: string, sourceCommand: string, gateIds: string[]) {
+	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
+}
+
 function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 	const noForkProof = writeNoForkProof();
-	return {
+	const lockfile = { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path };
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const withoutProof: CutoverBundleWithoutProof = {
 		schemaVersion: 1,
 		inventory: {
 			generatedAt: "2026-05-30T00:00:00Z",
@@ -522,14 +722,31 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 				},
 			],
 		},
-		decisionLog: { schemaVersion: 1, decisions: [] },
-		lockfile: { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path },
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
+		lockfile,
 		featureProbeMatrix,
+		featureProbeEvidence: {
+			schemaVersion: 1,
+			results: featureProbeMatrix.probes.map((probe) => ({
+				surface_id: probe.surface_id,
+				status: "pass" as const,
+				evidence_path: probe.evidence_path,
+				detail: "test fixture observed feature probe pass",
+			})),
+		},
 		fixtureResults: writeFixtureResults(),
 		noForkProof,
+		profileGenerationProof,
 		networkProbes,
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: writeRollbackRehearsal(),
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
 	};
 }
 
@@ -554,9 +771,25 @@ function modelRelayCutoverBundle(evidencePath: string): CutoverInputBundle {
 			},
 		],
 	};
-	const base = cutoverBundle(writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence));
-	return {
-		...base,
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const lockfile = {
+		...base.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(matrix),
+		featureProbes: [
+			{
+				surface_id: "model.relay",
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			},
+		],
+		adapterApiSignatures: { "model.relay": `sha256:${"c".repeat(64)}` },
+	};
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+	const withoutProof: CutoverBundleWithoutProof = {
+		...baseWithoutProof,
 		scopeManifest: {
 			schemaVersion: 1,
 			workflows: [
@@ -568,18 +801,80 @@ function modelRelayCutoverBundle(evidencePath: string): CutoverInputBundle {
 		},
 		featureProbeMatrix: matrix,
 		featureProbeEvidence: collectFeatureProbeEvidence(matrix),
-		lockfile: {
-			...base.lockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(matrix),
-			featureProbes: [
+		lockfile,
+		profileGenerationProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
+function edgeAdapterCutoverBundle(evidencePath: string): CutoverInputBundle {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
+	const matrix = {
+		schemaVersion: 1 as const,
+		probes: [
+			{
+				surface_id: "edge.whatsapp",
+				hermes_pin: hermesPin,
+				documented_seam: "Telclaude edge adapter contract mediates WhatsApp ingress and egress",
+				probe_command: "pnpm dev hermes probe edge.whatsapp --allow-run",
+				expected_result: "WhatsApp ingress is sanitized and outbound delivery uses prepared refs",
+				negative_probe: "raw WhatsApp credentials and direct native bridge access are absent",
+				evidence_path: evidencePath,
+				lockfile_key: "featureProbes.edge.whatsapp",
+				security_scope: "edge-adapter" as const,
+				approval_equivalent: true,
+				failure_outcome: "disable" as const,
+				status: "pass" as const,
+			},
+		],
+	};
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const lockfile = {
+		...base.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(matrix),
+		featureProbes: [
+			{
+				surface_id: "edge.whatsapp",
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			},
+		],
+		adapterApiSignatures: { "edge.whatsapp": `sha256:${"c".repeat(64)}` },
+	};
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+	const withoutProof: CutoverBundleWithoutProof = {
+		...baseWithoutProof,
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
 				{
-					surface_id: "model.relay",
-					status: "pass",
-					evidence_path: evidencePath,
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["edge.whatsapp"],
 				},
 			],
-			adapterApiSignatures: { "model.relay": `sha256:${"c".repeat(64)}` },
 		},
+		featureProbeMatrix: matrix,
+		featureProbeEvidence: collectFeatureProbeEvidence(matrix),
+		lockfile,
+		profileGenerationProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
 	};
 }
 
@@ -587,6 +882,49 @@ function networkGateDetail(networkProbes: ProbeBundle): string {
 	const report = evaluateCutoverCheck(cutoverBundle(networkProbes));
 	return report.gates.find((gate) => gate.name === "networkProbes.pass")?.detail ?? "";
 }
+
+describe("Hermes cutover edge-adapter evidence validation", () => {
+	it("refuses schema-only edge contract-unit evidence as cutover enforcement", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
+		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
+		writeJson(
+			evidencePath,
+			buildEdgeAdapterProbeEvidence({
+				surfaceId: "edge.whatsapp",
+				observedAt: "2026-05-31T09:00:00.000Z",
+				allowRun: true,
+			}),
+		);
+
+		const report = evaluateCutoverCheck(edgeAdapterCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"schema-only edge contract-unit evidence",
+		);
+	});
+
+	it("fails edge feature evidence when a required denial is missing", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
+		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		writeJson(evidencePath, {
+			...evidence,
+			controls: evidence.controls.filter((control) => control.name !== "credentials.raw-denied"),
+		});
+
+		const report = evaluateCutoverCheck(edgeAdapterCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"control credentials.raw-denied is missing",
+		);
+	});
+});
 
 describe("Hermes cutover network evidence validation", () => {
 	it("passes only after reopening every required and extra network evidence file", () => {
@@ -669,7 +1007,7 @@ describe("Hermes cutover network evidence validation", () => {
 					{
 						name: "model-provider",
 						kind: "http",
-						target: "https://api.anthropic.com/v1/models",
+						target: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 						expectation: "deny",
 						status: "pass",
 						observed: "policy_denied",
@@ -823,7 +1161,7 @@ describe("Hermes cutover network evidence validation", () => {
 					{
 						name: "extra-denial",
 						kind: "http",
-						target: "https://api.anthropic.com/v1/models",
+						target: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 						expectation: "deny",
 						status: "fail",
 						observed: "reachable",
@@ -908,9 +1246,7 @@ describe("Hermes cutover model-relay evidence validation", () => {
 		writeJson(
 			evidencePath,
 			modelRelayEvidence({
-				gates: modelRelayEvidence().gates.filter(
-					(gate) => gate.name !== "modelRelay.origin",
-				),
+				gates: modelRelayEvidence().gates.filter((gate) => gate.name !== "modelRelay.origin"),
 				origin: {
 					kind: "unknown",
 					detail: "model relay response did not include a server-observed peer header",

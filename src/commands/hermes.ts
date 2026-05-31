@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -25,25 +27,40 @@ import {
 	writeApprovalContinuationArtifacts,
 } from "../hermes/approval-continuation-runner.js";
 import {
+	buildEdgeAdapterProbeEvidence,
+	isEdgeAdapterFeatureSurfaceId,
+} from "../hermes/edge-adapter-probes.js";
+import {
+	allPrivateTelegramRequiredAssertions,
+	analyzeVitestFixtureReport,
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
+	buildCutoverProofBundle,
 	buildCutoverScopeManifestFromInventory,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
+	CutoverProofBundleSchema,
 	collectFeatureProbeEvidence,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
+	DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
 	DEFAULT_CUTOVER_SCOPE_PATH,
 	DEFAULT_DECISION_LOG_PATH,
 	DEFAULT_FEATURE_PROBE_MATRIX_PATH,
 	DEFAULT_FIXTURE_RESULTS_PATH,
 	DEFAULT_NETWORK_PROBES_PATH,
 	DEFAULT_NO_FORK_PROOF_PATH,
+	DEFAULT_PROFILE_GENERATION_PROOF_PATH,
 	DEFAULT_ROLLBACK_REHEARSAL_PATH,
 	evaluateCutoverCheck,
+	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
+	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
+	PRIVATE_TELEGRAM_FIXTURE_TEST_FILES,
 	parseHermesPin,
+	privateTelegramAssertionKey,
 	readJsonFile,
 	readOptionalJsonFile,
 	resolveHermesArtifactPath,
+	writeHermesProfileGenerationProof,
 } from "../hermes/foundation.js";
 import { collectHermesInventory } from "../hermes/inventory.js";
 import {
@@ -55,6 +72,10 @@ import {
 	DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK,
 	type TelclaudeLiveMcpRuntimeProbeTokenInput,
 } from "../hermes/mcp/live-runtime.js";
+import {
+	DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH,
+	runTelclaudeMcpSideEffectLedgerProbe,
+} from "../hermes/mcp/side-effect-ledger-probe.js";
 import {
 	DEFAULT_MODEL_RELAY_EVIDENCE_PATH,
 	DEFAULT_MODEL_RELAY_POSTURE,
@@ -70,6 +91,7 @@ import {
 	DEFAULT_NETWORK_PROBE_EVIDENCE_DIR,
 	DEFAULT_VAULT_SOCKET_PATH,
 	type NetworkProbePosture,
+	readHermesNetworkProbeRunReport,
 	runHermesNetworkProbes,
 	writeHermesNetworkProbeArtifacts,
 } from "../hermes/network-probes.js";
@@ -84,9 +106,21 @@ import {
 import {
 	buildHermesCliProbeInvocation,
 	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
+	type HermesCliProbeReport,
+	type HermesLaunchInvocation,
+	readHermesCliHeadlessProbeReport,
 	runHermesCliHeadlessProbe,
 	runHermesLaunchInvocation,
 } from "../hermes/private-runtime.js";
+import {
+	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
+	DEFAULT_PRO_REVIEW_REQUEST_PATH,
+	evaluateProReviewCheck,
+} from "../hermes/pro-review.js";
+import {
+	DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH,
+	runTelclaudeProviderApprovalBindingProbe,
+} from "../hermes/provider-approval-binding-probe.js";
 import {
 	DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH,
 	runHermesRollbackRehearsal,
@@ -100,6 +134,12 @@ import {
 	writeServedMcpContainmentEvidence,
 } from "../hermes/served-mcp-containment.js";
 import {
+	buildServedMcpProviderToolsProbeEvidence,
+	DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH,
+	DEFAULT_SERVED_MCP_PROVIDER_TOOLS_SOURCE_EVIDENCE_PATH,
+	readServedMcpProviderToolsSourceEvidence,
+} from "../hermes/served-mcp-provider-tools-probe.js";
+import {
 	relayGetHermesPrivateRuntimeState,
 	relaySetHermesPrivateRuntimeMode,
 } from "../relay/capabilities-client.js";
@@ -110,6 +150,7 @@ type JsonOption = {
 
 type PinOption = {
 	pin?: string;
+	lockfile?: string;
 };
 
 type ProbeOption = JsonOption & {
@@ -118,10 +159,12 @@ type ProbeOption = JsonOption & {
 	containerName?: string;
 	cwd?: string;
 	dnsUrl?: string;
+	dockerExecContainer?: string;
 	dockerBin?: string;
 	evidence: string;
 	expectedPeerAddress?: string;
 	firewallSentinel?: string;
+	fromReport?: string;
 	hermesBin?: string;
 	hermesHome?: string;
 	mcpAuth?: string;
@@ -148,6 +191,7 @@ type ProbeOption = JsonOption & {
 
 type NetworkProbeOption = JsonOption & {
 	allowRun?: boolean;
+	fromReport?: string;
 	out: string;
 	evidenceDir: string;
 	relayUrl?: string;
@@ -165,6 +209,43 @@ type RollbackRehearsalOption = JsonOption & {
 	allowRun?: boolean;
 	out: string;
 	evidencePath?: string;
+};
+
+type ProofBundleOption = JsonOption &
+	PinOption & {
+		inventory: string;
+		scopeManifest: string;
+		decisionLog: string;
+		compatibilityLockfile: string;
+		featureProbeMatrix: string;
+		fixtureResults: string;
+		noforkProofFile: string;
+		networkProbeBundle: string;
+		queueSnapshot: string;
+		rollbackEvidence: string;
+		out?: string;
+	};
+
+type FixtureResultOption = JsonOption & {
+	write?: boolean;
+	out: string;
+	evidenceDir: string;
+	testReport?: string;
+	reportOut: string;
+	observedAt?: string;
+};
+
+type ProReviewCheckOption = JsonOption & {
+	request: string;
+	canary: string;
+	requireApproval?: boolean;
+};
+
+type ProReviewSendOption = JsonOption & {
+	request: string;
+	canary: string;
+	bundleOut?: string;
+	execute?: boolean;
 };
 
 type PrivateRuntimeMode = "hermes" | "legacy";
@@ -198,7 +279,39 @@ function printJson(value: unknown): void {
 }
 
 function resolvePin(options: PinOption) {
-	return parseHermesPin(options.pin ?? process.env.TELCLAUDE_HERMES_PIN);
+	const explicitPin = parseHermesPin(options.pin ?? process.env.TELCLAUDE_HERMES_PIN);
+	if (explicitPin) return explicitPin;
+	const lockfile = readOptionalJsonFile(
+		resolveHermesArtifactPath(options.lockfile ?? DEFAULT_COMPAT_LOCKFILE_PATH),
+	);
+	if (
+		typeof lockfile !== "object" ||
+		lockfile === null ||
+		!("hermes" in lockfile) ||
+		typeof lockfile.hermes !== "object" ||
+		lockfile.hermes === null
+	) {
+		return null;
+	}
+	const pin = lockfile.hermes as {
+		version?: unknown;
+		commit?: unknown;
+		package?: unknown;
+		imageDigest?: unknown;
+	};
+	const lockfilePin = {
+		...(typeof pin.version === "string" && pin.version.trim()
+			? { version: pin.version.trim() }
+			: {}),
+		...(typeof pin.commit === "string" && pin.commit.trim() ? { commit: pin.commit.trim() } : {}),
+		...(typeof pin.package === "string" && pin.package.trim()
+			? { package: pin.package.trim() }
+			: {}),
+		...(typeof pin.imageDigest === "string" && pin.imageDigest.trim()
+			? { imageDigest: pin.imageDigest.trim() }
+			: {}),
+	};
+	return Object.keys(lockfilePin).length > 0 ? lockfilePin : null;
 }
 
 function writeJsonArtifact(filePath: string, value: unknown): void {
@@ -206,6 +319,178 @@ function writeJsonArtifact(filePath: string, value: unknown): void {
 	const tmpPath = `${filePath}.tmp.${process.pid}`;
 	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 	fs.renameSync(tmpPath, filePath);
+}
+
+function cutoverProofArtifact(artifactPath: string, sourceCommand: string, gateIds: string[]) {
+	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
+}
+
+function fileSha256(filePath: string): string {
+	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
+}
+
+function resolveProReviewBundlePath(bundleOut: string | undefined): string {
+	return bundleOut
+		? resolveHermesArtifactPath(bundleOut)
+		: path.join(os.tmpdir(), `telclaude-hermes-pro-review-${process.pid}.md`);
+}
+
+function writeProReviewBundle(requestPath: string, bundlePath: string): void {
+	const request = readJsonFile(resolveHermesArtifactPath(requestPath)) as {
+		prompt?: unknown;
+		selectedFiles?: unknown;
+		payloadBinding?: { payloadSha256?: unknown };
+		transport?: unknown;
+		model?: unknown;
+		fallbackAllowed?: unknown;
+	};
+	if (typeof request.prompt !== "string" || !Array.isArray(request.selectedFiles)) {
+		throw new Error("Pro review request cannot be converted to a bundle");
+	}
+	const lines = [
+		"# Telclaude Hermes Wrapper Pro Review",
+		"",
+		"## Request",
+		"",
+		request.prompt,
+		"",
+		"## Native Review Binding",
+		"",
+		`- transport: ${String(request.transport)}`,
+		`- model: ${String(request.model)}`,
+		`- fallbackAllowed: ${String(request.fallbackAllowed)}`,
+		`- payloadSha256: ${String(request.payloadBinding?.payloadSha256 ?? "")}`,
+		"",
+		"## Files",
+		"",
+	];
+	for (const file of request.selectedFiles) {
+		if (typeof file !== "string") continue;
+		const resolved = resolveHermesArtifactPath(file);
+		lines.push(`### ${file}`, "", "```text", fs.readFileSync(resolved, "utf8"), "```", "");
+	}
+	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
+	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, "utf8");
+}
+
+type FixtureVitestInvocation = {
+	command: string[];
+	cwd: string;
+	exitCode: 0;
+	startedAt: string;
+	endedAt: string;
+	reportPath: string;
+	reportSha256: string;
+	sourceDigests: Record<string, string>;
+};
+
+function privateTelegramSourceDigests(): Record<string, string> {
+	return Object.fromEntries(
+		PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS.map((sourcePath) => [
+			sourcePath,
+			fileSha256(resolveHermesArtifactPath(sourcePath)),
+		]),
+	);
+}
+
+function runPrivateTelegramFixtureVitest(reportPath: string): FixtureVitestInvocation {
+	const startedAt = new Date().toISOString();
+	const command = [
+		"pnpm",
+		"exec",
+		"vitest",
+		"run",
+		...PRIVATE_TELEGRAM_FIXTURE_TEST_FILES,
+		"--reporter=json",
+		`--outputFile=${reportPath}`,
+	];
+	fs.mkdirSync(path.dirname(resolveHermesArtifactPath(reportPath)), { recursive: true });
+	const result = spawnSync(command[0], command.slice(1), {
+		cwd: process.cwd(),
+		encoding: "utf8",
+	});
+	const endedAt = new Date().toISOString();
+	if (result.error) {
+		throw result.error;
+	}
+	if (result.status !== 0) {
+		throw new Error(
+			`private Telegram Vitest fixture command exited ${String(result.status)}: ${result.stderr}`,
+		);
+	}
+	return {
+		command,
+		cwd: process.cwd(),
+		exitCode: 0,
+		startedAt,
+		endedAt,
+		reportPath,
+		reportSha256: fileSha256(resolveHermesArtifactPath(reportPath)),
+		sourceDigests: privateTelegramSourceDigests(),
+	};
+}
+
+function buildPrivateTelegramFixtureResultBundle(options: {
+	testReportPath: string;
+	evidenceDir: string;
+	observedAt: string;
+	invocation?: FixtureVitestInvocation;
+}): {
+	schemaVersion: 1;
+	results: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>;
+	evidence: unknown[];
+} {
+	const resolvedReport = resolveHermesArtifactPath(options.testReportPath);
+	const report = analyzeVitestFixtureReport(resolvedReport, allPrivateTelegramRequiredAssertions());
+	if (report.failures.length > 0) {
+		throw new Error(`Vitest fixture report failed validation: ${report.failures.join("; ")}`);
+	}
+	const reportDigest = fileSha256(resolvedReport);
+	const evidence = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((fixture) => {
+		const checks = fixture.requiredAssertions.map((assertion) => ({
+			name: assertion.fullName,
+			status:
+				report.statuses.get(privateTelegramAssertionKey(assertion)) === "passed" ? "pass" : "fail",
+			detail:
+				report.statuses.get(privateTelegramAssertionKey(assertion)) === "passed"
+					? "required fixture assertion passed in machine-observed Vitest report"
+					: `required fixture assertion status is ${
+							report.statuses.get(privateTelegramAssertionKey(assertion)) ?? "missing"
+						}`,
+		}));
+		const status = checks.every((check) => check.status === "pass") ? "pass" : "fail";
+		const evidencePath = path.join(options.evidenceDir, `${fixture.id}.json`);
+		return {
+			schemaVersion: "telclaude.hermes.fixture-evidence.v1",
+			id: fixture.id,
+			status,
+			ran: true,
+			evidence_path: evidencePath,
+			observedAt: options.observedAt,
+			provenance: {
+				runner: "vitest-json",
+				command: options.invocation?.command.join(" "),
+				source: options.invocation ? "machine-observed-test-report" : "imported-test-report",
+			},
+			testReport: {
+				path: options.testReportPath,
+				sha256: reportDigest,
+				requiredTests: fixture.requiredTests,
+				requiredAssertions: fixture.requiredAssertions,
+			},
+			...(options.invocation ? { invocation: options.invocation } : {}),
+			checks,
+		};
+	});
+	return {
+		schemaVersion: 1,
+		results: evidence.map((item) => ({
+			id: item.id,
+			status: item.status as "pass" | "fail",
+			evidence_path: item.evidence_path,
+		})),
+		evidence,
+	};
 }
 
 function resolveHermesBin(value: string | undefined): string {
@@ -218,6 +503,162 @@ function resolveHermesHome(value: string | undefined): string {
 			process.env.TELCLAUDE_HERMES_HOME?.trim() ||
 			path.join(os.tmpdir(), "telclaude-hermes-cli-headless"),
 	);
+}
+
+function runHermesLaunchInvocationInDockerExec(
+	invocation: HermesLaunchInvocation,
+	options: { dockerBin?: string; containerName: string; timeoutMs?: number },
+): Promise<{
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	runtime?: HermesCliProbeReport["runtime"];
+}> {
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const runtime = collectDockerExecRuntimeEvidence(
+		dockerBin,
+		options.containerName,
+		options.timeoutMs,
+	);
+	const args = ["exec", "-i", "-w", invocation.cwd];
+	for (const [key, value] of Object.entries(invocation.env).sort(([left], [right]) =>
+		left.localeCompare(right),
+	)) {
+		args.push("-e", `${key}=${value}`);
+	}
+	args.push(options.containerName, invocation.command, ...invocation.args);
+	const result = spawnSync(dockerBin, args, {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: options.timeoutMs,
+	});
+	return Promise.resolve({
+		exitCode: result.status ?? (result.signal ? 124 : 1),
+		stdout: result.stdout ?? "",
+		stderr: [
+			runtime.stderr,
+			result.stderr ?? "",
+			result.error ? `failed to launch docker exec Hermes probe: ${result.error.message}` : "",
+		]
+			.filter(Boolean)
+			.join("\n"),
+		...(runtime.evidence ? { runtime: runtime.evidence } : {}),
+	});
+}
+
+function collectDockerExecRuntimeEvidence(
+	dockerBin: string,
+	containerName: string,
+	timeoutMs: number | undefined,
+): { evidence?: HermesCliProbeReport["runtime"]; stderr: string } {
+	const inspect = spawnSync(dockerBin, ["inspect", containerName, "--format", "{{json .}}"], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: timeoutMs,
+	});
+	if (inspect.status !== 0) {
+		return {
+			stderr: `failed to inspect Hermes container ${containerName}: ${inspect.stderr || inspect.error?.message || "unknown error"}`,
+		};
+	}
+	try {
+		const data = JSON.parse(inspect.stdout) as {
+			Id?: string;
+			Image?: string;
+			Config?: { Image?: string; Hostname?: string };
+			NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> };
+		};
+		const networkName = "telclaude-hermes-relay";
+		const containerIpAddress = data.NetworkSettings?.Networks?.[networkName]?.IPAddress?.trim();
+		const relayObservation = resolveDockerRelayObservation(dockerBin, containerName, timeoutMs);
+		if (
+			!containerIpAddress ||
+			!relayObservation.relayResolvedAddress ||
+			!relayObservation.observedPeerAddress
+		) {
+			return {
+				stderr: [
+					containerIpAddress ? "" : `Hermes container ${containerName} is not on ${networkName}`,
+					relayObservation.stderr,
+				]
+					.filter(Boolean)
+					.join("\n"),
+			};
+		}
+		return {
+			evidence: {
+				kind: "contained-docker",
+				containerName,
+				networkName,
+				containerId: data.Id ?? containerName,
+				image: data.Config?.Image ?? data.Image ?? "unknown",
+				imageDigest: normalizeDockerImageDigest(data.Image),
+				hostname: data.Config?.Hostname ?? containerName,
+				relayHost: "telclaude",
+				relayResolvedAddress: relayObservation.relayResolvedAddress,
+				containerIpAddress,
+				observedPeerAddress: relayObservation.observedPeerAddress,
+				provenanceSource: "docker-inspect-container-dns-and-relay-peer",
+			},
+			stderr: relayObservation.stderr,
+		};
+	} catch (error) {
+		return {
+			stderr: `failed to parse Hermes container inspect output: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+}
+
+function resolveDockerRelayObservation(
+	dockerBin: string,
+	containerName: string,
+	timeoutMs: number | undefined,
+): { relayResolvedAddress?: string; observedPeerAddress?: string; stderr: string } {
+	const script = [
+		"import json, socket, urllib.request",
+		"relay_ip = socket.gethostbyname('telclaude')",
+		"request = urllib.request.Request('http://telclaude:8790/v1/models', method='GET')",
+		"with urllib.request.urlopen(request, timeout=5) as response:",
+		"    observed_peer = response.headers.get('x-telclaude-model-relay-observed-peer-address', '')",
+		"print(json.dumps({'relayResolvedAddress': relay_ip, 'observedPeerAddress': observed_peer}, sort_keys=True))",
+	].join("\n");
+	const result = spawnSync(dockerBin, ["exec", containerName, "python", "-c", script], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: timeoutMs,
+	});
+	if (result.status !== 0) {
+		return {
+			stderr: `failed to resolve telclaude from Hermes container ${containerName}: ${
+				result.stderr || result.error?.message || "unknown error"
+			}`,
+		};
+	}
+	try {
+		const parsed = JSON.parse(result.stdout) as {
+			relayResolvedAddress?: string;
+			observedPeerAddress?: string;
+		};
+		return {
+			relayResolvedAddress: parsed.relayResolvedAddress?.trim(),
+			observedPeerAddress: parsed.observedPeerAddress?.trim(),
+			stderr: "",
+		};
+	} catch (error) {
+		return {
+			stderr: `failed to parse relay observation from Hermes container ${containerName}: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+}
+
+function normalizeDockerImageDigest(value: string | undefined): `sha256:${string}` {
+	const image = value?.trim() ?? "";
+	if (image.startsWith("sha256:")) return image as `sha256:${string}`;
+	return `sha256:${crypto.createHash("sha256").update(image).digest("hex")}`;
 }
 
 function parseTimeoutMs(value: string | undefined): number | undefined {
@@ -455,36 +896,39 @@ function collectHermesFeatureProbeEvidence(featureProbeMatrix: unknown) {
 	) {
 		return collected;
 	}
-	const approvalProbe = featureProbeMatrix.probes.find(
+	const approvalProbes = featureProbeMatrix.probes.filter(
 		(probe) =>
 			typeof probe === "object" &&
 			probe !== null &&
 			"surface_id" in probe &&
-			probe.surface_id === "execution.approval_continuation" &&
+			(probe.surface_id === "execution.approval_continuation" ||
+				probe.surface_id === "approval.continuation") &&
 			"evidence_path" in probe &&
 			typeof probe.evidence_path === "string",
 	);
-	if (!approvalProbe || typeof approvalProbe.evidence_path !== "string") return collected;
-	const evidencePath = resolveHermesArtifactPath(approvalProbe.evidence_path);
-	const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
-		missingPath: evidencePath,
-	});
+	if (approvalProbes.length === 0) return collected;
 	return {
 		schemaVersion: 1 as const,
 		results: [
 			...collected.results,
-			{
-				surface_id: "execution.approval_continuation",
-				status:
-					report.status === "pass" && report.productionEnable
-						? ("pass" as const)
-						: ("fail" as const),
-				evidence_path: approvalProbe.evidence_path,
-				detail:
-					report.status === "pass" && report.productionEnable
-						? `approval-continuation evidence passed in ${report.mode} mode`
-						: report.gates.map((gate) => gate.detail).join("; "),
-			},
+			...approvalProbes.map((approvalProbe) => {
+				const evidencePath = resolveHermesArtifactPath(approvalProbe.evidence_path);
+				const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
+					missingPath: evidencePath,
+				});
+				return {
+					surface_id: approvalProbe.surface_id,
+					status:
+						report.status === "pass" && report.productionEnable
+							? ("pass" as const)
+							: ("fail" as const),
+					evidence_path: approvalProbe.evidence_path,
+					detail:
+						report.status === "pass" && report.productionEnable
+							? `approval-continuation evidence passed in ${report.mode} mode`
+							: report.gates.map((gate) => gate.detail).join("; "),
+				};
+			}),
 		],
 	};
 }
@@ -572,26 +1016,147 @@ export function registerHermesCommand(program: Command): void {
 	hermes
 		.command("generate")
 		.description("Generate Hermes wrapper profile artifacts")
-		.requiredOption("--dry-run", "Preview generated artifacts without writing files")
+		.option("--dry-run", "Preview generated artifacts without writing files")
+		.option("--write", "Write generated profile artifacts and proof")
 		.option("--json", "Emit structured JSON")
 		.option("--pin <pin>", "Pinned Hermes version, commit, package, or image digest")
 		.option("--out <dir>", "Output directory for generated Hermes profiles", "/tmp/tc-hermes")
-		.action((options: JsonOption & PinOption & { out: string }) => {
+		.option("--lockfile <path>", "Compatibility lockfile JSON path", DEFAULT_COMPAT_LOCKFILE_PATH)
+		.option(
+			"--proof-out <path>",
+			"Profile generation proof JSON path",
+			DEFAULT_PROFILE_GENERATION_PROOF_PATH,
+		)
+		.action(
+			(
+				options: JsonOption &
+					PinOption & {
+						out: string;
+						dryRun?: boolean;
+						write?: boolean;
+						lockfile: string;
+						proofOut: string;
+					},
+			) => {
+				try {
+					if (options.dryRun && options.write) {
+						throw new Error("Use either --dry-run or --write, not both.");
+					}
+					if (options.write) {
+						const report = writeHermesProfileGenerationProof({
+							pin: resolvePin(options),
+							outDir: options.out,
+							lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
+							evidencePath: options.proofOut,
+						});
+						if (options.json) {
+							printJson(report);
+						} else {
+							console.log(`Hermes generate proof: ${report.status}`);
+							console.log(`- outDir ${report.outDir}`);
+							console.log(`- proof ${report.evidence_path}`);
+						}
+						process.exitCode = report.status === "pass" ? 0 : 1;
+						return;
+					}
+					const report = buildHermesGenerateDryRun({
+						pin: resolvePin(options),
+						outDir: options.out,
+					});
+					if (options.json) {
+						printJson(report);
+					} else {
+						console.log(`Hermes generate dry-run: ${report.outDir}`);
+						for (const output of report.outputs) {
+							console.log(`- ${output.classification} ${output.path}`);
+						}
+					}
+					process.exitCode = 0;
+				} catch (error) {
+					console.error(`Error: ${String(error instanceof Error ? error.message : error)}`);
+					process.exitCode = 1;
+				}
+			},
+		);
+
+	hermes
+		.command("fixtures")
+		.description("Generate Hermes wrapper parity fixture result artifacts")
+		.option("--json", "Emit structured JSON")
+		.option("--write", "Write fixture result bundle and per-fixture evidence")
+		.option(
+			"--test-report <path>",
+			"Import an existing Vitest JSON report as non-production evidence",
+		)
+		.option(
+			"--report-out <path>",
+			"Machine-observed Vitest JSON report output path",
+			"artifacts/hermes/fixtures/private-telegram-vitest.json",
+		)
+		.option("--out <path>", "Fixture result bundle JSON path", DEFAULT_FIXTURE_RESULTS_PATH)
+		.option(
+			"--evidence-dir <dir>",
+			"Directory for generated per-fixture evidence",
+			"artifacts/hermes/fixtures",
+		)
+		.option("--observed-at <iso>", "Observed timestamp for generated evidence")
+		.action((options: FixtureResultOption) => {
 			try {
-				const report = buildHermesGenerateDryRun({
-					pin: resolvePin(options),
-					outDir: options.out,
+				const observedAt = options.observedAt ?? new Date().toISOString();
+				const invocation = options.testReport
+					? undefined
+					: runPrivateTelegramFixtureVitest(options.reportOut);
+				const bundle = buildPrivateTelegramFixtureResultBundle({
+					testReportPath: options.testReport ?? options.reportOut,
+					evidenceDir: options.evidenceDir,
+					observedAt,
+					invocation,
 				});
+				if (options.write) {
+					if (options.testReport) {
+						throw new Error(
+							"Imported private Telegram fixture reports cannot be written; omit --test-report so the command runs Vitest and records machine-observed evidence.",
+						);
+					}
+					for (const evidence of bundle.evidence) {
+						const evidencePath =
+							typeof evidence === "object" &&
+							evidence !== null &&
+							"evidence_path" in evidence &&
+							typeof evidence.evidence_path === "string"
+								? evidence.evidence_path
+								: undefined;
+						if (!evidencePath) throw new Error("fixture evidence is missing evidence_path");
+						writeJsonArtifact(evidencePath, evidence);
+					}
+					writeJsonArtifact(options.out, {
+						schemaVersion: bundle.schemaVersion,
+						results: bundle.results,
+					});
+				}
+				const report = {
+					schemaVersion: 1,
+					status: bundle.results.every((result) => result.status === "pass") ? "pass" : "fail",
+					written: options.write === true,
+					out: options.out,
+					results: bundle.results,
+				};
 				if (options.json) {
 					printJson(report);
 				} else {
-					console.log(`Hermes generate dry-run: ${report.outDir}`);
-					for (const output of report.outputs) {
-						console.log(`- ${output.classification} ${output.path}`);
+					console.log(`Hermes fixtures: ${report.status}`);
+					for (const result of bundle.results) {
+						console.log(`- ${result.status.toUpperCase()} ${result.id}: ${result.evidence_path}`);
 					}
 				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
 			} catch (error) {
-				console.error(`Error: ${String(error instanceof Error ? error.message : error)}`);
+				const detail = String(error instanceof Error ? error.message : error);
+				if (options.json) {
+					printJson({ schemaVersion: 1, status: "input_error", detail });
+				} else {
+					console.error(`Error: ${detail}`);
+				}
 				process.exitCode = 1;
 			}
 		});
@@ -621,6 +1186,11 @@ export function registerHermesCommand(program: Command): void {
 		.option("--scope <path>", "P0 cutover scope manifest JSON path", DEFAULT_CUTOVER_SCOPE_PATH)
 		.option("--decisions <path>", "P0 decision log JSON path", DEFAULT_DECISION_LOG_PATH)
 		.option(
+			"--proof-bundle <path>",
+			"P0 cutover proof bundle JSON path",
+			DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
+		)
+		.option(
 			"--feature-probes <path>",
 			"P0 feature-probe matrix JSON path",
 			DEFAULT_FEATURE_PROBE_MATRIX_PATH,
@@ -635,6 +1205,11 @@ export function registerHermesCommand(program: Command): void {
 			"--network-probes <path>",
 			"P0 network probe bundle JSON path",
 			DEFAULT_NETWORK_PROBES_PATH,
+		)
+		.option(
+			"--profile-proof <path>",
+			"P0 profile generation proof JSON path",
+			DEFAULT_PROFILE_GENERATION_PROOF_PATH,
 		)
 		.option(
 			"--rollback <path>",
@@ -653,10 +1228,12 @@ export function registerHermesCommand(program: Command): void {
 					inventory?: string;
 					scope: string;
 					decisions: string;
+					proofBundle: string;
 					featureProbes: string;
 					lockfile: string;
 					fixtures: string;
 					networkProbes: string;
+					profileProof: string;
 					rollback: string;
 				},
 			) => {
@@ -697,6 +1274,28 @@ export function registerHermesCommand(program: Command): void {
 						const featureProbeMatrix = readJsonFile(
 							resolveHermesArtifactPath(options.featureProbes),
 						);
+						const proofTemplate = CutoverProofBundleSchema.parse(
+							readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
+						);
+						const cutoverProofBundle = buildCutoverProofBundle({
+							hermes: proofTemplate.hermes,
+							wrapperVersion: proofTemplate.wrapper.version,
+							artifacts: {
+								inventory: proofTemplate.artifacts.inventory,
+								scopeManifest: proofTemplate.artifacts.scopeManifest,
+								decisionLog: proofTemplate.artifacts.decisionLog,
+								compatibilityLockfile: proofTemplate.artifacts.compatibilityLockfile,
+								featureProbeMatrix: proofTemplate.artifacts.featureProbeMatrix,
+								fixtureResults: proofTemplate.artifacts.fixtureResults,
+								noForkProof: {
+									...proofTemplate.artifacts.noForkProof,
+									artifactPath: options.out,
+								},
+								networkProbeBundle: proofTemplate.artifacts.networkProbeBundle,
+								queueSnapshot: proofTemplate.artifacts.queueSnapshot,
+								rollbackEvidence: proofTemplate.artifacts.rollbackEvidence,
+							},
+						});
 						const cutover = evaluateCutoverCheck(
 							buildCutoverInputBundleFromArtifacts({
 								inventory: options.inventory
@@ -704,11 +1303,15 @@ export function registerHermesCommand(program: Command): void {
 									: collectHermesInventory(),
 								scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 								decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
+								cutoverProofBundle,
 								lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 								featureProbeMatrix,
 								featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
 								fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
 								noForkProof: readJsonFile(resolveHermesArtifactPath(options.out)),
+								profileGenerationProof: readOptionalJsonFile(
+									resolveHermesArtifactPath(options.profileProof),
+								),
 								networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
 								rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
 							}),
@@ -845,6 +1448,10 @@ export function registerHermesCommand(program: Command): void {
 		.option("--pin <pin>", "Pinned Hermes artifact for evidence-generating probes")
 		.option("--hermes-bin <path>", "Hermes executable path for executable probes")
 		.option("--docker-bin <path>", "Docker executable path for contained API-server probes")
+		.option(
+			"--docker-exec-container <name>",
+			"Run execution.cli_headless through docker exec inside the contained Hermes runtime",
+		)
 		.option("--hermes-home <dir>", "HERMES_HOME for executable probes")
 		.option("--cwd <dir>", "Working directory for executable probes", process.cwd())
 		.option("--out <path>", "Write executable probe evidence to this path")
@@ -880,6 +1487,10 @@ export function registerHermesCommand(program: Command): void {
 		.option("--provider-url <csv>", "Direct provider URL(s) that must be denied")
 		.option("--vault-socket <path>", "Vault socket path that must be absent")
 		.option("--model-url <url>", "Direct model-provider URL that must be denied")
+		.option(
+			"--from-report <path>",
+			"Promote a machine-observed probe report into the canonical evidence path",
+		)
 		.option("--profile-dir <dir>", "Generated Hermes profile directory to scan for model secrets")
 		.option("--posture <posture>", "Model relay posture: agent-iptables or contained-internal")
 		.option(
@@ -903,20 +1514,41 @@ export function registerHermesCommand(program: Command): void {
 		.action(async (surface: string, options: ProbeOption) => {
 			if (surface === "execution.cli_headless") {
 				let report: Awaited<ReturnType<typeof runHermesCliHeadlessProbe>>;
+				let outPath: string | undefined;
+				const fromReport = options.fromReport?.trim();
 				try {
-					const invocation = buildHermesCliProbeInvocation({
-						hermesBin: resolveHermesBin(options.hermesBin),
-						hermesHome: resolveHermesHome(options.hermesHome),
-						cwd: path.resolve(options.cwd ?? process.cwd()),
-						prompt: options.prompt,
-						env: process.env,
-					});
-					const timeoutMs = parseTimeoutMs(options.timeoutMs);
-					report = await runHermesCliHeadlessProbe({
-						allowRun: options.allowRun === true,
-						invocation,
-						runProcess: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
-					});
+					if (fromReport) {
+						if (options.allowRun === true) {
+							throw new Error("Use either --from-report or --allow-run, not both.");
+						}
+						report = readHermesCliHeadlessProbeReport(fromReport);
+						if (options.out) {
+							throw new Error(
+								"Imported cli-headless reports cannot write evidence; run --allow-run in the contained runtime to update canonical evidence.",
+							);
+						}
+					} else {
+						const invocation = buildHermesCliProbeInvocation({
+							hermesBin: resolveHermesBin(options.hermesBin),
+							hermesHome: resolveHermesHome(options.hermesHome),
+							cwd: path.resolve(options.cwd ?? process.cwd()),
+							prompt: options.prompt,
+							env: process.env,
+						});
+						const timeoutMs = parseTimeoutMs(options.timeoutMs);
+						report = await runHermesCliHeadlessProbe({
+							allowRun: options.allowRun === true,
+							invocation,
+							runProcess: options.dockerExecContainer?.trim()
+								? (launch) =>
+										runHermesLaunchInvocationInDockerExec(launch, {
+											dockerBin: options.dockerBin,
+											containerName: options.dockerExecContainer?.trim() ?? "",
+											timeoutMs,
+										})
+								: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
+						});
+					}
 				} catch (error) {
 					report = {
 						schemaVersion: "telclaude.hermes.probe-result.v1",
@@ -928,8 +1560,9 @@ export function registerHermesCommand(program: Command): void {
 					};
 				}
 
-				const outPath =
-					options.allowRun === true
+				outPath ??= fromReport
+					? undefined
+					: options.allowRun === true
 						? resolveHermesArtifactPath(options.out ?? DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH)
 						: options.out
 							? resolveHermesArtifactPath(options.out)
@@ -1104,48 +1737,89 @@ export function registerHermesCommand(program: Command): void {
 				return;
 			}
 
+			if (surface === "served_mcp.provider-tools") {
+				const sourcePath = resolveHermesArtifactPath(
+					options.fromReport?.trim() || DEFAULT_SERVED_MCP_PROVIDER_TOOLS_SOURCE_EVIDENCE_PATH,
+				);
+				const report = buildServedMcpProviderToolsProbeEvidence({
+					sourceEvidencePath: path.relative(process.cwd(), sourcePath) || sourcePath,
+					sourceEvidence: readServedMcpProviderToolsSourceEvidence(sourcePath),
+				});
+				let outPath: string | undefined;
+				if (options.out || options.allowRun === true || options.fromReport) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report);
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
 			if (surface === "model.relay") {
 				let report: Awaited<ReturnType<typeof runHermesModelRelayProbe>>;
 				let outPath: string | undefined;
 				let posture: ModelRelayPosture = DEFAULT_MODEL_RELAY_POSTURE;
 				try {
-					posture = parseModelRelayPosture(options.posture);
-					report = await runHermesModelRelayProbe({
-						allowRun: options.allowRun === true,
-						posture,
-						relayUrl:
-							options.relayUrl?.trim() ||
-							process.env.TELCLAUDE_HERMES_MODEL_RELAY_URL?.trim() ||
-							undefined,
-						directModelUrl:
-							options.modelUrl?.trim() ||
-							process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
-							DEFAULT_MODEL_PROVIDER_PROBE_URL,
-						profileDir:
-							options.profileDir?.trim() ||
-							process.env.TELCLAUDE_HERMES_PROFILE_DIR?.trim() ||
-							undefined,
-						firewallSentinelPath:
-							options.firewallSentinel?.trim() ||
-							process.env.TELCLAUDE_HERMES_FIREWALL_SENTINEL?.trim() ||
-							DEFAULT_FIREWALL_SENTINEL_PATH,
-						containerName:
-							options.containerName?.trim() ||
-							process.env.TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME?.trim() ||
-							undefined,
-						expectedPeerAddress:
-							options.expectedPeerAddress?.trim() ||
-							process.env.TELCLAUDE_HERMES_CONTAINED_IP?.trim() ||
-							undefined,
-						relayPeerAddress:
-							options.relayPeerAddress?.trim() ||
-							process.env.TELCLAUDE_HERMES_RELAY_IP?.trim() ||
-							undefined,
-						timeoutMs: parseTimeoutMs(options.timeoutMs),
-					});
-					if (options.allowRun === true && report.status !== "pending") {
+					if (options.fromReport?.trim()) {
+						if (options.allowRun === true) {
+							throw new Error("Use either --from-report or --allow-run, not both.");
+						}
+						report = readJsonFile(resolveHermesArtifactPath(options.fromReport)) as Awaited<
+							ReturnType<typeof runHermesModelRelayProbe>
+						>;
 						outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_MODEL_RELAY_EVIDENCE_PATH);
 						writeHermesModelRelayEvidence(report, outPath);
+						if (report.posture) posture = report.posture;
+					} else {
+						posture = parseModelRelayPosture(options.posture);
+						report = await runHermesModelRelayProbe({
+							allowRun: options.allowRun === true,
+							posture,
+							relayUrl:
+								options.relayUrl?.trim() ||
+								process.env.TELCLAUDE_HERMES_MODEL_RELAY_URL?.trim() ||
+								undefined,
+							directModelUrl:
+								options.modelUrl?.trim() ||
+								process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
+								DEFAULT_MODEL_PROVIDER_PROBE_URL,
+							profileDir:
+								options.profileDir?.trim() ||
+								process.env.TELCLAUDE_HERMES_PROFILE_DIR?.trim() ||
+								undefined,
+							firewallSentinelPath:
+								options.firewallSentinel?.trim() ||
+								process.env.TELCLAUDE_HERMES_FIREWALL_SENTINEL?.trim() ||
+								DEFAULT_FIREWALL_SENTINEL_PATH,
+							containerName:
+								options.containerName?.trim() ||
+								process.env.TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME?.trim() ||
+								undefined,
+							expectedPeerAddress:
+								options.expectedPeerAddress?.trim() ||
+								process.env.TELCLAUDE_HERMES_CONTAINED_IP?.trim() ||
+								undefined,
+							relayPeerAddress:
+								options.relayPeerAddress?.trim() ||
+								process.env.TELCLAUDE_HERMES_RELAY_IP?.trim() ||
+								undefined,
+							timeoutMs: parseTimeoutMs(options.timeoutMs),
+						});
+						if (options.allowRun === true && report.status !== "pending") {
+							outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_MODEL_RELAY_EVIDENCE_PATH);
+							writeHermesModelRelayEvidence(report, outPath);
+						}
 					}
 				} catch (error) {
 					report = {
@@ -1181,6 +1855,82 @@ export function registerHermesCommand(program: Command): void {
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
 				process.exitCode = report.status === "pass" ? 0 : report.status === "pending" ? 2 : 1;
+				return;
+			}
+
+			if (isEdgeAdapterFeatureSurfaceId(surface)) {
+				const report = buildEdgeAdapterProbeEvidence({
+					surfaceId: surface,
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? `artifacts/hermes/probes/${surface}.json`,
+					);
+					writeJsonArtifact(outPath, report);
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const control of report.controls) {
+						console.log(`- ${control.status.toUpperCase()} ${control.name}: ${control.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === "sideeffect.ledger") {
+				const report = await runTelclaudeMcpSideEffectLedgerProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report);
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === "providers.approval-binding") {
+				const report = await runTelclaudeProviderApprovalBindingProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report);
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
 				return;
 			}
 
@@ -1245,6 +1995,10 @@ export function registerHermesCommand(program: Command): void {
 		.description("Run gated Hermes network isolation probes and write cutover evidence")
 		.option("--json", "Emit structured JSON")
 		.option("--allow-run", "Permit real network probes and artifact writes")
+		.option(
+			"--from-report <path>",
+			"Promote a machine-observed network-probe run report into canonical cutover artifacts",
+		)
 		.option("--out <path>", "Network probe bundle JSON path", DEFAULT_NETWORK_PROBE_BUNDLE_PATH)
 		.option(
 			"--evidence-dir <dir>",
@@ -1287,33 +2041,47 @@ export function registerHermesCommand(program: Command): void {
 		.option("--timeout-ms <ms>", "Maximum time per HTTP probe in milliseconds")
 		.action(async (options: NetworkProbeOption) => {
 			try {
-				let report = await runHermesNetworkProbes({
-					allowRun: options.allowRun === true,
-					posture: parseNetworkProbePosture(options.posture),
-					relayUrl:
-						options.relayUrl?.trim() ||
-						process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
-						undefined,
-					providerUrls: parseCsvOption(
-						options.providerUrl ?? process.env.TELCLAUDE_HERMES_NETWORK_PROVIDER_URL,
-					),
-					vaultUrl:
-						options.vaultUrl?.trim() ||
-						process.env.TELCLAUDE_HERMES_NETWORK_VAULT_URL?.trim() ||
-						undefined,
-					vaultSocketPath: options.vaultSocket,
-					modelProviderUrl:
-						options.modelUrl?.trim() ||
-						process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
-						DEFAULT_MODEL_PROVIDER_PROBE_URL,
-					dnsExfilUrls: parseCsvOption(
-						options.dnsUrl ||
-							process.env.TELCLAUDE_HERMES_NETWORK_DNS_URL ||
-							DEFAULT_DNS_EXFIL_PROBE_URL,
-					),
-					firewallSentinelPath: options.firewallSentinel,
-					timeoutMs: parseTimeoutMs(options.timeoutMs),
-				});
+				let report: Awaited<ReturnType<typeof runHermesNetworkProbes>>;
+				if (options.fromReport?.trim()) {
+					if (options.allowRun === true) {
+						throw new Error("Use either --from-report or --allow-run, not both.");
+					}
+					report = writeHermesNetworkProbeArtifacts(
+						readHermesNetworkProbeRunReport(options.fromReport),
+						{
+							outPath: options.out,
+							evidenceDir: options.evidenceDir,
+						},
+					);
+				} else {
+					report = await runHermesNetworkProbes({
+						allowRun: options.allowRun === true,
+						posture: parseNetworkProbePosture(options.posture),
+						relayUrl:
+							options.relayUrl?.trim() ||
+							process.env.TELCLAUDE_HERMES_NETWORK_RELAY_URL?.trim() ||
+							undefined,
+						providerUrls: parseCsvOption(
+							options.providerUrl ?? process.env.TELCLAUDE_HERMES_NETWORK_PROVIDER_URL,
+						),
+						vaultUrl:
+							options.vaultUrl?.trim() ||
+							process.env.TELCLAUDE_HERMES_NETWORK_VAULT_URL?.trim() ||
+							undefined,
+						vaultSocketPath: options.vaultSocket,
+						modelProviderUrl:
+							options.modelUrl?.trim() ||
+							process.env.TELCLAUDE_HERMES_NETWORK_MODEL_URL?.trim() ||
+							DEFAULT_MODEL_PROVIDER_PROBE_URL,
+						dnsExfilUrls: parseCsvOption(
+							options.dnsUrl ||
+								process.env.TELCLAUDE_HERMES_NETWORK_DNS_URL ||
+								DEFAULT_DNS_EXFIL_PROBE_URL,
+						),
+						firewallSentinelPath: options.firewallSentinel,
+						timeoutMs: parseTimeoutMs(options.timeoutMs),
+					});
+				}
 
 				if (options.allowRun === true) {
 					report = writeHermesNetworkProbeArtifacts(report, {
@@ -1470,6 +2238,259 @@ export function registerHermesCommand(program: Command): void {
 		});
 
 	hermes
+		.command("pro-review-check")
+		.description("Validate ChatGPT Pro native-extension review request evidence")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--request <path>",
+			"ChatGPT Pro review request JSON path",
+			DEFAULT_PRO_REVIEW_REQUEST_PATH,
+		)
+		.option(
+			"--canary <path>",
+			"Yoetz ChatGPT native-extension canary JSON path",
+			DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
+		)
+		.option(
+			"--require-approval",
+			"Fail unless the private workspace disclosure approval is present and digest-bound",
+		)
+		.action((options: ProReviewCheckOption) => {
+			const report = evaluateProReviewCheck({
+				requestPath: options.request,
+				canaryPath: options.canary,
+				requireApproval: options.requireApproval,
+			});
+			if (options.json) {
+				printJson(report);
+			} else {
+				console.log(`Hermes pro-review-check: ${report.status}`);
+				for (const gate of report.gates) {
+					console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+				}
+			}
+			process.exitCode = report.status === "fail" ? 1 : report.status === "pending" ? 2 : 0;
+		});
+
+	hermes
+		.command("pro-review-send")
+		.description(
+			"Gate and optionally send the ChatGPT Pro review bundle through Yoetz native extension",
+		)
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--request <path>",
+			"ChatGPT Pro review request JSON path",
+			DEFAULT_PRO_REVIEW_REQUEST_PATH,
+		)
+		.option(
+			"--canary <path>",
+			"Yoetz ChatGPT native-extension canary JSON path",
+			DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
+		)
+		.option("--bundle-out <path>", "Write the generated Yoetz bundle to this path")
+		.option("--execute", "Actually invoke Yoetz native extension after all approval gates pass")
+		.action((options: ProReviewSendOption) => {
+			const report = evaluateProReviewCheck({
+				requestPath: options.request,
+				canaryPath: options.canary,
+				requireApproval: true,
+			});
+			const bundlePath = resolveProReviewBundlePath(options.bundleOut);
+			const yoetzCommand = [
+				"yoetz",
+				"browser",
+				"recipe",
+				"--recipe",
+				"chatgpt",
+				"--transport",
+				"chrome-extension-native",
+				"--bundle",
+				bundlePath,
+				"--format",
+				"json",
+			];
+			if (report.status !== "pass") {
+				const result = {
+					report,
+					send: {
+						status: "refused",
+						reason: "pro-review-check did not pass with approval required",
+						yoetzCommand,
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: refused");
+					for (const gate of report.gates) {
+						console.log(`- ${gate.status.toUpperCase()} ${gate.name}: ${gate.detail}`);
+					}
+				}
+				process.exitCode = 1;
+				return;
+			}
+
+			writeProReviewBundle(options.request, bundlePath);
+			if (!options.execute) {
+				const result = {
+					report,
+					send: {
+						status: "ready",
+						bundlePath,
+						yoetzCommand,
+						note: "not sent; pass --execute to invoke Yoetz native extension",
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: ready");
+					console.log(`- bundle: ${bundlePath}`);
+					console.log(`- command: YOETZ_AGENT=1 ${yoetzCommand.join(" ")}`);
+				}
+				process.exitCode = 0;
+				return;
+			}
+
+			const result = spawnSync(yoetzCommand[0], yoetzCommand.slice(1), {
+				encoding: "utf8",
+				env: { ...process.env, YOETZ_AGENT: "1" },
+			});
+			const send = {
+				status: result.status === 0 ? "sent" : "failed",
+				bundlePath,
+				yoetzCommand,
+				exitCode: result.status,
+				stdout: result.stdout,
+				stderr: result.stderr,
+				error: result.error?.message,
+			};
+			if (options.json) {
+				printJson({ report, send });
+			} else {
+				console.log(`Hermes pro-review-send: ${send.status}`);
+				if (send.stdout.trim()) console.log(send.stdout.trim());
+				if (send.stderr.trim()) console.error(send.stderr.trim());
+				if (send.error) console.error(send.error);
+			}
+			process.exitCode = result.status === 0 ? 0 : 1;
+		});
+
+	hermes
+		.command("proof-bundle")
+		.description("Build a byte-bound cutover proof bundle from strict evidence artifacts")
+		.requiredOption("--inventory <path>", "Inventory snapshot JSON path")
+		.requiredOption("--scope-manifest <path>", "Cutover scope manifest JSON path")
+		.requiredOption("--decision-log <path>", "Decision log JSON path")
+		.requiredOption("--compatibility-lockfile <path>", "Compatibility lockfile JSON path")
+		.requiredOption("--feature-probe-matrix <path>", "Feature-probe matrix JSON path")
+		.requiredOption("--fixture-results <path>", "Fixture result bundle JSON path")
+		.requiredOption("--nofork-proof-file <path>", "No-fork proof bundle JSON path")
+		.requiredOption("--network-probe-bundle <path>", "Network probe bundle JSON path")
+		.requiredOption("--queue-snapshot <path>", "Queue ownership snapshot JSON path")
+		.requiredOption("--rollback-evidence <path>", "Rollback rehearsal evidence JSON path")
+		.option("--pin <pin>", "Pinned Hermes version, commit, package, or image digest")
+		.option("--out <path>", "Write proof bundle JSON to this path")
+		.option("--json", "Emit structured JSON")
+		.action((options: ProofBundleOption) => {
+			try {
+				const hermesPin = resolvePin({
+					pin: options.pin,
+					lockfile: options.compatibilityLockfile,
+				});
+				if (!hermesPin) {
+					throw new Error("Cannot build cutover proof bundle without a pinned Hermes artifact.");
+				}
+				const proofBundle = buildCutoverProofBundle({
+					hermes: hermesPin,
+					wrapperVersion: readWrapperPackageVersion(),
+					artifacts: {
+						inventory: cutoverProofArtifact(options.inventory, "pnpm dev hermes inventory --json", [
+							"inputs.inventory",
+						]),
+						scopeManifest: cutoverProofArtifact(
+							options.scopeManifest,
+							"pnpm dev hermes cutover-scope --json",
+							["inputs.scopeManifest", "workflow.scope"],
+						),
+						decisionLog: cutoverProofArtifact(
+							options.decisionLog,
+							"pnpm dev hermes decision-log --json",
+							["inputs.decisionLog", "decisions.resolved"],
+						),
+						compatibilityLockfile: cutoverProofArtifact(
+							options.compatibilityLockfile,
+							"pnpm dev hermes compat-lock --dry-run --json",
+							["inputs.lockfile", "lockfile.consistent"],
+						),
+						featureProbeMatrix: cutoverProofArtifact(
+							options.featureProbeMatrix,
+							"pnpm dev hermes probes --json",
+							["inputs.featureProbeMatrix", "featureProbes.pass"],
+						),
+						fixtureResults: cutoverProofArtifact(
+							options.fixtureResults,
+							"pnpm dev hermes fixtures --json",
+							["inputs.fixtureResults", "fixtures.pass"],
+						),
+						noForkProof: cutoverProofArtifact(
+							options.noforkProofFile,
+							"pnpm dev hermes prove --upstream-clean --p0 --json",
+							["inputs.noForkProof", "nofork.clean"],
+						),
+						networkProbeBundle: cutoverProofArtifact(
+							options.networkProbeBundle,
+							"pnpm dev hermes network-probes --json",
+							["inputs.networkProbes", "networkProbes.pass"],
+						),
+						queueSnapshot: cutoverProofArtifact(
+							options.queueSnapshot,
+							"pnpm dev hermes queue-snapshot --json",
+							["inputs.queueSnapshot", "queues.owned"],
+						),
+						rollbackEvidence: cutoverProofArtifact(
+							options.rollbackEvidence,
+							"pnpm dev hermes rollback-rehearsal --json",
+							["inputs.rollbackRehearsal", "rollback.rehearsed"],
+						),
+					},
+				});
+				if (options.out) {
+					writeJsonArtifact(resolveHermesArtifactPath(options.out), proofBundle);
+				}
+				if (options.json || !options.out) {
+					printJson(proofBundle);
+				} else {
+					console.log(`Hermes proof-bundle: ${options.out}`);
+				}
+				process.exitCode = proofBundle
+					? Object.values(proofBundle.artifacts).every((artifact) => artifact.status === "pass")
+						? 0
+						: 1
+					: 1;
+			} catch (error) {
+				const report = {
+					status: "input_error",
+					exitCode: 2,
+					gates: [
+						{
+							name: "proofBundle.readable",
+							status: "fail",
+							detail: String(error instanceof Error ? error.message : error),
+						},
+					],
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.error(`Error: ${report.gates[0].detail}`);
+				}
+				process.exitCode = 2;
+			}
+		});
+
+	hermes
 		.command("cutover-check")
 		.description("Evaluate strict Hermes wrapper cutover evidence")
 		.option("--strict", "Fail closed for missing or unsafe evidence")
@@ -1481,6 +2502,11 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option("--scope <path>", "Cutover scope manifest JSON path", DEFAULT_CUTOVER_SCOPE_PATH)
 		.option("--decisions <path>", "Decision log JSON path", DEFAULT_DECISION_LOG_PATH)
+		.option(
+			"--proof-bundle <path>",
+			"Cutover proof bundle JSON path",
+			DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
+		)
 		.option(
 			"--feature-probes <path>",
 			"Feature-probe matrix JSON path",
@@ -1495,6 +2521,11 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option("--nofork <path>", "No-fork proof bundle JSON path", DEFAULT_NO_FORK_PROOF_PATH)
 		.option(
+			"--profile-proof <path>",
+			"Profile generation proof JSON path",
+			DEFAULT_PROFILE_GENERATION_PROOF_PATH,
+		)
+		.option(
 			"--rollback <path>",
 			"Rollback rehearsal evidence JSON path",
 			DEFAULT_ROLLBACK_REHEARSAL_PATH,
@@ -1505,11 +2536,13 @@ export function registerHermesCommand(program: Command): void {
 					inventory?: string;
 					scope: string;
 					decisions: string;
+					proofBundle: string;
 					featureProbes: string;
 					lockfile: string;
 					fixtures: string;
 					networkProbes: string;
 					nofork: string;
+					profileProof: string;
 					rollback: string;
 					strict?: boolean;
 					dryRun?: boolean;
@@ -1526,11 +2559,15 @@ export function registerHermesCommand(program: Command): void {
 							: collectHermesInventory(),
 						scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
+						cutoverProofBundle: readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 						featureProbeMatrix,
 						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
 						fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
 						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
+						profileGenerationProof: readOptionalJsonFile(
+							resolveHermesArtifactPath(options.profileProof),
+						),
 						networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
 						rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
 					});
