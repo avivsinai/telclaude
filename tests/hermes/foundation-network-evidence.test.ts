@@ -693,6 +693,19 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 		schemaVersion: 1,
 		inventory: {
 			generatedAt: "2026-05-30T00:00:00Z",
+			status: "complete",
+			summary: {
+				pendingQueues: {
+					approvals: 0,
+					planApprovals: 0,
+					cards: 0,
+					backgroundJobs: 0,
+					socialItems: 0,
+					curatorItems: 0,
+					pairingPendingRequests: 0,
+					pairingActiveLockouts: 0,
+				},
+			},
 			workflows: [
 				{
 					workflow_id: "private.telegram.basic",

@@ -4,7 +4,7 @@ import { cachedDNSLookup, isBlockedIP, isNonOverridableBlock } from "../sandbox/
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	DEFAULT_NETWORK_PROBES_PATH,
-	type NETWORK_PROBE_POSTURES,
+	NETWORK_PROBE_POSTURES,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	resolveHermesArtifactPath,
@@ -14,7 +14,8 @@ export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
 export const DEFAULT_FIREWALL_SENTINEL_PATH = "/run/telclaude/firewall-active";
 export const DEFAULT_VAULT_SOCKET_PATH = "/run/vault/vault.sock";
-export const DEFAULT_MODEL_PROVIDER_PROBE_URL = "https://api.anthropic.com/v1/models";
+export const DEFAULT_MODEL_PROVIDER_PROBE_URL =
+	"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 export const DEFAULT_DNS_EXFIL_PROBE_URLS = [
 	"http://169.254.169.254/latest/meta-data/",
 	"http://10.0.0.1/",
@@ -141,10 +142,10 @@ export function writeHermesNetworkProbeArtifacts(
 	const outPath = resolveHermesArtifactPath(options.outPath);
 	const evidence = report.evidence.map((probe) => ({
 		...probe,
-		evidence_path: path.join(evidenceDir, `${probeFileStem(probe.id)}.json`),
+		evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
 	}));
 	for (const probe of evidence) {
-		writeJsonArtifact(probe.evidence_path, probe);
+		writeJsonArtifact(resolveHermesArtifactPath(probe.evidence_path), probe);
 	}
 	const bundle = buildNetworkProbeBundle(evidence);
 	writeJsonArtifact(outPath, bundle);
@@ -155,6 +156,107 @@ export function writeHermesNetworkProbeArtifacts(
 		bundle,
 		evidence,
 	};
+}
+
+export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProbeRunnerReport {
+	const resolvedPath = resolveHermesArtifactPath(reportPath);
+	const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8")) as unknown;
+	if (!isRecord(raw)) {
+		throw new Error("network probe run report must be a JSON object");
+	}
+	if (raw.schemaVersion !== "telclaude.hermes.network-probe-run.v1") {
+		throw new Error("network probe run report has an unsupported schemaVersion");
+	}
+	if (raw.ran !== true) {
+		throw new Error("network probe run report was not machine-observed");
+	}
+	if (raw.status !== "pass") {
+		throw new Error(`network probe run report status is ${String(raw.status)}`);
+	}
+	if (!NETWORK_PROBE_POSTURES.includes(raw.posture as NetworkProbePosture)) {
+		throw new Error(`network probe run report posture is ${String(raw.posture)}`);
+	}
+	if (!Array.isArray(raw.evidence)) {
+		throw new Error("network probe run report is missing evidence");
+	}
+	const evidenceIds = new Set<string>();
+	for (const evidence of raw.evidence) {
+		if (!isRecord(evidence)) {
+			throw new Error("network probe evidence entry must be a JSON object");
+		}
+		if (evidence.schemaVersion !== NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION) {
+			throw new Error("network probe evidence entry has an unsupported schemaVersion");
+		}
+		if (!REQUIRED_CUTOVER_NETWORK_PROBE_IDS.includes(evidence.id as NetworkProbeId)) {
+			throw new Error(`network probe evidence has unsupported id ${String(evidence.id)}`);
+		}
+		if (evidenceIds.has(evidence.id as string)) {
+			throw new Error(`network probe run report duplicates ${String(evidence.id)}`);
+		}
+		evidenceIds.add(evidence.id as string);
+		if (evidence.ran !== true) {
+			throw new Error(`network probe evidence ${String(evidence.id)} was not run`);
+		}
+		if (evidence.status !== "pass") {
+			throw new Error(
+				`network probe evidence ${String(evidence.id)} status is ${String(evidence.status)}`,
+			);
+		}
+		if (evidence.posture !== raw.posture) {
+			throw new Error(
+				`network probe evidence ${String(evidence.id)} posture does not match report`,
+			);
+		}
+		if (!Array.isArray(evidence.attempts) || evidence.attempts.length === 0) {
+			throw new Error(`network probe evidence ${String(evidence.id)} has no attempts`);
+		}
+		for (const [index, attempt] of evidence.attempts.entries()) {
+			validatePassingNetworkProbeAttempt(evidence.id as NetworkProbeId, index, attempt);
+		}
+	}
+	for (const id of REQUIRED_CUTOVER_NETWORK_PROBE_IDS) {
+		if (!evidenceIds.has(id)) {
+			throw new Error(`network probe run report is missing ${id}`);
+		}
+	}
+	return raw as NetworkProbeRunnerReport;
+}
+
+function validatePassingNetworkProbeAttempt(
+	id: NetworkProbeId,
+	index: number,
+	attempt: unknown,
+): void {
+	if (!isRecord(attempt)) {
+		throw new Error(`network probe evidence ${id} attempt ${index} must be a JSON object`);
+	}
+	if (typeof attempt.name !== "string" || attempt.name.trim().length === 0) {
+		throw new Error(`network probe evidence ${id} attempt ${index} name is missing`);
+	}
+	if (
+		!["http", "unix_socket", "dns_guard", "firewall_sentinel", "configuration"].includes(
+			String(attempt.kind),
+		)
+	) {
+		throw new Error(`network probe evidence ${id} attempt ${index} kind is unsupported`);
+	}
+	if (!["allow", "deny", "present", "configured"].includes(String(attempt.expectation))) {
+		throw new Error(`network probe evidence ${id} attempt ${index} expectation is unsupported`);
+	}
+	if (attempt.status !== "pass") {
+		throw new Error(
+			`network probe evidence ${id} attempt ${index} status is ${String(attempt.status)}`,
+		);
+	}
+	for (const key of ["target", "observed", "detail"]) {
+		if (typeof attempt[key] !== "string" || attempt[key].trim().length === 0) {
+			throw new Error(`network probe evidence ${id} attempt ${index} ${key} is missing`);
+		}
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function networkProbeReport(input: {

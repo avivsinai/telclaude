@@ -19,6 +19,7 @@ import {
 	buildGuardrailMountPlan,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
+	buildHermesQueueSnapshot,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
 	computeHermesArtifactDigest,
@@ -885,6 +886,10 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 		schemaVersion: 1,
 		inventory: {
 			generatedAt: "2026-05-29T00:00:00Z",
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
 			workflows: [
 				{
 					workflow_id: "private.telegram.basic",
@@ -1616,6 +1621,8 @@ async function runCutoverCheckWithBundle(bundle: CutoverInputBundle) {
 		paths.lockfile,
 		"--fixtures",
 		paths.fixtures,
+		"--queue-snapshot",
+		paths.queueSnapshot,
 		"--network-probes",
 		paths.networkProbes,
 		"--nofork",
@@ -2399,6 +2406,115 @@ describe("Hermes wrapper foundation", () => {
 		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 0 });
 	});
 
+	it("builds queue ownership snapshots from complete inventory evidence", () => {
+		const source = safeCutoverBundle();
+		const inventory = {
+			...source.inventory,
+			status: "complete" as const,
+			summary: {
+				pendingQueues: pendingQueues({
+					approvals: 2,
+					backgroundJobs: 1,
+				}),
+			},
+		};
+
+		expect(buildHermesQueueSnapshot({ inventory })).toEqual({ unownedActiveCount: 3 });
+	});
+
+	it("writes queue-snapshot artifacts from an inventory snapshot", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-queue-snapshot-"));
+		const source = safeCutoverBundle();
+		const inventoryPath = path.join(tempDir, "inventory.json");
+		const outPath = path.join(tempDir, "queue-snapshot.json");
+		writeJson(inventoryPath, {
+			...source.inventory,
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues({
+					approvals: 1,
+					backgroundJobs: 2,
+				}),
+			},
+		});
+
+		const result = await runHermesCommand([
+			"hermes",
+			"queue-snapshot",
+			"--json",
+			"--inventory",
+			inventoryPath,
+			"--out",
+			outPath,
+		]);
+		const snapshot = JSON.parse(result.stdout) as { unownedActiveCount: number };
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(snapshot).toEqual({ unownedActiveCount: 3 });
+		expect(readJson(outPath)).toEqual(snapshot);
+	});
+
+	it("cutover-check consumes explicit queue snapshot artifacts", async () => {
+		const source = safeCutoverBundle();
+		const inventory = {
+			...source.inventory,
+			status: "complete" as const,
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		};
+		const bundle = safeCutoverBundle({
+			inventory,
+			queueSnapshot: { unownedActiveCount: 2 },
+		});
+
+		const result = await runCutoverCheckWithBundle(bundle);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "proofBundle.queueSnapshot")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "queues.owned")).toMatchObject({
+			status: "fail",
+		});
+	});
+
+	it("fails cutover when explicit queue snapshots underreport inventory queues", () => {
+		const source = safeCutoverBundle();
+		const inventory = {
+			...source.inventory,
+			status: "complete" as const,
+			summary: {
+				pendingQueues: pendingQueues({
+					approvals: 1,
+					backgroundJobs: 2,
+				}),
+			},
+		};
+
+		const report = evaluateCutoverCheck(
+			safeCutoverBundle({
+				inventory,
+				queueSnapshot: { unownedActiveCount: 0 },
+			}),
+		);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "queues.owned")).toEqual(
+			expect.objectContaining({
+				status: "fail",
+				detail: expect.stringContaining(
+					"queue snapshot does not match inventory pendingQueues: expected 3, got 0",
+				),
+			}),
+		);
+	});
+
 	it("builds a byte-bound proof bundle from canonical artifact files", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-proof-command-"));
 		const bundle = safeCutoverBundle();
@@ -2460,6 +2576,55 @@ describe("Hermes wrapper foundation", () => {
 				status: "fail",
 			}),
 		);
+	});
+
+	it("fails cutover-check when proof bundle artifact timestamps do not match on-disk evidence", () => {
+		const bundle = safeCutoverBundle();
+		const cutoverProofBundle = structuredClone(bundle.cutoverProofBundle);
+		cutoverProofBundle.artifacts.inventory.generatedAt = "2026-05-31T00:00:00.000Z";
+
+		const report = evaluateCutoverCheck({ ...bundle, cutoverProofBundle });
+
+		expect(report.status).toBe("input_error");
+		expect(report.exitCode).toBe(2);
+		expect(report.gates.find((gate) => gate.name === "proofBundle.inventory.valid")).toEqual(
+			expect.objectContaining({
+				status: "fail",
+				detail: expect.stringContaining("artifact generatedAt does not match on-disk evidence"),
+			}),
+		);
+	});
+
+	it("fails live cutover-check when the proof bundle timestamp is stale or future-dated", () => {
+		const stale = evaluateCutoverCheck(safeCutoverBundle(), {
+			liveCutover: true,
+			now: new Date("2026-06-07T00:00:00.001Z"),
+		});
+		const future = evaluateCutoverCheck(safeCutoverBundle(), {
+			liveCutover: true,
+			now: new Date("2026-05-30T00:00:00.000Z"),
+		});
+
+		for (const report of [stale, future]) {
+			expect(report.status).toBe("input_error");
+			expect(report.exitCode).toBe(2);
+			expect(report.gates.find((gate) => gate.name === "proofBundle.generatedAt.live")).toEqual(
+				expect.objectContaining({
+					status: "fail",
+					detail: "proof bundle generatedAt is stale or future-dated for live cutover",
+				}),
+			);
+		}
+	});
+
+	it("anchors artifact recency to the proof bundle timestamp during live cutover", () => {
+		const report = evaluateCutoverCheck(safeCutoverBundle(), {
+			liveCutover: true,
+			now: new Date("2026-06-06T23:59:59.000Z"),
+		});
+
+		expect(report.status).toBe("safe");
+		expect(report.exitCode).toBe(0);
 	});
 
 	it("marks proof bundle artifacts failed when raw evidence bytes contain secrets", () => {
@@ -2529,9 +2694,14 @@ describe("Hermes wrapper foundation", () => {
 
 	it("fails closed when canonical artifact assembly lacks complete queue evidence", () => {
 		const source = safeCutoverBundle();
+		const {
+			status: _status,
+			summary: _summary,
+			...inventoryWithoutQueueEvidence
+		} = source.inventory;
 		expect(() =>
 			buildCutoverInputBundleFromArtifacts({
-				inventory: source.inventory,
+				inventory: inventoryWithoutQueueEvidence,
 				scopeManifest: source.scopeManifest,
 				decisionLog: source.decisionLog,
 				cutoverProofBundle: source.cutoverProofBundle,
@@ -3856,7 +4026,7 @@ describe("Hermes wrapper foundation", () => {
 		const report = evaluateCutoverCheck(
 			safeCutoverBundle({
 				inventory: {
-					generatedAt: "2026-05-29T00:00:00Z",
+					...bundle.inventory,
 					workflows: [
 						...bundle.inventory.workflows,
 						{
@@ -3898,7 +4068,7 @@ describe("Hermes wrapper foundation", () => {
 		const bundle = safeCutoverBundle();
 		const richBundle = safeCutoverBundle({
 			inventory: {
-				generatedAt: "2026-05-29T00:00:00Z",
+				...bundle.inventory,
 				workflows: [
 					{
 						...bundle.inventory.workflows[0],
@@ -4289,6 +4459,35 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.exitCode).toBe(2);
 	});
 
+	it("does not apply wall-clock proof-bundle recency to archival dry-run checks", () => {
+		const report = evaluateCutoverCheck(safeCutoverBundle(), {
+			strict: true,
+			dryRun: true,
+			liveCutover: false,
+			now: new Date("2026-07-01T00:00:00.000Z"),
+		});
+
+		expect(report.exitCode).toBe(0);
+		expect(report.gates.map((gate) => gate.name)).not.toContain("proofBundle.generatedAt.live");
+	});
+
+	it("fails live cutover checks when the proof bundle is stale by wall clock", () => {
+		const report = evaluateCutoverCheck(safeCutoverBundle(), {
+			strict: true,
+			dryRun: false,
+			liveCutover: true,
+			now: new Date("2026-07-01T00:00:00.000Z"),
+		});
+
+		expect(report.status).toBe("input_error");
+		expect(report.exitCode).toBe(2);
+		expect(report.gates.find((gate) => gate.name === "proofBundle.generatedAt.live")).toMatchObject(
+			{
+				status: "fail",
+			},
+		);
+	});
+
 	it("registers the top-level hermes command group", () => {
 		const program = new Command();
 		registerHermesCommand(program);
@@ -4307,6 +4506,10 @@ describe("Hermes wrapper foundation", () => {
 		registerHermesCommand(program);
 		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("network-probes");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain("queue-snapshot");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain(
+			"rollback-rehearsal",
+		);
 	});
 
 	it("registers the fixtures command", () => {
