@@ -87,6 +87,7 @@ const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.expired-denied",
 	"ledger.kind-mismatch-denied",
 	"ledger.authority-mismatch-denied",
+	"ledger.provider-scope-mismatch-denied",
 ] as const;
 
 export function runTelclaudeMcpSideEffectLedgerProbe(input: {
@@ -408,6 +409,52 @@ async function runProbe(input: {
 				ledger.get(authorityMismatch.ref)?.status === "prepared",
 			"authority stamps must match the prepared side-effect owner before verification",
 		);
+
+		const providerScopeMismatch = ledger.prepare(
+			providerPrepareInput({
+				providerId: "clalit",
+				service: "clalit",
+				action: "appointments.cancel",
+				params: { appointmentId: "appt_123" },
+				providerAccountRef: "clalit:primary",
+				approvalRequestId: "approval-provider-scope-probe",
+				idempotencyKey: "idem-provider-scope-probe",
+				wysiwysRender: "Cancel Clalit appointment appt_123",
+			}),
+		);
+		const providerScopeToken = await generateProbeToken(
+			providerScopeMismatch,
+			vault,
+			"provider-scope-jti",
+		);
+		const verifierCallsBeforeScopeMismatch = observations.verifierCallCount;
+		const providerScopeMismatchResult = resultShape(
+			await bridge.tc_provider_execute_write({
+				actionRef: providerScopeMismatch.ref,
+				approvalToken: providerScopeToken,
+			}),
+		);
+		const recordAfterProviderScopeMismatch = ledger.get(providerScopeMismatch.ref);
+		const verifierCallsAfterScopeMismatch = observations.verifierCallCount;
+		const clalitBridge = createProbeBridge(ledger, undefined, { providerScopes: ["clalit"] });
+		const providerScopeAllowedResult = resultShape(
+			await clalitBridge.tc_provider_execute_write({
+				actionRef: providerScopeMismatch.ref,
+				approvalToken: providerScopeToken,
+			}),
+		);
+		pushCheck(
+			checks,
+			"ledger.provider-scope-mismatch-denied",
+			providerScopeMismatchResult.ok === false &&
+				providerScopeMismatchResult.code === "effect_authority_mismatch" &&
+				providerScopeMismatchResult.retryable === false &&
+				recordAfterProviderScopeMismatch?.status === "prepared" &&
+				verifierCallsAfterScopeMismatch === verifierCallsBeforeScopeMismatch &&
+				providerScopeAllowedResult.ok === true &&
+				providerScopeAllowedResult.record?.status === "executed",
+			"provider scopes must match the prepared provider before approval verification or JTI use",
+		);
 	} catch (error) {
 		checks.push({
 			name: "ledger.probe.exception",
@@ -487,16 +534,20 @@ async function generateProbeToken(
 function createProbeBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
+	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
-	return createTelclaudeMcpBridge(probeAuthority(), {
-		...baseDependencies(),
-		...createTelclaudeMcpLedgerExecuteDependencies({
-			ledger,
-			providerProxy,
-			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
-				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
-		}),
-	});
+	return createTelclaudeMcpBridge(
+		{ ...probeAuthority(), ...authorityOverrides },
+		{
+			...baseDependencies(),
+			...createTelclaudeMcpLedgerExecuteDependencies({
+				ledger,
+				providerProxy,
+				providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
+					`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			}),
+		},
+	);
 }
 
 function probeAuthority(): TelclaudeMcpAuthority {

@@ -182,6 +182,7 @@ describe("Telclaude MCP bridge foundation", () => {
 				writableNamespace: "private:ops",
 				endpointId: "endpoint-private",
 				networkNamespace: "netns-private",
+				providerId: "clalit",
 				service: "clalit",
 				action: "appointments.list",
 				params: { subjectUserId: "spoofed-family-member" },

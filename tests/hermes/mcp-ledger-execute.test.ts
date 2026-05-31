@@ -141,6 +141,37 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		);
 	});
 
+	it("rejects provider scope mismatches before verification and leaves the ref prepared", async () => {
+		const harness = createLedgerHarness();
+		const bridge = createBridge(harness.ledger);
+		const provider = harness.ledger.prepare(
+			providerPrepareInput({
+				providerId: "clalit",
+				service: "clalit",
+				action: "appointments.cancel",
+				params: { appointmentId: "appt_123" },
+				providerAccountRef: "clalit:primary",
+			}),
+		);
+		harness.accept("provider-token", provider);
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "effect_authority_mismatch",
+			reason: "side effect authority mismatch",
+			retryable: false,
+		});
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(harness.ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		);
+	});
+
 	it("surfaces revoked, expired, and executed refs as terminal ledger results", async () => {
 		const harness = createLedgerHarness();
 		const bridge = createBridge(harness.ledger);
@@ -214,26 +245,30 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-ledger-sidecar-"));
 		const jtiStore = new JtiStore(tempDir);
 		const vault = new PrefixSigningVault();
-		const bridge = createBridge(harness.ledger, {
-			providerProxy: async (request) => {
-				providerCalls.push(request);
-				expect(request.approvalToken).toMatch(/^v1\./);
-				expect(request.approvalToken).not.toBe("provider-token");
-				const sidecarResult = verifyApprovalToken(
-					request.approvalToken ?? "",
-					JSON.parse(String(request.body)) as FetchRequest,
-					request.userId ?? "",
-					(payload, signature) =>
-						vault.verifySignature(payload, signature, GOOGLE_APPROVAL_SIGNING_PREFIX),
-					jtiStore,
-				);
-				expect(sidecarResult).toEqual({ ok: true });
-				return { status: "ok", data: { draftId: "draft_123" } };
+		const bridge = createBridge(
+			harness.ledger,
+			{
+				providerProxy: async (request) => {
+					providerCalls.push(request);
+					expect(request.approvalToken).toMatch(/^v1\./);
+					expect(request.approvalToken).not.toBe("provider-token");
+					const sidecarResult = verifyApprovalToken(
+						request.approvalToken ?? "",
+						JSON.parse(String(request.body)) as FetchRequest,
+						request.userId ?? "",
+						(payload, signature) =>
+							vault.verifySignature(payload, signature, GOOGLE_APPROVAL_SIGNING_PREFIX),
+						jtiStore,
+					);
+					expect(sidecarResult).toEqual({ ok: true });
+					return { status: "ok", data: { draftId: "draft_123" } };
+				},
+				providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
+					vaultClient: vault,
+				}),
 			},
-			providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
-				vaultClient: vault,
-			}),
-		});
+			{ providerScopes: ["google"] },
+		);
 
 		try {
 			await expect(
@@ -373,8 +408,9 @@ function createLedgerHarness(): {
 function createBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
 	options: Omit<Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0], "ledger"> = {},
+	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
-	return createTelclaudeMcpBridge(baseAuthority(), {
+	return createTelclaudeMcpBridge(baseAuthority(authorityOverrides), {
 		...baseDependencies(),
 		...createTelclaudeMcpLedgerExecuteDependencies({ ledger, ...options }),
 	});

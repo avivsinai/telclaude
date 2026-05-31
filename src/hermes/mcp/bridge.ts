@@ -71,6 +71,7 @@ export type TelclaudeMcpProviderPrepareWriteRequest = TelclaudeMcpAuthorityStamp
 export type TelclaudeMcpProviderExecuteWriteRequest = TelclaudeMcpAuthorityStamp & {
 	actionRef: string;
 	approvalToken: string;
+	providerScopes: readonly string[];
 };
 
 export type TelclaudeMcpMemorySearchRequest = TelclaudeMcpAuthorityStamp & {
@@ -272,6 +273,7 @@ export function createTelclaudeMcpBridge(
 				...stamp,
 				actionRef: parsed.actionRef,
 				approvalToken: parsed.approvalToken,
+				providerScopes: normalizedAuthority.providerScopes,
 			});
 		},
 
