@@ -466,6 +466,102 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
+	it("passes only relay Anthropic proxy model env into the CLI headless launch", async () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+			prompt: "Reply with exactly HERMES_OK_53822847",
+			env: {
+				ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
+				ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+				OPENAI_API_KEY: "sk-proj-raw-provider-key",
+			},
+		});
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async (launch) => {
+				expect(launch.env).toEqual({
+					HERMES_HOME: "/tmp/tc-hermes-probe",
+					NO_COLOR: "1",
+					ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
+					ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+				});
+				return {
+					exitCode: 0,
+					stdout: "HERMES_OK_53822847\n",
+					stderr: "",
+				};
+			},
+		});
+
+		expect(report).toMatchObject({
+			status: "pass",
+			ran: true,
+			invocation: {
+				envKeys: [
+					"ANTHROPIC_API_KEY",
+					"ANTHROPIC_BASE_URL",
+					"HERMES_HOME",
+					"NO_COLOR",
+				],
+			},
+			modelProvider: {
+				baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+				baseUrlHost: "telclaude",
+				authEnvKey: "ANTHROPIC_API_KEY",
+				authScope: "relay-anthropic-proxy",
+				tokenScoping: "static-shared",
+			},
+			findings: [],
+		});
+		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
+		expect(JSON.stringify(report)).not.toContain("sk-proj-raw-provider-key");
+	});
+
+	it("blocks raw model-provider keys even when the relay proxy URL is configured", () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+			env: {
+				ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
+				ANTHROPIC_API_KEY: "sk-ant-api03-rawProviderKey",
+			},
+		});
+
+		expect(findHermesLaunchSecretFindings(invocation)).toEqual([
+			{
+				location: "env.ANTHROPIC_API_KEY",
+				reason: "raw model-provider credential is forbidden",
+			},
+		]);
+	});
+
+	it("blocks relay model auth when the base URL points at a direct provider", () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+			env: {
+				ANTHROPIC_BASE_URL: "https://api.anthropic.com/v1/anthropic-proxy",
+				ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+			},
+		});
+
+		expect(findHermesLaunchSecretFindings(invocation)).toEqual([
+			{
+				location: "env.ANTHROPIC_BASE_URL",
+				reason: "model base URL must point at the relay Anthropic proxy",
+			},
+			{
+				location: "env.ANTHROPIC_API_KEY",
+				reason: "forbidden credential environment key",
+			},
+		]);
+	});
+
 	it("fails a CLI headless probe when Hermes exits zero with runtime failure text", async () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",

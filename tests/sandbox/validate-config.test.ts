@@ -131,7 +131,7 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(findings).toEqual([]);
 	});
 
-	it("keeps the Hermes compose overlay secretless and contained", () => {
+	it("keeps the Hermes compose overlay raw-provider-secretless and contained", () => {
 		const composePath = path.resolve(process.cwd(), "docker/docker-compose.hermes.yml");
 		const compose = fs.readFileSync(composePath, "utf8");
 		const telclaude = serviceBlock(compose, "telclaude");
@@ -179,6 +179,8 @@ TELCLAUDE_LOG_LEVEL=info
 			API_SERVER_KEY: requiredApiKey,
 			HERMES_HOME: "/home/hermes/.hermes",
 			HOME: "/home/hermes",
+			ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
+			ANTHROPIC_API_KEY: "${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
 			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-contained-skills.allowlist",
 			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
@@ -221,6 +223,12 @@ TELCLAUDE_LOG_LEVEL=info
 			"VAULT_ENCRYPTION_KEY",
 		];
 		for (const key of [...Object.keys(telclaudeEnv), ...Object.keys(hermesEnv)]) {
+			if (
+				key === "ANTHROPIC_API_KEY" &&
+				hermesEnv[key] === "${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}"
+			) {
+				continue;
+			}
 			expect(forbiddenEnvKeys).not.toContain(key);
 		}
 		for (const interpolation of compose.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)) {
@@ -230,6 +238,7 @@ TELCLAUDE_LOG_LEVEL=info
 					"TELCLAUDE_HERMES_API_SERVER_KEY",
 					"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 					"OPERATOR_RPC_RELAY_PRIVATE_KEY",
+					"ANTHROPIC_PROXY_TOKEN",
 				]).toContain(variableName);
 			}
 		}

@@ -20,6 +20,9 @@ const DEFAULT_PRIVATE_MCP_ENDPOINT_ID = "telclaude-private-runtime";
 const DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE = "telclaude-private";
 const DEFAULT_HERMES_PROBE_TIMEOUT_MS = 120_000;
 const MAX_CAPTURED_PROCESS_OUTPUT_BYTES = 1_000_000;
+const HERMES_RELAY_ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL";
+const HERMES_RELAY_ANTHROPIC_AUTH_ENV = "ANTHROPIC_API_KEY";
+const HERMES_RELAY_ANTHROPIC_PROXY_PATH = "/v1/anthropic-proxy";
 
 export type HermesRuntimeRequest = {
 	prompt: string;
@@ -114,6 +117,13 @@ export type HermesCliProbeReport = {
 		args: string[];
 		cwd: string;
 		envKeys: string[];
+	};
+	modelProvider?: {
+		baseUrl: string;
+		baseUrlHost: string;
+		authEnvKey: typeof HERMES_RELAY_ANTHROPIC_AUTH_ENV;
+		authScope: "relay-anthropic-proxy";
+		tokenScoping: "static-shared" | "peer-bound";
 	};
 	exitCode?: number;
 	stdoutPreview?: string;
@@ -284,7 +294,9 @@ export function buildHermesCliProbeInvocation(input: {
 	hermesHome: string;
 	cwd: string;
 	prompt?: string;
+	env?: NodeJS.ProcessEnv;
 }): HermesLaunchInvocation {
+	const sourceEnv = input.env ?? {};
 	return {
 		command: input.hermesBin,
 		args: ["-z", input.prompt ?? `Reply with exactly ${DEFAULT_HERMES_CLI_PROBE_TOKEN}`],
@@ -292,6 +304,7 @@ export function buildHermesCliProbeInvocation(input: {
 		env: {
 			HERMES_HOME: input.hermesHome,
 			NO_COLOR: "1",
+			...hermesRelayModelEnv(sourceEnv),
 		},
 	};
 }
@@ -310,6 +323,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			ran: false,
 			summary: "Hermes CLI probe launch contains forbidden credential material",
 			invocation: probeInvocation(input.invocation),
+			modelProvider: probeModelProvider(input.invocation),
 			findings,
 		});
 	}
@@ -319,6 +333,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			ran: false,
 			summary: "Hermes CLI probe requires --allow-run",
 			invocation: probeInvocation(input.invocation),
+			modelProvider: probeModelProvider(input.invocation),
 			findings,
 		});
 	}
@@ -328,6 +343,7 @@ export async function runHermesCliHeadlessProbe(input: {
 			ran: false,
 			summary: "Hermes CLI probe runner is not configured",
 			invocation: probeInvocation(input.invocation),
+			modelProvider: probeModelProvider(input.invocation),
 			findings,
 		});
 	}
@@ -349,6 +365,7 @@ export async function runHermesCliHeadlessProbe(input: {
 						? `Hermes CLI oneshot probe did not return expected proof token: ${expectedToken ?? DEFAULT_HERMES_CLI_PROBE_TOKEN}`
 						: "Hermes CLI oneshot probe failed",
 		invocation: probeInvocation(input.invocation),
+		modelProvider: probeModelProvider(input.invocation),
 		exitCode: result.exitCode,
 		stdoutPreview: preview(redactHermesRuntimeText(result.stdout)),
 		stderrPreview: preview(redactHermesRuntimeText(result.stderr)),
@@ -421,7 +438,28 @@ export function findHermesLaunchSecretFindings(
 	invocation: HermesLaunchInvocation,
 ): HermesLaunchSecretFinding[] {
 	const findings: HermesLaunchSecretFinding[] = [];
+	const relayModelConfigured = isRelayAnthropicProxyUrl(
+		invocation.env[HERMES_RELAY_ANTHROPIC_BASE_URL_ENV],
+	);
 	for (const [key, value] of Object.entries(invocation.env)) {
+		if (key === HERMES_RELAY_ANTHROPIC_BASE_URL_ENV) {
+			if (value && !relayModelConfigured) {
+				findings.push({
+					location: `env.${key}`,
+					reason: "model base URL must point at the relay Anthropic proxy",
+				});
+			}
+			continue;
+		}
+		if (key === HERMES_RELAY_ANTHROPIC_AUTH_ENV && relayModelConfigured) {
+			if (containsRawModelProviderCredential(value)) {
+				findings.push({
+					location: `env.${key}`,
+					reason: "raw model-provider credential is forbidden",
+				});
+			}
+			continue;
+		}
 		if (isForbiddenCredentialKey(key)) {
 			findings.push({
 				location: `env.${key}`,
@@ -429,7 +467,7 @@ export function findHermesLaunchSecretFindings(
 			});
 			continue;
 		}
-		if (containsCredentialValue(value)) {
+		if (containsRawModelProviderCredential(value) || containsCredentialValue(value)) {
 			findings.push({
 				location: `env.${key}`,
 				reason: "credential-like environment value",
@@ -437,7 +475,7 @@ export function findHermesLaunchSecretFindings(
 		}
 	}
 	for (const [index, arg] of invocation.args.entries()) {
-		if (containsCredentialValue(arg)) {
+		if (containsRawModelProviderCredential(arg) || containsCredentialValue(arg)) {
 			findings.push({
 				location: `argv[${index}]`,
 				reason: "credential-like process argument",
@@ -473,11 +511,15 @@ function hermesCliExpectedProofToken(invocation: HermesLaunchInvocation): string
 function probeReport(
 	input: Omit<HermesCliProbeReport, "schemaVersion" | "probeId">,
 ): HermesCliProbeReport {
-	return {
+	const report: HermesCliProbeReport = {
 		schemaVersion: HERMES_PROBE_RESULT_SCHEMA_VERSION,
 		probeId: "execution.cli_headless" as const,
 		...input,
 	};
+	if (report.modelProvider === undefined) {
+		delete report.modelProvider;
+	}
+	return report;
 }
 
 function probeInvocation(
@@ -491,6 +533,22 @@ function probeInvocation(
 	};
 }
 
+function probeModelProvider(
+	invocation: HermesLaunchInvocation,
+): HermesCliProbeReport["modelProvider"] | undefined {
+	const baseUrl = invocation.env[HERMES_RELAY_ANTHROPIC_BASE_URL_ENV];
+	const authToken = invocation.env[HERMES_RELAY_ANTHROPIC_AUTH_ENV];
+	if (!baseUrl || !authToken || !isRelayAnthropicProxyUrl(baseUrl)) return undefined;
+	const parsed = new URL(baseUrl);
+	return {
+		baseUrl,
+		baseUrlHost: parsed.hostname,
+		authEnvKey: HERMES_RELAY_ANTHROPIC_AUTH_ENV,
+		authScope: "relay-anthropic-proxy",
+		tokenScoping: "static-shared",
+	};
+}
+
 function isForbiddenCredentialKey(key: string): boolean {
 	return /(^|_)(API_KEY|AUTH_TOKEN|OAUTH_TOKEN|TOKEN|KEY|PASSWORD|SECRET|COOKIE|CREDENTIALS?)(_|$)/i.test(
 		key,
@@ -499,6 +557,44 @@ function isForbiddenCredentialKey(key: string): boolean {
 
 function containsCredentialValue(value: string): boolean {
 	return filterOutput(value).blocked;
+}
+
+function containsRawModelProviderCredential(value: string): boolean {
+	return /\b(?:sk-ant|sk-proj|sk-[A-Za-z0-9])[A-Za-z0-9_-]{8,}\b/.test(value);
+}
+
+function hermesRelayModelEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+	const baseUrl = env[HERMES_RELAY_ANTHROPIC_BASE_URL_ENV]?.trim();
+	const authToken = env[HERMES_RELAY_ANTHROPIC_AUTH_ENV]?.trim();
+	if (!baseUrl && !authToken) return {};
+	return {
+		...(baseUrl ? { [HERMES_RELAY_ANTHROPIC_BASE_URL_ENV]: baseUrl } : {}),
+		...(authToken ? { [HERMES_RELAY_ANTHROPIC_AUTH_ENV]: authToken } : {}),
+	};
+}
+
+function isRelayAnthropicProxyUrl(value: string | undefined): boolean {
+	if (!value) return false;
+	try {
+		const parsed = new URL(value);
+		return (
+			(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+			parsed.pathname.replace(/\/+$/, "") === HERMES_RELAY_ANTHROPIC_PROXY_PATH &&
+			!isDirectModelProviderHost(parsed.hostname)
+		);
+	} catch {
+		return false;
+	}
+}
+
+function isDirectModelProviderHost(hostname: string): boolean {
+	return new Set([
+		"api.anthropic.com",
+		"api.openai.com",
+		"generativelanguage.googleapis.com",
+		"openrouter.ai",
+		"api.x.ai",
+	]).has(hostname.toLowerCase());
 }
 
 function preview(value: string, maxLength = 400): string {

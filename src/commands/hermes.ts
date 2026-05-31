@@ -909,6 +909,7 @@ export function registerHermesCommand(program: Command): void {
 						hermesHome: resolveHermesHome(options.hermesHome),
 						cwd: path.resolve(options.cwd ?? process.cwd()),
 						prompt: options.prompt,
+						env: process.env,
 					});
 					const timeoutMs = parseTimeoutMs(options.timeoutMs);
 					report = await runHermesCliHeadlessProbe({
