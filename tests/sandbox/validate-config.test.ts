@@ -179,6 +179,7 @@ TELCLAUDE_LOG_LEVEL=info
 			API_SERVER_KEY: requiredApiKey,
 			HERMES_HOME: "/home/hermes/.hermes",
 			HOME: "/home/hermes",
+			HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
 			ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
 			ANTHROPIC_API_KEY: "${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",

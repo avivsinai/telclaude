@@ -23,6 +23,7 @@ const MAX_CAPTURED_PROCESS_OUTPUT_BYTES = 1_000_000;
 const HERMES_RELAY_ANTHROPIC_BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 const HERMES_RELAY_ANTHROPIC_AUTH_ENV = "ANTHROPIC_API_KEY";
 const HERMES_RELAY_ANTHROPIC_PROXY_PATH = "/v1/anthropic-proxy";
+const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 
 export type HermesRuntimeRequest = {
 	prompt: string;
@@ -121,6 +122,8 @@ export type HermesCliProbeReport = {
 	modelProvider?: {
 		baseUrl: string;
 		baseUrlHost: string;
+		model: string;
+		modelSource: `env:${typeof HERMES_INFERENCE_MODEL_ENV}` | "missing";
 		authEnvKey: typeof HERMES_RELAY_ANTHROPIC_AUTH_ENV;
 		authScope: "relay-anthropic-proxy";
 		tokenScoping: "static-shared" | "peer-bound";
@@ -503,7 +506,7 @@ function hermesCliRuntimeFailure(stdout: string, stderr: string): string | null 
 }
 
 function hermesCliExpectedProofToken(invocation: HermesLaunchInvocation): string | null {
-	const prompt = invocation.args[1] ?? "";
+	const prompt = invocation.args.join("\n");
 	const match = prompt.match(/TELCLAUDE_HERMES_CLI_OK|HERMES_OK_[A-Za-z0-9_-]+/);
 	return match?.[0] ?? DEFAULT_HERMES_CLI_PROBE_TOKEN;
 }
@@ -543,6 +546,10 @@ function probeModelProvider(
 	return {
 		baseUrl,
 		baseUrlHost: parsed.hostname,
+		model: invocation.env[HERMES_INFERENCE_MODEL_ENV]?.trim() ?? "",
+		modelSource: invocation.env[HERMES_INFERENCE_MODEL_ENV]?.trim()
+			? `env:${HERMES_INFERENCE_MODEL_ENV}`
+			: "missing",
 		authEnvKey: HERMES_RELAY_ANTHROPIC_AUTH_ENV,
 		authScope: "relay-anthropic-proxy",
 		tokenScoping: "static-shared",
@@ -566,10 +573,12 @@ function containsRawModelProviderCredential(value: string): boolean {
 function hermesRelayModelEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 	const baseUrl = env[HERMES_RELAY_ANTHROPIC_BASE_URL_ENV]?.trim();
 	const authToken = env[HERMES_RELAY_ANTHROPIC_AUTH_ENV]?.trim();
-	if (!baseUrl && !authToken) return {};
+	const model = env[HERMES_INFERENCE_MODEL_ENV]?.trim();
+	if (!baseUrl && !authToken && !model) return {};
 	return {
 		...(baseUrl ? { [HERMES_RELAY_ANTHROPIC_BASE_URL_ENV]: baseUrl } : {}),
 		...(authToken ? { [HERMES_RELAY_ANTHROPIC_AUTH_ENV]: authToken } : {}),
+		...(model ? { [HERMES_INFERENCE_MODEL_ENV]: model } : {}),
 	};
 }
 

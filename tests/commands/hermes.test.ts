@@ -1018,11 +1018,19 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
 			command: "/usr/local/bin/hermes",
 			args: ["-z", "telclaude probe ok"],
 			cwd: "/repo",
-			envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "HERMES_HOME", "NO_COLOR"],
+			envKeys: [
+				"ANTHROPIC_API_KEY",
+				"ANTHROPIC_BASE_URL",
+				"HERMES_HOME",
+				"HERMES_INFERENCE_MODEL",
+				"NO_COLOR",
+			],
 		},
 		modelProvider: {
 			baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
 			baseUrlHost: "telclaude",
+			model: "claude-sonnet-4-6",
+			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authEnvKey: "ANTHROPIC_API_KEY",
 			authScope: "relay-anthropic-proxy",
 			tokenScoping: "static-shared",
@@ -1958,6 +1966,8 @@ describe("Hermes wrapper foundation", () => {
 				modelProvider: {
 					baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
 					baseUrlHost: "telclaude",
+					model: "claude-sonnet-4-6",
+					modelSource: "env:HERMES_INFERENCE_MODEL",
 					authEnvKey: "ANTHROPIC_API_KEY",
 					authScope: "relay-anthropic-proxy",
 				},
@@ -1970,6 +1980,8 @@ describe("Hermes wrapper foundation", () => {
 				modelProvider: {
 					baseUrl: "https://api.anthropic.com/v1/anthropic-proxy",
 					baseUrlHost: "api.anthropic.com",
+					model: "claude-sonnet-4-6",
+					modelSource: "env:HERMES_INFERENCE_MODEL",
 					authEnvKey: "ANTHROPIC_API_KEY",
 					authScope: "relay-anthropic-proxy",
 					tokenScoping: "static-shared",
@@ -1988,6 +2000,48 @@ describe("Hermes wrapper foundation", () => {
 				},
 			}),
 			detail: "ANTHROPIC_BASE_URL envKey is missing",
+		},
+		{
+			name: "missing inherited Hermes model env key",
+			evidence: cliHeadlessEvidence({
+				invocation: {
+					command: "/usr/local/bin/hermes",
+					args: ["-z", "telclaude probe ok"],
+					cwd: "/repo",
+					envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "HERMES_HOME", "NO_COLOR"],
+				},
+			}),
+			detail: "HERMES_INFERENCE_MODEL envKey is missing",
+		},
+		{
+			name: "missing model metadata value",
+			evidence: cliHeadlessEvidence({
+				modelProvider: {
+					baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+					baseUrlHost: "telclaude",
+					model: "",
+					modelSource: "env:HERMES_INFERENCE_MODEL",
+					authEnvKey: "ANTHROPIC_API_KEY",
+					authScope: "relay-anthropic-proxy",
+					tokenScoping: "static-shared",
+				},
+			}),
+			detail: "modelProvider.model is missing",
+		},
+		{
+			name: "missing model source metadata",
+			evidence: cliHeadlessEvidence({
+				modelProvider: {
+					baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+					baseUrlHost: "telclaude",
+					model: "claude-sonnet-4-6",
+					modelSource: "missing",
+					authEnvKey: "ANTHROPIC_API_KEY",
+					authScope: "relay-anthropic-proxy",
+					tokenScoping: "static-shared",
+				},
+			}),
+			detail: "modelProvider.modelSource is not env:HERMES_INFERENCE_MODEL",
 		},
 		{
 			name: "partial handwritten pass",
