@@ -5,6 +5,13 @@ import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import {
+	JtiStore as GoogleSidecarJtiStore,
+	canonicalHash as googleSidecarCanonicalHash,
+	verifyApprovalToken as verifyGoogleApprovalToken,
+} from "../google-services/approval.js";
+import type { FetchRequest } from "../google-services/types.js";
+import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../security/approval-domains.js";
+import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
 	type TelclaudeMcpSideEffectApprovalSignatureVerifier,
@@ -18,9 +25,14 @@ import {
 } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
 import {
+	createGoogleProviderSidecarApprovalTokenIssuer,
+	type GoogleProviderSidecarApprovalTokenSigner,
+} from "./mcp/provider-sidecar-token.js";
+import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
+	type TelclaudeMcpProviderSideEffectRecord,
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
@@ -33,6 +45,7 @@ export const PROVIDER_APPROVAL_BINDING_PROBE_SOURCE = "telclaude-provider-approv
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const PROBE_VAULT_SECRET = "telclaude-hermes-provider-approval-binding-probe";
 
 const ProviderApprovalBindingProbeCheckSchema = z
 	.object({
@@ -60,6 +73,8 @@ export const ProviderApprovalBindingProbeEvidenceSchema = z
 				bodyHash: Sha256Digest.optional(),
 				verifierCallCount: z.number().int().nonnegative(),
 				providerProxyCallCount: z.number().int().nonnegative(),
+				googleSidecarParamsHash: Sha256Digest.optional(),
+				hermesTokenSidecarRejectCode: NonEmptyString.optional(),
 			})
 			.strict(),
 	})
@@ -83,6 +98,8 @@ const REQUIRED_PROVIDER_APPROVAL_BINDING_CHECKS = [
 	"provider.approval-binding.revoked-ref-denied",
 	"provider.approval-binding.executed-ref-replay-denied",
 	"provider.approval-binding.duplicate-jti-denied",
+	"provider.approval-binding.google-sidecar-token-roundtrip",
+	"provider.approval-binding.hermes-token-sidecar-rejected",
 ] as const;
 
 export async function runTelclaudeProviderApprovalBindingProbe(input: {
@@ -377,6 +394,13 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			firstJti.ok === true && secondJti.ok === false && secondJti.code === "approval_replayed",
 			"approval verifier atomically rejects duplicate JTI reuse",
 		);
+
+		await runGoogleSidecarTokenChecks({
+			checks,
+			observations,
+			ledger,
+			vault,
+		});
 	} catch (error) {
 		checks.push({
 			name: "provider.approval-binding.exception",
@@ -448,20 +472,157 @@ export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): 
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 
+async function runGoogleSidecarTokenChecks(input: {
+	readonly checks: ProbeCheck[];
+	readonly observations: ProviderApprovalBindingProbeEvidence["observations"];
+	readonly ledger: TelclaudeMcpSideEffectLedger;
+	readonly vault: TelclaudeMcpSideEffectApprovalSigner & GoogleProviderSidecarApprovalTokenSigner;
+}): Promise<void> {
+	const googleRecord = input.ledger.prepare(
+		providerPrepareInput({
+			providerId: "google",
+			service: "gmail",
+			action: "create_draft",
+			params: {
+				to: "operator@example.com",
+				subject: "Hermes sidecar proof",
+				body: "approval token roundtrip",
+			},
+			providerAccountRef: "google:gmail:primary",
+			approvalRequestId: "google-sidecar-roundtrip",
+			wysiwysRender: "google.gmail.create_draft",
+		}),
+	) as TelclaudeMcpProviderSideEffectRecord;
+	const fetchRequest = fetchRequestForGoogleRecord(googleRecord);
+	const sidecarDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-google-sidecar-jti-"));
+	const sidecarJtiStore = new GoogleSidecarJtiStore(sidecarDir);
+	try {
+		const issuer = createGoogleProviderSidecarApprovalTokenIssuer({
+			vaultClient: input.vault,
+		});
+		const sidecarToken = await issuer({
+			record: googleRecord,
+			providerId: googleRecord.providerId,
+			service: googleRecord.service,
+			action: googleRecord.action,
+			params: googleRecord.params,
+			actorUserId: googleRecord.actorId,
+			approvalNonce: googleRecord.approvalRequestId,
+		});
+		const sidecarClaims = tokenClaims(sidecarToken);
+		input.observations.googleSidecarParamsHash =
+			typeof sidecarClaims.paramsHash === "string" ? sidecarClaims.paramsHash : undefined;
+		const sidecarAccepted = verifyGoogleApprovalToken(
+			sidecarToken,
+			fetchRequest,
+			googleRecord.actorId,
+			verifyGoogleApprovalSignature,
+			sidecarJtiStore,
+		);
+		const sidecarReplay = verifyGoogleApprovalToken(
+			sidecarToken,
+			fetchRequest,
+			googleRecord.actorId,
+			verifyGoogleApprovalSignature,
+			sidecarJtiStore,
+		);
+		pushCheck(
+			input.checks,
+			"provider.approval-binding.google-sidecar-token-roundtrip",
+			sidecarAccepted.ok === true &&
+				sidecarReplay.ok === false &&
+				sidecarReplay.code === "approval_replayed" &&
+				sidecarClaims.paramsHash ===
+					verifyGoogleParamsHash(googleRecord, sidecarClaims.subjectUserId),
+			"relay-minted Google sidecar token passes sidecar verification and is one-time",
+		);
+
+		const hermesToken = await generateProbeToken(
+			googleRecord,
+			input.vault,
+			"provider-approval-hermes-sidecar-reject",
+		);
+		const hermesRejected = verifyGoogleApprovalToken(
+			hermesToken,
+			fetchRequest,
+			googleRecord.actorId,
+			verifyGoogleApprovalSignature,
+			sidecarJtiStore,
+		);
+		input.observations.hermesTokenSidecarRejectCode = hermesRejected.ok
+			? "accepted"
+			: hermesRejected.code;
+		pushCheck(
+			input.checks,
+			"provider.approval-binding.hermes-token-sidecar-rejected",
+			hermesRejected.ok === false && hermesRejected.code === "approval_required",
+			"Hermes MCP side-effect tokens are rejected by the Google sidecar approval-v1 verifier",
+		);
+	} finally {
+		sidecarJtiStore.close();
+		fs.rmSync(sidecarDir, { recursive: true, force: true });
+	}
+}
+
 function createProbeVault(): TelclaudeMcpSideEffectApprovalSigner &
-	TelclaudeMcpSideEffectApprovalSignatureVerifier {
-	const secret = "telclaude-hermes-provider-approval-binding-probe";
+	TelclaudeMcpSideEffectApprovalSignatureVerifier &
+	GoogleProviderSidecarApprovalTokenSigner {
 	return {
 		async signPayload(payload, prefix) {
-			return { type: "sign-payload", signature: signature(secret, payload, prefix) };
+			return {
+				type: "sign-payload" as const,
+				signature: signature(PROBE_VAULT_SECRET, payload, prefix),
+			};
 		},
 		async verifyPayload(payload, sig, prefix) {
 			return {
 				type: "verify-payload",
-				valid: safeEqual(sig, signature(secret, payload, prefix)),
+				valid: safeEqual(sig, signature(PROBE_VAULT_SECRET, payload, prefix)),
 			};
 		},
 	};
+}
+
+function verifyGoogleApprovalSignature(payload: string, sig: string): boolean {
+	return safeEqual(sig, signature(PROBE_VAULT_SECRET, payload, GOOGLE_APPROVAL_SIGNING_PREFIX));
+}
+
+function tokenClaims(token: string): Record<string, unknown> {
+	const [, claimsB64] = token.split(".");
+	if (!claimsB64) return {};
+	try {
+		return JSON.parse(Buffer.from(claimsB64, "base64url").toString("utf8")) as Record<
+			string,
+			unknown
+		>;
+	} catch {
+		return {};
+	}
+}
+
+function fetchRequestForGoogleRecord(record: TelclaudeMcpSideEffectRecord): FetchRequest {
+	if (record.kind !== "provider" || record.providerId !== "google") {
+		throw new Error("record is not a Google provider action");
+	}
+	return {
+		service: record.service as FetchRequest["service"],
+		action: record.action,
+		params: record.params,
+	};
+}
+
+function verifyGoogleParamsHash(
+	record: TelclaudeMcpSideEffectRecord,
+	subjectUserId: unknown,
+): string | null {
+	if (record.kind !== "provider" || record.providerId !== "google") return null;
+	return googleSidecarCanonicalHash({
+		service: record.service,
+		action: record.action,
+		params: record.params,
+		actorUserId: record.actorId,
+		subjectUserId: typeof subjectUserId === "string" ? subjectUserId : null,
+	});
 }
 
 function signature(secret: string, payload: string, prefix: string): string {
