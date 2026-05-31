@@ -189,6 +189,119 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 		expect(harness.verifierCalls).toHaveLength(1);
 	});
+
+	it("executes provider sidecars through the relay proxy after ledger authorization", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(
+			providerPrepareInput({
+				providerId: "google",
+				service: "gmail",
+				action: "create_draft",
+				params: { to: "a@example.com", body: "hello" },
+				providerAccountRef: "google:gmail:primary",
+			}),
+		);
+		harness.accept("provider-token", provider);
+		const providerCalls: unknown[] = [];
+		const bridge = createBridge(harness.ledger, {
+			providerProxy: async (request) => {
+				providerCalls.push(request);
+				return { status: "ok", data: { draftId: "draft_123" } };
+			},
+			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
+				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+		});
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: provider.ref,
+				status: "executed",
+				approvalId: "provider-token",
+			}),
+		});
+		expect(providerCalls).toEqual([
+			{
+				providerId: "google",
+				path: "/v1/fetch",
+				method: "POST",
+				body: JSON.stringify({
+					service: "gmail",
+					action: "create_draft",
+					params: { to: "a@example.com", body: "hello" },
+				}),
+				userId: "operator",
+				approvalToken: "sidecar:google:gmail:create_draft:approval-provider-1",
+				approvalMode: "preapproved-ledger",
+			},
+		]);
+		expect(JSON.stringify(providerCalls)).not.toContain("provider-token");
+	});
+
+	it("fails closed before provider sidecar execution when no sidecar token issuer is configured", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(providerPrepareInput());
+		harness.accept("provider-token", provider);
+		const providerCalls: unknown[] = [];
+		const bridge = createBridge(harness.ledger, {
+			providerProxy: async (request) => {
+				providerCalls.push(request);
+				return { status: "ok", data: { accepted: true } };
+			},
+		});
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "provider_approval_token_issuer_missing",
+			reason: "provider sidecar approval token issuer is not configured",
+			retryable: false,
+			record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		});
+		expect(providerCalls).toEqual([]);
+		expect(harness.ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		);
+	});
+
+	it("leaves provider refs prepared when sidecar execution fails after approval verification", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(providerPrepareInput());
+		harness.accept("provider-token", provider);
+		const bridge = createBridge(harness.ledger, {
+			providerProxy: async () => ({
+				status: "error",
+				errorCode: "approval_required",
+				error: "sidecar rejected approval",
+			}),
+			providerApprovalTokenIssuer: () => "sidecar-token",
+		});
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "provider_approval_required",
+			reason: "sidecar rejected approval",
+			retryable: false,
+			record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		});
+		expect(harness.ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		);
+	});
 });
 
 function createLedgerHarness(): {
@@ -229,10 +342,13 @@ function createLedgerHarness(): {
 	};
 }
 
-function createBridge(ledger: TelclaudeMcpSideEffectLedger) {
+function createBridge(
+	ledger: TelclaudeMcpSideEffectLedger,
+	options: Omit<Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0], "ledger"> = {},
+) {
 	return createTelclaudeMcpBridge(baseAuthority(), {
 		...baseDependencies(),
-		...createTelclaudeMcpLedgerExecuteDependencies({ ledger }),
+		...createTelclaudeMcpLedgerExecuteDependencies({ ledger, ...options }),
 	});
 }
 
@@ -274,6 +390,7 @@ function providerPrepareInput(
 		approverActorId: "operator",
 		profileId: "ops",
 		domain: "private",
+		providerId: "bank",
 		service: "bank",
 		action: "transfer.prepare",
 		params: { amount: 100, currency: "ILS" },

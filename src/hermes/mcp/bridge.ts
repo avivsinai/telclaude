@@ -2,6 +2,7 @@ import { z } from "zod";
 import { validateMemorySource } from "../../memory/source.js";
 import type { MemoryCategory, MemorySource, TrustLevel } from "../../memory/types.js";
 import { validateMemoryEntryInput } from "../../memory/validation.js";
+import { resolveTelclaudeProviderOperation } from "./provider-routing.js";
 
 export const TELCLAUDE_MCP_TOOL_NAMES = [
 	"tc_provider_read",
@@ -53,12 +54,14 @@ export type TelclaudeMcpAuthorityStamp = {
 };
 
 export type TelclaudeMcpProviderReadRequest = TelclaudeMcpAuthorityStamp & {
+	providerId: string;
 	service: string;
 	action: string;
 	params: Record<string, unknown>;
 };
 
 export type TelclaudeMcpProviderPrepareWriteRequest = TelclaudeMcpAuthorityStamp & {
+	providerId: string;
 	service: string;
 	action: string;
 	params: Record<string, unknown>;
@@ -138,6 +141,7 @@ const DEFAULT_MEMORY_SEARCH_LIMIT = 10;
 
 const ProviderReadInputSchema = z
 	.object({
+		providerId: NonEmptyString.optional(),
 		service: NonEmptyString,
 		action: NonEmptyString,
 		params: JsonObjectSchema.optional(),
@@ -146,6 +150,7 @@ const ProviderReadInputSchema = z
 
 const ProviderPrepareWriteInputSchema = z
 	.object({
+		providerId: NonEmptyString.optional(),
 		service: NonEmptyString,
 		action: NonEmptyString,
 		params: JsonObjectSchema.optional(),
@@ -232,23 +237,31 @@ export function createTelclaudeMcpBridge(
 
 		async tc_provider_read(input) {
 			const parsed = ProviderReadInputSchema.parse(input);
-			assertProviderScope(normalizedAuthority, parsed.service);
-			return dependencies.providerRead({
-				...stamp,
+			const operation = resolveTelclaudeProviderOperation({
+				providerId: parsed.providerId,
 				service: parsed.service,
 				action: parsed.action,
 				params: parsed.params ?? {},
+			});
+			assertProviderScope(normalizedAuthority, operation.providerId);
+			return dependencies.providerRead({
+				...stamp,
+				...operation,
 			});
 		},
 
 		async tc_provider_prepare_write(input) {
 			const parsed = ProviderPrepareWriteInputSchema.parse(input);
-			assertProviderScope(normalizedAuthority, parsed.service);
-			return dependencies.providerPrepareWrite({
-				...stamp,
+			const operation = resolveTelclaudeProviderOperation({
+				providerId: parsed.providerId,
 				service: parsed.service,
 				action: parsed.action,
 				params: parsed.params ?? {},
+			});
+			assertProviderScope(normalizedAuthority, operation.providerId);
+			return dependencies.providerPrepareWrite({
+				...stamp,
+				...operation,
 				...(parsed.idempotencyKey ? { idempotencyKey: parsed.idempotencyKey } : {}),
 			});
 		},

@@ -386,6 +386,7 @@ function providerPrepareInput(
 		approverActorId: "telegram:operator",
 		profileId: "private",
 		domain: "private",
+		providerId: "bank",
 		service: "bank",
 		action: "transfer.prepare",
 		params: { amount: 100, currency: "ILS" },

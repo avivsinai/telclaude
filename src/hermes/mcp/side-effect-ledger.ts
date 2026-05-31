@@ -32,6 +32,7 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly providerId: string;
 	readonly service: string;
 	readonly action: string;
 	readonly params: Record<string, unknown>;
@@ -88,6 +89,7 @@ export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly providerId: string;
 	readonly service: string;
 	readonly action: string;
 	readonly params?: Record<string, unknown>;
@@ -129,6 +131,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 	readonly approverActorId: string;
 	readonly profileId: string;
 	readonly domain: TelclaudeMcpSideEffectDomain;
+	readonly providerId: string;
 	readonly service: string;
 	readonly action: string;
 	readonly providerAccountRef: string;
@@ -216,6 +219,15 @@ export type TelclaudeMcpSideEffectAuthorizeResult =
 	| TelclaudeMcpSideEffectRetryableFailure
 	| TelclaudeMcpSideEffectTerminalFailure;
 
+export type TelclaudeMcpSideEffectVerifyResult =
+	| {
+			readonly ok: true;
+			readonly record: TelclaudeMcpSideEffectRecord;
+			readonly approvalId?: string;
+	  }
+	| TelclaudeMcpSideEffectRetryableFailure
+	| TelclaudeMcpSideEffectTerminalFailure;
+
 export type TelclaudeMcpSideEffectRevokeResult =
 	| {
 			readonly ok: true;
@@ -228,6 +240,8 @@ export type TelclaudeMcpSideEffectLedger = {
 	get(ref: string): TelclaudeMcpSideEffectRecord | null;
 	list(): TelclaudeMcpSideEffectRecord[];
 	revoke(ref: string, reason?: string): TelclaudeMcpSideEffectRevokeResult;
+	verify(ref: string, approvalToken: string): Promise<TelclaudeMcpSideEffectVerifyResult>;
+	markExecuted(ref: string, approvalId?: string): TelclaudeMcpSideEffectAuthorizeResult;
 	authorize(ref: string, approvalToken: string): Promise<TelclaudeMcpSideEffectAuthorizeResult>;
 };
 
@@ -287,7 +301,7 @@ export function createTelclaudeMcpSideEffectLedger(
 			return { ok: true, record: cloneRecord(revoked) };
 		},
 
-		async authorize(ref, approvalToken) {
+		async verify(ref, approvalToken) {
 			const normalizedRef = requiredTrimmed(ref, "ref");
 			const authorizationNowMs = nowMs();
 			const prepared = records.get(normalizedRef);
@@ -316,6 +330,16 @@ export function createTelclaudeMcpSideEffectLedger(
 				return retryableFailure(approval.code, approval.reason, prepared);
 			}
 
+			return {
+				ok: true,
+				record: cloneRecord(prepared),
+				...(approval.approvalId ? { approvalId: approval.approvalId } : {}),
+			};
+		},
+
+		markExecuted(ref, approvalId) {
+			const normalizedRef = requiredTrimmed(ref, "ref");
+			const authorizationNowMs = nowMs();
 			const current = records.get(normalizedRef);
 			if (!current) {
 				return terminalFailure("effect_not_found", "side effect was not prepared");
@@ -327,10 +351,16 @@ export function createTelclaudeMcpSideEffectLedger(
 				...current,
 				status: "executed" as const,
 				executedAtMs: authorizationNowMs,
-				...(approval.approvalId ? { approvalId: approval.approvalId } : {}),
+				...(approvalId ? { approvalId: requiredTrimmed(approvalId, "approvalId") } : {}),
 			});
 			records.set(normalizedRef, executed);
 			return { ok: true, record: cloneRecord(executed) };
+		},
+
+		async authorize(ref, approvalToken) {
+			const verified = await this.verify(ref, approvalToken);
+			if (!verified.ok) return verified;
+			return this.markExecuted(ref, verified.approvalId);
 		},
 	};
 }
@@ -354,6 +384,7 @@ function prepareProviderRecord(
 		approverActorId: requiredTrimmed(input.approverActorId, "approverActorId"),
 		profileId: requiredTrimmed(input.profileId, "profileId"),
 		domain: input.domain,
+		providerId: requiredTrimmed(input.providerId, "providerId"),
 		service: requiredTrimmed(input.service, "service"),
 		action: requiredTrimmed(input.action, "action"),
 		params: cloneJsonObject(input.params ?? {}, "params"),
@@ -418,6 +449,7 @@ function hashProviderParams(record: ProviderBindingFields): string {
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		providerId: record.providerId,
 		service: record.service,
 		action: record.action,
 		params: record.params,
@@ -435,6 +467,7 @@ function hashProviderBody(record: ProviderBindingFields): string {
 		actorId: record.actorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		providerId: record.providerId,
 		service: record.service,
 		action: record.action,
 		providerAccountRef: record.providerAccountRef,
@@ -487,6 +520,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 		approverActorId: record.approverActorId,
 		profileId: record.profileId,
 		domain: record.domain,
+		providerId: record.providerId,
 		service: record.service,
 		action: record.action,
 		providerAccountRef: record.providerAccountRef,
@@ -528,6 +562,7 @@ function approvalBinding(
 			approverActorId: record.approverActorId,
 			profileId: record.profileId,
 			domain: record.domain,
+			providerId: record.providerId,
 			service: record.service,
 			action: record.action,
 			providerAccountRef: record.providerAccountRef,
@@ -713,6 +748,7 @@ type ProviderBindingFields = Pick<
 	| "actorId"
 	| "profileId"
 	| "domain"
+	| "providerId"
 	| "service"
 	| "action"
 	| "params"
