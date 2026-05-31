@@ -1018,7 +1018,14 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}) {
 			command: "/usr/local/bin/hermes",
 			args: ["-z", "telclaude probe ok"],
 			cwd: "/repo",
-			envKeys: ["HERMES_HOME", "NO_COLOR"],
+			envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "HERMES_HOME", "NO_COLOR"],
+		},
+		modelProvider: {
+			baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+			baseUrlHost: "telclaude",
+			authEnvKey: "ANTHROPIC_API_KEY",
+			authScope: "relay-anthropic-proxy",
+			tokenScoping: "static-shared",
 		},
 		findings: [],
 		...overrides,
@@ -1939,6 +1946,48 @@ describe("Hermes wrapper foundation", () => {
 				},
 			}),
 			detail: "forbidden credential envKeys: OPENAI_API_KEY",
+		},
+		{
+			name: "missing relay model provider",
+			evidence: cliHeadlessEvidence({ modelProvider: undefined }),
+			detail: "invalid feature probe evidence execution.cli_headless",
+		},
+		{
+			name: "missing relay token scoping metadata",
+			evidence: cliHeadlessEvidence({
+				modelProvider: {
+					baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+					baseUrlHost: "telclaude",
+					authEnvKey: "ANTHROPIC_API_KEY",
+					authScope: "relay-anthropic-proxy",
+				},
+			}),
+			detail: "invalid feature probe evidence execution.cli_headless",
+		},
+		{
+			name: "direct model provider base url",
+			evidence: cliHeadlessEvidence({
+				modelProvider: {
+					baseUrl: "https://api.anthropic.com/v1/anthropic-proxy",
+					baseUrlHost: "api.anthropic.com",
+					authEnvKey: "ANTHROPIC_API_KEY",
+					authScope: "relay-anthropic-proxy",
+					tokenScoping: "static-shared",
+				},
+			}),
+			detail: "modelProvider.baseUrl is not a relay Anthropic proxy URL",
+		},
+		{
+			name: "missing relay model env keys",
+			evidence: cliHeadlessEvidence({
+				invocation: {
+					command: "/usr/local/bin/hermes",
+					args: ["-z", "telclaude probe ok"],
+					cwd: "/repo",
+					envKeys: ["HERMES_HOME", "NO_COLOR"],
+				},
+			}),
+			detail: "ANTHROPIC_BASE_URL envKey is missing",
 		},
 		{
 			name: "partial handwritten pass",

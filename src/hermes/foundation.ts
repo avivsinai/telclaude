@@ -123,6 +123,15 @@ const CliHeadlessProbeEvidenceSchema = z
 				envKeys: z.array(NonEmptyString),
 			})
 			.passthrough(),
+		modelProvider: z
+			.object({
+				baseUrl: NonEmptyString,
+				baseUrlHost: NonEmptyString,
+				authEnvKey: z.literal("ANTHROPIC_API_KEY"),
+				authScope: z.literal("relay-anthropic-proxy"),
+				tokenScoping: z.enum(["static-shared", "peer-bound"]),
+			})
+			.passthrough(),
 		findings: z.array(
 			z
 				.object({
@@ -1865,10 +1874,28 @@ function collectCliHeadlessProbeEvidence(
 		failures.push(`findings are not empty (${parsed.data.findings.length})`);
 	}
 	const forbiddenEnvKeys = parsed.data.invocation.envKeys
-		.filter(isForbiddenCredentialKey)
+		.filter((key) => isForbiddenCredentialKey(key) && key !== "ANTHROPIC_API_KEY")
 		.sort((left, right) => left.localeCompare(right));
 	if (forbiddenEnvKeys.length > 0) {
 		failures.push(`forbidden credential envKeys: ${redactDetail(forbiddenEnvKeys.join(", "))}`);
+	}
+	if (!parsed.data.invocation.envKeys.includes("ANTHROPIC_BASE_URL")) {
+		failures.push("ANTHROPIC_BASE_URL envKey is missing");
+	}
+	if (!parsed.data.invocation.envKeys.includes("ANTHROPIC_API_KEY")) {
+		failures.push("ANTHROPIC_API_KEY envKey is missing");
+	}
+	if (!isRelayAnthropicProxyUrl(parsed.data.modelProvider.baseUrl)) {
+		failures.push("modelProvider.baseUrl is not a relay Anthropic proxy URL");
+	}
+	try {
+		if (
+			parsed.data.modelProvider.baseUrlHost !== new URL(parsed.data.modelProvider.baseUrl).hostname
+		) {
+			failures.push("modelProvider.baseUrlHost does not match baseUrl");
+		}
+	} catch {
+		failures.push("modelProvider.baseUrl is not parseable");
 	}
 	if (failures.length > 0) {
 		return featureProbeEvidenceFailure(
@@ -1881,7 +1908,7 @@ function collectCliHeadlessProbeEvidence(
 		surface_id: probe.surface_id,
 		status: "pass",
 		evidence_path: probe.evidence_path,
-		detail: `feature probe evidence ${probe.surface_id} observed pass, ran=true, exitCode=0`,
+		detail: `feature probe evidence ${probe.surface_id} observed pass, ran=true, exitCode=0, and relay Anthropic proxy model wiring`,
 	};
 }
 
@@ -2085,6 +2112,19 @@ function requiredModelRelayGateNames(
 function isDirectModelRelayProviderUrl(value: string): boolean {
 	try {
 		return DIRECT_MODEL_RELAY_PROVIDER_HOSTS.has(new URL(value).hostname.toLowerCase());
+	} catch {
+		return false;
+	}
+}
+
+function isRelayAnthropicProxyUrl(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return (
+			(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+			parsed.pathname.replace(/\/+$/, "") === "/v1/anthropic-proxy" &&
+			!DIRECT_MODEL_RELAY_PROVIDER_HOSTS.has(parsed.hostname.toLowerCase())
+		);
 	} catch {
 		return false;
 	}
