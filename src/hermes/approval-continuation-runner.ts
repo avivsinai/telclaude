@@ -30,6 +30,11 @@ import type {
 } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
 import {
+	providerAccountRefFor,
+	providerApprovalRenderFor,
+	resolveTelclaudeProviderOperation,
+} from "./mcp/provider-routing.js";
+import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalBinding,
@@ -332,19 +337,21 @@ function prepareProviderSideEffect(
 	ledger: TelclaudeMcpSideEffectLedger,
 	request: TelclaudeMcpProviderPrepareWriteRequest,
 ): PreparedProvider {
+	const operation = resolveTelclaudeProviderOperation(request);
 	const record = ledger.prepare({
 		kind: "provider",
 		actorId: request.actorId,
 		approverActorId: request.actorId,
 		profileId: request.profileId,
 		domain: request.domain,
-		service: request.service,
-		action: request.action,
-		params: request.params,
-		providerAccountRef: `${request.service}:primary`,
-		approvalRequestId: `approval-${request.service}-${request.action}`,
+		providerId: operation.providerId,
+		service: operation.service,
+		action: operation.action,
+		params: operation.params,
+		providerAccountRef: providerAccountRefFor(operation),
+		approvalRequestId: `approval-${operation.providerId}-${operation.service}-${operation.action}`,
 		approvalRevision: 1,
-		wysiwysRender: `${request.service} ${request.action}`,
+		wysiwysRender: providerApprovalRenderFor(operation),
 		...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
 	});
 	return { actionRef: record.ref, approvalRequestId: record.approvalRequestId };

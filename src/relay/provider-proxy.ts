@@ -29,6 +29,11 @@ export type ProviderProxyRequest = {
 	userId?: string;
 	/** Signed approval token for action-type requests */
 	approvalToken?: string;
+	/**
+	 * "preapproved-ledger" means the request already passed Hermes side-effect
+	 * approval and must not create a legacy /approve nonce on provider denial.
+	 */
+	approvalMode?: "interactive" | "preapproved-ledger";
 };
 
 export type ProviderProxyResponse = {
@@ -300,7 +305,11 @@ export async function proxyProviderRequest(
 		const errorCode = errorData.errorCode as string | undefined;
 
 		// Intercept approval_required: create pending approval for /approve flow
-		if (response.status === 403 && errorCode === "approval_required") {
+		if (
+			response.status === 403 &&
+			errorCode === "approval_required" &&
+			request.approvalMode !== "preapproved-ledger"
+		) {
 			const { createProviderApproval } = await import("./provider-approval.js");
 			try {
 				const parsedBody = body ? JSON.parse(body) : {};

@@ -35,6 +35,7 @@ const ProviderBindingSchema = z
 		approverActorId: NonEmptyString,
 		profileId: NonEmptyString,
 		domain: DomainSchema,
+		providerId: NonEmptyString,
 		service: NonEmptyString,
 		action: NonEmptyString,
 		providerAccountRef: NonEmptyString,

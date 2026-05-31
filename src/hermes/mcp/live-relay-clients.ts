@@ -20,6 +20,11 @@ import type {
 	TelclaudeMcpProviderReadRequest,
 } from "./bridge.js";
 import type { TelclaudeLiveMcpRelayClients } from "./live-server.js";
+import {
+	providerAccountRefFor,
+	providerApprovalRenderFor,
+	resolveTelclaudeProviderOperation,
+} from "./provider-routing.js";
 import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
 
 const logger = getChildLogger({ module: "hermes-live-relay-clients" });
@@ -65,11 +70,12 @@ export function createTelclaudeLiveMcpRelayClients(
 	return {
 		async providerRead(request) {
 			assertAuthorityMemoryBoundary(request);
+			const operation = resolveTelclaudeProviderOperation(request);
 			const response = await provider({
-				providerId: request.service,
+				providerId: operation.providerId,
 				path: PROVIDER_PATH,
 				method: "POST",
-				body: JSON.stringify(providerFetchBody(request)),
+				body: JSON.stringify(providerFetchBody(operation)),
 				userId: request.actorId,
 			});
 			if (response.status === "error") {
@@ -80,19 +86,21 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async providerPrepareWrite(request) {
 			assertAuthorityMemoryBoundary(request);
+			const operation = resolveTelclaudeProviderOperation(request);
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
 				approverActorId: request.actorId,
 				profileId: request.profileId,
 				domain: request.domain,
-				service: request.service,
-				action: request.action,
-				params: request.params,
-				providerAccountRef: `${request.service}:primary`,
+				providerId: operation.providerId,
+				service: operation.service,
+				action: operation.action,
+				params: operation.params,
+				providerAccountRef: providerAccountRefFor(operation),
 				approvalRequestId: makeApprovalRequestId(),
 				approvalRevision: 1,
-				wysiwysRender: providerApprovalRender(request),
+				wysiwysRender: providerApprovalRenderFor(operation),
 				...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
 			});
 			return { actionRef: record.ref, approvalRequestId: record.approvalRequestId };
@@ -181,18 +189,16 @@ export function createTelclaudeLiveMcpRelayClients(
 }
 
 function providerFetchBody(
-	request: TelclaudeMcpProviderReadRequest | TelclaudeMcpProviderPrepareWriteRequest,
+	request: Pick<
+		TelclaudeMcpProviderReadRequest | TelclaudeMcpProviderPrepareWriteRequest,
+		"service" | "action" | "params"
+	>,
 ): { service: string; action: string; params: Record<string, unknown> } {
-	const split = request.action.match(/^([a-zA-Z0-9_-]+)\.([a-zA-Z0-9_.:-]+)$/);
 	return {
-		service: split?.[1] ?? request.service,
-		action: split?.[2] ?? request.action,
+		service: request.service,
+		action: request.action,
 		params: request.params,
 	};
-}
-
-function providerApprovalRender(request: TelclaudeMcpProviderPrepareWriteRequest): string {
-	return `${request.service}.${request.action}`;
 }
 
 function providerErrorCode(response: { errorCode?: string; error?: string }): string {

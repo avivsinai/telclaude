@@ -102,6 +102,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		await expect(
 			clients.providerRead(
 				providerRead({
+					providerId: "google",
 					service: "google",
 					action: "gmail.search",
 					params: { q: "from:clinic" },
@@ -159,6 +160,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			kind: "provider",
 			status: "prepared",
 			actorId: "operator",
+			providerId: "bank",
 			service: "bank",
 			action: "transfer.execute",
 			params: { amount: 100, currency: "ILS" },
@@ -402,6 +404,7 @@ function providerRead(
 ): TelclaudeMcpProviderReadRequest {
 	return {
 		...privateStamp(),
+		providerId: "bank",
 		service: "bank",
 		action: "balances.list",
 		params: {},
@@ -414,6 +417,7 @@ function providerPrepare(
 ): TelclaudeMcpProviderPrepareWriteRequest {
 	return {
 		...privateStamp(),
+		providerId: "bank",
 		service: "bank",
 		action: "transfer.execute",
 		params: { amount: 10 },

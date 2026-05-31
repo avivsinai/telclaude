@@ -349,10 +349,10 @@ describe("Telclaude live MCP relay-side server", () => {
 		const prepared = harness.ledger.prepare(providerPrepareInput());
 		const token = await tokenFor(harness, prepared);
 
-		expect(
-			resultOf(
-				await harness.server.handleJsonRpc(
-					toolCall("tc_provider_execute_write", {
+			expect(
+				resultOf(
+					await harness.server.handleJsonRpc(
+						toolCall("tc_provider_execute_write", {
 						actionRef: "missing-ref",
 						approvalToken: token,
 					}),
@@ -484,10 +484,36 @@ describe("Telclaude live MCP relay-side server", () => {
 			record: expect.objectContaining({
 				ref: replayRecord.ref,
 				status: "executed",
-				approvalId: "jti-live-provider-retry",
-			}),
+					approvalId: "jti-live-provider-retry",
+				}),
+			});
+			expect(harness.calls.providerExecute).toEqual([
+				expect.objectContaining({
+					providerId: "bank",
+					path: "/v1/fetch",
+					method: "POST",
+					userId: "operator",
+					approvalToken: "sidecar:bank:bank:transfer.execute:approval-invalid-token",
+					approvalMode: "preapproved-ledger",
+				}),
+				expect.objectContaining({
+					providerId: "bank",
+					path: "/v1/fetch",
+					method: "POST",
+					userId: "operator",
+					approvalToken: "sidecar:bank:bank:transfer.execute:approval-live-provider",
+					approvalMode: "preapproved-ledger",
+				}),
+				expect.objectContaining({
+					providerId: "bank",
+					path: "/v1/fetch",
+					method: "POST",
+					userId: "operator",
+					approvalToken: "sidecar:bank:bank:transfer.execute:approval-replay",
+					approvalMode: "preapproved-ledger",
+				}),
+			]);
 		});
-	});
 
 	it("executes outbound side effects only through the ledger", async () => {
 		const harness = createHarness(cleanup);
@@ -556,11 +582,12 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 			nowSeconds: () => 120,
 		}),
 	});
-	const calls = {
-		providerRead: [] as unknown[],
-		memorySearch: [] as unknown[],
-		outboundPrepare: [] as unknown[],
-	};
+		const calls = {
+			providerRead: [] as unknown[],
+			providerExecute: [] as unknown[],
+			memorySearch: [] as unknown[],
+			outboundPrepare: [] as unknown[],
+		};
 	const relayClients: TelclaudeLiveMcpRelayClients = {
 		providerRead: async (request) => {
 			calls.providerRead.push(request);
@@ -592,13 +619,19 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 			authorityHandle: socialGrant.handle,
 			connection: socialConnection,
 		},
-		server: createTelclaudeLiveMcpRelayHttpServer({
-			registry,
-			ledger,
-			relayClients,
-			bindHost: "telclaude",
-			networkName: "telclaude-hermes-relay",
-			nowMs: () => 120_000,
+			server: createTelclaudeLiveMcpRelayHttpServer({
+				registry,
+				ledger,
+				relayClients,
+				providerProxy: async (request) => {
+					calls.providerExecute.push(request);
+					return { status: "ok", data: { executed: true } };
+				},
+				providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
+					`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+				bindHost: "telclaude",
+				networkName: "telclaude-hermes-relay",
+				nowMs: () => 120_000,
 		}),
 	};
 }
@@ -670,6 +703,7 @@ function providerPrepareInput(
 		approverActorId: "operator",
 		profileId: "ops",
 		domain: "private",
+		providerId: "bank",
 		service: "bank",
 		action: "transfer.execute",
 		params: { amount: 100, currency: "ILS" },

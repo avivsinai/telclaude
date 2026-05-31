@@ -5,6 +5,7 @@ import type {
 } from "./authority-registry.js";
 import { createTelclaudeMcpAuthorityRegistry } from "./authority-registry.js";
 import type { TelclaudeMcpAuthority } from "./bridge.js";
+import type { TelclaudeMcpProviderSidecarApprovalTokenIssuer } from "./ledger-execute.js";
 import { createTelclaudeLiveMcpConnectionResolver } from "./live-connection-resolver.js";
 import {
 	listenTelclaudeLiveMcpRelayHttpServer,
@@ -82,6 +83,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly registry?: TelclaudeMcpAuthorityRegistry;
 	readonly ledger?: TelclaudeMcpSideEffectLedger;
 	readonly verifyApproval?: TelclaudeMcpSideEffectApprovalVerifier;
+	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
 };
@@ -143,6 +145,7 @@ export async function startTelclaudeLiveMcpRuntime(
 		relayClients,
 		bindHost: options.config.host,
 		networkName: options.config.networkName,
+		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		nowMs: options.nowMs,
 	});
 	const nodeServer = createTelclaudeLiveMcpNodeHttpServer(liveServer, {
