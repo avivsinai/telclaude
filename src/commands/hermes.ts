@@ -39,6 +39,7 @@ import {
 	buildCutoverScopeManifestFromInventory,
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
+	buildHermesQueueSnapshot,
 	CutoverProofBundleSchema,
 	collectFeatureProbeEvidence,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
@@ -47,9 +48,11 @@ import {
 	DEFAULT_DECISION_LOG_PATH,
 	DEFAULT_FEATURE_PROBE_MATRIX_PATH,
 	DEFAULT_FIXTURE_RESULTS_PATH,
+	DEFAULT_INVENTORY_PATH,
 	DEFAULT_NETWORK_PROBES_PATH,
 	DEFAULT_NO_FORK_PROOF_PATH,
 	DEFAULT_PROFILE_GENERATION_PROOF_PATH,
+	DEFAULT_QUEUE_SNAPSHOT_PATH,
 	DEFAULT_ROLLBACK_REHEARSAL_PATH,
 	evaluateCutoverCheck,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
@@ -205,10 +208,19 @@ type NetworkProbeOption = JsonOption & {
 	timeoutMs?: string;
 };
 
+type InventoryOption = JsonOption & {
+	out?: string;
+};
+
 type RollbackRehearsalOption = JsonOption & {
 	allowRun?: boolean;
 	out: string;
 	evidencePath?: string;
+};
+
+type QueueSnapshotOption = JsonOption & {
+	inventory?: string;
+	out?: string;
 };
 
 type ProofBundleOption = JsonOption &
@@ -1315,7 +1327,7 @@ export function registerHermesCommand(program: Command): void {
 								networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
 								rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
 							}),
-							{ strict, dryRun },
+							{ strict, dryRun, liveCutover: false },
 						);
 						const proveReport = { schemaVersion: 1, noForkProof: report, p0: cutover };
 						if (options.json) {
@@ -1374,14 +1386,19 @@ export function registerHermesCommand(program: Command): void {
 		.command("inventory")
 		.description("Emit the Phase 0 wrapper inventory")
 		.option("--json", "Emit structured JSON")
-		.action((options: JsonOption) => {
+		.option("--out <path>", "Write inventory snapshot JSON to this path")
+		.action((options: InventoryOption) => {
 			const inventory = collectHermesInventory();
+			if (options.out) {
+				writeJsonArtifact(resolveHermesArtifactPath(options.out), inventory);
+			}
 			if (options.json) {
 				printJson(inventory);
 			} else {
 				console.log(
 					`Hermes inventory: ${inventory.status}, ${inventory.summary.workflows} workflow(s), ${inventory.summary.issues} issue(s)`,
 				);
+				if (options.out) console.log(`- evidence: ${options.out}`);
 			}
 		});
 
@@ -2378,6 +2395,56 @@ export function registerHermesCommand(program: Command): void {
 		});
 
 	hermes
+		.command("queue-snapshot")
+		.description("Build cutover queue ownership evidence from live or supplied Hermes inventory")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--inventory <path>",
+			`Inventory snapshot JSON path; uses ${DEFAULT_INVENTORY_PATH} when present, otherwise collects live inventory`,
+		)
+		.option("--out <path>", "Write queue snapshot JSON to this path")
+		.action((options: QueueSnapshotOption) => {
+			try {
+				const inventory = options.inventory
+					? readJsonFile(resolveHermesArtifactPath(options.inventory))
+					: collectHermesInventory();
+				const snapshot = buildHermesQueueSnapshot({ inventory });
+				const outPath = options.out ?? DEFAULT_QUEUE_SNAPSHOT_PATH;
+				if (options.out) {
+					writeJsonArtifact(resolveHermesArtifactPath(outPath), snapshot);
+				}
+				if (options.json) {
+					printJson(snapshot);
+				} else {
+					console.log(
+						`Hermes queue-snapshot: ${snapshot.unownedActiveCount} unowned active item(s)`,
+					);
+					if (options.out) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = snapshot.unownedActiveCount === 0 ? 0 : 1;
+			} catch (error) {
+				const report = {
+					status: "input_error",
+					exitCode: 2,
+					gates: [
+						{
+							name: "queueSnapshot.inventory",
+							status: "fail",
+							detail: String(error instanceof Error ? error.message : error),
+						},
+					],
+				};
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log("Hermes queue-snapshot: input_error");
+					console.log(`- FAIL queueSnapshot.inventory: ${report.gates[0].detail}`);
+				}
+				process.exitCode = 2;
+			}
+		});
+
+	hermes
 		.command("proof-bundle")
 		.description("Build a byte-bound cutover proof bundle from strict evidence artifacts")
 		.requiredOption("--inventory <path>", "Inventory snapshot JSON path")
@@ -2500,6 +2567,10 @@ export function registerHermesCommand(program: Command): void {
 			"--inventory <path>",
 			"Inventory snapshot JSON path; collects live inventory when omitted",
 		)
+		.option(
+			"--queue-snapshot <path>",
+			"Queue ownership snapshot JSON path; derives from inventory when omitted",
+		)
 		.option("--scope <path>", "Cutover scope manifest JSON path", DEFAULT_CUTOVER_SCOPE_PATH)
 		.option("--decisions <path>", "Decision log JSON path", DEFAULT_DECISION_LOG_PATH)
 		.option(
@@ -2540,6 +2611,7 @@ export function registerHermesCommand(program: Command): void {
 					featureProbes: string;
 					lockfile: string;
 					fixtures: string;
+					queueSnapshot?: string;
 					networkProbes: string;
 					nofork: string;
 					profileProof: string;
@@ -2553,10 +2625,14 @@ export function registerHermesCommand(program: Command): void {
 				let input: unknown;
 				try {
 					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
-					input = buildCutoverInputBundleFromArtifacts({
-						inventory: options.inventory
-							? readJsonFile(resolveHermesArtifactPath(options.inventory))
-							: collectHermesInventory(),
+						const defaultInventoryPath = resolveHermesArtifactPath(DEFAULT_INVENTORY_PATH);
+						const inventoryPath =
+							options.inventory ??
+							(fs.existsSync(defaultInventoryPath) ? DEFAULT_INVENTORY_PATH : undefined);
+						input = buildCutoverInputBundleFromArtifacts({
+							inventory: inventoryPath
+								? readJsonFile(resolveHermesArtifactPath(inventoryPath))
+								: collectHermesInventory(),
 						scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
 						cutoverProofBundle: readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
@@ -2569,6 +2645,9 @@ export function registerHermesCommand(program: Command): void {
 							resolveHermesArtifactPath(options.profileProof),
 						),
 						networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
+						queueSnapshot: options.queueSnapshot
+							? readJsonFile(resolveHermesArtifactPath(options.queueSnapshot))
+							: undefined,
 						rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
 					});
 				} catch (error) {
@@ -2594,7 +2673,12 @@ export function registerHermesCommand(program: Command): void {
 					return;
 				}
 
-				const report = evaluateCutoverCheck(input, { strict, dryRun });
+				const report = evaluateCutoverCheck(input, {
+					strict,
+					dryRun,
+					liveCutover: strict && !dryRun,
+					now: new Date(),
+				});
 				if (options.json) {
 					printJson(report);
 				} else {

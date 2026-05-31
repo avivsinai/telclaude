@@ -23,7 +23,9 @@ export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json
 export const DEFAULT_CUTOVER_SCOPE_PATH = "docs/hermes/cutover-scope.json";
 export const DEFAULT_DECISION_LOG_PATH = "docs/hermes/decisions.json";
 export const DEFAULT_FIXTURE_RESULTS_PATH = "docs/hermes/fixture-results.json";
+export const DEFAULT_INVENTORY_PATH = "docs/hermes/inventory.json";
 export const DEFAULT_NETWORK_PROBES_PATH = "docs/hermes/network-probes.json";
+export const DEFAULT_QUEUE_SNAPSHOT_PATH = "docs/hermes/queue-snapshot.json";
 export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_CUTOVER_PROOF_BUNDLE_PATH = "docs/hermes/cutover-proof-bundle.json";
 export const DEFAULT_PROFILE_GENERATION_PROOF_PATH = "docs/hermes/profile-generation-proof.json";
@@ -1390,6 +1392,10 @@ export function buildCutoverInputBundleFromArtifacts(input: {
 	return parsed.data;
 }
 
+export function buildHermesQueueSnapshot(input: { inventory: unknown }): QueueOwnershipSnapshot {
+	return deriveQueueOwnershipSnapshot(input.inventory);
+}
+
 export function buildCutoverProofBundle(input: {
 	hermes: HermesPin;
 	wrapperVersion: string;
@@ -2507,10 +2513,11 @@ function writeTextFileAtomic(filePath: string, content: string): void {
 
 export function evaluateCutoverCheck(
 	input: unknown,
-	options: { strict?: boolean; dryRun?: boolean } = {},
+	options: { strict?: boolean; dryRun?: boolean; liveCutover?: boolean; now?: Date } = {},
 ): CutoverReport {
 	const dryRun = options.dryRun ?? false;
 	const strict = options.strict ?? true;
+	const liveCutover = options.liveCutover ?? false;
 	if (!strict) {
 		return {
 			status: "input_error",
@@ -2543,6 +2550,8 @@ export function evaluateCutoverCheck(
 	const proofBundleResult = checkCutoverProofBundle({
 		bundle: bundle.cutoverProofBundle,
 		cutover: bundle,
+		liveCutover,
+		now: options.now,
 	});
 	const invalidEvidence = proofBundleResult.invalidEvidence;
 	gates.push(...proofBundleResult.gates);
@@ -2699,6 +2708,10 @@ export function evaluateCutoverCheck(
 	];
 	const noForkFailures = noForkProofEvidenceFailures(bundle.noForkProof);
 	const rollbackRehearsalFailures = rollbackRehearsalEvidenceFailures(bundle.rollbackRehearsal);
+	const queueSnapshotFailures = queueSnapshotEvidenceFailures(
+		bundle.inventory,
+		bundle.queueSnapshot,
+	);
 	const networkProbeById = new Map(bundle.networkProbes.probes.map((probe) => [probe.id, probe]));
 	const networkProbeFailures = [
 		...(bundle.networkProbes.probes.length === 0 ? ["network probe bundle is empty"] : []),
@@ -2779,8 +2792,23 @@ export function evaluateCutoverCheck(
 	});
 	gates.push({
 		name: "queues.owned",
-		status: bundle.queueSnapshot.unownedActiveCount === 0 ? "pass" : "fail",
-		detail: "active queues, approvals, cards, cron, social, and provider work must be owned",
+		status:
+			queueSnapshotFailures.length === 0 && bundle.queueSnapshot.unownedActiveCount === 0
+				? "pass"
+				: "fail",
+		detail:
+			queueSnapshotFailures.length === 0 && bundle.queueSnapshot.unownedActiveCount === 0
+				? "active queues, approvals, cards, cron, social, and provider work must be owned"
+				: unique([
+						...queueSnapshotFailures,
+						...(bundle.queueSnapshot.unownedActiveCount > 0
+							? [
+									`${String(
+										bundle.queueSnapshot.unownedActiveCount,
+									)} unowned active queue item(s) remain`,
+								]
+							: []),
+					]).join("; "),
 	});
 	gates.push({
 		name: "rollback.rehearsed",
@@ -2804,6 +2832,8 @@ export function evaluateCutoverCheck(
 function checkCutoverProofBundle(input: {
 	bundle: CutoverProofBundle;
 	cutover: CutoverInputBundle;
+	liveCutover?: boolean;
+	now?: Date;
 }): { gates: CutoverReport["gates"]; invalidEvidence: boolean } {
 	const gates: CutoverReport["gates"] = [];
 	let invalidEvidence = false;
@@ -2815,6 +2845,17 @@ function checkCutoverProofBundle(input: {
 			name: "proofBundle.generatedAt",
 			status: "fail",
 			detail: "proof bundle generatedAt is invalid",
+		});
+	} else if (
+		input.liveCutover === true &&
+		input.now &&
+		isStaleEvidenceTimestamp(input.bundle.generatedAt, input.now)
+	) {
+		invalidEvidence = true;
+		gates.push({
+			name: "proofBundle.generatedAt.live",
+			status: "fail",
+			detail: "proof bundle generatedAt is stale or future-dated for live cutover",
 		});
 	}
 	if (!sameJson(input.bundle.hermes, input.cutover.lockfile.hermes)) {
@@ -2847,6 +2888,10 @@ function checkCutoverProofBundle(input: {
 			}
 			if (artifact.schemaVersion !== schemaVersionOf(loaded.value)) {
 				failures.push("artifact schema version does not match on-disk evidence");
+			}
+			const loadedGeneratedAt = getEvidenceTimestamp(loaded.value);
+			if (loadedGeneratedAt && artifact.generatedAt !== loadedGeneratedAt) {
+				failures.push("artifact generatedAt does not match on-disk evidence");
 			}
 			if (stableStringify(loaded.value) !== stableStringify(value)) {
 				failures.push("artifact on-disk evidence does not match checker input");
@@ -4914,6 +4959,24 @@ function deriveQueueOwnershipSnapshot(inventory: unknown): QueueOwnershipSnapsho
 		0,
 	);
 	return { unownedActiveCount };
+}
+
+function queueSnapshotEvidenceFailures(
+	inventory: unknown,
+	queueSnapshot: QueueOwnershipSnapshot,
+): string[] {
+	let derived: QueueOwnershipSnapshot;
+	try {
+		derived = deriveQueueOwnershipSnapshot(inventory);
+	} catch (error) {
+		return [String(error instanceof Error ? error.message : error)];
+	}
+	if (sameJson(derived, queueSnapshot)) return [];
+	return [
+		`queue snapshot does not match inventory pendingQueues: expected ${String(
+			derived.unownedActiveCount,
+		)}, got ${String(queueSnapshot.unownedActiveCount)}`,
+	];
 }
 
 function collectLockfileConsistencyFailures(input: {
