@@ -139,6 +139,11 @@ import {
 	runTelclaudeProviderDomainProbe,
 } from "../hermes/provider-domain-probes.js";
 import {
+	buildGoogleProviderFixtureEvidenceBundle,
+	DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH,
+	runTelclaudeGoogleProviderProbe,
+} from "../hermes/provider-google-probe.js";
+import {
 	DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
 	runTelclaudeProviderReleasePolicyProbe,
 } from "../hermes/provider-release-policy-probe.js";
@@ -1214,6 +1219,13 @@ export function registerHermesCommand(program: Command): void {
 								observedAt,
 							})
 						: undefined;
+				const googleProviderBundle =
+					options.includeProviderDomain === true
+						? buildGoogleProviderFixtureEvidenceBundle({
+								evidenceDir: options.evidenceDir,
+								observedAt,
+							})
+						: undefined;
 				const workflowBundle =
 					options.includeWorkflow === true
 						? buildHermesWorkflowFixtureEvidenceBundle({
@@ -1239,6 +1251,7 @@ export function registerHermesCommand(program: Command): void {
 				const generatedResults = [
 					...bundle.results,
 					...(providerDomainBundle?.results ?? []),
+					...(googleProviderBundle?.results ?? []),
 					...(browserComputerBundle?.results ?? []),
 					...(workflowBundle?.results ?? []),
 				] as Array<{
@@ -1253,6 +1266,7 @@ export function registerHermesCommand(program: Command): void {
 				const evidence = [
 					...bundle.evidence,
 					...(providerDomainBundle?.evidence ?? []),
+					...(googleProviderBundle?.evidence ?? []),
 					...(browserComputerBundle?.evidence ?? []),
 					...(workflowBundle?.evidence ?? []),
 				];
@@ -2134,6 +2148,29 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
 					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === "providers.google") {
+				const report = await runTelclaudeGoogleProviderProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
