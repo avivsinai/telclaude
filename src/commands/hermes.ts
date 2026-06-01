@@ -27,6 +27,12 @@ import {
 	writeApprovalContinuationArtifacts,
 } from "../hermes/approval-continuation-runner.js";
 import {
+	buildBrowserComputerBrokerFixtureEvidenceBundle,
+	DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS,
+	isBrowserComputerBrokerSurfaceId,
+	runTelclaudeBrowserComputerBrokerProbe,
+} from "../hermes/browser-computer-broker-probes.js";
+import {
 	buildEdgeAdapterProbeEvidence,
 	isEdgeAdapterFeatureSurfaceId,
 } from "../hermes/edge-adapter-probes.js";
@@ -265,6 +271,7 @@ type ProofBundleOption = JsonOption &
 
 type FixtureResultOption = JsonOption & {
 	write?: boolean;
+	includeBrowserComputer?: boolean;
 	includeProviderDomain?: boolean;
 	includeWorkflow?: boolean;
 	mergeExisting?: boolean;
@@ -1178,6 +1185,10 @@ export function registerHermesCommand(program: Command): void {
 			"Generate provider-domain fixture evidence from provider-domain probe artifacts",
 		)
 		.option(
+			"--include-browser-computer",
+			"Generate browser/computer broker fixture evidence from broker probe artifacts",
+		)
+		.option(
 			"--include-workflow",
 			"Generate workflow fixture evidence from workflow probe artifacts",
 		)
@@ -1210,6 +1221,13 @@ export function registerHermesCommand(program: Command): void {
 								observedAt,
 							})
 						: undefined;
+				const browserComputerBundle =
+					options.includeBrowserComputer === true
+						? buildBrowserComputerBrokerFixtureEvidenceBundle({
+								evidenceDir: options.evidenceDir,
+								observedAt,
+							})
+						: undefined;
 				const existingResults =
 					options.mergeExisting === true && fs.existsSync(resolveHermesArtifactPath(options.out))
 						? ((
@@ -1221,6 +1239,7 @@ export function registerHermesCommand(program: Command): void {
 				const generatedResults = [
 					...bundle.results,
 					...(providerDomainBundle?.results ?? []),
+					...(browserComputerBundle?.results ?? []),
 					...(workflowBundle?.results ?? []),
 				] as Array<{
 					id: string;
@@ -1234,6 +1253,7 @@ export function registerHermesCommand(program: Command): void {
 				const evidence = [
 					...bundle.evidence,
 					...(providerDomainBundle?.evidence ?? []),
+					...(browserComputerBundle?.evidence ?? []),
 					...(workflowBundle?.evidence ?? []),
 				];
 				if (options.write) {
@@ -2113,6 +2133,32 @@ export function registerHermesCommand(program: Command): void {
 				if (options.allowRun === true || options.out) {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (isBrowserComputerBrokerSurfaceId(surface)) {
+				const report = runTelclaudeBrowserComputerBrokerProbe({
+					surfaceId: surface,
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS[surface],
 					);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
