@@ -304,6 +304,19 @@ describe("Telclaude edge adapter runtime", () => {
 		);
 		expectDenied(
 			() =>
+				runtime.authorizeHouseholdProviderAccess({
+					actorRef: inbound.actorRef,
+					conversationRef: inbound.conversationRef,
+					providerAccount: "clalit:family-member",
+					providerAccountBinding: "strong_link",
+					action: "prepare_write",
+					classification: "benign",
+					approved: false,
+				}),
+			"provider.sensitive-release-approval-required",
+		);
+		expectDenied(
+			() =>
 				runtime.prepareOutbound({
 					request: {
 						schemaVersion: EdgeAdapterSchemaVersions.outboundRequest,

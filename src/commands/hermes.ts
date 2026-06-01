@@ -133,6 +133,10 @@ import {
 	runTelclaudeProviderDomainProbe,
 } from "../hermes/provider-domain-probes.js";
 import {
+	DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
+	runTelclaudeProviderReleasePolicyProbe,
+} from "../hermes/provider-release-policy-probe.js";
+import {
 	DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH,
 	runHermesRollbackRehearsal,
 	writeHermesRollbackRehearsalEvidence,
@@ -2061,6 +2065,31 @@ export function registerHermesCommand(program: Command): void {
 				if (options.allowRun === true || options.out) {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS[surface],
+					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === "providers.release-policy") {
+				const report = runTelclaudeProviderReleasePolicyProbe({
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
 					);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}

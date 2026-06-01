@@ -20,6 +20,7 @@ import {
 	providerDomainFixtureEvidenceFailure,
 	providerDomainProbeEvidenceFailure,
 } from "./provider-domain-probes.js";
+import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
 
@@ -369,6 +370,9 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/edge-adapter-probes.ts",
 	],
 	"providers.release-policy": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/provider-release-policy-probe.ts",
 		"src/hermes/mcp/authority-registry.ts",
 		"src/hermes/mcp/bridge.ts",
 		"src/relay/provider-proxy.ts",
@@ -1676,6 +1680,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (isProviderDomainSurfaceId(probe.surface_id)) {
 			return [collectProviderDomainProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "providers.release-policy") {
+			return [collectProviderReleasePolicyProbeEvidence(probe)];
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
@@ -4961,6 +4968,42 @@ function collectProviderDomainProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider-domain MCP/proxy controls`,
+	};
+}
+
+function collectProviderReleasePolicyProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = providerReleasePolicyProbeEvidenceFailure(evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed provider release-policy controls`,
 	};
 }
 
