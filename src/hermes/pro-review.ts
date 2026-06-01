@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -569,6 +570,47 @@ export function buildProReviewRequestDraft(
 	};
 }
 
+export function dirtyTrackedProReviewSelectedFiles(
+	selectedFiles: readonly string[],
+): readonly string[] {
+	const topLevel = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+		cwd: process.cwd(),
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+	if (topLevel.status !== 0 || !topLevel.stdout.trim()) return [];
+	const repoRoot = topLevel.stdout.trim();
+	const repoRelativeFiles = selectedFiles
+		.map((file) => path.resolve(file))
+		.filter((file) => file === repoRoot || file.startsWith(`${repoRoot}${path.sep}`))
+		.map((file) => path.relative(repoRoot, file))
+		.filter((file) => file.length > 0);
+	if (repoRelativeFiles.length === 0) return [];
+
+	const dirty = new Set<string>();
+	for (const args of [
+		["diff", "--name-only", "--", ...repoRelativeFiles],
+		["diff", "--cached", "--name-only", "--", ...repoRelativeFiles],
+	]) {
+		const result = spawnSync("git", ["-C", repoRoot, ...args], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		if (result.status !== 0) {
+			throw new Error(
+				`Unable to verify Pro review selected file cleanliness: ${
+					result.stderr.trim() || "git diff failed"
+				}`,
+			);
+		}
+		for (const line of result.stdout.split(/\r?\n/)) {
+			const file = line.trim();
+			if (file) dirty.add(file);
+		}
+	}
+	return [...dirty].sort();
+}
+
 function readOptionalProReviewRequest(requestPath: string | undefined): ProReviewRequest | null {
 	const resolved = resolveHermesArtifactPath(requestPath ?? DEFAULT_PRO_REVIEW_REQUEST_PATH);
 	if (!fs.existsSync(resolved)) return null;
@@ -671,6 +713,15 @@ function requestPolicyGates(
 		missingFiles.length === 0
 			? pass("request.selectedFiles", "all selected Pro review files exist")
 			: fail("request.selectedFiles", `selected file(s) missing: ${missingFiles.join(", ")}`),
+	);
+	const dirtyFiles = dirtyTrackedProReviewSelectedFiles(request.selectedFiles);
+	gates.push(
+		dirtyFiles.length === 0
+			? pass("request.selectedFilesClean", "all selected tracked files are clean")
+			: fail(
+					"request.selectedFilesClean",
+					`selected tracked file(s) are dirty: ${dirtyFiles.join(", ")}`,
+				),
 	);
 	gates.push(...semanticEvidenceGates(request, { requireGreenEvidence }));
 
