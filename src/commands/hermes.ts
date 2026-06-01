@@ -412,6 +412,57 @@ function writeJsonArtifact(
 	writeHermesJsonArtifact(filePath, value, options);
 }
 
+function dirtyTrackedProReviewSelectedFiles(selectedFiles: readonly string[]): readonly string[] {
+	const topLevel = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+		cwd: process.cwd(),
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+	if (topLevel.status !== 0 || !topLevel.stdout.trim()) return [];
+	const repoRoot = topLevel.stdout.trim();
+	const repoRelativeFiles = selectedFiles
+		.map((file) => path.resolve(file))
+		.filter((file) => file === repoRoot || file.startsWith(`${repoRoot}${path.sep}`))
+		.map((file) => path.relative(repoRoot, file))
+		.filter((file) => file.length > 0);
+	if (repoRelativeFiles.length === 0) return [];
+
+	const dirty = new Set<string>();
+	for (const args of [
+		["diff", "--name-only", "--", ...repoRelativeFiles],
+		["diff", "--cached", "--name-only", "--", ...repoRelativeFiles],
+	]) {
+		const result = spawnSync("git", ["-C", repoRoot, ...args], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		if (result.status !== 0) {
+			throw new Error(
+				`Unable to verify Pro review selected file cleanliness: ${
+					result.stderr.trim() || "git diff failed"
+				}`,
+			);
+		}
+		for (const line of result.stdout.split(/\r?\n/)) {
+			const file = line.trim();
+			if (file) dirty.add(file);
+		}
+	}
+	return [...dirty].sort();
+}
+
+function assertProReviewTrackedSeedSelectedFilesClean(
+	selectedFiles: readonly string[],
+	options: ProReviewRefreshOption,
+): void {
+	if (options.write !== true || options.writeTrackedSeed !== true) return;
+	const dirtyFiles = dirtyTrackedProReviewSelectedFiles(selectedFiles);
+	if (dirtyFiles.length === 0) return;
+	throw new Error(
+		`Refusing to write tracked Pro review request while selected tracked file(s) are dirty: ${dirtyFiles.join(", ")}`,
+	);
+}
+
 function cutoverProofArtifact(artifactPath: string, sourceCommand: string, gateIds: string[]) {
 	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
 }
@@ -3035,6 +3086,7 @@ export function registerHermesCommand(program: Command): void {
 					selectedFiles: options.selectedFile ?? [],
 					includeExistingSelectedFiles: options.replaceSelectedFiles !== true,
 				});
+				assertProReviewTrackedSeedSelectedFilesClean(request.selectedFiles, options);
 				const result = {
 					status: "pass",
 					requestPath: options.request,
