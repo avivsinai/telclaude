@@ -347,7 +347,10 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"execution.cli_headless": [
 		"src/hermes/private-runtime.ts",
 		"src/commands/hermes.ts",
+		"src/relay/openai-codex-proxy.ts",
+		"src/relay/openai-codex-relay-proof.ts",
 		"docker/hermes-contained-entrypoint.sh",
+		"scripts/hermes-contained-cli-probe.sh",
 	],
 	"execution.approval_continuation": [
 		"src/hermes/approval-continuation.ts",
@@ -377,6 +380,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",
 		"src/relay/openai-codex-proxy.ts",
+		"src/relay/openai-codex-relay-proof.ts",
 	],
 	"edge.whatsapp": [
 		"src/hermes/edge-adapter-contract.ts",
@@ -536,6 +540,9 @@ const P0_PARITY_DIGEST_FILES = [
 	"src/hermes/workflow-run-ledger.ts",
 	"src/hermes/workflow-probes.ts",
 	"src/hermes/browser-computer-broker-probes.ts",
+	"src/hermes/private-runtime.ts",
+	"src/relay/openai-codex-proxy.ts",
+	"src/relay/openai-codex-relay-proof.ts",
 	"tests/hermes/edge-adapter-contract.test.ts",
 	"tests/hermes/edge-adapter-runtime.test.ts",
 	"tests/hermes/edge-adapter-probes.test.ts",
@@ -543,6 +550,8 @@ const P0_PARITY_DIGEST_FILES = [
 	"tests/hermes/workflow-probes.test.ts",
 	"tests/hermes/browser-computer-broker-probes.test.ts",
 	"tests/hermes/no-fork-proof.test.ts",
+	"tests/hermes/private-runtime.test.ts",
+	"tests/relay/openai-codex-proxy.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
 	"tests/commands/hermes.test.ts",
