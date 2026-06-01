@@ -25,6 +25,8 @@ import {
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
+import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
+import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 import {
 	type OpenAiCodexRelayProof,
@@ -270,6 +272,9 @@ function writeNetworkBundle(
 function writeNoForkProof() {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-nofork-"));
 	const evidencePath = path.join(tempDir, "no-fork.json");
+	const relayKeys = ensureOperatorRelayKeys();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const proof = {
 		schemaVersion: 1,
 		hermesCheckoutClean: true,
@@ -283,6 +288,30 @@ function writeNoForkProof() {
 		statusPorcelain: "",
 		diffExitCode: 0,
 		cachedDiffExitCode: 0,
+		runnerAttestation: signNoForkRunnerAttestation({
+			schemaVersion: "telclaude.hermes.no-fork-runner-attestation.v1",
+			source: "telclaude-no-fork-proof-runner",
+			runner: "telclaude-hermes-no-fork-runner",
+			startedAt: "2026-05-31T09:00:00.000Z",
+			endedAt: "2026-05-31T09:01:00.000Z",
+			checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
+			expectedRef: "v2026.5.29",
+			expectedVersion: "0.15.1",
+			head: "a".repeat(40),
+			expectedRefCommit: "a".repeat(40),
+			wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
+			profileGenerationSha256: noForkSha256Digest("profile-generation"),
+			fixtureResultsSha256: noForkSha256Digest("fixture-results"),
+			transcriptSha256: noForkSha256Digest("command-transcript"),
+			p0Command: ["pnpm", "dev", "hermes", "prove", "--upstream-clean", "--p0"],
+			p0ExitCode: 0,
+			p0Status: "pass",
+			runtimeSourceReplacementDenied: true,
+			monkeypatchDenied: true,
+			postRunStatusPorcelain: "",
+			postRunDiffExitCode: 0,
+			postRunCachedDiffExitCode: 0,
+		}),
 		checks: [
 			{
 				name: "checkout.present",
@@ -318,6 +347,41 @@ function writeNoForkProof() {
 				name: "checkout.indexClean",
 				status: "pass",
 				detail: "git diff --cached --quiet is clean",
+			},
+			{
+				name: "runner.attestation",
+				status: "pass",
+				detail: "no-fork wrapper run attestation is signed",
+			},
+			{
+				name: "runner.p0",
+				status: "pass",
+				detail: "P0 fixture/cutover command passed",
+			},
+			{
+				name: "runner.noRuntimeSourceReplacement",
+				status: "pass",
+				detail: "runtime source replacement denial was observed",
+			},
+			{
+				name: "runner.noMonkeypatch",
+				status: "pass",
+				detail: "monkeypatch denial was observed",
+			},
+			{
+				name: "runner.postStatusClean",
+				status: "pass",
+				detail: "post-run git status porcelain is clean",
+			},
+			{
+				name: "runner.postDiffClean",
+				status: "pass",
+				detail: "post-run git diff --quiet is clean",
+			},
+			{
+				name: "runner.postIndexClean",
+				status: "pass",
+				detail: "post-run git diff --cached --quiet is clean",
 			},
 		],
 	};
@@ -412,6 +476,19 @@ function writeRollbackRehearsal() {
 	};
 	writeJson(evidencePath, rehearsal);
 	return rehearsal;
+}
+
+function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
+	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
+		return {
+			privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+			publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+		};
+	}
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	return relayKeys;
 }
 
 function hermesRuntimeState() {
@@ -771,6 +848,32 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 		networkProbes,
 		queueSnapshot: { unownedActiveCount: 0 },
 		rollbackRehearsal: writeRollbackRehearsal(),
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
+function cutoverBundleWithNoForkProof(
+	noForkProof: ReturnType<typeof writeNoForkProof>,
+): CutoverInputBundle {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-cutover-"));
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+	const lockfile = { ...base.lockfile, noForkProofEvidencePath: noForkProof.evidence_path };
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const withoutProof: CutoverBundleWithoutProof = {
+		...baseWithoutProof,
+		lockfile,
+		noForkProof,
+		profileGenerationProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
 	};
 	return {
 		...withoutProof,
@@ -1297,6 +1400,47 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 });
 
 describe("Hermes cutover network evidence validation", () => {
+	it("fails no-fork cutover proof without a signed wrapper-run attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-attestation-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const noForkProof = { ...bundle.noForkProof };
+		delete (noForkProof as Record<string, unknown>).runnerAttestation;
+		writeJson(noForkProof.evidence_path, noForkProof);
+
+		const report = evaluateCutoverCheck(cutoverBundleWithNoForkProof(noForkProof));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"no-fork evidence runnerAttestation is missing",
+		);
+	});
+
+	it("fails no-fork cutover proof when the wrapper-run attestation was tampered", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-attestation-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const runnerAttestation = bundle.noForkProof.runnerAttestation;
+		if (!runnerAttestation) throw new Error("test no-fork proof lacks runnerAttestation");
+		const noForkProof = {
+			...bundle.noForkProof,
+			runnerAttestation: {
+				...runnerAttestation,
+				p0Status: "fail",
+			},
+		};
+		writeJson(noForkProof.evidence_path, noForkProof);
+
+		const report = evaluateCutoverCheck(cutoverBundleWithNoForkProof(noForkProof));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"no-fork runner attestation signature is invalid",
+		);
+	});
+
 	it("passes only after reopening every required and extra network evidence file", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
 		const networkProbes = writeNetworkBundle(

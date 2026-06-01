@@ -1,8 +1,30 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { buildNoForkProof, type NoForkGitRunner } from "../../src/hermes/no-fork-proof.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	buildNoForkProof,
+	type NoForkGitRunner,
+	type NoForkWrapperRunEvidence,
+	noForkSha256Digest,
+} from "../../src/hermes/no-fork-proof.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
+
+const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
 
 describe("Hermes no-fork proof", () => {
+	beforeEach(() => {
+		const keys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = keys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = keys.publicKey;
+	});
+
+	afterEach(() => {
+		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
+		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+	});
+
 	it("passes only when the checkout is at the pinned ref with a clean tree and index", () => {
 		const checkoutPath = path.resolve("/tmp/hermes-agent");
 		const runner = fakeGitRunner(checkoutPath, {
@@ -16,7 +38,7 @@ describe("Hermes no-fork proof", () => {
 			"tag --points-at HEAD": { exitCode: 0, stdout: "v2026.5.29\n" },
 		});
 
-		const report = buildNoForkProof({ checkoutPath, runner });
+		const report = buildNoForkProof({ checkoutPath, runner, wrapperRun: wrapperRunEvidence() });
 
 		expect(report).toMatchObject({
 			schemaVersion: 1,
@@ -31,7 +53,46 @@ describe("Hermes no-fork proof", () => {
 			diffExitCode: 0,
 			cachedDiffExitCode: 0,
 		});
+		expect(report.runnerAttestation).toMatchObject({
+			source: "telclaude-no-fork-proof-runner",
+			runner: "telclaude-hermes-no-fork-runner",
+			checkoutPath,
+			head: HEAD,
+			expectedRefCommit: HEAD,
+			p0Status: "pass",
+			p0ExitCode: 0,
+			postRunStatusPorcelain: "",
+			postRunDiffExitCode: 0,
+			postRunCachedDiffExitCode: 0,
+			signature: expect.objectContaining({
+				version: "v1",
+				scope: "operator",
+				path: "/v1/hermes.no-fork.runner-attestation",
+			}),
+		});
 		expect(report.checks.every((check) => check.status === "pass")).toBe(true);
+	});
+
+	it("fails closed when the wrapper/P0 run attestation is missing", () => {
+		const checkoutPath = path.resolve("/tmp/hermes-agent");
+		const runner = fakeGitRunner(checkoutPath, {
+			"rev-parse --show-toplevel": { exitCode: 0, stdout: `${checkoutPath}\n` },
+			"rev-parse HEAD": { exitCode: 0, stdout: `${HEAD}\n` },
+			"rev-parse --verify v2026.5.29^{commit}": { exitCode: 0, stdout: `${HEAD}\n` },
+			"status --porcelain=v1": { exitCode: 0, stdout: "" },
+			"diff --quiet": { exitCode: 0, stdout: "" },
+			"diff --cached --quiet": { exitCode: 0, stdout: "" },
+			"branch --show-current": { exitCode: 0, stdout: "" },
+			"tag --points-at HEAD": { exitCode: 0, stdout: "v2026.5.29\n" },
+		});
+
+		const report = buildNoForkProof({ checkoutPath, runner });
+
+		expect(report.hermesCheckoutClean).toBe(false);
+		expect(report.runnerAttestation).toBeUndefined();
+		expect(report.checks.find((check) => check.name === "runner.attestation")).toMatchObject({
+			status: "fail",
+		});
 	});
 
 	it("fails closed when HEAD is clean but not the pinned upstream ref", () => {
@@ -114,6 +175,25 @@ describe("Hermes no-fork proof", () => {
 
 const HEAD = "a".repeat(40);
 
+function wrapperRunEvidence(
+	overrides: Partial<NoForkWrapperRunEvidence> = {},
+): NoForkWrapperRunEvidence {
+	return {
+		startedAt: "2026-05-31T09:00:00.000Z",
+		endedAt: "2026-05-31T09:01:00.000Z",
+		wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
+		profileGenerationSha256: noForkSha256Digest("profile-generation"),
+		fixtureResultsSha256: noForkSha256Digest("fixture-results"),
+		transcriptSha256: noForkSha256Digest("command-transcript"),
+		p0Command: ["pnpm", "dev", "hermes", "prove", "--upstream-clean", "--p0"],
+		p0ExitCode: 0,
+		p0Status: "pass",
+		runtimeSourceReplacementDenied: true,
+		monkeypatchDenied: true,
+		...overrides,
+	};
+}
+
 function fakeGitRunner(
 	expectedCwd: string,
 	responses: Record<string, { exitCode: number; stdout?: string; stderr?: string }>,
@@ -130,4 +210,13 @@ function fakeGitRunner(
 			stderr: response.stderr ?? "",
 		};
 	};
+}
+
+function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
+	const value = ORIGINAL_ENV[key];
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
 }

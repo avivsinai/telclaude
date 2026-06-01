@@ -32,6 +32,13 @@ import {
 } from "./edge-adapter-probes.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
+import {
+	NO_FORK_RUNNER_ATTESTATION_RUNNER,
+	NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
+	NO_FORK_RUNNER_ATTESTATION_SOURCE,
+	type NoForkRunnerAttestation,
+	noForkRunnerAttestationSignatureFailure,
+} from "./no-fork-attestation.js";
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
 import {
 	isProviderDomainSurfaceId,
@@ -521,6 +528,8 @@ const P0_PARITY_DIGEST_FILES = [
 	"docs/hermes/network-probes.json",
 	"docs/hermes/no-fork-proof.json",
 	"docs/hermes/rollback-rehearsal.json",
+	"src/hermes/no-fork-attestation.ts",
+	"src/hermes/no-fork-proof.ts",
 	"src/hermes/edge-adapter-contract.ts",
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
@@ -533,6 +542,7 @@ const P0_PARITY_DIGEST_FILES = [
 	"tests/hermes/workflow-run-ledger.test.ts",
 	"tests/hermes/workflow-probes.test.ts",
 	"tests/hermes/browser-computer-broker-probes.test.ts",
+	"tests/hermes/no-fork-proof.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
 	"tests/commands/hermes.test.ts",
@@ -545,6 +555,13 @@ const REQUIRED_NO_FORK_CHECK_NAMES = [
 	"checkout.statusClean",
 	"checkout.diffClean",
 	"checkout.indexClean",
+	"runner.attestation",
+	"runner.p0",
+	"runner.noRuntimeSourceReplacement",
+	"runner.noMonkeypatch",
+	"runner.postStatusClean",
+	"runner.postDiffClean",
+	"runner.postIndexClean",
 ] as const;
 const REQUIRED_ROLLBACK_REHEARSAL_CHECK_NAMES = [
 	"rollback.allowed",
@@ -1169,6 +1186,34 @@ export const NoForkProofSchema = z
 		statusPorcelain: z.string().optional(),
 		diffExitCode: z.number().int().optional(),
 		cachedDiffExitCode: z.number().int().optional(),
+		runnerAttestation: z
+			.object({
+				schemaVersion: z.literal(NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION),
+				source: z.literal(NO_FORK_RUNNER_ATTESTATION_SOURCE),
+				runner: z.literal(NO_FORK_RUNNER_ATTESTATION_RUNNER),
+				startedAt: NonEmptyString,
+				endedAt: NonEmptyString,
+				checkoutPath: NonEmptyString,
+				expectedRef: NonEmptyString,
+				expectedVersion: NonEmptyString,
+				head: NonEmptyString,
+				expectedRefCommit: NonEmptyString,
+				wrapperPackageSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				profileGenerationSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				fixtureResultsSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				transcriptSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				p0Command: z.array(NonEmptyString),
+				p0ExitCode: z.number().int(),
+				p0Status: z.enum(["pass", "fail"]),
+				runtimeSourceReplacementDenied: z.boolean(),
+				monkeypatchDenied: z.boolean(),
+				postRunStatusPorcelain: z.string(),
+				postRunDiffExitCode: z.number().int(),
+				postRunCachedDiffExitCode: z.number().int(),
+				signature: InternalResponseProofSchema,
+			})
+			.strict()
+			.optional(),
 		checks: z
 			.array(
 				z
@@ -3919,6 +3964,7 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 			expectedRefCommit: evidence.expectedRefCommit,
 			exactTags: evidence.exactTags,
 			evidence_path: evidence.evidence_path,
+			runnerAttestation: evidence.runnerAttestation,
 		}),
 	);
 	if (!sameResolvedArtifactPath(evidence.evidence_path, noForkProof.evidence_path)) {
@@ -3974,6 +4020,7 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 	if (evidence.cachedDiffExitCode !== 0) {
 		failures.push(`no-fork evidence cachedDiffExitCode is ${String(evidence.cachedDiffExitCode)}`);
 	}
+	failures.push(...noForkRunnerAttestationFailures(evidence));
 	const checkByName = new Map((evidence.checks ?? []).map((check) => [check.name, check]));
 	for (const duplicate of findDuplicates((evidence.checks ?? []).map((check) => check.name))) {
 		failures.push(`duplicate no-fork evidence check ${redactDetail(duplicate)}`);
@@ -3992,6 +4039,67 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 		if (check.status === "pass") continue;
 		failures.push(
 			`no-fork evidence check ${redactDetail(check.name)} is fail: ${redactDetail(check.detail)}`,
+		);
+	}
+	return failures;
+}
+
+function noForkRunnerAttestationFailures(evidence: NoForkProof): string[] {
+	const attestation = evidence.runnerAttestation;
+	if (!attestation) return ["no-fork evidence runnerAttestation is missing"];
+	const failures: string[] = [];
+	const signatureFailure = noForkRunnerAttestationSignatureFailure(
+		attestation as NoForkRunnerAttestation,
+		{ allowStale: true },
+	);
+	if (signatureFailure) {
+		failures.push(`no-fork runner attestation signature is invalid: ${signatureFailure}`);
+	}
+	const matchedFields = [
+		"checkoutPath",
+		"expectedRef",
+		"expectedVersion",
+		"head",
+		"expectedRefCommit",
+	] as const;
+	for (const field of matchedFields) {
+		if (attestation[field] !== evidence[field]) {
+			failures.push(`no-fork runner attestation ${field} does not match evidence`);
+		}
+	}
+	const startedAtMs = Date.parse(attestation.startedAt);
+	const endedAtMs = Date.parse(attestation.endedAt);
+	if (Number.isNaN(startedAtMs) || Number.isNaN(endedAtMs)) {
+		failures.push("no-fork runner attestation timestamps are invalid");
+	} else if (startedAtMs > endedAtMs) {
+		failures.push("no-fork runner attestation startedAt is after endedAt");
+	}
+	if (attestation.p0Command.length === 0) {
+		failures.push("no-fork runner attestation p0Command is empty");
+	}
+	if (attestation.p0Status !== "pass") {
+		failures.push(`no-fork runner attestation p0Status is ${attestation.p0Status}`);
+	}
+	if (attestation.p0ExitCode !== 0) {
+		failures.push(`no-fork runner attestation p0ExitCode is ${attestation.p0ExitCode}`);
+	}
+	if (attestation.runtimeSourceReplacementDenied !== true) {
+		failures.push("no-fork runner attestation did not deny runtime source replacement");
+	}
+	if (attestation.monkeypatchDenied !== true) {
+		failures.push("no-fork runner attestation did not deny monkeypatching");
+	}
+	if (attestation.postRunStatusPorcelain !== "") {
+		failures.push("no-fork runner attestation postRunStatusPorcelain is not clean");
+	}
+	if (attestation.postRunDiffExitCode !== 0) {
+		failures.push(
+			`no-fork runner attestation postRunDiffExitCode is ${attestation.postRunDiffExitCode}`,
+		);
+	}
+	if (attestation.postRunCachedDiffExitCode !== 0) {
+		failures.push(
+			`no-fork runner attestation postRunCachedDiffExitCode is ${attestation.postRunCachedDiffExitCode}`,
 		);
 	}
 	return failures;
