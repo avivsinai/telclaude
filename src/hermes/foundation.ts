@@ -47,6 +47,14 @@ import {
 	type NoForkRunnerAttestation,
 	noForkRunnerAttestationSignatureFailure,
 } from "./no-fork-attestation.js";
+import {
+	PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_RUNNER,
+	PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCHEMA_VERSION,
+	PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SOURCE,
+	type PrivateTelegramFixtureAttestation,
+	privateTelegramFixtureAttestationFieldsForEvidence,
+	privateTelegramFixtureAttestationSignatureFailure,
+} from "./private-telegram-fixture-attestation.js";
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
 import {
 	isProviderDomainSurfaceId,
@@ -549,6 +557,7 @@ const P0_PARITY_DIGEST_FILES = [
 	"src/hermes/network-probes.ts",
 	"src/hermes/no-fork-attestation.ts",
 	"src/hermes/no-fork-proof.ts",
+	"src/hermes/private-telegram-fixture-attestation.ts",
 	"src/hermes/edge-adapter-contract.ts",
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
@@ -567,6 +576,8 @@ const P0_PARITY_DIGEST_FILES = [
 	"tests/hermes/network-probes.test.ts",
 	"tests/hermes/no-fork-proof.test.ts",
 	"tests/hermes/private-runtime.test.ts",
+	"tests/integration/telegram-control-plane.replay.test.ts",
+	"tests/telegram/command-gating.test.ts",
 	"tests/relay/openai-codex-proxy.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
@@ -1190,6 +1201,30 @@ const FixtureEvidenceSchema = z
 					})
 					.strict(),
 			)
+			.optional(),
+		privateTelegramRunnerAttestation: z
+			.object({
+				schemaVersion: z.literal(PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCHEMA_VERSION),
+				source: z.literal(PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SOURCE),
+				runner: z.literal(PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_RUNNER),
+				fixtureId: NonEmptyString,
+				status: z.enum(["pass", "fail"]),
+				observedAt: NonEmptyString.optional(),
+				generatedAt: NonEmptyString.optional(),
+				provenanceRunner: NonEmptyString,
+				provenanceSource: NonEmptyString.optional(),
+				testReportPath: NonEmptyString,
+				testReportSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				invocationReportPath: NonEmptyString,
+				invocationReportSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				invocationSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				requiredTestsSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				requiredAssertionsSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				checksSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				evidenceSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				signature: InternalResponseProofSchema,
+			})
+			.strict()
 			.optional(),
 	})
 	.passthrough()
@@ -3842,7 +3877,80 @@ function privateTelegramFixtureEvidenceFailure(
 			}
 		}
 	}
+	failures.push(...privateTelegramRunnerAttestationFailures(fixtureId, evidence));
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function privateTelegramRunnerAttestationFailures(
+	fixtureId: string,
+	evidence: z.infer<typeof FixtureEvidenceSchema>,
+): string[] {
+	const attestation = evidence.privateTelegramRunnerAttestation;
+	if (!attestation) return [`fixture ${fixtureId} privateTelegramRunnerAttestation is missing`];
+	const missing = [
+		...(evidence.testReport ? [] : ["testReport"]),
+		...(evidence.invocation ? [] : ["invocation"]),
+		...(evidence.checks ? [] : ["checks"]),
+	];
+	if (missing.length > 0) {
+		return [
+			`fixture ${fixtureId} privateTelegramRunnerAttestation cannot be validated without ${missing.join(", ")}`,
+		];
+	}
+	const testReport = evidence.testReport;
+	const invocation = evidence.invocation;
+	const checks = evidence.checks;
+	if (!testReport || !invocation || !checks) {
+		return [
+			`fixture ${fixtureId} privateTelegramRunnerAttestation cannot be validated without testReport, invocation, checks`,
+		];
+	}
+	const failures: string[] = [];
+	const signatureFailure = privateTelegramFixtureAttestationSignatureFailure(
+		attestation as PrivateTelegramFixtureAttestation,
+		{ allowStale: true },
+	);
+	if (signatureFailure) {
+		failures.push(
+			`fixture ${fixtureId} privateTelegramRunnerAttestation signature is invalid: ${signatureFailure}`,
+		);
+	}
+	const expected = privateTelegramFixtureAttestationFieldsForEvidence({
+		fixtureId,
+		status: evidence.status,
+		observedAt: evidence.observedAt,
+		generatedAt: evidence.generatedAt,
+		provenanceRunner: evidence.provenance.runner,
+		provenanceSource: evidence.provenance.source,
+		testReportPath: testReport.path,
+		testReportSha256: testReport.sha256 as `sha256:${string}`,
+		invocation,
+		requiredTests: testReport.requiredTests,
+		requiredAssertions: testReport.requiredAssertions ?? [],
+		checks,
+	});
+	for (const field of [
+		"fixtureId",
+		"status",
+		"observedAt",
+		"generatedAt",
+		"provenanceRunner",
+		"provenanceSource",
+		"testReportPath",
+		"testReportSha256",
+		"invocationReportPath",
+		"invocationReportSha256",
+		"invocationSha256",
+		"requiredTestsSha256",
+		"requiredAssertionsSha256",
+		"checksSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			failures.push(`fixture ${fixtureId} privateTelegramRunnerAttestation ${field} mismatch`);
+		}
+	}
+	return failures;
 }
 
 export function privateTelegramAssertionKey(assertion: { file: string; fullName: string }): string {
