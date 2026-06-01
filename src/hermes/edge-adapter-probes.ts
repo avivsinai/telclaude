@@ -3,6 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+	EDGE_ADAPTER_ATTESTATION_RUNNER,
+	EDGE_ADAPTER_ATTESTATION_SCHEMA_VERSION,
+	EDGE_ADAPTER_ATTESTATION_SOURCE,
+	type EdgeAdapterAttestation,
+	edgeAdapterAttestationFieldsForEvidence,
+	edgeAdapterAttestationSignatureFailure,
+	signEdgeAdapterAttestation,
+} from "./edge-adapter-attestation.js";
+import {
 	ActorRefSchema,
 	AttachmentRefSchema,
 	ConversationRefSchema,
@@ -30,6 +39,8 @@ import {
 } from "./provider-release-policy-probe.js";
 
 const NonEmptyString = z.string().trim().min(1);
+const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const HexSha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const EDGE_ADAPTER_PROBE_SCHEMA_VERSION = "telclaude.hermes.edge-adapter-probe.v1";
 export const EDGE_ADAPTER_CONTRACT_PROBE_SOURCE = "telclaude-edge-contract-unit";
@@ -553,6 +564,41 @@ const EdgeAdapterRuntimeHarnessSchema = z
 	})
 	.strict();
 
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: NonEmptyString,
+		timestamp: NonEmptyString,
+		nonce: NonEmptyString,
+		method: NonEmptyString,
+		path: NonEmptyString,
+		requestBodySha256: HexSha256Digest,
+		responseBodySha256: HexSha256Digest,
+		signature: NonEmptyString,
+	})
+	.strict();
+
+const EdgeAdapterAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(EDGE_ADAPTER_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(EDGE_ADAPTER_ATTESTATION_SOURCE),
+		runner: z.literal(EDGE_ADAPTER_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: z.literal(EDGE_ADAPTER_PROBE_SCHEMA_VERSION),
+		probeId: EdgeAdapterFeatureSurfaceIdSchema,
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		observedAt: NonEmptyString,
+		evidenceSource: z.literal(EDGE_ADAPTER_RUNTIME_PROBE_SOURCE),
+		surfaceSha256: Sha256Digest,
+		contractSha256: Sha256Digest,
+		custodySha256: Sha256Digest,
+		controlsSha256: Sha256Digest,
+		runtimeSha256: Sha256Digest,
+		evidenceSha256: Sha256Digest,
+		signature: InternalResponseProofSchema,
+	})
+	.strict();
+
 export const EdgeAdapterProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(EDGE_ADAPTER_PROBE_SCHEMA_VERSION),
@@ -588,6 +634,7 @@ export const EdgeAdapterProbeEvidenceSchema = z
 			.strict(),
 		controls: z.array(EdgeProbeControlSchema).min(1),
 		runtime: EdgeAdapterRuntimeHarnessSchema.optional(),
+		runnerAttestation: EdgeAdapterAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -680,7 +727,7 @@ export function buildEdgeAdapterProbeEvidence(input: {
 	const runtime = runRuntimeHarness(input.surfaceId, requirement);
 	const controls = runControlChecks(requirement, runtime?.controlPasses);
 	const status = controls.every((control) => control.status === "pass") ? "pass" : "fail";
-	return {
+	const evidence: Omit<EdgeAdapterProbeEvidence, "runnerAttestation"> = {
 		schemaVersion: EDGE_ADAPTER_PROBE_SCHEMA_VERSION,
 		probeId: input.surfaceId,
 		status,
@@ -705,6 +752,14 @@ export function buildEdgeAdapterProbeEvidence(input: {
 		controls,
 		...(runtime ? { runtime: runtime.evidence } : {}),
 	};
+	return status === "pass" && runtime
+		? {
+				...evidence,
+				runnerAttestation: signEdgeAdapterAttestation(
+					evidence,
+				) as EdgeAdapterProbeEvidence["runnerAttestation"],
+			}
+		: evidence;
 }
 
 export function edgeAdapterProbeEvidenceFailure(
@@ -752,7 +807,38 @@ export function edgeAdapterProbeEvidenceFailure(
 	}
 	const runtimeFailure = runtimeHarnessEvidenceFailure(surfaceId, data);
 	if (runtimeFailure) failures.push(runtimeFailure);
+	const attestationFailure = edgeAdapterRunnerAttestationFailure(data);
+	if (attestationFailure) failures.push(attestationFailure);
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function edgeAdapterRunnerAttestationFailure(data: EdgeAdapterProbeEvidence): string | null {
+	const attestation = data.runnerAttestation as EdgeAdapterAttestation | undefined;
+	if (!attestation) return "runnerAttestation is missing";
+	const signatureFailure = edgeAdapterAttestationSignatureFailure(attestation, {
+		allowStale: true,
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = edgeAdapterAttestationFieldsForEvidence(data);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"observedAt",
+		"evidenceSource",
+		"surfaceSha256",
+		"contractSha256",
+		"custodySha256",
+		"controlsSha256",
+		"runtimeSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			return `runnerAttestation ${field} mismatch`;
+		}
+	}
+	return null;
 }
 
 export function buildEdgeAdapterFixtureEvidenceBundle(input: {

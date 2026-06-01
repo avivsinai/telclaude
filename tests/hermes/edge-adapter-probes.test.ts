@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildEdgeAdapterFixtureEvidenceBundle,
 	buildEdgeAdapterProbeEvidence,
@@ -10,10 +10,26 @@ import {
 	edgeAdapterProbeEvidenceFailure,
 } from "../../src/hermes/edge-adapter-probes.js";
 import { runTelclaudeProviderReleasePolicyProbe } from "../../src/hermes/provider-release-policy-probe.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
 
 const observedAt = "2026-05-31T09:00:00.000Z";
+const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
 
 describe("Hermes edge adapter probe evidence", () => {
+	beforeEach(() => {
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	});
+
+	afterEach(() => {
+		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
+		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+	});
+
 	it.each(EDGE_ADAPTER_FEATURE_SURFACE_IDS)("accepts generated evidence for %s", (surfaceId) => {
 		const evidence = buildEdgeAdapterProbeEvidence({
 			surfaceId,
@@ -22,6 +38,19 @@ describe("Hermes edge adapter probe evidence", () => {
 		});
 
 		expect(evidence.status).toBe("pass");
+		expect(evidence.runnerAttestation).toMatchObject({
+			source: "telclaude-edge-runtime-probe-runner",
+			runner: "telclaude-edge-runtime-probe",
+			probeId: surfaceId,
+			status: "pass",
+			ran: true,
+			evidenceSource: "telclaude-edge-runtime-harness",
+			signature: expect.objectContaining({
+				version: "v1",
+				scope: "operator",
+				path: "/v1/hermes.edge-adapter.attestation",
+			}),
+		});
 		expect(edgeAdapterProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
 	});
 
@@ -114,6 +143,56 @@ describe("Hermes edge adapter probe evidence", () => {
 			]),
 		);
 		expect(edgeAdapterProbeEvidenceFailure("outbound.policy", evidence)).toBeNull();
+	});
+
+	it("rejects pass-looking edge evidence without a signed runner attestation", () => {
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt,
+			allowRun: true,
+		});
+		const { runnerAttestation: _attestation, ...unsignedEvidence } = evidence;
+
+		expect(edgeAdapterProbeEvidenceFailure("edge.whatsapp", unsignedEvidence)).toContain(
+			"runnerAttestation is missing",
+		);
+	});
+
+	it("rejects mutated runtime observations after signing", () => {
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt,
+			allowRun: true,
+		});
+
+		expect(
+			edgeAdapterProbeEvidenceFailure("edge.whatsapp", {
+				...evidence,
+				runtime: {
+					...evidence.runtime,
+					observations: {
+						...evidence.runtime?.observations,
+						deniedAttempts: 0,
+					},
+				},
+			}),
+		).toContain("runnerAttestation runtimeSha256 mismatch");
+	});
+
+	it("rejects runner attestations signed by an untrusted relay key", () => {
+		const trustedPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		const forgedEvidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt,
+			allowRun: true,
+		});
+		if (trustedPublicKey) process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedPublicKey;
+
+		expect(edgeAdapterProbeEvidenceFailure("edge.whatsapp", forgedEvidence)).toContain(
+			"runnerAttestation signature is invalid: signature verification failed",
+		);
 	});
 
 	it("requires runtime harness evidence for migrated identity", () => {
@@ -332,4 +411,13 @@ function writeEdgeFixtureProbeArtifacts(tempDir: string) {
 	);
 	probePaths["providers.release-policy"] = releasePolicyFile;
 	return probePaths;
+}
+
+function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
+	const value = ORIGINAL_ENV[key];
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
 }

@@ -885,6 +885,14 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 	};
 }
 
+function refreshCutoverProofBundle(bundle: CutoverInputBundle): CutoverInputBundle {
+	const { cutoverProofBundle: _cutoverProofBundle, ...withoutProof } = bundle;
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
 function cutoverBundleWithNoForkProof(
 	noForkProof: ReturnType<typeof writeNoForkProof>,
 ): CutoverInputBundle {
@@ -1261,6 +1269,9 @@ describe("Hermes cutover edge-adapter evidence validation", () => {
 	it("refuses schema-only edge contract-unit evidence as cutover enforcement", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
 		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		const evidence = buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
@@ -1283,6 +1294,9 @@ describe("Hermes cutover edge-adapter evidence validation", () => {
 	it("fails edge feature evidence when a required denial is missing", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
 		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		const evidence = buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
@@ -1337,7 +1351,7 @@ describe("Hermes cutover fixture evidence catalog validation", () => {
 		delete evidence.privateTelegramRunnerAttestation;
 		writeJson(fixture.evidence_path, evidence);
 
-		const report = evaluateCutoverCheck(bundle);
+		const report = evaluateCutoverCheck(refreshCutoverProofBundle(bundle));
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
@@ -1355,7 +1369,7 @@ describe("Hermes cutover fixture evidence catalog validation", () => {
 		evidence.checks[0].detail = "tampered after signing";
 		writeJson(fixture.evidence_path, evidence);
 
-		const report = evaluateCutoverCheck(bundle);
+		const report = evaluateCutoverCheck(refreshCutoverProofBundle(bundle));
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
