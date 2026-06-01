@@ -528,14 +528,10 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	],
 	"browser.profiles": [
 		"src/hermes/browser-computer-broker-probes.ts",
-		"src/hermes/network-probe-attestation.ts",
-		"src/hermes/network-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
 	],
 	"computer.broker": [
 		"src/hermes/browser-computer-broker-probes.ts",
-		"src/hermes/network-probe-attestation.ts",
-		"src/hermes/network-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
 	],
 	"network.egress-broker": [
@@ -546,6 +542,9 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"docker/docker-compose.hermes.yml",
 	],
 };
+export function hermesAdapterSignatureFilesForSurface(surfaceId: string): readonly string[] {
+	return ADAPTER_SIGNATURE_FILES[surfaceId] ?? ["src/hermes/foundation.ts"];
+}
 const P0_PARITY_DIGEST_FILES = [
 	"docs/hermes/cutover-scope.json",
 	"docs/hermes/feature-probes.json",
@@ -1949,9 +1948,7 @@ export function buildCompatibilityLockfileDraft(input: {
 						approval_equivalent: probe.approval_equivalent,
 						failure_outcome: probe.failure_outcome,
 					},
-					files: computeFileSetDigest(
-						ADAPTER_SIGNATURE_FILES[probe.surface_id] ?? ["src/hermes/foundation.ts"],
-					),
+					files: computeFileSetDigest(hermesAdapterSignatureFilesForSurface(probe.surface_id)),
 				}),
 			]),
 		),
