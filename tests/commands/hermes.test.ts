@@ -5542,8 +5542,129 @@ describe("Hermes wrapper foundation", () => {
 		const program = new Command();
 		registerHermesCommand(program);
 		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain(
+			"pro-review-refresh",
+		);
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("pro-review-check");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("pro-review-send");
+	});
+
+	it("refreshes the Pro review request payload binding and resets disclosure approval", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
+		writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			writeJson(canaryPath, proReviewCanary());
+			const staleRequest = proReviewRequest(canaryPath, {
+				status: "approved",
+				privateWorkspaceDisclosure: {
+					...(proReviewRequest(canaryPath).privateWorkspaceDisclosure as Record<string, unknown>),
+					approved: true,
+					approvalId: "old-approval",
+					operator: "aviv",
+					approvedAt: "2026-06-01T08:00:00.000Z",
+					payloadSha256: (proReviewRequest(canaryPath).payloadBinding as Record<string, unknown>)
+						.payloadSha256,
+				},
+				selectedFiles: ["src/hermes/pro-review.ts"],
+				payloadBinding: {
+					...(proReviewRequest(canaryPath).payloadBinding as Record<string, unknown>),
+					payloadSha256: `sha256:${"0".repeat(64)}`,
+					selectedFilesSha256: `sha256:${"1".repeat(64)}`,
+					selectedFileContentsSha256: `sha256:${"2".repeat(64)}`,
+				},
+			});
+			writeJson(requestPath, staleRequest);
+
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			const refreshed = JSON.parse(refresh.stdout) as {
+				status: string;
+				written: boolean;
+				payloadSha256: string;
+				request: {
+					status: string;
+					privateWorkspaceDisclosure: { approved: boolean; approvalId: string | null };
+					selectedFiles: string[];
+					payloadBinding: {
+						payloadSha256: string;
+						selectedFileContentsSha256: string;
+					};
+				};
+			};
+
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			expect(refreshed).toMatchObject({
+				status: "pass",
+				written: true,
+				request: {
+					status: "pending_operator_disclosure_approval",
+					privateWorkspaceDisclosure: { approved: false, approvalId: null },
+				},
+			});
+			expect(refreshed.request.selectedFiles).toEqual(
+				expect.arrayContaining([...REQUIRED_PRO_REVIEW_FILES]),
+			);
+			expect(refreshed.payloadSha256).not.toBe(`sha256:${"0".repeat(64)}`);
+			expect(refreshed.request.payloadBinding.selectedFileContentsSha256).not.toBe(
+				`sha256:${"2".repeat(64)}`,
+			);
+
+			const check = await runHermesCommand([
+				"hermes",
+				"pro-review-check",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			const report = JSON.parse(check.stdout) as {
+				status: string;
+				gates: Array<{ name: string; status: string }>;
+			};
+
+			expect(check.exitCode, check.stdout).toBe(2);
+			expect(report.status).toBe("pending");
+			expect(report.gates.find((gate) => gate.name === "request.payloadBinding")).toMatchObject({
+				status: "pass",
+			});
+			expect(report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject({
+				status: "pending",
+			});
+		});
+	});
+
+	it("refuses to refresh the tracked Pro review request without the seed-write flag", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
+		const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+		writeJson(canaryPath, proReviewCanary());
+
+		const result = await runHermesCommand([
+			"hermes",
+			"pro-review-refresh",
+			"--write",
+			"--json",
+			"--request",
+			"docs/hermes/pro-review-request.json",
+			"--canary",
+			canaryPath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; detail: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({ status: "input_error" });
+		expect(report.detail).toContain("Refusing to write tracked Hermes seed");
+		expect(report.detail).toContain("docs/hermes/pro-review-request.json");
 	});
 
 	it("validates pending ChatGPT Pro native-extension review evidence without sending a bundle", async () => {

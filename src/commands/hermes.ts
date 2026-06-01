@@ -131,11 +131,13 @@ import {
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../hermes/private-telegram-fixture-attestation.js";
 import {
 	buildProReviewNativeYoetzEnv,
+	buildProReviewRequestDraft,
 	buildProReviewYoetzCommand,
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
 	evaluateProReviewCheck,
 	readProReviewNativeCanary,
+	readProReviewRequest,
 	validateProReviewYoetzSendOutput,
 } from "../hermes/pro-review.js";
 import {
@@ -312,6 +314,15 @@ type ProReviewCheckOption = JsonOption & {
 	requireApproval?: boolean;
 };
 
+type ProReviewRefreshOption = JsonOption & {
+	request: string;
+	canary: string;
+	prompt?: string;
+	selectedFile?: string[];
+	replaceSelectedFiles?: boolean;
+	write?: boolean;
+} & TrackedSeedWriteOption;
+
 type ProReviewSendOption = JsonOption & {
 	request: string;
 	canary: string;
@@ -347,6 +358,10 @@ type LiveMcpProbeTokenOption = JsonOption & {
 
 function printJson(value: unknown): void {
 	console.log(JSON.stringify(value, null, 2));
+}
+
+function collectOption(value: string, previous: string[]): string[] {
+	return [...previous, value];
 }
 
 function resolvePin(options: PinOption) {
@@ -590,17 +605,7 @@ function resolveProReviewBundlePath(bundleOut: string | undefined): string {
 }
 
 function writeProReviewBundle(requestPath: string, bundlePath: string): void {
-	const request = readJsonFile(resolveHermesArtifactPath(requestPath)) as {
-		prompt?: unknown;
-		selectedFiles?: unknown;
-		payloadBinding?: { payloadSha256?: unknown };
-		transport?: unknown;
-		model?: unknown;
-		fallbackAllowed?: unknown;
-	};
-	if (typeof request.prompt !== "string" || !Array.isArray(request.selectedFiles)) {
-		throw new Error("Pro review request cannot be converted to a bundle");
-	}
+	const request = readProReviewRequest(requestPath);
 	const lines = [
 		"# Telclaude Hermes Wrapper Pro Review",
 		"",
@@ -2997,6 +3002,72 @@ export function registerHermesCommand(program: Command): void {
 				} else {
 					console.log(`Hermes private-runtime: fail`);
 					console.log(`- FAIL: ${String(error instanceof Error ? error.message : error)}`);
+				}
+				process.exitCode = 1;
+			}
+		});
+
+	hermes
+		.command("pro-review-refresh")
+		.description("Refresh the ChatGPT Pro native-extension request payload binding")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--request <path>",
+			"ChatGPT Pro review request JSON path",
+			DEFAULT_PRO_REVIEW_REQUEST_PATH,
+		)
+		.option(
+			"--canary <path>",
+			"Yoetz ChatGPT native-extension canary JSON path",
+			DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
+		)
+		.option("--prompt <text>", "Prompt text for a new request when no request exists")
+		.option("--selected-file <path>", "Additional selected file path", collectOption, [])
+		.option("--replace-selected-files", "Use only required files plus --selected-file entries")
+		.option("--write", "Write the refreshed request JSON")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
+		.action((options: ProReviewRefreshOption) => {
+			try {
+				const request = buildProReviewRequestDraft({
+					existingRequestPath: options.request,
+					canaryPath: options.canary,
+					prompt: options.prompt,
+					selectedFiles: options.selectedFile ?? [],
+					includeExistingSelectedFiles: options.replaceSelectedFiles !== true,
+				});
+				const result = {
+					status: "pass",
+					requestPath: options.request,
+					written: options.write === true,
+					payloadSha256: request.payloadBinding.payloadSha256,
+					selectedFileContentsSha256: request.payloadBinding.selectedFileContentsSha256,
+					transportEvidenceSha256: request.payloadBinding.transportEvidenceSha256,
+					approval: request.privateWorkspaceDisclosure,
+					selectedFiles: request.selectedFiles,
+					request,
+				};
+				if (options.write === true) {
+					writeJsonArtifact(options.request, request, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-refresh: pass");
+					console.log(`- payloadSha256: ${request.payloadBinding.payloadSha256}`);
+					console.log(`- selectedFiles: ${request.selectedFiles.length}`);
+					console.log(
+						`- disclosureApproved: ${String(request.privateWorkspaceDisclosure.approved)}`,
+					);
+					if (options.write === true) console.log(`- wrote: ${options.request}`);
+				}
+				process.exitCode = 0;
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				if (options.json) {
+					printJson({ status: "input_error", detail });
+				} else {
+					console.log("Hermes pro-review-refresh: input_error");
+					console.log(`- FAIL: ${detail}`);
 				}
 				process.exitCode = 1;
 			}
