@@ -36,7 +36,12 @@ import {
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
-import { TELCLAUDE_MCP_SERVER_POLICY } from "./mcp/bridge.js";
+import {
+	TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV,
+	TELCLAUDE_HERMES_MCP_SERVER_NAME,
+	TELCLAUDE_HERMES_MCP_URL,
+	TELCLAUDE_MCP_SERVER_POLICY,
+} from "./mcp/policy.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import {
 	NETWORK_PROBE_ATTESTATION_RUNNER,
@@ -2423,6 +2428,50 @@ function buildProfileFileContents(input: {
 	);
 }
 
+function hermesMcpServerConfig() {
+	return {
+		type: "http",
+		url: TELCLAUDE_HERMES_MCP_URL,
+		headers: {
+			Authorization: `Bearer \${${TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV}}`,
+		},
+		enabled: true,
+		timeout: 120,
+		connect_timeout: 60,
+		supports_parallel_tool_calls: false,
+		tools: {
+			include: [...TELCLAUDE_MCP_SERVER_POLICY.tools],
+			exclude: [],
+			resources: false,
+			prompts: false,
+		},
+		sampling: {
+			enabled: false,
+		},
+	};
+}
+
+function hermesMcpServerYamlLines(indent: string): string[] {
+	return [
+		`${indent}type: http`,
+		`${indent}url: ${TELCLAUDE_HERMES_MCP_URL}`,
+		`${indent}headers:`,
+		`${indent}  Authorization: "Bearer \${${TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV}}"`,
+		`${indent}enabled: true`,
+		`${indent}timeout: 120`,
+		`${indent}connect_timeout: 60`,
+		`${indent}supports_parallel_tool_calls: false`,
+		`${indent}tools:`,
+		`${indent}  include:`,
+		...TELCLAUDE_MCP_SERVER_POLICY.tools.map((tool) => `${indent}    - ${tool}`),
+		`${indent}  exclude: []`,
+		`${indent}  resources: false`,
+		`${indent}  prompts: false`,
+		`${indent}sampling:`,
+		`${indent}  enabled: false`,
+	];
+}
+
 function profileFileContent(
 	relativePath: string,
 	context: {
@@ -2455,6 +2504,9 @@ function profileFileContent(
 				"  mountPlan: guardrails/mount-plan.json",
 				"  productionMutationPolicy: deny-and-quarantine",
 				"  runtimeEnforcementStatus: generated-not-enforced",
+				"mcp_servers:",
+				`  ${TELCLAUDE_HERMES_MCP_SERVER_NAME}:`,
+				...hermesMcpServerYamlLines("    "),
 				"",
 			].join("\n");
 		case ".env.EXAMPLE":
@@ -2462,6 +2514,7 @@ function profileFileContent(
 				"HERMES_INFERENCE_PROVIDER=openai-codex",
 				`HERMES_CODEX_BASE_URL=${TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL}`,
 				"HERMES_INFERENCE_MODEL=<relay-approved-model>",
+				`${TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV}=<relay-injected-short-lived-token>`,
 				"TELCLAUDE_RELAY_TOKEN_FILE=/run/secrets/telclaude-hermes-relay-token",
 				"",
 			].join("\n");
@@ -2497,13 +2550,11 @@ function profileFileContent(
 		case "mcp.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
-				servers: {
-					telclaudeRelay: {
-						transport: "http",
-						url: "http://telclaude:8790/v1/hermes/mcp",
-						auth: "relay-token-file",
-						policy: TELCLAUDE_MCP_SERVER_POLICY,
-					},
+				mcp_servers: {
+					[TELCLAUDE_HERMES_MCP_SERVER_NAME]: hermesMcpServerConfig(),
+				},
+				telclaudePolicy: {
+					[TELCLAUDE_HERMES_MCP_SERVER_NAME]: TELCLAUDE_MCP_SERVER_POLICY,
 				},
 			});
 		case "toolsets.json":

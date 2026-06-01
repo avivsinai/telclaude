@@ -25,7 +25,12 @@ import {
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
-import { TELCLAUDE_MCP_SERVER_POLICY } from "../../src/hermes/mcp/bridge.js";
+import {
+	TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV,
+	TELCLAUDE_HERMES_MCP_SERVER_NAME,
+	TELCLAUDE_HERMES_MCP_URL,
+	TELCLAUDE_MCP_SERVER_POLICY,
+} from "../../src/hermes/mcp/policy.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
@@ -124,17 +129,51 @@ function profileDecision(evidencePath: string) {
 	};
 }
 
-it("generates mcp.json with the deny-by-default Telclaude MCP server policy", () => {
+it("generates Hermes-loadable MCP config with the deny-by-default Telclaude policy", () => {
 	const proof = writeProfileProof(compatLockfile);
 	const mcpConfig = readJson<{
-		servers?: {
-			telclaudeRelay?: {
-				policy?: unknown;
-			};
-		};
+		mcp_servers?: Record<string, unknown>;
+		telclaudePolicy?: Record<string, unknown>;
 	}>(path.join(proof.outDir, "mcp.json"));
+	const configYaml = fs.readFileSync(path.join(proof.outDir, "config.yaml"), "utf8");
+	const relayServer = mcpConfig.mcp_servers?.[TELCLAUDE_HERMES_MCP_SERVER_NAME];
 
-	expect(mcpConfig.servers?.telclaudeRelay?.policy).toEqual(TELCLAUDE_MCP_SERVER_POLICY);
+	expect(relayServer).toMatchObject({
+		type: "http",
+		url: TELCLAUDE_HERMES_MCP_URL,
+		headers: {
+			Authorization: `Bearer \${${TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV}}`,
+		},
+		tools: {
+			include: [...TELCLAUDE_MCP_SERVER_POLICY.tools],
+			exclude: [],
+			resources: false,
+			prompts: false,
+		},
+		sampling: {
+			enabled: false,
+		},
+	});
+	expect(mcpConfig.telclaudePolicy?.[TELCLAUDE_HERMES_MCP_SERVER_NAME]).toEqual(
+		TELCLAUDE_MCP_SERVER_POLICY,
+	);
+	expect(configYaml).toContain("mcp_servers:");
+	expect(configYaml).toContain(`  ${TELCLAUDE_HERMES_MCP_SERVER_NAME}:`);
+	expect(configYaml).toContain(`    url: ${TELCLAUDE_HERMES_MCP_URL}`);
+	expect(configYaml).toContain(
+		`      Authorization: "Bearer \${${TELCLAUDE_HERMES_MCP_RELAY_TOKEN_ENV}}"`,
+	);
+	for (const tool of TELCLAUDE_MCP_SERVER_POLICY.tools) {
+		expect(configYaml).toContain(`        - ${tool}`);
+	}
+	for (const requiredPolicyLine of [
+		"      resources: false",
+		"      prompts: false",
+		"    sampling:",
+		"      enabled: false",
+	]) {
+		expect(configYaml).toContain(requiredPolicyLine);
+	}
 });
 
 function networkEvidence(
