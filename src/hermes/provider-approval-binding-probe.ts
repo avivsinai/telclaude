@@ -138,6 +138,7 @@ const REQUIRED_PROVIDER_APPROVAL_BINDING_CHECKS = [
 	"provider.approval-binding.valid-token-executes",
 	"provider.approval-binding.proxy-relay",
 	"provider.approval-binding.hermes-approval-token-input-denied",
+	"provider.approval-binding.invalid-token-denied",
 	"provider.approval-binding.params-mutation-denied",
 	"provider.approval-binding.wrong-actor-denied",
 	"provider.approval-binding.service-action-mismatch-denied",
@@ -287,6 +288,27 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 					providerProxyCallPassed(call, prepared, sidecarApprovalTokenFor(prepared)),
 				),
 			"executed provider action is delivered only through the relay provider proxy",
+		);
+
+		const invalidToken = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "invalid-token" }),
+		);
+		const providerProxyCallsBeforeInvalidToken = providerProxyCalls.length;
+		providerApprovals.set(invalidToken.ref, "not-a-valid-token");
+		const invalidTokenResult = resultShape(
+			await bridge.tc_provider_execute_write({
+				actionRef: invalidToken.ref,
+			}),
+		);
+		pushCheck(
+			checks,
+			"provider.approval-binding.invalid-token-denied",
+			invalidTokenResult.ok === false &&
+				invalidTokenResult.code === "approval_required" &&
+				invalidTokenResult.retryable === true &&
+				invalidTokenResult.record?.status === "prepared" &&
+				providerProxyCalls.length === providerProxyCallsBeforeInvalidToken,
+			"malformed server-custodied approval tokens leave provider actions prepared and unexecuted",
 		);
 
 		const originalForMutation = ledger.prepare(
