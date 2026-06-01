@@ -21,6 +21,7 @@ import {
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
 import {
 	isProviderDomainSurfaceId,
@@ -39,6 +40,8 @@ import {
 	workflowFixtureEvidenceFailure,
 	workflowProbeEvidenceFailure,
 } from "./workflow-probes.js";
+
+export { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const DEFAULT_FEATURE_PROBE_MATRIX_PATH = "docs/hermes/feature-probes.json";
 export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json";
@@ -77,7 +80,6 @@ const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = "telclaude-openai-codex-proxy";
 const HERMES_CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
 const DEFAULT_HERMES_RELAY_IP = "172.29.92.10";
 const DEFAULT_HERMES_CONTAINED_IP = "172.29.92.11";
-export const NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION = "telclaude.hermes.network-probe.v1";
 export const PROFILE_GENERATION_PROOF_SCHEMA_VERSION =
 	"telclaude.hermes.profile-generation-proof.v1";
 export const GUARDRAIL_MANIFEST_SCHEMA_VERSION = "telclaude.hermes.guardrail-manifest.v1";
