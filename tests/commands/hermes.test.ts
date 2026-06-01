@@ -198,6 +198,47 @@ function writeJson(filePath: string, value: unknown): void {
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function networkProbeRunReport() {
+	const posture = "contained-internal";
+	const evidence = requiredNetworkProbeIds.map((id) => ({
+		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+		id,
+		posture,
+		status: "pass",
+		ran: true,
+		summary: `${id} passed`,
+		generatedAt: "2026-05-29T00:00:00.000Z",
+		evidence_path: `artifacts/hermes/network/${id.replace(/^network\./, "")}.json`,
+		attempts: [
+			{
+				name: `${id}.observed`,
+				kind: "configuration",
+				target: id,
+				expectation: "configured",
+				status: "pass",
+				observed: "configured",
+				detail: "test report observed the required network outcome",
+			},
+		],
+	}));
+	return {
+		schemaVersion: "telclaude.hermes.network-probe-run.v1",
+		posture,
+		status: "pass",
+		ran: true,
+		summary: "contained network probes passed",
+		bundle: {
+			schemaVersion: 1,
+			probes: evidence.map((probe) => ({
+				id: probe.id,
+				status: probe.status,
+				evidence_path: probe.evidence_path,
+			})),
+		},
+		evidence,
+	};
+}
+
 function hermesRuntimeState() {
 	return {
 		ok: true,
@@ -2298,6 +2339,99 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.pin).toEqual(hermesPin);
 			expect(report.outputs.length).toBeGreaterThan(0);
 		});
+	});
+
+	it("refuses to write the tracked profile-generation proof seed by default", async () => {
+		const trackedProofPath = path.resolve("docs/hermes/profile-generation-proof.json");
+		const before = fs.readFileSync(trackedProofPath, "utf8");
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-generate-seed-guard-"));
+		const profileDir = path.join(tempDir, "profile");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"generate",
+			"--write",
+			"--out",
+			profileDir,
+			"--json",
+		]);
+
+		expect(result.exitCode).toBe(1);
+		expect(fs.readFileSync(trackedProofPath, "utf8")).toBe(before);
+		expect(fs.existsSync(profileDir)).toBe(false);
+	});
+
+	it("writes profile-generation proof evidence to an explicit temp output", async () => {
+		const trackedProofPath = path.resolve("docs/hermes/profile-generation-proof.json");
+		const before = fs.readFileSync(trackedProofPath, "utf8");
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-generate-temp-proof-"));
+		const profileDir = path.join(tempDir, "profile");
+		const proofOut = path.join(tempDir, "profile-generation-proof.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"generate",
+			"--write",
+			"--out",
+			profileDir,
+			"--proof-out",
+			proofOut,
+			"--json",
+		]);
+		const report = readJson(proofOut) as { status: string; evidence_path: string };
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.evidence_path).toBe(proofOut);
+		expect(fs.existsSync(path.join(profileDir, "docs/hermes/hermes-compat.lock.json"))).toBe(true);
+		expect(fs.readFileSync(trackedProofPath, "utf8")).toBe(before);
+	});
+
+	it("refuses to promote network probes into the tracked seed path by default", async () => {
+		const trackedNetworkPath = path.resolve("docs/hermes/network-probes.json");
+		const before = fs.readFileSync(trackedNetworkPath, "utf8");
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-seed-guard-"));
+		const reportPath = path.join(tempDir, "network-run.json");
+		writeJson(reportPath, networkProbeRunReport());
+
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--from-report",
+			reportPath,
+			"--json",
+		]);
+
+		expect(result.exitCode).toBe(1);
+		expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
+	});
+
+	it("promotes network probes to explicit temp output without touching the tracked seed", async () => {
+		const trackedNetworkPath = path.resolve("docs/hermes/network-probes.json");
+		const before = fs.readFileSync(trackedNetworkPath, "utf8");
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-temp-out-"));
+		const reportPath = path.join(tempDir, "network-run.json");
+		const outPath = path.join(tempDir, "network-probes.json");
+		const evidenceDir = path.join(tempDir, "network-evidence");
+		writeJson(reportPath, networkProbeRunReport());
+
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--from-report",
+			reportPath,
+			"--out",
+			outPath,
+			"--evidence-dir",
+			evidenceDir,
+			"--json",
+		]);
+		const bundle = readJson(outPath) as { probes: unknown[] };
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(bundle.probes).toHaveLength(requiredNetworkProbeIds.length);
+		expect(fs.existsSync(path.join(evidenceDir, "relay-control-allowed.json"))).toBe(true);
+		expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
 	});
 
 	it("fails doctor when feature probes or lockfile evidence are not production-ready", () => {

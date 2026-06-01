@@ -9,7 +9,12 @@ import {
 	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 	type REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS,
 } from "./approval-continuation.js";
-import type { HermesPin } from "./foundation.js";
+import {
+	assertHermesArtifactWritesAllowed,
+	type HermesArtifactWriteOptions,
+	type HermesPin,
+	writeHermesJsonArtifact,
+} from "./foundation.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -87,6 +92,7 @@ export type RunHermesApprovalContinuationProbeOptions = {
 export type WriteApprovalContinuationArtifactsOptions = {
 	evidencePath: string;
 	fixtureEvidenceDir?: string;
+	allowTrackedSeedWrite?: boolean;
 };
 
 type ProbeHarness = {
@@ -202,8 +208,16 @@ export function writeApprovalContinuationArtifacts(
 	const fixtures = run.fixtures.map((fixture) => ({
 		...fixture,
 	}));
+	const writeOptions: HermesArtifactWriteOptions =
+		options.allowTrackedSeedWrite === undefined
+			? {}
+			: { allowTrackedSeedWrite: options.allowTrackedSeedWrite };
+	assertHermesArtifactWritesAllowed(
+		[evidencePath, ...fixtures.map((fixture) => fixturePath(fixtureEvidenceDir, fixture.id))],
+		writeOptions,
+	);
 	for (const fixture of fixtures) {
-		writeJsonArtifact(fixturePath(fixtureEvidenceDir, fixture.id), fixture);
+		writeHermesJsonArtifact(fixturePath(fixtureEvidenceDir, fixture.id), fixture, writeOptions);
 	}
 	const evidence: ApprovalContinuationEvidence = {
 		...run.evidence,
@@ -221,7 +235,7 @@ export function writeApprovalContinuationArtifacts(
 				}
 			: undefined,
 	};
-	writeJsonArtifact(evidencePath, evidence);
+	writeHermesJsonArtifact(evidencePath, evidence, writeOptions);
 	return {
 		...run,
 		evidencePath,
@@ -790,13 +804,6 @@ function defaultFixtureEvidenceDir(evidencePath: string): string {
 
 function fixturePath(fixtureEvidenceDir: string, id: string): string {
 	return path.join(fixtureEvidenceDir, `${id.replaceAll(".", "-")}.json`);
-}
-
-function writeJsonArtifact(filePath: string, value: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
 }
 
 function errorMessage(error: unknown): string {

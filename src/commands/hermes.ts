@@ -55,6 +55,7 @@ import {
 	DEFAULT_QUEUE_SNAPSHOT_PATH,
 	DEFAULT_ROLLBACK_REHEARSAL_PATH,
 	evaluateCutoverCheck,
+	type HermesArtifactWriteOptions,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
 	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
 	PRIVATE_TELEGRAM_FIXTURE_TEST_FILES,
@@ -63,6 +64,7 @@ import {
 	readJsonFile,
 	readOptionalJsonFile,
 	resolveHermesArtifactPath,
+	writeHermesJsonArtifact,
 	writeHermesProfileGenerationProof,
 } from "../hermes/foundation.js";
 import { collectHermesInventory } from "../hermes/inventory.js";
@@ -156,6 +158,13 @@ type PinOption = {
 	lockfile?: string;
 };
 
+type TrackedSeedWriteOption = {
+	writeTrackedSeed?: boolean;
+};
+
+const WRITE_TRACKED_SEED_OPTION_DESCRIPTION =
+	"Allow writing tracked docs/hermes seed files; use only for deliberate seed regeneration";
+
 type ProbeOption = JsonOption & {
 	allowRun?: boolean;
 	apiPort?: string;
@@ -190,7 +199,7 @@ type ProbeOption = JsonOption & {
 	timeoutMs?: string;
 	vaultSocket?: string;
 	pin?: string;
-};
+} & TrackedSeedWriteOption;
 
 type NetworkProbeOption = JsonOption & {
 	allowRun?: boolean;
@@ -206,22 +215,22 @@ type NetworkProbeOption = JsonOption & {
 	firewallSentinel: string;
 	posture?: string;
 	timeoutMs?: string;
-};
+} & TrackedSeedWriteOption;
 
 type InventoryOption = JsonOption & {
 	out?: string;
-};
+} & TrackedSeedWriteOption;
 
 type RollbackRehearsalOption = JsonOption & {
 	allowRun?: boolean;
 	out: string;
 	evidencePath?: string;
-};
+} & TrackedSeedWriteOption;
 
 type QueueSnapshotOption = JsonOption & {
 	inventory?: string;
 	out?: string;
-};
+} & TrackedSeedWriteOption;
 
 type ProofBundleOption = JsonOption &
 	PinOption & {
@@ -236,7 +245,7 @@ type ProofBundleOption = JsonOption &
 		queueSnapshot: string;
 		rollbackEvidence: string;
 		out?: string;
-	};
+	} & TrackedSeedWriteOption;
 
 type FixtureResultOption = JsonOption & {
 	write?: boolean;
@@ -245,7 +254,7 @@ type FixtureResultOption = JsonOption & {
 	testReport?: string;
 	reportOut: string;
 	observedAt?: string;
-};
+} & TrackedSeedWriteOption;
 
 type ProReviewCheckOption = JsonOption & {
 	request: string;
@@ -326,11 +335,16 @@ function resolvePin(options: PinOption) {
 	return Object.keys(lockfilePin).length > 0 ? lockfilePin : null;
 }
 
-function writeJsonArtifact(filePath: string, value: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
+function trackedSeedWriteOptions(options: TrackedSeedWriteOption): HermesArtifactWriteOptions {
+	return options.writeTrackedSeed === true ? { allowTrackedSeedWrite: true } : {};
+}
+
+function writeJsonArtifact(
+	filePath: string,
+	value: unknown,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	writeHermesJsonArtifact(filePath, value, options);
 }
 
 function cutoverProofArtifact(artifactPath: string, sourceCommand: string, gateIds: string[]) {
@@ -1053,6 +1067,7 @@ export function registerHermesCommand(program: Command): void {
 			"Profile generation proof JSON path",
 			DEFAULT_PROFILE_GENERATION_PROOF_PATH,
 		)
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(
 			(
 				options: JsonOption &
@@ -1062,7 +1077,7 @@ export function registerHermesCommand(program: Command): void {
 						write?: boolean;
 						lockfile: string;
 						proofOut: string;
-					},
+					} & TrackedSeedWriteOption,
 			) => {
 				try {
 					if (options.dryRun && options.write) {
@@ -1074,6 +1089,7 @@ export function registerHermesCommand(program: Command): void {
 							outDir: options.out,
 							lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 							evidencePath: options.proofOut,
+							allowTrackedSeedWrite: options.writeTrackedSeed === true,
 						});
 						if (options.json) {
 							printJson(report);
@@ -1126,6 +1142,7 @@ export function registerHermesCommand(program: Command): void {
 			"artifacts/hermes/fixtures",
 		)
 		.option("--observed-at <iso>", "Observed timestamp for generated evidence")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: FixtureResultOption) => {
 			try {
 				const observedAt = options.observedAt ?? new Date().toISOString();
@@ -1153,12 +1170,16 @@ export function registerHermesCommand(program: Command): void {
 								? evidence.evidence_path
 								: undefined;
 						if (!evidencePath) throw new Error("fixture evidence is missing evidence_path");
-						writeJsonArtifact(evidencePath, evidence);
+						writeJsonArtifact(evidencePath, evidence, trackedSeedWriteOptions(options));
 					}
-					writeJsonArtifact(options.out, {
-						schemaVersion: bundle.schemaVersion,
-						results: bundle.results,
-					});
+					writeJsonArtifact(
+						options.out,
+						{
+							schemaVersion: bundle.schemaVersion,
+							results: bundle.results,
+						},
+						trackedSeedWriteOptions(options),
+					);
 				}
 				const report = {
 					schemaVersion: 1,
@@ -1205,6 +1226,7 @@ export function registerHermesCommand(program: Command): void {
 			DEFAULT_HERMES_UPSTREAM_VERSION,
 		)
 		.option("--out <path>", "No-fork proof evidence path", DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH)
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.option(
 			"--inventory <path>",
 			"P0 inventory snapshot JSON path; collects live inventory when omitted",
@@ -1261,7 +1283,7 @@ export function registerHermesCommand(program: Command): void {
 					networkProbes: string;
 					profileProof: string;
 					rollback: string;
-				},
+				} & TrackedSeedWriteOption,
 			) => {
 				if (!options.upstreamClean) {
 					const report = {
@@ -1292,6 +1314,7 @@ export function registerHermesCommand(program: Command): void {
 						expectedVersion: options.expectedVersion,
 						evidencePath: options.out,
 					}),
+					trackedSeedWriteOptions(options),
 				);
 				if (options.p0) {
 					const strict = true;
@@ -1401,10 +1424,15 @@ export function registerHermesCommand(program: Command): void {
 		.description("Emit the Phase 0 wrapper inventory")
 		.option("--json", "Emit structured JSON")
 		.option("--out <path>", "Write inventory snapshot JSON to this path")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: InventoryOption) => {
 			const inventory = collectHermesInventory();
 			if (options.out) {
-				writeJsonArtifact(resolveHermesArtifactPath(options.out), inventory);
+				writeJsonArtifact(
+					resolveHermesArtifactPath(options.out),
+					inventory,
+					trackedSeedWriteOptions(options),
+				);
 			}
 			if (options.json) {
 				printJson(inventory);
@@ -1542,6 +1570,7 @@ export function registerHermesCommand(program: Command): void {
 			"Approval-continuation evidence JSON path",
 			DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 		)
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(async (surface: string, options: ProbeOption) => {
 			if (surface === "execution.cli_headless") {
 				let report: Awaited<ReturnType<typeof runHermesCliHeadlessProbe>>;
@@ -1599,7 +1628,7 @@ export function registerHermesCommand(program: Command): void {
 							? resolveHermesArtifactPath(options.out)
 							: undefined;
 				if (outPath && report.status !== "pending") {
-					writeJsonArtifact(outPath, report);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 
 				if (options.json) {
@@ -1661,7 +1690,11 @@ export function registerHermesCommand(program: Command): void {
 						outPath = resolveHermesArtifactPath(
 							options.out ?? DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH,
 						);
-						writeHermesApiServerContainmentEvidence(report, outPath);
+						writeHermesApiServerContainmentEvidence(
+							report,
+							outPath,
+							trackedSeedWriteOptions(options),
+						);
 					}
 				} catch (error) {
 					report = {
@@ -1720,7 +1753,7 @@ export function registerHermesCommand(program: Command): void {
 						outPath = resolveHermesArtifactPath(
 							options.out ?? DEFAULT_SERVED_MCP_CONTAINMENT_EVIDENCE_PATH,
 						);
-						writeServedMcpContainmentEvidence(report, outPath);
+						writeServedMcpContainmentEvidence(report, outPath, trackedSeedWriteOptions(options));
 					}
 				} catch (error) {
 					report = {
@@ -1781,7 +1814,7 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH,
 					);
-					writeJsonArtifact(outPath, report);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
 					printJson(report);
@@ -1810,7 +1843,7 @@ export function registerHermesCommand(program: Command): void {
 							ReturnType<typeof runHermesModelRelayProbe>
 						>;
 						outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_MODEL_RELAY_EVIDENCE_PATH);
-						writeHermesModelRelayEvidence(report, outPath);
+						writeHermesModelRelayEvidence(report, outPath, trackedSeedWriteOptions(options));
 						if (report.posture) posture = report.posture;
 					} else {
 						posture = parseModelRelayPosture(options.posture);
@@ -1849,7 +1882,7 @@ export function registerHermesCommand(program: Command): void {
 						});
 						if (options.allowRun === true && report.status !== "pending") {
 							outPath = resolveHermesArtifactPath(options.out ?? DEFAULT_MODEL_RELAY_EVIDENCE_PATH);
-							writeHermesModelRelayEvidence(report, outPath);
+							writeHermesModelRelayEvidence(report, outPath, trackedSeedWriteOptions(options));
 						}
 					}
 				} catch (error) {
@@ -1899,7 +1932,7 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? `artifacts/hermes/probes/${surface}.json`,
 					);
-					writeJsonArtifact(outPath, report);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
 					printJson(report);
@@ -1924,7 +1957,7 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH,
 					);
-					writeJsonArtifact(outPath, report);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
 					printJson(report);
@@ -1949,7 +1982,7 @@ export function registerHermesCommand(program: Command): void {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH,
 					);
-					writeJsonArtifact(outPath, report);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
 					printJson(report);
@@ -1990,6 +2023,7 @@ export function registerHermesCommand(program: Command): void {
 				if (run.evidence) {
 					run = writeApprovalContinuationArtifacts(run, {
 						evidencePath: options.out ?? options.evidence,
+						allowTrackedSeedWrite: options.writeTrackedSeed === true,
 					});
 				}
 				if (options.json) {
@@ -2070,6 +2104,7 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option("--posture <posture>", "Network boundary posture: agent-iptables or contained-internal")
 		.option("--timeout-ms <ms>", "Maximum time per HTTP probe in milliseconds")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(async (options: NetworkProbeOption) => {
 			try {
 				let report: Awaited<ReturnType<typeof runHermesNetworkProbes>>;
@@ -2082,6 +2117,7 @@ export function registerHermesCommand(program: Command): void {
 						{
 							outPath: options.out,
 							evidenceDir: options.evidenceDir,
+							allowTrackedSeedWrite: options.writeTrackedSeed === true,
 						},
 					);
 				} else {
@@ -2118,6 +2154,7 @@ export function registerHermesCommand(program: Command): void {
 					report = writeHermesNetworkProbeArtifacts(report, {
 						outPath: options.out,
 						evidenceDir: options.evidenceDir,
+						allowTrackedSeedWrite: options.writeTrackedSeed === true,
 					});
 				}
 
@@ -2164,6 +2201,7 @@ export function registerHermesCommand(program: Command): void {
 			"--evidence-path <path>",
 			"Logical evidence_path recorded inside the artifact; defaults to --out",
 		)
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(async (options: RollbackRehearsalOption) => {
 			try {
 				const outPath = resolveHermesArtifactPath(options.out);
@@ -2172,7 +2210,11 @@ export function registerHermesCommand(program: Command): void {
 					allowRun: options.allowRun === true,
 					evidencePath,
 				});
-				const written = writeHermesRollbackRehearsalEvidence(report, outPath);
+				const written = writeHermesRollbackRehearsalEvidence(
+					report,
+					outPath,
+					trackedSeedWriteOptions(options),
+				);
 				if (options.json) {
 					printJson({ ...report, written });
 				} else {
@@ -2417,13 +2459,18 @@ export function registerHermesCommand(program: Command): void {
 			`Inventory snapshot JSON path; uses ${DEFAULT_INVENTORY_PATH} when present, otherwise collects live inventory`,
 		)
 		.option("--out <path>", "Write queue snapshot JSON to this path")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: QueueSnapshotOption) => {
 			try {
 				const inventory = readInventorySnapshot(options.inventory);
 				const snapshot = buildHermesQueueSnapshot({ inventory });
 				const outPath = options.out ?? DEFAULT_QUEUE_SNAPSHOT_PATH;
 				if (options.out) {
-					writeJsonArtifact(resolveHermesArtifactPath(outPath), snapshot);
+					writeJsonArtifact(
+						resolveHermesArtifactPath(outPath),
+						snapshot,
+						trackedSeedWriteOptions(options),
+					);
 				}
 				if (options.json) {
 					printJson(snapshot);
@@ -2472,6 +2519,7 @@ export function registerHermesCommand(program: Command): void {
 		.option("--pin <pin>", "Pinned Hermes version, commit, package, or image digest")
 		.option("--out <path>", "Write proof bundle JSON to this path")
 		.option("--json", "Emit structured JSON")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: ProofBundleOption) => {
 			try {
 				const hermesPin = resolvePin({
@@ -2538,7 +2586,11 @@ export function registerHermesCommand(program: Command): void {
 					},
 				});
 				if (options.out) {
-					writeJsonArtifact(resolveHermesArtifactPath(options.out), proofBundle);
+					writeJsonArtifact(
+						resolveHermesArtifactPath(options.out),
+						proofBundle,
+						trackedSeedWriteOptions(options),
+					);
 				}
 				if (options.json || !options.out) {
 					printJson(proofBundle);

@@ -1,8 +1,11 @@
 import { randomBytes } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import { redactSecrets } from "../security/output-filter.js";
-import { resolveHermesArtifactPath } from "./foundation.js";
+import {
+	type HermesArtifactWriteOptions,
+	resolveHermesArtifactPath,
+	writeHermesJsonArtifact,
+} from "./foundation.js";
 import {
 	findHermesLaunchSecretFindings,
 	type HermesLaunchInvocation,
@@ -514,9 +517,10 @@ async function readRuntimePosture(
 export function writeHermesApiServerContainmentEvidence(
 	report: HermesApiServerContainmentReport,
 	outputPath = DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH,
+	options: HermesArtifactWriteOptions = {},
 ): HermesApiServerContainmentReport {
 	const artifactPath = resolveHermesArtifactPath(outputPath);
-	writeJsonArtifact(artifactPath, report);
+	writeHermesJsonArtifact(artifactPath, report, options);
 	return report;
 }
 
@@ -1029,11 +1033,4 @@ function redactApiServerText(value: string, plan: HermesApiServerLaunchPlan): st
 		plan.apiKey,
 		"[REDACTED:ephemeral_api_auth]",
 	);
-}
-
-function writeJsonArtifact(filePath: string, value: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
 }

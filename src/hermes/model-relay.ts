@@ -2,7 +2,12 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { redactSecrets } from "../security/output-filter.js";
-import { type NETWORK_PROBE_POSTURES, resolveHermesArtifactPath } from "./foundation.js";
+import {
+	type HermesArtifactWriteOptions,
+	type NETWORK_PROBE_POSTURES,
+	resolveHermesArtifactPath,
+	writeHermesJsonArtifact,
+} from "./foundation.js";
 import { DEFAULT_MODEL_PROVIDER_PROBE_URL } from "./network-probes.js";
 
 export const HERMES_MODEL_RELAY_SCHEMA_VERSION = "telclaude.hermes.model-relay.v1";
@@ -165,12 +170,10 @@ export async function runHermesModelRelayProbe(
 export function writeHermesModelRelayEvidence(
 	report: HermesModelRelayReport,
 	outPath: string,
+	options: HermesArtifactWriteOptions = {},
 ): HermesModelRelayReport {
 	const resolved = resolveHermesArtifactPath(outPath);
-	fs.mkdirSync(path.dirname(resolved), { recursive: true });
-	const tmpPath = `${resolved}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, resolved);
+	writeHermesJsonArtifact(resolved, report, options);
 	return report;
 }
 

@@ -30,6 +30,20 @@ export const DEFAULT_NO_FORK_PROOF_PATH = "docs/hermes/no-fork-proof.json";
 export const DEFAULT_CUTOVER_PROOF_BUNDLE_PATH = "docs/hermes/cutover-proof-bundle.json";
 export const DEFAULT_PROFILE_GENERATION_PROOF_PATH = "docs/hermes/profile-generation-proof.json";
 export const DEFAULT_ROLLBACK_REHEARSAL_PATH = "docs/hermes/rollback-rehearsal.json";
+export const HERMES_TRACKED_SEED_PATHS = [
+	DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+	DEFAULT_COMPAT_LOCKFILE_PATH,
+	DEFAULT_CUTOVER_SCOPE_PATH,
+	DEFAULT_DECISION_LOG_PATH,
+	DEFAULT_FIXTURE_RESULTS_PATH,
+	DEFAULT_INVENTORY_PATH,
+	DEFAULT_NETWORK_PROBES_PATH,
+	DEFAULT_QUEUE_SNAPSHOT_PATH,
+	DEFAULT_NO_FORK_PROOF_PATH,
+	DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
+	DEFAULT_PROFILE_GENERATION_PROOF_PATH,
+	DEFAULT_ROLLBACK_REHEARSAL_PATH,
+] as const;
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
 export const CUTOVER_PROOF_BUNDLE_SCHEMA_VERSION = "telclaude.hermes.cutover-proof-bundle.v1";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
@@ -1383,6 +1397,106 @@ export function readOptionalJsonFile(filePath: string): unknown | undefined {
 	return readJsonFile(filePath);
 }
 
+export type HermesArtifactWriteOptions = {
+	allowTrackedSeedWrite?: boolean;
+	mode?: number;
+};
+
+const trackedSeedPathCache = new Map<string, Map<string, string>>();
+
+export function assertHermesArtifactWritesAllowed(
+	filePaths: readonly string[],
+	options: HermesArtifactWriteOptions = {},
+): void {
+	for (const filePath of filePaths) {
+		assertHermesArtifactWriteAllowed(filePath, options);
+	}
+}
+
+export function assertHermesArtifactWriteAllowed(
+	filePath: string,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	const trackedSeedPath = trackedHermesSeedPath(filePath);
+	if (!trackedSeedPath || options.allowTrackedSeedWrite === true) return;
+	throw new Error(
+		`Refusing to write tracked Hermes seed ${trackedSeedPath}. Write generated evidence with --out outside docs/hermes, or pass --write-tracked-seed only for deliberate seed regeneration.`,
+	);
+}
+
+export function writeHermesJsonArtifact(
+	filePath: string,
+	value: unknown,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	writeHermesTextArtifact(filePath, `${JSON.stringify(value, null, 2)}\n`, options);
+}
+
+export function writeHermesTextArtifact(
+	filePath: string,
+	content: string,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	assertHermesArtifactWriteAllowed(filePath, options);
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const tmpPath = `${filePath}.tmp.${process.pid}`;
+	fs.writeFileSync(tmpPath, content, {
+		encoding: "utf8",
+		...(options.mode === undefined ? {} : { mode: options.mode }),
+	});
+	fs.renameSync(tmpPath, filePath);
+}
+
+function trackedHermesSeedPath(filePath: string): string | undefined {
+	const repoRoot = gitTopLevel(process.cwd());
+	if (!repoRoot) return undefined;
+	const resolved = path.resolve(filePath);
+	return trackedHermesSeedPaths(repoRoot).get(resolved);
+}
+
+function trackedHermesSeedPaths(repoRoot: string): Map<string, string> {
+	const normalizedRoot = path.resolve(repoRoot);
+	const cached = trackedSeedPathCache.get(normalizedRoot);
+	if (cached) return cached;
+
+	const paths = gitTrackedHermesSeedPaths(normalizedRoot);
+	const seedPaths = paths.length > 0 ? paths : [...HERMES_TRACKED_SEED_PATHS];
+	const next = new Map(
+		seedPaths
+			.filter((seedPath) => seedPath.startsWith("docs/hermes/") && seedPath.endsWith(".json"))
+			.map((seedPath) => [path.resolve(normalizedRoot, seedPath), seedPath]),
+	);
+	trackedSeedPathCache.set(normalizedRoot, next);
+	return next;
+}
+
+function gitTrackedHermesSeedPaths(repoRoot: string): string[] {
+	try {
+		const output = execFileSync("git", ["-C", repoRoot, "ls-files", "docs/hermes/*.json"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		return output
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+	} catch {
+		return [];
+	}
+}
+
+function gitTopLevel(cwd: string): string | undefined {
+	try {
+		const output = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return output.length > 0 ? output : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function buildCutoverInputBundleFromArtifacts(input: {
 	inventory: unknown;
 	scopeManifest: unknown;
@@ -1771,6 +1885,7 @@ export function writeHermesProfileGenerationProof(options: {
 	outDir: string;
 	lockfile: unknown;
 	evidencePath: string;
+	allowTrackedSeedWrite?: boolean;
 	now?: string;
 }): ProfileGenerationProof {
 	if (!options.pin) {
@@ -1788,10 +1903,21 @@ export function writeHermesProfileGenerationProof(options: {
 		secretManifest,
 		generatedAt,
 	});
+	const writeOptions: HermesArtifactWriteOptions =
+		options.allowTrackedSeedWrite === undefined
+			? {}
+			: { allowTrackedSeedWrite: options.allowTrackedSeedWrite };
 
+	assertHermesArtifactWritesAllowed(
+		[
+			resolveHermesArtifactPath(options.evidencePath),
+			...[...files.keys()].map((relativePath) => path.join(outDir, relativePath)),
+		],
+		writeOptions,
+	);
 	assertProfileOutputDirCleanForWrite(outDir, files);
 	for (const [relativePath, content] of files) {
-		writeTextFileAtomic(path.join(outDir, relativePath), content);
+		writeTextFileAtomic(path.join(outDir, relativePath), content, writeOptions);
 	}
 
 	const outputs = profileOutputDefinitions().map((output) => {
@@ -1839,6 +1965,7 @@ export function writeHermesProfileGenerationProof(options: {
 	writeTextFileAtomic(
 		resolveHermesArtifactPath(options.evidencePath),
 		`${JSON.stringify(parsed.data, null, 2)}\n`,
+		writeOptions,
 	);
 	return parsed.data;
 }
@@ -2580,11 +2707,12 @@ function scanCutoverProofArtifactLeaks(text: string): { status: "pass" | "fail";
 			};
 }
 
-function writeTextFileAtomic(filePath: string, content: string): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, content, "utf8");
-	fs.renameSync(tmpPath, filePath);
+function writeTextFileAtomic(
+	filePath: string,
+	content: string,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	writeHermesTextArtifact(filePath, content, options);
 }
 
 export function evaluateCutoverCheck(

@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
 import {
 	relayGetHermesPrivateRuntimeState,
@@ -8,7 +6,9 @@ import {
 import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
+	type HermesArtifactWriteOptions,
 	type RollbackRehearsal,
+	writeHermesJsonArtifact,
 } from "./foundation.js";
 import {
 	HERMES_PRIVATE_RUNTIME_FALLBACK_PATH,
@@ -159,15 +159,10 @@ export async function runHermesRollbackRehearsal(input: {
 export function writeHermesRollbackRehearsalEvidence(
 	evidence: RollbackRehearsal,
 	evidencePath: string = evidence.evidence_path,
+	options: HermesArtifactWriteOptions = {},
 ): boolean {
 	if (evidence.allowedToRun !== true || evidence.passed !== true) return false;
-	fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
-	const tmpPath = `${evidencePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(evidence, null, 2)}\n`, {
-		encoding: "utf8",
-		mode: 0o600,
-	});
-	fs.renameSync(tmpPath, evidencePath);
+	writeHermesJsonArtifact(evidencePath, evidence, { ...options, mode: 0o600 });
 	return true;
 }
 

@@ -1,7 +1,11 @@
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { type NoForkProof, resolveHermesArtifactPath } from "./foundation.js";
+import {
+	type HermesArtifactWriteOptions,
+	type NoForkProof,
+	resolveHermesArtifactPath,
+	writeHermesJsonArtifact,
+} from "./foundation.js";
 
 export const DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH = "/home/user/MyProjects/hermes-agent";
 export const DEFAULT_HERMES_UPSTREAM_REF = "v2026.5.29";
@@ -153,11 +157,12 @@ export function buildNoForkProof(input: {
 	};
 }
 
-export function writeNoForkProofReport(report: NoForkProofReport): NoForkProofReport {
+export function writeNoForkProofReport(
+	report: NoForkProofReport,
+	options: HermesArtifactWriteOptions = {},
+): NoForkProofReport {
 	const outputPath = resolveHermesArtifactPath(report.evidence_path);
-	fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-	fs.writeFileSync(`${outputPath}.tmp`, `${JSON.stringify(report, null, 2)}\n`);
-	fs.renameSync(`${outputPath}.tmp`, outputPath);
+	writeHermesJsonArtifact(outputPath, report, options);
 	return report;
 }
 

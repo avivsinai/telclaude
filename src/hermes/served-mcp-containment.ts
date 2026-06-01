@@ -1,8 +1,7 @@
-import fs from "node:fs";
 import net from "node:net";
-import path from "node:path";
 import { z } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
+import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { TELCLAUDE_MCP_TOOL_NAMES } from "./mcp/bridge.js";
 import { TELCLAUDE_LIVE_MCP_OBSERVED_PEER_HEADER } from "./mcp/live-server.js";
 
@@ -645,11 +644,9 @@ export function evaluateServedMcpContainmentEvidence(
 export function writeServedMcpContainmentEvidence(
 	evidence: ServedMcpContainmentEvidence,
 	filePath: string,
+	options: HermesArtifactWriteOptions = {},
 ): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
+	writeHermesJsonArtifact(filePath, evidence, options);
 }
 
 function buildEvidence(input: {
