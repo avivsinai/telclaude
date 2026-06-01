@@ -24,6 +24,7 @@ export const EXCLUDED_RESPONSE_HEADERS = new Set([
 	"te",
 	"trailer",
 	"upgrade",
+	"set-cookie",
 ]);
 
 /**

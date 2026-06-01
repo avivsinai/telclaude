@@ -81,12 +81,15 @@ const POSITIVE_DENIAL_ERROR_CODES = new Set([
 ]);
 const MODEL_CREDENTIAL_PATTERNS = [
 	/\b(ANTHROPIC|OPENAI|GEMINI|GOOGLE|OPENROUTER|XAI)_API_KEY\s*[:=]/i,
+	/\b(?:CODEX_HOME|HERMES_CODEX_BASE_URL)\s*[:=]\s*["']?https:\/\/chatgpt\.com/i,
 	/\b(BEDROCK|AWS)_SECRET_ACCESS_KEY\s*[:=]/i,
 	/\b(model|llm)[_-]?(api[_-]?key|token|secret)\s*[:=]/i,
 ];
 const DIRECT_MODEL_HOST_PATTERNS = [
 	/api\.anthropic\.com/i,
 	/api\.openai\.com/i,
+	/auth\.openai\.com/i,
+	/chatgpt\.com\/backend-api\/codex/i,
 	/generativelanguage\.googleapis\.com/i,
 	/openrouter\.ai\/api/i,
 	/api\.x\.ai/i,
@@ -94,6 +97,8 @@ const DIRECT_MODEL_HOST_PATTERNS = [
 const DIRECT_MODEL_PROVIDER_HOSTS = new Set([
 	"api.anthropic.com",
 	"api.openai.com",
+	"auth.openai.com",
+	"chatgpt.com",
 	"generativelanguage.googleapis.com",
 	"openrouter.ai",
 	"api.x.ai",

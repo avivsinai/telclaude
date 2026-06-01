@@ -38,6 +38,7 @@ export TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS="$TELCLAUDE_HERMES_CONTAINED_IP"
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=1
 export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-admin.sock
+export TELCLAUDE_HERMES_INFERENCE_MODEL="${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}"
 
 # Required for the one-off operator CLI and relay-authenticated rollback evidence.
 # Generate once with `pnpm dev keygen operator`; keep OPERATOR_RPC_AGENT_PRIVATE_KEY
@@ -47,6 +48,10 @@ export OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set fro
 export OPERATOR_RPC_AGENT_PUBLIC_KEY="${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}"
 export OPERATOR_RPC_RELAY_PRIVATE_KEY="${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}"
 export OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen operator}"
+
+# Required for Hermes openai-codex. This must be a relay-scoped Telclaude proxy
+# token, not an upstream OpenAI API key or Codex OAuth token.
+export TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN="${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}"
 ```
 
 Compose requires these base-stack values. For a local containment rehearsal without real accounts, use generated placeholders. For an operator smoke against real services, use the real local secret source instead.
@@ -144,7 +149,17 @@ These commands are the evidence-generating commands. Use `--json` for machine-re
 
 ### 5.1 CLI Headless
 
-Use the local Hermes checkout pinned to `v2026.5.29` / `0.15.1` unless the operator chooses a different verified binary.
+This proof must run the Hermes binary inside `tc-hermes-contained`; a host
+workstation run does not satisfy the gate because `telclaude` must resolve inside
+the internal `telclaude-hermes-relay` network. The command below uses the local
+Telclaude CLI as the verifier, but points `--hermes-bin` at the hardened
+contained wrapper. The wrapper refuses to create or widen networks, requires an
+existing internal `telclaude-hermes-relay` network with the relay already
+attached, runs Hermes inside a fresh `tc-hermes-contained` container, and records
+Docker inspect, in-container DNS, and relay server-observed peer evidence.
+Use a Docker-shareable `--hermes-home` under the workspace cache on macOS/Colima;
+host `/tmp` may not be mounted into the Docker VM, which makes the contained
+runtime miss the relay-scoped auth store.
 
 ```bash
 git -C /home/user/MyProjects/hermes-agent describe --tags --exact-match
@@ -153,14 +168,24 @@ git -C /home/user/MyProjects/hermes-agent show v2026.5.29:pyproject.toml | rg -n
 pnpm dev hermes probe execution.cli_headless \
   --allow-run \
   --json \
-  --hermes-bin /home/user/MyProjects/hermes-agent/hermes \
-  --hermes-home "$(mktemp -d /tmp/tc-hermes-cli.XXXXXX)" \
+  --hermes-bin scripts/hermes-contained-cli-probe.sh \
+  --hermes-home "$PWD/.cache/tc-hermes-cli-headless" \
   --cwd "$PWD" \
+  --prompt "Reply with exactly HERMES_OK_CODEX_SUB" \
   --timeout-ms 120000 \
   --out artifacts/hermes/probes/execution-cli-headless.json
 ```
 
-Expected green: exit code `0`, `status=pass`, `ran=true`, and evidence at `artifacts/hermes/probes/execution-cli-headless.json`.
+Expected green: exit code `0`, `status=pass`, `ran=true`, proof token
+observed, relay `openai-codex` model-provider metadata present, runtime
+`kind=contained-docker`, `networkName=telclaude-hermes-relay`, relay DNS
+resolved from inside `tc-hermes-contained`, Docker inspect
+`containerIpAddress == TELCLAUDE_HERMES_CONTAINED_IP`, relay
+`observedPeerAddress == TELCLAUDE_HERMES_CONTAINED_IP`, `runtimeSha256` bound in
+provenance, relay proof source `telclaude-openai-codex-proxy`,
+`relayProof.upstreamStatus` in the 2xx range, `relayProof.model` matching the
+configured Hermes model, `relayProofSha256` bound in provenance, and evidence at
+`artifacts/hermes/probes/execution-cli-headless.json`.
 
 ### 5.2 Approval Continuation
 

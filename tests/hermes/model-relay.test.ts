@@ -13,7 +13,7 @@ import {
 describe("Hermes model-relay probe", () => {
 	const tempDirs: string[] = [];
 	const servers: http.Server[] = [];
-	const directModelUrl = "https://api.anthropic.com/v1/models";
+	const directModelUrl = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 	const containedIp = "172.29.92.11";
 	const relayIp = "172.29.92.10";
 
@@ -303,7 +303,7 @@ describe("Hermes model-relay probe", () => {
 		fs.mkdirSync(profileDir);
 		fs.writeFileSync(
 			path.join(profileDir, ".env"),
-			"ANTHROPIC_API_KEY=sk-secret\nMODEL_BASE_URL=https://api.anthropic.com/v1\n",
+			"OPENAI_API_KEY=sk-secret\nHERMES_CODEX_BASE_URL=https://chatgpt.com/backend-api/codex\n",
 		);
 		const sentinel = path.join(tempDir, "firewall-active");
 		fs.writeFileSync(sentinel, "active\n");

@@ -26,6 +26,10 @@ ALLOWLIST_PATH=${TELCLAUDE_HERMES_SKILL_ALLOWLIST:-/tmp/telclaude-hermes-contain
 HERMES_HOME=${HERMES_HOME:-/home/hermes/.hermes}
 CURATED_SKILLS_DIR=${TELCLAUDE_HERMES_CURATED_BUNDLED_SKILLS:-/home/hermes/.telclaude-curated-bundled-skills}
 DEST_SKILLS_DIR="${HERMES_HOME}/skills"
+CODEX_PROVIDER=${HERMES_INFERENCE_PROVIDER:-}
+CODEX_MODEL=${HERMES_INFERENCE_MODEL:-}
+CODEX_BASE_URL=${HERMES_CODEX_BASE_URL:-}
+CODEX_RELAY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
 
 [ -d "$SOURCE_SKILLS_DIR" ] || die "source skills directory missing: $SOURCE_SKILLS_DIR"
 [ -f "$ALLOWLIST_PATH" ] || die "skill allowlist missing: $ALLOWLIST_PATH"
@@ -42,6 +46,7 @@ esac
 
 rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"
 mkdir -p "$CURATED_SKILLS_DIR" "$HERMES_HOME"
+chmod 700 "$HERMES_HOME"
 
 count=0
 while IFS= read -r rel || [ -n "$rel" ]; do
@@ -71,5 +76,64 @@ mkdir -p "$DEST_SKILLS_DIR"
 cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
+
+if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
+	[ -n "$CODEX_MODEL" ] || die "HERMES_INFERENCE_MODEL is required for openai-codex"
+	[ "$CODEX_BASE_URL" = "http://telclaude:8790/v1/openai-codex-proxy" ] || \
+		die "HERMES_CODEX_BASE_URL must point at the Telclaude OpenAI Codex relay proxy"
+	[ -n "$CODEX_RELAY_TOKEN" ] || die "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN is required"
+	case "$CODEX_RELAY_TOKEN" in
+		*[!A-Za-z0-9._~+/@:=,-]*)
+			die "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN contains unsupported characters"
+			;;
+	esac
+	case "$CODEX_MODEL" in
+		*[!A-Za-z0-9._:/+-]*)
+			die "HERMES_INFERENCE_MODEL contains unsupported characters"
+			;;
+	esac
+
+	umask 077
+	cat > "${HERMES_HOME}/config.yaml" <<EOF
+model:
+  provider: openai-codex
+  default: ${CODEX_MODEL}
+  api_mode: codex_responses
+  openai_runtime: auto
+EOF
+	tmp_auth="${HERMES_HOME}/auth.json.tmp.$$"
+	cat > "$tmp_auth" <<EOF
+{
+  "version": 1,
+  "active_provider": "openai-codex",
+  "providers": {
+    "openai-codex": {
+      "auth_mode": "telclaude-relay",
+      "last_refresh": "1970-01-01T00:00:00.000Z",
+      "tokens": {
+        "access_token": "${CODEX_RELAY_TOKEN}",
+        "refresh_token": "telclaude-relay-token-is-not-refreshable"
+      }
+    }
+  },
+  "credential_pool": {
+    "openai-codex": [
+      {
+        "id": "telclaude-relay",
+        "label": "Telclaude OpenAI Codex relay",
+        "auth_type": "api_key",
+        "priority": 0,
+        "source": "manual:telclaude-relay",
+        "access_token": "${CODEX_RELAY_TOKEN}",
+        "base_url": "http://telclaude:8790/v1/openai-codex-proxy"
+      }
+    ]
+  }
+}
+EOF
+	mv "$tmp_auth" "${HERMES_HOME}/auth.json"
+	chmod 600 "${HERMES_HOME}/auth.json"
+	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN
+fi
 
 exec /opt/hermes/hermes "$@"
