@@ -16,6 +16,25 @@ export const PRO_REVIEW_REQUEST_SCHEMA_VERSION = "telclaude.hermes.pro-review-re
 export const PRO_REVIEW_NATIVE_CANARY_SCHEMA_VERSION =
 	"telclaude.hermes.pro-review-native-canary.v1";
 export const PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS = 15 * 60 * 1000;
+const PRO_REVIEW_PAYLOAD_BINDING_FIELDS = [
+	"reviewer",
+	"transport",
+	"model",
+	"fallbackAllowed",
+	"transportEvidence",
+	"blockedFallbacks",
+	"prompt",
+	"selectedFiles",
+	"selectedFileContentsSha256",
+	"transportEvidenceSha256",
+] as const;
+const REQUIRED_PRO_REVIEW_BLOCKED_FALLBACKS = [
+	"cdp",
+	"api-key",
+	"manual-browser",
+	"claude-substitution",
+	"amq-substitution",
+] as const;
 const PRO_REVIEW_EDGE_PROBE_PATHS = {
 	"artifacts/hermes/probes/edge-whatsapp.json": "edge.whatsapp",
 	"artifacts/hermes/probes/edge-email.json": "edge.email",
@@ -332,12 +351,20 @@ const ProReviewNativeCanarySchema = z
 	})
 	.strict();
 
-type ProReviewRequest = z.infer<typeof ProReviewRequestSchema>;
+export type ProReviewRequest = z.infer<typeof ProReviewRequestSchema>;
 export type ProReviewNativeCanary = z.infer<typeof ProReviewNativeCanarySchema>;
 
 export type ProReviewYoetzSendValidation = {
 	readonly status: "pass" | "fail";
 	readonly detail: string;
+};
+
+export type BuildProReviewRequestInput = {
+	readonly existingRequestPath?: string;
+	readonly canaryPath?: string;
+	readonly prompt?: string;
+	readonly selectedFiles?: readonly string[];
+	readonly includeExistingSelectedFiles?: boolean;
 };
 
 const PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS = [
@@ -407,6 +434,97 @@ export function evaluateProReviewCheck(
 				}
 			: {}),
 	};
+}
+
+export function readProReviewRequest(
+	requestPath = DEFAULT_PRO_REVIEW_REQUEST_PATH,
+): ProReviewRequest {
+	const raw = JSON.parse(
+		fs.readFileSync(resolveHermesArtifactPath(requestPath), "utf8"),
+	) as unknown;
+	return ProReviewRequestSchema.parse(raw);
+}
+
+export function buildProReviewRequestDraft(
+	input: BuildProReviewRequestInput = {},
+): ProReviewRequest {
+	const existing = readOptionalProReviewRequest(input.existingRequestPath);
+	const prompt = input.prompt ?? existing?.prompt;
+	if (!prompt) {
+		throw new Error("Pro review request refresh requires an existing request or --prompt.");
+	}
+	const transportEvidence =
+		input.canaryPath ?? existing?.transportEvidence ?? DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH;
+	const selectedFiles = uniqueStrings([
+		...REQUIRED_PRO_REVIEW_FILES,
+		...(input.includeExistingSelectedFiles === false ? [] : (existing?.selectedFiles ?? [])),
+		...(input.selectedFiles ?? []),
+	]);
+	const blockedFallbacks = uniqueStrings([
+		...REQUIRED_PRO_REVIEW_BLOCKED_FALLBACKS,
+		...(existing?.blockedFallbacks ?? []),
+	]);
+	const selectedFileContentsSha256 = digestSelectedFileContents(selectedFiles);
+	const transportEvidenceSha256 = digestFile(transportEvidence);
+	const payload = {
+		reviewer: "ChatGPT Pro Extended via Yoetz native extension",
+		transport: "chrome-extension-native",
+		model: "Extended Pro",
+		fallbackAllowed: false,
+		transportEvidence,
+		blockedFallbacks,
+		prompt,
+		selectedFiles,
+		selectedFileContentsSha256,
+		transportEvidenceSha256,
+	};
+	return {
+		schemaVersion: PRO_REVIEW_REQUEST_SCHEMA_VERSION,
+		status: "pending_operator_disclosure_approval",
+		reviewer: "ChatGPT Pro Extended via Yoetz native extension",
+		transport: "chrome-extension-native",
+		model: "Extended Pro",
+		fallbackAllowed: false,
+		transportEvidence,
+		prompt,
+		privateWorkspaceDisclosure: {
+			required: true,
+			approved: false,
+			approvalReason:
+				existing?.privateWorkspaceDisclosure.approvalReason ??
+				"The payload includes private repo code, tests, docs, and local evidence artifacts.",
+			approvalBindingRequired: true,
+			approvalId: null,
+			operator: null,
+			approvedAt: null,
+			payloadSha256: null,
+		},
+		payloadBinding: {
+			digestAlgorithm: "sha256",
+			canonicalJsonFields: [...PRO_REVIEW_PAYLOAD_BINDING_FIELDS],
+			payloadSha256: digestJson(payload),
+			promptSha256: digestText(prompt),
+			selectedFilesSha256: digestJson(selectedFiles),
+			selectedFileContentsSha256,
+			transportEvidenceSha256,
+			notes:
+				existing?.payloadBinding.notes ??
+				"A future approval is valid only for this exact prompt, selectedFiles list, selected file contents digest, and native-extension evidence digest.",
+		},
+		selectedFiles,
+		blockedFallbacks,
+	};
+}
+
+function readOptionalProReviewRequest(requestPath: string | undefined): ProReviewRequest | null {
+	const resolved = resolveHermesArtifactPath(requestPath ?? DEFAULT_PRO_REVIEW_REQUEST_PATH);
+	if (!fs.existsSync(resolved)) return null;
+	const raw = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+	return ProReviewRequestSchema.parse(raw);
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+	return Array.from(new Set(values));
 }
 
 function readRequest(pathname: string, gates: ProReviewGate[]): ProReviewRequest | null {
