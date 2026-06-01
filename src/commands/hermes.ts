@@ -130,6 +130,7 @@ import {
 } from "../hermes/private-runtime.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../hermes/private-telegram-fixture-attestation.js";
 import {
+	buildProReviewNativeYoetzEnv,
 	buildProReviewYoetzCommand,
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
@@ -3061,35 +3062,13 @@ export function registerHermesCommand(program: Command): void {
 				requireApproval: true,
 			});
 			const bundlePath = resolveProReviewBundlePath(options.bundleOut);
-			const canary = (() => {
-				try {
-					return readProReviewNativeCanary(options.canary);
-				} catch {
-					return null;
-				}
-			})();
-			const yoetzCommand = canary
-				? buildProReviewYoetzCommand({ canary, bundlePath })
-				: [
-						"yoetz",
-						"browser",
-						"recipe",
-						"--recipe",
-						"chatgpt",
-						"--transport",
-						"chrome-extension-native",
-						"--bundle",
-						bundlePath,
-						"--format",
-						"json",
-					];
 			if (report.status !== "pass") {
 				const result = {
 					report,
 					send: {
 						status: "refused",
 						reason: "pro-review-check did not pass with approval required",
-						yoetzCommand,
+						note: "no Yoetz command is constructed until all approval and native-extension evidence gates pass",
 					},
 				};
 				if (options.json) {
@@ -3103,6 +3082,36 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 				return;
 			}
+
+			const canary = (() => {
+				try {
+					return readProReviewNativeCanary(options.canary);
+				} catch (error) {
+					if (error instanceof Error) return error;
+					return new Error(String(error));
+				}
+			})();
+			const canaryError = canary instanceof Error ? canary.message : undefined;
+			const nativeCanary = canary instanceof Error ? null : canary;
+			if (!nativeCanary) {
+				const result = {
+					report,
+					send: {
+						status: "refused",
+						reason: "validated native canary is unavailable",
+						...(canaryError ? { canaryError } : {}),
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: refused");
+					if (canaryError) console.log(`- FAIL nativeCanary.read: ${canaryError}`);
+				}
+				process.exitCode = 1;
+				return;
+			}
+			const yoetzCommand = buildProReviewYoetzCommand({ canary: nativeCanary, bundlePath });
 
 			writeProReviewBundle(options.request, bundlePath);
 			if (!options.execute) {
@@ -3128,13 +3137,13 @@ export function registerHermesCommand(program: Command): void {
 
 			const result = spawnSync(yoetzCommand[0], yoetzCommand.slice(1), {
 				encoding: "utf8",
-				env: { ...process.env, YOETZ_AGENT: "1" },
+				env: buildProReviewNativeYoetzEnv(),
 			});
 			const validation =
-				result.status === 0 && canary
+				result.status === 0
 					? validateProReviewYoetzSendOutput({
 							stdout: result.stdout,
-							expectedExtensionInstanceId: canary.extensionInstanceId,
+							expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
 						})
 					: null;
 			const send = {

@@ -2525,6 +2525,12 @@ function writeRequiredProReviewWorkspace(root: string): void {
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
 			writeJson(resolved, cliHeadlessEvidence());
+		} else if (file.startsWith("artifacts/hermes/probes/")) {
+			writeJson(resolved, {
+				schemaVersion: "telclaude.hermes.pro-review-red-probe-fixture.v1",
+				status: "fail",
+				summary: `explicitly red Pro-review fixture for ${file}`,
+			});
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
 		} else {
@@ -5665,7 +5671,7 @@ describe("Hermes wrapper foundation", () => {
 				canaryPath,
 			]);
 			const report = JSON.parse(result.stdout) as {
-				send: { status: string; reason: string; yoetzCommand: string[] };
+				send: { status: string; reason: string; note: string; yoetzCommand?: string[] };
 				report: { gates: Array<{ name: string; status: string }> };
 			};
 
@@ -5674,14 +5680,8 @@ describe("Hermes wrapper foundation", () => {
 				status: "refused",
 				reason: "pro-review-check did not pass with approval required",
 			});
-			expect(report.send.yoetzCommand).toEqual(
-				expect.arrayContaining(["--transport", "chrome-extension-native"]),
-			);
-			expect(report.send.yoetzCommand).toEqual(
-				expect.arrayContaining(["--var", "extension_instance_id=ext_test"]),
-			);
-			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
-			expect(report.send.yoetzCommand).not.toContain("--cdp");
+			expect(report.send.note).toContain("no Yoetz command is constructed");
+			expect(report.send.yoetzCommand).toBeUndefined();
 			expect(report.report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject(
 				{
 					status: "fail",
