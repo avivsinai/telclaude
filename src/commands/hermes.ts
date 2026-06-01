@@ -114,6 +114,8 @@ import {
 	DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH,
 	DEFAULT_HERMES_UPSTREAM_REF,
 	DEFAULT_HERMES_UPSTREAM_VERSION,
+	type NoForkWrapperRunEvidence,
+	noForkSha256Digest,
 	writeNoForkProofReport,
 } from "../hermes/no-fork-proof.js";
 import {
@@ -177,6 +179,10 @@ import {
 	isHermesWorkflowSurfaceId,
 	runHermesWorkflowProbe,
 } from "../hermes/workflow-probes.js";
+import {
+	buildInternalResponseProof,
+	internalResponseProofVerificationFailure,
+} from "../internal-auth.js";
 import {
 	relayGetHermesPrivateRuntimeState,
 	relaySetHermesPrivateRuntimeMode,
@@ -407,6 +413,170 @@ function fileSha256(filePath: string): string {
 	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
 }
 
+function noForkFileSha256(filePath: string): `sha256:${string}` {
+	return fileSha256(filePath) as `sha256:${string}`;
+}
+
+function buildNoForkWrapperPackageDigest(): `sha256:${string}` {
+	const sourcePaths = [
+		"package.json",
+		"pnpm-lock.yaml",
+		"src/commands/hermes.ts",
+		"src/hermes/no-fork-attestation.ts",
+		"src/hermes/no-fork-proof.ts",
+	];
+	return noForkSha256Digest(
+		JSON.stringify(
+			sourcePaths.map((sourcePath) => {
+				const resolved = resolveHermesArtifactPath(sourcePath);
+				return {
+					path: sourcePath,
+					sha256: fs.existsSync(resolved) ? fileSha256(resolved) : null,
+				};
+			}),
+		),
+	);
+}
+
+function buildNoForkP0Command(options: {
+	readonly checkout: string;
+	readonly expectedRef: string;
+	readonly expectedVersion: string;
+	readonly out: string;
+	readonly inventory?: string;
+	readonly scope: string;
+	readonly decisions: string;
+	readonly proofBundle: string;
+	readonly featureProbes: string;
+	readonly lockfile: string;
+	readonly fixtures: string;
+	readonly networkProbes: string;
+	readonly profileProof: string;
+	readonly rollback: string;
+}): readonly string[] {
+	return [
+		"telclaude",
+		"hermes",
+		"prove",
+		"--upstream-clean",
+		"--p0",
+		"--checkout",
+		options.checkout,
+		"--expected-ref",
+		options.expectedRef,
+		"--expected-version",
+		options.expectedVersion,
+		"--out",
+		options.out,
+		...(options.inventory ? ["--inventory", options.inventory] : []),
+		"--scope",
+		options.scope,
+		"--decisions",
+		options.decisions,
+		"--proof-bundle",
+		options.proofBundle,
+		"--feature-probes",
+		options.featureProbes,
+		"--lockfile",
+		options.lockfile,
+		"--fixtures",
+		options.fixtures,
+		"--network-probes",
+		options.networkProbes,
+		"--profile-proof",
+		options.profileProof,
+		"--rollback",
+		options.rollback,
+	];
+}
+
+const NO_FORK_BOOTSTRAP_FAILURE_PATTERNS = [
+	/^no-fork evidence runnerAttestation is missing$/,
+	/^no-fork evidence required check runner\.attestation is fail: /,
+	/^no-fork evidence required check runner\.p0 is fail: /,
+	/^no-fork evidence required check runner\.noRuntimeSourceReplacement is fail: /,
+	/^no-fork evidence required check runner\.noMonkeypatch is fail: /,
+	/^no-fork evidence check runner\.attestation is fail: /,
+	/^no-fork evidence check runner\.p0 is fail: /,
+	/^no-fork evidence check runner\.noRuntimeSourceReplacement is fail: /,
+	/^no-fork evidence check runner\.noMonkeypatch is fail: /,
+];
+
+function isNoForkBootstrapFailure(detail: string): boolean {
+	const clauses = detail
+		.split(";")
+		.map((clause) => clause.trim())
+		.filter((clause) => clause.length > 0);
+	return (
+		clauses.length > 0 &&
+		clauses.every((clause) =>
+			NO_FORK_BOOTSTRAP_FAILURE_PATTERNS.some((pattern) => pattern.test(clause)),
+		)
+	);
+}
+
+function isProofBundleNoForkBootstrapFailure(detail: string): boolean {
+	return (
+		detail.includes("proof bundle artifact noForkProof invalid") &&
+		detail.includes("artifact status does not match on-disk semantic evidence")
+	);
+}
+
+function isLockfileNoForkBootstrapFailure(detail: string): boolean {
+	return detail === "lockfile noForkProofEvidencePath does not match no-fork evidence path";
+}
+
+type NoForkP0StatusDerivationOptions = {
+	readonly allowLockfileNoForkPathBootstrap?: boolean;
+};
+
+export function deriveNoForkP0Status(
+	cutover: ReturnType<typeof evaluateCutoverCheck>,
+	options: NoForkP0StatusDerivationOptions = {},
+): "pass" | "fail" {
+	const failingGates = cutover.gates.filter((gate) => gate.status !== "pass");
+	if (failingGates.length === 0) return "pass";
+	if (
+		failingGates.every((gate) => {
+			if (gate.name === "nofork.clean") return isNoForkBootstrapFailure(gate.detail);
+			if (gate.name === "proofBundle.noForkProof.valid") {
+				return isProofBundleNoForkBootstrapFailure(gate.detail);
+			}
+			if (gate.name === "lockfile.consistent") {
+				return (
+					options.allowLockfileNoForkPathBootstrap === true &&
+					isLockfileNoForkBootstrapFailure(gate.detail)
+				);
+			}
+			return false;
+		})
+	) {
+		return "pass";
+	}
+	return "fail";
+}
+
+function profileProofDeniesSourceReplacement(profileProof: unknown): boolean {
+	if (!isJsonRecord(profileProof) || !Array.isArray(profileProof.checks)) return false;
+	return profileProof.checks.some(
+		(check) =>
+			isJsonRecord(check) &&
+			check.name === "profile.noSourceReplacement" &&
+			check.status === "pass",
+	);
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function lockfileNoForkPathMatchesOutput(lockfile: unknown, outputPath: string): boolean {
+	if (!isJsonRecord(lockfile) || typeof lockfile.noForkProofEvidencePath !== "string") {
+		return false;
+	}
+	return path.resolve(lockfile.noForkProofEvidencePath) === path.resolve(outputPath);
+}
+
 function resolveProReviewBundlePath(bundleOut: string | undefined): string {
 	return bundleOut
 		? resolveHermesArtifactPath(bundleOut)
@@ -591,6 +761,60 @@ function buildPrivateTelegramFixtureResultBundle(options: {
 		})),
 		evidence,
 	};
+}
+
+function assertPrivateTelegramFixtureWritePreconditions(options: FixtureResultOption): void {
+	if (options.write !== true) return;
+	if (options.testReport) {
+		throw new Error(
+			"Imported private Telegram fixture reports cannot be written; omit --test-report so the command runs Vitest and records machine-observed evidence.",
+		);
+	}
+	assertOperatorRelaySigningEnv();
+}
+
+function operatorRelaySigningEnvFailure(): string | null {
+	if (!process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY?.trim()) {
+		return "Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.";
+	}
+	return operatorRelayVerificationEnvFailure() ?? operatorRelaySigningRoundTripFailure();
+}
+
+function operatorRelayVerificationEnvFailure(): string | null {
+	if (!process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY?.trim()) {
+		return "Missing relay response verification key for operator. Set OPERATOR_RPC_RELAY_PUBLIC_KEY.";
+	}
+	return null;
+}
+
+function operatorRelaySigningRoundTripFailure(): string | null {
+	const body = "telclaude-hermes-operator-relay-signing-preflight";
+	const requestPath = "/v1/hermes.operator-relay-signing-preflight";
+	try {
+		const proof = buildInternalResponseProof("POST", requestPath, body, body, {
+			scope: "operator",
+		});
+		const failure = internalResponseProofVerificationFailure(
+			proof,
+			"POST",
+			requestPath,
+			body,
+			body,
+			{ scope: "operator" },
+		);
+		return failure
+			? `Operator relay signing keys failed round-trip verification: ${failure}`
+			: null;
+	} catch (error) {
+		return `Operator relay signing keys failed round-trip verification: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+	}
+}
+
+function assertOperatorRelaySigningEnv(): void {
+	const failure = operatorRelaySigningEnvFailure();
+	if (failure) throw new Error(failure);
 }
 
 function mergeFixtureResults(
@@ -1239,6 +1463,7 @@ export function registerHermesCommand(program: Command): void {
 		.action((options: FixtureResultOption) => {
 			try {
 				const observedAt = options.observedAt ?? new Date().toISOString();
+				assertPrivateTelegramFixtureWritePreconditions(options);
 				const invocation = options.testReport
 					? undefined
 					: runPrivateTelegramFixtureVitest(options.reportOut);
@@ -1316,11 +1541,6 @@ export function registerHermesCommand(program: Command): void {
 					...(edgeAdapterBundle?.evidence ?? []),
 				];
 				if (options.write) {
-					if (options.testReport) {
-						throw new Error(
-							"Imported private Telegram fixture reports cannot be written; omit --test-report so the command runs Vitest and records machine-observed evidence.",
-						);
-					}
 					for (const evidenceItem of evidence) {
 						const evidencePath =
 							typeof evidenceItem === "object" &&
@@ -1467,65 +1687,148 @@ export function registerHermesCommand(program: Command): void {
 					process.exitCode = 2;
 					return;
 				}
-				const report = writeNoForkProofReport(
-					buildNoForkProof({
-						checkoutPath: options.checkout,
-						expectedRef: options.expectedRef,
-						expectedVersion: options.expectedVersion,
-						evidencePath: options.out,
-					}),
-					trackedSeedWriteOptions(options),
-				);
+				const noForkProofInput = {
+					checkoutPath: options.checkout,
+					expectedRef: options.expectedRef,
+					expectedVersion: options.expectedVersion,
+					evidencePath: options.out,
+				};
+				let report = buildNoForkProof(noForkProofInput);
 				if (options.p0) {
 					const strict = true;
 					const dryRun = true;
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						const cutover = {
+							status: "input_error",
+							exitCode: 2,
+							mode: { strict, dryRun },
+							gates: [
+								{
+									name: "inputs.operatorRelaySigning",
+									status: "fail",
+									detail: relaySigningFailure,
+								},
+							],
+						};
+						const proveReport = { schemaVersion: 1, noForkProof: report, p0: cutover };
+						if (options.json) {
+							printJson(proveReport);
+						} else {
+							console.log("Hermes prove: input_error");
+							console.log(`- FAIL ${cutover.gates[0].name}: ${cutover.gates[0].detail}`);
+						}
+						process.exitCode = cutover.exitCode;
+						return;
+					}
+					const startedAt = new Date().toISOString();
+					const preliminaryNoForkPath = path.join(
+						os.tmpdir(),
+						`telclaude-hermes-nofork-${process.pid}-${Date.now()}.json`,
+					);
 					try {
+						writeNoForkProofReport(
+							buildNoForkProof({ ...noForkProofInput, evidencePath: preliminaryNoForkPath }),
+						);
 						const featureProbeMatrix = readJsonFile(
 							resolveHermesArtifactPath(options.featureProbes),
+						);
+						const profileGenerationProof = readOptionalJsonFile(
+							resolveHermesArtifactPath(options.profileProof),
 						);
 						const proofTemplate = CutoverProofBundleSchema.parse(
 							readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						);
-						const cutoverProofBundle = buildCutoverProofBundle({
-							hermes: proofTemplate.hermes,
-							wrapperVersion: proofTemplate.wrapper.version,
-							artifacts: {
-								inventory: proofTemplate.artifacts.inventory,
-								scopeManifest: proofTemplate.artifacts.scopeManifest,
-								decisionLog: proofTemplate.artifacts.decisionLog,
-								compatibilityLockfile: proofTemplate.artifacts.compatibilityLockfile,
-								featureProbeMatrix: proofTemplate.artifacts.featureProbeMatrix,
-								fixtureResults: proofTemplate.artifacts.fixtureResults,
-								noForkProof: {
-									...proofTemplate.artifacts.noForkProof,
-									artifactPath: options.out,
-								},
-								networkProbeBundle: proofTemplate.artifacts.networkProbeBundle,
-								queueSnapshot: proofTemplate.artifacts.queueSnapshot,
-								rollbackEvidence: proofTemplate.artifacts.rollbackEvidence,
-							},
-						});
-						const cutover = evaluateCutoverCheck(
-							buildCutoverInputBundleFromArtifacts({
-								inventory: options.inventory
-									? readJsonFile(resolveHermesArtifactPath(options.inventory))
-									: collectHermesInventory(),
-								scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
-								decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
-								cutoverProofBundle,
-								lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
-								featureProbeMatrix,
-								featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
-								fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
-								noForkProof: readJsonFile(resolveHermesArtifactPath(options.out)),
-								profileGenerationProof: readOptionalJsonFile(
-									resolveHermesArtifactPath(options.profileProof),
-								),
-								networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
-								rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
-							}),
-							{ strict, dryRun, liveCutover: false },
+						const lockfile = readJsonFile(resolveHermesArtifactPath(options.lockfile));
+						const allowLockfileNoForkPathBootstrap = lockfileNoForkPathMatchesOutput(
+							lockfile,
+							options.out,
 						);
+						const evaluateP0Cutover = (noForkPath: string) => {
+							const cutoverProofBundle = buildCutoverProofBundle({
+								hermes: proofTemplate.hermes,
+								wrapperVersion: proofTemplate.wrapper.version,
+								artifacts: {
+									inventory: proofTemplate.artifacts.inventory,
+									scopeManifest: proofTemplate.artifacts.scopeManifest,
+									decisionLog: proofTemplate.artifacts.decisionLog,
+									compatibilityLockfile: proofTemplate.artifacts.compatibilityLockfile,
+									featureProbeMatrix: proofTemplate.artifacts.featureProbeMatrix,
+									fixtureResults: proofTemplate.artifacts.fixtureResults,
+									noForkProof: {
+										...proofTemplate.artifacts.noForkProof,
+										artifactPath: noForkPath,
+									},
+									networkProbeBundle: proofTemplate.artifacts.networkProbeBundle,
+									queueSnapshot: proofTemplate.artifacts.queueSnapshot,
+									rollbackEvidence: proofTemplate.artifacts.rollbackEvidence,
+								},
+							});
+							return evaluateCutoverCheck(
+								buildCutoverInputBundleFromArtifacts({
+									inventory: options.inventory
+										? readJsonFile(resolveHermesArtifactPath(options.inventory))
+										: collectHermesInventory(),
+									scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
+									decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
+									cutoverProofBundle,
+									lockfile,
+									featureProbeMatrix,
+									featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
+									fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
+									noForkProof: readJsonFile(resolveHermesArtifactPath(noForkPath)),
+									profileGenerationProof,
+									networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
+									rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
+								}),
+								{ strict, dryRun, liveCutover: false },
+							);
+						};
+						const preliminaryCutover = evaluateP0Cutover(preliminaryNoForkPath);
+						const p0Status = deriveNoForkP0Status(preliminaryCutover, {
+							allowLockfileNoForkPathBootstrap,
+						});
+						const endedAt = new Date().toISOString();
+						const p0Command = buildNoForkP0Command(options);
+						const transcript = {
+							command: p0Command,
+							startedAt,
+							endedAt,
+							preliminaryCutover: {
+								status: preliminaryCutover.status,
+								exitCode: preliminaryCutover.exitCode,
+								gates: preliminaryCutover.gates,
+							},
+							derivedP0Status: p0Status,
+						};
+						const sourceReplacementDenied =
+							profileProofDeniesSourceReplacement(profileGenerationProof);
+						const wrapperRun: NoForkWrapperRunEvidence = {
+							startedAt,
+							endedAt,
+							wrapperPackageSha256: buildNoForkWrapperPackageDigest(),
+							profileGenerationSha256: noForkFileSha256(
+								resolveHermesArtifactPath(options.profileProof),
+							),
+							fixtureResultsSha256: noForkFileSha256(resolveHermesArtifactPath(options.fixtures)),
+							transcriptSha256: noForkSha256Digest(JSON.stringify(transcript)),
+							p0Command,
+							p0ExitCode: p0Status === "pass" ? 0 : preliminaryCutover.exitCode || 1,
+							p0Status,
+							runtimeSourceReplacementDenied: sourceReplacementDenied,
+							monkeypatchDenied: sourceReplacementDenied,
+						};
+						report = writeNoForkProofReport(
+							buildNoForkProof({
+								checkoutPath: options.checkout,
+								expectedRef: options.expectedRef,
+								expectedVersion: options.expectedVersion,
+								evidencePath: options.out,
+								wrapperRun,
+							}),
+							trackedSeedWriteOptions(options),
+						);
+						const cutover = evaluateP0Cutover(options.out);
 						const proveReport = { schemaVersion: 1, noForkProof: report, p0: cutover };
 						if (options.json) {
 							printJson(proveReport);
@@ -1564,8 +1867,11 @@ export function registerHermesCommand(program: Command): void {
 						}
 						process.exitCode = cutover.exitCode;
 						return;
+					} finally {
+						fs.rmSync(preliminaryNoForkPath, { force: true });
 					}
 				}
+				report = writeNoForkProofReport(report, trackedSeedWriteOptions(options));
 				if (options.json) {
 					printJson(report);
 				} else {
