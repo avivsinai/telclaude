@@ -271,7 +271,7 @@ const EDGE_SURFACE_REQUIREMENTS: Record<EdgeAdapterFeatureSurfaceId, EdgeSurface
 	},
 };
 
-const EDGE_FIXTURE_REQUIREMENTS = [
+export const EDGE_FIXTURE_REQUIREMENTS = [
 	{
 		id: "fixture.public.whatsapp.basic",
 		fixtureClass: "positive",

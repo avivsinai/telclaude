@@ -894,6 +894,55 @@ function edgeAdapterCutoverBundle(evidencePath: string): CutoverInputBundle {
 	};
 }
 
+function cutoverBundleWithGenericFixture(fixtureId: string): CutoverInputBundle {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixture-catalog-"));
+	const evidencePath = path.join(tempDir, `${fixtureId}.json`);
+	writeJson(evidencePath, {
+		schemaVersion: "telclaude.hermes.fixture-evidence.v1",
+		id: fixtureId,
+		status: "pass",
+		ran: true,
+		evidence_path: evidencePath,
+		observedAt: "2026-05-31T09:00:00.000Z",
+		provenance: {
+			runner: "self-reported-json",
+			source: "hand-authored",
+		},
+		checks: [
+			{
+				name: "self-reported-pass",
+				status: "pass",
+				detail: "hand-authored fixture evidence claimed pass",
+			},
+		],
+	});
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+	const withoutProof: CutoverBundleWithoutProof = {
+		...baseWithoutProof,
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					fixture_ids: [fixtureId],
+					negative_fixture_ids: [],
+				},
+			],
+		},
+		fixtureResults: {
+			schemaVersion: 1,
+			results: [{ id: fixtureId, status: "pass", evidence_path: evidencePath }],
+		},
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
 function networkGateDetail(networkProbes: ProbeBundle): string {
 	const report = evaluateCutoverCheck(cutoverBundle(networkProbes));
 	return report.gates.find((gate) => gate.name === "networkProbes.pass")?.detail ?? "";
@@ -940,6 +989,30 @@ describe("Hermes cutover edge-adapter evidence validation", () => {
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"control credentials.raw-denied is missing",
+		);
+	});
+});
+
+describe("Hermes cutover fixture evidence catalog validation", () => {
+	it("fails unknown fixtures instead of accepting generic pass evidence", () => {
+		const report = evaluateCutoverCheck(
+			cutoverBundleWithGenericFixture("fixture.unregistered.self-reported"),
+		);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"not registered in the fixture validator catalog",
+		);
+	});
+
+	it("runs registered non-private fixtures through their specific validator", () => {
+		const report = evaluateCutoverCheck(
+			cutoverBundleWithGenericFixture("fixture.public.email.basic"),
+		);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"invalid edge fixture evidence",
 		);
 	});
 });
