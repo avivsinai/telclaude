@@ -10,7 +10,6 @@ import {
 } from "../../src/hermes/network-probe-attestation.js";
 import {
 	type NetworkProbeRunnerReport,
-	networkProbeEvidenceFailure,
 	readHermesNetworkProbeRunReport,
 	runHermesNetworkProbes,
 } from "../../src/hermes/network-probes.js";
@@ -26,7 +25,7 @@ describe("Hermes network probes", () => {
 				allowRun: true,
 				posture: "contained-internal",
 				relayUrl: relay.url,
-				providerUrls: [`bank=${deniedProviderUrl}`, `clalit=${deniedProviderUrl}`],
+				providerUrls: requiredProviderUrls(deniedProviderUrl),
 				vaultSocketPath: path.join(os.tmpdir(), "missing-hermes-vault.sock"),
 				modelProviderUrl: await closedProbeUrl(),
 				dnsExfilUrls: [await closedProbeUrl()],
@@ -37,40 +36,15 @@ describe("Hermes network probes", () => {
 			const directProviderEvidence = report.evidence.find(
 				(probe) => probe.id === "network.direct-provider-denied",
 			);
-			if (!directProviderEvidence) {
-				throw new Error("missing direct-provider network evidence");
-			}
-
-			expect(directProviderEvidence.attempts.map((attempt) => attempt.name)).toEqual([
+			expect(directProviderEvidence?.attempts.map((attempt) => attempt.name)).toEqual([
 				"provider:bank",
 				"provider:clalit",
+				"provider:government",
+				"provider:google",
 			]);
-			expect(directProviderEvidence.attempts.every((attempt) => attempt.status === "pass")).toBe(
+			expect(directProviderEvidence?.attempts.every((attempt) => attempt.status === "pass")).toBe(
 				true,
 			);
-			expect(
-				networkProbeEvidenceFailure(directProviderEvidence, {
-					expectedId: "network.direct-provider-denied",
-					requiredAttemptNames: ["provider:bank"],
-				}),
-			).toBeNull();
-			expect(
-				networkProbeEvidenceFailure(directProviderEvidence, {
-					expectedId: "network.direct-provider-denied",
-					requiredAttemptNames: ["provider:google"],
-				}),
-			).toContain("attempt provider:google is missing");
-			const unsignedDirectProviderEvidence = cloneReport({
-				...report,
-				evidence: [directProviderEvidence],
-			}).evidence[0];
-			delete unsignedDirectProviderEvidence.attestation;
-			expect(
-				networkProbeEvidenceFailure(unsignedDirectProviderEvidence, {
-					expectedId: "network.direct-provider-denied",
-					requiredAttemptNames: ["provider:bank"],
-				}),
-			).toContain("attestation is missing");
 			expect(report.evidence.every((probe) => probe.attestation?.probeId === probe.id)).toBe(true);
 			expect(
 				report.evidence.every(
@@ -122,6 +96,32 @@ describe("Hermes network probes", () => {
 				"network probe evidence network.relay-control-allowed contained-internal denial proof is missing or not pass",
 			);
 
+			const genericProviderReport = resignReportEvidence(importableReport, (probe) =>
+				probe.id === "network.direct-provider-denied"
+					? {
+							...probe,
+							attempts: [genericProviderDenialAttempt()],
+						}
+					: probe,
+			);
+			writeJson(reportPath, genericProviderReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.direct-provider-denied provider:bank contained-internal denial proof is missing or not pass",
+			);
+
+			const dnsGuardProviderReport = resignReportEvidence(importableReport, (probe) =>
+				probe.id === "network.direct-provider-denied"
+					? {
+							...probe,
+							attempts: requiredProviderNames().map(dnsGuardProviderDenialAttempt),
+						}
+					: probe,
+			);
+			writeJson(reportPath, dnsGuardProviderReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.direct-provider-denied provider:bank contained-internal denial proof is missing or not pass",
+			);
+
 			const tamperedReport = cloneReport(importableReport);
 			tamperedReport.evidence[1].attempts[0].detail = "mutated after signing";
 			writeJson(reportPath, tamperedReport);
@@ -147,6 +147,59 @@ describe("Hermes network probes", () => {
 			writeJson(reportPath, badSignatureReport);
 			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
 				"network probe evidence network.relay-control-allowed attestation signature is invalid",
+			);
+		} finally {
+			restoreKeys();
+			await relay.close();
+		}
+	});
+
+	it("fails contained-internal provider denial evidence without provider-specific targets", async () => {
+		const restoreKeys = installOperatorRelayKeys();
+		const deniedProviderUrl = await closedProbeUrl();
+		const relay = await openProbeUrl();
+		try {
+			const report = await runHermesNetworkProbes({
+				allowRun: true,
+				posture: "contained-internal",
+				relayUrl: relay.url,
+				providerUrls: [`bank=${deniedProviderUrl}`, deniedProviderUrl],
+				vaultSocketPath: path.join(os.tmpdir(), "missing-hermes-vault.sock"),
+				modelProviderUrl: await closedProbeUrl(),
+				dnsExfilUrls: [await closedProbeUrl()],
+				firewallSentinelPath: path.join(os.tmpdir(), "missing-hermes-firewall-sentinel"),
+				timeoutMs: 100,
+				now: new Date("2026-06-01T09:10:00.000Z"),
+			});
+			const directProviderEvidence = report.evidence.find(
+				(probe) => probe.id === "network.direct-provider-denied",
+			);
+
+			expect(report.status).toBe("fail");
+			expect(directProviderEvidence).toMatchObject({ status: "fail" });
+			expect(directProviderEvidence?.attempts).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: "provider:2.named",
+						status: "fail",
+						detail: expect.stringContaining("must name each provider"),
+					}),
+					expect.objectContaining({
+						name: "provider:clalit.configured",
+						status: "fail",
+						detail: expect.stringContaining("missing provider:clalit"),
+					}),
+					expect.objectContaining({
+						name: "provider:government.configured",
+						status: "fail",
+						detail: expect.stringContaining("missing provider:government"),
+					}),
+					expect.objectContaining({
+						name: "provider:google.configured",
+						status: "fail",
+						detail: expect.stringContaining("missing provider:google"),
+					}),
+				]),
 			);
 		} finally {
 			restoreKeys();
@@ -184,6 +237,43 @@ function metadataDnsGuardAttempt() {
 		status: "pass" as const,
 		observed: "denied",
 		detail: "target was actively denied with ENETUNREACH",
+		durationMs: 1,
+		errorName: "TypeError",
+		errorCode: "ENETUNREACH",
+		resolvedAddresses: [
+			{
+				address: "169.254.169.254",
+				blocked: true,
+				nonOverridable: true,
+			},
+		],
+	};
+}
+
+function genericProviderDenialAttempt() {
+	return {
+		name: "provider",
+		kind: "http" as const,
+		target: "https://provider.internal/probe",
+		expectation: "deny" as const,
+		status: "pass" as const,
+		observed: "denied",
+		detail: "target was actively denied with ENETUNREACH",
+		durationMs: 1,
+		errorName: "TypeError",
+		errorCode: "ENETUNREACH",
+	};
+}
+
+function dnsGuardProviderDenialAttempt(provider: string) {
+	return {
+		name: `provider:${provider}`,
+		kind: "dns_guard" as const,
+		target: `https://${provider}.provider.internal/probe`,
+		expectation: "deny" as const,
+		status: "pass" as const,
+		observed: "denied",
+		detail: "DNS guard should not satisfy provider direct HTTP denial",
 		durationMs: 1,
 		errorName: "TypeError",
 		errorCode: "ENETUNREACH",
@@ -268,4 +358,12 @@ async function closedProbeUrl(): Promise<string> {
 		server.close((error) => (error ? reject(error) : resolve()));
 	});
 	return `http://127.0.0.1:${address.port}/probe`;
+}
+
+function requiredProviderUrls(url: string): string[] {
+	return requiredProviderNames().map((name) => `${name}=${url}`);
+}
+
+function requiredProviderNames(): string[] {
+	return ["bank", "clalit", "government", "google"];
 }

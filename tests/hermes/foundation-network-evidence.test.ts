@@ -153,7 +153,7 @@ function containedInternalNetworkEvidence(
 ) {
 	return networkEvidence(id, evidencePath, {
 		posture: "contained-internal",
-		attempts: [containedInternalAttempt(id)],
+		attempts: containedInternalAttempts(id),
 		...overrides,
 	});
 }
@@ -170,36 +170,63 @@ function firewallSentinelAttempt() {
 	};
 }
 
-function containedInternalAttempt(id: string) {
+function containedInternalAttempts(id: string) {
 	if (id === "network.relay-control-allowed") {
-		return {
-			name: "relay-control",
-			kind: "http",
-			target: "http://telclaude:8790/health",
-			expectation: "allow",
-			status: "pass",
-			observed: "reachable",
-			detail: "allowed control reached relay with HTTP status 200",
-			durationMs: 1,
-			httpStatus: 200,
-		};
+		return [
+			{
+				name: "relay-control",
+				kind: "http",
+				target: "http://telclaude:8790/health",
+				expectation: "allow",
+				status: "pass",
+				observed: "reachable",
+				detail: "allowed control reached relay with HTTP status 200",
+				durationMs: 1,
+				httpStatus: 200,
+			},
+		];
 	}
 	if (id === "network.direct-vault-denied") {
-		return {
-			name: "vault-socket",
-			kind: "unix_socket",
-			target: "/run/vault/vault.sock",
-			expectation: "deny",
-			status: "pass",
-			observed: "absent",
-			detail: "vault socket path is absent from the probe environment",
-		};
+		return [
+			{
+				name: "vault-socket",
+				kind: "unix_socket",
+				target: "/run/vault/vault.sock",
+				expectation: "deny",
+				status: "pass",
+				observed: "absent",
+				detail: "vault socket path is absent from the probe environment",
+			},
+		];
 	}
 	if (id === "network.dns-exfil-denied") {
-		return {
-			name: "dns-exfil-1",
-			kind: "dns_guard",
-			target: "http://169.254.169.254/latest/meta-data/",
+		return [
+			{
+				name: "dns-exfil-1",
+				kind: "dns_guard",
+				target: "http://169.254.169.254/latest/meta-data/",
+				expectation: "deny",
+				status: "pass",
+				observed: "denied",
+				detail: "target was actively denied with ENETUNREACH",
+				durationMs: 1,
+				errorName: "TypeError",
+				errorCode: "ENETUNREACH",
+				resolvedAddresses: [
+					{
+						address: "169.254.169.254",
+						blocked: true,
+						nonOverridable: true,
+					},
+				],
+			},
+		];
+	}
+	if (id === "network.direct-provider-denied") {
+		return ["bank", "clalit", "government", "google"].map((provider) => ({
+			name: `provider:${provider}`,
+			kind: "http",
+			target: `https://${provider}.provider.internal/probe`,
 			expectation: "deny",
 			status: "pass",
 			observed: "denied",
@@ -207,27 +234,22 @@ function containedInternalAttempt(id: string) {
 			durationMs: 1,
 			errorName: "TypeError",
 			errorCode: "ENETUNREACH",
-			resolvedAddresses: [
-				{
-					address: "169.254.169.254",
-					blocked: true,
-					nonOverridable: true,
-				},
-			],
-		};
+		}));
 	}
-	return {
-		name: "contained-egress",
-		kind: "http",
-		target: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-		expectation: "deny",
-		status: "pass",
-		observed: "denied",
-		detail: "target was actively denied with ENETUNREACH",
-		durationMs: 1,
-		errorName: "TypeError",
-		errorCode: "ENETUNREACH",
-	};
+	return [
+		{
+			name: "contained-egress",
+			kind: "http",
+			target: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+			expectation: "deny",
+			status: "pass",
+			observed: "denied",
+			detail: "target was actively denied with ENETUNREACH",
+			durationMs: 1,
+			errorName: "TypeError",
+			errorCode: "ENETUNREACH",
+		},
+	];
 }
 
 function networkPolicyAttempt(id: string) {
@@ -1597,6 +1619,38 @@ describe("Hermes cutover network evidence validation", () => {
 		expect(report.gates.find((gate) => gate.name === "networkProbes.pass")).toMatchObject({
 			status: "pass",
 		});
+	});
+
+	it("fails signed contained-internal provider denial evidence that only proves a generic provider", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence);
+		const probe = networkProbes.probes.find(
+			(candidate) => candidate.id === "network.direct-provider-denied",
+		);
+		if (!probe) throw new Error("missing direct-provider probe");
+		writeJson(
+			probe.evidence_path,
+			containedInternalNetworkEvidence(probe.id, probe.evidence_path, {
+				attempts: [
+					{
+						name: "provider",
+						kind: "http",
+						target: "https://provider.internal/probe",
+						expectation: "deny",
+						status: "pass",
+						observed: "denied",
+						detail: "target was actively denied with ENETUNREACH",
+						durationMs: 1,
+						errorName: "TypeError",
+						errorCode: "ENETUNREACH",
+					},
+				],
+			}),
+		);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.direct-provider-denied provider:bank contained-internal denial proof is missing or not pass",
+		);
 	});
 
 	it("fails Hermes cutover network evidence that selects the agent-iptables posture", () => {

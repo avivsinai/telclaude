@@ -63,6 +63,7 @@ export type NetworkProbeEvidenceValidationOptions = {
 	readonly expectedId?: NetworkProbeId;
 	readonly requiredAttemptNames?: readonly string[];
 	readonly requiredPosture?: NetworkProbePosture;
+	readonly requireAttestation?: boolean;
 } & HermesSignedEvidenceValidationOptions;
 
 export function networkProbeEvidenceFailure(
@@ -90,7 +91,9 @@ export function assertNetworkProbeEvidence(
 	for (const [index, attempt] of validated.attempts.entries()) {
 		validatePassingNetworkProbeAttempt(validated.id, index, attempt);
 	}
-	validateNetworkProbeAttestation(validated, options);
+	if (validated.attestation || options.requireAttestation !== false) {
+		validateNetworkProbeAttestation(validated, options);
+	}
 	validateNetworkProbeSemanticProof(validated, options);
 	for (const attemptName of options.requiredAttemptNames ?? []) {
 		validateRequiredNetworkDenialAttempt(validated, attemptName);
