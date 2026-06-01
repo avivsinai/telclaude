@@ -3852,6 +3852,20 @@ function fixtureEvidenceFailure(
 	return null;
 }
 
+export function hermesFixtureEvidenceFileFailure(
+	evidencePath: string,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string | null {
+	return fixtureEvidenceFailure(
+		{
+			id: path.basename(evidencePath, ".json"),
+			status: "pass",
+			evidence_path: evidencePath,
+		},
+		options,
+	);
+}
+
 function privateTelegramFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: z.infer<typeof FixtureEvidenceSchema>,
