@@ -26,6 +26,7 @@ import {
 	runHermesApprovalContinuationProbe,
 	writeApprovalContinuationArtifacts,
 } from "../hermes/approval-continuation-runner.js";
+import type { HermesSignedEvidenceValidationOptions } from "../hermes/attestation-validation.js";
 import {
 	buildBrowserComputerBrokerFixtureEvidenceBundle,
 	DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS,
@@ -995,8 +996,11 @@ function servedMcpEndpoint(
 	return { url: resolvedUrl, headers: parseHeaderOption(header) };
 }
 
-function collectHermesFeatureProbeEvidence(featureProbeMatrix: unknown) {
-	const collected = collectFeatureProbeEvidence(featureProbeMatrix) ?? {
+function collectHermesFeatureProbeEvidence(
+	featureProbeMatrix: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
+) {
+	const collected = collectFeatureProbeEvidence(featureProbeMatrix, options) ?? {
 		schemaVersion: 1,
 		results: [],
 	};
@@ -2987,6 +2991,8 @@ export function registerHermesCommand(program: Command): void {
 			) => {
 				const strict = options.strict ?? true;
 				const dryRun = options.dryRun ?? false;
+				const liveCutover = strict && !dryRun;
+				const now = new Date();
 				let input: unknown;
 				try {
 					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
@@ -2997,7 +3003,10 @@ export function registerHermesCommand(program: Command): void {
 						cutoverProofBundle: readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 						featureProbeMatrix,
-						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
+						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix, {
+							allowStaleAttestations: !liveCutover,
+							now,
+						}),
 						fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
 						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
 						profileGenerationProof: readOptionalJsonFile(
@@ -3035,8 +3044,8 @@ export function registerHermesCommand(program: Command): void {
 				const report = evaluateCutoverCheck(input, {
 					strict,
 					dryRun,
-					liveCutover: strict && !dryRun,
-					now: new Date(),
+					liveCutover,
+					now,
 				});
 				if (options.json) {
 					printJson(report);

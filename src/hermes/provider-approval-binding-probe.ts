@@ -12,6 +12,11 @@ import {
 import type { FetchRequest } from "../google-services/types.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../security/approval-domains.js";
 import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
+import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
 	type TelclaudeMcpSideEffectApprovalSignatureVerifier,
@@ -480,7 +485,10 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		: evidence;
 }
 
-export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): string | null {
+export function providerApprovalBindingProbeEvidenceFailure(
+	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string | null {
 	const parsed = ProviderApprovalBindingProbeEvidenceSchema.safeParse(evidence);
 	if (!parsed.success) {
 		return `invalid provider approval-binding evidence: ${flattenZodError(parsed.error)}`;
@@ -489,7 +497,7 @@ export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): 
 	const failures: string[] = [];
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
-	const attestationFailure = providerApprovalBindingRunnerAttestationFailure(data);
+	const attestationFailure = providerApprovalBindingRunnerAttestationFailure(data, options);
 	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
@@ -526,11 +534,18 @@ export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): 
 
 function providerApprovalBindingRunnerAttestationFailure(
 	evidence: ProviderApprovalBindingProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions,
 ): string | null {
 	const attestation = evidence.runnerAttestation as ProviderApprovalBindingAttestation | undefined;
 	if (!attestation) return "runnerAttestation is missing";
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"runnerAttestation observedAt",
+		attestation.observedAt,
+		options,
+	);
+	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = providerApprovalBindingAttestationSignatureFailure(attestation, {
-		allowStale: true,
+		allowStale: hermesAllowsStaleAttestations(options),
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = providerApprovalBindingAttestationFieldsForEvidence(evidence);

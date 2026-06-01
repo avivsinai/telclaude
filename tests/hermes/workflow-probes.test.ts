@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	collectFeatureProbeEvidence,
+	type FeatureProbeMatrix,
+} from "../../src/hermes/foundation.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	HERMES_WORKFLOW_SURFACE_IDS,
@@ -25,6 +29,7 @@ describe("Hermes workflow probes", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
 	});
@@ -55,6 +60,76 @@ describe("Hermes workflow probes", () => {
 		});
 		expect(evidence.observations).not.toEqual({});
 		expect(workflowProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
+	});
+
+	it("rejects stale signed workflow attestations in live mode only", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-06-01T09:00:00.000Z"));
+		const evidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.cron",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+
+		vi.setSystemTime(new Date("2026-06-10T09:00:00.000Z"));
+
+		expect(workflowProbeEvidenceFailure("workflow.cron", evidence)).toBeNull();
+		expect(
+			workflowProbeEvidenceFailure("workflow.cron", evidence, {
+				allowStaleAttestations: false,
+				now: new Date("2026-06-10T09:00:00.000Z"),
+			}),
+		).toContain("runnerAttestation observedAt is stale or future-dated");
+	});
+
+	it("threads live freshness through collected workflow feature-probe evidence", () => {
+		vi.useFakeTimers();
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-live-"));
+		const evidencePath = path.join(tempDir, "workflow-cron.json");
+		vi.setSystemTime(new Date("2026-06-01T09:00:00.000Z"));
+		const evidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.cron",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+		fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
+		const matrix: FeatureProbeMatrix = {
+			schemaVersion: 1,
+			probes: [
+				{
+					surface_id: "workflow.cron",
+					hermes_pin: { version: "0.15.1" },
+					documented_seam: "Hermes workflow ledger",
+					probe_command: "pnpm dev hermes workflow-probes --surface workflow.cron",
+					expected_result: "workflow ledger runner proof passes",
+					negative_probe: "stale workflow runner proof fails live cutover",
+					evidence_path: evidencePath,
+					lockfile_key: "featureProbes.workflow.cron",
+					security_scope: "workflow-ledger",
+					approval_equivalent: true,
+					failure_outcome: "disable",
+					status: "pass",
+				},
+			],
+		};
+
+		vi.setSystemTime(new Date("2026-06-10T09:00:00.000Z"));
+
+		expect(collectFeatureProbeEvidence(matrix)?.results[0]).toMatchObject({
+			surface_id: "workflow.cron",
+			status: "pass",
+		});
+		const live = collectFeatureProbeEvidence(matrix, {
+			allowStaleAttestations: false,
+			now: new Date("2026-06-10T09:00:00.000Z"),
+		});
+		expect(live?.results[0]).toMatchObject({
+			surface_id: "workflow.cron",
+			status: "fail",
+		});
+		expect(live?.results[0]?.detail).toContain(
+			"runnerAttestation observedAt is stale or future-dated",
+		);
 	});
 
 	it("proves cron background delivery, authority binding, and duplicate denial", () => {

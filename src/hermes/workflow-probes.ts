@@ -3,6 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
 import { createHermesWorkflowRunLedger } from "./workflow-run-ledger.js";
 import {
 	HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_RUNNER,
@@ -203,6 +208,7 @@ export function runHermesWorkflowProbe(input: {
 export function workflowProbeEvidenceFailure(
 	surfaceId: HermesWorkflowSurfaceId,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const parsed = HermesWorkflowProbeEvidenceSchema.safeParse(evidence);
 	if (!parsed.success) return `invalid workflow evidence: ${flattenZodError(parsed.error)}`;
@@ -212,7 +218,7 @@ export function workflowProbeEvidenceFailure(
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
 	if (data.source !== HERMES_WORKFLOW_PROBE_SOURCE) failures.push(`source is ${data.source}`);
-	const attestationFailure = workflowRunLedgerRunnerAttestationFailure(data);
+	const attestationFailure = workflowRunLedgerRunnerAttestationFailure(data, options);
 	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
@@ -250,11 +256,18 @@ export function workflowProbeEvidenceFailure(
 
 function workflowRunLedgerRunnerAttestationFailure(
 	data: HermesWorkflowProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions,
 ): string | null {
 	const attestation = data.runnerAttestation as HermesWorkflowRunLedgerAttestation | undefined;
 	if (!attestation) return "runnerAttestation is missing";
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"runnerAttestation observedAt",
+		attestation.observedAt,
+		options,
+	);
+	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = hermesWorkflowRunLedgerAttestationSignatureFailure(attestation, {
-		allowStale: true,
+		allowStale: hermesAllowsStaleAttestations(options),
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = hermesWorkflowRunLedgerAttestationFieldsForEvidence(data);
@@ -356,6 +369,7 @@ export function buildHermesWorkflowFixtureEvidenceBundle(
 export function workflowFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const requirement = HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
@@ -386,14 +400,18 @@ export function workflowFixtureEvidenceFailure(
 	) {
 		failures.push("fixture requiredObservationHashes do not match workflow contract");
 	}
-	const probe = readWorkflowProbeArtifact(data.provenance.probePath, requirement.surfaceId);
+	const probe = readWorkflowProbeArtifact(
+		data.provenance.probePath,
+		requirement.surfaceId,
+		options,
+	);
 	if (probe.sha256 !== data.provenance.probeSha256) {
 		failures.push("fixture probeSha256 does not match workflow probe artifact");
 	}
 	if (probe.failure) {
 		failures.push(`fixture probe artifact failed validation: ${probe.failure}`);
 	} else if (probe.evidence) {
-		failures.push(...workflowFixtureContractFailures(requirement, data, probe.evidence));
+		failures.push(...workflowFixtureContractFailures(requirement, data, probe.evidence, options));
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
 }
@@ -677,9 +695,10 @@ function workflowFixtureContractFailures(
 	requirement: (typeof HERMES_WORKFLOW_FIXTURE_REQUIREMENTS)[number],
 	fixture: WorkflowFixtureEvidence,
 	probe: HermesWorkflowProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string[] {
 	const failures: string[] = [];
-	const probeFailure = workflowProbeEvidenceFailure(requirement.surfaceId, probe);
+	const probeFailure = workflowProbeEvidenceFailure(requirement.surfaceId, probe, options);
 	if (probeFailure) failures.push(probeFailure);
 	const probeChecksByName = new Map(probe.checks.map((check) => [check.name, check]));
 	const fixtureChecksByName = new Map(fixture.checks.map((check) => [check.name, check]));
@@ -711,10 +730,11 @@ function cachedWorkflowProbeArtifact(
 	>,
 	surfaceId: HermesWorkflowSurfaceId,
 	probePath: string,
+	options: HermesSignedEvidenceValidationOptions = {},
 ) {
 	const cached = cache.get(surfaceId);
 	if (cached?.path === probePath) return cached;
-	const read = readWorkflowProbeArtifact(probePath, surfaceId);
+	const read = readWorkflowProbeArtifact(probePath, surfaceId, options);
 	cache.set(surfaceId, read);
 	return read;
 }
@@ -722,6 +742,7 @@ function cachedWorkflowProbeArtifact(
 function readWorkflowProbeArtifact(
 	probePath: string,
 	surfaceId: HermesWorkflowSurfaceId,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): {
 	readonly path: string;
 	readonly sha256: string;
@@ -755,7 +776,7 @@ function readWorkflowProbeArtifact(
 			failure: `invalid workflow probe artifact: ${flattenZodError(parsed.error)}`,
 		};
 	}
-	const semanticFailure = workflowProbeEvidenceFailure(surfaceId, parsed.data);
+	const semanticFailure = workflowProbeEvidenceFailure(surfaceId, parsed.data, options);
 	return {
 		path: probePath,
 		sha256: hashFile(probePath),

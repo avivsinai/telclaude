@@ -3,6 +3,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
+import {
 	EDGE_ADAPTER_ATTESTATION_RUNNER,
 	EDGE_ADAPTER_ATTESTATION_SCHEMA_VERSION,
 	EDGE_ADAPTER_ATTESTATION_SOURCE,
@@ -765,6 +770,7 @@ export function buildEdgeAdapterProbeEvidence(input: {
 export function edgeAdapterProbeEvidenceFailure(
 	surfaceId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	if (!isEdgeAdapterFeatureSurfaceId(surfaceId)) {
 		return `unsupported edge adapter surface ${surfaceId}`;
@@ -807,16 +813,25 @@ export function edgeAdapterProbeEvidenceFailure(
 	}
 	const runtimeFailure = runtimeHarnessEvidenceFailure(surfaceId, data);
 	if (runtimeFailure) failures.push(runtimeFailure);
-	const attestationFailure = edgeAdapterRunnerAttestationFailure(data);
+	const attestationFailure = edgeAdapterRunnerAttestationFailure(data, options);
 	if (attestationFailure) failures.push(attestationFailure);
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 
-function edgeAdapterRunnerAttestationFailure(data: EdgeAdapterProbeEvidence): string | null {
+function edgeAdapterRunnerAttestationFailure(
+	data: EdgeAdapterProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions,
+): string | null {
 	const attestation = data.runnerAttestation as EdgeAdapterAttestation | undefined;
 	if (!attestation) return "runnerAttestation is missing";
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"runnerAttestation observedAt",
+		attestation.observedAt,
+		options,
+	);
+	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = edgeAdapterAttestationSignatureFailure(attestation, {
-		allowStale: true,
+		allowStale: hermesAllowsStaleAttestations(options),
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = edgeAdapterAttestationFieldsForEvidence(data);
@@ -873,6 +888,7 @@ export function buildEdgeAdapterFixtureEvidenceBundle(input: {
 export function edgeAdapterFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const requirement = EDGE_FIXTURE_REQUIREMENTS.find((candidate) => candidate.id === fixtureId);
 	if (!requirement) return null;
@@ -918,9 +934,13 @@ export function edgeAdapterFixtureEvidenceFailure(
 		if (currentDigest !== artifact.evidenceSha256) {
 			failures.push(`fixture probe artifact ${probeRequirement.probeId} sha256 changed`);
 		}
-		const loaded = loadEdgeFixtureProbe(probeRequirement, {
-			[probeRequirement.probeId]: artifact.evidencePath,
-		});
+		const loaded = loadEdgeFixtureProbe(
+			probeRequirement,
+			{
+				[probeRequirement.probeId]: artifact.evidencePath,
+			},
+			options,
+		);
 		if (loaded.failure) failures.push(loaded.failure);
 		for (const checkName of probeRequirement.requiredChecks) {
 			const check = loaded.checks.get(checkName);
@@ -1044,6 +1064,7 @@ function buildEdgeFixtureChecks(
 function loadEdgeFixtureProbe(
 	requirement: EdgeFixtureProbeRequirement,
 	probePaths: Partial<Record<EdgeFixtureProbeId, string>>,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): LoadedEdgeFixtureProbe {
 	const evidencePath =
 		probePaths[requirement.probeId] ?? defaultEdgeFixtureProbePath(requirement.probeId);
@@ -1079,7 +1100,7 @@ function loadEdgeFixtureProbe(
 	if (requirement.probeId === "providers.release-policy") {
 		return loadProviderReleaseFixtureProbe(requirement, evidencePath, resolvedPath, evidence);
 	}
-	return loadEdgeAdapterFixtureProbe(requirement, evidencePath, resolvedPath, evidence);
+	return loadEdgeAdapterFixtureProbe(requirement, evidencePath, resolvedPath, evidence, options);
 }
 
 function loadEdgeAdapterFixtureProbe(
@@ -1087,6 +1108,7 @@ function loadEdgeAdapterFixtureProbe(
 	evidencePath: string,
 	resolvedPath: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions,
 ): LoadedEdgeFixtureProbe {
 	const parsed = EdgeAdapterProbeEvidenceSchema.safeParse(evidence);
 	const checks = parsed.success
@@ -1103,7 +1125,7 @@ function loadEdgeAdapterFixtureProbe(
 		checks,
 		failure:
 			parsed.success && isEdgeAdapterFeatureSurfaceId(requirement.probeId)
-				? edgeAdapterProbeEvidenceFailure(requirement.probeId, parsed.data)
+				? edgeAdapterProbeEvidenceFailure(requirement.probeId, parsed.data, options)
 				: `invalid edge fixture probe ${requirement.probeId}`,
 	};
 }

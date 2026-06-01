@@ -5,6 +5,11 @@ import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../../crypto/canonical-hash.js";
 import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "../attestation-validation.js";
+import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
 	type TelclaudeMcpSideEffectApprovalSignatureVerifier,
@@ -142,6 +147,7 @@ export function runTelclaudeMcpSideEffectLedgerProbe(input: {
 export function sideEffectLedgerProbeEvidenceFailure(
 	surfaceId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	if (surfaceId !== "sideeffect.ledger") {
 		return `unsupported side-effect ledger surface ${surfaceId}`;
@@ -155,7 +161,7 @@ export function sideEffectLedgerProbeEvidenceFailure(
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
 	if (data.probeId !== "sideeffect.ledger") failures.push(`probeId is ${data.probeId}`);
-	const attestationFailure = sideEffectLedgerRunnerAttestationFailure(data);
+	const attestationFailure = sideEffectLedgerRunnerAttestationFailure(data, options);
 	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
@@ -200,11 +206,18 @@ export function sideEffectLedgerProbeEvidenceFailure(
 
 function sideEffectLedgerRunnerAttestationFailure(
 	evidence: SideEffectLedgerProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions,
 ): string | null {
 	const attestation = evidence.runnerAttestation as SideEffectLedgerAttestation | undefined;
 	if (!attestation) return "runnerAttestation is missing";
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"runnerAttestation observedAt",
+		attestation.observedAt,
+		options,
+	);
+	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = sideEffectLedgerAttestationSignatureFailure(attestation, {
-		allowStale: true,
+		allowStale: hermesAllowsStaleAttestations(options),
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = sideEffectLedgerAttestationFieldsForEvidence(evidence);
