@@ -36,6 +36,7 @@ import {
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
+import { TELCLAUDE_MCP_SERVER_POLICY } from "./mcp/bridge.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import {
 	NETWORK_PROBE_ATTESTATION_RUNNER,
@@ -2501,6 +2502,7 @@ function profileFileContent(
 						transport: "http",
 						url: "http://telclaude:8790/v1/hermes/mcp",
 						auth: "relay-token-file",
+						policy: TELCLAUDE_MCP_SERVER_POLICY,
 					},
 				},
 			});

@@ -25,6 +25,7 @@ import {
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
+import { TELCLAUDE_MCP_SERVER_POLICY } from "../../src/hermes/mcp/bridge.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
@@ -122,6 +123,19 @@ function profileDecision(evidencePath: string) {
 		cutover_impact: "Profile generation proof is required before private cutover.",
 	};
 }
+
+it("generates mcp.json with the deny-by-default Telclaude MCP server policy", () => {
+	const proof = writeProfileProof(compatLockfile);
+	const mcpConfig = readJson<{
+		servers?: {
+			telclaudeRelay?: {
+				policy?: unknown;
+			};
+		};
+	}>(path.join(proof.outDir, "mcp.json"));
+
+	expect(mcpConfig.servers?.telclaudeRelay?.policy).toEqual(TELCLAUDE_MCP_SERVER_POLICY);
+});
 
 function networkEvidence(
 	id: string,
