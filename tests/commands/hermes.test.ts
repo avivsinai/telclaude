@@ -48,6 +48,7 @@ import {
 } from "../../src/hermes/inventory.js";
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
+import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
@@ -368,6 +369,15 @@ function restoreEnv(name: string, value: string | undefined): void {
 	}
 }
 
+function ensureOperatorRelayKeys(): void {
+	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
+		return;
+	}
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+}
+
 function minimalInventoryConfig(options: { webhooksEnabled?: boolean } = {}): TelclaudeConfig {
 	return {
 		security: { profile: "simple", permissions: { defaultTier: "READ_ONLY", users: {} } },
@@ -482,7 +492,13 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		typeof overrides.evidence_path === "string"
 			? overrides.evidence_path
 			: path.join(tempDir, "rollback-rehearsal.json");
-	const relayKeys = generateKeyPair();
+	const relayKeys =
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY
+			? {
+					privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+					publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+				}
+			: generateKeyPair();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const relayPublicKey = {
@@ -579,6 +595,7 @@ function signedRelayTranscript(
 }
 
 function writeFixtureResults() {
+	ensureOperatorRelayKeys();
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-fixtures-"));
 	const reportPath = path.join(tempDir, "private-telegram-vitest.json");
 	writeJson(reportPath, privateTelegramVitestReport());
@@ -589,7 +606,12 @@ function writeFixtureResults() {
 	const invocation = privateTelegramFixtureInvocation(reportPath, reportDigest);
 	const fixtures = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((requirement) => {
 		const evidencePath = path.join(tempDir, `${requirement.id}.json`);
-		writeJson(evidencePath, {
+		const checks = requirement.requiredTests.map((testName) => ({
+			name: testName,
+			status: "pass",
+			detail: "required fixture assertion passed in machine-observed Vitest report",
+		}));
+		const evidence = {
 			schemaVersion: "telclaude.hermes.fixture-evidence.v1",
 			id: requirement.id,
 			status: "pass",
@@ -607,11 +629,23 @@ function writeFixtureResults() {
 				requiredAssertions: requirement.requiredAssertions,
 			},
 			invocation,
-			checks: requirement.requiredTests.map((testName) => ({
-				name: testName,
-				status: "pass",
-				detail: "required fixture assertion passed in machine-observed Vitest report",
-			})),
+			checks,
+		};
+		writeJson(evidencePath, {
+			...evidence,
+			privateTelegramRunnerAttestation: signPrivateTelegramFixtureEvidenceAttestation({
+				fixtureId: requirement.id,
+				status: evidence.status,
+				observedAt: evidence.observedAt,
+				provenanceRunner: evidence.provenance.runner,
+				provenanceSource: evidence.provenance.source,
+				testReportPath: evidence.testReport.path,
+				testReportSha256: reportDigest as `sha256:${string}`,
+				invocation,
+				requiredTests: requirement.requiredTests,
+				requiredAssertions: requirement.requiredAssertions,
+				checks,
+			}),
 		});
 		return { id: requirement.id, status: "pass" as const, evidence_path: evidencePath };
 	});
@@ -5731,44 +5765,73 @@ describe("Hermes wrapper foundation", () => {
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
 		const outPath = path.join(tempDir, "fixture-results.json");
 		const evidenceDir = path.join(tempDir, "evidence");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 
-		const result = await runHermesCommand([
-			"hermes",
-			"fixtures",
-			"--write",
-			"--json",
-			"--report-out",
-			testReportPath,
-			"--out",
-			outPath,
-			"--evidence-dir",
-			evidenceDir,
-			"--observed-at",
-			"2026-05-31T00:00:00.000Z",
-		]);
-		const report = JSON.parse(result.stdout) as {
-			status: string;
-			results: Array<{ id: string; status: string; evidence_path: string }>;
-		};
-		const bundle = readJson(outPath) as CutoverInputBundle["fixtureResults"];
+		try {
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--report-out",
+				testReportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+				"--observed-at",
+				"2026-05-31T00:00:00.000Z",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				results: Array<{ id: string; status: string; evidence_path: string }>;
+			};
+			const bundle = readJson(outPath) as CutoverInputBundle["fixtureResults"];
 
-		expect(result.exitCode).toBe(0);
-		expect(report.status).toBe("pass");
-		expect(bundle.results.map((fixture) => fixture.status)).toEqual(["pass", "pass"]);
-		for (const fixture of bundle.results) {
-			expect(fs.existsSync(fixture.evidence_path)).toBe(true);
-			expect(readJson(fixture.evidence_path)).toMatchObject({
-				id: fixture.id,
-				status: "pass",
-				provenance: { runner: "vitest-json", source: "machine-observed-test-report" },
-				invocation: { exitCode: 0, reportPath: testReportPath },
-			});
+			expect(result.exitCode).toBe(0);
+			expect(report.status).toBe("pass");
+			expect(bundle.results.map((fixture) => fixture.status)).toEqual(["pass", "pass"]);
+			for (const fixture of bundle.results) {
+				expect(fs.existsSync(fixture.evidence_path)).toBe(true);
+				const evidence = readJson(fixture.evidence_path);
+				expect(evidence).toMatchObject({
+					id: fixture.id,
+					status: "pass",
+					provenance: { runner: "vitest-json", source: "machine-observed-test-report" },
+					invocation: { exitCode: 0, reportPath: testReportPath },
+					privateTelegramRunnerAttestation: {
+						fixtureId: fixture.id,
+						status: "pass",
+						provenanceRunner: "vitest-json",
+						provenanceSource: "machine-observed-test-report",
+						testReportPath,
+						testReportSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						invocationReportPath: testReportPath,
+						invocationReportSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						invocationSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						requiredTestsSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						requiredAssertionsSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						checksSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						evidenceSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+						signature: expect.objectContaining({
+							scope: "operator",
+							signature: expect.any(String),
+						}),
+					},
+				});
+			}
+			const fixturesGate = evaluateCutoverCheck(
+				safeCutoverBundle({ fixtureResults: bundle }),
+			).gates.find((gate) => gate.name === "fixtures.pass");
+			expect(fixturesGate, JSON.stringify(fixturesGate)).toMatchObject({ status: "pass" });
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
 		}
-		expect(
-			evaluateCutoverCheck(safeCutoverBundle({ fixtureResults: bundle })).gates.find(
-				(gate) => gate.name === "fixtures.pass",
-			),
-		).toMatchObject({ status: "pass" });
 	});
 
 	it("includes workflow fixture results from workflow probe artifacts", async () => {
