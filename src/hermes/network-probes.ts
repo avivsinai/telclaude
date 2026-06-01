@@ -23,6 +23,10 @@ import {
 	signNetworkProbeEvidenceAttestation,
 } from "./network-probe-attestation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
+import {
+	networkProbeSemanticProofFailures,
+	POSITIVE_NETWORK_DENIAL_ERROR_CODES,
+} from "./network-probe-semantic-proof.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
@@ -104,13 +108,6 @@ type NetworkProbeWriteOptions = {
 };
 
 const DEFAULT_TIMEOUT_MS = 3_000;
-const POSITIVE_DENIAL_ERROR_CODES = new Set([
-	"ECONNREFUSED",
-	"EHOSTUNREACH",
-	"ENETUNREACH",
-	"EACCES",
-	"EPERM",
-]);
 const POLICY_DENIAL_HEADER = "x-telclaude-network-policy";
 
 export async function runHermesNetworkProbes(
@@ -289,60 +286,11 @@ function validatePassingNetworkProbeAttempt(
 }
 
 function validateNetworkProbeSemanticProof(evidence: NetworkProbeEvidence): void {
-	if (evidence.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
-		throw new Error(
-			`network probe evidence ${evidence.id} posture is ${evidence.posture}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
-		);
-	}
-	if (!hasContainedInternalProof(evidence)) {
-		throw new Error(
-			`network probe evidence ${evidence.id} contained-internal denial proof is missing or not pass`,
-		);
-	}
-	if (evidence.id === "network.dns-exfil-denied" && !hasNonOverridableDnsGuard(evidence)) {
-		throw new Error(
-			`network probe evidence ${evidence.id} dns_guard lacks nonOverridable resolved address`,
-		);
-	}
-}
-
-function hasContainedInternalProof(evidence: NetworkProbeEvidence): boolean {
-	switch (evidence.id) {
-		case "network.relay-control-allowed":
-			return evidence.attempts.some(
-				(attempt) =>
-					attempt.kind === "http" && attempt.expectation === "allow" && attempt.status === "pass",
-			);
-		case "network.direct-vault-denied":
-			return evidence.attempts.some(
-				(attempt) =>
-					attempt.expectation === "deny" &&
-					attempt.status === "pass" &&
-					((attempt.kind === "unix_socket" && attempt.observed === "absent") ||
-						hasPositiveContainedHttpDenial(attempt)),
-			);
-		default:
-			return evidence.attempts.some(hasPositiveContainedHttpDenial);
-	}
-}
-
-function hasPositiveContainedHttpDenial(attempt: NetworkProbeAttempt): boolean {
-	return (
-		(attempt.kind === "http" || attempt.kind === "dns_guard") &&
-		attempt.expectation === "deny" &&
-		attempt.status === "pass" &&
-		attempt.observed === "denied" &&
-		attempt.errorCode !== undefined &&
-		POSITIVE_DENIAL_ERROR_CODES.has(attempt.errorCode)
-	);
-}
-
-function hasNonOverridableDnsGuard(evidence: NetworkProbeEvidence): boolean {
-	return evidence.attempts.some(
-		(attempt) =>
-			attempt.kind === "dns_guard" &&
-			attempt.resolvedAddresses?.some((address) => address.nonOverridable) === true,
-	);
+	const [failure] = networkProbeSemanticProofFailures(evidence, {
+		requiredProbeIds: REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
+		requiredPosture: REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
+	});
+	if (failure) throw new Error(failure);
 }
 
 function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
@@ -573,7 +521,7 @@ async function attemptHttpDenied(
 	} catch (error) {
 		const { name: errorName, code, message } = normalizeNetworkError(error);
 		const isTimeout = errorName === "AbortError" || code === "ETIMEDOUT";
-		const isPositiveDenial = code !== undefined && POSITIVE_DENIAL_ERROR_CODES.has(code);
+		const isPositiveDenial = code !== undefined && POSITIVE_NETWORK_DENIAL_ERROR_CODES.has(code);
 		return {
 			name,
 			kind: "http",
