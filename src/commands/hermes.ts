@@ -155,6 +155,12 @@ import {
 	readServedMcpProviderToolsSourceEvidence,
 } from "../hermes/served-mcp-provider-tools-probe.js";
 import {
+	buildHermesWorkflowFixtureEvidenceBundle,
+	DEFAULT_HERMES_WORKFLOW_EVIDENCE_PATHS,
+	isHermesWorkflowSurfaceId,
+	runHermesWorkflowProbe,
+} from "../hermes/workflow-probes.js";
+import {
 	relayGetHermesPrivateRuntimeState,
 	relaySetHermesPrivateRuntimeMode,
 } from "../relay/capabilities-client.js";
@@ -260,6 +266,7 @@ type ProofBundleOption = JsonOption &
 type FixtureResultOption = JsonOption & {
 	write?: boolean;
 	includeProviderDomain?: boolean;
+	includeWorkflow?: boolean;
 	mergeExisting?: boolean;
 	out: string;
 	evidenceDir: string;
@@ -1170,6 +1177,10 @@ export function registerHermesCommand(program: Command): void {
 			"--include-provider-domain",
 			"Generate provider-domain fixture evidence from provider-domain probe artifacts",
 		)
+		.option(
+			"--include-workflow",
+			"Generate workflow fixture evidence from workflow probe artifacts",
+		)
 		.option("--merge-existing", "Merge generated fixture evidence into the existing output bundle")
 		.option("--observed-at <iso>", "Observed timestamp for generated evidence")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
@@ -1192,6 +1203,13 @@ export function registerHermesCommand(program: Command): void {
 								observedAt,
 							})
 						: undefined;
+				const workflowBundle =
+					options.includeWorkflow === true
+						? buildHermesWorkflowFixtureEvidenceBundle({
+								evidenceDir: options.evidenceDir,
+								observedAt,
+							})
+						: undefined;
 				const existingResults =
 					options.mergeExisting === true && fs.existsSync(resolveHermesArtifactPath(options.out))
 						? ((
@@ -1203,6 +1221,7 @@ export function registerHermesCommand(program: Command): void {
 				const generatedResults = [
 					...bundle.results,
 					...(providerDomainBundle?.results ?? []),
+					...(workflowBundle?.results ?? []),
 				] as Array<{
 					id: string;
 					status: "pass" | "fail";
@@ -1212,7 +1231,11 @@ export function registerHermesCommand(program: Command): void {
 					options.mergeExisting === true
 						? mergeFixtureResults(existingResults, generatedResults)
 						: generatedResults;
-				const evidence = [...bundle.evidence, ...(providerDomainBundle?.evidence ?? [])];
+				const evidence = [
+					...bundle.evidence,
+					...(providerDomainBundle?.evidence ?? []),
+					...(workflowBundle?.evidence ?? []),
+				];
 				if (options.write) {
 					if (options.testReport) {
 						throw new Error(
@@ -1250,7 +1273,7 @@ export function registerHermesCommand(program: Command): void {
 					printJson(report);
 				} else {
 					console.log(`Hermes fixtures: ${report.status}`);
-					for (const result of bundle.results) {
+					for (const result of report.results) {
 						console.log(`- ${result.status.toUpperCase()} ${result.id}: ${result.evidence_path}`);
 					}
 				}
@@ -2090,6 +2113,32 @@ export function registerHermesCommand(program: Command): void {
 				if (options.allowRun === true || options.out) {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (isHermesWorkflowSurfaceId(surface)) {
+				const report = runHermesWorkflowProbe({
+					surfaceId: surface,
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_HERMES_WORKFLOW_EVIDENCE_PATHS[surface],
 					);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}

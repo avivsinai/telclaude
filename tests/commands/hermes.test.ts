@@ -22,6 +22,7 @@ import {
 	buildHermesQueueSnapshot,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
+	collectFeatureProbeEvidence,
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	evaluateGuardrailMutation,
@@ -52,6 +53,13 @@ import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
+import {
+	buildHermesWorkflowFixtureEvidenceBundle,
+	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
+	HERMES_WORKFLOW_SURFACE_IDS,
+	type HermesWorkflowSurfaceId,
+	runHermesWorkflowProbe,
+} from "../../src/hermes/workflow-probes.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 import { redactSecrets } from "../../src/security/output-filter.js";
 
@@ -1358,6 +1366,172 @@ function sideEffectLedgerCutoverBundle(
 			},
 			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
+	});
+}
+
+function workflowProbe(
+	surfaceId: HermesWorkflowSurfaceId,
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "pass",
+) {
+	const label = surfaceId === "workflow.cron" ? "cron" : "long-running";
+	return {
+		surface_id: surfaceId,
+		hermes_pin: hermesPin,
+		documented_seam: `Telclaude ${label} workflow control state remains in an append-only workflow-run ledger`,
+		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
+		expected_result:
+			surfaceId === "workflow.cron"
+				? "Cron workflow authority, background completion, and duplicate-denial ledger controls pass"
+				: "Long-running approval resume, stale denial, retry/backoff, and terminal cancellation controls pass",
+		negative_probe:
+			surfaceId === "workflow.cron"
+				? "Client-derived cron authority, duplicate delivery, and missing terminal completion fail closed"
+				: "Stale resume, unbound approval resume, missing retry ledger state, and post-cancel checkpoints fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: `featureProbes.${surfaceId}`,
+		security_scope: "workflow-ledger" as const,
+		approval_equivalent: surfaceId === "workflow.longrun",
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function workflowCutoverBundle(
+	surfaceId: HermesWorkflowSurfaceId,
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	const probe = workflowProbe(surfaceId, evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	const fixtureResults = writeWorkflowFixtureResultsForSurface(surfaceId, evidencePath);
+	const fixtureIds = HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.filter(
+		(requirement) => requirement.surfaceId === surfaceId,
+	).map((requirement) => requirement.id);
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: surfaceId,
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					workflow_id: surfaceId,
+					owner: "operator",
+					trust_domain: "private",
+					fixture_ids: [fixtureIds[0]],
+					negative_fixture_ids: fixtureIds.slice(1),
+					required_surface_ids: [surfaceId],
+				},
+			],
+		},
+		featureProbeMatrix,
+		featureProbeEvidence: collectFeatureProbeEvidence(featureProbeMatrix),
+		fixtureResults,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [
+				{
+					id: "D-profile-generation",
+					status: "accepted",
+					owner: "operator",
+					deadline_phase: "Phase 1",
+					accepted_answer:
+						"Generated Hermes profiles are produced by the checked profile generator.",
+					affected_workflows: [],
+					cutover_impact: "Profile generation proof is required before workflow cutover.",
+				},
+			],
+		},
+		noForkProof: base.noForkProof,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: surfaceId,
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				[surfaceId]: `sha256:${"8".repeat(64)}`,
+			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
+		},
+	});
+}
+
+function writeWorkflowFixtureResultsForSurface(
+	surfaceId: HermesWorkflowSurfaceId,
+	evidencePath: string,
+): CutoverInputBundle["fixtureResults"] {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-"));
+	const probePaths = workflowProbePaths(tempDir, { [surfaceId]: evidencePath });
+	for (const probeSurfaceId of HERMES_WORKFLOW_SURFACE_IDS) {
+		if (!fs.existsSync(probePaths[probeSurfaceId])) {
+			writeWorkflowProbeArtifact(probeSurfaceId, probePaths[probeSurfaceId]);
+		}
+	}
+	const bundle = buildHermesWorkflowFixtureEvidenceBundle({
+		evidenceDir: path.join(tempDir, "fixtures"),
+		probePaths,
+		observedAt: "2026-06-01T09:10:00.000Z",
+	});
+	const fixtureIds = new Set(
+		HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.filter(
+			(requirement) => requirement.surfaceId === surfaceId,
+		).map((requirement) => requirement.id),
+	);
+	for (const evidence of bundle.evidence) {
+		if (fixtureIds.has(evidence.id)) writeJson(evidence.evidence_path, evidence);
+	}
+	return {
+		schemaVersion: 1,
+		results: bundle.results.filter((result) => fixtureIds.has(result.id)),
+	};
+}
+
+function workflowProbePaths(
+	tempDir: string,
+	overrides: Partial<Record<HermesWorkflowSurfaceId, string>> = {},
+): Record<HermesWorkflowSurfaceId, string> {
+	return {
+		"workflow.cron": overrides["workflow.cron"] ?? path.join(tempDir, "workflow-cron.json"),
+		"workflow.longrun":
+			overrides["workflow.longrun"] ?? path.join(tempDir, "workflow-longrun.json"),
+	};
+}
+
+function writeWorkflowProbeArtifact(
+	surfaceId: HermesWorkflowSurfaceId,
+	evidencePath: string,
+	overrides: Record<string, unknown> = {},
+) {
+	writeJson(evidencePath, {
+		...runHermesWorkflowProbe({
+			surfaceId,
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		}),
+		...overrides,
 	});
 }
 
@@ -5597,6 +5771,50 @@ describe("Hermes wrapper foundation", () => {
 		).toMatchObject({ status: "pass" });
 	});
 
+	it("includes workflow fixture results from workflow probe artifacts", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-cli-"));
+		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
+		writeJson(testReportPath, privateTelegramVitestReport());
+		await withCwd(tempDir, async () => {
+			writeWorkflowProbeArtifact(
+				"workflow.cron",
+				path.join(tempDir, "artifacts/hermes/probes/workflow-cron.json"),
+			);
+			writeWorkflowProbeArtifact(
+				"workflow.longrun",
+				path.join(tempDir, "artifacts/hermes/probes/workflow-longrun.json"),
+			);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--json",
+				"--test-report",
+				testReportPath,
+				"--include-workflow",
+				"--evidence-dir",
+				path.join(tempDir, "fixtures"),
+				"--observed-at",
+				"2026-06-01T09:10:00.000Z",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				results: Array<{ id: string; status: string; evidence_path: string }>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.status).toBe("pass");
+			expect(report.results).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ id: "fixture.cron.background.delivery", status: "pass" }),
+					expect.objectContaining({ id: "fixture.cron.duplicate-deny", status: "pass" }),
+					expect.objectContaining({ id: "fixture.longrun.approval-resume", status: "pass" }),
+					expect.objectContaining({ id: "fixture.longrun.stale-resume-deny", status: "pass" }),
+				]),
+			);
+		});
+	});
+
 	it("refuses to write imported private Telegram fixture reports", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-imported-"));
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
@@ -7110,6 +7328,110 @@ sleep 5
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("check ledger.replay-denied is missing"),
+		});
+	});
+
+	it.each(
+		HERMES_WORKFLOW_SURFACE_IDS,
+	)("writes %s workflow probe evidence through the CLI harness", async (surfaceId) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-cli-"));
+		const evidencePath = path.join(tempDir, `${surfaceId}.json`);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			surfaceId,
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			ran: boolean;
+			source: string;
+			checks: Array<{ name: string; status: string }>;
+			observations: Record<string, unknown>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: surfaceId,
+			status: "pass",
+			ran: true,
+			source: "telclaude-workflow-run-ledger-harness",
+		});
+		expect(artifact.checks.every((check) => check.status === "pass")).toBe(true);
+		expect(Object.keys(artifact.observations).length).toBeGreaterThan(0);
+	});
+
+	it.each(
+		HERMES_WORKFLOW_SURFACE_IDS,
+	)("passes the %s cutover gate from complete observed workflow evidence", async (surfaceId) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
+		const evidencePath = path.join(tempDir, `${surfaceId}.json`);
+		writeWorkflowProbeArtifact(surfaceId, evidencePath);
+
+		const result = await runCutoverCheckWithBundle(workflowCutoverBundle(surfaceId, evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the workflow cutover gate when a required probe check is missing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
+		const evidencePath = path.join(tempDir, "workflow-longrun.json");
+		const evidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.longrun",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+		writeJson(evidencePath, {
+			...evidence,
+			checks: evidence.checks.filter(
+				(check) => check.name !== "workflow.longrun.stale-resume-denied",
+			),
+		});
+
+		const result = await runCutoverCheckWithBundle(
+			workflowCutoverBundle("workflow.longrun", evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("check workflow.longrun.stale-resume-denied is missing"),
+		});
+	});
+
+	it("fails workflow fixtures when their bound probe artifact changes", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
+		const evidencePath = path.join(tempDir, "workflow-cron.json");
+		writeWorkflowProbeArtifact("workflow.cron", evidencePath);
+		const bundle = workflowCutoverBundle("workflow.cron", evidencePath);
+		writeJson(evidencePath, { changed: true });
+
+		const result = await runCutoverCheckWithBundle(bundle);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("fixture probeSha256 does not match"),
 		});
 	});
 

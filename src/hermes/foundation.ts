@@ -23,6 +23,11 @@ import {
 import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
+import {
+	isHermesWorkflowSurfaceId,
+	workflowFixtureEvidenceFailure,
+	workflowProbeEvidenceFailure,
+} from "./workflow-probes.js";
 
 export const DEFAULT_FEATURE_PROBE_MATRIX_PATH = "docs/hermes/feature-probes.json";
 export const DEFAULT_COMPAT_LOCKFILE_PATH = "docs/hermes/hermes-compat.lock.json";
@@ -127,6 +132,7 @@ export const FeatureProbeSchema = z
 				"served-mcp-containment",
 				"served-mcp-provider-tools",
 				"side-effect-ledger",
+				"workflow-ledger",
 			])
 			.optional(),
 		approval_equivalent: z.boolean().optional(),
@@ -430,10 +436,14 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/cron/store.ts",
 		"src/background/runner.ts",
 		"src/background/jobs.ts",
+		"src/hermes/workflow-run-ledger.ts",
+		"src/hermes/workflow-probes.ts",
 	],
 	"workflow.longrun": [
 		"src/background/runner.ts",
 		"src/background/jobs.ts",
+		"src/hermes/workflow-run-ledger.ts",
+		"src/hermes/workflow-probes.ts",
 		"src/hermes/mcp/side-effect-ledger.ts",
 	],
 	"sideeffect.ledger": [
@@ -464,9 +474,13 @@ const P0_PARITY_DIGEST_FILES = [
 	"src/hermes/edge-adapter-contract.ts",
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
+	"src/hermes/workflow-run-ledger.ts",
+	"src/hermes/workflow-probes.ts",
 	"tests/hermes/edge-adapter-contract.test.ts",
 	"tests/hermes/edge-adapter-runtime.test.ts",
 	"tests/hermes/edge-adapter-probes.test.ts",
+	"tests/hermes/workflow-run-ledger.test.ts",
+	"tests/hermes/workflow-probes.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
 	"tests/commands/hermes.test.ts",
@@ -1686,6 +1700,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
+		}
+		if (isHermesWorkflowSurfaceId(probe.surface_id)) {
+			return [collectWorkflowProbeEvidence(probe)];
 		}
 		return [];
 	});
@@ -3583,6 +3600,8 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (privateTelegramFailure) return privateTelegramFailure;
 	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
 	if (providerDomainFailure) return providerDomainFailure;
+	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
+	if (workflowFailure) return workflowFailure;
 	return null;
 }
 
@@ -5004,6 +5023,48 @@ function collectProviderReleasePolicyProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider release-policy controls`,
+	};
+}
+
+function collectWorkflowProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	if (!isHermesWorkflowSurfaceId(probe.surface_id)) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} is not a workflow surface`,
+		);
+	}
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = workflowProbeEvidenceFailure(probe.surface_id, evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed workflow ledger controls`,
 	};
 }
 
