@@ -9,6 +9,7 @@ import {
 	NETWORK_PROBE_POSTURES,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
+	REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
@@ -244,6 +245,7 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 			validatePassingNetworkProbeAttempt(evidence.id as NetworkProbeId, index, attempt);
 		}
 		validateNetworkProbeAttestation(evidence as NetworkProbeEvidence);
+		validateNetworkProbeSemanticProof(evidence as NetworkProbeEvidence);
 	}
 	for (const id of REQUIRED_CUTOVER_NETWORK_PROBE_IDS) {
 		if (!evidenceIds.has(id)) {
@@ -286,14 +288,69 @@ function validatePassingNetworkProbeAttempt(
 	}
 }
 
+function validateNetworkProbeSemanticProof(evidence: NetworkProbeEvidence): void {
+	if (evidence.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
+		throw new Error(
+			`network probe evidence ${evidence.id} posture is ${evidence.posture}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
+		);
+	}
+	if (!hasContainedInternalProof(evidence)) {
+		throw new Error(
+			`network probe evidence ${evidence.id} contained-internal denial proof is missing or not pass`,
+		);
+	}
+	if (evidence.id === "network.dns-exfil-denied" && !hasNonOverridableDnsGuard(evidence)) {
+		throw new Error(
+			`network probe evidence ${evidence.id} dns_guard lacks nonOverridable resolved address`,
+		);
+	}
+}
+
+function hasContainedInternalProof(evidence: NetworkProbeEvidence): boolean {
+	switch (evidence.id) {
+		case "network.relay-control-allowed":
+			return evidence.attempts.some(
+				(attempt) =>
+					attempt.kind === "http" && attempt.expectation === "allow" && attempt.status === "pass",
+			);
+		case "network.direct-vault-denied":
+			return evidence.attempts.some(
+				(attempt) =>
+					attempt.expectation === "deny" &&
+					attempt.status === "pass" &&
+					((attempt.kind === "unix_socket" && attempt.observed === "absent") ||
+						hasPositiveContainedHttpDenial(attempt)),
+			);
+		default:
+			return evidence.attempts.some(hasPositiveContainedHttpDenial);
+	}
+}
+
+function hasPositiveContainedHttpDenial(attempt: NetworkProbeAttempt): boolean {
+	return (
+		(attempt.kind === "http" || attempt.kind === "dns_guard") &&
+		attempt.expectation === "deny" &&
+		attempt.status === "pass" &&
+		attempt.observed === "denied" &&
+		attempt.errorCode !== undefined &&
+		POSITIVE_DENIAL_ERROR_CODES.has(attempt.errorCode)
+	);
+}
+
+function hasNonOverridableDnsGuard(evidence: NetworkProbeEvidence): boolean {
+	return evidence.attempts.some(
+		(attempt) =>
+			attempt.kind === "dns_guard" &&
+			attempt.resolvedAddresses?.some((address) => address.nonOverridable) === true,
+	);
+}
+
 function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
 	if (!evidence.attestation) {
 		throw new Error(`network probe evidence ${evidence.id} attestation is missing`);
 	}
 	if (evidence.attestation.schemaVersion !== NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION) {
-		throw new Error(
-			`network probe evidence ${evidence.id} attestation schemaVersion is invalid`,
-		);
+		throw new Error(`network probe evidence ${evidence.id} attestation schemaVersion is invalid`);
 	}
 	if (evidence.attestation.source !== NETWORK_PROBE_ATTESTATION_SOURCE) {
 		throw new Error(`network probe evidence ${evidence.id} attestation source is invalid`);
