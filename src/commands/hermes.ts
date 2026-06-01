@@ -124,6 +124,7 @@ import {
 	runHermesCliHeadlessProbe,
 	runHermesLaunchInvocation,
 } from "../hermes/private-runtime.js";
+import { signPrivateTelegramFixtureEvidenceAttestation } from "../hermes/private-telegram-fixture-attestation.js";
 import {
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
@@ -533,7 +534,10 @@ function buildPrivateTelegramFixtureResultBundle(options: {
 		}));
 		const status = checks.every((check) => check.status === "pass") ? "pass" : "fail";
 		const evidencePath = path.join(options.evidenceDir, `${fixture.id}.json`);
-		return {
+		const provenanceSource = options.invocation
+			? "machine-observed-test-report"
+			: "imported-test-report";
+		const item = {
 			schemaVersion: "telclaude.hermes.fixture-evidence.v1",
 			id: fixture.id,
 			status,
@@ -543,7 +547,7 @@ function buildPrivateTelegramFixtureResultBundle(options: {
 			provenance: {
 				runner: "vitest-json",
 				command: options.invocation?.command.join(" "),
-				source: options.invocation ? "machine-observed-test-report" : "imported-test-report",
+				source: provenanceSource,
 			},
 			testReport: {
 				path: options.testReportPath,
@@ -554,6 +558,24 @@ function buildPrivateTelegramFixtureResultBundle(options: {
 			...(options.invocation ? { invocation: options.invocation } : {}),
 			checks,
 		};
+		return options.invocation
+			? {
+					...item,
+					privateTelegramRunnerAttestation: signPrivateTelegramFixtureEvidenceAttestation({
+						fixtureId: fixture.id,
+						status,
+						observedAt: options.observedAt,
+						provenanceRunner: "vitest-json",
+						provenanceSource,
+						testReportPath: options.testReportPath,
+						testReportSha256: reportDigest as `sha256:${string}`,
+						invocation: options.invocation,
+						requiredTests: fixture.requiredTests,
+						requiredAssertions: fixture.requiredAssertions,
+						checks,
+					}),
+				}
+			: item;
 	});
 	return {
 		schemaVersion: 1,

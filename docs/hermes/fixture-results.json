@@ -3,12 +3,12 @@
   "results": [
     {
       "id": "fixture.private.telegram.basic",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/fixtures/fixture.private.telegram.basic.json"
     },
     {
       "id": "fixture.private.telegram.basic.deny",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/fixtures/fixture.private.telegram.basic.deny.json"
     },
     {
