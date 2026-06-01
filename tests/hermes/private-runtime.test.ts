@@ -102,6 +102,62 @@ describe("Hermes private runtime seam", () => {
 		expect(sessions.get("tg:123", "ops")?.hermesSessionId).toBe("hermes-session-1");
 	});
 
+	it("redacts Hermes private runtime stream text, tool payloads, and final errors", async () => {
+		const token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi";
+		const sessions = new HermesSessionMap(() => "tc-session-1");
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* () {
+				yield { type: "text_delta", text: `hello ${token}` };
+				yield {
+					type: "tool_use",
+					toolName: "tc_provider",
+					input: { nested: [`send ${token}`] },
+				};
+				yield {
+					type: "tool_result",
+					toolName: "tc_provider",
+					output: { response: `done ${token}` },
+				};
+				yield { type: "done", response: `final ${token}`, error: `warn ${token}` };
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions,
+				request: baseRequest(),
+				now: () => 1000,
+			}),
+		);
+
+		expect(JSON.stringify(chunks)).not.toContain(token);
+		expect(chunks).toEqual([
+			{ type: "text", content: "hello [REDACTED:telegram_bot_token]" },
+			{
+				type: "tool_use",
+				toolName: "tc_provider",
+				input: { nested: ["send [REDACTED:telegram_bot_token]"] },
+			},
+			{
+				type: "tool_result",
+				toolName: "tc_provider",
+				output: { response: "done [REDACTED:telegram_bot_token]" },
+			},
+			{
+				type: "done",
+				result: {
+					response: "final [REDACTED:telegram_bot_token]",
+					success: true,
+					error: "warn [REDACTED:telegram_bot_token]",
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 0,
+				},
+			},
+		]);
+	});
+
 	it("mints private MCP authority out-of-band for the runtime and revokes it on completion", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const sessions = new HermesSessionMap(() => "tc-session-1");

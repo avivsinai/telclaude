@@ -278,12 +278,13 @@ export async function* executeHermesPrivateRuntime(input: {
 			},
 		};
 	} catch (error) {
+		const message = redactHermesRuntimeText(error instanceof Error ? error.message : String(error));
 		yield {
 			type: "done",
 			result: {
 				response: "",
 				success: false,
-				error: error instanceof Error ? error.message : String(error),
+				error: message,
 				costUsd: 0,
 				numTurns: 1,
 				durationMs: Math.max(0, now() - startedAt),
@@ -308,22 +309,30 @@ export async function* executeHermesPrivateRuntime(input: {
 					break;
 				case "text_delta":
 					response += event.text;
-					yield { type: "text", content: event.text };
+					yield { type: "text", content: redactHermesRuntimeText(event.text) };
 					break;
 				case "tool_use":
-					yield { type: "tool_use", toolName: event.toolName, input: event.input };
+					yield {
+						type: "tool_use",
+						toolName: event.toolName,
+						input: redactHermesRuntimeValue(event.input),
+					};
 					break;
 				case "tool_result":
-					yield { type: "tool_result", toolName: event.toolName, output: event.output };
+					yield {
+						type: "tool_result",
+						toolName: event.toolName,
+						output: redactHermesRuntimeValue(event.output),
+					};
 					break;
 				case "done":
 					sawDone = true;
 					yield {
 						type: "done",
 						result: {
-							response: event.response ?? response,
+							response: redactHermesRuntimeText(event.response ?? response),
 							success: event.success ?? true,
-							...(event.error ? { error: event.error } : {}),
+							...(event.error ? { error: redactHermesRuntimeText(event.error) } : {}),
 							costUsd: event.costUsd ?? 0,
 							numTurns: event.numTurns ?? 1,
 							durationMs: event.durationMs ?? Math.max(0, now() - startedAt),
@@ -336,7 +345,7 @@ export async function* executeHermesPrivateRuntime(input: {
 			yield {
 				type: "done",
 				result: {
-					response,
+					response: redactHermesRuntimeText(response),
 					success: true,
 					costUsd: 0,
 					numTurns: 1,
@@ -345,12 +354,13 @@ export async function* executeHermesPrivateRuntime(input: {
 			};
 		}
 	} catch (error) {
+		const message = redactHermesRuntimeText(error instanceof Error ? error.message : String(error));
 		yield {
 			type: "done",
 			result: {
-				response,
+				response: redactHermesRuntimeText(response),
 				success: false,
-				error: error instanceof Error ? error.message : String(error),
+				error: message,
 				costUsd: 0,
 				numTurns: 1,
 				durationMs: Math.max(0, now() - startedAt),
@@ -971,6 +981,15 @@ export function findHermesLaunchSecretFindings(
 
 export function redactHermesRuntimeText(value: string): string {
 	return redactSecrets(value);
+}
+
+export function redactHermesRuntimeValue(value: unknown): unknown {
+	if (typeof value === "string") return redactHermesRuntimeText(value);
+	if (Array.isArray(value)) return value.map((item) => redactHermesRuntimeValue(item));
+	if (!isRecord(value)) return value;
+	return Object.fromEntries(
+		Object.entries(value).map(([key, entry]) => [key, redactHermesRuntimeValue(entry)]),
+	);
 }
 
 export function readHermesCliHeadlessProbeReport(reportPath: string): HermesCliProbeReport {
