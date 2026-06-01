@@ -21,6 +21,8 @@ describe("Hermes Pro review gate", () => {
 				"artifacts/hermes/fixtures/fixture.providers.google.direct-provider-deny.json",
 				"src/hermes/workflow-probes.ts",
 				"tests/hermes/workflow-probes.test.ts",
+				"src/hermes/mcp/side-effect-human-approval.ts",
+				"tests/hermes/mcp-side-effect-human-approval.test.ts",
 			]),
 		);
 	});
