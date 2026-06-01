@@ -125,6 +125,7 @@ const REQUIRED_SIDE_EFFECT_LEDGER_CHECKS = [
 	"ledger.provider.prepare-hashes",
 	"ledger.outbound.prepare-hashes",
 	"ledger.approval-binding.content-hash",
+	"ledger.provider.hermes-approval-token-input-denied",
 	"ledger.provider.execute-authorized",
 	"ledger.outbound.execute-authorized",
 	"ledger.provider.proxy-relay",
@@ -292,11 +293,17 @@ async function runProbe(input: {
 			},
 		});
 		const providerProxyCalls: unknown[] = [];
-		const bridge = createProbeBridge(ledger, async (request) => {
-			providerProxyCalls.push(request);
-			observations.providerProxyCallCount = providerProxyCalls.length;
-			return { status: "ok", data: { accepted: true } };
-		});
+		const providerApprovals = new Map<string, string>();
+		const bridge = createProbeBridge(
+			ledger,
+			providerApprovals,
+			() => nowMs,
+			async (request) => {
+				providerProxyCalls.push(request);
+				observations.providerProxyCallCount = providerProxyCalls.length;
+				return { status: "ok", data: { accepted: true } };
+			},
+		);
 
 		const provider = ledger.prepare(providerPrepareInput());
 		const outbound = ledger.prepare(outboundPrepareInput());
@@ -341,10 +348,33 @@ async function runProbe(input: {
 
 		const providerToken = await generateProbeToken(provider, vault, "provider-jti");
 		const outboundToken = await generateProbeToken(outbound, vault, "outbound-jti");
+		const hermesTokenInputResult = await bridge
+			.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: providerToken,
+			})
+			.then(
+				(result) => resultShape(result),
+				(error) => ({
+					ok: false,
+					code: "schema_rejected",
+					detail: error instanceof Error ? error.message : String(error),
+				}),
+			);
+		pushCheck(
+			checks,
+			"ledger.provider.hermes-approval-token-input-denied",
+			hermesTokenInputResult.ok === false &&
+				hermesTokenInputResult.code === "schema_rejected" &&
+				observations.verifierCallCount === 0 &&
+				providerProxyCalls.length === 0 &&
+				ledger.get(provider.ref)?.status === "prepared",
+			"Hermes-facing provider execute rejects approvalToken input before verifier or proxy use",
+		);
+		providerApprovals.set(provider.ref, providerToken);
 		const providerResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: providerToken,
 			}),
 		);
 		const outboundResult = resultShape(
@@ -390,10 +420,10 @@ async function runProbe(input: {
 		observations.mutatedProviderContentHash =
 			getTelclaudeMcpSideEffectApprovalBinding(mutated).contentHash;
 		const mutationToken = await generateProbeToken(originalForMutation, vault, "mutation-jti");
+		providerApprovals.set(mutated.ref, mutationToken);
 		const mutationResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: mutated.ref,
-				approvalToken: mutationToken,
 			}),
 		);
 		pushCheck(
@@ -411,7 +441,6 @@ async function runProbe(input: {
 		const replayResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: providerToken,
 			}),
 		);
 		pushCheck(
@@ -446,7 +475,6 @@ async function runProbe(input: {
 		const expiredResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: expired.ref,
-				approvalToken: "unused-expired-token",
 			}),
 		);
 		nowMs = 100_000;
@@ -464,7 +492,6 @@ async function runProbe(input: {
 		const kindMismatchResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: kindMismatch.ref,
-				approvalToken: "unused-kind-token",
 			}),
 		);
 		pushCheck(
@@ -481,7 +508,6 @@ async function runProbe(input: {
 		const authorityMismatchResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: authorityMismatch.ref,
-				approvalToken: "unused-authority-token",
 			}),
 		);
 		pushCheck(
@@ -511,20 +537,21 @@ async function runProbe(input: {
 			vault,
 			"provider-scope-jti",
 		);
+		providerApprovals.set(providerScopeMismatch.ref, providerScopeToken);
 		const verifierCallsBeforeScopeMismatch = observations.verifierCallCount;
 		const providerScopeMismatchResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: providerScopeMismatch.ref,
-				approvalToken: providerScopeToken,
 			}),
 		);
 		const recordAfterProviderScopeMismatch = ledger.get(providerScopeMismatch.ref);
 		const verifierCallsAfterScopeMismatch = observations.verifierCallCount;
-		const clalitBridge = createProbeBridge(ledger, undefined, { providerScopes: ["clalit"] });
+		const clalitBridge = createProbeBridge(ledger, providerApprovals, () => nowMs, undefined, {
+			providerScopes: ["clalit"],
+		});
 		const providerScopeAllowedResult = resultShape(
 			await clalitBridge.tc_provider_execute_write({
 				actionRef: providerScopeMismatch.ref,
-				approvalToken: providerScopeToken,
 			}),
 		);
 		pushCheck(
@@ -625,6 +652,8 @@ async function generateProbeToken(
 
 function createProbeBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
+	providerApprovals: Map<string, string>,
+	nowMs: () => number,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
@@ -635,8 +664,22 @@ function createProbeBridge(
 			...createTelclaudeMcpLedgerExecuteDependencies({
 				ledger,
 				providerProxy,
+				providerApprovalTokenResolver: ({ actionRef }) => {
+					const approvalToken = providerApprovals.get(actionRef);
+					if (!approvalToken) {
+						return {
+							ok: false,
+							code: "approval_token_unavailable",
+							reason: "server-side approval token is unavailable",
+							retryable: true,
+						};
+					}
+					providerApprovals.delete(actionRef);
+					return { ok: true, approvalToken };
+				},
 				providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
 					`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+				nowMs,
 			}),
 		},
 	);

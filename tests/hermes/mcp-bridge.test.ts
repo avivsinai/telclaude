@@ -211,7 +211,6 @@ describe("Telclaude MCP bridge foundation", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: "act_123",
-				approvalToken: "signed-token",
 			}),
 		).resolves.toEqual({ status: "queued" });
 		await expect(
@@ -222,13 +221,19 @@ describe("Telclaude MCP bridge foundation", () => {
 		).resolves.toEqual({ status: "sent" });
 
 		expect(calls).toEqual([
-			expect.objectContaining({ actionRef: "act_123", approvalToken: "signed-token" }),
+			expect.objectContaining({ actionRef: "act_123" }),
 			expect.objectContaining({ outboundRef: "out_123", approvalToken: "signed-token" }),
 		]);
+		expect(calls[0]).not.toHaveProperty("approvalToken");
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: "act_123",
 				approvalToken: "signed-token",
+			}),
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: "act_123",
 				params: { amount: 100 },
 			}),
 		).rejects.toThrow();

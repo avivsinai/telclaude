@@ -103,6 +103,7 @@ type ProbeHarness = {
 	ledger: TelclaudeMcpSideEffectLedger;
 	bridge: TelclaudeMcpBridge;
 	wrongActorBridge: TelclaudeMcpBridge;
+	storeProviderApproval: (actionRef: string, approvalToken: string) => void;
 	stop: () => Promise<void>;
 };
 
@@ -258,6 +259,7 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 	});
 	const vault = new VaultClient({ socketPath, timeout: 5_000 });
 	const jtiStore = new TelclaudeMcpSideEffectJtiStore(path.join(dataDir, "jti"));
+	const serverSideApprovals = new Map<string, string>();
 	const ledger = createTelclaudeMcpSideEffectLedger({
 		nowMs: () => nowMs,
 		makeRef: () => `effect-approval-continuation-${++refCounter}`,
@@ -269,6 +271,19 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		}),
 	});
 	const registry = createTelclaudeMcpAuthorityRegistry();
+	const resolveProviderApprovalToken = ({ actionRef }: { readonly actionRef: string }) => {
+		const approvalToken = serverSideApprovals.get(actionRef);
+		if (!approvalToken) {
+			return {
+				ok: false as const,
+				code: "approval_token_unavailable",
+				reason: "server-side approval token is unavailable",
+				retryable: true,
+			};
+		}
+		serverSideApprovals.delete(actionRef);
+		return { ok: true as const, approvalToken };
+	};
 	const connection: TelclaudeMcpAuthorityConnection = {
 		sessionKey: "session-private-1",
 		profileId: "private",
@@ -276,12 +291,21 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		networkNamespace: "netns-private",
 	};
 	const authority = baseAuthority();
-	const bridge = registeredBridge({ registry, connection, authority, ledger });
+	const bridge = registeredBridge({
+		registry,
+		connection,
+		authority,
+		ledger,
+		resolveProviderApprovalToken,
+		nowMs: () => nowMs,
+	});
 	const wrongActorBridge = registeredBridge({
 		registry,
 		connection: { ...connection, sessionKey: "session-private-attacker" },
 		authority: { ...authority, actorId: "telegram:attacker" },
 		ledger,
+		resolveProviderApprovalToken,
+		nowMs: () => nowMs,
 	});
 	return {
 		nowMs: () => nowMs,
@@ -293,6 +317,9 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		ledger,
 		bridge,
 		wrongActorBridge,
+		storeProviderApproval: (actionRef, approvalToken) => {
+			serverSideApprovals.set(actionRef, approvalToken);
+		},
 		stop: () => stopProbeHarness(handle, jtiStore),
 	};
 }
@@ -310,6 +337,10 @@ function registeredBridge(input: {
 	connection: TelclaudeMcpAuthorityConnection;
 	authority: TelclaudeMcpAuthority;
 	ledger: TelclaudeMcpSideEffectLedger;
+	resolveProviderApprovalToken: Parameters<
+		typeof createTelclaudeMcpLedgerExecuteDependencies
+	>[0]["providerApprovalTokenResolver"];
+	nowMs: () => number;
 }): TelclaudeMcpBridge {
 	const grant = input.registry.register({
 		connection: input.connection,
@@ -321,7 +352,11 @@ function registeredBridge(input: {
 		registry: input.registry,
 		handle: grant.handle,
 		connection: input.connection,
-		dependencies: createProbeDependencies(input.ledger),
+		dependencies: createProbeDependencies(
+			input.ledger,
+			input.resolveProviderApprovalToken,
+			input.nowMs,
+		),
 		nowMs: BASE_NOW_MS,
 	});
 	if (!result.ok) {
@@ -332,8 +367,16 @@ function registeredBridge(input: {
 
 function createProbeDependencies(
 	ledger: TelclaudeMcpSideEffectLedger,
+	resolveProviderApprovalToken: Parameters<
+		typeof createTelclaudeMcpLedgerExecuteDependencies
+	>[0]["providerApprovalTokenResolver"],
+	nowMs: () => number,
 ): TelclaudeMcpBridgeDependencies {
-	const executeDependencies = createTelclaudeMcpLedgerExecuteDependencies({ ledger });
+	const executeDependencies = createTelclaudeMcpLedgerExecuteDependencies({
+		ledger,
+		providerApprovalTokenResolver: resolveProviderApprovalToken,
+		nowMs,
+	});
 	return {
 		providerRead: async () => ({ ok: true }),
 		providerPrepareWrite: async (request) => prepareProviderSideEffect(ledger, request),
@@ -408,9 +451,9 @@ async function runProviderFixture(
 		const record = requireRecord(harness.ledger, prepared.actionRef);
 		observations.push(pass("prepare", "provider side effect prepared through registered bridge"));
 		const token = await approvalTokenFor(harness, record, "jti-provider-fixture");
+		harness.storeProviderApproval(prepared.actionRef, token);
 		const result = await harness.bridge.tc_provider_execute_write({
 			actionRef: prepared.actionRef,
-			approvalToken: token,
 		});
 		observations.push(assertExecuted(result, "execute", "provider side effect executed"));
 	} catch (error) {
@@ -488,9 +531,9 @@ async function runLongRunningFixture(
 			pass("prepare", "long-running provider ref prepared through registered bridge"),
 		);
 		const token = await approvalTokenFor(harness, record, "jti-long-running-fixture");
+		harness.storeProviderApproval(prepared.actionRef, token);
 		const result = await harness.bridge.tc_provider_execute_write({
 			actionRef: prepared.actionRef,
-			approvalToken: token,
 		});
 		observations.push(
 			assertExecuted(result, "execute", "long-running approval wait resumed via execute"),
@@ -522,9 +565,9 @@ async function runWrongActorDenied(
 	})) as PreparedProvider;
 	const record = requireRecord(harness.ledger, prepared.actionRef);
 	const token = await approvalTokenFor(harness, record, "jti-wrong-actor");
+	harness.storeProviderApproval(prepared.actionRef, token);
 	const result = await harness.wrongActorBridge.tc_provider_execute_write({
 		actionRef: prepared.actionRef,
-		approvalToken: token,
 	});
 	const denial = assertFailureCode(
 		result,
@@ -535,7 +578,6 @@ async function runWrongActorDenied(
 	if (denial.status === "fail") return denial;
 	const recovery = await harness.bridge.tc_provider_execute_write({
 		actionRef: prepared.actionRef,
-		approvalToken: token,
 	});
 	const recoveryObservation = assertExecuted(
 		recovery,
@@ -557,12 +599,12 @@ async function runStaleRequestDenied(
 	})) as PreparedProvider;
 	const record = requireRecord(harness.ledger, prepared.actionRef);
 	const token = await approvalTokenFor(harness, record, "jti-stale");
+	harness.storeProviderApproval(prepared.actionRef, token);
 	harness.setNowMs(BASE_NOW_MS + 120_000);
 	let result: unknown;
 	try {
 		result = await harness.bridge.tc_provider_execute_write({
 			actionRef: prepared.actionRef,
-			approvalToken: token,
 		});
 	} finally {
 		harness.setNowMs(BASE_NOW_MS);

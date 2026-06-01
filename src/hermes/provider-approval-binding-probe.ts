@@ -137,7 +137,7 @@ const REQUIRED_PROVIDER_APPROVAL_BINDING_CHECKS = [
 	"provider.approval-binding.content-hash",
 	"provider.approval-binding.valid-token-executes",
 	"provider.approval-binding.proxy-relay",
-	"provider.approval-binding.invalid-token-denied",
+	"provider.approval-binding.hermes-approval-token-input-denied",
 	"provider.approval-binding.params-mutation-denied",
 	"provider.approval-binding.wrong-actor-denied",
 	"provider.approval-binding.service-action-mismatch-denied",
@@ -203,11 +203,17 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			},
 		});
 		const providerProxyCalls: unknown[] = [];
-		const bridge = createProbeBridge(ledger, async (request) => {
-			providerProxyCalls.push(request);
-			observations.providerProxyCallCount = providerProxyCalls.length;
-			return { status: "ok", data: { accepted: true } };
-		});
+		const providerApprovals = new Map<string, string>();
+		const bridge = createProbeBridge(
+			ledger,
+			providerApprovals,
+			() => nowMs,
+			async (request) => {
+				providerProxyCalls.push(request);
+				observations.providerProxyCallCount = providerProxyCalls.length;
+				return { status: "ok", data: { accepted: true } };
+			},
+		);
 
 		const prepared = ledger.prepare(providerPrepareInput());
 		const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
@@ -235,10 +241,33 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		);
 
 		const token = await generateProbeToken(prepared, vault, "provider-approval-valid");
+		const hermesTokenInputResult = await bridge
+			.tc_provider_execute_write({
+				actionRef: prepared.ref,
+				approvalToken: token,
+			})
+			.then(
+				(result) => resultShape(result),
+				(error) => ({
+					ok: false,
+					code: "schema_rejected",
+					detail: error instanceof Error ? error.message : String(error),
+				}),
+			);
+		pushCheck(
+			checks,
+			"provider.approval-binding.hermes-approval-token-input-denied",
+			hermesTokenInputResult.ok === false &&
+				hermesTokenInputResult.code === "schema_rejected" &&
+				observations.verifierCallCount === 0 &&
+				providerProxyCalls.length === 0 &&
+				ledger.get(prepared.ref)?.status === "prepared",
+			"Hermes-facing provider execute rejects approvalToken input before verifier or proxy use",
+		);
+		providerApprovals.set(prepared.ref, token);
 		const executed = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: prepared.ref,
-				approvalToken: token,
 			}),
 		);
 		pushCheck(
@@ -260,25 +289,6 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			"executed provider action is delivered only through the relay provider proxy",
 		);
 
-		const invalidToken = ledger.prepare(
-			providerPrepareInput({ approvalRequestId: "invalid-token" }),
-		);
-		const invalidTokenResult = resultShape(
-			await bridge.tc_provider_execute_write({
-				actionRef: invalidToken.ref,
-				approvalToken: "not-a-valid-token",
-			}),
-		);
-		pushCheck(
-			checks,
-			"provider.approval-binding.invalid-token-denied",
-			invalidTokenResult.ok === false &&
-				invalidTokenResult.code === "approval_required" &&
-				invalidTokenResult.retryable === true &&
-				invalidTokenResult.record?.status === "prepared",
-			"missing or malformed approval tokens leave provider actions prepared and unexecuted",
-		);
-
 		const originalForMutation = ledger.prepare(
 			providerPrepareInput({ approvalRequestId: "mutation-original" }),
 		);
@@ -293,10 +303,10 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			vault,
 			"provider-approval-mutation",
 		);
+		providerApprovals.set(mutated.ref, mutationToken);
 		const mutationResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: mutated.ref,
-				approvalToken: mutationToken,
 			}),
 		);
 		pushCheck(
@@ -315,7 +325,6 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		const wrongActorResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: wrongActor.ref,
-				approvalToken: "unused-wrong-actor-token",
 			}),
 		);
 		pushCheck(
@@ -345,10 +354,10 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			vault,
 			"provider-approval-service",
 		);
+		providerApprovals.set(serviceMismatch.ref, serviceToken);
 		const serviceResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: serviceMismatch.ref,
-				approvalToken: serviceToken,
 			}),
 		);
 		pushCheck(
@@ -368,7 +377,6 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		const expiredResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: expired.ref,
-				approvalToken: "unused-expired-token",
 			}),
 		);
 		nowMs = 100_000;
@@ -386,7 +394,6 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		const revokedResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: revoked.ref,
-				approvalToken: "unused-revoked-token",
 			}),
 		);
 		pushCheck(
@@ -402,7 +409,6 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		const replayResult = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: prepared.ref,
-				approvalToken: token,
 			}),
 		);
 		pushCheck(
@@ -752,6 +758,8 @@ async function generateProbeToken(
 
 function createProbeBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
+	providerApprovals: Map<string, string>,
+	nowMs: () => number,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 ) {
 	return createTelclaudeMcpBridge(probeAuthority(), {
@@ -759,8 +767,22 @@ function createProbeBridge(
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger,
 			providerProxy,
+			providerApprovalTokenResolver: ({ actionRef }) => {
+				const approvalToken = providerApprovals.get(actionRef);
+				if (!approvalToken) {
+					return {
+						ok: false,
+						code: "approval_token_unavailable",
+						reason: "server-side approval token is unavailable",
+						retryable: true,
+					};
+				}
+				providerApprovals.delete(actionRef);
+				return { ok: true, approvalToken };
+			},
 			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
 				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			nowMs,
 		}),
 	});
 }

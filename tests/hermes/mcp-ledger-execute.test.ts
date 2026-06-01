@@ -27,7 +27,7 @@ import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-doma
 describe("Telclaude MCP ledger execute dependencies", () => {
 	it("authorizes provider and outbound executes through the ledger", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(providerPrepareInput());
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
 		harness.accept("provider-token", provider);
@@ -36,7 +36,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: true,
@@ -72,24 +71,42 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		]);
 	});
 
-	it("surfaces verifier failures as retryable without executing the prepared ref", async () => {
+	it("surfaces missing server-side approvals as retryable without executing the prepared ref", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(providerPrepareInput());
 
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "unknown-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
-			code: "approval_mismatch",
-			reason: "approval token not accepted",
+			code: "approval_token_unavailable",
+			reason: "server-side approval token is unavailable",
 			retryable: true,
 			record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
 		});
-		expect(harness.verifierCalls).toHaveLength(1);
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(harness.ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		);
+	});
+
+	it("rejects Hermes-supplied provider approval tokens at the bridge boundary", async () => {
+		const harness = createLedgerHarness();
+		const bridge = createBridge(harness);
+		const provider = harness.ledger.prepare(providerPrepareInput());
+		harness.accept("provider-token", provider);
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).rejects.toThrow();
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
 		expect(harness.ledger.get(provider.ref)).toEqual(
 			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
 		);
@@ -100,7 +117,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const provider = harness.ledger.prepare(providerPrepareInput({ approverActorId: "operator" }));
 		harness.accept("provider-token", provider);
 		const providerCalls: unknown[] = [];
-		const bridge = createBridge(harness.ledger, {
+		const bridge = createBridge(harness, {
 			providerProxy: async (request) => {
 				providerCalls.push(request);
 				return { status: "ok", data: { accepted: true } };
@@ -111,7 +128,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -129,14 +145,13 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("rejects kind mismatches before verification and leaves the ref prepared", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
 		harness.accept("outbound-token", outbound);
 
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: outbound.ref,
-				approvalToken: "outbound-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -152,14 +167,13 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("rejects authority mismatches before verification and leaves the ref prepared", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(providerPrepareInput({ actorId: "other-actor" }));
 		harness.accept("provider-token", provider);
 
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -175,7 +189,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("rejects provider scope mismatches before verification and leaves the ref prepared", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(
 			providerPrepareInput({
 				providerId: "clalit",
@@ -190,7 +204,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -206,7 +219,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 
 	it("surfaces revoked, expired, and executed refs as terminal ledger results", async () => {
 		const harness = createLedgerHarness();
-		const bridge = createBridge(harness.ledger);
+		const bridge = createBridge(harness);
 		const revoked = harness.ledger.prepare(providerPrepareInput());
 		const expired = harness.ledger.prepare(providerPrepareInput({ ttlMs: 10_000 }));
 		const replayed = harness.ledger.prepare(providerPrepareInput());
@@ -216,7 +229,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: revoked.ref,
-				approvalToken: "revoked-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -230,7 +242,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: expired.ref,
-				approvalToken: "expired-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -243,12 +254,10 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		harness.setNowMs(100_000);
 		await bridge.tc_provider_execute_write({
 			actionRef: replayed.ref,
-			approvalToken: "replayed-token",
 		});
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: replayed.ref,
-				approvalToken: "replayed-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -278,7 +287,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const jtiStore = new JtiStore(tempDir);
 		const vault = new PrefixSigningVault();
 		const bridge = createBridge(
-			harness.ledger,
+			harness,
 			{
 				providerProxy: async (request) => {
 					providerCalls.push(request);
@@ -306,7 +315,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 			await expect(
 				bridge.tc_provider_execute_write({
 					actionRef: provider.ref,
-					approvalToken: "provider-token",
 				}),
 			).resolves.toEqual({
 				ok: true,
@@ -343,7 +351,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const provider = harness.ledger.prepare(providerPrepareInput());
 		harness.accept("provider-token", provider);
 		const providerCalls: unknown[] = [];
-		const bridge = createBridge(harness.ledger, {
+		const bridge = createBridge(harness, {
 			providerProxy: async (request) => {
 				providerCalls.push(request);
 				return { status: "ok", data: { accepted: true } };
@@ -353,7 +361,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -372,7 +379,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(providerPrepareInput());
 		harness.accept("provider-token", provider);
-		const bridge = createBridge(harness.ledger, {
+		const bridge = createBridge(harness, {
 			providerProxy: async () => ({
 				status: "error",
 				errorCode: "approval_required",
@@ -384,7 +391,6 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: provider.ref,
-				approvalToken: "provider-token",
 			}),
 		).resolves.toEqual({
 			ok: false,
@@ -402,13 +408,23 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 function createLedgerHarness(): {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly verifierCalls: TelclaudeMcpSideEffectApprovalVerification[];
+	readonly resolverCalls: Array<{ readonly actionRef: string; readonly recordRef: string }>;
 	readonly accept: (token: string, record: TelclaudeMcpSideEffectRecord) => void;
 	readonly setNowMs: (nowMs: number) => void;
+	readonly nowMs: () => number;
+	readonly resolveProviderApprovalToken: Parameters<
+		typeof createTelclaudeMcpLedgerExecuteDependencies
+	>[0]["providerApprovalTokenResolver"];
 } {
 	let nowMs = 100_000;
 	let refCounter = 0;
 	const accepted = new Map<string, string>();
+	const serverApprovals = new Map<
+		string,
+		{ readonly approvalToken: string; readonly binding: string }
+	>();
 	const verifierCalls: TelclaudeMcpSideEffectApprovalVerification[] = [];
+	const resolverCalls: Array<{ readonly actionRef: string; readonly recordRef: string }> = [];
 	const ledger = createTelclaudeMcpSideEffectLedger({
 		nowMs: () => nowMs,
 		makeRef: () => `effect-execute-${++refCounter}`,
@@ -428,23 +444,57 @@ function createLedgerHarness(): {
 	return {
 		ledger,
 		verifierCalls,
+		resolverCalls,
 		accept(token, record) {
-			accepted.set(token, canonicalBinding(getTelclaudeMcpSideEffectApprovalBinding(record)));
+			const binding = canonicalBinding(getTelclaudeMcpSideEffectApprovalBinding(record));
+			accepted.set(token, binding);
+			serverApprovals.set(record.ref, { approvalToken: token, binding });
 		},
 		setNowMs(nextNowMs) {
 			nowMs = nextNowMs;
+		},
+		nowMs() {
+			return nowMs;
+		},
+		resolveProviderApprovalToken({ actionRef, record }) {
+			resolverCalls.push({ actionRef, recordRef: record.ref });
+			const stored = serverApprovals.get(actionRef);
+			if (!stored) {
+				return {
+					ok: false,
+					code: "approval_token_unavailable",
+					reason: "server-side approval token is unavailable",
+					retryable: true,
+				};
+			}
+			if (stored.binding !== canonicalBinding(getTelclaudeMcpSideEffectApprovalBinding(record))) {
+				return {
+					ok: false,
+					code: "approval_binding_mismatch",
+					reason: "server-side approval binding mismatch",
+					retryable: false,
+				};
+			}
+			serverApprovals.delete(actionRef);
+			return { ok: true, approvalToken: stored.approvalToken };
 		},
 	};
 }
 
 function createBridge(
-	ledger: TelclaudeMcpSideEffectLedger,
+	harness: ReturnType<typeof createLedgerHarness>,
 	options: Omit<Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0], "ledger"> = {},
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
 	return createTelclaudeMcpBridge(baseAuthority(authorityOverrides), {
 		...baseDependencies(),
-		...createTelclaudeMcpLedgerExecuteDependencies({ ledger, ...options }),
+		...createTelclaudeMcpLedgerExecuteDependencies({
+			ledger: harness.ledger,
+			providerApprovalTokenResolver:
+				options.providerApprovalTokenResolver ?? harness.resolveProviderApprovalToken,
+			nowMs: options.nowMs ?? harness.nowMs,
+			...options,
+		}),
 	});
 }
 
