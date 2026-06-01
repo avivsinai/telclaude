@@ -305,7 +305,12 @@ const ProReviewNativeCanarySchema = z
 	.strict();
 
 type ProReviewRequest = z.infer<typeof ProReviewRequestSchema>;
-type ProReviewNativeCanary = z.infer<typeof ProReviewNativeCanarySchema>;
+export type ProReviewNativeCanary = z.infer<typeof ProReviewNativeCanarySchema>;
+
+export type ProReviewYoetzSendValidation = {
+	readonly status: "pass" | "fail";
+	readonly detail: string;
+};
 
 export function evaluateProReviewCheck(
 	input: {
@@ -716,40 +721,13 @@ function requiredCanaryCheckFailures(canary: ProReviewNativeCanary): string[] {
 		const check = checks.get(name);
 		return check?.status === "pass" ? [] : [`${name} check is missing or not pass`];
 	});
-	if (
-		canary.nativeStatus.command !==
-		"YOETZ_AGENT=1 yoetz browser extension status --chatgpt --format json"
-	) {
-		failures.push("native status command is not the Yoetz extension status command");
-	}
-	if (
-		canary.dryCanary.command !==
-		"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --format json"
-	) {
-		failures.push("dry canary command is not the Yoetz extension dry canary command");
-	}
-	if (
-		!canary.liveCanary.command.startsWith(
-			"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --live",
-		)
-	) {
-		failures.push("live canary command is not the Yoetz extension live canary command");
-	}
-	if (!/\s--extension-instance-id\s+\S+/.test(canary.liveCanary.command)) {
-		failures.push("live canary command does not bind an extension instance");
-	} else {
-		const boundExtensionInstance = flagValue(canary.liveCanary.command, "--extension-instance-id");
-		if (boundExtensionInstance !== canary.extensionInstanceId) {
-			failures.push(
-				`live canary command binds extension instance ${String(
-					boundExtensionInstance,
-				)}, expected ${canary.extensionInstanceId}`,
-			);
-		}
-	}
-	if (!/\s--format\s+json(?:\s|$)/.test(canary.liveCanary.command)) {
-		failures.push("live canary command does not request JSON output");
-	}
+	failures.push(
+		...nativeStatusCommandFailures(canary.nativeStatus.command, canary.extensionInstanceId),
+	);
+	failures.push(...dryCanaryCommandFailures(canary.dryCanary.command, canary.extensionInstanceId));
+	failures.push(
+		...liveCanaryCommandFailures(canary.liveCanary.command, canary.extensionInstanceId),
+	);
 	for (const [label, command] of [
 		["native status", canary.nativeStatus.command],
 		["dry canary", canary.dryCanary.command],
@@ -760,6 +738,85 @@ function requiredCanaryCheckFailures(canary: ProReviewNativeCanary): string[] {
 		}
 	}
 	return failures;
+}
+
+function nativeStatusCommandFailures(
+	command: string,
+	expectedExtensionInstanceId: string,
+): string[] {
+	const allowed =
+		command.startsWith("YOETZ_AGENT=1 yoetz browser extension status --chatgpt") ||
+		command.startsWith("YOETZ_AGENT=1 yoetz browser extension reconnect --chatgpt");
+	if (!allowed) {
+		return ["native status command is not the Yoetz extension status/reconnect command"];
+	}
+	return extensionBoundJsonCommandFailures(command, "native status", expectedExtensionInstanceId, {
+		requireExtensionInstance: true,
+	});
+}
+
+function dryCanaryCommandFailures(command: string, expectedExtensionInstanceId: string): string[] {
+	if (!command.startsWith("YOETZ_AGENT=1 yoetz browser extension canary --chatgpt")) {
+		return ["dry canary command is not the Yoetz extension dry canary command"];
+	}
+	const failures = extensionBoundJsonCommandFailures(
+		command,
+		"dry canary",
+		expectedExtensionInstanceId,
+		{
+			requireExtensionInstance: true,
+		},
+	);
+	if (hasFlag(command, "--live")) {
+		failures.push("dry canary command includes --live");
+	}
+	return failures;
+}
+
+function liveCanaryCommandFailures(command: string, expectedExtensionInstanceId: string): string[] {
+	if (!command.startsWith("YOETZ_AGENT=1 yoetz browser extension canary --chatgpt")) {
+		return ["live canary command is not the Yoetz extension live canary command"];
+	}
+	const failures = extensionBoundJsonCommandFailures(
+		command,
+		"live canary",
+		expectedExtensionInstanceId,
+		{
+			requireExtensionInstance: true,
+		},
+	);
+	if (!hasFlag(command, "--live")) {
+		failures.push("live canary command does not include --live");
+	}
+	return failures;
+}
+
+function extensionBoundJsonCommandFailures(
+	command: string,
+	label: string,
+	expectedExtensionInstanceId: string,
+	options: { readonly requireExtensionInstance: boolean },
+): string[] {
+	const failures = [];
+	const boundExtensionInstance = flagValue(command, "--extension-instance-id");
+	if (!boundExtensionInstance) {
+		if (options.requireExtensionInstance) {
+			failures.push(`${label} command does not bind an extension instance`);
+		}
+	} else if (boundExtensionInstance !== expectedExtensionInstanceId) {
+		failures.push(
+			`${label} command binds extension instance ${boundExtensionInstance}, expected ${expectedExtensionInstanceId}`,
+		);
+	}
+	if (!/\s--format\s+json(?:\s|$)/.test(command)) {
+		failures.push(`${label} command does not request JSON output`);
+	}
+	return failures;
+}
+
+function hasFlag(command: string, flag: string): boolean {
+	const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`(?:^|\\s)${escapedFlag}(?:\\s|$)`).test(command);
 }
 
 function flagValue(command: string, flag: string): string | null {
@@ -777,6 +834,103 @@ function containsBlockedFallback(command: string): boolean {
 		/\bclaude\b/i,
 		/\bamq\b/i,
 	].some((pattern) => pattern.test(command));
+}
+
+export function readProReviewNativeCanary(
+	pathname = DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
+): ProReviewNativeCanary {
+	const parsed = readAndParse(pathname, ProReviewNativeCanarySchema);
+	if (!parsed.ok) {
+		throw new Error(`invalid Yoetz native canary evidence: ${parsed.error}`);
+	}
+	const failures = requiredCanaryCheckFailures(parsed.value);
+	if (failures.length > 0) {
+		throw new Error(`invalid Yoetz native canary commands: ${failures.join("; ")}`);
+	}
+	return parsed.value;
+}
+
+export function buildProReviewYoetzCommand(input: {
+	readonly canary: ProReviewNativeCanary;
+	readonly bundlePath: string;
+}): string[] {
+	return [
+		"yoetz",
+		"browser",
+		"recipe",
+		"--recipe",
+		"chatgpt",
+		"--transport",
+		"chrome-extension-native",
+		"--bundle",
+		input.bundlePath,
+		"--format",
+		"json",
+		"--var",
+		`extension_instance_id=${input.canary.extensionInstanceId}`,
+	];
+}
+
+export function validateProReviewYoetzSendOutput(input: {
+	readonly stdout: string;
+	readonly expectedExtensionInstanceId: string;
+}): ProReviewYoetzSendValidation {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(input.stdout);
+	} catch (error) {
+		return {
+			status: "fail",
+			detail: `Yoetz native send stdout is not JSON: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	if (!isRecord(parsed)) {
+		return { status: "fail", detail: "Yoetz native send stdout is not a JSON object" };
+	}
+	const failures: string[] = [];
+	if (parsed.status !== "ok") {
+		failures.push(`status is ${String(parsed.status)}`);
+	}
+	if (parsed.transport !== "chrome-extension-native") {
+		failures.push(`transport is ${String(parsed.transport)}`);
+	}
+	if (parsed.model_selection_status !== "selected") {
+		failures.push(`model_selection_status is ${String(parsed.model_selection_status)}`);
+	}
+	if (!isExtendedProModel(parsed.model_used)) {
+		failures.push(`model_used is ${String(parsed.model_used)}`);
+	}
+	if (parsed.fallback_used !== false) {
+		failures.push(`fallback_used is ${String(parsed.fallback_used)}`);
+	}
+	if (parsed.auto_paste_fallback !== false) {
+		failures.push(`auto_paste_fallback is ${String(parsed.auto_paste_fallback)}`);
+	}
+	if (Array.isArray(parsed.warnings) && parsed.warnings.length > 0) {
+		failures.push(`warnings are not empty (${parsed.warnings.length})`);
+	} else if (!Array.isArray(parsed.warnings)) {
+		failures.push("warnings is not an array");
+	}
+	const extensionInstanceId = parsed.extension_instance_id ?? parsed.extensionInstanceId;
+	if (
+		extensionInstanceId !== undefined &&
+		extensionInstanceId !== input.expectedExtensionInstanceId
+	) {
+		failures.push(
+			`extension_instance_id is ${String(
+				extensionInstanceId,
+			)}, expected ${input.expectedExtensionInstanceId}`,
+		);
+	}
+	return failures.length === 0
+		? { status: "pass", detail: "Yoetz native send reported Extended Pro without fallback" }
+		: { status: "fail", detail: failures.join("; ") };
+}
+
+function isExtendedProModel(value: unknown): boolean {
+	return value === "Extended Pro" || value === "extended-pro";
 }
 
 function readAndParse<T>(

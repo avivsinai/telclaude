@@ -3,7 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { evaluateProReviewCheck, REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
+import {
+	buildProReviewYoetzCommand,
+	evaluateProReviewCheck,
+	type ProReviewNativeCanary,
+	REQUIRED_PRO_REVIEW_FILES,
+	validateProReviewYoetzSendOutput,
+} from "../../src/hermes/pro-review.js";
 
 describe("Hermes Pro review gate", () => {
 	it("requires edge runtime authorizer files in the native Pro payload", () => {
@@ -93,6 +99,165 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
+	it("fails native canary evidence when status or dry canary commands are not extension-bound", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const baseCanary = proReviewCanary();
+			writeJson(
+				canaryPath,
+				proReviewCanary({
+					dryCanary: {
+						...(baseCanary.dryCanary as Record<string, unknown>),
+						command: "YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --format json",
+					},
+					nativeStatus: {
+						...(baseCanary.nativeStatus as Record<string, unknown>),
+						command: "YOETZ_AGENT=1 yoetz browser extension status --chatgpt --format json",
+					},
+				}),
+			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+			const detail = report.gates.find(
+				(gate) => gate.name === "nativeCanary.requiredChecks",
+			)?.detail;
+
+			expect(report.status).toBe("fail");
+			expect(detail).toContain("native status command does not bind an extension instance");
+			expect(detail).toContain("dry canary command does not bind an extension instance");
+		});
+	});
+
+	it("accepts instance-bound native reconnect and dry canary evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const baseCanary = proReviewCanary();
+			writeJson(
+				canaryPath,
+				proReviewCanary({
+					dryCanary: {
+						...(baseCanary.dryCanary as Record<string, unknown>),
+						command:
+							"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --extension-instance-id ext_test --format json",
+					},
+					nativeStatus: {
+						...(baseCanary.nativeStatus as Record<string, unknown>),
+						command:
+							"YOETZ_AGENT=1 yoetz browser extension reconnect --chatgpt --extension-instance-id ext_test --format json",
+					},
+				}),
+			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(
+				report.gates.find((gate) => gate.name === "nativeCanary.requiredChecks"),
+			).toMatchObject({
+				status: "pass",
+			});
+		});
+	});
+
+	it("fails instance-bound native reconnect and dry canary commands for the wrong extension", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const baseCanary = proReviewCanary();
+			writeJson(
+				canaryPath,
+				proReviewCanary({
+					dryCanary: {
+						...(baseCanary.dryCanary as Record<string, unknown>),
+						command:
+							"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --extension-instance-id ext_other --format json",
+					},
+					nativeStatus: {
+						...(baseCanary.nativeStatus as Record<string, unknown>),
+						command:
+							"YOETZ_AGENT=1 yoetz browser extension reconnect --chatgpt --extension-instance-id ext_other --format json",
+					},
+				}),
+			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.status).toBe("fail");
+			expect(
+				report.gates.find((gate) => gate.name === "nativeCanary.requiredChecks"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(
+					"native status command binds extension instance ext_other, expected ext_test",
+				),
+			});
+			expect(
+				report.gates.find((gate) => gate.name === "nativeCanary.requiredChecks")?.detail,
+			).toContain("dry canary command binds extension instance ext_other, expected ext_test");
+		});
+	});
+
+	it("builds final Pro review sends against the validated native extension instance", () => {
+		const command = buildProReviewYoetzCommand({
+			canary: proReviewCanary() as ProReviewNativeCanary,
+			bundlePath: "/tmp/pro-review.md",
+		});
+
+		expect(command).toEqual(
+			expect.arrayContaining([
+				"--transport",
+				"chrome-extension-native",
+				"--var",
+				"extension_instance_id=ext_test",
+			]),
+		);
+		expect(command).not.toContain("--allow-cdp-fallback");
+		expect(command).not.toContain("--cdp");
+	});
+
+	it("validates Yoetz native final-send JSON before reporting sent", () => {
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+				}),
+				expectedExtensionInstanceId: "ext_test",
+			}),
+		).toMatchObject({ status: "pass" });
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "dev-browser",
+					model_used: "gpt-5",
+					model_selection_status: "kept_current",
+					warnings: ["fallback"],
+					fallback_used: true,
+					auto_paste_fallback: true,
+					extension_instance_id: "ext_other",
+				}),
+				expectedExtensionInstanceId: "ext_test",
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("transport is dev-browser"),
+		});
+	});
+
 	it("fails approved private disclosure metadata when request status remains pending", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
 		await withCwd(tempDir, async () => {
@@ -145,7 +310,8 @@ function proReviewCanary(overrides: Record<string, unknown> = {}): Record<string
 		observedAt: "2026-05-31T17:00:00.000Z",
 		reverifiedAt: "2026-05-31T17:04:51Z",
 		dryCanary: {
-			command: "YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --format json",
+			command:
+				"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --extension-instance-id ext_test --format json",
 			exitCode: 0,
 			status: "ok",
 			transport: "chrome-extension-native",
@@ -162,7 +328,8 @@ function proReviewCanary(overrides: Record<string, unknown> = {}): Record<string
 			response: "OK",
 		},
 		nativeStatus: {
-			command: "YOETZ_AGENT=1 yoetz browser extension status --chatgpt --format json",
+			command:
+				"YOETZ_AGENT=1 yoetz browser extension reconnect --chatgpt --extension-instance-id ext_test --format json",
 			exitCode: 0,
 			status: "connected",
 			detail: "native host socket is reachable and extension hello was observed",

@@ -2247,7 +2247,8 @@ function proReviewCanary(overrides: Record<string, unknown> = {}) {
 		observedAt: "2026-05-31T17:00:00.000Z",
 		reverifiedAt: "2026-05-31T17:04:51Z",
 		dryCanary: {
-			command: "YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --format json",
+			command:
+				"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --extension-instance-id ext_test --format json",
 			exitCode: 0,
 			status: "ok",
 			transport: "chrome-extension-native",
@@ -2264,7 +2265,8 @@ function proReviewCanary(overrides: Record<string, unknown> = {}) {
 			response: "OK",
 		},
 		nativeStatus: {
-			command: "YOETZ_AGENT=1 yoetz browser extension status --chatgpt --format json",
+			command:
+				"YOETZ_AGENT=1 yoetz browser extension reconnect --chatgpt --extension-instance-id ext_test --format json",
 			exitCode: 0,
 			status: "connected",
 			detail: "native host socket is reachable and extension hello was observed",
@@ -5533,6 +5535,11 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.send.yoetzCommand).toEqual(
 				expect.arrayContaining(["--transport", "chrome-extension-native"]),
 			);
+			expect(report.send.yoetzCommand).toEqual(
+				expect.arrayContaining(["--var", "extension_instance_id=ext_test"]),
+			);
+			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
+			expect(report.send.yoetzCommand).not.toContain("--cdp");
 			expect(report.report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject(
 				{
 					status: "fail",
