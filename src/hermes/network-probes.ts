@@ -22,7 +22,10 @@ import {
 	type NetworkProbeStatus,
 } from "./network-probe-evidence-validation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
-import { POSITIVE_NETWORK_DENIAL_ERROR_CODES } from "./network-probe-semantic-proof.js";
+import {
+	POSITIVE_NETWORK_DENIAL_ERROR_CODES,
+	REQUIRED_CONTAINED_PROVIDER_DENY_NAMES,
+} from "./network-probe-semantic-proof.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
@@ -60,6 +63,7 @@ export type NetworkProbeRunnerReport = {
 
 export type NetworkProbeRunnerOptions = {
 	allowRun: boolean;
+	signEvidence?: boolean;
 	posture?: NetworkProbePosture;
 	relayUrl?: string;
 	providerUrls: string[];
@@ -76,6 +80,10 @@ type NetworkProbeWriteOptions = {
 	outPath: string;
 	evidenceDir: string;
 	allowTrackedSeedWrite?: boolean;
+};
+
+type NetworkProbeRunReportReadOptions = {
+	requireAttestation?: boolean;
 };
 
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -107,7 +115,7 @@ export async function runHermesNetworkProbes(
 	]);
 	const status = evidence.every((probe) => probe.status === "pass") ? "pass" : "fail";
 	const signedEvidence =
-		status === "pass"
+		status === "pass" && options.signEvidence !== false
 			? evidence.map((probe) => ({
 					...probe,
 					attestation: signNetworkProbeEvidenceAttestation(probe),
@@ -135,10 +143,28 @@ export function writeHermesNetworkProbeArtifacts(
 		options.allowTrackedSeedWrite === undefined
 			? {}
 			: { allowTrackedSeedWrite: options.allowTrackedSeedWrite };
-	const evidence = report.evidence.map((probe) => ({
-		...probe,
-		evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
-	}));
+	const evidence = report.evidence.map((probe) =>
+		canonicalNetworkProbeEvidence({
+			...probe,
+			evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
+		}),
+	);
+	const bundle = buildNetworkProbeBundle(evidence);
+	const promotedReport = {
+		...report,
+		bundlePath: outPath,
+		evidenceDir,
+		bundle,
+		evidence,
+	};
+	if (promotedReport.status === "pass") {
+		for (const probe of promotedReport.evidence) {
+			assertNetworkProbeEvidence(probe, {
+				expectedId: probe.id,
+				requiredPosture: promotedReport.posture,
+			});
+		}
+	}
 	assertHermesArtifactWritesAllowed(
 		[outPath, ...evidence.map((probe) => resolveHermesArtifactPath(probe.evidence_path))],
 		writeOptions,
@@ -146,20 +172,23 @@ export function writeHermesNetworkProbeArtifacts(
 	for (const probe of evidence) {
 		writeHermesJsonArtifact(resolveHermesArtifactPath(probe.evidence_path), probe, writeOptions);
 	}
-	const bundle = buildNetworkProbeBundle(evidence);
 	writeHermesJsonArtifact(outPath, bundle, writeOptions);
-	return {
-		...report,
-		bundlePath: outPath,
-		evidenceDir,
-		bundle,
-		evidence,
-	};
+	return promotedReport;
 }
 
-export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProbeRunnerReport {
+export function readHermesNetworkProbeRunReport(
+	reportPath: string,
+	options: NetworkProbeRunReportReadOptions = {},
+): NetworkProbeRunnerReport {
 	const resolvedPath = resolveHermesArtifactPath(reportPath);
 	const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8")) as unknown;
+	return assertHermesNetworkProbeRunReport(raw, options);
+}
+
+export function assertHermesNetworkProbeRunReport(
+	raw: unknown,
+	options: NetworkProbeRunReportReadOptions = {},
+): NetworkProbeRunnerReport {
 	if (!isRecord(raw)) {
 		throw new Error("network probe run report must be a JSON object");
 	}
@@ -209,6 +238,7 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 		assertNetworkProbeEvidence(evidence, {
 			expectedId: evidence.id as NetworkProbeId,
 			requiredPosture: raw.posture as NetworkProbePosture,
+			requireAttestation: options.requireAttestation,
 		});
 	}
 	for (const id of REQUIRED_CUTOVER_NETWORK_PROBE_IDS) {
@@ -217,6 +247,16 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 		}
 	}
 	return raw as NetworkProbeRunnerReport;
+}
+
+function canonicalNetworkProbeEvidence(evidence: NetworkProbeEvidence): NetworkProbeEvidence {
+	if (evidence.status === "pass" && !evidence.attestation) {
+		return {
+			...evidence,
+			attestation: signNetworkProbeEvidenceAttestation(evidence),
+		};
+	}
+	return evidence;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -255,15 +295,16 @@ function buildNetworkProbeBundle(evidence: NetworkProbeEvidence[]): ProbeBundle 
 async function runDirectProviderDenied(
 	options: NetworkProbeRunnerOptions,
 ): Promise<NetworkProbeEvidence> {
+	const providerTargets = options.providerUrls.map(parseProviderDenyTarget);
 	const attempts = [
 		...boundaryProofAttempts(options),
+		...containedInternalProviderNameAttempts(options, providerTargets),
 		...(options.providerUrls.length === 0
 			? [configurationAttempt("providerUrls", "TELCLAUDE_HERMES_NETWORK_PROVIDER_URL")]
 			: await Promise.all(
-					options.providerUrls.map((entry, index) => {
-						const target = parseProviderDenyTarget(entry, index);
-						return attemptHttpDenied(target.name, target.url, options.timeoutMs);
-					}),
+					providerTargets.map((target) =>
+						attemptHttpDenied(target.name, target.url, options.timeoutMs),
+					),
 				)),
 	];
 	return networkProbeEvidence("network.direct-provider-denied", attempts, options);
@@ -282,6 +323,44 @@ function parseProviderDenyTarget(entry: string, index: number): { name: string; 
 		name: `provider:${named[1]}`,
 		url: named[2].trim(),
 	};
+}
+
+function containedInternalProviderNameAttempts(
+	options: NetworkProbeRunnerOptions,
+	targets: Array<{ name: string; url: string }>,
+): NetworkProbeAttempt[] {
+	if ((options.posture ?? "agent-iptables") !== "contained-internal") return [];
+	const attempts: NetworkProbeAttempt[] = [];
+	const configuredNames = new Set<string>();
+	for (const target of targets) {
+		const match = target.name.match(/^provider:(.+)$/);
+		if (match && !/^\d+$/.test(match[1])) {
+			configuredNames.add(match[1]);
+			continue;
+		}
+		attempts.push({
+			name: `${target.name}.named`,
+			kind: "configuration",
+			target: redactSecrets(target.url),
+			expectation: "configured",
+			status: "fail",
+			observed: "unnamed",
+			detail: "contained-internal provider denial evidence must name each provider as name=url",
+		});
+	}
+	for (const requiredName of REQUIRED_CONTAINED_PROVIDER_DENY_NAMES) {
+		if (configuredNames.has(requiredName)) continue;
+		attempts.push({
+			name: `provider:${requiredName}.configured`,
+			kind: "configuration",
+			target: `TELCLAUDE_HERMES_NETWORK_PROVIDER_URL:${requiredName}`,
+			expectation: "configured",
+			status: "fail",
+			observed: "missing",
+			detail: `contained-internal provider denial evidence is missing provider:${requiredName}`,
+		});
+	}
+	return attempts;
 }
 
 async function runRelayControlAllowed(

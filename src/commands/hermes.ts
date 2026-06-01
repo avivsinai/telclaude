@@ -97,6 +97,7 @@ import {
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
 import {
+	assertHermesNetworkProbeRunReport,
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
@@ -242,7 +243,9 @@ type ProbeOption = JsonOption & {
 
 type NetworkProbeOption = JsonOption & {
 	allowRun?: boolean;
+	deferAttestation?: boolean;
 	fromReport?: string;
+	runReportOut?: string;
 	out: string;
 	evidenceDir: string;
 	relayUrl?: string;
@@ -815,6 +818,18 @@ function operatorRelaySigningRoundTripFailure(): string | null {
 function assertOperatorRelaySigningEnv(): void {
 	const failure = operatorRelaySigningEnvFailure();
 	if (failure) throw new Error(failure);
+}
+
+function importedNetworkProbeReportRequiresSigning(reportPath: string): boolean {
+	const raw = readJsonFile(resolveHermesArtifactPath(reportPath));
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+	const evidence = (raw as { readonly evidence?: unknown }).evidence;
+	if (!Array.isArray(evidence)) return false;
+	return evidence.some((probe) => {
+		if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return false;
+		const item = probe as { readonly status?: unknown; readonly attestation?: unknown };
+		return item.status === "pass" && item.attestation === undefined;
+	});
 }
 
 function mergeFixtureResults(
@@ -2653,8 +2668,16 @@ export function registerHermesCommand(program: Command): void {
 		.option("--json", "Emit structured JSON")
 		.option("--allow-run", "Permit real network probes and artifact writes")
 		.option(
+			"--defer-attestation",
+			"Run probes without relay signing and emit/write a machine-observed run report for later promotion",
+		)
+		.option(
 			"--from-report <path>",
 			"Promote a machine-observed network-probe run report into canonical cutover artifacts",
+		)
+		.option(
+			"--run-report-out <path>",
+			"Machine-observed network-probe run report path for --defer-attestation",
 		)
 		.option("--out <path>", "Network probe bundle JSON path", DEFAULT_NETWORK_PROBE_BUNDLE_PATH)
 		.option(
@@ -2700,12 +2723,25 @@ export function registerHermesCommand(program: Command): void {
 		.action(async (options: NetworkProbeOption) => {
 			try {
 				let report: Awaited<ReturnType<typeof runHermesNetworkProbes>>;
-				if (options.fromReport?.trim()) {
+				const fromReport = options.fromReport?.trim();
+				if (options.deferAttestation === true && !fromReport && options.allowRun !== true) {
+					throw new Error("--defer-attestation requires --allow-run.");
+				}
+				if (fromReport) {
 					if (options.allowRun === true) {
 						throw new Error("Use either --from-report or --allow-run, not both.");
 					}
+					if (options.deferAttestation === true) {
+						throw new Error("Use either --from-report or --defer-attestation, not both.");
+					}
+					const reportRequiresSigning = importedNetworkProbeReportRequiresSigning(fromReport);
+					if (reportRequiresSigning) {
+						assertOperatorRelaySigningEnv();
+					}
 					report = writeHermesNetworkProbeArtifacts(
-						readHermesNetworkProbeRunReport(options.fromReport),
+						readHermesNetworkProbeRunReport(fromReport, {
+							requireAttestation: reportRequiresSigning ? false : undefined,
+						}),
 						{
 							outPath: options.out,
 							evidenceDir: options.evidenceDir,
@@ -2713,8 +2749,12 @@ export function registerHermesCommand(program: Command): void {
 						},
 					);
 				} else {
+					if (options.allowRun === true && options.deferAttestation !== true) {
+						assertOperatorRelaySigningEnv();
+					}
 					report = await runHermesNetworkProbes({
 						allowRun: options.allowRun === true,
+						signEvidence: options.deferAttestation === true ? false : undefined,
 						posture: parseNetworkProbePosture(options.posture),
 						relayUrl:
 							options.relayUrl?.trim() ||
@@ -2742,7 +2782,18 @@ export function registerHermesCommand(program: Command): void {
 					});
 				}
 
-				if (options.allowRun === true) {
+				if (options.deferAttestation === true) {
+					if (report.status === "pass") {
+						report = assertHermesNetworkProbeRunReport(report, { requireAttestation: false });
+					}
+					if (options.runReportOut?.trim()) {
+						writeJsonArtifact(options.runReportOut, report, trackedSeedWriteOptions(options));
+						report = {
+							...report,
+							bundlePath: options.runReportOut,
+						};
+					}
+				} else if (options.allowRun === true) {
 					report = writeHermesNetworkProbeArtifacts(report, {
 						outPath: options.out,
 						evidenceDir: options.evidenceDir,

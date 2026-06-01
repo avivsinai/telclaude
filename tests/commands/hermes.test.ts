@@ -49,6 +49,7 @@ import {
 } from "../../src/hermes/inventory.js";
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
+import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
@@ -225,27 +226,12 @@ function initPinnedHermesCheckout(checkoutPath: string): void {
 
 function networkProbeRunReport() {
 	const posture = "contained-internal";
-	const evidence = requiredNetworkProbeIds.map((id) => ({
-		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
-		id,
-		posture,
-		status: "pass",
-		ran: true,
-		summary: `${id} passed`,
-		generatedAt: "2026-05-29T00:00:00.000Z",
-		evidence_path: `artifacts/hermes/network/${id.replace(/^network\./, "")}.json`,
-		attempts: [
-			{
-				name: `${id}.observed`,
-				kind: "configuration",
-				target: id,
-				expectation: "configured",
-				status: "pass",
-				observed: "configured",
-				detail: "test report observed the required network outcome",
-			},
-		],
-	}));
+	const evidence = requiredNetworkProbeIds.map((id) =>
+		passingNetworkProbeEvidence(
+			id,
+			`artifacts/hermes/network/${id.replace(/^network\./, "")}.json`,
+		),
+	);
 	return {
 		schemaVersion: "telclaude.hermes.network-probe-run.v1",
 		posture,
@@ -343,6 +329,10 @@ async function closedProbeUrl(): Promise<string> {
 		server.close((error) => (error ? reject(error) : resolve()));
 	});
 	return url;
+}
+
+function requiredProviderUrlCsv(url: string): string {
+	return ["bank", "clalit", "government", "google"].map((name) => `${name}=${url}`).join(",");
 }
 
 async function startLiveMcpAdminSocket(response: TelclaudeLiveMcpProbeTokenBundle): Promise<{
@@ -799,7 +789,7 @@ function privateTelegramVitestReport() {
 }
 
 function passingNetworkProbeEvidence(id: string, evidencePath: string) {
-	return {
+	return withNetworkProbeAttestation({
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 		id,
 		posture: "contained-internal",
@@ -811,7 +801,26 @@ function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 				: `${id} observed only expected denials`,
 		generatedAt: "2026-05-30T00:00:00.000Z",
 		evidence_path: evidencePath,
-		attempts: [passingFirewallSentinelAttempt(), passingNetworkProbeAttempt(id)],
+		attempts: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)],
+	});
+}
+
+function withNetworkProbeAttestation<
+	T extends {
+		schemaVersion: string;
+		id: string;
+		posture?: string;
+		status: string;
+		ran: boolean;
+		summary: string;
+		generatedAt: string;
+		attempts: readonly unknown[];
+	},
+>(evidence: T): T & { attestation: ReturnType<typeof signNetworkProbeEvidenceAttestation> } {
+	ensureOperatorRelayKeys();
+	return {
+		...evidence,
+		attestation: signNetworkProbeEvidenceAttestation(evidence),
 	};
 }
 
@@ -893,57 +902,70 @@ function passingFirewallSentinelAttempt() {
 	};
 }
 
-function passingNetworkProbeAttempt(id: string) {
+function passingNetworkProbeAttempts(id: string) {
 	switch (id) {
 		case "network.relay-control-allowed":
-			return {
-				name: "relay-control",
-				kind: "http",
-				target: "http://127.0.0.1/relay-control",
-				expectation: "allow",
-				status: "pass",
-				observed: "reachable",
-				detail: "allowed control reached relay with HTTP status 204",
-				durationMs: 1,
-				httpStatus: 204,
-			};
+			return [
+				{
+					name: "relay-control",
+					kind: "http",
+					target: "http://127.0.0.1/relay-control",
+					expectation: "allow",
+					status: "pass",
+					observed: "reachable",
+					detail: "allowed control reached relay with HTTP status 204",
+					durationMs: 1,
+					httpStatus: 204,
+				},
+			];
 		case "network.direct-vault-denied":
-			return {
-				name: "vault-socket",
-				kind: "unix_socket",
-				target: "/run/vault/vault.sock",
-				expectation: "deny",
-				status: "pass",
-				observed: "absent",
-				detail: "vault socket path is absent from the probe environment",
-			};
+			return [
+				{
+					name: "vault-socket",
+					kind: "unix_socket",
+					target: "/run/vault/vault.sock",
+					expectation: "deny",
+					status: "pass",
+					observed: "absent",
+					detail: "vault socket path is absent from the probe environment",
+				},
+			];
 		case "network.dns-exfil-denied":
-			return {
-				name: "dns-exfil-1",
-				kind: "dns_guard",
-				target: "http://169.254.169.254/latest/meta-data/",
-				expectation: "deny",
-				status: "pass",
-				observed: "denied",
-				detail: "target was actively denied with ECONNREFUSED",
-				durationMs: 1,
-				errorName: "TypeError",
-				errorCode: "ECONNREFUSED",
-				resolvedAddresses: [
-					{
-						address: "169.254.169.254",
-						blocked: true,
-						nonOverridable: true,
-					},
-				],
-			};
+			return [
+				{
+					name: "dns-exfil-1",
+					kind: "dns_guard",
+					target: "http://169.254.169.254/latest/meta-data/",
+					expectation: "deny",
+					status: "pass",
+					observed: "denied",
+					detail: "target was actively denied with ECONNREFUSED",
+					durationMs: 1,
+					errorName: "TypeError",
+					errorCode: "ECONNREFUSED",
+					resolvedAddresses: [
+						{
+							address: "169.254.169.254",
+							blocked: true,
+							nonOverridable: true,
+						},
+					],
+				},
+			];
 		case "network.direct-provider-denied":
-			return passingHttpDenialAttempt("provider", "https://provider.internal/probe");
-		case "network.direct-model-provider-denied":
-			return passingHttpDenialAttempt(
-				"model-provider",
-				"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+			return ["bank", "clalit", "government", "google"].map((provider) =>
+				passingHttpDenialAttempt(
+					`provider:${provider}`,
+					`https://${provider}.provider.internal/probe`,
+				),
 			);
+		case "network.direct-model-provider-denied":
+			return [
+				passingHttpDenialAttempt(
+					"model-provider",
+					"https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+				),
+			];
 		default:
 			throw new Error(`unsupported network probe fixture ${id}`);
 	}
@@ -6531,10 +6553,46 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("writes passing network-probe artifacts from observed denials and a reachable relay control", async () => {
+	it("refuses live network-probe signing without operator relay signing keys before network I/O", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-no-key-"));
+		const relay = await startProbeServer();
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				relay.url,
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ status: "fail" });
+			expect(report.summary).toContain("Missing relay response signing key");
+			expect(relay.requests.count).toBe(0);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+			await relay.close();
+		}
+	});
+
+	it("refuses canonical network-probe artifacts when DNS proof lacks a non-overridable target", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
 		try {
+			ensureOperatorRelayKeys();
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
 			const deniedProviderUrl = await closedProbeUrl();
@@ -6549,7 +6607,7 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				deniedProviderUrl,
+				requiredProviderUrlCsv(deniedProviderUrl),
 				"--model-url",
 				deniedModelUrl,
 				"--dns-url",
@@ -6565,55 +6623,38 @@ describe("Hermes wrapper foundation", () => {
 			]);
 			const report = JSON.parse(result.stdout) as {
 				status: string;
-				ran: boolean;
-				bundlePath: string;
-				evidence: Array<{
-					id: string;
-					status: string;
-					attempts: Array<{ name: string; observed: string; errorCode?: string }>;
-				}>;
-			};
-			const bundle = readJson(outPath) as {
-				probes: Array<{ id: string; status: string; evidence_path: string }>;
+				summary: string;
 			};
 
-			expect(result.exitCode, result.stdout).toBe(0);
-			expect(report).toMatchObject({ status: "pass", ran: true, bundlePath: outPath });
-			expect(bundle.probes.map((probe) => probe.id)).toEqual(requiredNetworkProbeIds);
-			expect(bundle.probes.every((probe) => probe.status === "pass")).toBe(true);
-			for (const probe of bundle.probes) {
-				expect(fs.existsSync(probe.evidence_path)).toBe(true);
-			}
-			expect(
-				report.evidence
-					.find((probe) => probe.id === "network.direct-provider-denied")
-					?.attempts.find((attempt) => attempt.name === "provider"),
-			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
-			expect(
-				report.evidence
-					.find((probe) => probe.id === "network.relay-control-allowed")
-					?.attempts.find((attempt) => attempt.name === "relay-control"),
-			).toMatchObject({ observed: "reachable" });
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ status: "fail" });
+			expect(report.summary).toContain("dns_guard lacks nonOverridable resolved address");
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
 		} finally {
 			await relay.close();
 		}
 	});
 
-	it("writes contained-internal network-probe artifacts without a firewall sentinel", async () => {
+	it("refuses deferred network-probe reports when semantic proof is not promotable", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
 		try {
+			const outPath = path.join(tempDir, "network-probes.json");
+			const evidenceDir = path.join(tempDir, "evidence");
+			const runReportPath = path.join(tempDir, "network-probes.run-report.json");
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
 				"--allow-run",
+				"--defer-attestation",
 				"--json",
 				"--posture",
 				"contained-internal",
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				await closedProbeUrl(),
+				requiredProviderUrlCsv(await closedProbeUrl()),
 				"--model-url",
 				await closedProbeUrl(),
 				"--dns-url",
@@ -6621,30 +6662,45 @@ describe("Hermes wrapper foundation", () => {
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--out",
-				path.join(tempDir, "network-probes.json"),
+				outPath,
 				"--evidence-dir",
-				path.join(tempDir, "evidence"),
+				evidenceDir,
+				"--run-report-out",
+				runReportPath,
 			]);
 			const report = JSON.parse(result.stdout) as {
-				posture: string;
 				status: string;
-				evidence: Array<{
-					posture: string;
-					attempts: Array<{ kind: string; name: string }>;
-				}>;
+				summary: string;
 			};
 
-			expect(result.exitCode, result.stdout).toBe(0);
-			expect(report).toMatchObject({ posture: "contained-internal", status: "pass" });
-			expect(report.evidence.every((probe) => probe.posture === "contained-internal")).toBe(true);
-			expect(
-				report.evidence.flatMap((probe) =>
-					probe.attempts.filter((attempt) => attempt.kind === "firewall_sentinel"),
-				),
-			).toEqual([]);
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ status: "fail" });
+			expect(report.summary).toContain("dns_guard lacks nonOverridable resolved address");
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+			expect(fs.existsSync(runReportPath)).toBe(false);
 		} finally {
 			await relay.close();
 		}
+	});
+
+	it("refuses deferred network-probe runs without --allow-run", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-deferred-"));
+		const runReportPath = path.join(tempDir, "network-probes.run-report.json");
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--defer-attestation",
+			"--json",
+			"--run-report-out",
+			runReportPath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({ status: "fail" });
+		expect(report.summary).toContain("--defer-attestation requires --allow-run");
+		expect(fs.existsSync(runReportPath)).toBe(false);
 	});
 
 	it("promotes a machine-observed network-probe run report into canonical artifacts", async () => {
@@ -6654,7 +6710,11 @@ describe("Hermes wrapper foundation", () => {
 		const evidenceDir = path.join(tempDir, "canonical");
 		const evidence = requiredNetworkProbeIds.map((id) => {
 			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
-			return passingNetworkProbeEvidence(id, evidencePath);
+			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
+				id,
+				evidencePath,
+			);
+			return unsignedEvidence;
 		});
 		const reportPath = path.join(tempDir, "run-report.json");
 		writeJson(reportPath, {
@@ -6705,11 +6765,122 @@ describe("Hermes wrapper foundation", () => {
 				id: probe.id,
 				status: "pass",
 				evidence_path: probe.evidence_path,
+				attestation: {
+					probeId: probe.id,
+					signature: { path: "/v1/hermes.network-probe.attestation" },
+				},
 			});
 		}
 		expect(promoted.evidence.map((probe) => probe.evidence_path)).toEqual(
 			bundle.probes.map((probe) => probe.evidence_path),
 		);
+	});
+
+	it("refuses to promote generic provider-denial reports as contained network proof", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-generic-"));
+		const sourceDir = path.join(tempDir, "source");
+		const outPath = path.join(tempDir, "network-probes.json");
+		const evidenceDir = path.join(tempDir, "canonical");
+		const evidence = requiredNetworkProbeIds.map((id) => {
+			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
+			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
+				id,
+				evidencePath,
+			);
+			return id === "network.direct-provider-denied"
+				? {
+						...unsignedEvidence,
+						attempts: [
+							passingFirewallSentinelAttempt(),
+							passingHttpDenialAttempt("provider", "https://provider.internal/probe"),
+						],
+					}
+				: unsignedEvidence;
+		});
+		const reportPath = path.join(tempDir, "run-report.json");
+		writeJson(reportPath, {
+			schemaVersion: "telclaude.hermes.network-probe-run.v1",
+			posture: "contained-internal",
+			status: "pass",
+			ran: true,
+			summary: "Hermes network denial probes passed",
+			bundle: { schemaVersion: 1, probes: [] },
+			evidence,
+		});
+
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--json",
+			"--from-report",
+			reportPath,
+			"--out",
+			outPath,
+			"--evidence-dir",
+			evidenceDir,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report.status).toBe("fail");
+		expect(report.summary).toContain(
+			"provider:bank contained-internal denial proof is missing or not pass",
+		);
+		expect(fs.existsSync(outPath)).toBe(false);
+		expect(fs.existsSync(evidenceDir)).toBe(false);
+	});
+
+	it("refuses unsigned network-probe report promotion without operator relay signing keys", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-no-key-"));
+		const sourceDir = path.join(tempDir, "source");
+		const outPath = path.join(tempDir, "network-probes.json");
+		const evidenceDir = path.join(tempDir, "canonical");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const evidence = requiredNetworkProbeIds.map((id) => {
+			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
+			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
+				id,
+				evidencePath,
+			);
+			return unsignedEvidence;
+		});
+		const reportPath = path.join(tempDir, "run-report.json");
+		writeJson(reportPath, {
+			schemaVersion: "telclaude.hermes.network-probe-run.v1",
+			posture: "contained-internal",
+			status: "pass",
+			ran: true,
+			summary: "Hermes network denial probes passed",
+			bundle: { schemaVersion: 1, probes: [] },
+			evidence,
+		});
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--json",
+				"--from-report",
+				reportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("fail");
+			expect(report.summary).toContain("Missing relay response signing key");
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
 	});
 
 	it("refuses network-probe report promotion when any attempt failed", async () => {
@@ -7043,6 +7214,7 @@ describe("Hermes wrapper foundation", () => {
 		const relay = await startProbeServer();
 		const provider = await startProbeServer();
 		try {
+			ensureOperatorRelayKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -7094,6 +7266,7 @@ describe("Hermes wrapper foundation", () => {
 			// Intentionally keep the socket open so the probe hits its own timeout path.
 		});
 		try {
+			ensureOperatorRelayKeys();
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -7142,6 +7315,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("fails network-probes when the allowed relay control cannot connect", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		ensureOperatorRelayKeys();
 		const result = await runHermesCommand([
 			"hermes",
 			"network-probes",

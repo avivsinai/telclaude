@@ -5,6 +5,12 @@ export const POSITIVE_NETWORK_DENIAL_ERROR_CODES = new Set([
 	"EACCES",
 	"EPERM",
 ]);
+export const REQUIRED_CONTAINED_PROVIDER_DENY_NAMES = [
+	"bank",
+	"clalit",
+	"government",
+	"google",
+] as const;
 
 export type NetworkProbeSemanticAttempt = {
 	readonly name?: string;
@@ -47,6 +53,9 @@ export function networkProbeSemanticProofFailures(
 			failures.push(
 				`network probe evidence ${evidence.id} contained-internal denial proof is missing or not pass`,
 			);
+		}
+		if (evidence.id === "network.direct-provider-denied") {
+			failures.push(...containedInternalProviderDenyFailures(evidence));
 		}
 	} else if (options.allowFirewallSentinelFallback === true) {
 		if (!hasPassingFirewallSentinel(evidence)) {
@@ -100,6 +109,31 @@ function hasContainedInternalProof(evidence: NetworkProbeSemanticEvidence): bool
 function hasPositiveContainedHttpDenial(attempt: NetworkProbeSemanticAttempt): boolean {
 	return (
 		(attempt.kind === "http" || attempt.kind === "dns_guard") &&
+		attempt.expectation === "deny" &&
+		attempt.status === "pass" &&
+		attempt.observed === "denied" &&
+		attempt.errorCode !== undefined &&
+		POSITIVE_NETWORK_DENIAL_ERROR_CODES.has(attempt.errorCode)
+	);
+}
+
+function containedInternalProviderDenyFailures(evidence: NetworkProbeSemanticEvidence): string[] {
+	const failures: string[] = [];
+	for (const provider of REQUIRED_CONTAINED_PROVIDER_DENY_NAMES) {
+		const attemptName = `provider:${provider}`;
+		const attempt = evidence.attempts.find((candidate) => candidate.name === attemptName);
+		if (!attempt || !hasPositiveContainedProviderHttpDenial(attempt)) {
+			failures.push(
+				`network probe evidence ${evidence.id} ${attemptName} contained-internal denial proof is missing or not pass`,
+			);
+		}
+	}
+	return failures;
+}
+
+function hasPositiveContainedProviderHttpDenial(attempt: NetworkProbeSemanticAttempt): boolean {
+	return (
+		attempt.kind === "http" &&
 		attempt.expectation === "deny" &&
 		attempt.status === "pass" &&
 		attempt.observed === "denied" &&
