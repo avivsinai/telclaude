@@ -355,7 +355,7 @@ function prepareProviderSideEffect(
 	const record = ledger.prepare({
 		kind: "provider",
 		actorId: request.actorId,
-		approverActorId: request.actorId,
+		approverActorId: "operator:approval-continuation-approver",
 		profileId: request.profileId,
 		domain: request.domain,
 		providerId: operation.providerId,

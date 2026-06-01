@@ -362,6 +362,7 @@ export async function runTelclaudeProviderDomainProbe(input: {
 		ledger,
 		makeApprovalRequestId: makeApprovalIds(),
 		providerProxy,
+		providerWriteApproverActorId: "operator:provider-probe-approver",
 	});
 	const executeDeps = createTelclaudeMcpLedgerExecuteDependencies({
 		ledger,
@@ -419,6 +420,8 @@ export async function runTelclaudeProviderDomainProbe(input: {
 			record.service === config.providerId &&
 			record.action === config.writeAction &&
 			record.providerAccountRef === config.expectedProviderAccountRef &&
+			record.approverActorId === "operator:provider-probe-approver" &&
+			record.approverActorId !== record.actorId &&
 			record.idempotencyKey === config.idempotencyKey &&
 			prepared.approvalRequestId === "approval-1" &&
 			providerProxyCalls.length === 1,
@@ -996,7 +999,7 @@ function prepareRecordForNegative(
 	const record = ledger.prepare({
 		kind: "provider",
 		actorId: "operator:provider-probe",
-		approverActorId: "operator:provider-probe",
+		approverActorId: "operator:provider-probe-approver",
 		profileId: "provider-probe",
 		domain: "private",
 		providerId: config.providerId,

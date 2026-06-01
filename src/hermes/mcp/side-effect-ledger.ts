@@ -313,6 +313,8 @@ export function createTelclaudeMcpSideEffectLedger(
 			if (isExpired(prepared, authorizationNowMs)) {
 				return terminalFailure("effect_expired", "side effect approval window expired", prepared);
 			}
+			const approverFailure = terminalFailureForProviderSelfApproval(prepared);
+			if (approverFailure) return approverFailure;
 
 			const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
 			let approval: TelclaudeMcpSideEffectApprovalResult;
@@ -346,6 +348,8 @@ export function createTelclaudeMcpSideEffectLedger(
 			}
 			const currentFailure = terminalFailureForRecord(current);
 			if (currentFailure) return currentFailure;
+			const approverFailure = terminalFailureForProviderSelfApproval(current);
+			if (approverFailure) return approverFailure;
 
 			const executed = deepFreeze({
 				...current,
@@ -604,6 +608,18 @@ function terminalFailureForRecord(
 		return terminalFailure("effect_revoked", "side effect was revoked", record);
 	}
 	return null;
+}
+
+function terminalFailureForProviderSelfApproval(
+	record: TelclaudeMcpSideEffectRecord,
+): TelclaudeMcpSideEffectTerminalFailure | null {
+	if (record.kind !== "provider") return null;
+	if (record.actorId !== record.approverActorId) return null;
+	return terminalFailure(
+		"provider_distinct_human_approver_required",
+		"provider side effects require approval by a distinct human approver",
+		record,
+	);
 }
 
 function retryableFailure(

@@ -258,6 +258,43 @@ describe("Telclaude MCP side-effect ledger", () => {
 		);
 	});
 
+	it("rejects provider self-approval before verifier or direct execution", async () => {
+		let verifierCalls = 0;
+		const ledger = createTestLedger({
+			verifier: async () => {
+				verifierCalls += 1;
+				return { ok: true };
+			},
+		});
+		const prepared = ledger.prepare(providerInput({ approverActorId: "telegram:123" }));
+
+		await expect(ledger.verify(prepared.ref, "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "provider_distinct_human_approver_required",
+			reason: "provider side effects require approval by a distinct human approver",
+			retryable: false,
+			record: expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		});
+		await expect(ledger.authorize(prepared.ref, "signed-token")).resolves.toEqual({
+			ok: false,
+			code: "provider_distinct_human_approver_required",
+			reason: "provider side effects require approval by a distinct human approver",
+			retryable: false,
+			record: expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		});
+		expect(ledger.markExecuted(prepared.ref, "approval-1")).toEqual({
+			ok: false,
+			code: "provider_distinct_human_approver_required",
+			reason: "provider side effects require approval by a distinct human approver",
+			retryable: false,
+			record: expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		});
+		expect(verifierCalls).toBe(0);
+		expect(ledger.get(prepared.ref)).toEqual(
+			expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		);
+	});
+
 	it("blocks revoked refs, denies expired refs before verifier, and denies unknown refs", async () => {
 		let nowMs = 10_000;
 		let verifierCalls = 0;

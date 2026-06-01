@@ -95,6 +95,38 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		);
 	});
 
+	it("rejects provider self-approval before verifier or sidecar execution", async () => {
+		const harness = createLedgerHarness();
+		const provider = harness.ledger.prepare(providerPrepareInput({ approverActorId: "operator" }));
+		harness.accept("provider-token", provider);
+		const providerCalls: unknown[] = [];
+		const bridge = createBridge(harness.ledger, {
+			providerProxy: async (request) => {
+				providerCalls.push(request);
+				return { status: "ok", data: { accepted: true } };
+			},
+			providerApprovalTokenIssuer: () => "sidecar-token",
+		});
+
+		await expect(
+			bridge.tc_provider_execute_write({
+				actionRef: provider.ref,
+				approvalToken: "provider-token",
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "provider_distinct_human_approver_required",
+			reason: "provider side effects require approval by a distinct human approver",
+			retryable: false,
+			record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		});
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(providerCalls).toEqual([]);
+		expect(harness.ledger.get(provider.ref)).toEqual(
+			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		);
+	});
+
 	it("rejects kind mismatches before verification and leaves the ref prepared", async () => {
 		const harness = createLedgerHarness();
 		const bridge = createBridge(harness.ledger);
@@ -451,7 +483,7 @@ function providerPrepareInput(
 	return {
 		kind: "provider",
 		actorId: "operator",
-		approverActorId: "operator",
+		approverActorId: "operator:provider-approver",
 		profileId: "ops",
 		domain: "private",
 		providerId: "bank",

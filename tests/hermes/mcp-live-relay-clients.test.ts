@@ -144,6 +144,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				providerProxyCalled = true;
 				return { status: "ok", data: {} };
 			},
+			providerWriteApproverActorId: "operator:provider-approver",
 		});
 
 		const providerPrepared = (await clients.providerPrepareWrite(
@@ -160,6 +161,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			kind: "provider",
 			status: "prepared",
 			actorId: "operator",
+			approverActorId: "operator:provider-approver",
 			providerId: "bank",
 			service: "bank",
 			action: "transfer.execute",
@@ -186,6 +188,27 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			mediaRefs: ["att_menu"],
 			conversationRef: "whatsapp:+15551234567",
 		});
+	});
+
+	it("fails provider write preparation closed without a distinct relay-side approver", async () => {
+		const missingApproverLedger = testLedger();
+		const missingApproverClients = createTelclaudeLiveMcpRelayClients({
+			ledger: missingApproverLedger,
+		});
+		await expect(missingApproverClients.providerPrepareWrite(providerPrepare())).rejects.toThrow(
+			"provider write approval denied: providerWriteApproverActorId is not configured",
+		);
+		expect(missingApproverLedger.list()).toEqual([]);
+
+		const selfApproverLedger = testLedger();
+		const selfApproverClients = createTelclaudeLiveMcpRelayClients({
+			ledger: selfApproverLedger,
+			providerWriteApproverActorId: "operator",
+		});
+		await expect(selfApproverClients.providerPrepareWrite(providerPrepare())).rejects.toThrow(
+			"provider write approval denied: providerWriteApproverActorId must differ from actorId",
+		);
+		expect(selfApproverLedger.list()).toEqual([]);
 	});
 
 	it("returns attachment metadata only and validates refs against the authority actor", async () => {
@@ -273,6 +296,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				createTelclaudeLiveMcpRelayClients({
 					ledger,
 					makeApprovalRequestId: () => "runtime-approval",
+					providerWriteApproverActorId: "operator:provider-approver",
 				}),
 		});
 		try {
