@@ -25,6 +25,15 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./side-effect-ledger.js";
+import {
+	SIDE_EFFECT_LEDGER_ATTESTATION_RUNNER,
+	SIDE_EFFECT_LEDGER_ATTESTATION_SCHEMA_VERSION,
+	SIDE_EFFECT_LEDGER_ATTESTATION_SOURCE,
+	type SideEffectLedgerAttestation,
+	sideEffectLedgerAttestationFieldsForEvidence,
+	sideEffectLedgerAttestationSignatureFailure,
+	signSideEffectLedgerAttestation,
+} from "./side-effect-ledger-attestation.js";
 
 export const DEFAULT_SIDE_EFFECT_LEDGER_EVIDENCE_PATH =
 	"artifacts/hermes/probes/sideeffect-ledger.json";
@@ -34,12 +43,44 @@ export const SIDE_EFFECT_LEDGER_PROBE_SOURCE = "telclaude-mcp-side-effect-ledger
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const HexSha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 
 const SideEffectLedgerProbeCheckSchema = z
 	.object({
 		name: NonEmptyString,
 		status: z.enum(["pass", "fail"]),
 		detail: NonEmptyString,
+	})
+	.strict();
+
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: NonEmptyString,
+		timestamp: NonEmptyString,
+		nonce: NonEmptyString,
+		method: NonEmptyString,
+		path: NonEmptyString,
+		requestBodySha256: HexSha256Digest,
+		responseBodySha256: HexSha256Digest,
+		signature: NonEmptyString,
+	})
+	.strict();
+
+const SideEffectLedgerAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(SIDE_EFFECT_LEDGER_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(SIDE_EFFECT_LEDGER_ATTESTATION_SOURCE),
+		runner: z.literal(SIDE_EFFECT_LEDGER_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: z.literal(SIDE_EFFECT_LEDGER_PROBE_SCHEMA_VERSION),
+		probeId: z.literal("sideeffect.ledger"),
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		observedAt: NonEmptyString,
+		checksSha256: Sha256Digest,
+		observationsSha256: Sha256Digest,
+		evidenceSha256: Sha256Digest,
+		signature: InternalResponseProofSchema,
 	})
 	.strict();
 
@@ -68,6 +109,7 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 				providerProxyCallCount: z.number().int().nonnegative(),
 			})
 			.strict(),
+		runnerAttestation: SideEffectLedgerAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -113,6 +155,8 @@ export function sideEffectLedgerProbeEvidenceFailure(
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
 	if (data.probeId !== "sideeffect.ledger") failures.push(`probeId is ${data.probeId}`);
+	const attestationFailure = sideEffectLedgerRunnerAttestationFailure(data);
+	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
 		failures.push(`duplicate check ${duplicate}`);
@@ -152,6 +196,33 @@ export function sideEffectLedgerProbeEvidenceFailure(
 		}
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function sideEffectLedgerRunnerAttestationFailure(
+	evidence: SideEffectLedgerProbeEvidence,
+): string | null {
+	const attestation = evidence.runnerAttestation as SideEffectLedgerAttestation | undefined;
+	if (!attestation) return "runnerAttestation is missing";
+	const signatureFailure = sideEffectLedgerAttestationSignatureFailure(attestation, {
+		allowStale: true,
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = sideEffectLedgerAttestationFieldsForEvidence(evidence);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"observedAt",
+		"checksSha256",
+		"observationsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			return `runnerAttestation ${field} mismatch`;
+		}
+	}
+	return null;
 }
 
 async function runProbe(input: {
@@ -468,7 +539,7 @@ async function runProbe(input: {
 
 	const status =
 		checks.length > 0 && checks.every((check) => check.status === "pass") ? "pass" : "fail";
-	return {
+	const evidence: Omit<SideEffectLedgerProbeEvidence, "runnerAttestation"> = {
 		schemaVersion: SIDE_EFFECT_LEDGER_PROBE_SCHEMA_VERSION,
 		probeId: "sideeffect.ledger",
 		status,
@@ -482,6 +553,14 @@ async function runProbe(input: {
 		checks,
 		observations,
 	};
+	return status === "pass"
+		? {
+				...evidence,
+				runnerAttestation: signSideEffectLedgerAttestation(
+					evidence,
+				) as SideEffectLedgerProbeEvidence["runnerAttestation"],
+			}
+		: evidence;
 }
 
 function createProbeVault(): TelclaudeMcpSideEffectApprovalSigner &
