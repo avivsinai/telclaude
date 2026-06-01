@@ -295,6 +295,8 @@ type FixtureResultOption = JsonOption & {
 	includeEdgeAdapter?: boolean;
 	includeProviderDomain?: boolean;
 	includeWorkflow?: boolean;
+	onlyWorkflow?: boolean;
+	skipPrivateTelegram?: boolean;
 	mergeExisting?: boolean;
 	out: string;
 	evidenceDir: string;
@@ -1472,22 +1474,49 @@ export function registerHermesCommand(program: Command): void {
 			"--include-workflow",
 			"Generate workflow fixture evidence from workflow probe artifacts",
 		)
+		.option(
+			"--only-workflow",
+			"Refresh only workflow fixture evidence and preserve existing fixture results",
+		)
+		.option(
+			"--skip-private-telegram",
+			"Do not rerun private Telegram fixtures; use with --merge-existing for targeted refreshes",
+		)
 		.option("--merge-existing", "Merge generated fixture evidence into the existing output bundle")
 		.option("--observed-at <iso>", "Observed timestamp for generated evidence")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: FixtureResultOption) => {
 			try {
 				const observedAt = options.observedAt ?? new Date().toISOString();
-				assertPrivateTelegramFixtureWritePreconditions(options);
-				const invocation = options.testReport
+				const includeWorkflow = options.includeWorkflow === true || options.onlyWorkflow === true;
+				const skipPrivateTelegram =
+					options.skipPrivateTelegram === true || options.onlyWorkflow === true;
+				if (skipPrivateTelegram && options.testReport) {
+					throw new Error("Use either --skip-private-telegram or --test-report, not both.");
+				}
+				if (skipPrivateTelegram && options.write === true && options.mergeExisting !== true) {
+					throw new Error("--skip-private-telegram writes require --merge-existing.");
+				}
+				const resolvedOutPath = resolveHermesArtifactPath(options.out);
+				if (skipPrivateTelegram && options.write === true && !fs.existsSync(resolvedOutPath)) {
+					throw new Error(
+						"--skip-private-telegram writes require an existing --out fixture results bundle.",
+					);
+				}
+				const bundle = skipPrivateTelegram
 					? undefined
-					: runPrivateTelegramFixtureVitest(options.reportOut);
-				const bundle = buildPrivateTelegramFixtureResultBundle({
-					testReportPath: options.testReport ?? options.reportOut,
-					evidenceDir: options.evidenceDir,
-					observedAt,
-					invocation,
-				});
+					: (() => {
+							assertPrivateTelegramFixtureWritePreconditions(options);
+							const invocation = options.testReport
+								? undefined
+								: runPrivateTelegramFixtureVitest(options.reportOut);
+							return buildPrivateTelegramFixtureResultBundle({
+								testReportPath: options.testReport ?? options.reportOut,
+								evidenceDir: options.evidenceDir,
+								observedAt,
+								invocation,
+							});
+						})();
 				const providerDomainBundle =
 					options.includeProviderDomain === true
 						? buildProviderDomainFixtureEvidenceBundle({
@@ -1503,7 +1532,7 @@ export function registerHermesCommand(program: Command): void {
 							})
 						: undefined;
 				const workflowBundle =
-					options.includeWorkflow === true
+					includeWorkflow === true
 						? buildHermesWorkflowFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,
@@ -1524,15 +1553,15 @@ export function registerHermesCommand(program: Command): void {
 							})
 						: undefined;
 				const existingResults =
-					options.mergeExisting === true && fs.existsSync(resolveHermesArtifactPath(options.out))
+					options.mergeExisting === true && fs.existsSync(resolvedOutPath)
 						? ((
-								readJsonFile(resolveHermesArtifactPath(options.out)) as {
+								readJsonFile(resolvedOutPath) as {
 									results?: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>;
 								}
 							).results ?? [])
 						: [];
 				const generatedResults = [
-					...bundle.results,
+					...(bundle?.results ?? []),
 					...(providerDomainBundle?.results ?? []),
 					...(googleProviderBundle?.results ?? []),
 					...(workflowBundle?.results ?? []),
@@ -1548,7 +1577,7 @@ export function registerHermesCommand(program: Command): void {
 						? mergeFixtureResults(existingResults, generatedResults)
 						: generatedResults;
 				const evidence = [
-					...bundle.evidence,
+					...(bundle?.evidence ?? []),
 					...(providerDomainBundle?.evidence ?? []),
 					...(googleProviderBundle?.evidence ?? []),
 					...(workflowBundle?.evidence ?? []),
@@ -1570,7 +1599,7 @@ export function registerHermesCommand(program: Command): void {
 					writeJsonArtifact(
 						options.out,
 						{
-							schemaVersion: bundle.schemaVersion,
+							schemaVersion: bundle?.schemaVersion ?? 1,
 							results,
 						},
 						trackedSeedWriteOptions(options),
@@ -2580,6 +2609,25 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (isHermesWorkflowSurfaceId(surface)) {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						const report = {
+							schemaVersion: "telclaude.hermes.probe-report.v1",
+							status: "input_error",
+							surface,
+							detail: relaySigningFailure,
+						};
+						if (options.json) {
+							printJson(report);
+						} else {
+							console.log(`Hermes probe ${surface}: input_error`);
+							console.log(`- FAIL surface: ${relaySigningFailure}`);
+						}
+						process.exitCode = 1;
+						return;
+					}
+				}
 				const report = runHermesWorkflowProbe({
 					surfaceId: surface,
 					allowRun: options.allowRun === true,

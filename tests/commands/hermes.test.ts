@@ -6026,6 +6026,136 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("refreshes workflow fixtures independently of private Telegram fixture execution", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-only-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "fixtures");
+		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		ensureOperatorRelayKeys();
+
+		writeJson(outPath, {
+			schemaVersion: 1,
+			results: [
+				{
+					id: "fixture.private.telegram.basic",
+					status: "pass",
+					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+				},
+			],
+		});
+
+		try {
+			await withCwd(tempDir, async () => {
+				writeWorkflowProbeArtifact(
+					"workflow.cron",
+					path.join(tempDir, "artifacts/hermes/probes/workflow-cron.json"),
+				);
+				writeWorkflowProbeArtifact(
+					"workflow.longrun",
+					path.join(tempDir, "artifacts/hermes/probes/workflow-longrun.json"),
+				);
+				delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+
+				const result = await runHermesCommand([
+					"hermes",
+					"fixtures",
+					"--write",
+					"--json",
+					"--merge-existing",
+					"--only-workflow",
+					"--report-out",
+					reportOut,
+					"--out",
+					outPath,
+					"--evidence-dir",
+					evidenceDir,
+					"--observed-at",
+					"2026-06-01T09:10:00.000Z",
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					results: Array<{ id: string; status: string; evidence_path: string }>;
+				};
+				const written = readJson(outPath) as {
+					results: Array<{ id: string; status: string; evidence_path: string }>;
+				};
+
+				expect(result.exitCode, result.stdout).toBe(0);
+				expect(report.status).toBe("pass");
+				expect(report.results).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
+						expect.objectContaining({ id: "fixture.cron.background.delivery", status: "pass" }),
+						expect.objectContaining({ id: "fixture.cron.duplicate-deny", status: "pass" }),
+						expect.objectContaining({ id: "fixture.longrun.approval-resume", status: "pass" }),
+						expect.objectContaining({ id: "fixture.longrun.stale-resume-deny", status: "pass" }),
+					]),
+				);
+				expect(written.results).toEqual(report.results);
+				expect(fs.existsSync(reportOut)).toBe(false);
+				for (const fixture of report.results.filter(
+					(item) => item.id.startsWith("fixture.cron.") || item.id.startsWith("fixture.longrun."),
+				)) {
+					expect(fs.existsSync(fixture.evidence_path)).toBe(true);
+				}
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refuses workflow-only fixture writes without merge-existing", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-no-merge-"));
+		const result = await runHermesCommand([
+			"hermes",
+			"fixtures",
+			"--write",
+			"--json",
+			"--only-workflow",
+			"--out",
+			path.join(tempDir, "fixture-results.json"),
+			"--evidence-dir",
+			path.join(tempDir, "fixtures"),
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({
+			status: "input_error",
+			detail: "--skip-private-telegram writes require --merge-existing.",
+		});
+	});
+
+	it("refuses workflow-only fixture writes without an existing output bundle", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-missing-out-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "fixtures");
+		const result = await runHermesCommand([
+			"hermes",
+			"fixtures",
+			"--write",
+			"--json",
+			"--merge-existing",
+			"--only-workflow",
+			"--out",
+			outPath,
+			"--evidence-dir",
+			evidenceDir,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({
+			status: "input_error",
+			detail: "--skip-private-telegram writes require an existing --out fixture results bundle.",
+		});
+		expect(fs.existsSync(outPath)).toBe(false);
+		expect(fs.existsSync(evidenceDir)).toBe(false);
+	});
+
 	it("refuses to write imported private Telegram fixture reports", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-imported-"));
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
@@ -8159,6 +8289,35 @@ sleep 5
 		});
 		expect(artifact.checks.every((check) => check.status === "pass")).toBe(true);
 		expect(Object.keys(artifact.observations).length).toBeGreaterThan(0);
+	});
+
+	it("refuses workflow probe writes without the operator relay signing key", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-missing-key-"));
+		const evidencePath = path.join(tempDir, "workflow-cron.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"probe",
+				"workflow.cron",
+				"--allow-run",
+				"--json",
+				"--out",
+				evidencePath,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({
+				status: "input_error",
+				detail:
+					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+			});
+			expect(fs.existsSync(evidencePath)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+		}
 	});
 
 	it.each(
