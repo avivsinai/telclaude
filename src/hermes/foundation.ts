@@ -25,6 +25,10 @@ import {
 	providerDomainFixtureEvidenceFailure,
 	providerDomainProbeEvidenceFailure,
 } from "./provider-domain-probes.js";
+import {
+	googleProviderFixtureEvidenceFailure,
+	googleProviderProbeEvidenceFailure,
+} from "./provider-google-probe.js";
 import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
@@ -432,6 +436,10 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"providers.google": [
 		"src/hermes/mcp/bridge.ts",
 		"src/hermes/mcp/ledger-execute.ts",
+		"src/hermes/mcp/live-relay-clients.ts",
+		"src/hermes/mcp/provider-routing.ts",
+		"src/hermes/mcp/provider-sidecar-token.ts",
+		"src/hermes/provider-google-probe.ts",
 		"src/google-services/server.ts",
 		"src/google-services/approval.ts",
 		"src/google-services/types.ts",
@@ -1716,6 +1724,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "providers.google") {
+			return [collectGoogleProviderProbeEvidence(probe)];
 		}
 		if (isBrowserComputerBrokerSurfaceId(probe.surface_id)) {
 			return [collectBrowserComputerBrokerProbeEvidence(probe)];
@@ -3619,6 +3630,8 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (privateTelegramFailure) return privateTelegramFailure;
 	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
 	if (providerDomainFailure) return providerDomainFailure;
+	const googleProviderFailure = googleProviderFixtureEvidenceFailure(result.id, parsed.data);
+	if (googleProviderFailure) return googleProviderFailure;
 	const browserComputerFailure = browserComputerBrokerFixtureEvidenceFailure(result.id, evidence);
 	if (browserComputerFailure) return browserComputerFailure;
 	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
@@ -5044,6 +5057,42 @@ function collectProviderReleasePolicyProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider release-policy controls`,
+	};
+}
+
+function collectGoogleProviderProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = googleProviderProbeEvidenceFailure(evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed Google provider custody and approval controls`,
 	};
 }
 
