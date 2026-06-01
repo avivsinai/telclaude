@@ -33,6 +33,7 @@ import {
 	runTelclaudeBrowserComputerBrokerProbe,
 } from "../hermes/browser-computer-broker-probes.js";
 import {
+	buildEdgeAdapterFixtureEvidenceBundle,
 	buildEdgeAdapterProbeEvidence,
 	isEdgeAdapterFeatureSurfaceId,
 } from "../hermes/edge-adapter-probes.js";
@@ -277,6 +278,7 @@ type ProofBundleOption = JsonOption &
 type FixtureResultOption = JsonOption & {
 	write?: boolean;
 	includeBrowserComputer?: boolean;
+	includeEdgeAdapter?: boolean;
 	includeProviderDomain?: boolean;
 	includeWorkflow?: boolean;
 	mergeExisting?: boolean;
@@ -1194,6 +1196,10 @@ export function registerHermesCommand(program: Command): void {
 			"Generate browser/computer broker fixture evidence from broker probe artifacts",
 		)
 		.option(
+			"--include-edge-adapter",
+			"Generate public/household edge fixture evidence from edge probe artifacts",
+		)
+		.option(
 			"--include-workflow",
 			"Generate workflow fixture evidence from workflow probe artifacts",
 		)
@@ -1240,6 +1246,13 @@ export function registerHermesCommand(program: Command): void {
 								observedAt,
 							})
 						: undefined;
+				const edgeAdapterBundle =
+					options.includeEdgeAdapter === true
+						? buildEdgeAdapterFixtureEvidenceBundle({
+								evidenceDir: options.evidenceDir,
+								observedAt,
+							})
+						: undefined;
 				const existingResults =
 					options.mergeExisting === true && fs.existsSync(resolveHermesArtifactPath(options.out))
 						? ((
@@ -1252,8 +1265,9 @@ export function registerHermesCommand(program: Command): void {
 					...bundle.results,
 					...(providerDomainBundle?.results ?? []),
 					...(googleProviderBundle?.results ?? []),
-					...(browserComputerBundle?.results ?? []),
 					...(workflowBundle?.results ?? []),
+					...(browserComputerBundle?.results ?? []),
+					...(edgeAdapterBundle?.results ?? []),
 				] as Array<{
 					id: string;
 					status: "pass" | "fail";
@@ -1267,8 +1281,9 @@ export function registerHermesCommand(program: Command): void {
 					...bundle.evidence,
 					...(providerDomainBundle?.evidence ?? []),
 					...(googleProviderBundle?.evidence ?? []),
-					...(browserComputerBundle?.evidence ?? []),
 					...(workflowBundle?.evidence ?? []),
+					...(browserComputerBundle?.evidence ?? []),
+					...(edgeAdapterBundle?.evidence ?? []),
 				];
 				if (options.write) {
 					if (options.testReport) {

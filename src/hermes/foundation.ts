@@ -15,6 +15,8 @@ import {
 	isBrowserComputerBrokerSurfaceId,
 } from "./browser-computer-broker-probes.js";
 import {
+	EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
+	edgeAdapterFixtureEvidenceFailure,
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
@@ -482,10 +484,6 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"docker/docker-compose.hermes.yml",
 	],
 };
-const EDGE_ADAPTER_CONTRACT_UNIT_FILES = new Set([
-	"src/hermes/edge-adapter-contract.ts",
-	"src/hermes/edge-adapter-probes.ts",
-]);
 const P0_PARITY_DIGEST_FILES = [
 	"docs/hermes/cutover-scope.json",
 	"docs/hermes/feature-probes.json",
@@ -3632,6 +3630,8 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (providerDomainFailure) return providerDomainFailure;
 	const googleProviderFailure = googleProviderFixtureEvidenceFailure(result.id, parsed.data);
 	if (googleProviderFailure) return googleProviderFailure;
+	const edgeAdapterFailure = edgeAdapterFixtureEvidenceFailure(result.id, evidence);
+	if (edgeAdapterFailure) return edgeAdapterFailure;
 	const browserComputerFailure = browserComputerBrokerFixtureEvidenceFailure(result.id, evidence);
 	if (browserComputerFailure) return browserComputerFailure;
 	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
@@ -4883,16 +4883,16 @@ function collectEdgeAdapterProbeEvidence(
 			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
 		);
 	}
+	const schemaOnlyFailure = schemaOnlyEdgeAdapterEnforcementFailure(probe.surface_id, evidence);
+	if (schemaOnlyFailure) {
+		return featureProbeEvidenceFailure(probe, schemaOnlyFailure);
+	}
 	const failure = edgeAdapterProbeEvidenceFailure(probe.surface_id, evidence);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,
 			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
 		);
-	}
-	const schemaOnlyFailure = schemaOnlyEdgeAdapterEnforcementFailure(probe.surface_id);
-	if (schemaOnlyFailure) {
-		return featureProbeEvidenceFailure(probe, schemaOnlyFailure);
 	}
 	return {
 		surface_id: probe.surface_id,
@@ -4902,12 +4902,20 @@ function collectEdgeAdapterProbeEvidence(
 	};
 }
 
-function schemaOnlyEdgeAdapterEnforcementFailure(surfaceId: string): string | null {
-	const signatureFiles = ADAPTER_SIGNATURE_FILES[surfaceId] ?? [];
-	if (signatureFiles.length === 0) return null;
-	const schemaOnly = signatureFiles.every((file) => EDGE_ADAPTER_CONTRACT_UNIT_FILES.has(file));
+function schemaOnlyEdgeAdapterEnforcementFailure(
+	surfaceId: string,
+	evidence: unknown,
+): string | null {
+	if (!isEdgeAdapterFeatureSurfaceId(surfaceId)) return null;
+	if (!isPlainRecord(evidence)) return null;
+	const schemaOnly =
+		evidence.source === EDGE_ADAPTER_CONTRACT_PROBE_SOURCE || !("runtime" in evidence);
 	if (!schemaOnly) return null;
-	return `feature probe evidence ${surfaceId} is schema-only edge contract-unit evidence; runtime consumer/authorizer enforcement evidence is required before cutover pass`;
+	return `feature probe evidence ${surfaceId} runtime harness evidence is missing; schema-only edge contract-unit evidence cannot prove runtime consumer/authorizer enforcement before cutover pass`;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function collectSideEffectLedgerProbeEvidence(

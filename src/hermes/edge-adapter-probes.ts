@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import {
 	ActorRefSchema,
@@ -20,6 +23,11 @@ import {
 	createTelclaudeEdgeRuntime,
 	isTelclaudeEdgeRuntimeDeniedError,
 } from "./edge-adapter-runtime.js";
+import {
+	DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH,
+	ProviderReleasePolicyProbeEvidenceSchema,
+	providerReleasePolicyProbeEvidenceFailure,
+} from "./provider-release-policy-probe.js";
 
 const NonEmptyString = z.string().trim().min(1);
 
@@ -27,6 +35,11 @@ export const EDGE_ADAPTER_PROBE_SCHEMA_VERSION = "telclaude.hermes.edge-adapter-
 export const EDGE_ADAPTER_CONTRACT_PROBE_SOURCE = "telclaude-edge-contract-unit";
 export const EDGE_ADAPTER_RUNTIME_PROBE_SOURCE = "telclaude-edge-runtime-harness";
 export const EDGE_ADAPTER_PROBE_SOURCE = EDGE_ADAPTER_CONTRACT_PROBE_SOURCE;
+export const EDGE_ADAPTER_FIXTURE_EVIDENCE_SCHEMA_VERSION =
+	"telclaude.hermes.edge-adapter-fixture-evidence.v1";
+export const EDGE_ADAPTER_FIXTURE_EVIDENCE_SOURCE = "telclaude-edge-runtime-fixture-generator";
+export const EDGE_ADAPTER_FIXTURE_EVIDENCE_RUNNER = "telclaude-edge-runtime-fixture-harness";
+export const DEFAULT_EDGE_ADAPTER_FIXTURE_EVIDENCE_DIR = "artifacts/hermes/fixtures";
 export const EDGE_ADAPTER_FEATURE_SURFACE_IDS = [
 	"edge.whatsapp",
 	"edge.email",
@@ -55,6 +68,19 @@ const EDGE_ADAPTER_RUNTIME_SURFACE_SET = new Set<string>(EDGE_ADAPTER_RUNTIME_SU
 export type EdgeAdapterFeatureSurfaceId = (typeof EDGE_ADAPTER_FEATURE_SURFACE_IDS)[number];
 
 const EdgeAdapterFeatureSurfaceIdSchema = z.enum(EDGE_ADAPTER_FEATURE_SURFACE_IDS);
+type EdgeFixtureProbeId = EdgeAdapterFeatureSurfaceId | "providers.release-policy";
+
+export const DEFAULT_EDGE_ADAPTER_EVIDENCE_PATHS: Record<EdgeAdapterFeatureSurfaceId, string> = {
+	"edge.whatsapp": "artifacts/hermes/probes/edge-whatsapp.json",
+	"edge.email": "artifacts/hermes/probes/edge-email.json",
+	"edge.agentmail": "artifacts/hermes/probes/edge-agentmail.json",
+	"edge.social": "artifacts/hermes/probes/edge-social.json",
+	"identity.migration": "artifacts/hermes/probes/identity-migration.json",
+	"household.scopes": "artifacts/hermes/probes/household-scopes.json",
+	"attachment.quarantine": "artifacts/hermes/probes/attachment-quarantine.json",
+	"outbound.policy": "artifacts/hermes/probes/outbound-policy.json",
+	"public.social.isolation": "artifacts/hermes/probes/public-social-isolation.json",
+};
 
 type EdgeChannel = z.infer<typeof EdgeChannelSchema>;
 type TrustDomain = z.infer<typeof TrustDomainSchema>;
@@ -111,6 +137,17 @@ type EdgeSurfaceRequirement = {
 	readonly channels: readonly EdgeChannel[];
 	readonly trustDomains: readonly TrustDomain[];
 	readonly requiredControls: readonly EdgeControlName[];
+};
+
+type EdgeFixtureProbeRequirement = {
+	readonly probeId: EdgeFixtureProbeId;
+	readonly requiredChecks: readonly string[];
+};
+
+type EdgeFixtureRequirement = {
+	readonly id: string;
+	readonly fixtureClass: "positive" | "negative";
+	readonly requiredProbes: readonly EdgeFixtureProbeRequirement[];
 };
 
 const BASE_EDGE_CONTROLS = [
@@ -234,6 +271,262 @@ const EDGE_SURFACE_REQUIREMENTS: Record<EdgeAdapterFeatureSurfaceId, EdgeSurface
 	},
 };
 
+const EDGE_FIXTURE_REQUIREMENTS = [
+	{
+		id: "fixture.public.whatsapp.basic",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.whatsapp",
+				requiredChecks: [
+					"contract.inbound.sanitized",
+					"contract.outbound.prepared-owned",
+					"contract.delivery.receipt-ref-only",
+					"credentials.raw-denied",
+					"attachment.ref-only",
+				],
+			},
+			{
+				probeId: "outbound.policy",
+				requiredChecks: ["outbound.recipient-body-bound", "outbound.replay-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.whatsapp.benign",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.whatsapp",
+				requiredChecks: ["contract.inbound.sanitized", "attachment.ref-only"],
+			},
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.scoped-benign-allowed", "household.strong-link-required"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.whatsapp.unknown-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "edge.whatsapp",
+				requiredChecks: ["whatsapp.unknown-sender-denied", "whatsapp.direct-bridge-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.whatsapp.provider-unscoped-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.strong-link-required", "household.number-only-provider-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.email.basic",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.email",
+				requiredChecks: [
+					"contract.inbound.sanitized",
+					"contract.outbound.prepared-owned",
+					"contract.delivery.receipt-ref-only",
+					"credentials.raw-denied",
+				],
+			},
+			{
+				probeId: "outbound.policy",
+				requiredChecks: ["outbound.recipient-body-bound", "outbound.replay-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.email.scoped",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.email",
+				requiredChecks: ["contract.inbound.sanitized", "attachment.ref-only"],
+			},
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.scoped-benign-allowed", "household.strong-link-required"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.email.wrong-thread-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "edge.email",
+				requiredChecks: ["email.wrong-thread-denied", "email.direct-mailbox-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.email.private-memory-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.private-memory-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.agentmail.basic",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.agentmail",
+				requiredChecks: [
+					"contract.inbound.sanitized",
+					"contract.outbound.prepared-owned",
+					"agentmail.unauthorized-sender-denied",
+				],
+			},
+			{
+				probeId: "outbound.policy",
+				requiredChecks: ["outbound.recipient-body-bound"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.agentmail.direct-key-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "edge.agentmail",
+				requiredChecks: ["agentmail.direct-key-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.social.timeline",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.social",
+				requiredChecks: ["contract.inbound.sanitized", "social.unapproved-posting-denied"],
+			},
+			{
+				probeId: "public.social.isolation",
+				requiredChecks: ["public-social.separate-profile"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.social.reply",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "edge.social",
+				requiredChecks: ["social.unapproved-posting-denied", "social.budget-denied"],
+			},
+			{
+				probeId: "outbound.policy",
+				requiredChecks: ["outbound.recipient-body-bound", "outbound.replay-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.public.social.private-leak-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "public.social.isolation",
+				requiredChecks: [
+					"public-social.private-workspace-denied",
+					"public-social.private-memory-denied",
+					"public-social.provider-scope-denied",
+				],
+			},
+		],
+	},
+	{
+		id: "fixture.public.social.budget-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "edge.social",
+				requiredChecks: ["social.budget-denied"],
+			},
+			{
+				probeId: "public.social.isolation",
+				requiredChecks: ["public-social.budget-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.provider.strong-link-read",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.strong-link-required"],
+			},
+			{
+				probeId: "providers.release-policy",
+				requiredChecks: [
+					"provider.release.allowed-read-audited",
+					"provider.release.raw-secret-not-observed",
+				],
+			},
+		],
+	},
+	{
+		id: "fixture.household.private-memory-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.private-memory-denied"],
+			},
+			{
+				probeId: "providers.release-policy",
+				requiredChecks: ["provider.release.private-memory-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.provider-number-only-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.strong-link-required", "household.number-only-provider-denied"],
+			},
+			{
+				probeId: "providers.release-policy",
+				requiredChecks: ["provider.release.missing-strong-link-denied"],
+			},
+		],
+	},
+	{
+		id: "fixture.household.cross-recipient-deny",
+		fixtureClass: "negative",
+		requiredProbes: [
+			{
+				probeId: "household.scopes",
+				requiredChecks: ["household.cross-recipient-denied"],
+			},
+			{
+				probeId: "providers.release-policy",
+				requiredChecks: [
+					"provider.release.wrong-actor-denied",
+					"provider.release.wrong-recipient-denied",
+				],
+			},
+		],
+	},
+] as const satisfies readonly EdgeFixtureRequirement[];
+
 const EdgeProbeControlSchema = z
 	.object({
 		name: NonEmptyString,
@@ -299,6 +592,52 @@ export const EdgeAdapterProbeEvidenceSchema = z
 	.strict();
 
 export type EdgeAdapterProbeEvidence = z.infer<typeof EdgeAdapterProbeEvidenceSchema>;
+
+const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const EdgeFixtureProbeArtifactSchema = z
+	.object({
+		probeId: NonEmptyString,
+		evidencePath: NonEmptyString,
+		evidenceSha256: Sha256DigestSchema,
+		requiredChecks: z.array(NonEmptyString).min(1),
+		observedAt: NonEmptyString.optional(),
+	})
+	.strict();
+
+export const EdgeAdapterFixtureEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(EDGE_ADAPTER_FIXTURE_EVIDENCE_SCHEMA_VERSION),
+		id: NonEmptyString,
+		status: z.enum(["pass", "fail"]),
+		ran: z.literal(true),
+		evidence_path: NonEmptyString,
+		observedAt: NonEmptyString,
+		provenance: z
+			.object({
+				runner: z.literal(EDGE_ADAPTER_FIXTURE_EVIDENCE_RUNNER),
+				command: NonEmptyString,
+				source: z.literal(EDGE_ADAPTER_FIXTURE_EVIDENCE_SOURCE),
+			})
+			.strict(),
+		edge: z
+			.object({
+				fixtureClass: z.enum(["positive", "negative"]),
+				requiredProbes: z.array(
+					z
+						.object({
+							probeId: NonEmptyString,
+							requiredChecks: z.array(NonEmptyString).min(1),
+						})
+						.strict(),
+				),
+				probeArtifacts: z.array(EdgeFixtureProbeArtifactSchema).min(1),
+			})
+			.strict(),
+		checks: z.array(EdgeProbeControlSchema).min(1),
+	})
+	.strict();
+
+export type EdgeAdapterFixtureEvidence = z.infer<typeof EdgeAdapterFixtureEvidenceSchema>;
 
 export function isEdgeAdapterFeatureSurfaceId(
 	surfaceId: string,
@@ -414,6 +753,303 @@ export function edgeAdapterProbeEvidenceFailure(
 	const runtimeFailure = runtimeHarnessEvidenceFailure(surfaceId, data);
 	if (runtimeFailure) failures.push(runtimeFailure);
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+export function buildEdgeAdapterFixtureEvidenceBundle(input: {
+	readonly evidenceDir?: string;
+	readonly observedAt?: string;
+	readonly probePaths?: Partial<Record<EdgeFixtureProbeId, string>>;
+}): {
+	readonly schemaVersion: 1;
+	readonly results: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>;
+	readonly evidence: readonly EdgeAdapterFixtureEvidence[];
+} {
+	const observedAt = input.observedAt ?? new Date().toISOString();
+	const evidenceDir = input.evidenceDir ?? DEFAULT_EDGE_ADAPTER_FIXTURE_EVIDENCE_DIR;
+	const evidence = EDGE_FIXTURE_REQUIREMENTS.map((requirement) =>
+		buildEdgeFixtureEvidence(requirement, {
+			evidencePath: path.join(evidenceDir, `${requirement.id}.json`),
+			observedAt,
+			probePaths: input.probePaths ?? {},
+		}),
+	);
+	return {
+		schemaVersion: 1,
+		results: evidence.map((item) => ({
+			id: item.id,
+			status: item.status,
+			evidence_path: item.evidence_path,
+		})),
+		evidence,
+	};
+}
+
+export function edgeAdapterFixtureEvidenceFailure(
+	fixtureId: string,
+	evidence: unknown,
+): string | null {
+	const requirement = EDGE_FIXTURE_REQUIREMENTS.find((candidate) => candidate.id === fixtureId);
+	if (!requirement) return null;
+	const parsed = EdgeAdapterFixtureEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return `invalid edge fixture evidence: ${flattenZodError(parsed.error)}`;
+	}
+	const data = parsed.data;
+	const failures: string[] = [];
+	if (data.id !== fixtureId) failures.push(`fixture id is ${data.id}`);
+	if (data.status !== "pass") failures.push(`fixture status is ${data.status}`);
+	if (data.ran !== true) failures.push("fixture harness did not run");
+	if (data.provenance.runner !== EDGE_ADAPTER_FIXTURE_EVIDENCE_RUNNER) {
+		failures.push("fixture provenance runner is not the edge runtime fixture harness");
+	}
+	if (data.provenance.source !== EDGE_ADAPTER_FIXTURE_EVIDENCE_SOURCE) {
+		failures.push("fixture provenance source is not the edge fixture generator");
+	}
+	if (data.edge.fixtureClass !== requirement.fixtureClass) {
+		failures.push(`fixture class is ${data.edge.fixtureClass}`);
+	}
+	if (!sameJson(data.edge.requiredProbes, requirement.requiredProbes)) {
+		failures.push("fixture requiredProbes do not match edge fixture contract");
+	}
+	const artifactByProbe = new Map(
+		data.edge.probeArtifacts.map((artifact) => [artifact.probeId, artifact]),
+	);
+	for (const probeRequirement of requirement.requiredProbes) {
+		const artifact = artifactByProbe.get(probeRequirement.probeId);
+		if (!artifact) {
+			failures.push(`fixture probe artifact ${probeRequirement.probeId} is missing`);
+			continue;
+		}
+		if (!sameArray(artifact.requiredChecks, probeRequirement.requiredChecks)) {
+			failures.push(`fixture probe ${probeRequirement.probeId} requiredChecks changed`);
+		}
+		const resolvedPath = path.resolve(artifact.evidencePath);
+		if (!fs.existsSync(resolvedPath)) {
+			failures.push(`fixture probe artifact ${probeRequirement.probeId} file is missing`);
+			continue;
+		}
+		const currentDigest = sha256Digest(fs.readFileSync(resolvedPath));
+		if (currentDigest !== artifact.evidenceSha256) {
+			failures.push(`fixture probe artifact ${probeRequirement.probeId} sha256 changed`);
+		}
+		const loaded = loadEdgeFixtureProbe(probeRequirement, {
+			[probeRequirement.probeId]: artifact.evidencePath,
+		});
+		if (loaded.failure) failures.push(loaded.failure);
+		for (const checkName of probeRequirement.requiredChecks) {
+			const check = loaded.checks.get(checkName);
+			if (!check) {
+				failures.push(`fixture required check ${checkName} is missing`);
+			} else if (check.status !== "pass") {
+				failures.push(`fixture required check ${checkName} is ${check.status}`);
+			}
+		}
+	}
+	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
+	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
+		failures.push(`duplicate fixture check ${duplicate}`);
+	}
+	for (const checkName of requirement.requiredProbes.flatMap((probe) => probe.requiredChecks)) {
+		const check = checksByName.get(checkName);
+		if (!check) {
+			failures.push(`fixture check ${checkName} is missing`);
+		} else if (check.status !== "pass") {
+			failures.push(`fixture check ${checkName} is ${check.status}`);
+		}
+	}
+	for (const check of data.checks) {
+		if (check.status !== "pass") failures.push(`fixture check ${check.name} is ${check.status}`);
+	}
+	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+type EdgeFixtureCheck = {
+	readonly name: string;
+	readonly status: "pass" | "fail";
+	readonly detail: string;
+};
+
+type LoadedEdgeFixtureProbe = {
+	readonly artifact: EdgeAdapterFixtureEvidence["edge"]["probeArtifacts"][number];
+	readonly checks: ReadonlyMap<string, EdgeFixtureCheck>;
+	readonly failure: string | null;
+};
+
+function buildEdgeFixtureEvidence(
+	requirement: EdgeFixtureRequirement,
+	input: {
+		readonly evidencePath: string;
+		readonly observedAt: string;
+		readonly probePaths: Partial<Record<EdgeFixtureProbeId, string>>;
+	},
+): EdgeAdapterFixtureEvidence {
+	const probes = requirement.requiredProbes.map((probeRequirement) =>
+		loadEdgeFixtureProbe(probeRequirement, input.probePaths),
+	);
+	const checks = requirement.requiredProbes.flatMap((probeRequirement) =>
+		buildEdgeFixtureChecks(
+			probeRequirement,
+			probes.find((probe) => probe.artifact.probeId === probeRequirement.probeId),
+		),
+	);
+	const status = checks.every((check) => check.status === "pass") ? "pass" : "fail";
+	return {
+		schemaVersion: EDGE_ADAPTER_FIXTURE_EVIDENCE_SCHEMA_VERSION,
+		id: requirement.id,
+		status,
+		ran: true,
+		evidence_path: input.evidencePath,
+		observedAt: input.observedAt,
+		provenance: {
+			runner: EDGE_ADAPTER_FIXTURE_EVIDENCE_RUNNER,
+			command: "pnpm dev hermes fixtures --include-edge-adapter --write",
+			source: EDGE_ADAPTER_FIXTURE_EVIDENCE_SOURCE,
+		},
+		edge: {
+			fixtureClass: requirement.fixtureClass,
+			requiredProbes: requirement.requiredProbes.map((probe) => ({
+				probeId: probe.probeId,
+				requiredChecks: [...probe.requiredChecks],
+			})),
+			probeArtifacts: probes.map((probe) => probe.artifact),
+		},
+		checks,
+	};
+}
+
+function buildEdgeFixtureChecks(
+	requirement: EdgeFixtureProbeRequirement,
+	probe: LoadedEdgeFixtureProbe | undefined,
+): EdgeFixtureCheck[] {
+	if (!probe) {
+		return requirement.requiredChecks.map((name) => ({
+			name,
+			status: "fail",
+			detail: `probe ${requirement.probeId} was not loaded`,
+		}));
+	}
+	return requirement.requiredChecks.map((name) => {
+		const check = probe.checks.get(name);
+		if (!check) {
+			return {
+				name,
+				status: "fail",
+				detail: `required check ${name} is missing from ${requirement.probeId}`,
+			};
+		}
+		if (probe.failure) {
+			return {
+				name,
+				status: "fail",
+				detail: `probe ${requirement.probeId} failed validation: ${probe.failure}`,
+			};
+		}
+		return {
+			name,
+			status: check.status,
+			detail:
+				check.status === "pass"
+					? `required check ${name} passed in ${requirement.probeId}`
+					: `required check ${name} is ${check.status} in ${requirement.probeId}`,
+		};
+	});
+}
+
+function loadEdgeFixtureProbe(
+	requirement: EdgeFixtureProbeRequirement,
+	probePaths: Partial<Record<EdgeFixtureProbeId, string>>,
+): LoadedEdgeFixtureProbe {
+	const evidencePath =
+		probePaths[requirement.probeId] ?? defaultEdgeFixtureProbePath(requirement.probeId);
+	const resolvedPath = path.resolve(evidencePath);
+	const emptyArtifact = {
+		probeId: requirement.probeId,
+		evidencePath,
+		evidenceSha256: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		requiredChecks: [...requirement.requiredChecks],
+	};
+	if (!fs.existsSync(resolvedPath)) {
+		return {
+			artifact: emptyArtifact,
+			checks: new Map(),
+			failure: `missing fixture probe artifact ${requirement.probeId}`,
+		};
+	}
+	let evidence: unknown;
+	try {
+		evidence = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
+	} catch (error) {
+		return {
+			artifact: {
+				...emptyArtifact,
+				evidenceSha256: sha256Digest(fs.readFileSync(resolvedPath)),
+			},
+			checks: new Map(),
+			failure: `unreadable fixture probe artifact ${requirement.probeId}: ${String(
+				error instanceof Error ? error.message : error,
+			)}`,
+		};
+	}
+	if (requirement.probeId === "providers.release-policy") {
+		return loadProviderReleaseFixtureProbe(requirement, evidencePath, resolvedPath, evidence);
+	}
+	return loadEdgeAdapterFixtureProbe(requirement, evidencePath, resolvedPath, evidence);
+}
+
+function loadEdgeAdapterFixtureProbe(
+	requirement: EdgeFixtureProbeRequirement,
+	evidencePath: string,
+	resolvedPath: string,
+	evidence: unknown,
+): LoadedEdgeFixtureProbe {
+	const parsed = EdgeAdapterProbeEvidenceSchema.safeParse(evidence);
+	const checks = parsed.success
+		? new Map(parsed.data.controls.map((check) => [check.name, check]))
+		: new Map<string, EdgeFixtureCheck>();
+	return {
+		artifact: {
+			probeId: requirement.probeId,
+			evidencePath,
+			evidenceSha256: sha256Digest(fs.readFileSync(resolvedPath)),
+			requiredChecks: [...requirement.requiredChecks],
+			...(parsed.success ? { observedAt: parsed.data.observedAt } : {}),
+		},
+		checks,
+		failure:
+			parsed.success && isEdgeAdapterFeatureSurfaceId(requirement.probeId)
+				? edgeAdapterProbeEvidenceFailure(requirement.probeId, parsed.data)
+				: `invalid edge fixture probe ${requirement.probeId}`,
+	};
+}
+
+function loadProviderReleaseFixtureProbe(
+	requirement: EdgeFixtureProbeRequirement,
+	evidencePath: string,
+	resolvedPath: string,
+	evidence: unknown,
+): LoadedEdgeFixtureProbe {
+	const parsed = ProviderReleasePolicyProbeEvidenceSchema.safeParse(evidence);
+	const checks = parsed.success
+		? new Map(parsed.data.checks.map((check) => [check.name, check]))
+		: new Map<string, EdgeFixtureCheck>();
+	return {
+		artifact: {
+			probeId: requirement.probeId,
+			evidencePath,
+			evidenceSha256: sha256Digest(fs.readFileSync(resolvedPath)),
+			requiredChecks: [...requirement.requiredChecks],
+			...(parsed.success ? { observedAt: parsed.data.observedAt } : {}),
+		},
+		checks,
+		failure: parsed.success
+			? providerReleasePolicyProbeEvidenceFailure(parsed.data)
+			: `invalid provider release fixture probe ${requirement.probeId}`,
+	};
+}
+
+function defaultEdgeFixtureProbePath(probeId: EdgeFixtureProbeId): string {
+	if (probeId === "providers.release-policy") return DEFAULT_PROVIDER_RELEASE_POLICY_EVIDENCE_PATH;
+	return DEFAULT_EDGE_ADAPTER_EVIDENCE_PATHS[probeId];
 }
 
 type EdgeRuntimeHarnessResult = {
@@ -1691,6 +2327,14 @@ function sameSet<T>(left: readonly T[], right: readonly T[]): boolean {
 	if (left.length !== right.length) return false;
 	const rightSet = new Set<T>(right);
 	return left.every((value) => rightSet.has(value));
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sha256Digest(bytes: string | Buffer): string {
+	return `sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 function containsEvery<T>(left: readonly T[], right: readonly T[]): boolean {
