@@ -15,6 +15,11 @@ import {
 } from "./edge-adapter-probes.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
+import {
+	isProviderDomainSurfaceId,
+	providerDomainFixtureEvidenceFailure,
+	providerDomainProbeEvidenceFailure,
+} from "./provider-domain-probes.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
 
@@ -371,6 +376,8 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"providers.bank": [
 		"src/hermes/mcp/bridge.ts",
 		"src/hermes/mcp/ledger-execute.ts",
+		"src/hermes/mcp/live-relay-clients.ts",
+		"src/hermes/provider-domain-probes.ts",
 		"src/providers/catalog.ts",
 		"src/providers/external-provider.ts",
 		"src/relay/provider-proxy.ts",
@@ -392,6 +399,8 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"providers.clalit": [
 		"src/hermes/mcp/bridge.ts",
 		"src/hermes/mcp/ledger-execute.ts",
+		"src/hermes/mcp/live-relay-clients.ts",
+		"src/hermes/provider-domain-probes.ts",
 		"src/providers/catalog.ts",
 		"src/providers/external-provider.ts",
 		"src/relay/provider-proxy.ts",
@@ -399,6 +408,8 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"providers.government": [
 		"src/hermes/mcp/bridge.ts",
 		"src/hermes/mcp/ledger-execute.ts",
+		"src/hermes/mcp/live-relay-clients.ts",
+		"src/hermes/provider-domain-probes.ts",
 		"src/providers/catalog.ts",
 		"src/providers/external-provider.ts",
 		"src/relay/provider-proxy.ts",
@@ -1662,6 +1673,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "providers.approval-binding") {
 			return [collectProviderApprovalBindingProbeEvidence(probe)];
+		}
+		if (isProviderDomainSurfaceId(probe.surface_id)) {
+			return [collectProviderDomainProbeEvidence(probe)];
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
@@ -3560,6 +3574,8 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	}
 	const privateTelegramFailure = privateTelegramFixtureEvidenceFailure(result.id, parsed.data);
 	if (privateTelegramFailure) return privateTelegramFailure;
+	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
+	if (providerDomainFailure) return providerDomainFailure;
 	return null;
 }
 
@@ -4903,6 +4919,48 @@ function collectProviderApprovalBindingProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider approval-binding controls`,
+	};
+}
+
+function collectProviderDomainProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	if (!isProviderDomainSurfaceId(probe.surface_id)) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} is not a provider-domain surface`,
+		);
+	}
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = providerDomainProbeEvidenceFailure(probe.surface_id, evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed provider-domain MCP/proxy controls`,
 	};
 }
 
