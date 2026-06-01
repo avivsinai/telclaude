@@ -18,6 +18,12 @@ import {
 } from "../relay/openai-codex-relay-proof.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+	isHermesEvidenceTimestampStale,
+} from "./attestation-validation.js";
+import {
 	BROWSER_COMPUTER_BROKER_FIXTURE_REQUIREMENTS,
 	browserComputerBrokerFixtureEvidenceFailure,
 	browserComputerBrokerProbeEvidenceFailure,
@@ -142,8 +148,6 @@ const PLACEHOLDER_VALUES = new Set([
 	"sha256:todo",
 	"sha256:tbd",
 ]);
-
-const MAX_CUTOVER_PROOF_ARTIFACT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const HermesPinSchema = z
 	.object({
@@ -1788,13 +1792,14 @@ export function buildCutoverProofBundle(input: {
 function cutoverProofArtifactSemanticFailures(
 	key: CutoverProofArtifactKey,
 	value: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string[] {
 	if (key === "noForkProof") {
 		const parsed = NoForkProofSchema.safeParse(value);
 		if (!parsed.success) {
 			return [`no-fork proof schema invalid: ${flattenZodError(parsed.error)}`];
 		}
-		return noForkProofEvidenceFailures(parsed.data);
+		return noForkProofEvidenceFailures(parsed.data, options);
 	}
 
 	if (key === "networkProbeBundle") {
@@ -1811,7 +1816,7 @@ function cutoverProofArtifactSemanticFailures(
 			...REQUIRED_CUTOVER_NETWORK_PROBE_IDS.flatMap((probeId) =>
 				probeById.has(probeId) ? [] : [`missing network probe ${probeId}`],
 			),
-			...parsed.data.probes.flatMap((probe) => networkProbeEvidenceFailures(probe)),
+			...parsed.data.probes.flatMap((probe) => networkProbeEvidenceFailures(probe, options)),
 		];
 	}
 
@@ -1820,7 +1825,7 @@ function cutoverProofArtifactSemanticFailures(
 		if (!parsed.success) {
 			return [`rollback rehearsal schema invalid: ${flattenZodError(parsed.error)}`];
 		}
-		return rollbackRehearsalEvidenceFailures(parsed.data);
+		return rollbackRehearsalEvidenceFailures(parsed.data, options);
 	}
 
 	return [];
@@ -1828,12 +1833,13 @@ function cutoverProofArtifactSemanticFailures(
 
 export function collectFeatureProbeEvidence(
 	featureProbeMatrix: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle | undefined {
 	const parsed = FeatureProbeMatrixSchema.safeParse(featureProbeMatrix);
 	if (!parsed.success) return undefined;
 	const results = parsed.data.probes.flatMap((probe) => {
 		if (probe.surface_id === "execution.cli_headless") {
-			return [collectCliHeadlessProbeEvidence(probe)];
+			return [collectCliHeadlessProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "execution.served_mcp_containment") {
 			return [collectServedMcpContainmentProbeEvidence(probe)];
@@ -1845,13 +1851,13 @@ export function collectFeatureProbeEvidence(
 			return [collectModelRelayProbeEvidence(probe)];
 		}
 		if (isEdgeAdapterFeatureSurfaceId(probe.surface_id)) {
-			return [collectEdgeAdapterProbeEvidence(probe)];
+			return [collectEdgeAdapterProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "sideeffect.ledger") {
-			return [collectSideEffectLedgerProbeEvidence(probe)];
+			return [collectSideEffectLedgerProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "providers.approval-binding") {
-			return [collectProviderApprovalBindingProbeEvidence(probe)];
+			return [collectProviderApprovalBindingProbeEvidence(probe, options)];
 		}
 		if (isProviderDomainSurfaceId(probe.surface_id)) {
 			return [collectProviderDomainProbeEvidence(probe)];
@@ -1869,7 +1875,7 @@ export function collectFeatureProbeEvidence(
 			return [collectBrowserComputerBrokerProbeEvidence(probe)];
 		}
 		if (isHermesWorkflowSurfaceId(probe.surface_id)) {
-			return [collectWorkflowProbeEvidence(probe)];
+			return [collectWorkflowProbeEvidence(probe, options)];
 		}
 		return [];
 	});
@@ -2871,10 +2877,17 @@ function getEvidenceTimestamp(value: unknown): string | undefined {
 }
 
 function isStaleEvidenceTimestamp(timestamp: string, now: Date): boolean {
-	const parsed = Date.parse(timestamp);
-	if (Number.isNaN(parsed)) return true;
-	const nowMs = now.getTime();
-	return parsed > nowMs || nowMs - parsed > MAX_CUTOVER_PROOF_ARTIFACT_AGE_MS;
+	return isHermesEvidenceTimestampStale(timestamp, now);
+}
+
+function cutoverValidationOptions(
+	liveCutover: boolean,
+	now?: Date,
+): HermesSignedEvidenceValidationOptions {
+	return {
+		allowStaleAttestations: !liveCutover,
+		...(now ? { now } : {}),
+	};
 }
 
 function scanCutoverProofArtifactRedaction(text: string): {
@@ -2954,11 +2967,13 @@ export function evaluateCutoverCheck(
 
 	const bundle = parsed.data;
 	const gates: CutoverReport["gates"] = [];
+	const validationOptions = cutoverValidationOptions(liveCutover, options.now);
 	const proofBundleResult = checkCutoverProofBundle({
 		bundle: bundle.cutoverProofBundle,
 		cutover: bundle,
 		liveCutover,
 		now: options.now,
+		validationOptions,
 	});
 	const invalidEvidence = proofBundleResult.invalidEvidence;
 	gates.push(...proofBundleResult.gates);
@@ -3103,18 +3118,21 @@ export function evaluateCutoverCheck(
 			const result = fixtureById.get(fixtureId);
 			if (!result) return [`missing fixture result ${fixtureId}`];
 			if (result.status !== "pass") return [`fixture ${fixtureId} status is ${result.status}`];
-			const evidenceFailure = fixtureEvidenceFailure(result);
+			const evidenceFailure = fixtureEvidenceFailure(result, validationOptions);
 			if (evidenceFailure) return [evidenceFailure];
 			return [];
 		}),
 		...bundle.fixtureResults.results.flatMap((result) => {
 			if (result.status !== "pass") return [`fixture ${result.id} status is ${result.status}`];
-			const evidenceFailure = fixtureEvidenceFailure(result);
+			const evidenceFailure = fixtureEvidenceFailure(result, validationOptions);
 			return evidenceFailure ? [evidenceFailure] : [];
 		}),
 	];
-	const noForkFailures = noForkProofEvidenceFailures(bundle.noForkProof);
-	const rollbackRehearsalFailures = rollbackRehearsalEvidenceFailures(bundle.rollbackRehearsal);
+	const noForkFailures = noForkProofEvidenceFailures(bundle.noForkProof, validationOptions);
+	const rollbackRehearsalFailures = rollbackRehearsalEvidenceFailures(
+		bundle.rollbackRehearsal,
+		validationOptions,
+	);
 	const queueSnapshotFailures = queueSnapshotEvidenceFailures(
 		bundle.inventory,
 		bundle.queueSnapshot,
@@ -3130,7 +3148,9 @@ export function evaluateCutoverCheck(
 			if (!probe) return [`missing network probe ${probeId}`];
 			return [];
 		}),
-		...bundle.networkProbes.probes.flatMap((probe) => networkProbeEvidenceFailures(probe)),
+		...bundle.networkProbes.probes.flatMap((probe) =>
+			networkProbeEvidenceFailures(probe, validationOptions),
+		),
 	];
 
 	gates.push({
@@ -3241,6 +3261,7 @@ function checkCutoverProofBundle(input: {
 	cutover: CutoverInputBundle;
 	liveCutover?: boolean;
 	now?: Date;
+	validationOptions?: HermesSignedEvidenceValidationOptions;
 }): { gates: CutoverReport["gates"]; invalidEvidence: boolean } {
 	const gates: CutoverReport["gates"] = [];
 	let invalidEvidence = false;
@@ -3290,7 +3311,11 @@ function checkCutoverProofBundle(input: {
 		if (!loaded.ok) {
 			failures.push(loaded.failure);
 		} else {
-			const semanticFailures = cutoverProofArtifactSemanticFailures(key, loaded.value);
+			const semanticFailures = cutoverProofArtifactSemanticFailures(
+				key,
+				loaded.value,
+				input.validationOptions,
+			);
 			const expectedStatus =
 				loaded.redaction.status === "pass" &&
 				loaded.leakScan.status === "pass" &&
@@ -3729,7 +3754,10 @@ function lockfileEvidenceFailures(
 	return failures;
 }
 
-function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]): string | null {
+function fixtureEvidenceFailure(
+	result: FixtureResultBundle["results"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): string | null {
 	const resultPlaceholders = placeholderFailures(`fixture result ${result.id}`, result);
 	if (resultPlaceholders.length > 0) return resultPlaceholders.join("; ");
 	const resolvedPath = resolveHermesArtifactPath(result.evidence_path);
@@ -3761,17 +3789,21 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (!sameResolvedArtifactPath(parsed.data.evidence_path, result.evidence_path)) {
 		return `fixture evidence_path mismatch for ${redactDetail(result.id)}`;
 	}
-	const privateTelegramFailure = privateTelegramFixtureEvidenceFailure(result.id, parsed.data);
+	const privateTelegramFailure = privateTelegramFixtureEvidenceFailure(
+		result.id,
+		parsed.data,
+		options,
+	);
 	if (privateTelegramFailure) return privateTelegramFailure;
 	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
 	if (providerDomainFailure) return providerDomainFailure;
 	const googleProviderFailure = googleProviderFixtureEvidenceFailure(result.id, parsed.data);
 	if (googleProviderFailure) return googleProviderFailure;
-	const edgeAdapterFailure = edgeAdapterFixtureEvidenceFailure(result.id, evidence);
+	const edgeAdapterFailure = edgeAdapterFixtureEvidenceFailure(result.id, evidence, options);
 	if (edgeAdapterFailure) return edgeAdapterFailure;
 	const browserComputerFailure = browserComputerBrokerFixtureEvidenceFailure(result.id, evidence);
 	if (browserComputerFailure) return browserComputerFailure;
-	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
+	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence, options);
 	if (workflowFailure) return workflowFailure;
 	if (!REGISTERED_FIXTURE_IDS.has(result.id)) {
 		return `fixture ${redactDetail(result.id)} is not registered in the fixture validator catalog`;
@@ -3782,6 +3814,7 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 function privateTelegramFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: z.infer<typeof FixtureEvidenceSchema>,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const requirement = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
@@ -3867,13 +3900,14 @@ function privateTelegramFixtureEvidenceFailure(
 			}
 		}
 	}
-	failures.push(...privateTelegramRunnerAttestationFailures(fixtureId, evidence));
+	failures.push(...privateTelegramRunnerAttestationFailures(fixtureId, evidence, options));
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 
 function privateTelegramRunnerAttestationFailures(
 	fixtureId: string,
 	evidence: z.infer<typeof FixtureEvidenceSchema>,
+	options: HermesSignedEvidenceValidationOptions,
 ): string[] {
 	const attestation = evidence.privateTelegramRunnerAttestation;
 	if (!attestation) return [`fixture ${fixtureId} privateTelegramRunnerAttestation is missing`];
@@ -3896,9 +3930,15 @@ function privateTelegramRunnerAttestationFailures(
 		];
 	}
 	const failures: string[] = [];
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		`fixture ${fixtureId} privateTelegramRunnerAttestation observedAt/generatedAt`,
+		attestation.observedAt ?? attestation.generatedAt,
+		options,
+	);
+	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = privateTelegramFixtureAttestationSignatureFailure(
 		attestation as PrivateTelegramFixtureAttestation,
-		{ allowStale: true },
+		{ allowStale: hermesAllowsStaleAttestations(options) },
 	);
 	if (signatureFailure) {
 		failures.push(
@@ -4088,7 +4128,10 @@ export function resolveHermesArtifactPath(relativePath: string): string {
 	return path.resolve(relativePath);
 }
 
-function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
+function noForkProofEvidenceFailures(
+	noForkProof: NoForkProof,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string[] {
 	const failures = noForkProof.hermesCheckoutClean
 		? []
 		: ["no-fork proof summary hermesCheckoutClean is false"];
@@ -4161,7 +4204,7 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 	if (evidence.cachedDiffExitCode !== 0) {
 		failures.push(`no-fork evidence cachedDiffExitCode is ${String(evidence.cachedDiffExitCode)}`);
 	}
-	failures.push(...noForkRunnerAttestationFailures(evidence));
+	failures.push(...noForkRunnerAttestationFailures(evidence, options));
 	const checkByName = new Map((evidence.checks ?? []).map((check) => [check.name, check]));
 	for (const duplicate of findDuplicates((evidence.checks ?? []).map((check) => check.name))) {
 		failures.push(`duplicate no-fork evidence check ${redactDetail(duplicate)}`);
@@ -4185,13 +4228,22 @@ function noForkProofEvidenceFailures(noForkProof: NoForkProof): string[] {
 	return failures;
 }
 
-function noForkRunnerAttestationFailures(evidence: NoForkProof): string[] {
+function noForkRunnerAttestationFailures(
+	evidence: NoForkProof,
+	options: HermesSignedEvidenceValidationOptions,
+): string[] {
 	const attestation = evidence.runnerAttestation;
 	if (!attestation) return ["no-fork evidence runnerAttestation is missing"];
 	const failures: string[] = [];
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"no-fork runner attestation endedAt",
+		attestation.endedAt,
+		options,
+	);
+	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = noForkRunnerAttestationSignatureFailure(
 		attestation as NoForkRunnerAttestation,
-		{ allowStale: true },
+		{ allowStale: hermesAllowsStaleAttestations(options) },
 	);
 	if (signatureFailure) {
 		failures.push(`no-fork runner attestation signature is invalid: ${signatureFailure}`);
@@ -4277,7 +4329,10 @@ function readNoForkProofEvidence(
 	return { valid: true, evidence: parsed.data };
 }
 
-function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal): string[] {
+function rollbackRehearsalEvidenceFailures(
+	rollbackRehearsal: RollbackRehearsal,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string[] {
 	const failures = rollbackRehearsal.passed ? [] : ["rollback rehearsal summary passed is false"];
 	const loaded = readRollbackRehearsalEvidence(rollbackRehearsal);
 	if (!loaded.valid) return [...failures, loaded.failure];
@@ -4322,7 +4377,7 @@ function rollbackRehearsalEvidenceFailures(rollbackRehearsal: RollbackRehearsal)
 		failures.push("rollback rehearsal evidence observedAfterControlSource is not runtime-config");
 	}
 	failures.push(...rollbackRelayPublicKeyFailures(evidence, rollbackRehearsal));
-	failures.push(...rollbackRelayTranscriptFailures(evidence));
+	failures.push(...rollbackRelayTranscriptFailures(evidence, options));
 	if (evidence.checks === undefined || evidence.checks.length === 0) {
 		failures.push("rollback rehearsal evidence checks are empty");
 	}
@@ -4409,19 +4464,29 @@ function trustedRollbackRelayPublicKey(
 	return { valid: true, value: trustedValue };
 }
 
-function rollbackRelayTranscriptFailures(evidence: RollbackRehearsal): string[] {
+function rollbackRelayTranscriptFailures(
+	evidence: RollbackRehearsal,
+	options: HermesSignedEvidenceValidationOptions,
+): string[] {
 	const transcripts = evidence.signedRelayTranscripts;
 	if (!transcripts) return ["rollback rehearsal signed relay transcripts are missing"];
 	const trustedKey = trustedRollbackRelayPublicKey(evidence);
 	if (!trustedKey.valid) return [trustedKey.failure];
 	return [
-		...rollbackRelayTranscriptFailure("before", transcripts.before, evidence, trustedKey.value, {
-			method: "POST",
-			path: "/v1/hermes.private-runtime.status",
-			body: "{}",
-			effectiveValue: "1",
-			effectiveMode: "hermes",
-		}),
+		...rollbackRelayTranscriptFailure(
+			"before",
+			transcripts.before,
+			evidence,
+			trustedKey.value,
+			{
+				method: "POST",
+				path: "/v1/hermes.private-runtime.status",
+				body: "{}",
+				effectiveValue: "1",
+				effectiveMode: "hermes",
+			},
+			options,
+		),
 		...rollbackRelayTranscriptFailure(
 			"afterControl",
 			transcripts.afterControl,
@@ -4435,15 +4500,23 @@ function rollbackRelayTranscriptFailures(evidence: RollbackRehearsal): string[] 
 				controlMode: "legacy",
 				controlSource: "runtime-config",
 			},
+			options,
 		),
-		...rollbackRelayTranscriptFailure("after", transcripts.after, evidence, trustedKey.value, {
-			method: "POST",
-			path: "/v1/hermes.private-runtime.status",
-			body: "{}",
-			effectiveValue: "0",
-			effectiveMode: "legacy",
-			controlSource: "runtime-config",
-		}),
+		...rollbackRelayTranscriptFailure(
+			"after",
+			transcripts.after,
+			evidence,
+			trustedKey.value,
+			{
+				method: "POST",
+				path: "/v1/hermes.private-runtime.status",
+				body: "{}",
+				effectiveValue: "0",
+				effectiveMode: "legacy",
+				controlSource: "runtime-config",
+			},
+			options,
+		),
 	];
 }
 
@@ -4465,6 +4538,7 @@ function rollbackRelayTranscriptFailure(
 			| "runtime-config-default"
 			| "runtime-config-invalid";
 	},
+	options: HermesSignedEvidenceValidationOptions,
 ): string[] {
 	const failures: string[] = [];
 	if (transcript.request.method !== expected.method) {
@@ -4484,7 +4558,7 @@ function rollbackRelayTranscriptFailure(
 		transcript.responseBody,
 		{
 			scope: "operator",
-			allowStale: true,
+			allowStale: hermesAllowsStaleAttestations(options),
 			relayPublicKey: trustedRelayPublicKey,
 		},
 	);
@@ -4573,7 +4647,10 @@ function readRollbackRehearsalEvidence(
 	return { valid: true, evidence: parsed.data };
 }
 
-function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): string[] {
+function networkProbeEvidenceFailures(
+	probe: ProbeBundle["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): string[] {
 	const failures =
 		probe.status === "pass" ? [] : [`network probe ${probe.id} status is ${probe.status}`];
 	const loaded = readNetworkProbeEvidence(probe);
@@ -4598,7 +4675,7 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 		failures.push(`network probe evidence ${probe.id} attempts are empty`);
 	}
 	if (probe.status === "pass") {
-		failures.push(...networkProbeAttestationFailures(evidence));
+		failures.push(...networkProbeAttestationFailures(evidence, options));
 	}
 	failures.push(
 		...networkProbeSemanticProofFailures(evidence, {
@@ -4620,13 +4697,20 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 
 function networkProbeAttestationFailures(
 	evidence: z.infer<typeof NetworkProbeEvidenceSchema>,
+	options: HermesSignedEvidenceValidationOptions,
 ): string[] {
 	const attestation = evidence.attestation;
 	if (!attestation) return [`network probe evidence ${evidence.id} attestation is missing`];
 	const failures: string[] = [];
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		`network probe evidence ${evidence.id} attestation generatedAt`,
+		attestation.generatedAt,
+		options,
+	);
+	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = networkProbeAttestationSignatureFailure(
 		attestation as NetworkProbeAttestation,
-		{ allowStale: true },
+		{ allowStale: hermesAllowsStaleAttestations(options) },
 	);
 	if (signatureFailure) {
 		failures.push(
@@ -4724,6 +4808,7 @@ function collectPlaceholderFailures(label: string, value: unknown, failures: str
 
 function collectCliHeadlessProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
 	if (!fs.existsSync(resolvedPath)) {
@@ -4963,11 +5048,17 @@ function collectCliHeadlessProbeEvidence(
 		}
 		const signatureFailure = openAiCodexRelayProofSignatureFailure(
 			relayProof as OpenAiCodexRelayProof,
-			{ allowStale: true },
+			{ allowStale: hermesAllowsStaleAttestations(options) },
 		);
 		if (signatureFailure) {
 			failures.push(`relay proof signature is invalid: ${signatureFailure}`);
 		}
+		const freshnessFailure = hermesAttestationFreshnessFailure(
+			"relay proof observedAt",
+			relayProof.observedAt,
+			options,
+		);
+		if (freshnessFailure) failures.push(freshnessFailure);
 		if (!provenance?.expectedProofToken) {
 			failures.push("relay proof cannot be bound because expectedProofToken is missing");
 		} else {
@@ -5119,6 +5210,7 @@ function collectServedMcpContainmentProbeEvidence(
 
 function collectEdgeAdapterProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
 	let evidence: unknown;
@@ -5142,7 +5234,7 @@ function collectEdgeAdapterProbeEvidence(
 	if (schemaOnlyFailure) {
 		return featureProbeEvidenceFailure(probe, schemaOnlyFailure);
 	}
-	const failure = edgeAdapterProbeEvidenceFailure(probe.surface_id, evidence);
+	const failure = edgeAdapterProbeEvidenceFailure(probe.surface_id, evidence, options);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,
@@ -5175,6 +5267,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function collectSideEffectLedgerProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
 	let evidence: unknown;
@@ -5194,7 +5287,7 @@ function collectSideEffectLedgerProbeEvidence(
 			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
 		);
 	}
-	const failure = sideEffectLedgerProbeEvidenceFailure(probe.surface_id, evidence);
+	const failure = sideEffectLedgerProbeEvidenceFailure(probe.surface_id, evidence, options);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,
@@ -5211,6 +5304,7 @@ function collectSideEffectLedgerProbeEvidence(
 
 function collectProviderApprovalBindingProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
 	let evidence: unknown;
@@ -5230,7 +5324,7 @@ function collectProviderApprovalBindingProbeEvidence(
 			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
 		);
 	}
-	const failure = providerApprovalBindingProbeEvidenceFailure(evidence);
+	const failure = providerApprovalBindingProbeEvidenceFailure(evidence, options);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,
@@ -5403,6 +5497,7 @@ function collectBrowserComputerBrokerProbeEvidence(
 
 function collectWorkflowProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	if (!isHermesWorkflowSurfaceId(probe.surface_id)) {
 		return featureProbeEvidenceFailure(
@@ -5428,7 +5523,7 @@ function collectWorkflowProbeEvidence(
 			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
 		);
 	}
-	const failure = workflowProbeEvidenceFailure(probe.surface_id, evidence);
+	const failure = workflowProbeEvidenceFailure(probe.surface_id, evidence, options);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,

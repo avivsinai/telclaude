@@ -1,4 +1,9 @@
 import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
+import {
 	NETWORK_PROBE_ATTESTATION_RUNNER,
 	NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION,
 	NETWORK_PROBE_ATTESTATION_SOURCE,
@@ -58,7 +63,7 @@ export type NetworkProbeEvidenceValidationOptions = {
 	readonly expectedId?: NetworkProbeId;
 	readonly requiredAttemptNames?: readonly string[];
 	readonly requiredPosture?: NetworkProbePosture;
-};
+} & HermesSignedEvidenceValidationOptions;
 
 export function networkProbeEvidenceFailure(
 	evidence: unknown,
@@ -85,7 +90,7 @@ export function assertNetworkProbeEvidence(
 	for (const [index, attempt] of validated.attempts.entries()) {
 		validatePassingNetworkProbeAttempt(validated.id, index, attempt);
 	}
-	validateNetworkProbeAttestation(validated);
+	validateNetworkProbeAttestation(validated, options);
 	validateNetworkProbeSemanticProof(validated, options);
 	for (const attemptName of options.requiredAttemptNames ?? []) {
 		validateRequiredNetworkDenialAttempt(validated, attemptName);
@@ -174,7 +179,10 @@ function validateNetworkProbeSemanticProof(
 	if (failure) throw new Error(failure);
 }
 
-function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
+function validateNetworkProbeAttestation(
+	evidence: NetworkProbeEvidence,
+	options: HermesSignedEvidenceValidationOptions,
+): void {
 	if (!evidence.attestation) {
 		throw new Error(`network probe evidence ${evidence.id} attestation is missing`);
 	}
@@ -187,8 +195,16 @@ function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
 	if (evidence.attestation.runner !== NETWORK_PROBE_ATTESTATION_RUNNER) {
 		throw new Error(`network probe evidence ${evidence.id} attestation runner is invalid`);
 	}
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		`network probe evidence ${evidence.id} attestation generatedAt`,
+		evidence.attestation.generatedAt,
+		options,
+	);
+	if (freshnessFailure) {
+		throw new Error(freshnessFailure);
+	}
 	const signatureFailure = networkProbeAttestationSignatureFailure(evidence.attestation, {
-		allowStale: true,
+		allowStale: hermesAllowsStaleAttestations(options),
 	});
 	if (signatureFailure) {
 		throw new Error(
