@@ -24,6 +24,7 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH =
 	"artifacts/hermes/probes/providers-google.json";
@@ -34,6 +35,8 @@ export const PROVIDER_GOOGLE_FIXTURE_EVIDENCE_SCHEMA_VERSION =
 export const PROVIDER_GOOGLE_FIXTURE_SOURCE = "machine-observed-google-provider-probe";
 export const PROVIDER_GOOGLE_FIXTURE_RUNNER = "telclaude-google-provider-fixture-generator";
 export const DEFAULT_PROVIDER_GOOGLE_FIXTURE_EVIDENCE_DIR = "artifacts/hermes/fixtures";
+export const DEFAULT_PROVIDER_GOOGLE_DIRECT_NETWORK_EVIDENCE_PATH =
+	"artifacts/hermes/network/direct-provider-denied.json";
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
@@ -46,6 +49,36 @@ const GoogleProviderProbeCheckSchema = z
 		detail: NonEmptyString,
 	})
 	.strict();
+
+const GoogleProviderDirectNetworkAttemptSchema = z
+	.object({
+		name: NonEmptyString,
+		kind: z.literal("http"),
+		target: NonEmptyString,
+		expectation: z.literal("deny"),
+		status: z.enum(["pass", "fail"]),
+		observed: NonEmptyString,
+		detail: NonEmptyString,
+	})
+	.passthrough();
+
+const GoogleProviderDirectNetworkProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION),
+		id: z.literal("network.direct-provider-denied"),
+		posture: z.enum(["agent-iptables", "contained-internal"]),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		summary: NonEmptyString,
+		generatedAt: NonEmptyString,
+		evidence_path: NonEmptyString,
+		attempts: z.array(GoogleProviderDirectNetworkAttemptSchema).min(1),
+	})
+	.strict();
+
+type GoogleProviderDirectNetworkProbeEvidence = z.infer<
+	typeof GoogleProviderDirectNetworkProbeEvidenceSchema
+>;
 
 export const GoogleProviderProbeEvidenceSchema = z
 	.object({
@@ -88,11 +121,13 @@ const REQUIRED_GOOGLE_PROVIDER_CHECKS = [
 
 type GoogleProviderFixtureRequirement = {
 	readonly id: string;
+	readonly kind?: "google-provider" | "direct-provider-deny";
 	readonly requiredChecks: readonly string[];
 	readonly requiredObservationHashes: readonly (keyof Pick<
 		GoogleProviderProbeEvidence["observations"],
 		"readRequestBodyHash" | "sidecarParamsHash" | "writeRequestBodyHash"
 	>)[];
+	readonly networkAttemptName?: "provider:google";
 };
 
 export const GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS = [
@@ -120,6 +155,13 @@ export const GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS = [
 		id: "fixture.providers.google.replay-deny",
 		requiredChecks: ["google.replay-denied"],
 		requiredObservationHashes: ["sidecarParamsHash"],
+	},
+	{
+		id: "fixture.providers.google.direct-provider-deny",
+		kind: "direct-provider-deny",
+		requiredChecks: [],
+		requiredObservationHashes: [],
+		networkAttemptName: "provider:google",
 	},
 ] as const satisfies readonly GoogleProviderFixtureRequirement[];
 
@@ -430,10 +472,20 @@ const GoogleProviderFixtureEvidenceSchema = z
 			.strict(),
 		googleProvider: z
 			.object({
-				requiredProbeChecks: z.array(NonEmptyString).min(1),
+				requiredProbeChecks: z.array(NonEmptyString),
 				requiredObservationHashes: z.array(NonEmptyString),
 			})
 			.strict(),
+		networkDeny: z
+			.object({
+				probeId: z.literal("network.direct-provider-denied"),
+				probePath: NonEmptyString,
+				probeSha256: Sha256Digest,
+				requiredAttemptName: z.literal("provider:google"),
+				posture: z.enum(["agent-iptables", "contained-internal"]).optional(),
+			})
+			.strict()
+			.optional(),
 		checks: z.array(GoogleProviderProbeCheckSchema).min(1),
 	})
 	.strict();
@@ -445,6 +497,7 @@ export function buildGoogleProviderFixtureEvidenceBundle(
 		readonly evidenceDir?: string;
 		readonly observedAt?: string;
 		readonly probePath?: string;
+		readonly networkProbePath?: string;
 	} = {},
 ): {
 	readonly schemaVersion: 1;
@@ -459,11 +512,15 @@ export function buildGoogleProviderFixtureEvidenceBundle(
 	const probe = readGoogleProviderProbeArtifact(
 		input.probePath ?? DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH,
 	);
+	const networkProbe = readGoogleProviderDirectNetworkProbeArtifact(
+		input.networkProbePath ?? DEFAULT_PROVIDER_GOOGLE_DIRECT_NETWORK_EVIDENCE_PATH,
+	);
 	const evidence = GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS.map((requirement) =>
 		buildGoogleProviderFixtureEvidence(requirement, {
 			evidenceDir,
 			observedAt: input.observedAt,
 			probe,
+			networkProbe,
 		}),
 	);
 	return {
@@ -483,7 +540,7 @@ export function googleProviderFixtureEvidenceFailure(
 ): string | null {
 	const requirement = GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
-	);
+	) as GoogleProviderFixtureRequirement | undefined;
 	if (!requirement) return null;
 	const parsed = GoogleProviderFixtureEvidenceSchema.safeParse(evidence);
 	if (!parsed.success) {
@@ -514,11 +571,16 @@ export function googleProviderFixtureEvidenceFailure(
 	} else if (probe.evidence) {
 		failures.push(...googleProviderFixtureContractFailures(requirement, data, probe.evidence));
 	}
+	if (requirement.kind === "direct-provider-deny") {
+		failures.push(...googleProviderDirectNetworkFixtureFailures(requirement, data));
+	} else if (data.networkDeny) {
+		failures.push("Google provider fixture unexpectedly includes direct-provider network evidence");
+	}
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 
 function buildGoogleProviderFixtureEvidence(
-	requirement: (typeof GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS)[number],
+	requirement: GoogleProviderFixtureRequirement,
 	options: {
 		readonly evidenceDir: string;
 		readonly observedAt?: string;
@@ -528,15 +590,26 @@ function buildGoogleProviderFixtureEvidence(
 			readonly evidence?: GoogleProviderProbeEvidence;
 			readonly failure?: string;
 		};
+		readonly networkProbe: {
+			readonly path: string;
+			readonly sha256: string;
+			readonly evidence?: GoogleProviderDirectNetworkProbeEvidence;
+			readonly failure?: string;
+		};
 	},
 ): GoogleProviderFixtureEvidence {
-	const checks = buildGoogleProviderFixtureChecks(
-		requirement,
-		options.probe.evidence,
-		options.probe.failure,
-	);
+	const checks =
+		requirement.kind === "direct-provider-deny"
+			? buildGoogleProviderDirectNetworkFixtureChecks(requirement, options.networkProbe)
+			: buildGoogleProviderFixtureChecks(
+					requirement,
+					options.probe.evidence,
+					options.probe.failure,
+				);
 	const status =
-		options.probe.failure === undefined && checks.every((check) => check.status === "pass")
+		options.probe.failure === undefined &&
+		(requirement.kind !== "direct-provider-deny" || options.networkProbe.failure === undefined) &&
+		checks.every((check) => check.status === "pass")
 			? "pass"
 			: "fail";
 	return {
@@ -559,12 +632,25 @@ function buildGoogleProviderFixtureEvidence(
 			requiredProbeChecks: [...requirement.requiredChecks],
 			requiredObservationHashes: [...requirement.requiredObservationHashes],
 		},
+		...(requirement.kind === "direct-provider-deny"
+			? {
+					networkDeny: {
+						probeId: "network.direct-provider-denied" as const,
+						probePath: options.networkProbe.path,
+						probeSha256: options.networkProbe.sha256,
+						requiredAttemptName: "provider:google" as const,
+						...(options.networkProbe.evidence?.posture
+							? { posture: options.networkProbe.evidence.posture }
+							: {}),
+					},
+				}
+			: {}),
 		checks,
 	};
 }
 
 function buildGoogleProviderFixtureChecks(
-	requirement: (typeof GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS)[number],
+	requirement: GoogleProviderFixtureRequirement,
 	probe: GoogleProviderProbeEvidence | undefined,
 	probeFailure: string | undefined,
 ): ProbeCheck[] {
@@ -600,8 +686,54 @@ function buildGoogleProviderFixtureChecks(
 	];
 }
 
+function buildGoogleProviderDirectNetworkFixtureChecks(
+	requirement: GoogleProviderFixtureRequirement,
+	networkProbe: {
+		readonly evidence?: GoogleProviderDirectNetworkProbeEvidence;
+		readonly failure?: string;
+	},
+): ProbeCheck[] {
+	const attemptName = requirement.networkAttemptName;
+	if (!attemptName) {
+		return [
+			{
+				name: `${requirement.id}.network-attempt-configured`,
+				status: "fail",
+				detail: "direct-provider-deny fixture is missing a required network attempt name",
+			},
+		];
+	}
+	if (!networkProbe.evidence || networkProbe.failure) {
+		return [
+			{
+				name: `${requirement.id}.${attemptName}`,
+				status: "fail",
+				detail: networkProbe.failure ?? "direct provider network evidence is missing",
+			},
+		];
+	}
+	const attempt = networkProbe.evidence.attempts.find(
+		(candidate) => candidate.name === attemptName,
+	);
+	const passed =
+		networkProbe.evidence.status === "pass" &&
+		networkProbe.evidence.ran === true &&
+		attempt?.status === "pass" &&
+		attempt.expectation === "deny" &&
+		(attempt.observed === "denied" || attempt.observed === "policy_denied");
+	return [
+		{
+			name: `${requirement.id}.${attemptName}`,
+			status: passed ? "pass" : "fail",
+			detail: passed
+				? "direct Google provider endpoint was denied in the Hermes runtime namespace"
+				: `network evidence does not contain a passing denial attempt named ${attemptName}`,
+		},
+	];
+}
+
 function googleProviderFixtureContractFailures(
-	requirement: (typeof GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS)[number],
+	requirement: GoogleProviderFixtureRequirement,
 	fixture: GoogleProviderFixtureEvidence,
 	probe: GoogleProviderProbeEvidence,
 ): string[] {
@@ -622,6 +754,52 @@ function googleProviderFixtureContractFailures(
 		if (fixtureCheck?.status !== "pass") {
 			failures.push(`fixture observation check ${field} is not pass`);
 		}
+	}
+	return failures;
+}
+
+function googleProviderDirectNetworkFixtureFailures(
+	requirement: GoogleProviderFixtureRequirement,
+	fixture: GoogleProviderFixtureEvidence,
+): string[] {
+	const failures: string[] = [];
+	const binding = fixture.networkDeny;
+	if (!binding) return ["direct-provider fixture networkDeny binding is missing"];
+	if (binding.probeId !== "network.direct-provider-denied") {
+		failures.push(`networkDeny probeId is ${binding.probeId}`);
+	}
+	if (binding.requiredAttemptName !== requirement.networkAttemptName) {
+		failures.push("networkDeny requiredAttemptName does not match Google provider contract");
+	}
+	const network = readGoogleProviderDirectNetworkProbeArtifact(binding.probePath);
+	if (network.sha256 !== binding.probeSha256) {
+		failures.push("networkDeny probeSha256 does not match direct-provider network artifact");
+	}
+	if (network.failure) {
+		failures.push(`networkDeny probe artifact failed validation: ${network.failure}`);
+		return failures;
+	}
+	const attempt = network.evidence?.attempts.find(
+		(candidate) => candidate.name === requirement.networkAttemptName,
+	);
+	if (!attempt) {
+		failures.push(`networkDeny attempt ${String(requirement.networkAttemptName)} is missing`);
+	} else if (
+		attempt.status !== "pass" ||
+		attempt.expectation !== "deny" ||
+		(attempt.observed !== "denied" && attempt.observed !== "policy_denied")
+	) {
+		failures.push(
+			`networkDeny attempt ${String(requirement.networkAttemptName)} is not a passing denial`,
+		);
+	}
+	const fixtureCheck = new Map(fixture.checks.map((check) => [check.name, check])).get(
+		`${requirement.id}.${String(requirement.networkAttemptName)}`,
+	);
+	if (fixtureCheck?.status !== "pass") {
+		failures.push(
+			`fixture network denial check ${String(requirement.networkAttemptName)} is not pass`,
+		);
 	}
 	return failures;
 }
@@ -665,6 +843,50 @@ function readGoogleProviderProbeArtifact(probePath: string): {
 		sha256: fileSha256(probePath),
 		evidence: parsed.data,
 		...(semanticFailure ? { failure: semanticFailure } : {}),
+	};
+}
+
+function readGoogleProviderDirectNetworkProbeArtifact(probePath: string): {
+	readonly path: string;
+	readonly sha256: string;
+	readonly evidence?: GoogleProviderDirectNetworkProbeEvidence;
+	readonly failure?: string;
+} {
+	if (!fs.existsSync(probePath)) {
+		return {
+			path: probePath,
+			sha256: sha256Digest(`${probePath}:missing`),
+			failure: `missing direct-provider network artifact ${probePath}`,
+		};
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(fs.readFileSync(probePath, "utf8")) as unknown;
+	} catch (error) {
+		return {
+			path: probePath,
+			sha256: fileSha256(probePath),
+			failure: `unreadable direct-provider network artifact: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	const parsed = GoogleProviderDirectNetworkProbeEvidenceSchema.safeParse(raw);
+	if (!parsed.success) {
+		return {
+			path: probePath,
+			sha256: fileSha256(probePath),
+			failure: `invalid direct-provider network artifact: ${flattenZodError(parsed.error)}`,
+		};
+	}
+	const failures: string[] = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push("network probe did not run");
+	return {
+		path: probePath,
+		sha256: fileSha256(probePath),
+		evidence: parsed.data,
+		...(failures.length > 0 ? { failure: failures.join("; ") } : {}),
 	};
 }
 

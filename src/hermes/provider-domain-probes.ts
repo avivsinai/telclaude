@@ -13,6 +13,7 @@ import {
 	type TelclaudeMcpProviderSideEffectRecord,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const PROVIDER_DOMAIN_PROBE_SCHEMA_VERSION = "telclaude.hermes.provider-domain-probe.v1";
 export const PROVIDER_DOMAIN_PROBE_SOURCE = "telclaude-provider-domain-harness";
@@ -21,6 +22,8 @@ export const PROVIDER_DOMAIN_FIXTURE_EVIDENCE_SCHEMA_VERSION =
 export const PROVIDER_DOMAIN_FIXTURE_SOURCE = "machine-observed-provider-domain-probe";
 export const PROVIDER_DOMAIN_FIXTURE_RUNNER = "telclaude-provider-domain-fixture-generator";
 export const DEFAULT_PROVIDER_DOMAIN_FIXTURE_EVIDENCE_DIR = "artifacts/hermes/fixtures";
+export const DEFAULT_PROVIDER_DIRECT_NETWORK_EVIDENCE_PATH =
+	"artifacts/hermes/network/direct-provider-denied.json";
 
 export const PROVIDER_DOMAIN_SURFACE_IDS = [
 	"providers.bank",
@@ -41,11 +44,13 @@ type ProviderDomainFixtureRequirement = {
 	readonly id: string;
 	readonly surfaceId: ProviderDomainSurfaceId;
 	readonly providerId: ProviderId;
+	readonly kind?: "provider-domain" | "direct-provider-deny";
 	readonly requiredChecks: readonly string[];
 	readonly requiredObservationHashes: readonly (keyof Pick<
 		ProviderDomainProbeEvidence["observations"],
 		"bodyHash" | "contentHash" | "paramsHash" | "readRequestBodyHash" | "writeRequestBodyHash"
 	>)[];
+	readonly networkAttemptName?: `provider:${ProviderId}`;
 };
 
 export const PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS = [
@@ -89,6 +94,15 @@ export const PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS = [
 		requiredObservationHashes: ["contentHash"],
 	},
 	{
+		id: "fixture.providers.bank.direct-provider-deny",
+		surfaceId: "providers.bank",
+		providerId: "bank",
+		kind: "direct-provider-deny",
+		requiredChecks: [],
+		requiredObservationHashes: [],
+		networkAttemptName: "provider:bank",
+	},
+	{
 		id: "fixture.providers.clalit.read",
 		surfaceId: "providers.clalit",
 		providerId: "clalit",
@@ -125,6 +139,15 @@ export const PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS = [
 		providerId: "clalit",
 		requiredChecks: ["clalit.emergency-escalation-denied"],
 		requiredObservationHashes: ["contentHash"],
+	},
+	{
+		id: "fixture.providers.clalit.direct-provider-deny",
+		surfaceId: "providers.clalit",
+		providerId: "clalit",
+		kind: "direct-provider-deny",
+		requiredChecks: [],
+		requiredObservationHashes: [],
+		networkAttemptName: "provider:clalit",
 	},
 	{
 		id: "fixture.providers.government.read",
@@ -171,6 +194,15 @@ export const PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS = [
 		requiredChecks: ["government.replay-denied"],
 		requiredObservationHashes: ["contentHash"],
 	},
+	{
+		id: "fixture.providers.government.direct-provider-deny",
+		surfaceId: "providers.government",
+		providerId: "government",
+		kind: "direct-provider-deny",
+		requiredChecks: [],
+		requiredObservationHashes: [],
+		networkAttemptName: "provider:government",
+	},
 ] as const satisfies readonly ProviderDomainFixtureRequirement[];
 
 export type ProviderDomainFixtureId = (typeof PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS)[number]["id"];
@@ -185,6 +217,34 @@ const ProviderDomainProbeCheckSchema = z
 		detail: NonEmptyString,
 	})
 	.strict();
+
+const ProviderDirectNetworkAttemptSchema = z
+	.object({
+		name: NonEmptyString,
+		kind: z.literal("http"),
+		target: NonEmptyString,
+		expectation: z.literal("deny"),
+		status: z.enum(["pass", "fail"]),
+		observed: NonEmptyString,
+		detail: NonEmptyString,
+	})
+	.passthrough();
+
+const ProviderDirectNetworkProbeEvidenceSchema = z
+	.object({
+		schemaVersion: z.literal(NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION),
+		id: z.literal("network.direct-provider-denied"),
+		posture: z.enum(["agent-iptables", "contained-internal"]),
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		summary: NonEmptyString,
+		generatedAt: NonEmptyString,
+		evidence_path: NonEmptyString,
+		attempts: z.array(ProviderDirectNetworkAttemptSchema).min(1),
+	})
+	.strict();
+
+type ProviderDirectNetworkProbeEvidence = z.infer<typeof ProviderDirectNetworkProbeEvidenceSchema>;
 
 export const ProviderDomainProbeEvidenceSchema = z
 	.object({
@@ -664,10 +724,20 @@ const ProviderDomainFixtureEvidenceSchema = z
 			.object({
 				surfaceId: z.enum(PROVIDER_DOMAIN_SURFACE_IDS),
 				providerId: z.enum(["bank", "clalit", "government"]),
-				requiredProbeChecks: z.array(NonEmptyString).min(1),
+				requiredProbeChecks: z.array(NonEmptyString),
 				requiredObservationHashes: z.array(NonEmptyString),
 			})
 			.strict(),
+		networkDeny: z
+			.object({
+				probeId: z.literal("network.direct-provider-denied"),
+				probePath: NonEmptyString,
+				probeSha256: Sha256Digest,
+				requiredAttemptName: NonEmptyString,
+				posture: z.enum(["agent-iptables", "contained-internal"]).optional(),
+			})
+			.strict()
+			.optional(),
 		checks: z.array(ProviderDomainProbeCheckSchema).min(1),
 	})
 	.strict();
@@ -683,6 +753,7 @@ export function buildProviderDomainFixtureEvidenceBundle(
 		readonly evidenceDir?: string;
 		readonly observedAt?: string;
 		readonly probePaths?: Partial<Record<ProviderDomainSurfaceId, string>>;
+		readonly networkProbePath?: string;
 	} = {},
 ): {
 	readonly schemaVersion: 1;
@@ -703,6 +774,9 @@ export function buildProviderDomainFixtureEvidenceBundle(
 			readonly failure?: string;
 		}
 	>();
+	const networkProbe = readProviderDirectNetworkProbeArtifact(
+		input.networkProbePath ?? DEFAULT_PROVIDER_DIRECT_NETWORK_EVIDENCE_PATH,
+	);
 	const evidence = PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS.map((requirement) =>
 		buildProviderDomainFixtureEvidence(requirement, {
 			evidenceDir,
@@ -711,6 +785,7 @@ export function buildProviderDomainFixtureEvidenceBundle(
 				input.probePaths?.[requirement.surfaceId] ??
 				DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS[requirement.surfaceId],
 			probeCache,
+			networkProbe,
 		}),
 	);
 	return {
@@ -730,7 +805,7 @@ export function providerDomainFixtureEvidenceFailure(
 ): string | null {
 	const requirement = PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
-	);
+	) as ProviderDomainFixtureRequirement | undefined;
 	if (!requirement) return null;
 	const parsed = ProviderDomainFixtureEvidenceSchema.safeParse(evidence);
 	if (!parsed.success) {
@@ -770,11 +845,16 @@ export function providerDomainFixtureEvidenceFailure(
 	} else if (probe.evidence) {
 		failures.push(...providerDomainFixtureContractFailures(requirement, data, probe.evidence));
 	}
+	if (requirement.kind === "direct-provider-deny") {
+		failures.push(...providerDirectNetworkFixtureFailures(requirement, data));
+	} else if (data.networkDeny) {
+		failures.push("provider-domain fixture unexpectedly includes direct-provider network evidence");
+	}
 	return failures.length > 0 ? failures.join("; ") : null;
 }
 
 function buildProviderDomainFixtureEvidence(
-	requirement: (typeof PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS)[number],
+	requirement: ProviderDomainFixtureRequirement,
 	options: {
 		readonly evidenceDir: string;
 		readonly observedAt?: string;
@@ -788,6 +868,12 @@ function buildProviderDomainFixtureEvidence(
 				readonly failure?: string;
 			}
 		>;
+		readonly networkProbe: {
+			readonly path: string;
+			readonly sha256: string;
+			readonly evidence?: ProviderDirectNetworkProbeEvidence;
+			readonly failure?: string;
+		};
 	},
 ): ProviderDomainFixtureEvidence {
 	const probe = cachedProviderDomainProbeArtifact(
@@ -795,9 +881,14 @@ function buildProviderDomainFixtureEvidence(
 		requirement.surfaceId,
 		options.probePath,
 	);
-	const checks = buildProviderDomainFixtureChecks(requirement, probe.evidence, probe.failure);
+	const checks =
+		requirement.kind === "direct-provider-deny"
+			? buildProviderDirectNetworkFixtureChecks(requirement, options.networkProbe)
+			: buildProviderDomainFixtureChecks(requirement, probe.evidence, probe.failure);
 	const status =
-		probe.failure === undefined && checks.every((check) => check.status === "pass")
+		probe.failure === undefined &&
+		(requirement.kind !== "direct-provider-deny" || options.networkProbe.failure === undefined) &&
+		checks.every((check) => check.status === "pass")
 			? "pass"
 			: "fail";
 	return {
@@ -821,12 +912,25 @@ function buildProviderDomainFixtureEvidence(
 			requiredProbeChecks: [...requirement.requiredChecks],
 			requiredObservationHashes: [...requirement.requiredObservationHashes],
 		},
+		...(requirement.kind === "direct-provider-deny" && requirement.networkAttemptName
+			? {
+					networkDeny: {
+						probeId: "network.direct-provider-denied" as const,
+						probePath: options.networkProbe.path,
+						probeSha256: options.networkProbe.sha256,
+						requiredAttemptName: requirement.networkAttemptName,
+						...(options.networkProbe.evidence?.posture
+							? { posture: options.networkProbe.evidence.posture }
+							: {}),
+					},
+				}
+			: {}),
 		checks,
 	};
 }
 
 function buildProviderDomainFixtureChecks(
-	requirement: (typeof PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS)[number],
+	requirement: ProviderDomainFixtureRequirement,
 	probe: ProviderDomainProbeEvidence | undefined,
 	probeFailure: string | undefined,
 ): ProbeCheck[] {
@@ -862,8 +966,54 @@ function buildProviderDomainFixtureChecks(
 	];
 }
 
+function buildProviderDirectNetworkFixtureChecks(
+	requirement: ProviderDomainFixtureRequirement,
+	networkProbe: {
+		readonly evidence?: ProviderDirectNetworkProbeEvidence;
+		readonly failure?: string;
+	},
+): ProbeCheck[] {
+	const attemptName = requirement.networkAttemptName;
+	if (!attemptName) {
+		return [
+			{
+				name: `${requirement.id}.network-attempt-configured`,
+				status: "fail",
+				detail: "direct-provider-deny fixture is missing a required network attempt name",
+			},
+		];
+	}
+	if (!networkProbe.evidence || networkProbe.failure) {
+		return [
+			{
+				name: `${requirement.id}.${attemptName}`,
+				status: "fail",
+				detail: networkProbe.failure ?? "direct provider network evidence is missing",
+			},
+		];
+	}
+	const attempt = networkProbe.evidence.attempts.find(
+		(candidate) => candidate.name === attemptName,
+	);
+	const passed =
+		networkProbe.evidence.status === "pass" &&
+		networkProbe.evidence.ran === true &&
+		attempt?.status === "pass" &&
+		attempt.expectation === "deny" &&
+		(attempt.observed === "denied" || attempt.observed === "policy_denied");
+	return [
+		{
+			name: `${requirement.id}.${attemptName}`,
+			status: passed ? "pass" : "fail",
+			detail: passed
+				? `direct ${requirement.providerId} provider endpoint was denied in the Hermes runtime namespace`
+				: `network evidence does not contain a passing denial attempt named ${attemptName}`,
+		},
+	];
+}
+
 function providerDomainFixtureContractFailures(
-	requirement: (typeof PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS)[number],
+	requirement: ProviderDomainFixtureRequirement,
 	fixture: ProviderDomainFixtureEvidence,
 	probe: ProviderDomainProbeEvidence,
 ): string[] {
@@ -884,6 +1034,52 @@ function providerDomainFixtureContractFailures(
 		if (fixtureCheck?.status !== "pass") {
 			failures.push(`fixture observation check ${field} is not pass`);
 		}
+	}
+	return failures;
+}
+
+function providerDirectNetworkFixtureFailures(
+	requirement: ProviderDomainFixtureRequirement,
+	fixture: ProviderDomainFixtureEvidence,
+): string[] {
+	const failures: string[] = [];
+	const binding = fixture.networkDeny;
+	if (!binding) return ["direct-provider fixture networkDeny binding is missing"];
+	if (binding.probeId !== "network.direct-provider-denied") {
+		failures.push(`networkDeny probeId is ${binding.probeId}`);
+	}
+	if (binding.requiredAttemptName !== requirement.networkAttemptName) {
+		failures.push("networkDeny requiredAttemptName does not match provider contract");
+	}
+	const network = readProviderDirectNetworkProbeArtifact(binding.probePath);
+	if (network.sha256 !== binding.probeSha256) {
+		failures.push("networkDeny probeSha256 does not match direct-provider network artifact");
+	}
+	if (network.failure) {
+		failures.push(`networkDeny probe artifact failed validation: ${network.failure}`);
+		return failures;
+	}
+	const attempt = network.evidence?.attempts.find(
+		(candidate) => candidate.name === requirement.networkAttemptName,
+	);
+	if (!attempt) {
+		failures.push(`networkDeny attempt ${String(requirement.networkAttemptName)} is missing`);
+	} else if (
+		attempt.status !== "pass" ||
+		attempt.expectation !== "deny" ||
+		(attempt.observed !== "denied" && attempt.observed !== "policy_denied")
+	) {
+		failures.push(
+			`networkDeny attempt ${String(requirement.networkAttemptName)} is not a passing denial`,
+		);
+	}
+	const fixtureCheck = new Map(fixture.checks.map((check) => [check.name, check])).get(
+		`${requirement.id}.${String(requirement.networkAttemptName)}`,
+	);
+	if (fixtureCheck?.status !== "pass") {
+		failures.push(
+			`fixture network denial check ${String(requirement.networkAttemptName)} is not pass`,
+		);
 	}
 	return failures;
 }
@@ -955,6 +1151,50 @@ function readProviderDomainProbeArtifact(
 		sha256: hashFile(probePath),
 		evidence: parsed.data,
 		...(semanticFailure ? { failure: semanticFailure } : {}),
+	};
+}
+
+function readProviderDirectNetworkProbeArtifact(probePath: string): {
+	readonly path: string;
+	readonly sha256: string;
+	readonly evidence?: ProviderDirectNetworkProbeEvidence;
+	readonly failure?: string;
+} {
+	if (!fs.existsSync(probePath)) {
+		return {
+			path: probePath,
+			sha256: hashText(`${probePath}:missing`),
+			failure: `missing direct-provider network artifact ${probePath}`,
+		};
+	}
+	let raw: unknown;
+	try {
+		raw = JSON.parse(fs.readFileSync(probePath, "utf8")) as unknown;
+	} catch (error) {
+		return {
+			path: probePath,
+			sha256: hashFile(probePath),
+			failure: `unreadable direct-provider network artifact: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	const parsed = ProviderDirectNetworkProbeEvidenceSchema.safeParse(raw);
+	if (!parsed.success) {
+		return {
+			path: probePath,
+			sha256: hashFile(probePath),
+			failure: `invalid direct-provider network artifact: ${flattenZodError(parsed.error)}`,
+		};
+	}
+	const failures: string[] = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push("network probe did not run");
+	return {
+		path: probePath,
+		sha256: hashFile(probePath),
+		evidence: parsed.data,
+		...(failures.length > 0 ? { failure: failures.join("; ") } : {}),
 	};
 }
 

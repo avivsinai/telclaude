@@ -12,6 +12,7 @@ import {
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
@@ -25,7 +26,7 @@ export const DEFAULT_DNS_EXFIL_PROBE_URLS = [
 	"http://100.64.0.1/",
 ];
 export const DEFAULT_DNS_EXFIL_PROBE_URL = DEFAULT_DNS_EXFIL_PROBE_URLS.join(",");
-export const NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION = "telclaude.hermes.network-probe.v1";
+export { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 type NetworkProbeId = (typeof REQUIRED_CUTOVER_NETWORK_PROBE_IDS)[number];
 
@@ -308,10 +309,28 @@ async function runDirectProviderDenied(
 		...(options.providerUrls.length === 0
 			? [configurationAttempt("providerUrls", "TELCLAUDE_HERMES_NETWORK_PROVIDER_URL")]
 			: await Promise.all(
-					options.providerUrls.map((url) => attemptHttpDenied("provider", url, options.timeoutMs)),
+					options.providerUrls.map((entry, index) => {
+						const target = parseProviderDenyTarget(entry, index);
+						return attemptHttpDenied(target.name, target.url, options.timeoutMs);
+					}),
 				)),
 	];
 	return networkProbeEvidence("network.direct-provider-denied", attempts, options);
+}
+
+function parseProviderDenyTarget(entry: string, index: number): { name: string; url: string } {
+	const trimmed = entry.trim();
+	const named = trimmed.match(/^([A-Za-z][A-Za-z0-9_.-]*)=(.+)$/);
+	if (!named) {
+		return {
+			name: index === 0 ? "provider" : `provider:${index + 1}`,
+			url: trimmed,
+		};
+	}
+	return {
+		name: `provider:${named[1]}`,
+		url: named[2].trim(),
+	};
 }
 
 async function runRelayControlAllowed(

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "../../src/hermes/network-probe-schema.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
 	PROVIDER_DOMAIN_SURFACE_IDS,
@@ -103,9 +104,15 @@ describe("Hermes provider-domain probes", () => {
 	it("builds provider fixture evidence bound to provider-domain probe artifacts", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-domain-fixtures-"));
 		const probePaths = await writeProviderDomainProbeArtifacts(tempDir);
+		const networkProbePath = writeDirectProviderNetworkProbeArtifact(tempDir, [
+			"provider:bank",
+			"provider:clalit",
+			"provider:government",
+		]);
 		const bundle = buildProviderDomainFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			probePaths,
+			networkProbePath,
 			observedAt: "2026-06-01T09:10:00.000Z",
 		});
 
@@ -113,22 +120,72 @@ describe("Hermes provider-domain probes", () => {
 			expect.arrayContaining([
 				expect.objectContaining({ id: "fixture.providers.bank.read", status: "pass" }),
 				expect.objectContaining({
+					id: "fixture.providers.bank.direct-provider-deny",
+					status: "pass",
+				}),
+				expect.objectContaining({
 					id: "fixture.providers.clalit.emergency-escalate",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					id: "fixture.providers.clalit.direct-provider-deny",
 					status: "pass",
 				}),
 				expect.objectContaining({
 					id: "fixture.providers.government.approved-submit",
 					status: "pass",
 				}),
+				expect.objectContaining({
+					id: "fixture.providers.government.direct-provider-deny",
+					status: "pass",
+				}),
 			]),
 		);
-		expect(bundle.results.some((result) => result.id.endsWith("direct-provider-deny"))).toBe(false);
 		const bankReadEvidence = bundle.evidence.find(
 			(evidence) => evidence.id === "fixture.providers.bank.read",
 		);
 		expect(
 			providerDomainFixtureEvidenceFailure("fixture.providers.bank.read", bankReadEvidence),
 		).toBeNull();
+		const bankDirectEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.providers.bank.direct-provider-deny",
+		);
+		expect(
+			providerDomainFixtureEvidenceFailure(
+				"fixture.providers.bank.direct-provider-deny",
+				bankDirectEvidence,
+			),
+		).toBeNull();
+	});
+
+	it("keeps direct-provider-deny fixtures red without provider-specific network attempts", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-domain-fixtures-"));
+		const probePaths = await writeProviderDomainProbeArtifacts(tempDir);
+		const networkProbePath = writeDirectProviderNetworkProbeArtifact(tempDir, ["provider"]);
+		const bundle = buildProviderDomainFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			probePaths,
+			networkProbePath,
+			observedAt: "2026-06-01T09:10:00.000Z",
+		});
+		const bankDirectEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.providers.bank.direct-provider-deny",
+		);
+
+		expect(bundle.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "fixture.providers.bank.direct-provider-deny",
+					status: "fail",
+				}),
+			]),
+		);
+		expect(
+			providerDomainFixtureEvidenceFailure(
+				"fixture.providers.bank.direct-provider-deny",
+				bankDirectEvidence,
+			),
+		).toContain("networkDeny attempt provider:bank is missing");
 	});
 
 	it("rejects provider fixture evidence when the bound probe artifact changes", async () => {
@@ -168,4 +225,40 @@ async function writeProviderDomainProbeArtifacts(
 		fs.writeFileSync(probePaths[surfaceId], JSON.stringify(evidence, null, 2), "utf8");
 	}
 	return probePaths;
+}
+
+function writeDirectProviderNetworkProbeArtifact(
+	tempDir: string,
+	attemptNames: readonly string[],
+): string {
+	const probePath = path.join(tempDir, "direct-provider-denied.json");
+	fs.writeFileSync(
+		probePath,
+		JSON.stringify(
+			{
+				schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+				id: "network.direct-provider-denied",
+				posture: "contained-internal",
+				status: "pass",
+				ran: true,
+				summary: "direct provider endpoints were denied in the Hermes runtime namespace",
+				generatedAt: "2026-06-01T09:10:00.000Z",
+				evidence_path: probePath,
+				attempts: attemptNames.map((name) => ({
+					name,
+					kind: "http",
+					target: `http://${name.replace(/[^a-z0-9-]/gi, "-")}.invalid/v1/health`,
+					expectation: "deny",
+					status: "pass",
+					observed: "denied",
+					detail: `${name} was denied`,
+					errorCode: "ENETUNREACH",
+				})),
+			},
+			null,
+			2,
+		),
+		"utf8",
+	);
+	return probePath;
 }
