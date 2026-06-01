@@ -41,13 +41,13 @@ export TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=/run/telclaude/hermes-live-mcp-adm
 export TELCLAUDE_HERMES_INFERENCE_MODEL="${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}"
 
 # Required for the one-off operator CLI and relay-authenticated rollback evidence.
-# Generate once with `pnpm dev keygen operator`; keep OPERATOR_RPC_AGENT_PRIVATE_KEY
+# Generate once with `pnpm dev dev keygen operator`; keep OPERATOR_RPC_AGENT_PRIVATE_KEY
 # on the host, pass OPERATOR_RPC_AGENT_PUBLIC_KEY and OPERATOR_RPC_RELAY_PRIVATE_KEY
 # into the relay, and pass OPERATOR_RPC_RELAY_PUBLIC_KEY to the rollback CLI.
-export OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}"
-export OPERATOR_RPC_AGENT_PUBLIC_KEY="${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}"
-export OPERATOR_RPC_RELAY_PRIVATE_KEY="${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}"
-export OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen operator}"
+export OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev dev keygen operator}"
+export OPERATOR_RPC_AGENT_PUBLIC_KEY="${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev dev keygen operator}"
+export OPERATOR_RPC_RELAY_PRIVATE_KEY="${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev dev keygen operator}"
+export OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev dev keygen operator}"
 
 # Required for Hermes openai-codex. This must be a relay-scoped Telclaude proxy
 # token, not an upstream OpenAI API key or Codex OAuth token.
@@ -404,8 +404,8 @@ hand-write this evidence.
 ```bash
 docker exec \
   -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
-  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
-  -e OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev keygen operator}" \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev dev keygen operator}" \
+  -e OPERATOR_RPC_RELAY_PUBLIC_KEY="${OPERATOR_RPC_RELAY_PUBLIC_KEY:?set from pnpm dev dev keygen operator}" \
   telclaude telclaude hermes rollback-rehearsal \
     --allow-run \
     --json \
@@ -427,12 +427,12 @@ operator surface before the final cutover check and any real flag flip:
 ```bash
 docker exec \
   -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
-  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev dev keygen operator}" \
   telclaude telclaude hermes private-runtime set hermes --json
 
 docker exec \
   -e TELCLAUDE_CAPABILITIES_URL=http://127.0.0.1:${TELCLAUDE_CAPABILITIES_PORT:-8790} \
-  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev keygen operator}" \
+  -e OPERATOR_RPC_AGENT_PRIVATE_KEY="${OPERATOR_RPC_AGENT_PRIVATE_KEY:?set from pnpm dev dev keygen operator}" \
   telclaude telclaude hermes private-runtime status --json
 ```
 
