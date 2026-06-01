@@ -11,6 +11,16 @@ describe("Hermes Pro review gate", () => {
 			expect.arrayContaining([
 				"src/hermes/edge-adapter-runtime.ts",
 				"tests/hermes/edge-adapter-runtime.test.ts",
+				"src/hermes/browser-computer-broker-probes.ts",
+				"tests/hermes/browser-computer-broker-probes.test.ts",
+				"src/hermes/network-probes.ts",
+				"tests/hermes/network-probes.test.ts",
+				"artifacts/hermes/fixtures/fixture.public.whatsapp.basic.json",
+				"artifacts/hermes/fixtures/fixture.household.provider.strong-link-read.json",
+				"artifacts/hermes/fixtures/fixture.providers.bank.direct-provider-deny.json",
+				"artifacts/hermes/fixtures/fixture.providers.google.direct-provider-deny.json",
+				"src/hermes/workflow-probes.ts",
+				"tests/hermes/workflow-probes.test.ts",
 			]),
 		);
 	});
