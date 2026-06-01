@@ -139,13 +139,15 @@ os.replace(tmp_path, path)
 PY
 /opt/hermes/hermes "$@"
 status=$?
-python - "$TELCLAUDE_HERMES_RELAY_PROOF_PATH" <<'"'"'PY'"'"'
+python - "$TELCLAUDE_HERMES_RELAY_PROOF_PATH" "$TELCLAUDE_HERMES_RUNTIME_OBSERVATION_PATH" <<'"'"'PY'"'"'
 import json
 import os
+import re
 import sys
 import urllib.request
 
 path = sys.argv[1]
+runtime_observation_path = sys.argv[2]
 auth_path = os.path.join(os.environ["HERMES_HOME"], "auth.json")
 try:
     with open(auth_path, encoding="utf-8") as handle:
@@ -165,6 +167,41 @@ try:
     )
     with urllib.request.urlopen(request, timeout=10) as response:
         proof = json.loads(response.read().decode("utf-8"))
+    if not isinstance(proof, dict):
+        raise RuntimeError("relay proof is not a JSON object")
+    expected = {
+        "schemaVersion": "telclaude.hermes.cli-headless-relay-proof.v1",
+        "source": "telclaude-openai-codex-proxy",
+        "method": "POST",
+        "path": "/backend-api/codex/responses",
+    }
+    for key, value in expected.items():
+        if proof.get(key) != value:
+            raise RuntimeError(f"relay proof {key} is {proof.get(key)!r}, expected {value!r}")
+    upstream_status = proof.get("upstreamStatus")
+    if not isinstance(upstream_status, int) or upstream_status < 200 or upstream_status >= 300:
+        raise RuntimeError(f"relay proof upstreamStatus is {upstream_status!r}")
+    proof_token_sha256 = proof.get("proofTokenSha256")
+    if not isinstance(proof_token_sha256, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", proof_token_sha256):
+        raise RuntimeError("relay proof proofTokenSha256 is missing or invalid")
+    signature = proof.get("signature")
+    if not isinstance(signature, dict):
+        raise RuntimeError("relay proof signature is missing")
+    for key in ("version", "scope", "timestamp", "nonce", "method", "path", "requestBodySha256", "responseBodySha256", "signature"):
+        value = signature.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(f"relay proof signature.{key} is missing")
+    observed_peer = proof.get("observedPeerAddress")
+    if not isinstance(observed_peer, str) or not observed_peer.strip():
+        raise RuntimeError("relay proof observedPeerAddress is missing")
+    if os.path.exists(runtime_observation_path):
+        with open(runtime_observation_path, encoding="utf-8") as handle:
+            observation = json.load(handle)
+        runtime_peer = observation.get("observedPeerAddress")
+        if isinstance(runtime_peer, str) and runtime_peer.strip() and runtime_peer.strip() != observed_peer.strip():
+            raise RuntimeError(
+                f"relay proof observedPeerAddress {observed_peer!r} does not match runtime observedPeerAddress {runtime_peer!r}"
+            )
     tmp_path = f"{path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as handle:
         json.dump(proof, handle, indent=2, sort_keys=True)
@@ -172,7 +209,12 @@ try:
     os.replace(tmp_path, path)
 except Exception as exc:
     print(f"failed to collect relay proof evidence: {exc}", file=sys.stderr)
+    sys.exit(126)
 PY
+proof_status=$?
+if [ "$status" -eq 0 ] && [ "$proof_status" -ne 0 ]; then
+	status=$proof_status
+fi
 exit "$status"' \
 	sh "$@"
 status=$?

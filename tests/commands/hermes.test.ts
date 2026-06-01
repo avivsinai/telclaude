@@ -66,10 +66,17 @@ import {
 	runHermesWorkflowProbe,
 } from "../../src/hermes/workflow-probes.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
+import {
+	type OpenAiCodexRelayProof,
+	type OpenAiCodexRelayProofSignedFields,
+	openAiCodexRelayProofTokenSha256,
+	signOpenAiCodexRelayProof,
+} from "../../src/relay/openai-codex-relay-proof.js";
 import { redactSecrets } from "../../src/security/output-filter.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
+const cliHeadlessRelaySigningKeys = generateKeyPair();
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
 
 const featureProbeMatrix: FeatureProbeMatrix = {
@@ -2232,18 +2239,7 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		observedPeerAddress: "172.29.92.11",
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
-	const relayProof = {
-		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
-		source: "telclaude-openai-codex-proxy",
-		requestId: "codex-proof-1",
-		method: "POST",
-		path: "/backend-api/codex/responses",
-		observedPeerAddress: "172.29.92.11",
-		upstreamStatus: 200,
-		model: "gpt-5.3-codex",
-		requestBodySha256: `sha256:${"a".repeat(64)}`,
-		observedAt: "2026-05-30T00:00:00.500Z",
-	};
+	const relayProof = cliHeadlessRelayProof();
 	const base = {
 		schemaVersion: "telclaude.hermes.probe-result.v1",
 		probeId: "execution.cli_headless",
@@ -2299,6 +2295,37 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		};
 	}
 	return report;
+}
+
+function cliHeadlessRelayProof(
+	overrides: Partial<OpenAiCodexRelayProofSignedFields> = {},
+): OpenAiCodexRelayProof {
+	if (!process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY || !process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = cliHeadlessRelaySigningKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
+	}
+	return signOpenAiCodexRelayProof({
+		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
+		source: "telclaude-openai-codex-proxy",
+		requestId: "codex-proof-1",
+		method: "POST",
+		path: "/backend-api/codex/responses",
+		observedPeerAddress: "172.29.92.11",
+		upstreamStatus: 200,
+		model: "gpt-5.3-codex",
+		requestBodySha256: `sha256:${"a".repeat(64)}`,
+		proofTokenSha256: openAiCodexRelayProofTokenSha256("telclaude probe ok"),
+		observedAt: "2026-05-30T00:00:00.500Z",
+		...overrides,
+	});
+}
+
+function cliHeadlessUnsignedRelayProofWithNullToken(): Record<string, unknown> {
+	const { signature: _signature, ...unsigned } = cliHeadlessRelayProof();
+	return {
+		...unsigned,
+		proofTokenSha256: null,
+	};
 }
 
 function cliHeadlessReadinessFailureEvidence(): Record<string, unknown> {
@@ -4747,6 +4774,13 @@ describe("Hermes wrapper foundation", () => {
 			detail: "relay proof is missing",
 		},
 		{
+			name: "unsigned relay proof with null proof token",
+			evidence: cliHeadlessEvidence({
+				relayProof: cliHeadlessUnsignedRelayProofWithNullToken(),
+			}),
+			detail: "relayProof.signature",
+		},
+		{
 			name: "mismatched relay proof provenance",
 			evidence: cliHeadlessEvidence({
 				provenance: {
@@ -4758,10 +4792,9 @@ describe("Hermes wrapper foundation", () => {
 		{
 			name: "relay proof from wrong peer",
 			evidence: cliHeadlessEvidence({
-				relayProof: {
-					...(cliHeadlessEvidence().relayProof as Record<string, unknown>),
+				relayProof: cliHeadlessRelayProof({
 					observedPeerAddress: "172.29.92.12",
-				},
+				}),
 			}),
 			detail: "relay proof observedPeerAddress does not match runtime observedPeerAddress",
 		},
@@ -7652,6 +7685,8 @@ echo should-not-run
 	it("writes a passing cli-headless artifact only with runtime and relay proof", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
 		const hermesBin = writeExecutable(
 			tempDir,
 			`#!/bin/sh
@@ -7672,49 +7707,88 @@ cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'
   "provenanceSource": "docker-inspect-container-dns-and-relay-peer"
 }
 JSON
-cat > "$HERMES_HOME/relay-proof.json" <<JSON
-{
-  "schemaVersion": "telclaude.hermes.cli-headless-relay-proof.v1",
-  "source": "telclaude-openai-codex-proxy",
-  "requestId": "codex-proof-1",
-  "method": "POST",
-  "path": "/backend-api/codex/responses",
-  "observedPeerAddress": "172.29.92.11",
-  "upstreamStatus": 200,
-  "model": "gpt-5.3-codex",
-  "requestBodySha256": "sha256:${"a".repeat(64)}",
-  "observedAt": "$observed_at"
-}
-JSON
+node - "$HERMES_HOME/relay-proof.json" "$observed_at" <<'NODE'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const outputPath = process.argv[2];
+const observedAt = process.argv[3];
+const privateKey = ${JSON.stringify(cliHeadlessRelaySigningKeys.privateKey)};
+const proof = {
+  schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
+  source: "telclaude-openai-codex-proxy",
+  requestId: "codex-proof-1",
+  method: "POST",
+  path: "/backend-api/codex/responses",
+  observedPeerAddress: "172.29.92.11",
+  upstreamStatus: 200,
+  model: "gpt-5.3-codex",
+  requestBodySha256: "sha256:${"a".repeat(64)}",
+  proofTokenSha256: "${openAiCodexRelayProofTokenSha256("TELCLAUDE_HERMES_CLI_OK")}",
+  observedAt,
+};
+const signedPayload = JSON.stringify(proof);
+const sha256Hex = (value) => crypto.createHash("sha256").update(value).digest("hex");
+const unsigned = {
+  version: "v1",
+  scope: "operator",
+  timestamp: Date.now().toString(),
+  nonce: crypto.randomBytes(16).toString("hex"),
+  method: "POST",
+  path: "/backend-api/codex/responses",
+  requestBodySha256: sha256Hex(signedPayload),
+  responseBodySha256: sha256Hex(signedPayload),
+};
+const signaturePayload = Buffer.from([
+  "v1",
+  "relay-response",
+  unsigned.scope,
+  unsigned.timestamp,
+  unsigned.nonce,
+  unsigned.method,
+  unsigned.path,
+  unsigned.requestBodySha256,
+  unsigned.responseBodySha256,
+].join("\\n"));
+const signature = crypto.sign(null, signaturePayload, {
+  key: Buffer.from(privateKey, "base64"),
+  format: "der",
+  type: "pkcs8",
+}).toString("base64");
+fs.writeFileSync(outputPath, JSON.stringify({ ...proof, signature: { ...unsigned, signature } }, null, 2) + "\\n");
+NODE
 echo "TELCLAUDE_HERMES_CLI_OK"
 exit 0
 `,
 		);
 
-		const result = await runHermesCommandWithEnv(
-			[
-				"hermes",
-				"probe",
-				"execution.cli_headless",
-				"--allow-run",
-				"--json",
-				"--hermes-bin",
-				hermesBin,
-				"--hermes-home",
-				path.join(tempDir, "home"),
-				"--cwd",
-				tempDir,
-				"--out",
-				evidencePath,
-			],
-			cliRelayEnv(),
-		);
-		const report = JSON.parse(result.stdout) as { status: string; exitCode: number };
-		const artifact = readJson(evidencePath) as { status: string; exitCode: number };
+		try {
+			const result = await runHermesCommandWithEnv(
+				[
+					"hermes",
+					"probe",
+					"execution.cli_headless",
+					"--allow-run",
+					"--json",
+					"--hermes-bin",
+					hermesBin,
+					"--hermes-home",
+					path.join(tempDir, "home"),
+					"--cwd",
+					tempDir,
+					"--out",
+					evidencePath,
+				],
+				cliRelayEnv(),
+			);
+			const report = JSON.parse(result.stdout) as { status: string; exitCode: number };
+			const artifact = readJson(evidencePath) as { status: string; exitCode: number };
 
-		expect(result.exitCode).toBe(0);
-		expect(report).toMatchObject({ status: "pass", exitCode: 0 });
-		expect(artifact).toMatchObject({ status: "pass", exitCode: 0 });
+			expect(result.exitCode).toBe(0);
+			expect(report).toMatchObject({ status: "pass", exitCode: 0 });
+			expect(artifact).toMatchObject({ status: "pass", exitCode: 0 });
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+		}
 	});
 
 	it("validates imported cli-headless reports without writing canonical evidence", async () => {
