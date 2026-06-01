@@ -127,6 +127,12 @@ import {
 	runTelclaudeProviderApprovalBindingProbe,
 } from "../hermes/provider-approval-binding-probe.js";
 import {
+	buildProviderDomainFixtureEvidenceBundle,
+	DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS,
+	isProviderDomainSurfaceId,
+	runTelclaudeProviderDomainProbe,
+} from "../hermes/provider-domain-probes.js";
+import {
 	DEFAULT_HERMES_ROLLBACK_REHEARSAL_EVIDENCE_PATH,
 	runHermesRollbackRehearsal,
 	writeHermesRollbackRehearsalEvidence,
@@ -249,6 +255,8 @@ type ProofBundleOption = JsonOption &
 
 type FixtureResultOption = JsonOption & {
 	write?: boolean;
+	includeProviderDomain?: boolean;
+	mergeExisting?: boolean;
 	out: string;
 	evidenceDir: string;
 	testReport?: string;
@@ -531,6 +539,19 @@ function buildPrivateTelegramFixtureResultBundle(options: {
 		})),
 		evidence,
 	};
+}
+
+function mergeFixtureResults(
+	existing: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>,
+	generated: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>,
+): Array<{ id: string; status: "pass" | "fail"; evidence_path: string }> {
+	const generatedById = new Map(generated.map((result) => [result.id, result]));
+	const merged = existing.map((result) => generatedById.get(result.id) ?? result);
+	const existingIds = new Set(existing.map((result) => result.id));
+	for (const result of generated) {
+		if (!existingIds.has(result.id)) merged.push(result);
+	}
+	return merged;
 }
 
 function resolveHermesBin(value: string | undefined): string {
@@ -1141,6 +1162,11 @@ export function registerHermesCommand(program: Command): void {
 			"Directory for generated per-fixture evidence",
 			"artifacts/hermes/fixtures",
 		)
+		.option(
+			"--include-provider-domain",
+			"Generate provider-domain fixture evidence from provider-domain probe artifacts",
+		)
+		.option("--merge-existing", "Merge generated fixture evidence into the existing output bundle")
 		.option("--observed-at <iso>", "Observed timestamp for generated evidence")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: FixtureResultOption) => {
@@ -1155,38 +1181,66 @@ export function registerHermesCommand(program: Command): void {
 					observedAt,
 					invocation,
 				});
+				const providerDomainBundle =
+					options.includeProviderDomain === true
+						? buildProviderDomainFixtureEvidenceBundle({
+								evidenceDir: options.evidenceDir,
+								observedAt,
+							})
+						: undefined;
+				const existingResults =
+					options.mergeExisting === true && fs.existsSync(resolveHermesArtifactPath(options.out))
+						? ((
+								readJsonFile(resolveHermesArtifactPath(options.out)) as {
+									results?: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>;
+								}
+							).results ?? [])
+						: [];
+				const generatedResults = [
+					...bundle.results,
+					...(providerDomainBundle?.results ?? []),
+				] as Array<{
+					id: string;
+					status: "pass" | "fail";
+					evidence_path: string;
+				}>;
+				const results =
+					options.mergeExisting === true
+						? mergeFixtureResults(existingResults, generatedResults)
+						: generatedResults;
+				const evidence = [...bundle.evidence, ...(providerDomainBundle?.evidence ?? [])];
 				if (options.write) {
 					if (options.testReport) {
 						throw new Error(
 							"Imported private Telegram fixture reports cannot be written; omit --test-report so the command runs Vitest and records machine-observed evidence.",
 						);
 					}
-					for (const evidence of bundle.evidence) {
+					for (const evidenceItem of evidence) {
 						const evidencePath =
-							typeof evidence === "object" &&
-							evidence !== null &&
-							"evidence_path" in evidence &&
-							typeof evidence.evidence_path === "string"
-								? evidence.evidence_path
+							typeof evidenceItem === "object" &&
+							evidenceItem !== null &&
+							"evidence_path" in evidenceItem &&
+							typeof evidenceItem.evidence_path === "string"
+								? evidenceItem.evidence_path
 								: undefined;
 						if (!evidencePath) throw new Error("fixture evidence is missing evidence_path");
-						writeJsonArtifact(evidencePath, evidence, trackedSeedWriteOptions(options));
+						writeJsonArtifact(evidencePath, evidenceItem, trackedSeedWriteOptions(options));
 					}
 					writeJsonArtifact(
 						options.out,
 						{
 							schemaVersion: bundle.schemaVersion,
-							results: bundle.results,
+							results,
 						},
 						trackedSeedWriteOptions(options),
 					);
 				}
 				const report = {
 					schemaVersion: 1,
-					status: bundle.results.every((result) => result.status === "pass") ? "pass" : "fail",
+					status: results.every((result) => result.status === "pass") ? "pass" : "fail",
 					written: options.write === true,
 					out: options.out,
-					results: bundle.results,
+					results,
 				};
 				if (options.json) {
 					printJson(report);
@@ -1981,6 +2035,32 @@ export function registerHermesCommand(program: Command): void {
 				if (options.allowRun === true || options.out) {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH,
+					);
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (isProviderDomainSurfaceId(surface)) {
+				const report = await runTelclaudeProviderDomainProbe({
+					surfaceId: surface,
+					allowRun: options.allowRun === true,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true || options.out) {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS[surface],
 					);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
 				}

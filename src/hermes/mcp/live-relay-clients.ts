@@ -71,6 +71,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerRead(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
+			assertProviderOperationPolicy(operation);
 			const response = await provider({
 				providerId: operation.providerId,
 				path: PROVIDER_PATH,
@@ -87,6 +88,7 @@ export function createTelclaudeLiveMcpRelayClients(
 		async providerPrepareWrite(request) {
 			assertAuthorityMemoryBoundary(request);
 			const operation = resolveTelclaudeProviderOperation(request);
+			assertProviderOperationPolicy(operation);
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
@@ -203,6 +205,30 @@ function providerFetchBody(
 
 function providerErrorCode(response: { errorCode?: string; error?: string }): string {
 	return redactSecrets(response.errorCode || response.error || "provider_unavailable");
+}
+
+function assertProviderOperationPolicy(request: {
+	readonly providerId: string;
+	readonly service: string;
+	readonly action: string;
+	readonly params: Record<string, unknown>;
+}): void {
+	if (request.providerId === "clalit" && containsUrgentHealthSignal(request)) {
+		throw new Error("provider policy denied: urgent_health_escalation_required");
+	}
+}
+
+function containsUrgentHealthSignal(value: unknown): boolean {
+	const text = JSON.stringify(value).toLowerCase();
+	return [
+		"emergency",
+		"urgent",
+		"chest pain",
+		"shortness of breath",
+		"stroke",
+		"heart attack",
+		"suicidal",
+	].some((term) => text.includes(term));
 }
 
 function parseMemorySearchFilters(
