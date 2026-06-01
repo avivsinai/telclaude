@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
 import path from "node:path";
 import {
 	type HermesArtifactWriteOptions,
@@ -6,6 +7,12 @@ import {
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
+import {
+	NO_FORK_RUNNER_ATTESTATION_RUNNER,
+	NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
+	NO_FORK_RUNNER_ATTESTATION_SOURCE,
+	signNoForkRunnerAttestation,
+} from "./no-fork-attestation.js";
 
 export const DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH = "/home/user/MyProjects/hermes-agent";
 export const DEFAULT_HERMES_UPSTREAM_REF = "v2026.5.29";
@@ -38,12 +45,27 @@ export type NoForkProofReport = NoForkProof & {
 	}>;
 };
 
+export type NoForkWrapperRunEvidence = {
+	readonly startedAt: string;
+	readonly endedAt: string;
+	readonly wrapperPackageSha256: `sha256:${string}`;
+	readonly profileGenerationSha256: `sha256:${string}`;
+	readonly fixtureResultsSha256: `sha256:${string}`;
+	readonly transcriptSha256: `sha256:${string}`;
+	readonly p0Command: readonly string[];
+	readonly p0ExitCode: number;
+	readonly p0Status: "pass" | "fail";
+	readonly runtimeSourceReplacementDenied: boolean;
+	readonly monkeypatchDenied: boolean;
+};
+
 export function buildNoForkProof(input: {
 	readonly checkoutPath?: string;
 	readonly expectedRef?: string;
 	readonly expectedVersion?: string;
 	readonly evidencePath?: string;
 	readonly runner?: NoForkGitRunner;
+	readonly wrapperRun?: NoForkWrapperRunEvidence;
 }): NoForkProofReport {
 	const checkoutPath = path.resolve(input.checkoutPath ?? DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH);
 	const expectedRef = nonEmpty(input.expectedRef, DEFAULT_HERMES_UPSTREAM_REF);
@@ -136,6 +158,104 @@ export function buildNoForkProof(input: {
 					.filter((tag) => tag.length > 0)
 			: [];
 
+	const postStatus = checkoutExists
+		? runner(["status", "--porcelain=v1"], checkoutPath)
+		: failedGit();
+	const postStatusPorcelain = postStatus.exitCode === 0 ? postStatus.stdout.trim() : "";
+	const postDiff = checkoutExists ? runner(["diff", "--quiet"], checkoutPath) : failedGit();
+	const postCachedDiff = checkoutExists
+		? runner(["diff", "--cached", "--quiet"], checkoutPath)
+		: failedGit();
+	const signedRunnerAttestation =
+		input.wrapperRun && head && expectedRefCommit
+			? signNoForkRunnerAttestation({
+					schemaVersion: NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
+					source: NO_FORK_RUNNER_ATTESTATION_SOURCE,
+					runner: NO_FORK_RUNNER_ATTESTATION_RUNNER,
+					startedAt: input.wrapperRun.startedAt,
+					endedAt: input.wrapperRun.endedAt,
+					checkoutPath,
+					expectedRef,
+					expectedVersion,
+					head,
+					expectedRefCommit,
+					wrapperPackageSha256: input.wrapperRun.wrapperPackageSha256,
+					profileGenerationSha256: input.wrapperRun.profileGenerationSha256,
+					fixtureResultsSha256: input.wrapperRun.fixtureResultsSha256,
+					transcriptSha256: input.wrapperRun.transcriptSha256,
+					p0Command: input.wrapperRun.p0Command,
+					p0ExitCode: input.wrapperRun.p0ExitCode,
+					p0Status: input.wrapperRun.p0Status,
+					runtimeSourceReplacementDenied: input.wrapperRun.runtimeSourceReplacementDenied,
+					monkeypatchDenied: input.wrapperRun.monkeypatchDenied,
+					postRunStatusPorcelain: postStatusPorcelain,
+					postRunDiffExitCode: postDiff.exitCode,
+					postRunCachedDiffExitCode: postCachedDiff.exitCode,
+				})
+			: undefined;
+	const runnerAttestation = signedRunnerAttestation
+		? {
+				...signedRunnerAttestation,
+				p0Command: [...signedRunnerAttestation.p0Command],
+			}
+		: undefined;
+	checks.push({
+		name: "runner.attestation",
+		status: runnerAttestation ? "pass" : "fail",
+		detail: runnerAttestation
+			? "no-fork wrapper run attestation is signed"
+			: "no-fork wrapper run attestation is missing",
+	});
+	checks.push({
+		name: "runner.p0",
+		status:
+			input.wrapperRun?.p0Status === "pass" && input.wrapperRun.p0ExitCode === 0 ? "pass" : "fail",
+		detail:
+			input.wrapperRun?.p0Status === "pass" && input.wrapperRun.p0ExitCode === 0
+				? "P0 fixture/cutover command passed"
+				: "P0 fixture/cutover command did not pass",
+	});
+	checks.push({
+		name: "runner.noRuntimeSourceReplacement",
+		status: input.wrapperRun?.runtimeSourceReplacementDenied === true ? "pass" : "fail",
+		detail:
+			input.wrapperRun?.runtimeSourceReplacementDenied === true
+				? "runtime source replacement denial was observed"
+				: "runtime source replacement denial was not observed",
+	});
+	checks.push({
+		name: "runner.noMonkeypatch",
+		status: input.wrapperRun?.monkeypatchDenied === true ? "pass" : "fail",
+		detail:
+			input.wrapperRun?.monkeypatchDenied === true
+				? "monkeypatch denial was observed"
+				: "monkeypatch denial was not observed",
+	});
+	checks.push({
+		name: "runner.postStatusClean",
+		status: postStatus.exitCode === 0 && postStatusPorcelain.length === 0 ? "pass" : "fail",
+		detail:
+			postStatus.exitCode === 0 && postStatusPorcelain.length === 0
+				? "post-run git status porcelain is clean"
+				: postStatus.exitCode === 0
+					? `post-run git status porcelain is not clean: ${postStatusPorcelain}`
+					: cleanGitError(postStatus, "post-run git status failed"),
+	});
+	checks.push({
+		name: "runner.postDiffClean",
+		status: postDiff.exitCode === 0 ? "pass" : "fail",
+		detail:
+			postDiff.exitCode === 0 ? "post-run git diff --quiet is clean" : "post-run diff is not clean",
+	});
+	checks.push({
+		name: "runner.postIndexClean",
+		status: postCachedDiff.exitCode === 0 ? "pass" : "fail",
+		detail:
+			postCachedDiff.exitCode === 0
+				? "post-run git diff --cached --quiet is clean"
+				: "post-run index diff is not clean",
+	});
+
 	const hermesCheckoutClean = checks.every((check) => check.status === "pass");
 	return {
 		schemaVersion: 1,
@@ -153,6 +273,7 @@ export function buildNoForkProof(input: {
 		statusPorcelain,
 		diffExitCode: diff.exitCode,
 		cachedDiffExitCode: cachedDiff.exitCode,
+		...(runnerAttestation ? { runnerAttestation } : {}),
 		checks,
 	};
 }
@@ -190,4 +311,8 @@ function nonEmpty(value: string | undefined, fallback: string): string {
 
 function cleanGitError(result: NoForkGitResult, fallback: string): string {
 	return (result.stderr || result.stdout || fallback).replace(/\s+/g, " ").trim();
+}
+
+export function noForkSha256Digest(value: string): `sha256:${string}` {
+	return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
 }
