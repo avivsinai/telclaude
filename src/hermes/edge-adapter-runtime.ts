@@ -69,6 +69,8 @@ export type TelclaudeHouseholdProviderAccessInput = {
 	readonly providerAccount: string;
 	readonly providerAccountBinding: "strong_link" | "number_only";
 	readonly action: "read" | "prepare_write";
+	readonly classification?: "benign" | "sensitive" | "urgent" | "emergency";
+	readonly approved?: boolean;
 	readonly privateMemorySource?: string;
 };
 
@@ -434,9 +436,19 @@ export class TelclaudeEdgeRuntime {
 
 	authorizeHouseholdProviderAccess(input: TelclaudeHouseholdProviderAccessInput): {
 		readonly releaseRef: string;
+		readonly audit: {
+			readonly decision: "allowed";
+			readonly actorId: string;
+			readonly domain: "household";
+			readonly providerAccountRef: string;
+			readonly action: "read" | "prepare_write";
+			readonly classification: "benign" | "sensitive";
+			readonly approved: boolean;
+		};
 	} {
 		const actorRef = ActorRefSchema.parse(input.actorRef);
 		const conversationRef = ConversationRefSchema.parse(input.conversationRef);
+		const requestedClassification = input.classification ?? "benign";
 		if (conversationRef.domain !== "household") {
 			this.deny("household.private-memory-denied", "Provider access is not in household domain");
 		}
@@ -461,6 +473,22 @@ export class TelclaudeEdgeRuntime {
 				"Provider account cannot be released from phone-number-only identity",
 			);
 		}
+		if (requestedClassification === "urgent" || requestedClassification === "emergency") {
+			this.deny(
+				"provider.urgent-health-misclassification-denied",
+				"Urgent or emergency health requests must not be released as ordinary provider reads",
+			);
+		}
+		const classification: "benign" | "sensitive" =
+			input.action === "prepare_write" || requestedClassification === "sensitive"
+				? "sensitive"
+				: "benign";
+		if (classification === "sensitive" && input.approved !== true) {
+			this.deny(
+				"provider.sensitive-release-approval-required",
+				"Sensitive provider release requires explicit approval",
+			);
+		}
 		if (!actorHasScopeAction(actorRef, "household:benign", input.action)) {
 			this.deny("identity.forged-actor-denied", "Household actor lacks scoped provider action");
 		}
@@ -471,6 +499,15 @@ export class TelclaudeEdgeRuntime {
 				providerAccount: input.providerAccount,
 				action: input.action,
 			})}`,
+			audit: {
+				decision: "allowed",
+				actorId: actorRef.actorId,
+				domain: "household",
+				providerAccountRef: `provider-account:${sha256Short(input.providerAccount)}`,
+				action: input.action,
+				classification,
+				approved: input.approved === true,
+			},
 		};
 	}
 

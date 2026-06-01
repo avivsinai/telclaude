@@ -1457,6 +1457,101 @@ function providerApprovalBindingCutoverBundle(
 	});
 }
 
+function providerReleasePolicyProbe(
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "pass",
+) {
+	return {
+		surface_id: "providers.release-policy",
+		hermes_pin: hermesPin,
+		documented_seam:
+			"Telclaude provider release policy binds scoped actor, domain, recipient, and provider account release",
+		probe_command: "pnpm dev hermes probe providers.release-policy --allow-run",
+		expected_result:
+			"Provider reads and prepared actions release only non-secret refs to bound actors and audit the decision",
+		negative_probe:
+			"Wrong actor, wrong recipient, missing strong link, urgent health misclassification, private memory, and unapproved sensitive release fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.providers.releasePolicy",
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function providerReleasePolicyCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	const probe = providerReleasePolicyProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "household.assistant",
+					owner: "household:family",
+					trust_domain: "household",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					workflow_id: "household.assistant",
+					owner: "household:family",
+					trust_domain: "household",
+					required_surface_ids: ["providers.release-policy"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		noForkProof: base.noForkProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [
+				{
+					id: "D-profile-generation",
+					status: "accepted",
+					owner: "operator",
+					deadline_phase: "Phase 1",
+					accepted_answer:
+						"Generated Hermes profiles are produced by the checked profile generator.",
+					affected_workflows: [],
+					cutover_impact: "Profile generation proof is required before provider cutover.",
+				},
+			],
+		},
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "providers.release-policy",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"providers.release-policy": `sha256:${"5".repeat(64)}`,
+			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
+		},
+	});
+}
+
 function servedMcpContainmentProbe(
 	evidencePath: string,
 	status: "pass" | "fail" | "skip" = "pass",
@@ -4016,6 +4111,79 @@ describe("Hermes wrapper foundation", () => {
 				}),
 				expect.objectContaining({
 					name: "provider.approval-binding.duplicate-jti-denied",
+					status: "pass",
+				}),
+			]),
+		);
+	});
+
+	it("writes provider release-policy probe evidence through the CLI harness", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-provider-release-cli-"));
+		const evidencePath = path.join(tempDir, "providers-release-policy.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.release-policy",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			ran: boolean;
+			source: string;
+			checks: Array<{ name: string; status: string }>;
+			observations: {
+				releaseCount: number;
+				deniedCount: number;
+				auditCount: number;
+				rawProviderSecretObserved: boolean;
+				deniedControls: string[];
+			};
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: "providers.release-policy",
+			status: "pass",
+			ran: true,
+			source: "telclaude-provider-release-policy-harness",
+		});
+		expect(artifact.observations.releaseCount).toBe(2);
+		expect(artifact.observations.auditCount).toBe(2);
+		expect(artifact.observations.deniedCount).toBeGreaterThanOrEqual(7);
+		expect(artifact.observations.rawProviderSecretObserved).toBe(false);
+		expect(artifact.observations.deniedControls).toEqual(
+			expect.arrayContaining([
+				"household.cross-recipient-denied",
+				"household.strong-link-required",
+				"provider.urgent-health-misclassification-denied",
+				"provider.sensitive-release-approval-required",
+			]),
+		);
+		expect(artifact.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "provider.release.allowed-read-audited",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "provider.release.prepare-write-audited",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "provider.release.urgent-health-misclassification-denied",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "provider.release.unapproved-sensitive-denied",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "provider.release.prepare-write-benign-denied",
 					status: "pass",
 				}),
 			]),
@@ -7005,6 +7173,70 @@ sleep 5
 			status: "fail",
 			detail: expect.stringContaining(
 				"check provider.approval-binding.duplicate-jti-denied is missing",
+			),
+		});
+	});
+
+	it("passes the provider release-policy cutover gate from complete observed evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-release-"));
+		const evidencePath = path.join(tempDir, "providers-release-policy.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.release-policy",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+
+		const result = await runCutoverCheckWithBundle(
+			providerReleasePolicyCutoverBundle(evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the provider release-policy cutover gate when urgent health denial is unproven", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-release-"));
+		const evidencePath = path.join(tempDir, "providers-release-policy.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.release-policy",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+		const evidence = readJson(evidencePath) as { checks: Array<{ name: string }> };
+		writeJson(evidencePath, {
+			...evidence,
+			checks: evidence.checks.filter(
+				(check) => check.name !== "provider.release.urgent-health-misclassification-denied",
+			),
+		});
+
+		const result = await runCutoverCheckWithBundle(
+			providerReleasePolicyCutoverBundle(evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				"check provider.release.urgent-health-misclassification-denied is missing",
 			),
 		});
 	});
