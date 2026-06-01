@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildEdgeAdapterProbeEvidence } from "../../src/hermes/edge-adapter-probes.js";
+import {
+	buildEdgeAdapterProbeEvidence,
+	EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
+} from "../../src/hermes/edge-adapter-probes.js";
 import {
 	buildCutoverProofBundle,
 	type CompatibilityLockfile,
@@ -900,14 +903,16 @@ describe("Hermes cutover edge-adapter evidence validation", () => {
 	it("refuses schema-only edge contract-unit evidence as cutover enforcement", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
 		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
-		writeJson(
-			evidencePath,
-			buildEdgeAdapterProbeEvidence({
-				surfaceId: "edge.whatsapp",
-				observedAt: "2026-05-31T09:00:00.000Z",
-				allowRun: true,
-			}),
-		);
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		writeJson(evidencePath, {
+			...evidence,
+			source: EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
+			runtime: undefined,
+		});
 
 		const report = evaluateCutoverCheck(edgeAdapterCutoverBundle(evidencePath));
 

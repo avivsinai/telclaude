@@ -1,9 +1,15 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	buildEdgeAdapterFixtureEvidenceBundle,
 	buildEdgeAdapterProbeEvidence,
 	EDGE_ADAPTER_FEATURE_SURFACE_IDS,
+	edgeAdapterFixtureEvidenceFailure,
 	edgeAdapterProbeEvidenceFailure,
 } from "../../src/hermes/edge-adapter-probes.js";
+import { runTelclaudeProviderReleasePolicyProbe } from "../../src/hermes/provider-release-policy-probe.js";
 
 const observedAt = "2026-05-31T09:00:00.000Z";
 
@@ -249,4 +255,81 @@ describe("Hermes edge adapter probe evidence", () => {
 			"probe surface mismatch",
 		);
 	});
+
+	it("builds public and household fixture evidence from current edge probe artifacts", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixtures-"));
+		const probePaths = writeEdgeFixtureProbeArtifacts(tempDir);
+		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			observedAt,
+			probePaths,
+		});
+
+		expect(bundle.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "fixture.public.whatsapp.basic", status: "pass" }),
+				expect.objectContaining({
+					id: "fixture.household.provider.strong-link-read",
+					status: "pass",
+				}),
+				expect.objectContaining({ id: "fixture.public.social.private-leak-deny", status: "pass" }),
+			]),
+		);
+		for (const evidence of bundle.evidence) {
+			for (const artifact of evidence.edge.probeArtifacts) {
+				fs.mkdirSync(path.dirname(artifact.evidencePath), { recursive: true });
+			}
+			expect(edgeAdapterFixtureEvidenceFailure(evidence.id, evidence)).toBeNull();
+		}
+	});
+
+	it("rejects edge fixture evidence when a bound probe artifact changes", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixture-tamper-"));
+		const probePaths = writeEdgeFixtureProbeArtifacts(tempDir);
+		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			observedAt,
+			probePaths,
+		});
+		const whatsappFixture = bundle.evidence.find(
+			(item) => item.id === "fixture.public.whatsapp.basic",
+		);
+		expect(whatsappFixture).toBeDefined();
+
+		fs.writeFileSync(probePaths["edge.whatsapp"], JSON.stringify({ changed: true }), "utf8");
+
+		expect(
+			edgeAdapterFixtureEvidenceFailure("fixture.public.whatsapp.basic", whatsappFixture),
+		).toContain("sha256 changed");
+	});
 });
+
+function writeEdgeFixtureProbeArtifacts(tempDir: string) {
+	const probePaths = Object.fromEntries(
+		EDGE_ADAPTER_FEATURE_SURFACE_IDS.map((surfaceId) => {
+			const evidence = buildEdgeAdapterProbeEvidence({
+				surfaceId,
+				observedAt,
+				allowRun: true,
+			});
+			const file = path.join(tempDir, "probes", `${surfaceId.replaceAll(".", "-")}.json`);
+			fs.mkdirSync(path.dirname(file), { recursive: true });
+			fs.writeFileSync(file, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+			return [surfaceId, file];
+		}),
+	) as Record<(typeof EDGE_ADAPTER_FEATURE_SURFACE_IDS)[number], string> & {
+		"providers.release-policy": string;
+	};
+	const releasePolicyFile = path.join(tempDir, "probes", "providers-release-policy.json");
+	fs.writeFileSync(
+		releasePolicyFile,
+		`${JSON.stringify(
+			runTelclaudeProviderReleasePolicyProbe({ allowRun: true, observedAt }),
+			null,
+			2,
+		)}\n`,
+		"utf8",
+	);
+	probePaths["providers.release-policy"] = releasePolicyFile;
+	return probePaths;
+}
