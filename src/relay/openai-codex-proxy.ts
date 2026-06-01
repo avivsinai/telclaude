@@ -5,6 +5,15 @@ import { pipeline } from "node:stream/promises";
 
 import { getChildLogger } from "../logging.js";
 import { getVaultClient, isVaultAvailable } from "../vault-daemon/client.js";
+import {
+	extractOpenAiCodexRelayProofToken,
+	OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
+	OPENAI_CODEX_RELAY_PROOF_SOURCE,
+	OPENAI_CODEX_RESPONSES_PATH,
+	type OpenAiCodexRelayProof,
+	openAiCodexRelayProofTokenSha256,
+	signOpenAiCodexRelayProof,
+} from "./openai-codex-relay-proof.js";
 import { forwardResponseHeaders } from "./proxy-headers.js";
 import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 
@@ -30,18 +39,7 @@ const MAX_CODEX_REQUEST_BODY_BYTES = Number(
 	process.env.TELCLAUDE_OPENAI_CODEX_PROXY_BODY_LIMIT ?? 1_000_000,
 );
 
-type CodexRelayProof = {
-	schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1";
-	source: "telclaude-openai-codex-proxy";
-	requestId: string;
-	method: "POST";
-	path: "/backend-api/codex/responses";
-	observedPeerAddress: string;
-	upstreamStatus: number;
-	model: string;
-	requestBodySha256: `sha256:${string}`;
-	observedAt: string;
-};
+type CodexRelayProof = OpenAiCodexRelayProof;
 
 type AuthHeader = {
 	name: string;
@@ -174,14 +172,22 @@ export async function handleOpenAiCodexProxyRequest(
 		observedPeerAddress &&
 		requestBody
 	) {
-		latestResponseProofByPeer.set(
-			observedPeerAddress,
-			buildCodexRelayProof({
+		try {
+			latestResponseProofByPeer.set(
 				observedPeerAddress,
-				upstreamStatus: upstream.status,
-				requestBody,
-			}),
-		);
+				buildCodexRelayProof({
+					observedPeerAddress,
+					upstreamStatus: upstream.status,
+					requestBody,
+				}),
+			);
+		} catch (error) {
+			latestResponseProofByPeer.delete(observedPeerAddress);
+			logger.warn(
+				{ error: String(error), observedPeerAddress },
+				"[openai-codex-proxy] failed to sign relay proof",
+			);
+		}
 	}
 	forwardResponseHeaders(upstream, res);
 	if (observedPeerAddress) {
@@ -232,12 +238,13 @@ function buildCodexRelayProof(input: {
 	upstreamStatus: number;
 	requestBody: Buffer;
 }): CodexRelayProof {
-	return {
-		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
-		source: "telclaude-openai-codex-proxy",
+	const proofToken = extractOpenAiCodexRelayProofToken(input.requestBody.toString("utf8"));
+	return signOpenAiCodexRelayProof({
+		schemaVersion: OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
+		source: OPENAI_CODEX_RELAY_PROOF_SOURCE,
 		requestId: crypto.randomUUID(),
 		method: "POST",
-		path: "/backend-api/codex/responses",
+		path: OPENAI_CODEX_RESPONSES_PATH,
 		observedPeerAddress: input.observedPeerAddress,
 		upstreamStatus: input.upstreamStatus,
 		model: extractCodexRequestModel(input.requestBody),
@@ -245,8 +252,9 @@ function buildCodexRelayProof(input: {
 			.createHash("sha256")
 			.update(input.requestBody)
 			.digest("hex")}`,
+		...(proofToken ? { proofTokenSha256: openAiCodexRelayProofTokenSha256(proofToken) } : {}),
 		observedAt: new Date().toISOString(),
-	};
+	});
 }
 
 function extractCodexRequestModel(body: Buffer): string {

@@ -4,8 +4,18 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import type { PermissionTier } from "../config/config.js";
+import type { InternalResponseProof } from "../internal-auth.js";
 import { telegramMemorySource } from "../memory/source.js";
 import type { MemorySource } from "../memory/types.js";
+import {
+	extractOpenAiCodexRelayProofToken,
+	OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
+	OPENAI_CODEX_RELAY_PROOF_SOURCE,
+	OPENAI_CODEX_RESPONSES_PATH,
+	type OpenAiCodexRelayProof,
+	openAiCodexRelayProofSignatureFailure,
+	openAiCodexRelayProofTokenSha256,
+} from "../relay/openai-codex-relay-proof.js";
 import type { StreamChunk } from "../sdk/client.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
 import {
@@ -36,10 +46,9 @@ const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
 const HERMES_CLI_HEADLESS_PROVENANCE_SOURCE = "live-allow-run";
 const HERMES_CLI_HEADLESS_RUNTIME_PROVENANCE_SOURCE = "docker-inspect-container-dns-and-relay-peer";
-const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION =
-	"telclaude.hermes.cli-headless-relay-proof.v1";
-const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = "telclaude-openai-codex-proxy";
-const HERMES_CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
+const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION = OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION;
+const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = OPENAI_CODEX_RELAY_PROOF_SOURCE;
+const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
 const DEFAULT_HERMES_RELAY_IP = "172.29.92.10";
 const DEFAULT_HERMES_CONTAINED_IP = "172.29.92.11";
 
@@ -206,7 +215,9 @@ export type HermesCliProbeReport = {
 		upstreamStatus: number;
 		model: string;
 		requestBodySha256: `sha256:${string}`;
+		proofTokenSha256?: `sha256:${string}`;
 		observedAt: string;
+		signature: InternalResponseProof;
 	};
 	findings: HermesLaunchSecretFinding[];
 };
@@ -467,6 +478,7 @@ export async function runHermesCliHeadlessProbe(input: {
 	const invocation = probeInvocation(input.invocation);
 	const modelProvider = probeModelProvider(input.invocation);
 	const relayProofFailure = hermesCliRelayProofFailure(result.relayProof, {
+		expectedProofToken: expectedToken,
 		modelProvider,
 		runtime: result.runtime,
 		startedAt,
@@ -860,6 +872,11 @@ function parseHermesRelayProofEvidence(raw: unknown): HermesCliRelayProof {
 	if (!/^sha256:[a-f0-9]{64}$/i.test(requestBodySha256)) {
 		throw new Error("relay proof evidence requestBodySha256 is not a sha256 digest");
 	}
+	const proofTokenSha256 =
+		typeof raw.proofTokenSha256 === "string" ? raw.proofTokenSha256 : undefined;
+	if (proofTokenSha256 !== undefined && !/^sha256:[a-f0-9]{64}$/i.test(proofTokenSha256)) {
+		throw new Error("relay proof evidence proofTokenSha256 is not a sha256 digest");
+	}
 	return {
 		schemaVersion: HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION,
 		source: HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE,
@@ -870,7 +887,26 @@ function parseHermesRelayProofEvidence(raw: unknown): HermesCliRelayProof {
 		upstreamStatus,
 		model: runtimeString(raw, "model"),
 		requestBodySha256: requestBodySha256 as `sha256:${string}`,
+		...(proofTokenSha256 ? { proofTokenSha256: proofTokenSha256 as `sha256:${string}` } : {}),
 		observedAt: runtimeString(raw, "observedAt"),
+		signature: parseInternalResponseProof(raw.signature),
+	};
+}
+
+function parseInternalResponseProof(raw: unknown): InternalResponseProof {
+	if (!isRecord(raw)) {
+		throw new Error("relay proof evidence signature must be a JSON object");
+	}
+	return {
+		version: runtimeString(raw, "version") as InternalResponseProof["version"],
+		scope: runtimeString(raw, "scope"),
+		timestamp: runtimeString(raw, "timestamp"),
+		nonce: runtimeString(raw, "nonce"),
+		method: runtimeString(raw, "method"),
+		path: runtimeString(raw, "path"),
+		requestBodySha256: runtimeString(raw, "requestBodySha256"),
+		responseBodySha256: runtimeString(raw, "responseBodySha256"),
+		signature: runtimeString(raw, "signature"),
 	};
 }
 
@@ -1040,10 +1076,12 @@ export function readHermesCliHeadlessProbeReport(reportPath: string): HermesCliP
 	const parsedRuntime = parseHermesRuntimeEvidence(runtime);
 	const relayProof = isRecord(raw.relayProof) ? (raw.relayProof as HermesCliRelayProof) : undefined;
 	const relayProofFailure = hermesCliRelayProofFailure(relayProof, {
+		expectedProofToken: String(raw.provenance.expectedProofToken ?? ""),
 		modelProvider: raw.modelProvider as HermesCliProbeReport["modelProvider"],
 		runtime: parsedRuntime,
 		startedAt: String(raw.provenance.startedAt ?? ""),
 		endedAt: String(raw.provenance.endedAt ?? ""),
+		allowStaleSignature: true,
 	});
 	if (relayProofFailure) {
 		throw new Error(`cli-headless probe report relay proof is invalid: ${relayProofFailure}`);
@@ -1130,19 +1168,21 @@ function hermesCliRuntimeFailure(stdout: string, stderr: string): string | null 
 	return null;
 }
 
-function hermesCliExpectedProofToken(invocation: HermesLaunchInvocation): string | null {
-	const prompt = invocation.args.join("\n");
-	const match = prompt.match(/TELCLAUDE_HERMES_CLI_OK|HERMES_OK_[A-Za-z0-9_-]+/);
-	return match?.[0] ?? DEFAULT_HERMES_CLI_PROBE_TOKEN;
+function hermesCliExpectedProofToken(invocation: HermesLaunchInvocation): string {
+	return (
+		extractOpenAiCodexRelayProofToken(invocation.args.join("\n")) ?? DEFAULT_HERMES_CLI_PROBE_TOKEN
+	);
 }
 
 function hermesCliRelayProofFailure(
 	proof: HermesCliRelayProof | undefined,
 	context: {
+		expectedProofToken: string;
 		modelProvider?: HermesCliProbeReport["modelProvider"];
 		runtime?: HermesCliRuntimeEvidence;
 		startedAt: string;
 		endedAt: string;
+		allowStaleSignature?: boolean;
 	},
 ): string | null {
 	if (!proof) return "relay proof is missing";
@@ -1162,6 +1202,18 @@ function hermesCliRelayProofFailure(
 	}
 	if (!/^sha256:[a-f0-9]{64}$/i.test(proof.requestBodySha256)) {
 		return "relay proof requestBodySha256 is not a sha256 digest";
+	}
+	const signatureFailure = openAiCodexRelayProofSignatureFailure(proof as OpenAiCodexRelayProof, {
+		allowStale: context.allowStaleSignature,
+	});
+	if (signatureFailure) {
+		return `relay proof signature is invalid: ${signatureFailure}`;
+	}
+	if (!context.expectedProofToken.trim()) return "expected proof token is missing";
+	const expectedProofTokenSha256 = openAiCodexRelayProofTokenSha256(context.expectedProofToken);
+	if (!proof.proofTokenSha256) return "relay proof proofTokenSha256 is missing";
+	if (proof.proofTokenSha256 !== expectedProofTokenSha256) {
+		return "relay proof proofTokenSha256 does not match expected proof token";
 	}
 	if (!context.runtime) return "runtime evidence is missing";
 	if (
