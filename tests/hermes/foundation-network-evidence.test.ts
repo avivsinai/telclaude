@@ -28,6 +28,7 @@ import {
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
+import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 import {
 	type OpenAiCodexRelayProof,
@@ -88,6 +89,12 @@ const compatLockfile: CompatibilityLockfile = {
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function readJson<T extends Record<string, unknown> = Record<string, unknown>>(
+	filePath: string,
+): T {
+	return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
 }
 
 function writeProfileProof(lockfile: CompatibilityLockfile) {
@@ -545,11 +552,12 @@ function writeFixtureResults() {
 	const reportDigest = `sha256:${crypto
 		.createHash("sha256")
 		.update(fs.readFileSync(reportPath))
-		.digest("hex")}`;
+		.digest("hex")}` as `sha256:${string}`;
 	const invocation = privateTelegramFixtureInvocation(reportPath, reportDigest);
+	ensureOperatorRelayKeys();
 	const results = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((requirement) => {
 		const evidencePath = path.join(tempDir, `${requirement.id}.json`);
-		writeJson(evidencePath, {
+		const evidence = {
 			schemaVersion: "telclaude.hermes.fixture-evidence.v1",
 			id: requirement.id,
 			status: "pass",
@@ -572,13 +580,29 @@ function writeFixtureResults() {
 				status: "pass",
 				detail: "required fixture assertion passed in machine-observed Vitest report",
 			})),
+		};
+		writeJson(evidencePath, {
+			...evidence,
+			privateTelegramRunnerAttestation: signPrivateTelegramFixtureEvidenceAttestation({
+				fixtureId: evidence.id,
+				status: evidence.status,
+				observedAt: evidence.observedAt,
+				provenanceRunner: evidence.provenance.runner,
+				provenanceSource: evidence.provenance.source,
+				testReportPath: evidence.testReport.path,
+				testReportSha256: evidence.testReport.sha256,
+				invocation: evidence.invocation,
+				requiredTests: evidence.testReport.requiredTests,
+				requiredAssertions: evidence.testReport.requiredAssertions,
+				checks: evidence.checks,
+			}),
 		});
 		return { id: requirement.id, status: "pass" as const, evidence_path: evidencePath };
 	});
 	return { schemaVersion: 1 as const, results };
 }
 
-function privateTelegramFixtureInvocation(reportPath: string, reportDigest: string) {
+function privateTelegramFixtureInvocation(reportPath: string, reportDigest: `sha256:${string}`) {
 	return {
 		command: [
 			"pnpm",
@@ -1298,6 +1322,74 @@ describe("Hermes cutover fixture evidence catalog validation", () => {
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
 			"invalid edge fixture evidence",
+		);
+	});
+
+	it("requires private Telegram fixture evidence to carry a signed runner attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-private-fixture-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const fixture = bundle.fixtureResults.results[0];
+		const evidence = readJson<{ privateTelegramRunnerAttestation?: unknown }>(
+			fixture.evidence_path,
+		);
+		delete evidence.privateTelegramRunnerAttestation;
+		writeJson(fixture.evidence_path, evidence);
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"privateTelegramRunnerAttestation is missing",
+		);
+	});
+
+	it("rejects private Telegram fixture evidence mutated after runner attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-private-fixture-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const fixture = bundle.fixtureResults.results[0];
+		const evidence = readJson<{ checks: Array<{ detail: string }> }>(fixture.evidence_path);
+		evidence.checks[0].detail = "tampered after signing";
+		writeJson(fixture.evidence_path, evidence);
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"privateTelegramRunnerAttestation checksSha256 mismatch",
+		);
+	});
+
+	it("rejects private Telegram fixture evidence signed by an untrusted runner key", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-private-fixture-"));
+		const trustedKeys = generateKeyPair();
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = attackerKeys.publicKey;
+		const fixtureResults = writeFixtureResults();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+		const base = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+		const withoutProof: CutoverBundleWithoutProof = {
+			...baseWithoutProof,
+			fixtureResults,
+		};
+		const bundle = {
+			...withoutProof,
+			cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+		};
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
+			"privateTelegramRunnerAttestation signature is invalid: signature verification failed",
 		);
 	});
 });
