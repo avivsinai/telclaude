@@ -1055,19 +1055,29 @@ function cliHeadlessCutoverBundle(
 }
 
 function edgeAdapterProbe(
-	surfaceId: "attachment.quarantine" | "outbound.policy",
+	surfaceId:
+		| "edge.whatsapp"
+		| "edge.email"
+		| "edge.agentmail"
+		| "edge.social"
+		| "identity.migration"
+		| "household.scopes"
+		| "attachment.quarantine"
+		| "outbound.policy"
+		| "public.social.isolation",
 	evidencePath: string,
 	status: "pass" | "fail" | "skip" = "pass",
 ) {
 	return {
 		surface_id: surfaceId,
 		hermes_pin: hermesPin,
-		documented_seam: "Telclaude edge runtime owns attachment quarantine and outbound policy",
+		documented_seam:
+			"Telclaude edge runtime owns identity, household, attachment, and outbound policy enforcement",
 		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
 		expected_result:
-			"Runtime harness proves ref-only attachments, edge-owned execution, binding, and replay denial",
+			"Runtime harness proves edge-owned identity, household scope, attachment ref, outbound binding, and replay enforcement",
 		negative_probe:
-			"Raw attachment access, raw paths/URLs, direct credentials, approval-token injection, mutation, and replay fail closed",
+			"Forged identities, session-id authority, weak household links, raw attachments, direct credentials, approval-token injection, mutation, and replay fail closed",
 		evidence_path: evidencePath,
 		lockfile_key: `featureProbes.${surfaceId}`,
 		security_scope: "edge-adapter" as const,
@@ -1078,7 +1088,16 @@ function edgeAdapterProbe(
 }
 
 function edgeAdapterCutoverBundle(
-	surfaceId: "attachment.quarantine" | "outbound.policy",
+	surfaceId:
+		| "edge.whatsapp"
+		| "edge.email"
+		| "edge.agentmail"
+		| "edge.social"
+		| "identity.migration"
+		| "household.scopes"
+		| "attachment.quarantine"
+		| "outbound.policy"
+		| "public.social.isolation",
 	evidencePath: string,
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
@@ -3569,7 +3588,7 @@ describe("Hermes wrapper foundation", () => {
 		expect(artifact).toMatchObject({
 			probeId: "edge.whatsapp",
 			status: "pass",
-			source: "telclaude-edge-contract-unit",
+			source: "telclaude-edge-runtime-harness",
 		});
 		expect(artifact.controls).toEqual(
 			expect.arrayContaining([
@@ -3579,11 +3598,18 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
-	it("writes runtime edge probe evidence for attachment quarantine and outbound policy", async () => {
+	it("writes runtime edge probe evidence for runtime-required edge surfaces", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-runtime-cli-"));
 		for (const [surface, expectedControl] of [
+			["edge.whatsapp", "whatsapp.direct-bridge-denied"],
+			["edge.email", "email.direct-mailbox-denied"],
+			["edge.agentmail", "agentmail.direct-key-denied"],
+			["edge.social", "social.unapproved-posting-denied"],
+			["identity.migration", "identity.session-id-not-authority"],
+			["household.scopes", "household.number-only-provider-denied"],
 			["attachment.quarantine", "attachment.cross-domain-reuse-denied"],
 			["outbound.policy", "outbound.replay-denied"],
+			["public.social.isolation", "public-social.private-workspace-denied"],
 		] as const) {
 			const evidencePath = path.join(tempDir, `${surface}.json`);
 
@@ -3627,7 +3653,17 @@ describe("Hermes wrapper foundation", () => {
 
 	it("passes runtime-required edge cutover gates from runtime harness evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-edge-runtime-"));
-		for (const surface of ["attachment.quarantine", "outbound.policy"] as const) {
+		for (const surface of [
+			"edge.whatsapp",
+			"edge.email",
+			"edge.agentmail",
+			"edge.social",
+			"identity.migration",
+			"household.scopes",
+			"attachment.quarantine",
+			"outbound.policy",
+			"public.social.isolation",
+		] as const) {
 			const evidencePath = path.join(tempDir, `${surface}.json`);
 			const probeResult = await runHermesCommand([
 				"hermes",

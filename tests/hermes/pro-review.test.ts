@@ -6,6 +6,15 @@ import { describe, expect, it } from "vitest";
 import { evaluateProReviewCheck, REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 
 describe("Hermes Pro review gate", () => {
+	it("requires edge runtime authorizer files in the native Pro payload", () => {
+		expect(REQUIRED_PRO_REVIEW_FILES).toEqual(
+			expect.arrayContaining([
+				"src/hermes/edge-adapter-runtime.ts",
+				"tests/hermes/edge-adapter-runtime.test.ts",
+			]),
+		);
+	});
+
 	it("fails native canary commands that include blocked fallback flags", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
 		await withCwd(tempDir, async () => {

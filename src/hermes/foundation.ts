@@ -304,15 +304,36 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/private-runtime.ts",
 		"src/relay/openai-codex-proxy.ts",
 	],
-	"edge.whatsapp": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
-	"edge.email": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
-	"edge.agentmail": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
-	"edge.social": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
-	"identity.migration": [
+	"edge.whatsapp": [
 		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
 		"src/hermes/edge-adapter-probes.ts",
 	],
-	"household.scopes": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
+	"edge.email": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
+	"edge.agentmail": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
+	"edge.social": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
+	"identity.migration": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
+	"household.scopes": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
 	"attachment.quarantine": [
 		"src/hermes/edge-adapter-contract.ts",
 		"src/hermes/edge-adapter-runtime.ts",
@@ -325,6 +346,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	],
 	"public.social.isolation": [
 		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
 		"src/hermes/edge-adapter-probes.ts",
 	],
 	"providers.release-policy": [
