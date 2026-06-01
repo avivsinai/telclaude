@@ -84,6 +84,19 @@ const MODEL_CREDENTIAL_PATTERNS = [
 	/\b(?:CODEX_HOME|HERMES_CODEX_BASE_URL)\s*[:=]\s*["']?https:\/\/chatgpt\.com/i,
 	/\b(BEDROCK|AWS)_SECRET_ACCESS_KEY\s*[:=]/i,
 	/\b(model|llm)[_-]?(api[_-]?key|token|secret)\s*[:=]/i,
+	/\b(?:openai|anthropic|google|gemini|groq|mistral|model|llm)[_-]?api[_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\bapi[_-]?key["']?\s*[:=]\s*["']?sk-[A-Za-z0-9._-]{12,}/i,
+	/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b/i,
+	/\b(?:access|refresh|id)[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\b(?:auth|bearer|session|cookie|cookies)[_-]?(?:token|secret|state)?["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\bAuthorization\s*[:=]\s*["']?Bearer\s+[A-Za-z0-9._~+/=-]{12,}/i,
+	/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
+];
+const MODEL_CREDENTIAL_FILE_PATTERNS = [
+	/(?:^|\/)auth\.json$/i,
+	/(?:^|\/)\.codex(?:\/|$)/i,
+	/(?:^|\/)(?:codex|chatgpt|openai)[_-]?(?:auth|oauth|tokens?)(?:\.json)?$/i,
+	/(?:^|\/)(?:cookies?|session)(?:\.json|\.sqlite|\.db|\.txt)?$/i,
 ];
 const DIRECT_MODEL_HOST_PATTERNS = [
 	/api\.anthropic\.com/i,
@@ -293,16 +306,23 @@ function scanProfileDir(profileDir: string | undefined): {
 	const inventory = listProfileFiles(resolved);
 	for (const filePath of inventory.scannedFiles) {
 		scannedFiles.push(filePath);
+		const relativePath = path.relative(resolved, filePath);
+		if (
+			MODEL_CREDENTIAL_FILE_PATTERNS.some((pattern) => pattern.test(toPortablePath(relativePath)))
+		) {
+			findings.push(relativePath);
+			continue;
+		}
 		const content = fs.readFileSync(filePath, "utf8");
 		for (const pattern of MODEL_CREDENTIAL_PATTERNS) {
 			if (pattern.test(content)) {
-				findings.push(path.relative(resolved, filePath));
+				findings.push(relativePath);
 				break;
 			}
 		}
 		for (const pattern of DIRECT_MODEL_HOST_PATTERNS) {
 			if (pattern.test(content)) {
-				directHostFindings.push(path.relative(resolved, filePath));
+				directHostFindings.push(relativePath);
 				break;
 			}
 		}
@@ -527,4 +547,8 @@ function pending(name: string, detail: string): ModelRelayGate {
 
 function unique(values: string[]): string[] {
 	return [...new Set(values)];
+}
+
+function toPortablePath(value: string): string {
+	return value.split(path.sep).join("/");
 }

@@ -266,6 +266,62 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
 	});
 
+	it("fails closed on auth.json, Codex OAuth state, JWTs, and cookie/session tokens", async () => {
+		const relayUrl = await startServer((_req, res) => {
+			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
+			res.writeHead(204).end();
+		});
+		const { profileDir, sentinel } = makeCleanProfile();
+		fs.writeFileSync(
+			path.join(profileDir, "auth.json"),
+			JSON.stringify({
+				access_token: "access_token_value_1234567890",
+				refresh_token: "refresh_token_value_1234567890",
+			}),
+		);
+		const codexDir = path.join(profileDir, ".codex");
+		fs.mkdirSync(codexDir);
+		fs.writeFileSync(
+			path.join(codexDir, "auth.json"),
+			JSON.stringify({
+				id_token:
+					"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjb2RleC1vYXV0aCJ9.signatureValue1234567890",
+			}),
+		);
+		fs.writeFileSync(
+			path.join(profileDir, "cookies.txt"),
+			"session_token=session-token-value-1234567890\nAuthorization: Bearer bearer-token-value-1234567890\n",
+		);
+		fs.writeFileSync(
+			path.join(profileDir, "profile.json"),
+			JSON.stringify({
+				api_key: "sk-proj-raw-provider-key-1234567890",
+				refresh_token: "refresh-token-value-1234567890",
+			}),
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			fetchImpl: directModelFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		const rawCredentialGate = gate(report, "profile.noRawModelCredentials");
+		expect(rawCredentialGate).toMatchObject({ status: "fail" });
+		expect(rawCredentialGate.detail).toContain("auth.json");
+		expect(rawCredentialGate.detail).toContain(path.join(".codex", "auth.json"));
+		expect(rawCredentialGate.detail).toContain("cookies.txt");
+		expect(rawCredentialGate.detail).toContain("profile.json");
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
 	it("fails closed when profile files cannot be fully scanned", async () => {
 		const relayUrl = await startServer((_req, res) => {
 			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
