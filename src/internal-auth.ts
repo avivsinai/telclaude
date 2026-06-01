@@ -65,6 +65,7 @@ type InternalAuthOptions = {
 
 type InternalResponseProofVerifyOptions = InternalAuthOptions & {
 	allowStale?: boolean;
+	relayPublicKey?: string;
 };
 
 function getHeader(req: http.IncomingMessage, name: string): string | undefined {
@@ -302,27 +303,43 @@ export function verifyInternalResponseProof(
 	responseBody: string,
 	options?: InternalResponseProofVerifyOptions,
 ): boolean {
+	return (
+		internalResponseProofVerificationFailure(
+			proof,
+			method,
+			path,
+			requestBody,
+			responseBody,
+			options,
+		) === null
+	);
+}
+
+export function internalResponseProofVerificationFailure(
+	proof: InternalResponseProof,
+	method: string,
+	path: string,
+	requestBody: string,
+	responseBody: string,
+	options?: InternalResponseProofVerifyOptions,
+): string | null {
 	const scope = options?.scope ?? proof.scope;
-	if (
-		proof.version !== RESPONSE_PROOF_VERSION ||
-		proof.scope !== scope ||
-		proof.method !== method.toUpperCase() ||
-		proof.path !== path ||
-		proof.requestBodySha256 !== sha256Hex(requestBody) ||
-		proof.responseBodySha256 !== sha256Hex(responseBody)
-	) {
-		return false;
-	}
+	if (proof.version !== RESPONSE_PROOF_VERSION) return "version mismatch";
+	if (proof.scope !== scope) return "scope mismatch";
+	if (proof.method !== method.toUpperCase()) return "method mismatch";
+	if (proof.path !== path) return "path mismatch";
+	if (proof.requestBodySha256 !== sha256Hex(requestBody)) return "request body digest mismatch";
+	if (proof.responseBodySha256 !== sha256Hex(responseBody)) return "response body digest mismatch";
 	const timestampMs = Number.parseInt(proof.timestamp, 10);
 	if (
 		!Number.isFinite(timestampMs) ||
 		(options?.allowStale !== true && Math.abs(Date.now() - timestampMs) > DEFAULT_SKEW_MS)
 	) {
-		return false;
+		return "timestamp outside allowed skew";
 	}
 	const vars = scopeEnvVarNames(scope);
-	const publicKeyBase64 = process.env[vars.relayPublicKey];
-	if (!publicKeyBase64) return false;
+	const publicKeyBase64 = options?.relayPublicKey ?? process.env[vars.relayPublicKey];
+	if (!publicKeyBase64) return `missing relay public key env ${vars.relayPublicKey}`;
 	try {
 		return crypto.verify(
 			null,
@@ -338,9 +355,11 @@ export function verifyInternalResponseProof(
 			}),
 			{ key: Buffer.from(publicKeyBase64, "base64"), format: "der", type: "spki" },
 			Buffer.from(proof.signature, "base64"),
-		);
+		)
+			? null
+			: "signature verification failed";
 	} catch {
-		return false;
+		return "signature verification errored";
 	}
 }
 

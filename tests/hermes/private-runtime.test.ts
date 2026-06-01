@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTelclaudeMcpAuthorityRegistry } from "../../src/hermes/mcp/authority-registry.js";
 import {
@@ -14,8 +17,37 @@ import {
 	type HermesRuntimeRequest,
 	redactHermesRuntimeText,
 	runHermesCliHeadlessProbe,
+	runHermesLaunchInvocation,
 } from "../../src/hermes/private-runtime.js";
 import { HermesSessionMap } from "../../src/hermes/session-map.js";
+
+type TestContainedDockerRuntime = {
+	kind: "contained-docker";
+	containerName: string;
+	networkName: "telclaude-hermes-relay";
+	containerId: string;
+	image: string;
+	imageDigest: `sha256:${string}`;
+	hostname: string;
+	relayHost: "telclaude";
+	relayResolvedAddress: string;
+	containerIpAddress: string;
+	observedPeerAddress: string;
+	provenanceSource: "docker-inspect-container-dns-and-relay-peer";
+};
+
+type TestRelayProof = {
+	schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1";
+	source: "telclaude-openai-codex-proxy";
+	requestId: string;
+	method: "POST";
+	path: "/backend-api/codex/responses";
+	observedPeerAddress: string;
+	upstreamStatus: number;
+	model: string;
+	requestBodySha256: `sha256:${string}`;
+	observedAt: string;
+};
 
 describe("Hermes private runtime seam", () => {
 	it("normalizes Hermes runtime events into Telclaude StreamChunks", async () => {
@@ -408,7 +440,8 @@ describe("Hermes private runtime seam", () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
-			cwd: "/repo",
+			cwd: process.cwd(),
+			env: cliRelayEnv(),
 		});
 
 		await expect(
@@ -430,11 +463,9 @@ describe("Hermes private runtime seam", () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
-			cwd: "/repo",
+			cwd: process.cwd(),
 			prompt: "Reply with exactly TELCLAUDE_HERMES_CLI_OK",
-			env: {
-				HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
-			},
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
 		});
 		const report = await runHermesCliHeadlessProbe({
 			allowRun: true,
@@ -444,17 +475,24 @@ describe("Hermes private runtime seam", () => {
 				expect(launch.env).toEqual({
 					HERMES_HOME: "/tmp/tc-hermes-probe",
 					NO_COLOR: "1",
-					HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
+					HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+					HERMES_INFERENCE_PROVIDER: "openai-codex",
+					HERMES_INFERENCE_MODEL: "gpt-5.3-codex",
+				});
+				expect(launch.authSetup).toEqual({
+					openAiCodexRelayToken: "relay-scoped-proxy-token",
 				});
 				return {
 					exitCode: 0,
 					stdout: "TELCLAUDE_HERMES_CLI_OK\n",
 					stderr: "token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
+					runtime: containedDockerRuntime(),
+					relayProof: relayProof({ model: "gpt-5.3-codex" }),
 				};
 			},
 		});
 
-		expect(report).toEqual({
+		expect(report).toMatchObject({
 			schemaVersion: "telclaude.hermes.probe-result.v1",
 			probeId: "execution.cli_headless",
 			status: "pass",
@@ -463,26 +501,93 @@ describe("Hermes private runtime seam", () => {
 			invocation: {
 				command: "/usr/local/bin/hermes",
 				args: ["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"],
-				cwd: "/repo",
-				envKeys: ["HERMES_HOME", "HERMES_INFERENCE_MODEL", "NO_COLOR"],
+				cwd: process.cwd(),
+				envKeys: [
+					"HERMES_CODEX_BASE_URL",
+					"HERMES_HOME",
+					"HERMES_INFERENCE_MODEL",
+					"HERMES_INFERENCE_PROVIDER",
+					"NO_COLOR",
+				],
 			},
 			exitCode: 0,
 			stdoutPreview: "TELCLAUDE_HERMES_CLI_OK\n",
 			stderrPreview: "token [REDACTED:telegram_bot_token]",
+			runtime: containedDockerRuntime(),
+			relayProof: expect.objectContaining({
+				source: "telclaude-openai-codex-proxy",
+				path: "/backend-api/codex/responses",
+				observedPeerAddress: "172.29.92.11",
+				upstreamStatus: 200,
+				model: "gpt-5.3-codex",
+			}),
+			provenance: {
+				runner: "telclaude-hermes-cli-probe",
+				source: "live-allow-run",
+				expectedProofToken: "TELCLAUDE_HERMES_CLI_OK",
+				proofTokenObserved: true,
+				invocationSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				stdoutSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				stderrSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+				relayProofSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			},
 			findings: [],
 		});
 	});
 
-	it("passes only relay Anthropic proxy model env into the CLI headless launch", async () => {
+	it("does not inherit Anthropic API fallback credentials into CLI probes", () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
 			cwd: "/repo",
-			prompt: "Reply with exactly HERMES_OK_53822847",
 			env: {
 				ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
-				ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
-				HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
+				ANTHROPIC_API_KEY: "relay-anthropic-token",
+				HERMES_INFERENCE_MODEL: "gpt-5.3-codex",
+			},
+		});
+
+		expect(invocation.env).toEqual({
+			HERMES_HOME: "/tmp/tc-hermes-probe",
+			NO_COLOR: "1",
+			HERMES_INFERENCE_MODEL: "gpt-5.3-codex",
+		});
+	});
+
+	it("does not let echo-only CLI output satisfy the headless model proof", async () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_ECHO_ONLY",
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
+		});
+
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "HERMES_OK_ECHO_ONLY\n",
+				stderr: "",
+				runtime: containedDockerRuntime(),
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
+		});
+	});
+
+	it("passes only relay OpenAI Codex subscription model env into the CLI headless launch", async () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_53822847",
+			env: {
+				...cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
 				OPENAI_API_KEY: "sk-proj-raw-provider-key",
 			},
 		});
@@ -494,43 +599,206 @@ describe("Hermes private runtime seam", () => {
 				expect(launch.env).toEqual({
 					HERMES_HOME: "/tmp/tc-hermes-probe",
 					NO_COLOR: "1",
-					ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
-					ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
-					HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
+					HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+					HERMES_INFERENCE_PROVIDER: "openai-codex",
+					HERMES_INFERENCE_MODEL: "gpt-5.3-codex",
+				});
+				expect(launch.authSetup).toEqual({
+					openAiCodexRelayToken: "relay-scoped-proxy-token",
 				});
 				return {
 					exitCode: 0,
 					stdout: "HERMES_OK_53822847\n",
 					stderr: "",
+					runtime: containedDockerRuntime(),
+					relayProof: relayProof({ model: "gpt-5.3-codex" }),
 				};
 			},
 		});
 
+		expect(report.invocation.envKeys).toEqual([
+			"HERMES_CODEX_BASE_URL",
+			"HERMES_HOME",
+			"HERMES_INFERENCE_MODEL",
+			"HERMES_INFERENCE_PROVIDER",
+			"NO_COLOR",
+		]);
 		expect(report).toMatchObject({
 			status: "pass",
 			ran: true,
-			invocation: {
-				envKeys: [
-					"ANTHROPIC_API_KEY",
-					"ANTHROPIC_BASE_URL",
-					"HERMES_HOME",
-					"HERMES_INFERENCE_MODEL",
-					"NO_COLOR",
-				],
-			},
 			modelProvider: {
-				baseUrl: "http://telclaude:8790/v1/anthropic-proxy",
+				provider: "openai-codex",
+				baseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 				baseUrlHost: "telclaude",
-				model: "claude-sonnet-4-6",
+				model: "gpt-5.3-codex",
 				modelSource: "env:HERMES_INFERENCE_MODEL",
-				authEnvKey: "ANTHROPIC_API_KEY",
-				authScope: "relay-anthropic-proxy",
+				authLocation: "hermes-auth-store:openai-codex",
+				authScope: "relay-openai-codex-subscription-proxy",
 				tokenScoping: "static-shared",
+				auxiliaryAuthSource: "manual:telclaude-relay",
+				auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+				auxiliaryBaseUrlHost: "telclaude",
+				refreshTokenPolicy: "non-refreshable-placeholder",
 			},
+			relayProof: expect.objectContaining({
+				source: "telclaude-openai-codex-proxy",
+				path: "/backend-api/codex/responses",
+				observedPeerAddress: "172.29.92.11",
+				upstreamStatus: 200,
+				model: "gpt-5.3-codex",
+			}),
 			findings: [],
 		});
 		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
 		expect(JSON.stringify(report)).not.toContain("sk-proj-raw-provider-key");
+	});
+
+	it("writes relay OpenAI Codex auth store with a relay credential pool entry", async () => {
+		const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-auth-"));
+		try {
+			const result = await runHermesLaunchInvocation(
+				{
+					command: "/bin/sh",
+					args: ["-c", 'cat "$HERMES_HOME/auth.json"'],
+					cwd: hermesHome,
+					env: {
+						HERMES_HOME: hermesHome,
+						HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+					},
+					authSetup: {
+						openAiCodexRelayToken: "relay-scoped-proxy-token",
+					},
+				},
+				{ timeoutMs: 5_000 },
+			);
+
+			expect(result.exitCode).toBe(0);
+			const auth = JSON.parse(result.stdout) as {
+				providers: { "openai-codex": { tokens: Record<string, string> } };
+				credential_pool: {
+					"openai-codex": Array<Record<string, unknown>>;
+				};
+			};
+			expect(auth.providers["openai-codex"].tokens.access_token).toBe("relay-scoped-proxy-token");
+			expect(auth.providers["openai-codex"].tokens.refresh_token).toBe(
+				"telclaude-relay-token-is-not-refreshable",
+			);
+			expect(auth.credential_pool["openai-codex"][0]).toMatchObject({
+				id: "telclaude-relay",
+				label: "Telclaude OpenAI Codex relay",
+				auth_type: "api_key",
+				priority: 0,
+				source: "manual:telclaude-relay",
+				access_token: "relay-scoped-proxy-token",
+				base_url: "http://telclaude:8790/v1/openai-codex-proxy",
+			});
+			expect(JSON.stringify(auth)).not.toContain("https://chatgpt.com");
+		} finally {
+			fs.rmSync(hermesHome, { recursive: true, force: true });
+		}
+	});
+
+	it("attaches runtime evidence emitted by the contained Hermes launcher", async () => {
+		const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-runtime-"));
+		const runtime = containedDockerRuntime({
+			containerId: "0e6b7d5fbff2",
+			hostname: "0e6b7d5fbff2",
+		});
+		try {
+			const result = await runHermesLaunchInvocation(
+				{
+					command: "/bin/sh",
+					args: [
+						"-c",
+						`cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'\n${JSON.stringify(
+							runtime,
+						)}\nJSON\necho HERMES_OK_RUNTIME`,
+					],
+					cwd: hermesHome,
+					env: {
+						HERMES_HOME: hermesHome,
+					},
+				},
+				{ timeoutMs: 5_000 },
+			);
+
+			expect(result).toMatchObject({
+				exitCode: 0,
+				stdout: "HERMES_OK_RUNTIME\n",
+				stderr: "",
+				runtime,
+			});
+		} finally {
+			fs.rmSync(hermesHome, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects contained runtime evidence with a loopback observed peer", async () => {
+		const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-runtime-"));
+		const runtime = containedDockerRuntime({
+			observedPeerAddress: "127.0.0.1",
+		});
+		try {
+			const result = await runHermesLaunchInvocation(
+				{
+					command: "/bin/sh",
+					args: [
+						"-c",
+						`cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'\n${JSON.stringify(
+							runtime,
+						)}\nJSON\necho HERMES_OK_RUNTIME`,
+					],
+					cwd: hermesHome,
+					env: {
+						HERMES_HOME: hermesHome,
+					},
+				},
+				{ timeoutMs: 5_000 },
+			);
+
+			expect(result).toMatchObject({
+				exitCode: 0,
+				stdout: "HERMES_OK_RUNTIME\n",
+			});
+			expect(result.runtime).toBeUndefined();
+			expect(result.stderr).toContain(
+				"failed to read Hermes runtime evidence: runtime evidence observedPeerAddress is loopback",
+			);
+		} finally {
+			fs.rmSync(hermesHome, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects contained runtime evidence with a host-gateway relay address", async () => {
+		const hermesHome = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-runtime-"));
+		const runtime = containedDockerRuntime({
+			relayResolvedAddress: "192.168.5.2",
+		});
+		try {
+			const result = await runHermesLaunchInvocation(
+				{
+					command: "/bin/sh",
+					args: [
+						"-c",
+						`cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'\n${JSON.stringify(
+							runtime,
+						)}\nJSON\necho HERMES_OK_RUNTIME`,
+					],
+					cwd: hermesHome,
+					env: {
+						HERMES_HOME: hermesHome,
+					},
+				},
+				{ timeoutMs: 5_000 },
+			);
+
+			expect(result.runtime).toBeUndefined();
+			expect(result.stderr).toContain(
+				"failed to read Hermes runtime evidence: runtime evidence relayResolvedAddress is 192.168.5.2, expected 172.29.92.10",
+			);
+		} finally {
+			fs.rmSync(hermesHome, { recursive: true, force: true });
+		}
 	});
 
 	it("blocks raw model-provider keys even when the relay proxy URL is configured", () => {
@@ -539,15 +807,34 @@ describe("Hermes private runtime seam", () => {
 			hermesHome: "/tmp/tc-hermes-probe",
 			cwd: "/repo",
 			env: {
-				ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
-				ANTHROPIC_API_KEY: "sk-ant-api03-rawProviderKey",
+				HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+				TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: "sk-proj-rawProviderKey",
 			},
 		});
 
 		expect(findHermesLaunchSecretFindings(invocation)).toEqual([
 			{
-				location: "env.ANTHROPIC_API_KEY",
+				location: "authSetup.openAiCodexRelayToken",
 				reason: "raw model-provider credential is forbidden",
+			},
+		]);
+	});
+
+	it("blocks relay model auth when the base URL only mimics the relay path on another host", () => {
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: "/repo",
+			env: {
+				HERMES_CODEX_BASE_URL: "http://evil.internal:8790/v1/openai-codex-proxy",
+				TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: "relay-scoped-proxy-token",
+			},
+		});
+
+		expect(findHermesLaunchSecretFindings(invocation)).toEqual([
+			{
+				location: "env.HERMES_CODEX_BASE_URL",
+				reason: "model base URL must point at the relay OpenAI Codex proxy",
 			},
 		]);
 	});
@@ -558,19 +845,15 @@ describe("Hermes private runtime seam", () => {
 			hermesHome: "/tmp/tc-hermes-probe",
 			cwd: "/repo",
 			env: {
-				ANTHROPIC_BASE_URL: "https://api.anthropic.com/v1/anthropic-proxy",
-				ANTHROPIC_API_KEY: "relay-scoped-proxy-token",
+				HERMES_CODEX_BASE_URL: "https://chatgpt.com/backend-api/codex",
+				TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: "relay-scoped-proxy-token",
 			},
 		});
 
 		expect(findHermesLaunchSecretFindings(invocation)).toEqual([
 			{
-				location: "env.ANTHROPIC_BASE_URL",
-				reason: "model base URL must point at the relay Anthropic proxy",
-			},
-			{
-				location: "env.ANTHROPIC_API_KEY",
-				reason: "forbidden credential environment key",
+				location: "env.HERMES_CODEX_BASE_URL",
+				reason: "model base URL must point at the relay OpenAI Codex proxy",
 			},
 		]);
 	});
@@ -579,8 +862,9 @@ describe("Hermes private runtime seam", () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
-			cwd: "/repo",
+			cwd: process.cwd(),
 			prompt: "Reply with exactly TELCLAUDE_HERMES_CLI_OK",
+			env: cliRelayEnv(),
 		});
 		const report = await runHermesCliHeadlessProbe({
 			allowRun: true,
@@ -607,7 +891,8 @@ describe("Hermes private runtime seam", () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
 			hermesHome: "/tmp/tc-hermes-probe",
-			cwd: "/repo",
+			cwd: process.cwd(),
+			env: cliRelayEnv(),
 		});
 		const report = await runHermesCliHeadlessProbe({
 			allowRun: true,
@@ -656,6 +941,53 @@ function baseRequest(
 		isNewSession: true,
 		timeoutMs: 60_000,
 		signal: new AbortController().signal,
+		...overrides,
+	};
+}
+
+function cliRelayEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
+	return {
+		HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+		TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: "relay-scoped-proxy-token",
+		HERMES_INFERENCE_PROVIDER: "openai-codex",
+		HERMES_INFERENCE_MODEL: "gpt-5.3-codex",
+		...overrides,
+	};
+}
+
+function containedDockerRuntime(
+	overrides: Partial<TestContainedDockerRuntime> = {},
+): TestContainedDockerRuntime {
+	return {
+		kind: "contained-docker" as const,
+		containerName: "tc-hermes-contained",
+		networkName: "telclaude-hermes-relay" as const,
+		containerId: "b6d8f6c9a1d4",
+		image:
+			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
+		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7" as const,
+		hostname: "b6d8f6c9a1d4",
+		relayHost: "telclaude" as const,
+		relayResolvedAddress: "172.29.92.10",
+		containerIpAddress: "172.29.92.11",
+		observedPeerAddress: "172.29.92.11",
+		provenanceSource: "docker-inspect-container-dns-and-relay-peer" as const,
+		...overrides,
+	};
+}
+
+function relayProof(overrides: Partial<TestRelayProof> = {}): TestRelayProof {
+	return {
+		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
+		source: "telclaude-openai-codex-proxy",
+		requestId: "codex-proof-1",
+		method: "POST",
+		path: "/backend-api/codex/responses",
+		observedPeerAddress: "172.29.92.11",
+		upstreamStatus: 200,
+		model: "gpt-5.3-codex",
+		requestBodySha256: `sha256:${"a".repeat(64)}`,
+		observedAt: new Date().toISOString(),
 		...overrides,
 	};
 }
