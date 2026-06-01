@@ -47,12 +47,12 @@
     },
     {
       "surface_id": "attachment.quarantine",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/probes/attachment-quarantine.json"
     },
     {
       "surface_id": "outbound.policy",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/probes/outbound-policy.json"
     },
     {
@@ -87,12 +87,12 @@
     },
     {
       "surface_id": "providers.approval-binding",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/probes/providers-approval-binding.json"
     },
     {
       "surface_id": "served_mcp.provider-tools",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/probes/served-mcp-provider-tools.json"
     },
     {
@@ -127,7 +127,7 @@
     },
     {
       "surface_id": "sideeffect.ledger",
-      "status": "pass",
+      "status": "fail",
       "evidence_path": "artifacts/hermes/probes/sideeffect-ledger.json"
     },
     {
