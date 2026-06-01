@@ -5551,7 +5551,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("refreshes the Pro review request payload binding and resets disclosure approval", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		await withCwd(tempDir, async () => {
 			const requestPath = path.join(tempDir, "pro-review-request.json");
 			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
@@ -5633,11 +5633,14 @@ describe("Hermes wrapper foundation", () => {
 				gates: Array<{ name: string; status: string }>;
 			};
 
-			expect(check.exitCode, check.stdout).toBe(2);
-			expect(report.status).toBe("pending");
+			expect(check.exitCode, check.stdout).toBe(1);
+			expect(report.status).toBe("fail");
 			expect(report.gates.find((gate) => gate.name === "request.payloadBinding")).toMatchObject({
 				status: "pass",
 			});
+			expect(report.gates.some((gate) => gate.name.startsWith("request.semanticEvidence."))).toBe(
+				true,
+			);
 			expect(report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject({
 				status: "pending",
 			});
@@ -5667,9 +5670,48 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.detail).toContain("docs/hermes/pro-review-request.json");
 	});
 
+	it("refuses to refresh a tracked Pro review request that binds dirty selected files", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			execFileSync("git", ["init", "-q"], { cwd: tempDir });
+			execFileSync("git", ["config", "user.email", "hermes-wrapper-test@example.invalid"], {
+				cwd: tempDir,
+			});
+			execFileSync("git", ["config", "user.name", "Hermes Wrapper Test"], { cwd: tempDir });
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			execFileSync("git", ["add", "."], { cwd: tempDir });
+			execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: tempDir });
+			fs.appendFileSync("src/hermes/pro-review.ts", "dirty selected file\n", "utf8");
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--write-tracked-seed",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ status: "input_error" });
+			expect(report.detail).toContain(
+				"Refusing to write tracked Pro review request while selected tracked file(s) are dirty",
+			);
+			expect(report.detail).toContain("src/hermes/pro-review.ts");
+		});
+	});
+
 	it("validates pending ChatGPT Pro native-extension review evidence without sending a bundle", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		await withCwd(tempDir, async () => {
 			const requestPath = "docs/hermes/pro-review-request.json";
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
