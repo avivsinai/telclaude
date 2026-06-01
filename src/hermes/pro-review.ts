@@ -2,11 +2,30 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import {
+	type BrowserComputerBrokerSurfaceId,
+	browserComputerBrokerProbeEvidenceFailure,
+} from "./browser-computer-broker-probes.js";
 import { edgeAdapterProbeEvidenceFailure } from "./edge-adapter-probes.js";
-import { resolveHermesArtifactPath } from "./foundation.js";
+import {
+	hermesFixtureEvidenceFileFailure,
+	REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
+	resolveHermesArtifactPath,
+} from "./foundation.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
+import {
+	type NetworkProbeId,
+	networkProbeEvidenceFailure,
+} from "./network-probe-evidence-validation.js";
 import { readHermesCliHeadlessProbeReport } from "./private-runtime.js";
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
+import {
+	type ProviderDomainSurfaceId,
+	providerDomainProbeEvidenceFailure,
+} from "./provider-domain-probes.js";
+import { googleProviderProbeEvidenceFailure } from "./provider-google-probe.js";
+import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
+import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
 import { workflowProbeEvidenceFailure } from "./workflow-probes.js";
 
 export const DEFAULT_PRO_REVIEW_REQUEST_PATH = "docs/hermes/pro-review-request.json";
@@ -53,6 +72,39 @@ const PRO_REVIEW_SIGNED_PROBE_PATHS = {
 	"artifacts/hermes/probes/workflow-cron.json": "workflow.cron",
 	"artifacts/hermes/probes/workflow-longrun.json": "workflow.longrun",
 } as const;
+const PRO_REVIEW_BROWSER_COMPUTER_PROBE_PATHS = {
+	"artifacts/hermes/probes/browser-profiles.json": "browser.profiles",
+	"artifacts/hermes/probes/computer-broker.json": "computer.broker",
+	"artifacts/hermes/probes/network-egress-broker.json": "network.egress-broker",
+} as const satisfies Record<string, BrowserComputerBrokerSurfaceId>;
+const PRO_REVIEW_PROVIDER_DOMAIN_PROBE_PATHS = {
+	"artifacts/hermes/probes/providers-bank.json": "providers.bank",
+	"artifacts/hermes/probes/providers-clalit.json": "providers.clalit",
+	"artifacts/hermes/probes/providers-government.json": "providers.government",
+} as const satisfies Record<string, ProviderDomainSurfaceId>;
+const PRO_REVIEW_NETWORK_PROBE_PATHS = {
+	"artifacts/hermes/network/relay-control-allowed.json": "network.relay-control-allowed",
+	"artifacts/hermes/network/direct-provider-denied.json": "network.direct-provider-denied",
+	"artifacts/hermes/network/direct-vault-denied.json": "network.direct-vault-denied",
+	"artifacts/hermes/network/direct-model-provider-denied.json":
+		"network.direct-model-provider-denied",
+	"artifacts/hermes/network/dns-exfil-denied.json": "network.dns-exfil-denied",
+} as const satisfies Record<string, NetworkProbeId>;
+const PRO_REVIEW_GOOGLE_PROVIDER_PROBE_PATH = "artifacts/hermes/probes/providers-google.json";
+const PRO_REVIEW_PROVIDER_RELEASE_POLICY_PROBE_PATH =
+	"artifacts/hermes/probes/providers-release-policy.json";
+const PRO_REVIEW_SERVED_MCP_PROVIDER_TOOLS_PROBE_PATH =
+	"artifacts/hermes/probes/served-mcp-provider-tools.json";
+const PRO_REVIEW_CLI_HEADLESS_PROBE_PATH = "artifacts/hermes/probes/execution-cli-headless.json";
+const PRO_REVIEW_KNOWN_PROBE_ARTIFACT_PATHS = new Set<string>([
+	PRO_REVIEW_CLI_HEADLESS_PROBE_PATH,
+	...Object.keys(PRO_REVIEW_SIGNED_PROBE_PATHS),
+	...Object.keys(PRO_REVIEW_BROWSER_COMPUTER_PROBE_PATHS),
+	...Object.keys(PRO_REVIEW_PROVIDER_DOMAIN_PROBE_PATHS),
+	PRO_REVIEW_GOOGLE_PROVIDER_PROBE_PATH,
+	PRO_REVIEW_PROVIDER_RELEASE_POLICY_PROBE_PATH,
+	PRO_REVIEW_SERVED_MCP_PROVIDER_TOOLS_PROBE_PATH,
+]);
 export const REQUIRED_PRO_REVIEW_FILES = [
 	"docs/plans/2026-05-29-hermes-wrapper-pristine-spec.md",
 	"docs/hermes/local-colima-live-run.md",
@@ -196,6 +248,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"tests/hermes/workflow-probes.test.ts",
 	"tests/hermes/workflow-run-ledger.test.ts",
 	"tests/hermes/pro-review.test.ts",
+	"tests/hermes/pro-review-semantic-artifacts.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/mcp-side-effect-human-approval.test.ts",
 	"tests/hermes/mcp-ledger-execute.test.ts",
@@ -837,12 +890,10 @@ function semanticEvidenceGates(
 	options: { readonly requireGreenEvidence: boolean },
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
-	if (request.selectedFiles.includes("artifacts/hermes/probes/execution-cli-headless.json")) {
+	gates.push(semanticEvidenceCoverageGate(request.selectedFiles));
+	if (request.selectedFiles.includes(PRO_REVIEW_CLI_HEADLESS_PROBE_PATH)) {
 		gates.push(
-			cliHeadlessEvidenceGate(
-				"artifacts/hermes/probes/execution-cli-headless.json",
-				options.requireGreenEvidence,
-			),
+			cliHeadlessEvidenceGate(PRO_REVIEW_CLI_HEADLESS_PROBE_PATH, options.requireGreenEvidence),
 		);
 	}
 	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_SIGNED_PROBE_PATHS)) {
@@ -850,7 +901,131 @@ function semanticEvidenceGates(
 			gates.push(signedProbeEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence));
 		}
 	}
+	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_BROWSER_COMPUTER_PROBE_PATHS)) {
+		if (request.selectedFiles.includes(reportPath)) {
+			gates.push(
+				jsonSemanticEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence, (evidence) =>
+					browserComputerBrokerProbeEvidenceFailure(surfaceId, evidence),
+				),
+			);
+		}
+	}
+	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_PROVIDER_DOMAIN_PROBE_PATHS)) {
+		if (request.selectedFiles.includes(reportPath)) {
+			gates.push(
+				jsonSemanticEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence, (evidence) =>
+					providerDomainProbeEvidenceFailure(surfaceId, evidence),
+				),
+			);
+		}
+	}
+	if (request.selectedFiles.includes(PRO_REVIEW_GOOGLE_PROVIDER_PROBE_PATH)) {
+		gates.push(
+			jsonSemanticEvidenceGate(
+				PRO_REVIEW_GOOGLE_PROVIDER_PROBE_PATH,
+				"providers.google",
+				options.requireGreenEvidence,
+				googleProviderProbeEvidenceFailure,
+			),
+		);
+	}
+	if (request.selectedFiles.includes(PRO_REVIEW_PROVIDER_RELEASE_POLICY_PROBE_PATH)) {
+		gates.push(
+			jsonSemanticEvidenceGate(
+				PRO_REVIEW_PROVIDER_RELEASE_POLICY_PROBE_PATH,
+				"providers.release-policy",
+				options.requireGreenEvidence,
+				providerReleasePolicyProbeEvidenceFailure,
+			),
+		);
+	}
+	if (request.selectedFiles.includes(PRO_REVIEW_SERVED_MCP_PROVIDER_TOOLS_PROBE_PATH)) {
+		gates.push(
+			jsonSemanticEvidenceGate(
+				PRO_REVIEW_SERVED_MCP_PROVIDER_TOOLS_PROBE_PATH,
+				"served_mcp.provider-tools",
+				options.requireGreenEvidence,
+				servedMcpProviderToolsProbeEvidenceFailure,
+			),
+		);
+	}
+	for (const [reportPath, probeId] of Object.entries(PRO_REVIEW_NETWORK_PROBE_PATHS)) {
+		if (request.selectedFiles.includes(reportPath)) {
+			gates.push(
+				jsonSemanticEvidenceGate(reportPath, probeId, options.requireGreenEvidence, (evidence) =>
+					networkProbeEvidenceFailure(evidence, {
+						expectedId: probeId,
+						requiredPosture: REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
+					}),
+				),
+			);
+		}
+	}
+	for (const reportPath of request.selectedFiles.filter(isProReviewFixtureArtifactPath)) {
+		const fixtureId = path.basename(reportPath, ".json");
+		gates.push(
+			jsonSemanticEvidenceGate(reportPath, fixtureId, options.requireGreenEvidence, () =>
+				hermesFixtureEvidenceFileFailure(reportPath),
+			),
+		);
+	}
 	return gates;
+}
+
+function semanticEvidenceCoverageGate(selectedFiles: readonly string[]): ProReviewGate {
+	const uncovered = selectedFiles.filter(isUncoveredProReviewSemanticArtifactPath);
+	return uncovered.length === 0
+		? pass(
+				"request.semanticEvidence.coverage",
+				"all selected Hermes semantic evidence artifacts have validators",
+			)
+		: fail(
+				"request.semanticEvidence.coverage",
+				`selected Hermes semantic evidence artifact(s) lack validators: ${uncovered.join(", ")}`,
+			);
+}
+
+function isUncoveredProReviewSemanticArtifactPath(file: string): boolean {
+	if (file === DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH) return false;
+	if (isProReviewFixtureArtifactPath(file)) return false;
+	if (file.startsWith("artifacts/hermes/network/") && file.endsWith(".json")) {
+		return !Object.hasOwn(PRO_REVIEW_NETWORK_PROBE_PATHS, file);
+	}
+	if (file.startsWith("artifacts/hermes/probes/") && file.endsWith(".json")) {
+		return !PRO_REVIEW_KNOWN_PROBE_ARTIFACT_PATHS.has(file);
+	}
+	if (file.startsWith("artifacts/hermes/") && file.endsWith(".json")) {
+		return true;
+	}
+	return false;
+}
+
+function isProReviewFixtureArtifactPath(file: string): boolean {
+	return file.startsWith("artifacts/hermes/fixtures/") && file.endsWith(".json");
+}
+
+function jsonSemanticEvidenceGate(
+	reportPath: string,
+	surfaceId: string,
+	requireGreenEvidence: boolean,
+	validator: (evidence: unknown) => string | null,
+): ProReviewGate {
+	const name = `request.semanticEvidence.${surfaceId}`;
+	const read = readJsonObject(reportPath);
+	if (!read.ok) return fail(name, `${surfaceId} evidence cannot be read: ${read.error}`);
+	if (read.value.status !== "pass") {
+		if (read.value.status !== "fail") {
+			return fail(name, `${surfaceId} evidence status is ${String(read.value.status)}`);
+		}
+		if (requireGreenEvidence) {
+			return fail(name, `${surfaceId} evidence is explicitly red and cannot be sent`);
+		}
+		return pass(name, `${surfaceId} evidence is explicitly red`);
+	}
+	const failure = validator(read.value);
+	return failure
+		? fail(name, `${surfaceId} pass evidence is not accepted by the current validator: ${failure}`)
+		: pass(name, `${surfaceId} pass evidence passes current semantic validator`);
 }
 
 function cliHeadlessEvidenceGate(reportPath: string, requireGreenEvidence: boolean): ProReviewGate {
