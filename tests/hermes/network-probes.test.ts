@@ -10,6 +10,7 @@ import {
 } from "../../src/hermes/network-probe-attestation.js";
 import {
 	type NetworkProbeRunnerReport,
+	networkProbeEvidenceFailure,
 	readHermesNetworkProbeRunReport,
 	runHermesNetworkProbes,
 } from "../../src/hermes/network-probes.js";
@@ -36,14 +37,40 @@ describe("Hermes network probes", () => {
 			const directProviderEvidence = report.evidence.find(
 				(probe) => probe.id === "network.direct-provider-denied",
 			);
+			if (!directProviderEvidence) {
+				throw new Error("missing direct-provider network evidence");
+			}
 
-			expect(directProviderEvidence?.attempts.map((attempt) => attempt.name)).toEqual([
+			expect(directProviderEvidence.attempts.map((attempt) => attempt.name)).toEqual([
 				"provider:bank",
 				"provider:clalit",
 			]);
-			expect(directProviderEvidence?.attempts.every((attempt) => attempt.status === "pass")).toBe(
+			expect(directProviderEvidence.attempts.every((attempt) => attempt.status === "pass")).toBe(
 				true,
 			);
+			expect(
+				networkProbeEvidenceFailure(directProviderEvidence, {
+					expectedId: "network.direct-provider-denied",
+					requiredAttemptNames: ["provider:bank"],
+				}),
+			).toBeNull();
+			expect(
+				networkProbeEvidenceFailure(directProviderEvidence, {
+					expectedId: "network.direct-provider-denied",
+					requiredAttemptNames: ["provider:google"],
+				}),
+			).toContain("attempt provider:google is missing");
+			const unsignedDirectProviderEvidence = cloneReport({
+				...report,
+				evidence: [directProviderEvidence],
+			}).evidence[0];
+			delete unsignedDirectProviderEvidence.attestation;
+			expect(
+				networkProbeEvidenceFailure(unsignedDirectProviderEvidence, {
+					expectedId: "network.direct-provider-denied",
+					requiredAttemptNames: ["provider:bank"],
+				}),
+			).toContain("attestation is missing");
 			expect(report.evidence.every((probe) => probe.attestation?.probeId === probe.id)).toBe(true);
 			expect(
 				report.evidence.every(

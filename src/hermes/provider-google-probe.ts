@@ -24,6 +24,7 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
+import { networkProbeEvidenceFailure } from "./network-probe-evidence-validation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH =
@@ -74,7 +75,7 @@ const GoogleProviderDirectNetworkProbeEvidenceSchema = z
 		evidence_path: NonEmptyString,
 		attempts: z.array(GoogleProviderDirectNetworkAttemptSchema).min(1),
 	})
-	.strict();
+	.passthrough();
 
 type GoogleProviderDirectNetworkProbeEvidence = z.infer<
 	typeof GoogleProviderDirectNetworkProbeEvidenceSchema
@@ -712,22 +713,18 @@ function buildGoogleProviderDirectNetworkFixtureChecks(
 			},
 		];
 	}
-	const attempt = networkProbe.evidence.attempts.find(
-		(candidate) => candidate.name === attemptName,
-	);
-	const passed =
-		networkProbe.evidence.status === "pass" &&
-		networkProbe.evidence.ran === true &&
-		attempt?.status === "pass" &&
-		attempt.expectation === "deny" &&
-		(attempt.observed === "denied" || attempt.observed === "policy_denied");
+	const validationFailure = networkProbeEvidenceFailure(networkProbe.evidence, {
+		expectedId: "network.direct-provider-denied",
+		requiredAttemptNames: [attemptName],
+	});
+	const passed = validationFailure === null;
 	return [
 		{
 			name: `${requirement.id}.${attemptName}`,
 			status: passed ? "pass" : "fail",
 			detail: passed
 				? "direct Google provider endpoint was denied in the Hermes runtime namespace"
-				: `network evidence does not contain a passing denial attempt named ${attemptName}`,
+				: validationFailure,
 		},
 	];
 }
@@ -779,19 +776,12 @@ function googleProviderDirectNetworkFixtureFailures(
 		failures.push(`networkDeny probe artifact failed validation: ${network.failure}`);
 		return failures;
 	}
-	const attempt = network.evidence?.attempts.find(
-		(candidate) => candidate.name === requirement.networkAttemptName,
-	);
-	if (!attempt) {
-		failures.push(`networkDeny attempt ${String(requirement.networkAttemptName)} is missing`);
-	} else if (
-		attempt.status !== "pass" ||
-		attempt.expectation !== "deny" ||
-		(attempt.observed !== "denied" && attempt.observed !== "policy_denied")
-	) {
-		failures.push(
-			`networkDeny attempt ${String(requirement.networkAttemptName)} is not a passing denial`,
-		);
+	const signedFailure = networkProbeEvidenceFailure(network.evidence, {
+		expectedId: "network.direct-provider-denied",
+		requiredAttemptNames: requirement.networkAttemptName ? [requirement.networkAttemptName] : [],
+	});
+	if (signedFailure) {
+		failures.push(`networkDeny signed proof failed validation: ${signedFailure}`);
 	}
 	const fixtureCheck = new Map(fixture.checks.map((check) => [check.name, check])).get(
 		`${requirement.id}.${String(requirement.networkAttemptName)}`,
@@ -879,14 +869,14 @@ function readGoogleProviderDirectNetworkProbeArtifact(probePath: string): {
 			failure: `invalid direct-provider network artifact: ${flattenZodError(parsed.error)}`,
 		};
 	}
-	const failures: string[] = [];
-	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
-	if (parsed.data.ran !== true) failures.push("network probe did not run");
+	const failure = networkProbeEvidenceFailure(parsed.data, {
+		expectedId: "network.direct-provider-denied",
+	});
 	return {
 		path: probePath,
 		sha256: fileSha256(probePath),
 		evidence: parsed.data,
-		...(failures.length > 0 ? { failure: failures.join("; ") } : {}),
+		...(failure ? { failure } : {}),
 	};
 }
 

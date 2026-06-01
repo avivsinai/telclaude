@@ -9,24 +9,20 @@ import {
 	NETWORK_PROBE_POSTURES,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
-	REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
+import { signNetworkProbeEvidenceAttestation } from "./network-probe-attestation.js";
 import {
-	NETWORK_PROBE_ATTESTATION_RUNNER,
-	NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION,
-	NETWORK_PROBE_ATTESTATION_SOURCE,
-	type NetworkProbeAttestation,
-	networkProbeAttestationFieldsForEvidence,
-	networkProbeAttestationSignatureFailure,
-	signNetworkProbeEvidenceAttestation,
-} from "./network-probe-attestation.js";
+	assertNetworkProbeEvidence,
+	type NetworkProbeAttempt,
+	type NetworkProbeEvidence,
+	type NetworkProbeId,
+	type NetworkProbePosture,
+	type NetworkProbeStatus,
+} from "./network-probe-evidence-validation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
-import {
-	networkProbeSemanticProofFailures,
-	POSITIVE_NETWORK_DENIAL_ERROR_CODES,
-} from "./network-probe-semantic-proof.js";
+import { POSITIVE_NETWORK_DENIAL_ERROR_CODES } from "./network-probe-semantic-proof.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
 export const DEFAULT_NETWORK_PROBE_EVIDENCE_DIR = "artifacts/hermes/network";
@@ -40,40 +36,15 @@ export const DEFAULT_DNS_EXFIL_PROBE_URLS = [
 	"http://100.64.0.1/",
 ];
 export const DEFAULT_DNS_EXFIL_PROBE_URL = DEFAULT_DNS_EXFIL_PROBE_URLS.join(",");
+export type {
+	NetworkProbeAttempt,
+	NetworkProbeEvidence,
+	NetworkProbeId,
+	NetworkProbePosture,
+	NetworkProbeStatus,
+} from "./network-probe-evidence-validation.js";
+export { networkProbeEvidenceFailure } from "./network-probe-evidence-validation.js";
 export { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
-
-type NetworkProbeId = (typeof REQUIRED_CUTOVER_NETWORK_PROBE_IDS)[number];
-
-type NetworkProbeStatus = "pass" | "fail" | "pending";
-export type NetworkProbePosture = (typeof NETWORK_PROBE_POSTURES)[number];
-
-type NetworkProbeAttempt = {
-	name: string;
-	kind: "http" | "unix_socket" | "dns_guard" | "firewall_sentinel" | "configuration";
-	target: string;
-	expectation: "allow" | "deny" | "present" | "configured";
-	status: "pass" | "fail";
-	observed: string;
-	detail: string;
-	durationMs?: number;
-	httpStatus?: number;
-	errorName?: string;
-	errorCode?: string;
-	resolvedAddresses?: Array<{ address: string; blocked: boolean; nonOverridable: boolean }>;
-};
-
-export type NetworkProbeEvidence = {
-	schemaVersion: typeof NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION;
-	id: NetworkProbeId;
-	posture: NetworkProbePosture;
-	status: NetworkProbeStatus;
-	ran: boolean;
-	summary: string;
-	generatedAt: string;
-	evidence_path: string;
-	attempts: NetworkProbeAttempt[];
-	attestation?: NetworkProbeAttestation;
-};
 
 export type NetworkProbeRunnerReport = {
 	schemaVersion: "telclaude.hermes.network-probe-run.v1";
@@ -235,14 +206,10 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 				`network probe evidence ${String(evidence.id)} posture does not match report`,
 			);
 		}
-		if (!Array.isArray(evidence.attempts) || evidence.attempts.length === 0) {
-			throw new Error(`network probe evidence ${String(evidence.id)} has no attempts`);
-		}
-		for (const [index, attempt] of evidence.attempts.entries()) {
-			validatePassingNetworkProbeAttempt(evidence.id as NetworkProbeId, index, attempt);
-		}
-		validateNetworkProbeAttestation(evidence as NetworkProbeEvidence);
-		validateNetworkProbeSemanticProof(evidence as NetworkProbeEvidence);
+		assertNetworkProbeEvidence(evidence, {
+			expectedId: evidence.id as NetworkProbeId,
+			requiredPosture: raw.posture as NetworkProbePosture,
+		});
 	}
 	for (const id of REQUIRED_CUTOVER_NETWORK_PROBE_IDS) {
 		if (!evidenceIds.has(id)) {
@@ -250,85 +217,6 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 		}
 	}
 	return raw as NetworkProbeRunnerReport;
-}
-
-function validatePassingNetworkProbeAttempt(
-	id: NetworkProbeId,
-	index: number,
-	attempt: unknown,
-): void {
-	if (!isRecord(attempt)) {
-		throw new Error(`network probe evidence ${id} attempt ${index} must be a JSON object`);
-	}
-	if (typeof attempt.name !== "string" || attempt.name.trim().length === 0) {
-		throw new Error(`network probe evidence ${id} attempt ${index} name is missing`);
-	}
-	if (
-		!["http", "unix_socket", "dns_guard", "firewall_sentinel", "configuration"].includes(
-			String(attempt.kind),
-		)
-	) {
-		throw new Error(`network probe evidence ${id} attempt ${index} kind is unsupported`);
-	}
-	if (!["allow", "deny", "present", "configured"].includes(String(attempt.expectation))) {
-		throw new Error(`network probe evidence ${id} attempt ${index} expectation is unsupported`);
-	}
-	if (attempt.status !== "pass") {
-		throw new Error(
-			`network probe evidence ${id} attempt ${index} status is ${String(attempt.status)}`,
-		);
-	}
-	for (const key of ["target", "observed", "detail"]) {
-		if (typeof attempt[key] !== "string" || attempt[key].trim().length === 0) {
-			throw new Error(`network probe evidence ${id} attempt ${index} ${key} is missing`);
-		}
-	}
-}
-
-function validateNetworkProbeSemanticProof(evidence: NetworkProbeEvidence): void {
-	const [failure] = networkProbeSemanticProofFailures(evidence, {
-		requiredProbeIds: REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
-		requiredPosture: REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
-	});
-	if (failure) throw new Error(failure);
-}
-
-function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
-	if (!evidence.attestation) {
-		throw new Error(`network probe evidence ${evidence.id} attestation is missing`);
-	}
-	if (evidence.attestation.schemaVersion !== NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION) {
-		throw new Error(`network probe evidence ${evidence.id} attestation schemaVersion is invalid`);
-	}
-	if (evidence.attestation.source !== NETWORK_PROBE_ATTESTATION_SOURCE) {
-		throw new Error(`network probe evidence ${evidence.id} attestation source is invalid`);
-	}
-	if (evidence.attestation.runner !== NETWORK_PROBE_ATTESTATION_RUNNER) {
-		throw new Error(`network probe evidence ${evidence.id} attestation runner is invalid`);
-	}
-	const signatureFailure = networkProbeAttestationSignatureFailure(evidence.attestation, {
-		allowStale: true,
-	});
-	if (signatureFailure) {
-		throw new Error(
-			`network probe evidence ${evidence.id} attestation signature is invalid: ${signatureFailure}`,
-		);
-	}
-	const expected = networkProbeAttestationFieldsForEvidence(evidence);
-	for (const field of [
-		"probeEvidenceSchemaVersion",
-		"probeId",
-		"posture",
-		"status",
-		"ran",
-		"generatedAt",
-		"attemptsSha256",
-		"evidenceSha256",
-	] as const) {
-		if (evidence.attestation[field] !== expected[field]) {
-			throw new Error(`network probe evidence ${evidence.id} attestation ${field} mismatch`);
-		}
-	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

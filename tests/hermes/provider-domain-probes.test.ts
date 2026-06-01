@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "../../src/hermes/network-probe-schema.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
@@ -11,8 +12,20 @@ import {
 	providerDomainProbeEvidenceFailure,
 	runTelclaudeProviderDomainProbe,
 } from "../../src/hermes/provider-domain-probes.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
+
+let restoreOperatorRelayKeys: (() => void) | undefined;
 
 describe("Hermes provider-domain probes", () => {
+	beforeEach(() => {
+		restoreOperatorRelayKeys = installOperatorRelayKeys();
+	});
+
+	afterEach(() => {
+		restoreOperatorRelayKeys?.();
+		restoreOperatorRelayKeys = undefined;
+	});
+
 	it.each(
 		PROVIDER_DOMAIN_SURFACE_IDS,
 	)("passes %s only after read, prepare, approved execute, scope, replay, and credential checks", async (surfaceId: ProviderDomainSurfaceId) => {
@@ -185,7 +198,41 @@ describe("Hermes provider-domain probes", () => {
 				"fixture.providers.bank.direct-provider-deny",
 				bankDirectEvidence,
 			),
-		).toContain("networkDeny attempt provider:bank is missing");
+		).toContain("attempt provider:bank is missing");
+	});
+
+	it("rejects direct-provider-deny fixtures backed by unsigned network evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "provider-domain-fixtures-"));
+		const probePaths = await writeProviderDomainProbeArtifacts(tempDir);
+		const networkProbePath = writeDirectProviderNetworkProbeArtifact(
+			tempDir,
+			["provider:bank", "provider:clalit", "provider:government"],
+			{ sign: false },
+		);
+		const bundle = buildProviderDomainFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			probePaths,
+			networkProbePath,
+			observedAt: "2026-06-01T09:10:00.000Z",
+		});
+		const bankDirectEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.providers.bank.direct-provider-deny",
+		);
+
+		expect(bundle.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "fixture.providers.bank.direct-provider-deny",
+					status: "fail",
+				}),
+			]),
+		);
+		expect(
+			providerDomainFixtureEvidenceFailure(
+				"fixture.providers.bank.direct-provider-deny",
+				bankDirectEvidence,
+			),
+		).toContain("attestation is missing");
 	});
 
 	it("rejects provider fixture evidence when the bound probe artifact changes", async () => {
@@ -230,35 +277,62 @@ async function writeProviderDomainProbeArtifacts(
 function writeDirectProviderNetworkProbeArtifact(
 	tempDir: string,
 	attemptNames: readonly string[],
+	options: { readonly sign?: boolean } = {},
 ): string {
 	const probePath = path.join(tempDir, "direct-provider-denied.json");
+	const evidence = {
+		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+		id: "network.direct-provider-denied",
+		posture: "contained-internal",
+		status: "pass",
+		ran: true,
+		summary: "direct provider endpoints were denied in the Hermes runtime namespace",
+		generatedAt: "2026-06-01T09:10:00.000Z",
+		evidence_path: probePath,
+		attempts: attemptNames.map((name) => ({
+			name,
+			kind: "http",
+			target: `http://${name.replace(/[^a-z0-9-]/gi, "-")}.invalid/v1/health`,
+			expectation: "deny",
+			status: "pass",
+			observed: "denied",
+			detail: `${name} was denied`,
+			errorCode: "ENETUNREACH",
+		})),
+	};
 	fs.writeFileSync(
 		probePath,
 		JSON.stringify(
-			{
-				schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
-				id: "network.direct-provider-denied",
-				posture: "contained-internal",
-				status: "pass",
-				ran: true,
-				summary: "direct provider endpoints were denied in the Hermes runtime namespace",
-				generatedAt: "2026-06-01T09:10:00.000Z",
-				evidence_path: probePath,
-				attempts: attemptNames.map((name) => ({
-					name,
-					kind: "http",
-					target: `http://${name.replace(/[^a-z0-9-]/gi, "-")}.invalid/v1/health`,
-					expectation: "deny",
-					status: "pass",
-					observed: "denied",
-					detail: `${name} was denied`,
-					errorCode: "ENETUNREACH",
-				})),
-			},
+			options.sign === false
+				? evidence
+				: {
+						...evidence,
+						attestation: signNetworkProbeEvidenceAttestation(evidence),
+					},
 			null,
 			2,
 		),
 		"utf8",
 	);
 	return probePath;
+}
+
+function installOperatorRelayKeys(): () => void {
+	const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+	const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	return () => {
+		if (originalPrivateKey === undefined) {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		} else {
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = originalPrivateKey;
+		}
+		if (originalPublicKey === undefined) {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		} else {
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = originalPublicKey;
+		}
+	};
 }
