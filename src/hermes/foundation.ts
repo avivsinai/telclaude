@@ -10,6 +10,11 @@ import {
 } from "../internal-auth.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	browserComputerBrokerFixtureEvidenceFailure,
+	browserComputerBrokerProbeEvidenceFailure,
+	isBrowserComputerBrokerSurfaceId,
+} from "./browser-computer-broker-probes.js";
+import {
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
@@ -452,9 +457,18 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/mcp/approval-token.ts",
 		"src/hermes/mcp/side-effect-ledger-probe.ts",
 	],
-	"browser.profiles": ["src/hermes/network-probes.ts", "src/hermes/edge-adapter-contract.ts"],
-	"computer.broker": ["src/hermes/network-probes.ts", "src/hermes/edge-adapter-contract.ts"],
+	"browser.profiles": [
+		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-probes.ts",
+		"src/hermes/edge-adapter-contract.ts",
+	],
+	"computer.broker": [
+		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-probes.ts",
+		"src/hermes/edge-adapter-contract.ts",
+	],
 	"network.egress-broker": [
+		"src/hermes/browser-computer-broker-probes.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",
 		"docker/docker-compose.hermes.yml",
@@ -476,11 +490,13 @@ const P0_PARITY_DIGEST_FILES = [
 	"src/hermes/edge-adapter-probes.ts",
 	"src/hermes/workflow-run-ledger.ts",
 	"src/hermes/workflow-probes.ts",
+	"src/hermes/browser-computer-broker-probes.ts",
 	"tests/hermes/edge-adapter-contract.test.ts",
 	"tests/hermes/edge-adapter-runtime.test.ts",
 	"tests/hermes/edge-adapter-probes.test.ts",
 	"tests/hermes/workflow-run-ledger.test.ts",
 	"tests/hermes/workflow-probes.test.ts",
+	"tests/hermes/browser-computer-broker-probes.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
 	"tests/commands/hermes.test.ts",
@@ -1700,6 +1716,9 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
+		}
+		if (isBrowserComputerBrokerSurfaceId(probe.surface_id)) {
+			return [collectBrowserComputerBrokerProbeEvidence(probe)];
 		}
 		if (isHermesWorkflowSurfaceId(probe.surface_id)) {
 			return [collectWorkflowProbeEvidence(probe)];
@@ -3600,6 +3619,8 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (privateTelegramFailure) return privateTelegramFailure;
 	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
 	if (providerDomainFailure) return providerDomainFailure;
+	const browserComputerFailure = browserComputerBrokerFixtureEvidenceFailure(result.id, evidence);
+	if (browserComputerFailure) return browserComputerFailure;
 	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
 	if (workflowFailure) return workflowFailure;
 	return null;
@@ -5023,6 +5044,48 @@ function collectProviderReleasePolicyProbeEvidence(
 		status: "pass",
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed provider release-policy controls`,
+	};
+}
+
+function collectBrowserComputerBrokerProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+): FeatureProbeEvidenceBundle["results"][number] {
+	if (!isBrowserComputerBrokerSurfaceId(probe.surface_id)) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} is not a browser/computer broker surface`,
+		);
+	}
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	if (evidence === undefined) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	const failure = browserComputerBrokerProbeEvidenceFailure(probe.surface_id, evidence);
+	if (failure) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(failure)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed browser/computer broker controls`,
 	};
 }
 
