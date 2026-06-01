@@ -3,11 +3,14 @@ import path from "node:path";
 import { cachedDNSLookup, isBlockedIP, isNonOverridableBlock } from "../sandbox/network-proxy.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	assertHermesArtifactWritesAllowed,
 	DEFAULT_NETWORK_PROBES_PATH,
+	type HermesArtifactWriteOptions,
 	NETWORK_PROBE_POSTURES,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	resolveHermesArtifactPath,
+	writeHermesJsonArtifact,
 } from "./foundation.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
@@ -85,6 +88,7 @@ export type NetworkProbeRunnerOptions = {
 type NetworkProbeWriteOptions = {
 	outPath: string;
 	evidenceDir: string;
+	allowTrackedSeedWrite?: boolean;
 };
 
 const DEFAULT_TIMEOUT_MS = 3_000;
@@ -140,15 +144,23 @@ export function writeHermesNetworkProbeArtifacts(
 ): NetworkProbeRunnerReport {
 	const evidenceDir = resolveHermesArtifactPath(options.evidenceDir);
 	const outPath = resolveHermesArtifactPath(options.outPath);
+	const writeOptions: HermesArtifactWriteOptions =
+		options.allowTrackedSeedWrite === undefined
+			? {}
+			: { allowTrackedSeedWrite: options.allowTrackedSeedWrite };
 	const evidence = report.evidence.map((probe) => ({
 		...probe,
 		evidence_path: path.join(options.evidenceDir, `${probeFileStem(probe.id)}.json`),
 	}));
+	assertHermesArtifactWritesAllowed(
+		[outPath, ...evidence.map((probe) => resolveHermesArtifactPath(probe.evidence_path))],
+		writeOptions,
+	);
 	for (const probe of evidence) {
-		writeJsonArtifact(resolveHermesArtifactPath(probe.evidence_path), probe);
+		writeHermesJsonArtifact(resolveHermesArtifactPath(probe.evidence_path), probe, writeOptions);
 	}
 	const bundle = buildNetworkProbeBundle(evidence);
-	writeJsonArtifact(outPath, bundle);
+	writeHermesJsonArtifact(outPath, bundle, writeOptions);
 	return {
 		...report,
 		bundlePath: outPath,
@@ -639,13 +651,6 @@ function evidencePathFor(id: NetworkProbeId): string {
 
 function probeFileStem(id: NetworkProbeId): string {
 	return id.replace(/^network\./, "");
-}
-
-function writeJsonArtifact(filePath: string, value: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const tmpPath = `${filePath}.tmp.${process.pid}`;
-	fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-	fs.renameSync(tmpPath, filePath);
 }
 
 function normalizeNetworkError(error: unknown): { name: string; code?: string; message: string } {
