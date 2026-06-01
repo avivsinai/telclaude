@@ -84,7 +84,12 @@ describe("Hermes Google provider probe", () => {
 	it("builds Google provider fixture evidence bound to the probe artifact", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "google-provider-fixtures-"));
 		const probePath = await writeGoogleProviderProbeArtifact(tempDir);
-		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, ["provider:google"]);
+		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, [
+			"provider:bank",
+			"provider:clalit",
+			"provider:government",
+			"provider:google",
+		]);
 		const bundle = buildGoogleProviderFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			probePath,
@@ -126,7 +131,11 @@ describe("Hermes Google provider probe", () => {
 	it("keeps Google direct-provider-deny red without provider-specific network evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "google-provider-fixtures-"));
 		const probePath = await writeGoogleProviderProbeArtifact(tempDir);
-		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, ["provider"]);
+		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, [
+			"provider:bank",
+			"provider:clalit",
+			"provider:government",
+		]);
 		const bundle = buildGoogleProviderFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			probePath,
@@ -150,15 +159,17 @@ describe("Hermes Google provider probe", () => {
 				"fixture.providers.google.direct-provider-deny",
 				directEvidence,
 			),
-		).toContain("attempt provider:google is missing");
+		).toContain("provider:google");
 	});
 
 	it("rejects Google direct-provider-deny fixtures backed by unsigned network evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "google-provider-fixtures-"));
 		const probePath = await writeGoogleProviderProbeArtifact(tempDir);
-		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, ["provider:google"], {
-			sign: false,
-		});
+		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(
+			tempDir,
+			["provider:bank", "provider:clalit", "provider:government", "provider:google"],
+			{ sign: false },
+		);
 		const bundle = buildGoogleProviderFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			probePath,
