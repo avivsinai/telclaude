@@ -12,6 +12,15 @@ import {
 	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
+import {
+	NETWORK_PROBE_ATTESTATION_RUNNER,
+	NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION,
+	NETWORK_PROBE_ATTESTATION_SOURCE,
+	type NetworkProbeAttestation,
+	networkProbeAttestationFieldsForEvidence,
+	networkProbeAttestationSignatureFailure,
+	signNetworkProbeEvidenceAttestation,
+} from "./network-probe-attestation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 
 export const DEFAULT_NETWORK_PROBE_BUNDLE_PATH = DEFAULT_NETWORK_PROBES_PATH;
@@ -58,6 +67,7 @@ export type NetworkProbeEvidence = {
 	generatedAt: string;
 	evidence_path: string;
 	attempts: NetworkProbeAttempt[];
+	attestation?: NetworkProbeAttestation;
 };
 
 export type NetworkProbeRunnerReport = {
@@ -127,6 +137,13 @@ export async function runHermesNetworkProbes(
 		runDnsExfilDenied(options),
 	]);
 	const status = evidence.every((probe) => probe.status === "pass") ? "pass" : "fail";
+	const signedEvidence =
+		status === "pass"
+			? evidence.map((probe) => ({
+					...probe,
+					attestation: signNetworkProbeEvidenceAttestation(probe),
+				}))
+			: evidence;
 	return networkProbeReport({
 		posture,
 		status,
@@ -135,7 +152,7 @@ export async function runHermesNetworkProbes(
 			status === "pass"
 				? "Hermes network denial probes passed"
 				: "Hermes network denial probes failed",
-		evidence,
+		evidence: signedEvidence,
 	});
 }
 
@@ -226,6 +243,7 @@ export function readHermesNetworkProbeRunReport(reportPath: string): NetworkProb
 		for (const [index, attempt] of evidence.attempts.entries()) {
 			validatePassingNetworkProbeAttempt(evidence.id as NetworkProbeId, index, attempt);
 		}
+		validateNetworkProbeAttestation(evidence as NetworkProbeEvidence);
 	}
 	for (const id of REQUIRED_CUTOVER_NETWORK_PROBE_IDS) {
 		if (!evidenceIds.has(id)) {
@@ -264,6 +282,46 @@ function validatePassingNetworkProbeAttempt(
 	for (const key of ["target", "observed", "detail"]) {
 		if (typeof attempt[key] !== "string" || attempt[key].trim().length === 0) {
 			throw new Error(`network probe evidence ${id} attempt ${index} ${key} is missing`);
+		}
+	}
+}
+
+function validateNetworkProbeAttestation(evidence: NetworkProbeEvidence): void {
+	if (!evidence.attestation) {
+		throw new Error(`network probe evidence ${evidence.id} attestation is missing`);
+	}
+	if (evidence.attestation.schemaVersion !== NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION) {
+		throw new Error(
+			`network probe evidence ${evidence.id} attestation schemaVersion is invalid`,
+		);
+	}
+	if (evidence.attestation.source !== NETWORK_PROBE_ATTESTATION_SOURCE) {
+		throw new Error(`network probe evidence ${evidence.id} attestation source is invalid`);
+	}
+	if (evidence.attestation.runner !== NETWORK_PROBE_ATTESTATION_RUNNER) {
+		throw new Error(`network probe evidence ${evidence.id} attestation runner is invalid`);
+	}
+	const signatureFailure = networkProbeAttestationSignatureFailure(evidence.attestation, {
+		allowStale: true,
+	});
+	if (signatureFailure) {
+		throw new Error(
+			`network probe evidence ${evidence.id} attestation signature is invalid: ${signatureFailure}`,
+		);
+	}
+	const expected = networkProbeAttestationFieldsForEvidence(evidence);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"posture",
+		"status",
+		"ran",
+		"generatedAt",
+		"attemptsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (evidence.attestation[field] !== expected[field]) {
+			throw new Error(`network probe evidence ${evidence.id} attestation ${field} mismatch`);
 		}
 	}
 }

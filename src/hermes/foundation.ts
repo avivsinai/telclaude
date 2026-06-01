@@ -31,6 +31,14 @@ import {
 	isEdgeAdapterFeatureSurfaceId,
 } from "./edge-adapter-probes.js";
 import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
+import {
+	NETWORK_PROBE_ATTESTATION_RUNNER,
+	NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION,
+	NETWORK_PROBE_ATTESTATION_SOURCE,
+	type NetworkProbeAttestation,
+	networkProbeAttestationFieldsForEvidence,
+	networkProbeAttestationSignatureFailure,
+} from "./network-probe-attestation.js";
 import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js";
 import {
 	NO_FORK_RUNNER_ATTESTATION_RUNNER,
@@ -377,6 +385,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	],
 	"model.relay": [
 		"src/hermes/model-relay.ts",
+		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",
 		"src/relay/openai-codex-proxy.ts",
@@ -510,16 +519,19 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	],
 	"browser.profiles": [
 		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
 	],
 	"computer.broker": [
 		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/edge-adapter-contract.ts",
 	],
 	"network.egress-broker": [
 		"src/hermes/browser-computer-broker-probes.ts",
+		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",
 		"docker/docker-compose.hermes.yml",
@@ -532,6 +544,9 @@ const P0_PARITY_DIGEST_FILES = [
 	"docs/hermes/network-probes.json",
 	"docs/hermes/no-fork-proof.json",
 	"docs/hermes/rollback-rehearsal.json",
+	"src/hermes/network-probe-attestation.ts",
+	"src/hermes/network-probe-schema.ts",
+	"src/hermes/network-probes.ts",
 	"src/hermes/no-fork-attestation.ts",
 	"src/hermes/no-fork-proof.ts",
 	"src/hermes/edge-adapter-contract.ts",
@@ -549,6 +564,7 @@ const P0_PARITY_DIGEST_FILES = [
 	"tests/hermes/workflow-run-ledger.test.ts",
 	"tests/hermes/workflow-probes.test.ts",
 	"tests/hermes/browser-computer-broker-probes.test.ts",
+	"tests/hermes/network-probes.test.ts",
 	"tests/hermes/no-fork-proof.test.ts",
 	"tests/hermes/private-runtime.test.ts",
 	"tests/relay/openai-codex-proxy.test.ts",
@@ -770,6 +786,23 @@ const NetworkProbeAttemptSchema = z
 	})
 	.strict();
 
+const NetworkProbeAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(NETWORK_PROBE_ATTESTATION_SOURCE),
+		runner: z.literal(NETWORK_PROBE_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: NonEmptyString,
+		probeId: NonEmptyString,
+		posture: NonEmptyString,
+		status: z.enum(["pass", "fail", "pending"]),
+		ran: z.boolean(),
+		generatedAt: NonEmptyString,
+		attemptsSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+		evidenceSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+		signature: InternalResponseProofSchema,
+	})
+	.strict();
+
 const NetworkProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION),
@@ -781,6 +814,7 @@ const NetworkProbeEvidenceSchema = z
 		generatedAt: NonEmptyString,
 		evidence_path: NonEmptyString,
 		attempts: z.array(NetworkProbeAttemptSchema),
+		attestation: NetworkProbeAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -4465,6 +4499,9 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 	if (evidence.attempts.length === 0) {
 		failures.push(`network probe evidence ${probe.id} attempts are empty`);
 	}
+	if (probe.status === "pass") {
+		failures.push(...networkProbeAttestationFailures(evidence));
+	}
 	if (
 		REQUIRED_CUTOVER_NETWORK_PROBE_ID_SET.has(probe.id) &&
 		evidence.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE
@@ -4495,6 +4532,39 @@ function networkProbeEvidenceFailures(probe: ProbeBundle["probes"][number]): str
 				attempt.name,
 			)} status is ${attempt.status}: ${redactDetail(attempt.detail)}`,
 		);
+	}
+	return failures;
+}
+
+function networkProbeAttestationFailures(
+	evidence: z.infer<typeof NetworkProbeEvidenceSchema>,
+): string[] {
+	const attestation = evidence.attestation;
+	if (!attestation) return [`network probe evidence ${evidence.id} attestation is missing`];
+	const failures: string[] = [];
+	const signatureFailure = networkProbeAttestationSignatureFailure(
+		attestation as NetworkProbeAttestation,
+		{ allowStale: true },
+	);
+	if (signatureFailure) {
+		failures.push(
+			`network probe evidence ${evidence.id} attestation signature is invalid: ${signatureFailure}`,
+		);
+	}
+	const expected = networkProbeAttestationFieldsForEvidence(evidence);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"posture",
+		"status",
+		"ran",
+		"generatedAt",
+		"attemptsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			failures.push(`network probe evidence ${evidence.id} attestation ${field} mismatch`);
+		}
 	}
 	return failures;
 }
