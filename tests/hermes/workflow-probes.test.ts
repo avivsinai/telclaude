@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	HERMES_WORKFLOW_SURFACE_IDS,
@@ -10,8 +10,25 @@ import {
 	workflowFixtureEvidenceFailure,
 	workflowProbeEvidenceFailure,
 } from "../../src/hermes/workflow-probes.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
+
+const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
 
 describe("Hermes workflow probes", () => {
+	beforeEach(() => {
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	});
+
+	afterEach(() => {
+		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
+		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+	});
+
 	it.each(
 		HERMES_WORKFLOW_SURFACE_IDS,
 	)("passes %s only after workflow ledger controls are observed", (surfaceId: HermesWorkflowSurfaceId) => {
@@ -23,6 +40,19 @@ describe("Hermes workflow probes", () => {
 
 		expect(evidence.status).toBe("pass");
 		expect(evidence.ran).toBe(true);
+		expect(evidence.runnerAttestation).toMatchObject({
+			source: "telclaude-workflow-run-ledger-probe-runner",
+			runner: "telclaude-workflow-run-ledger-probe",
+			probeId: surfaceId,
+			status: "pass",
+			ran: true,
+			evidenceSource: "telclaude-workflow-run-ledger-harness",
+			signature: expect.objectContaining({
+				version: "v1",
+				scope: "operator",
+				path: "/v1/hermes.workflow-run-ledger.attestation",
+			}),
+		});
 		expect(evidence.observations).not.toEqual({});
 		expect(workflowProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
 	});
@@ -103,6 +133,53 @@ describe("Hermes workflow probes", () => {
 		);
 	});
 
+	it("rejects pass-looking workflow evidence without a signed runner attestation", () => {
+		const evidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.longrun",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+		const { runnerAttestation: _attestation, ...unsignedEvidence } = evidence;
+
+		expect(workflowProbeEvidenceFailure("workflow.longrun", unsignedEvidence)).toContain(
+			"runnerAttestation is missing",
+		);
+	});
+
+	it("rejects mutated workflow observations after signing", () => {
+		const evidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.longrun",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+
+		expect(
+			workflowProbeEvidenceFailure("workflow.longrun", {
+				...evidence,
+				observations: {
+					...evidence.observations,
+					terminalDenialCode: "run_not_found",
+				},
+			}),
+		).toContain("runnerAttestation observationsSha256 mismatch");
+	});
+
+	it("rejects workflow attestations signed by an untrusted relay key", () => {
+		const trustedPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		const forgedEvidence = runHermesWorkflowProbe({
+			surfaceId: "workflow.cron",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+		if (trustedPublicKey) process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedPublicKey;
+
+		expect(workflowProbeEvidenceFailure("workflow.cron", forgedEvidence)).toContain(
+			"runnerAttestation signature is invalid: signature verification failed",
+		);
+	});
+
 	it("builds fixture evidence bound to workflow probe artifacts", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-fixtures-"));
 		const probePaths = writeWorkflowProbeArtifacts(tempDir);
@@ -146,6 +223,35 @@ describe("Hermes workflow probes", () => {
 			workflowFixtureEvidenceFailure("fixture.cron.background.delivery", cronEvidence),
 		).toContain("probeSha256 does not match");
 	});
+
+	it("rejects workflow fixture evidence when the bound probe artifact is unsigned", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-fixtures-"));
+		const probePaths = writeWorkflowProbeArtifacts(tempDir);
+		const unsignedCronProbe = runHermesWorkflowProbe({
+			surfaceId: "workflow.cron",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+		delete unsignedCronProbe.runnerAttestation;
+		fs.writeFileSync(
+			probePaths["workflow.cron"],
+			JSON.stringify(unsignedCronProbe, null, 2),
+			"utf8",
+		);
+
+		const bundle = buildHermesWorkflowFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			probePaths,
+			observedAt: "2026-06-01T09:10:00.000Z",
+		});
+		const cronEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.cron.background.delivery",
+		);
+
+		expect(
+			workflowFixtureEvidenceFailure("fixture.cron.background.delivery", cronEvidence),
+		).toContain("fixture probe artifact failed validation: runnerAttestation is missing");
+	});
 });
 
 function writeWorkflowProbeArtifacts(tempDir: string): Record<HermesWorkflowSurfaceId, string> {
@@ -162,4 +268,13 @@ function writeWorkflowProbeArtifacts(tempDir: string): Record<HermesWorkflowSurf
 		fs.writeFileSync(probePaths[surfaceId], JSON.stringify(evidence, null, 2), "utf8");
 	}
 	return probePaths;
+}
+
+function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
+	const value = ORIGINAL_ENV[key];
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
 }
