@@ -2,32 +2,14 @@ import { z } from "zod";
 import { validateMemorySource } from "../../memory/source.js";
 import type { MemoryCategory, MemorySource, TrustLevel } from "../../memory/types.js";
 import { validateMemoryEntryInput } from "../../memory/validation.js";
+import { TELCLAUDE_MCP_SERVER_POLICY } from "./policy.js";
 import { resolveTelclaudeProviderOperation } from "./provider-routing.js";
 
-export const TELCLAUDE_MCP_TOOL_NAMES = [
-	"tc_provider_read",
-	"tc_provider_prepare_write",
-	"tc_provider_execute_write",
-	"tc_memory_search",
-	"tc_memory_write",
-	"tc_attachment_get",
-	"tc_outbound_prepare",
-	"tc_outbound_execute",
-	"tc_audit_note",
-] as const;
-
-export type TelclaudeMcpToolName = (typeof TELCLAUDE_MCP_TOOL_NAMES)[number];
-
-export const TELCLAUDE_MCP_SERVER_POLICY = {
-	tools: TELCLAUDE_MCP_TOOL_NAMES,
-	resources: [],
-	prompts: [],
-	roots: [],
-	sampling: false,
-	env: {},
-	cwd: null,
-	subprocess: false,
-} as const;
+export {
+	TELCLAUDE_MCP_SERVER_POLICY,
+	TELCLAUDE_MCP_TOOL_NAMES,
+	type TelclaudeMcpToolName,
+} from "./policy.js";
 
 export type TelclaudeMcpDomain = "private" | "social" | "household" | "public" | "specialist";
 
