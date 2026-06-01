@@ -375,6 +375,32 @@ export function getTelclaudeMcpSideEffectApprovalBinding(
 	return immutableClone(approvalBinding(record));
 }
 
+export function telclaudeMcpSideEffectRecordIntegrityFailures(
+	record: TelclaudeMcpSideEffectRecord,
+): string[] {
+	const failures: string[] = [];
+	if (record.kind === "provider") {
+		const paramsHash = hashProviderParams(record);
+		const bodyHash = hashProviderBody(record);
+		if (record.paramsHash !== paramsHash) {
+			failures.push("provider paramsHash does not match current provider params/render");
+		}
+		if (record.bodyHash !== bodyHash) {
+			failures.push("provider bodyHash does not match current provider render");
+		}
+		return failures;
+	}
+	const paramsHash = hashOutboundParams(record);
+	const bodyHash = hashOutboundBody(record);
+	if (record.paramsHash !== paramsHash) {
+		failures.push("outbound paramsHash does not match current outbound params/render");
+	}
+	if (record.bodyHash !== bodyHash) {
+		failures.push("outbound bodyHash does not match current outbound render");
+	}
+	return failures;
+}
+
 function prepareProviderRecord(
 	input: TelclaudeMcpProviderSideEffectPrepareInput,
 	makeRef: () => string,

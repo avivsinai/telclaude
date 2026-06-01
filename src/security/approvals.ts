@@ -132,6 +132,17 @@ function consumeFromTable<TRow extends RowBase, T>(
 	chatId: number,
 	mapper: (row: TRow) => T,
 ): Result<T> {
+	return consumeFromTableMatching(table, label, nonce, chatId, mapper);
+}
+
+function consumeFromTableMatching<TRow extends RowBase, T>(
+	table: string,
+	label: string,
+	nonce: string,
+	chatId: number,
+	mapper: (row: TRow) => T,
+	validate?: (mapped: T) => string | null,
+): Result<T> {
 	const db = getDb();
 
 	return db.transaction(() => {
@@ -161,6 +172,16 @@ function consumeFromTable<TRow extends RowBase, T>(
 			};
 		}
 
+		const mapped = mapper(row);
+		const validationError = validate?.(mapped);
+		if (validationError) {
+			logger.warn({ nonce, requestId: row.request_id, chatId }, `${label} validation failed`);
+			return {
+				success: false as const,
+				error: validationError,
+			};
+		}
+
 		const deleteResult = db.prepare(`DELETE FROM ${table} WHERE nonce = ?`).run(nonce);
 		if (deleteResult.changes !== 1) {
 			logger.error(
@@ -175,7 +196,7 @@ function consumeFromTable<TRow extends RowBase, T>(
 
 		logger.info({ nonce, requestId: row.request_id, chatId }, `${label} consumed`);
 
-		return { success: true as const, data: mapper(row) };
+		return { success: true as const, data: mapped };
 	})();
 }
 
@@ -386,6 +407,26 @@ export function consumeApproval(nonce: string, chatId: number): Result<PendingAp
 		nonce,
 		chatId,
 		rowToApproval,
+	);
+}
+
+/**
+ * Consume an approval only if the caller's binding predicate still matches the
+ * durable approval row. A predicate failure leaves the row pending so a forged
+ * or drifted consume attempt cannot burn the legitimate operator approval.
+ */
+export function consumeApprovalMatching(
+	nonce: string,
+	chatId: number,
+	validate: (approval: PendingApproval) => string | null,
+): Result<PendingApproval> {
+	return consumeFromTableMatching<ApprovalRow, PendingApproval>(
+		"approvals",
+		"approval",
+		nonce,
+		chatId,
+		rowToApproval,
+		validate,
 	);
 }
 
