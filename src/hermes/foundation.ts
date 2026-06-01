@@ -1820,6 +1820,47 @@ function cutoverProofArtifactSemanticFailures(
 		];
 	}
 
+	if (key === "featureProbeMatrix") {
+		const parsed = FeatureProbeMatrixSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`feature probe matrix schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [
+			...(parsed.data.probes.length === 0 ? ["feature probe matrix is empty"] : []),
+			...findDuplicates(parsed.data.probes.map((probe) => probe.surface_id)).map(
+				(surfaceId) => `duplicate feature probe ${surfaceId}`,
+			),
+			...parsed.data.probes.flatMap((probe) => {
+				if (probe.status !== "pass") {
+					return [`feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`];
+				}
+				if (probe.surface_id !== "execution.cli_headless") return [];
+				const cliEvidence = collectCliHeadlessProbeEvidence(probe, options);
+				return cliEvidence.status === "pass"
+					? []
+					: [`feature probe ${probe.surface_id} evidence failed: ${cliEvidence.detail}`];
+			}),
+		];
+	}
+
+	if (key === "fixtureResults") {
+		const parsed = FixtureResultBundleSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`fixture result bundle schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [
+			...(parsed.data.results.length === 0 ? ["fixture result bundle is empty"] : []),
+			...findDuplicates(parsed.data.results.map((result) => result.id)).map(
+				(fixtureId) => `duplicate fixture result ${fixtureId}`,
+			),
+			...parsed.data.results.flatMap((result) => {
+				if (result.status !== "pass") return [`fixture ${result.id} status is ${result.status}`];
+				const evidenceFailure = fixtureEvidenceFailure(result, options);
+				return evidenceFailure ? [evidenceFailure] : [];
+			}),
+		];
+	}
+
 	if (key === "rollbackEvidence") {
 		const parsed = RollbackRehearsalSchema.safeParse(value);
 		if (!parsed.success) {

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "telclaude.hermes.cutover-proof-bundle.v1",
-  "generatedAt": "2026-06-01T00:23:14.773Z",
+  "generatedAt": "2026-06-01T17:30:19.058Z",
   "hermes": {
     "version": "0.15.1"
   },
@@ -34,7 +34,7 @@
     "scopeManifest": {
       "key": "scopeManifest",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/cutover-scope.json",
       "sha256": "sha256:92ea501eb0d9df37e7e5f4e53f2331d586ffa955ea662ec2ba3ad672e26e9e28",
       "sourceCommand": "pnpm dev hermes cutover-scope --json",
@@ -59,7 +59,7 @@
     "decisionLog": {
       "key": "decisionLog",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/decisions.json",
       "sha256": "sha256:0819616a8a59950ccc9e03d5ae484103a08d5cf3877aa7d3289ea5986cf087e2",
       "sourceCommand": "pnpm dev hermes decision-log --json",
@@ -84,7 +84,7 @@
     "compatibilityLockfile": {
       "key": "compatibilityLockfile",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/hermes-compat.lock.json",
       "sha256": "sha256:55d0e3718c7c1f085c079be632ff4c60c1e44cd4070cb4a5e7fb0c713a0e8690",
       "sourceCommand": "pnpm dev hermes compat-lock --dry-run --json",
@@ -109,11 +109,11 @@
     "featureProbeMatrix": {
       "key": "featureProbeMatrix",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/feature-probes.json",
       "sha256": "sha256:5bbeeafc7d6fd0e77a74dfcb2276ad05d3550260fa3ef8182cac26d64740e241",
       "sourceCommand": "pnpm dev hermes probes --json",
-      "status": "pass",
+      "status": "fail",
       "redaction": {
         "status": "pass",
         "summary": "artifact bytes contain no credential-shaped text requiring redaction"
@@ -134,11 +134,11 @@
     "fixtureResults": {
       "key": "fixtureResults",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/fixture-results.json",
-      "sha256": "sha256:d76c45da3c4e222539f0bfe3f31f540caa9f1e15f207a98f32356d036ee37010",
+      "sha256": "sha256:ef54c55d98b1f1fabefdd9f83f1288f42fbce11656c50128496ccebdac36c615",
       "sourceCommand": "pnpm dev hermes fixtures --json",
-      "status": "pass",
+      "status": "fail",
       "redaction": {
         "status": "pass",
         "summary": "artifact bytes contain no credential-shaped text requiring redaction"
@@ -159,7 +159,7 @@
     "noForkProof": {
       "key": "noForkProof",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/no-fork-proof.json",
       "sha256": "sha256:549d70f1021f598495e144e450ff1f530fa70cda4e73bff7a20668846f4898ab",
       "sourceCommand": "pnpm dev hermes prove --upstream-clean --p0 --json",
@@ -184,7 +184,7 @@
     "networkProbeBundle": {
       "key": "networkProbeBundle",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/network-probes.json",
       "sha256": "sha256:d0c4a494fba466bb5ca416323e80cec098e0e59f6cd3eb3296dac7d09e019f23",
       "sourceCommand": "pnpm dev hermes network-probes --json",
@@ -209,7 +209,7 @@
     "queueSnapshot": {
       "key": "queueSnapshot",
       "schemaVersion": "unknown",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/queue-snapshot.json",
       "sha256": "sha256:faef1ed4f58ac564a079e7954ad1e8faa196df3e2f0d65f39eda59f25cd7b885",
       "sourceCommand": "pnpm dev hermes queue-snapshot --inventory docs/hermes/inventory.json --out docs/hermes/queue-snapshot.json --json",
@@ -234,7 +234,7 @@
     "rollbackEvidence": {
       "key": "rollbackEvidence",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-01T00:23:14.773Z",
+      "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/rollback-rehearsal.json",
       "sha256": "sha256:6aba63410db6e1902cee8a635678ad200c31709ffa85120eea9144df718a5a3b",
       "sourceCommand": "pnpm dev hermes rollback-rehearsal --json",
