@@ -5,7 +5,7 @@ import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	type ServedMcpContainmentEvidence,
 	ServedMcpContainmentEvidenceSchema,
-} from "./served-mcp-containment.js";
+} from "./served-mcp-containment-schema.js";
 
 export const DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH =
 	"artifacts/hermes/probes/served-mcp-provider-tools.json";
@@ -171,6 +171,8 @@ export function servedMcpProviderToolsProbeEvidenceFailure(evidence: unknown): s
 	}
 	const data = parsed.data;
 	const failures: string[] = [];
+	const sourceFailure = servedMcpProviderToolsSourceEvidenceFailure(data);
+	if (sourceFailure) failures.push(sourceFailure);
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
@@ -194,6 +196,45 @@ export function servedMcpProviderToolsProbeEvidenceFailure(evidence: unknown): s
 		failures.push(`originKind is ${data.observations.originKind}`);
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function servedMcpProviderToolsSourceEvidenceFailure(
+	evidence: ServedMcpProviderToolsProbeEvidence,
+): string | null {
+	if (!fs.existsSync(evidence.sourceEvidence.path)) {
+		return `source served-MCP containment artifact is missing: ${evidence.sourceEvidence.path}`;
+	}
+	let sourceRaw: unknown;
+	try {
+		sourceRaw = JSON.parse(fs.readFileSync(evidence.sourceEvidence.path, "utf8")) as unknown;
+	} catch (error) {
+		return `source served-MCP containment artifact is unreadable: ${String(
+			error instanceof Error ? error.message : error,
+		)}`;
+	}
+	if (sha256Json(sourceRaw) !== evidence.sourceEvidence.sha256) {
+		return "source served-MCP containment artifact sha256 changed";
+	}
+	const rebuilt = buildServedMcpProviderToolsProbeEvidence({
+		sourceEvidencePath: evidence.sourceEvidence.path,
+		sourceEvidence: sourceRaw,
+		observedAt: evidence.observedAt,
+	});
+	if (rebuilt.status !== "pass") {
+		return `source served-MCP containment artifact failed provider-tools derivation: ${rebuilt.summary}`;
+	}
+	const sourceParsed = ServedMcpContainmentEvidenceSchema.safeParse(sourceRaw);
+	if (!sourceParsed.success) {
+		return `source served-MCP containment artifact is invalid: ${flattenZodError(sourceParsed.error)}`;
+	}
+	const source = sourceParsed.data;
+	if (
+		source.schemaVersion !== evidence.sourceEvidence.schemaVersion ||
+		source.probeId !== evidence.sourceEvidence.probeId
+	) {
+		return "source served-MCP containment artifact identity changed";
+	}
+	return null;
 }
 
 function buildEvidence(
