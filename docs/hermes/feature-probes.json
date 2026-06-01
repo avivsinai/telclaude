@@ -143,7 +143,7 @@
       "security_scope": "edge-adapter",
       "approval_equivalent": false,
       "failure_outcome": "disable",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "surface_id": "outbound.policy",
@@ -159,7 +159,7 @@
       "security_scope": "edge-adapter",
       "approval_equivalent": true,
       "failure_outcome": "disable",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "surface_id": "edge.email",
@@ -269,7 +269,7 @@
       "security_scope": "provider-approval-binding",
       "approval_equivalent": true,
       "failure_outcome": "disable",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "surface_id": "served_mcp.provider-tools",
@@ -285,7 +285,7 @@
       "security_scope": "served-mcp-provider-tools",
       "approval_equivalent": true,
       "failure_outcome": "disable",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "surface_id": "providers.clalit",
@@ -392,7 +392,7 @@
       "security_scope": "side-effect-ledger",
       "approval_equivalent": true,
       "failure_outcome": "disable",
-      "status": "pass"
+      "status": "fail"
     },
     {
       "surface_id": "browser.profiles",

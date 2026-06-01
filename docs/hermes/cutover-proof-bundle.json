@@ -86,7 +86,7 @@
       "schemaVersion": "1",
       "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/hermes-compat.lock.json",
-      "sha256": "sha256:55d0e3718c7c1f085c079be632ff4c60c1e44cd4070cb4a5e7fb0c713a0e8690",
+      "sha256": "sha256:78aba34afd6d54ea0ca15bcba8c63f7ce4f1d08b8439adceadaedce306a3a60c",
       "sourceCommand": "pnpm dev hermes compat-lock --dry-run --json",
       "status": "pass",
       "redaction": {
@@ -111,7 +111,7 @@
       "schemaVersion": "1",
       "generatedAt": "2026-06-01T17:30:19.058Z",
       "artifactPath": "docs/hermes/feature-probes.json",
-      "sha256": "sha256:5bbeeafc7d6fd0e77a74dfcb2276ad05d3550260fa3ef8182cac26d64740e241",
+      "sha256": "sha256:73b033a08db1b23c561885c40836e91f52f156eb56a1c4478b37dcb6fc574255",
       "sourceCommand": "pnpm dev hermes probes --json",
       "status": "fail",
       "redaction": {
