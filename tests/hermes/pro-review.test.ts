@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -452,6 +453,37 @@ describe("Hermes Pro review gate", () => {
 				status: "fail",
 				detail: "edge.whatsapp evidence status is undefined",
 			});
+		});
+	});
+
+	it("fails Pro review checks when payload binding was refreshed from dirty selected files", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			execFileSync("git", ["init", "-q"], { cwd: tempDir });
+			execFileSync("git", ["config", "user.email", "hermes-wrapper-test@example.invalid"], {
+				cwd: tempDir,
+			});
+			execFileSync("git", ["config", "user.name", "Hermes Wrapper Test"], { cwd: tempDir });
+			execFileSync("git", ["add", "."], { cwd: tempDir });
+			execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: tempDir });
+
+			fs.appendFileSync("src/hermes/pro-review.ts", "dirty selected file\n", "utf8");
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.gates.find((gate) => gate.name === "request.payloadBinding")).toMatchObject({
+				status: "pass",
+			});
+			expect(report.gates.find((gate) => gate.name === "request.selectedFilesClean")).toMatchObject(
+				{
+					status: "fail",
+					detail: expect.stringContaining("src/hermes/pro-review.ts"),
+				},
+			);
 		});
 	});
 
