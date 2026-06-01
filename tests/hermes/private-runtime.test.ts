@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTelclaudeMcpAuthorityRegistry } from "../../src/hermes/mcp/authority-registry.js";
 import {
 	buildHermesPrivateRuntimeAdapterFromEnv,
@@ -20,6 +20,18 @@ import {
 	runHermesLaunchInvocation,
 } from "../../src/hermes/private-runtime.js";
 import { HermesSessionMap } from "../../src/hermes/session-map.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
+import {
+	type OpenAiCodexRelayProof,
+	type OpenAiCodexRelayProofSignedFields,
+	openAiCodexRelayProofTokenSha256,
+	signOpenAiCodexRelayProof,
+} from "../../src/relay/openai-codex-relay-proof.js";
+
+const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
 
 type TestContainedDockerRuntime = {
 	kind: "contained-docker";
@@ -36,20 +48,20 @@ type TestContainedDockerRuntime = {
 	provenanceSource: "docker-inspect-container-dns-and-relay-peer";
 };
 
-type TestRelayProof = {
-	schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1";
-	source: "telclaude-openai-codex-proxy";
-	requestId: string;
-	method: "POST";
-	path: "/backend-api/codex/responses";
-	observedPeerAddress: string;
-	upstreamStatus: number;
-	model: string;
-	requestBodySha256: `sha256:${string}`;
-	observedAt: string;
-};
+type TestRelayProof = OpenAiCodexRelayProof;
 
 describe("Hermes private runtime seam", () => {
+	beforeEach(() => {
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	});
+
+	afterEach(() => {
+		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
+		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+	});
+
 	it("normalizes Hermes runtime events into Telclaude StreamChunks", async () => {
 		const sessions = new HermesSessionMap(() => "tc-session-1");
 		const runtime: HermesRuntimeAdapter = {
@@ -580,6 +592,129 @@ describe("Hermes private runtime seam", () => {
 		});
 	});
 
+	it("rejects relay proofs whose signed fields were tampered after relay signing", async () => {
+		const signedProof = relayProof({ model: "gpt-5.3-codex" }, "HERMES_OK_SIGNED_PROOF");
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_SIGNED_PROOF",
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
+		});
+
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "HERMES_OK_SIGNED_PROOF\n",
+				stderr: "",
+				runtime: containedDockerRuntime(),
+				relayProof: { ...signedProof, model: "gpt-5.5" },
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: expect.stringContaining("relay proof signature is invalid"),
+		});
+	});
+
+	it("rejects relay proofs not bound to the expected stdout proof token", async () => {
+		const signedProof = relayProof({ model: "gpt-5.3-codex" }, "HERMES_OK_DIFFERENT_TOKEN");
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_TOKEN_BINDING",
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
+		});
+
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "HERMES_OK_TOKEN_BINDING\n",
+				stderr: "",
+				runtime: containedDockerRuntime(),
+				relayProof: signedProof,
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: expect.stringContaining(
+				"relay proof proofTokenSha256 does not match expected proof token",
+			),
+		});
+	});
+
+	it("fails closed when the trusted operator relay public key is unavailable", async () => {
+		const signedProof = relayProof({ model: "gpt-5.3-codex" }, "HERMES_OK_MISSING_KEY");
+		delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_MISSING_KEY",
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
+		});
+
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "HERMES_OK_MISSING_KEY\n",
+				stderr: "",
+				runtime: containedDockerRuntime(),
+				relayProof: signedProof,
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: expect.stringContaining(
+				"relay proof signature is invalid: missing relay public key env OPERATOR_RPC_RELAY_PUBLIC_KEY",
+			),
+		});
+	});
+
+	it("rejects relay proofs signed by a key other than the trusted operator relay key", async () => {
+		const trustedPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		const forgedProof = relayProof({ model: "gpt-5.3-codex" }, "HERMES_OK_FORGED_KEY");
+		if (trustedPublicKey) process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedPublicKey;
+		const invocation = buildHermesCliProbeInvocation({
+			hermesBin: "/usr/local/bin/hermes",
+			hermesHome: "/tmp/tc-hermes-probe",
+			cwd: process.cwd(),
+			prompt: "Reply with exactly HERMES_OK_FORGED_KEY",
+			env: cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.3-codex" }),
+		});
+
+		const report = await runHermesCliHeadlessProbe({
+			allowRun: true,
+			invocation,
+			runProcess: async () => ({
+				exitCode: 0,
+				stdout: "HERMES_OK_FORGED_KEY\n",
+				stderr: "",
+				runtime: containedDockerRuntime(),
+				relayProof: forgedProof,
+			}),
+		});
+
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: expect.stringContaining(
+				"relay proof signature is invalid: signature verification failed",
+			),
+		});
+	});
+
 	it("passes only relay OpenAI Codex subscription model env into the CLI headless launch", async () => {
 		const invocation = buildHermesCliProbeInvocation({
 			hermesBin: "/usr/local/bin/hermes",
@@ -611,7 +746,7 @@ describe("Hermes private runtime seam", () => {
 					stdout: "HERMES_OK_53822847\n",
 					stderr: "",
 					runtime: containedDockerRuntime(),
-					relayProof: relayProof({ model: "gpt-5.3-codex" }),
+					relayProof: relayProof({ model: "gpt-5.3-codex" }, "HERMES_OK_53822847"),
 				};
 			},
 		});
@@ -976,8 +1111,11 @@ function containedDockerRuntime(
 	};
 }
 
-function relayProof(overrides: Partial<TestRelayProof> = {}): TestRelayProof {
-	return {
+function relayProof(
+	overrides: Partial<OpenAiCodexRelayProofSignedFields> = {},
+	expectedProofToken = "TELCLAUDE_HERMES_CLI_OK",
+): TestRelayProof {
+	return signOpenAiCodexRelayProof({
 		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
 		source: "telclaude-openai-codex-proxy",
 		requestId: "codex-proof-1",
@@ -987,13 +1125,23 @@ function relayProof(overrides: Partial<TestRelayProof> = {}): TestRelayProof {
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
+		proofTokenSha256: openAiCodexRelayProofTokenSha256(expectedProofToken),
 		observedAt: new Date().toISOString(),
 		...overrides,
-	};
+	});
 }
 
 async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 	const values: T[] = [];
 	for await (const value of iterable) values.push(value);
 	return values;
+}
+
+function restoreEnv(key: keyof typeof ORIGINAL_ENV): void {
+	const value = ORIGINAL_ENV[key];
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
 }

@@ -8,6 +8,14 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import {
+	OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
+	OPENAI_CODEX_RELAY_PROOF_SOURCE,
+	OPENAI_CODEX_RESPONSES_PATH,
+	type OpenAiCodexRelayProof,
+	openAiCodexRelayProofSignatureFailure,
+	openAiCodexRelayProofTokenSha256,
+} from "../relay/openai-codex-relay-proof.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	BROWSER_COMPUTER_BROKER_FIXTURE_REQUIREMENTS,
@@ -79,10 +87,9 @@ export const CUTOVER_PROOF_BUNDLE_SCHEMA_VERSION = "telclaude.hermes.cutover-pro
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
 const HERMES_CLI_HEADLESS_PROVENANCE_SOURCE = "live-allow-run";
 const HERMES_CLI_HEADLESS_RUNTIME_PROVENANCE_SOURCE = "docker-inspect-container-dns-and-relay-peer";
-const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION =
-	"telclaude.hermes.cli-headless-relay-proof.v1";
-const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = "telclaude-openai-codex-proxy";
-const HERMES_CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
+const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION = OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION;
+const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = OPENAI_CODEX_RELAY_PROOF_SOURCE;
+const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
 const DEFAULT_HERMES_RELAY_IP = "172.29.92.10";
 const DEFAULT_HERMES_CONTAINED_IP = "172.29.92.11";
 export const PROFILE_GENERATION_PROOF_SCHEMA_VERSION =
@@ -186,6 +193,20 @@ export const FeatureProbeEvidenceBundleSchema = z
 
 export type FeatureProbeEvidenceBundle = z.infer<typeof FeatureProbeEvidenceBundleSchema>;
 
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: z.string().min(1),
+		timestamp: z.string().min(1),
+		nonce: z.string().min(1),
+		method: z.string().min(1),
+		path: z.string().min(1),
+		requestBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		responseBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+		signature: z.string().min(1),
+	})
+	.strict();
+
 const CliHeadlessProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(HERMES_PROBE_RESULT_SCHEMA_VERSION),
@@ -265,7 +286,9 @@ const CliHeadlessProbeEvidenceSchema = z
 				upstreamStatus: z.number().int(),
 				model: NonEmptyString,
 				requestBodySha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				proofTokenSha256: z.string().regex(SHA256_DIGEST_PATTERN).optional(),
 				observedAt: NonEmptyString,
+				signature: InternalResponseProofSchema,
 			})
 			.strict()
 			.optional(),
@@ -1246,20 +1269,6 @@ export const CutoverProofBundleSchema = z
 	.strict();
 
 export type CutoverProofBundle = z.infer<typeof CutoverProofBundleSchema>;
-
-const InternalResponseProofSchema = z
-	.object({
-		version: z.literal("v1"),
-		scope: z.string().min(1),
-		timestamp: z.string().min(1),
-		nonce: z.string().min(1),
-		method: z.string().min(1),
-		path: z.string().min(1),
-		requestBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
-		responseBodySha256: z.string().regex(/^[a-f0-9]{64}$/),
-		signature: z.string().min(1),
-	})
-	.strict();
 
 const RollbackRelayPublicKeySchema = z
 	.object({
@@ -4742,6 +4751,25 @@ function collectCliHeadlessProbeEvidence(
 		}
 		if (relayProof.upstreamStatus < 200 || relayProof.upstreamStatus >= 300) {
 			failures.push(`relay proof upstreamStatus is ${relayProof.upstreamStatus}`);
+		}
+		const signatureFailure = openAiCodexRelayProofSignatureFailure(
+			relayProof as OpenAiCodexRelayProof,
+			{ allowStale: true },
+		);
+		if (signatureFailure) {
+			failures.push(`relay proof signature is invalid: ${signatureFailure}`);
+		}
+		if (!provenance?.expectedProofToken) {
+			failures.push("relay proof cannot be bound because expectedProofToken is missing");
+		} else {
+			const expectedProofTokenSha256 = openAiCodexRelayProofTokenSha256(
+				provenance.expectedProofToken,
+			);
+			if (!relayProof.proofTokenSha256) {
+				failures.push("relay proof proofTokenSha256 is missing");
+			} else if (relayProof.proofTokenSha256 !== expectedProofTokenSha256) {
+				failures.push("relay proof proofTokenSha256 does not match expected proof token");
+			}
 		}
 		if (modelProvider && relayProof.model !== modelProvider.model) {
 			failures.push("relay proof model does not match modelProvider model");

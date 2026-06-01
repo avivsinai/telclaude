@@ -27,13 +27,21 @@ vi.mock("../../src/vault-daemon/client.js", () => ({
 }));
 
 import { MODEL_RELAY_OBSERVED_PEER_HEADER } from "../../src/hermes/model-relay.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
 import { startCapabilityServer } from "../../src/relay/capabilities.js";
 import {
 	isOpenAiCodexProxyAllowedClientAddress,
 	resetOpenAiCodexProxyState,
 } from "../../src/relay/openai-codex-proxy.js";
+import {
+	type OpenAiCodexRelayProof,
+	openAiCodexRelayProofSignatureFailure,
+	openAiCodexRelayProofTokenSha256,
+} from "../../src/relay/openai-codex-relay-proof.js";
 
 const ORIGINAL_ENV = {
+	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 	TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN: process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN,
 	TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN: process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN,
 };
@@ -43,6 +51,9 @@ describe("OpenAI Codex relay proxy", () => {
 	let baseUrl = "";
 
 	beforeEach(async () => {
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 		process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN = "relay-proxy-token";
 		process.env.TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN = fakeCodexJwt("acct_123");
 		isVaultAvailableMock.mockReset().mockResolvedValue(false);
@@ -65,6 +76,8 @@ describe("OpenAI Codex relay proxy", () => {
 			});
 			server = null;
 		}
+		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
+		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
 		restoreEnv("TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN");
 		restoreEnv("TELCLAUDE_OPENAI_CODEX_OAUTH_TOKEN");
 		resetOpenAiCodexProxyState();
@@ -120,7 +133,11 @@ describe("OpenAI Codex relay proxy", () => {
 	});
 
 	it("records a non-secret relay proof for the latest Codex response request from the peer", async () => {
-		const requestBody = JSON.stringify({ model: "gpt-5.5", input: "private prompt text" });
+		const expectedProofToken = "HERMES_OK_RELAY_PROOF_BINDING";
+		const requestBody = JSON.stringify({
+			model: "gpt-5.5",
+			input: `private prompt text; reply with ${expectedProofToken}`,
+		});
 		const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 			expect(String(input)).toBe("https://chatgpt.com/backend-api/codex/responses");
 			expect(Buffer.isBuffer(init?.body)).toBe(true);
@@ -159,11 +176,67 @@ describe("OpenAI Codex relay proxy", () => {
 			upstreamStatus: 200,
 			model: "gpt-5.5",
 			requestBodySha256: `sha256:${crypto.createHash("sha256").update(requestBody).digest("hex")}`,
+			proofTokenSha256: openAiCodexRelayProofTokenSha256(expectedProofToken),
 		});
 		expect(parsed.requestId).toEqual(expect.any(String));
 		expect(parsed.observedAt).toEqual(expect.any(String));
+		expect(parsed.signature).toMatchObject({
+			version: "v1",
+			scope: "operator",
+			method: "POST",
+			path: "/backend-api/codex/responses",
+			signature: expect.any(String),
+		});
+		expect(openAiCodexRelayProofSignatureFailure(parsed as OpenAiCodexRelayProof)).toBeNull();
 		expect(proof.body).not.toContain("private prompt text");
 		expect(fetchSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not serve a stale relay proof when proof signing fails", async () => {
+		const requestBody = JSON.stringify({ model: "gpt-5.5", input: "private prompt text" });
+		const fetchSpy = vi.fn(async () => {
+			return new Response(JSON.stringify({ output_text: "ok" }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const first = await makeRequest(
+			baseUrl,
+			"/v1/openai-codex-proxy/responses",
+			requestBody,
+			"POST",
+			{ Authorization: "Bearer relay-proxy-token" },
+		);
+		const firstProof = await makeRequest(
+			baseUrl,
+			"/v1/openai-codex-proxy/_telclaude/relay-proof/latest",
+			undefined,
+			"GET",
+			{ Authorization: "Bearer relay-proxy-token" },
+		);
+		delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const second = await makeRequest(
+			baseUrl,
+			"/v1/openai-codex-proxy/responses",
+			requestBody,
+			"POST",
+			{ Authorization: "Bearer relay-proxy-token" },
+		);
+		const staleProof = await makeRequest(
+			baseUrl,
+			"/v1/openai-codex-proxy/_telclaude/relay-proof/latest",
+			undefined,
+			"GET",
+			{ Authorization: "Bearer relay-proxy-token" },
+		);
+
+		expect(first.status).toBe(200);
+		expect(firstProof.status).toBe(200);
+		expect(second.status).toBe(200);
+		expect(staleProof.status).toBe(404);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it("rejects invalid relay tokens before reaching ChatGPT", async () => {

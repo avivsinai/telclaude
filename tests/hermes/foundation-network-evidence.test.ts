@@ -26,6 +26,12 @@ import {
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
+import {
+	type OpenAiCodexRelayProof,
+	type OpenAiCodexRelayProofSignedFields,
+	openAiCodexRelayProofTokenSha256,
+	signOpenAiCodexRelayProof,
+} from "../../src/relay/openai-codex-relay-proof.js";
 
 const hermesPin = { version: "0.15.1" };
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
@@ -322,7 +328,13 @@ function writeNoForkProof() {
 function writeRollbackRehearsal() {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-rollback-"));
 	const evidencePath = path.join(tempDir, "rollback-rehearsal.json");
-	const relayKeys = generateKeyPair();
+	const relayKeys =
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY
+			? {
+					privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+					publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+				}
+			: generateKeyPair();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const relayPublicKey = {
@@ -894,6 +906,170 @@ function edgeAdapterCutoverBundle(evidencePath: string): CutoverInputBundle {
 	};
 }
 
+function cliHeadlessCutoverBundle(
+	evidencePath: string,
+	beforeCollectFeatureEvidence?: () => void,
+): CutoverInputBundle {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+	const matrix = {
+		schemaVersion: 1 as const,
+		probes: [
+			{
+				surface_id: "execution.cli_headless",
+				hermes_pin: hermesPin,
+				documented_seam: "Hermes CLI headless runs through the Telclaude model relay",
+				probe_command: "pnpm dev hermes probe execution.cli_headless --allow-run",
+				expected_result: "Hermes CLI returns a proof token through relay-owned Codex",
+				negative_probe: "Direct model credentials and unsigned relay proofs fail",
+				evidence_path: evidencePath,
+				lockfile_key: "featureProbes.execution.cli_headless",
+				security_scope: "headless-availability-only" as const,
+				approval_equivalent: false,
+				failure_outcome: "disable" as const,
+				status: "pass" as const,
+			},
+		],
+	};
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const lockfile = {
+		...base.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(matrix),
+		featureProbes: [
+			{
+				surface_id: "execution.cli_headless",
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			},
+		],
+		adapterApiSignatures: { "execution.cli_headless": `sha256:${"c".repeat(64)}` },
+	};
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const { cutoverProofBundle: _cutoverProofBundle, ...baseWithoutProof } = base;
+	beforeCollectFeatureEvidence?.();
+	const withoutProof: CutoverBundleWithoutProof = {
+		...baseWithoutProof,
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: ["execution.cli_headless"],
+				},
+			],
+		},
+		featureProbeMatrix: matrix,
+		featureProbeEvidence: collectFeatureProbeEvidence(matrix),
+		lockfile,
+		profileGenerationProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
+function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexRelayProof): void {
+	const invocation = {
+		command: "/usr/local/bin/hermes",
+		args: ["-z", "Reply with exactly HERMES_OK_SIGNED_GATE"],
+		cwd: process.cwd(),
+		envKeys: [
+			"HERMES_CODEX_BASE_URL",
+			"HERMES_HOME",
+			"HERMES_INFERENCE_MODEL",
+			"HERMES_INFERENCE_PROVIDER",
+			"NO_COLOR",
+		],
+	};
+	const runtime = {
+		kind: "contained-docker",
+		containerName: "tc-hermes-contained",
+		networkName: "telclaude-hermes-relay",
+		containerId: "b6d8f6c9a1d4",
+		image:
+			"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
+		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
+		hostname: "b6d8f6c9a1d4",
+		relayHost: "telclaude",
+		relayResolvedAddress: "172.29.92.10",
+		containerIpAddress: "172.29.92.11",
+		observedPeerAddress: "172.29.92.11",
+		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
+	};
+	const stdoutPreview = "HERMES_OK_SIGNED_GATE\n";
+	const stderrPreview = "";
+	writeJson(evidencePath, {
+		schemaVersion: "telclaude.hermes.probe-result.v1",
+		probeId: "execution.cli_headless",
+		status: "pass",
+		ran: true,
+		summary: "Hermes CLI oneshot probe completed successfully",
+		exitCode: 0,
+		invocation,
+		modelProvider: {
+			provider: "openai-codex",
+			baseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			baseUrlHost: "telclaude",
+			model: "gpt-5.3-codex",
+			modelSource: "env:HERMES_INFERENCE_MODEL",
+			authLocation: "hermes-auth-store:openai-codex",
+			authScope: "relay-openai-codex-subscription-proxy",
+			tokenScoping: "static-shared",
+			auxiliaryAuthSource: "manual:telclaude-relay",
+			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			auxiliaryBaseUrlHost: "telclaude",
+			refreshTokenPolicy: "non-refreshable-placeholder",
+		},
+		provenance: {
+			runner: "telclaude-hermes-cli-probe",
+			source: "live-allow-run",
+			startedAt: "2026-05-31T09:00:00.000Z",
+			endedAt: "2026-05-31T09:01:00.000Z",
+			expectedProofToken: "HERMES_OK_SIGNED_GATE",
+			proofTokenObserved: true,
+			invocationSha256: computeHermesArtifactDigest(invocation),
+			stdoutSha256: textDigest(stdoutPreview),
+			stderrSha256: textDigest(stderrPreview),
+			runtimeSha256: computeHermesArtifactDigest(runtime),
+			relayProofSha256: computeHermesArtifactDigest(relayProof),
+		},
+		stdoutPreview,
+		stderrPreview,
+		runtime,
+		relayProof,
+		findings: [],
+	});
+}
+
+function cliHeadlessRelayProof(
+	overrides: Partial<OpenAiCodexRelayProofSignedFields> = {},
+): OpenAiCodexRelayProof {
+	return signOpenAiCodexRelayProof({
+		schemaVersion: "telclaude.hermes.cli-headless-relay-proof.v1",
+		source: "telclaude-openai-codex-proxy",
+		requestId: "codex-proof-1",
+		method: "POST",
+		path: "/backend-api/codex/responses",
+		observedPeerAddress: "172.29.92.11",
+		upstreamStatus: 200,
+		model: "gpt-5.3-codex",
+		requestBodySha256: `sha256:${"a".repeat(64)}`,
+		proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_SIGNED_GATE"),
+		observedAt: "2026-05-31T09:00:30.000Z",
+		...overrides,
+	});
+}
+
+function textDigest(value: string): string {
+	return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
+}
+
 function cutoverBundleWithGenericFixture(fixtureId: string): CutoverInputBundle {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixture-catalog-"));
 	const evidencePath = path.join(tempDir, `${fixtureId}.json`);
@@ -1013,6 +1189,109 @@ describe("Hermes cutover fixture evidence catalog validation", () => {
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "fixtures.pass")?.detail).toContain(
 			"invalid edge fixture evidence",
+		);
+	});
+});
+
+describe("Hermes cutover cli-headless relay proof validation", () => {
+	it("accepts cli-headless evidence only with a trusted signed relay proof", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
+		const bundle = cliHeadlessCutoverBundle(evidencePath);
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("rejects cli-headless evidence when a signed relay proof field is tampered", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		const signedProof = cliHeadlessRelayProof();
+		writeCliHeadlessEvidence(evidencePath, { ...signedProof, model: "gpt-5.5" });
+		const bundle = cliHeadlessCutoverBundle(evidencePath);
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"relay proof signature is invalid",
+		);
+	});
+
+	it("rejects cli-headless evidence when the signed relay proof is for a different proof token", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeCliHeadlessEvidence(
+			evidencePath,
+			cliHeadlessRelayProof({
+				proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_DIFFERENT_GATE"),
+			}),
+		);
+		const bundle = cliHeadlessCutoverBundle(evidencePath);
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"relay proof proofTokenSha256 does not match expected proof token",
+		);
+	});
+
+	it("rejects cli-headless evidence signed by an untrusted relay key", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const trustedKeys = generateKeyPair();
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = attackerKeys.publicKey;
+		const forgedProof = cliHeadlessRelayProof();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeCliHeadlessEvidence(evidencePath, forgedProof);
+		const bundle = cliHeadlessCutoverBundle(evidencePath);
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"relay proof signature is invalid: signature verification failed",
+		);
+	});
+
+	it("fails closed when the trusted operator relay public key is missing", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+		writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
+		const bundle = cliHeadlessCutoverBundle(evidencePath, () => {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		});
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"relay proof signature is invalid: missing relay public key env OPERATOR_RPC_RELAY_PUBLIC_KEY",
 		);
 	});
 });
