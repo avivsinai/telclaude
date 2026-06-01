@@ -4,8 +4,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { networkProbeAttestationSignatureFailure } from "../../src/hermes/network-probe-attestation.js";
 import {
+	networkProbeAttestationSignatureFailure,
+	signNetworkProbeEvidenceAttestation,
+} from "../../src/hermes/network-probe-attestation.js";
+import {
+	type NetworkProbeRunnerReport,
 	readHermesNetworkProbeRunReport,
 	runHermesNetworkProbes,
 } from "../../src/hermes/network-probes.js";
@@ -54,14 +58,68 @@ describe("Hermes network probes", () => {
 				fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-report-")),
 				"report.json",
 			);
-			writeJson(reportPath, report);
+			const importableReport = resignReportEvidence(report, (probe) =>
+				probe.id === "network.dns-exfil-denied"
+					? {
+							...probe,
+							attempts: [metadataDnsGuardAttempt()],
+						}
+					: probe,
+			);
+			writeJson(reportPath, importableReport);
 			expect(readHermesNetworkProbeRunReport(reportPath)).toMatchObject({ status: "pass" });
 
-			const unsignedReport = JSON.parse(JSON.stringify(report)) as typeof report;
+			const unsignedReport = cloneReport(importableReport);
 			delete unsignedReport.evidence[0].attestation;
 			writeJson(reportPath, unsignedReport);
 			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
 				"network probe evidence network.relay-control-allowed attestation is missing",
+			);
+
+			const configurationOnlyReport = resignReportEvidence(importableReport, (probe) => ({
+				...probe,
+				attempts: [
+					{
+						name: `${probe.id}.configured`,
+						kind: "configuration",
+						target: probe.id,
+						expectation: "configured",
+						status: "pass",
+						observed: "configured",
+						detail: "schema-only configured proof",
+					},
+				],
+			}));
+			writeJson(reportPath, configurationOnlyReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.relay-control-allowed contained-internal denial proof is missing or not pass",
+			);
+
+			const tamperedReport = cloneReport(importableReport);
+			tamperedReport.evidence[1].attempts[0].detail = "mutated after signing";
+			writeJson(reportPath, tamperedReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.direct-provider-denied attestation attemptsSha256 mismatch",
+			);
+
+			const wrongAttestationSchemaReport = cloneReport(importableReport);
+			if (!wrongAttestationSchemaReport.evidence[0].attestation) {
+				throw new Error("missing attestation in test fixture");
+			}
+			wrongAttestationSchemaReport.evidence[0].attestation.schemaVersion = "wrong" as never;
+			writeJson(reportPath, wrongAttestationSchemaReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.relay-control-allowed attestation schemaVersion is invalid",
+			);
+
+			const badSignatureReport = cloneReport(importableReport);
+			if (!badSignatureReport.evidence[0].attestation) {
+				throw new Error("missing attestation in test fixture");
+			}
+			badSignatureReport.evidence[0].attestation.signature.signature = "bad-signature";
+			writeJson(reportPath, badSignatureReport);
+			expect(() => readHermesNetworkProbeRunReport(reportPath)).toThrow(
+				"network probe evidence network.relay-control-allowed attestation signature is invalid",
 			);
 		} finally {
 			restoreKeys();
@@ -88,6 +146,58 @@ function installOperatorRelayKeys(): () => void {
 			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = originalPublicKey;
 		}
 	};
+}
+
+function metadataDnsGuardAttempt() {
+	return {
+		name: "dns-exfil-1",
+		kind: "dns_guard" as const,
+		target: "http://169.254.169.254/latest/meta-data/",
+		expectation: "deny" as const,
+		status: "pass" as const,
+		observed: "denied",
+		detail: "target was actively denied with ENETUNREACH",
+		durationMs: 1,
+		errorName: "TypeError",
+		errorCode: "ENETUNREACH",
+		resolvedAddresses: [
+			{
+				address: "169.254.169.254",
+				blocked: true,
+				nonOverridable: true,
+			},
+		],
+	};
+}
+
+function cloneReport(report: NetworkProbeRunnerReport): NetworkProbeRunnerReport {
+	return JSON.parse(JSON.stringify(report)) as NetworkProbeRunnerReport;
+}
+
+function resignReportEvidence(
+	report: NetworkProbeRunnerReport,
+	mutate: (
+		probe: NetworkProbeRunnerReport["evidence"][number],
+	) => NetworkProbeRunnerReport["evidence"][number],
+): NetworkProbeRunnerReport {
+	const updated = cloneReport(report);
+	updated.evidence = updated.evidence.map((probe) => {
+		const mutated = mutate(probe);
+		delete mutated.attestation;
+		return {
+			...mutated,
+			attestation: signNetworkProbeEvidenceAttestation(mutated),
+		};
+	});
+	updated.bundle = {
+		schemaVersion: 1,
+		probes: updated.evidence.map((probe) => ({
+			id: probe.id,
+			status: probe.status === "pass" ? "pass" : "fail",
+			evidence_path: probe.evidence_path,
+		})),
+	};
+	return updated;
 }
 
 function writeJson(filePath: string, value: unknown): void {
