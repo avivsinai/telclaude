@@ -53,6 +53,7 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly validateAttachment?: AttachmentValidator;
 	readonly auditNote?: (entry: TelclaudeLiveMcpAuditEntry) => void | Promise<void>;
 	readonly makeApprovalRequestId?: () => string;
+	readonly providerWriteApproverActorId?: string;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -66,6 +67,7 @@ export function createTelclaudeLiveMcpRelayClients(
 	const auditNote = options.auditNote ?? defaultAuditNote;
 	const makeApprovalRequestId =
 		options.makeApprovalRequestId ?? (() => `mcp-approval-${crypto.randomUUID()}`);
+	const providerWriteApproverActorId = optionalTrimmed(options.providerWriteApproverActorId);
 
 	return {
 		async providerRead(request) {
@@ -92,7 +94,7 @@ export function createTelclaudeLiveMcpRelayClients(
 			const record = options.ledger.prepare({
 				kind: "provider",
 				actorId: request.actorId,
-				approverActorId: request.actorId,
+				approverActorId: providerWriteApproverFor(providerWriteApproverActorId, request.actorId),
 				profileId: request.profileId,
 				domain: request.domain,
 				providerId: operation.providerId,
@@ -229,6 +231,28 @@ function containsUrgentHealthSignal(value: unknown): boolean {
 		"heart attack",
 		"suicidal",
 	].some((term) => text.includes(term));
+}
+
+function providerWriteApproverFor(
+	providerWriteApproverActorId: string | undefined,
+	actorId: string,
+): string {
+	if (!providerWriteApproverActorId) {
+		throw new Error(
+			"provider write approval denied: providerWriteApproverActorId is not configured",
+		);
+	}
+	if (providerWriteApproverActorId === actorId.trim()) {
+		throw new Error(
+			"provider write approval denied: providerWriteApproverActorId must differ from actorId",
+		);
+	}
+	return providerWriteApproverActorId;
+}
+
+function optionalTrimmed(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
 function parseMemorySearchFilters(

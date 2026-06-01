@@ -584,7 +584,7 @@ function providerPrepareInput(
 	return {
 		kind: "provider",
 		actorId: "operator",
-		approverActorId: "operator",
+		approverActorId: "operator:provider-approver",
 		profileId: "ops",
 		domain: "private",
 		providerId: "bank",

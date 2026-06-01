@@ -164,6 +164,8 @@ export function registerRelayCommand(program: Command): void {
 				const schedulerHandles: Array<{ stop: () => void | Promise<void> }> = [];
 				const liveMcpAdminConfig = readTelclaudeLiveMcpAdminConfig();
 				const liveMcpRuntimeConfig = readTelclaudeLiveMcpRuntimeConfig();
+				const liveMcpProviderWriteApproverActorId =
+					process.env.TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID?.trim();
 				const probeNoTelegramError = validateProbeNoTelegramRelayMode({
 					probeNoTelegram: opts.probeNoTelegram,
 					dryRun: opts.dryRun ?? false,
@@ -278,12 +280,23 @@ export function registerRelayCommand(program: Command): void {
 
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
-					createRelayClients: ({ ledger }) => createTelclaudeLiveMcpRelayClients({ ledger }),
+					createRelayClients: ({ ledger }) =>
+						createTelclaudeLiveMcpRelayClients({
+							ledger,
+							providerWriteApproverActorId: liveMcpProviderWriteApproverActorId,
+						}),
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
 				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
 					schedulerHandles.push({ stop: () => liveMcpRuntime.stop() });
 					console.log(`  Hermes live MCP: enabled (${liveMcpRuntime.endpoint.url})`);
+					console.log(
+						`  Hermes provider write approver: ${
+							liveMcpProviderWriteApproverActorId
+								? "configured"
+								: "not configured (provider writes fail closed)"
+						}`,
+					);
 					if (liveMcpAdminConfig.enabled) {
 						console.log(`  Hermes live MCP admin: enabled (${liveMcpAdminConfig.socketPath})`);
 					}
