@@ -43,6 +43,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/commands/hermes.ts",
 	"src/relay/provider-proxy.ts",
 	"src/relay/openai-codex-proxy.ts",
+	"src/relay/openai-codex-relay-proof.ts",
 	"docker/docker-compose.hermes.yml",
 	"docker/hermes-contained-entrypoint.sh",
 	"scripts/hermes-contained-cli-probe.sh",

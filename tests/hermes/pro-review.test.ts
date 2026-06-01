@@ -23,6 +23,7 @@ describe("Hermes Pro review gate", () => {
 				"tests/hermes/workflow-probes.test.ts",
 				"src/hermes/mcp/side-effect-human-approval.ts",
 				"tests/hermes/mcp-side-effect-human-approval.test.ts",
+				"src/relay/openai-codex-relay-proof.ts",
 			]),
 		);
 	});
