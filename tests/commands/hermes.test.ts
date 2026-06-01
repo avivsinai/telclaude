@@ -3365,7 +3365,7 @@ describe("Hermes wrapper foundation", () => {
 	it("anchors artifact recency to the proof bundle timestamp during live cutover", () => {
 		const report = evaluateCutoverCheck(safeCutoverBundle(), {
 			liveCutover: true,
-			now: new Date("2026-06-06T23:59:59.000Z"),
+			now: new Date("2026-06-05T23:59:59.000Z"),
 		});
 
 		expect(report.status).toBe("safe");
@@ -3987,8 +3987,9 @@ describe("Hermes wrapper foundation", () => {
 		};
 		writeJson(rehearsal.evidence_path, tampered);
 
-		const bundle = safeCutoverBundle({ rollbackRehearsal: tampered });
+		const bundleWithStaleProof = safeCutoverBundle({ rollbackRehearsal: tampered });
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = rehearsal.relayPublicKey.value;
+		const bundle = refreshCutoverProofBundle(bundleWithStaleProof);
 		const failed = evaluateCutoverCheck(bundle);
 
 		expect(failed.status).toBe("fail");
@@ -8379,10 +8380,18 @@ sleep 5
 
 		const result = await runCutoverCheckWithBundle(bundle);
 		const report = JSON.parse(result.stdout) as {
+			status: string;
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
 
-		expect(result.exitCode, result.stdout).toBe(1);
+		expect(result.exitCode, result.stdout).toBe(2);
+		expect(report.status).toBe("input_error");
+		expect(report.gates.find((gate) => gate.name === "proofBundle.fixtureResults.valid")).toEqual(
+			expect.objectContaining({
+				status: "fail",
+				detail: expect.stringContaining("artifact status does not match on-disk semantic evidence"),
+			}),
+		);
 		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("fixture probeSha256 does not match"),
