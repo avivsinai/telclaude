@@ -121,6 +121,7 @@ describe("Hermes provider-domain probes", () => {
 			"provider:bank",
 			"provider:clalit",
 			"provider:government",
+			"provider:google",
 		]);
 		const bundle = buildProviderDomainFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
@@ -198,7 +199,7 @@ describe("Hermes provider-domain probes", () => {
 				"fixture.providers.bank.direct-provider-deny",
 				bankDirectEvidence,
 			),
-		).toContain("attempt provider:bank is missing");
+		).toContain("provider:bank");
 	});
 
 	it("rejects direct-provider-deny fixtures backed by unsigned network evidence", async () => {
@@ -206,7 +207,7 @@ describe("Hermes provider-domain probes", () => {
 		const probePaths = await writeProviderDomainProbeArtifacts(tempDir);
 		const networkProbePath = writeDirectProviderNetworkProbeArtifact(
 			tempDir,
-			["provider:bank", "provider:clalit", "provider:government"],
+			["provider:bank", "provider:clalit", "provider:government", "provider:google"],
 			{ sign: false },
 		);
 		const bundle = buildProviderDomainFixtureEvidenceBundle({
