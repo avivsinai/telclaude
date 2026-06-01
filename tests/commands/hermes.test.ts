@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
@@ -7,7 +8,7 @@ import path from "node:path";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { shutdownTokenClient } from "../../src/agent/token-client.js";
-import { registerHermesCommand } from "../../src/commands/hermes.js";
+import { deriveNoForkP0Status, registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approval-continuation.js";
 import {
@@ -48,6 +49,8 @@ import {
 } from "../../src/hermes/inventory.js";
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
+import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
+import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 import {
@@ -205,6 +208,19 @@ function readJson(filePath: string): unknown {
 function writeJson(filePath: string, value: unknown): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function initPinnedHermesCheckout(checkoutPath: string): void {
+	fs.mkdirSync(checkoutPath, { recursive: true });
+	execFileSync("git", ["init", "-q"], { cwd: checkoutPath });
+	execFileSync("git", ["config", "user.email", "hermes-wrapper-test@example.invalid"], {
+		cwd: checkoutPath,
+	});
+	execFileSync("git", ["config", "user.name", "Hermes Wrapper Test"], { cwd: checkoutPath });
+	fs.writeFileSync(path.join(checkoutPath, "README.md"), "Hermes upstream fixture\n", "utf8");
+	execFileSync("git", ["add", "README.md"], { cwd: checkoutPath });
+	execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: checkoutPath });
+	execFileSync("git", ["tag", "v2026.5.29"], { cwd: checkoutPath });
 }
 
 function networkProbeRunReport() {
@@ -369,13 +385,17 @@ function restoreEnv(name: string, value: string | undefined): void {
 	}
 }
 
-function ensureOperatorRelayKeys(): void {
+function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
 	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
-		return;
+		return {
+			privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+			publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+		};
 	}
 	const relayKeys = generateKeyPair();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	return relayKeys;
 }
 
 function minimalInventoryConfig(options: { webhooksEnabled?: boolean } = {}): TelclaudeConfig {
@@ -430,6 +450,7 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 		typeof overrides.evidence_path === "string"
 			? overrides.evidence_path
 			: path.join(tempDir, "no-fork.json");
+	const relayKeys = ensureOperatorRelayKeys();
 	const proof = {
 		schemaVersion: 1,
 		hermesCheckoutClean: true,
@@ -479,9 +500,74 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 				status: "pass",
 				detail: "git diff --cached --quiet is clean",
 			},
+			{
+				name: "runner.attestation",
+				status: "pass",
+				detail: "no-fork wrapper run attestation is signed",
+			},
+			{
+				name: "runner.p0",
+				status: "pass",
+				detail: "P0 fixture/cutover command passed",
+			},
+			{
+				name: "runner.noRuntimeSourceReplacement",
+				status: "pass",
+				detail: "runtime source replacement denial was observed",
+			},
+			{
+				name: "runner.noMonkeypatch",
+				status: "pass",
+				detail: "monkeypatch denial was observed",
+			},
+			{
+				name: "runner.postStatusClean",
+				status: "pass",
+				detail: "post-run git status porcelain is clean",
+			},
+			{
+				name: "runner.postDiffClean",
+				status: "pass",
+				detail: "post-run git diff --quiet is clean",
+			},
+			{
+				name: "runner.postIndexClean",
+				status: "pass",
+				detail: "post-run git diff --cached --quiet is clean",
+			},
 		],
 		...overrides,
 	};
+	if (!Object.hasOwn(overrides, "runnerAttestation")) {
+		Object.assign(proof, {
+			runnerAttestation: signNoForkRunnerAttestation({
+				schemaVersion: "telclaude.hermes.no-fork-runner-attestation.v1",
+				source: "telclaude-no-fork-proof-runner",
+				runner: "telclaude-hermes-no-fork-runner",
+				startedAt: "2026-05-31T09:00:00.000Z",
+				endedAt: "2026-05-31T09:01:00.000Z",
+				checkoutPath: String(proof.checkoutPath),
+				expectedRef: String(proof.expectedRef),
+				expectedVersion: String(proof.expectedVersion),
+				head: String(proof.head),
+				expectedRefCommit: String(proof.expectedRefCommit),
+				wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
+				profileGenerationSha256: noForkSha256Digest("profile-generation"),
+				fixtureResultsSha256: noForkSha256Digest("fixture-results"),
+				transcriptSha256: noForkSha256Digest("command-transcript"),
+				p0Command: ["pnpm", "dev", "hermes", "prove", "--upstream-clean", "--p0"],
+				p0ExitCode: 0,
+				p0Status: "pass",
+				runtimeSourceReplacementDenied: true,
+				monkeypatchDenied: true,
+				postRunStatusPorcelain: String(proof.statusPorcelain),
+				postRunDiffExitCode: Number(proof.diffExitCode),
+				postRunCachedDiffExitCode: Number(proof.cachedDiffExitCode),
+			}),
+		});
+	}
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	writeJson(evidencePath, proof);
 	return proof;
 }
@@ -5913,6 +5999,122 @@ describe("Hermes wrapper foundation", () => {
 		expect(fs.existsSync(evidenceDir)).toBe(false);
 	});
 
+	it("refuses to run writable private Telegram fixtures without the operator relay signing key", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-unsigned-"));
+		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--report-out",
+				testReportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("input_error");
+			expect(report.detail).toBe(
+				"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+			);
+			expect(fs.existsSync(testReportPath)).toBe(false);
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+		}
+	});
+
+	it("refuses to run writable private Telegram fixtures without the operator relay verification key", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-unverified-"));
+		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const relayKeys = generateKeyPair();
+
+		try {
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--report-out",
+				testReportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("input_error");
+			expect(report.detail).toBe(
+				"Missing relay response verification key for operator. Set OPERATOR_RPC_RELAY_PUBLIC_KEY.",
+			);
+			expect(fs.existsSync(testReportPath)).toBe(false);
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refuses to run writable private Telegram fixtures with mismatched operator relay signing keys", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-bad-keypair-"));
+		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const privateKeys = generateKeyPair();
+		const publicKeys = generateKeyPair();
+
+		try {
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = privateKeys.privateKey;
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = publicKeys.publicKey;
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--report-out",
+				testReportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("input_error");
+			expect(report.detail).toContain("Operator relay signing keys failed round-trip verification");
+			expect(report.detail).toContain("signature verification failed");
+			expect(fs.existsSync(testReportPath)).toBe(false);
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
 	it("does not write no-fork proof evidence without --upstream-clean", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-"));
 		const evidencePath = path.join(tempDir, "no-fork.json");
@@ -5962,7 +6164,161 @@ describe("Hermes wrapper foundation", () => {
 		expect(artifact.hermesCheckoutClean).toBe(false);
 	});
 
+	it("does not write unsigned no-fork proof evidence when prove --p0 input validation fails", async () => {
+		ensureOperatorRelayKeys();
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-input-"));
+		const evidencePath = path.join(tempDir, "no-fork.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--p0",
+			"--json",
+			"--checkout",
+			tempDir,
+			"--out",
+			evidencePath,
+			"--feature-probes",
+			path.join(tempDir, "missing-feature-probes.json"),
+		]);
+		const report = JSON.parse(result.stdout) as {
+			p0: { status: string; gates: Array<{ name: string; status: string; detail: string }> };
+			noForkProof: { evidence_path: string; runnerAttestation?: unknown };
+		};
+
+		expect(result.exitCode).toBe(2);
+		expect(report.p0.status).toBe("input_error");
+		expect(report.p0.gates[0]).toMatchObject({ name: "inputs.readable", status: "fail" });
+		expect(report.noForkProof.evidence_path).toBe(evidencePath);
+		expect(report.noForkProof.runnerAttestation).toBeUndefined();
+		expect(fs.existsSync(evidencePath)).toBe(false);
+	});
+
+	it("refuses prove --p0 without operator relay signing keys before reading P0 inputs", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-no-key-"));
+		const evidencePath = path.join(tempDir, "no-fork.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"prove",
+				"--upstream-clean",
+				"--p0",
+				"--json",
+				"--checkout",
+				tempDir,
+				"--out",
+				evidencePath,
+				"--feature-probes",
+				path.join(tempDir, "missing-feature-probes.json"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				p0: { status: string; gates: Array<{ name: string; status: string; detail: string }> };
+				noForkProof: { evidence_path: string; runnerAttestation?: unknown };
+			};
+
+			expect(result.exitCode).toBe(2);
+			expect(report.p0).toMatchObject({ status: "input_error" });
+			expect(report.p0.gates[0]).toMatchObject({
+				name: "inputs.operatorRelaySigning",
+				status: "fail",
+				detail:
+					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+			});
+			expect(report.noForkProof.evidence_path).toBe(evidencePath);
+			expect(report.noForkProof.runnerAttestation).toBeUndefined();
+			expect(fs.existsSync(evidencePath)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refuses prove --p0 with mismatched operator relay signing keys before reading P0 inputs", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-bad-keypair-"));
+		const evidencePath = path.join(tempDir, "no-fork.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const privateKeys = generateKeyPair();
+		const publicKeys = generateKeyPair();
+
+		try {
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = privateKeys.privateKey;
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = publicKeys.publicKey;
+			const result = await runHermesCommand([
+				"hermes",
+				"prove",
+				"--upstream-clean",
+				"--p0",
+				"--json",
+				"--checkout",
+				tempDir,
+				"--out",
+				evidencePath,
+				"--feature-probes",
+				path.join(tempDir, "missing-feature-probes.json"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				p0: { status: string; gates: Array<{ name: string; status: string; detail: string }> };
+				noForkProof: { evidence_path: string; runnerAttestation?: unknown };
+			};
+
+			expect(result.exitCode).toBe(2);
+			expect(report.p0).toMatchObject({ status: "input_error" });
+			expect(report.p0.gates[0]).toMatchObject({
+				name: "inputs.operatorRelaySigning",
+				status: "fail",
+			});
+			expect(report.p0.gates[0].detail).toContain(
+				"Operator relay signing keys failed round-trip verification",
+			);
+			expect(report.p0.gates[0].detail).toContain("signature verification failed");
+			expect(report.noForkProof.evidence_path).toBe(evidencePath);
+			expect(report.noForkProof.runnerAttestation).toBeUndefined();
+			expect(fs.existsSync(evidencePath)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("does not classify a dirty checkout no-fork failure as a P0 bootstrap failure", () => {
+		const status = deriveNoForkP0Status({
+			gates: [
+				{
+					name: "nofork.clean",
+					status: "fail",
+					detail:
+						"no-fork proof summary hermesCheckoutClean is false; no-fork evidence hermesCheckoutClean is false",
+				},
+			],
+		} as ReturnType<typeof evaluateCutoverCheck>);
+
+		expect(status).toBe("fail");
+	});
+
+	it("does not classify final lockfile no-fork path mismatch as a P0 bootstrap failure", () => {
+		const cutover = {
+			gates: [
+				{
+					name: "lockfile.consistent",
+					status: "fail",
+					detail: "lockfile noForkProofEvidencePath does not match no-fork evidence path",
+				},
+			],
+		} as ReturnType<typeof evaluateCutoverCheck>;
+
+		expect(deriveNoForkP0Status(cutover)).toBe("fail");
+		expect(deriveNoForkP0Status(cutover, { allowLockfileNoForkPathBootstrap: true })).toBe("pass");
+	});
+
 	it("evaluates P0 cutover gates when prove is run with --p0", async () => {
+		ensureOperatorRelayKeys();
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-"));
 		const base = safeCutoverBundle();
 		const paths = writeCutoverBundleArtifacts(
@@ -6020,6 +6376,127 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.p0.gates.find((gate) => gate.name === "profileGeneration.proven")).toMatchObject({
 			status: "pass",
 		});
+		expect(report.p0.gates.find((gate) => gate.name === "nofork.clean")).toMatchObject({
+			status: "fail",
+		});
+	});
+
+	it("writes signed runner attestation when prove --p0 evaluates a pinned clean checkout", async () => {
+		ensureOperatorRelayKeys();
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-clean-"));
+		const checkoutPathRaw = path.join(tempDir, "upstream");
+		initPinnedHermesCheckout(checkoutPathRaw);
+		const checkoutPath = fs.realpathSync(checkoutPathRaw);
+		const noForkPath = path.join(tempDir, "nofork.json");
+		const cliHeadlessPath = path.join(tempDir, "cli-headless.json");
+		writeJson(cliHeadlessPath, cliHeadlessEvidence());
+		const featureProbeMatrix = {
+			schemaVersion: 1 as const,
+			probes: [cliHeadlessProbe(cliHeadlessPath)],
+		};
+		const noForkProof = writeNoForkProof({ evidence_path: noForkPath });
+		const lockfile = {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "execution.cli_headless",
+					status: "pass",
+					evidence_path: cliHeadlessPath,
+				},
+			],
+			adapterApiSignatures: {
+				"execution.cli_headless": `sha256:${"c".repeat(64)}`,
+			},
+			noForkProofEvidencePath: noForkProof.evidence_path,
+		};
+		const paths = writeCutoverBundleArtifacts(
+			tempDir,
+			safeCutoverBundle({
+				scopeManifest: {
+					schemaVersion: 1,
+					workflows: [
+						{
+							workflow_id: "private.telegram.basic",
+							owner: "operator",
+							trust_domain: "private",
+							current_behavior: "Telclaude handles a private Telegram chat through the relay.",
+							hermes_target_behavior:
+								"Hermes runs behind the Telclaude edge with relay-owned secrets.",
+							cutover_class: "P0",
+							cutover_requirement: "Pinned Hermes wrapper parity fixture must pass.",
+							status: "included",
+							rollback_owner: "operator",
+							fixture_ids: ["fixture.private.telegram.basic"],
+							negative_fixture_ids: ["fixture.private.telegram.basic.deny"],
+							required_surface_ids: ["execution.cli_headless"],
+							unresolved_decision_ids: [],
+						},
+					],
+				},
+				lockfile,
+				featureProbeMatrix,
+				noForkProof,
+			}),
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--p0",
+			"--json",
+			"--checkout",
+			checkoutPath,
+			"--out",
+			paths.nofork,
+			"--inventory",
+			paths.inventory,
+			"--scope",
+			paths.scope,
+			"--decisions",
+			paths.decisions,
+			"--proof-bundle",
+			paths.proofBundle,
+			"--feature-probes",
+			paths.featureProbes,
+			"--lockfile",
+			paths.lockfile,
+			"--fixtures",
+			paths.fixtures,
+			"--network-probes",
+			paths.networkProbes,
+			"--profile-proof",
+			paths.profileProof,
+			"--rollback",
+			paths.rollback,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			noForkProof: {
+				hermesCheckoutClean: boolean;
+				runnerAttestation?: {
+					checkoutPath: string;
+					p0Command: string[];
+					p0ExitCode: number;
+					p0Status: string;
+					signature?: { path: string };
+				};
+			};
+			p0: { status: string; gates: Array<{ name: string; status: string }> };
+		};
+		const artifact = readJson(paths.nofork) as typeof report.noForkProof;
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.noForkProof.hermesCheckoutClean).toBe(false);
+		expect(report.noForkProof.runnerAttestation).toMatchObject({
+			checkoutPath,
+			p0ExitCode: 1,
+			p0Status: "fail",
+			signature: { path: "/v1/hermes.no-fork.runner-attestation" },
+		});
+		expect(report.noForkProof.runnerAttestation?.p0Command).toContain("--p0");
+		expect(artifact.runnerAttestation).toMatchObject(report.noForkProof.runnerAttestation ?? {});
+		expect(report.p0.status).toBe("fail");
 		expect(report.p0.gates.find((gate) => gate.name === "nofork.clean")).toMatchObject({
 			status: "fail",
 		});
