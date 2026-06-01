@@ -4,6 +4,15 @@ import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { createHermesWorkflowRunLedger } from "./workflow-run-ledger.js";
+import {
+	HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_RUNNER,
+	HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SCHEMA_VERSION,
+	HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SOURCE,
+	type HermesWorkflowRunLedgerAttestation,
+	hermesWorkflowRunLedgerAttestationFieldsForEvidence,
+	hermesWorkflowRunLedgerAttestationSignatureFailure,
+	signHermesWorkflowRunLedgerAttestation,
+} from "./workflow-run-ledger-attestation.js";
 
 export const HERMES_WORKFLOW_PROBE_SCHEMA_VERSION = "telclaude.hermes.workflow-probe.v1";
 export const HERMES_WORKFLOW_PROBE_SOURCE = "telclaude-workflow-run-ledger-harness";
@@ -23,6 +32,7 @@ export const DEFAULT_HERMES_WORKFLOW_EVIDENCE_PATHS: Record<HermesWorkflowSurfac
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const HexSha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 
 const WorkflowProbeCheckSchema = z
 	.object({
@@ -48,6 +58,38 @@ const WorkflowProbeObservationSchema = z
 	})
 	.strict();
 
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: NonEmptyString,
+		timestamp: NonEmptyString,
+		nonce: NonEmptyString,
+		method: NonEmptyString,
+		path: NonEmptyString,
+		requestBodySha256: HexSha256Digest,
+		responseBodySha256: HexSha256Digest,
+		signature: NonEmptyString,
+	})
+	.strict();
+
+const HermesWorkflowRunLedgerAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SOURCE),
+		runner: z.literal(HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: z.literal(HERMES_WORKFLOW_PROBE_SCHEMA_VERSION),
+		probeId: z.enum(HERMES_WORKFLOW_SURFACE_IDS),
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		observedAt: NonEmptyString,
+		evidenceSource: z.literal(HERMES_WORKFLOW_PROBE_SOURCE),
+		checksSha256: Sha256Digest,
+		observationsSha256: Sha256Digest,
+		evidenceSha256: Sha256Digest,
+		signature: InternalResponseProofSchema,
+	})
+	.strict();
+
 export const HermesWorkflowProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(HERMES_WORKFLOW_PROBE_SCHEMA_VERSION),
@@ -59,6 +101,7 @@ export const HermesWorkflowProbeEvidenceSchema = z
 		summary: NonEmptyString,
 		checks: z.array(WorkflowProbeCheckSchema).min(1),
 		observations: WorkflowProbeObservationSchema,
+		runnerAttestation: HermesWorkflowRunLedgerAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -169,6 +212,8 @@ export function workflowProbeEvidenceFailure(
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
 	if (data.source !== HERMES_WORKFLOW_PROBE_SOURCE) failures.push(`source is ${data.source}`);
+	const attestationFailure = workflowRunLedgerRunnerAttestationFailure(data);
+	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
 		failures.push(`duplicate check ${duplicate}`);
@@ -201,6 +246,34 @@ export function workflowProbeEvidenceFailure(
 		}
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function workflowRunLedgerRunnerAttestationFailure(
+	data: HermesWorkflowProbeEvidence,
+): string | null {
+	const attestation = data.runnerAttestation as HermesWorkflowRunLedgerAttestation | undefined;
+	if (!attestation) return "runnerAttestation is missing";
+	const signatureFailure = hermesWorkflowRunLedgerAttestationSignatureFailure(attestation, {
+		allowStale: true,
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = hermesWorkflowRunLedgerAttestationFieldsForEvidence(data);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"observedAt",
+		"evidenceSource",
+		"checksSha256",
+		"observationsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			return `runnerAttestation ${field} mismatch`;
+		}
+	}
+	return null;
 }
 
 const WorkflowFixtureEvidenceSchema = z
@@ -748,7 +821,7 @@ function workflowProbeReport(
 	observations: WorkflowProbeObservation,
 ): HermesWorkflowProbeEvidence {
 	const status = checks.every((check) => check.status === "pass") ? "pass" : "fail";
-	return {
+	const evidence: Omit<HermesWorkflowProbeEvidence, "runnerAttestation"> = {
 		schemaVersion: HERMES_WORKFLOW_PROBE_SCHEMA_VERSION,
 		probeId: surfaceId,
 		status,
@@ -762,6 +835,14 @@ function workflowProbeReport(
 		checks,
 		observations,
 	};
+	return status === "pass"
+		? {
+				...evidence,
+				runnerAttestation: signHermesWorkflowRunLedgerAttestation(
+					evidence,
+				) as HermesWorkflowProbeEvidence["runnerAttestation"],
+			}
+		: evidence;
 }
 
 function pushCheck(checks: WorkflowProbeCheck[], name: string, ok: boolean, detail: string): void {
