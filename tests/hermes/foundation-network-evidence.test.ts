@@ -25,6 +25,7 @@ import {
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
+import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
@@ -120,7 +121,8 @@ function networkEvidence(
 	evidencePath: string,
 	overrides: Record<string, unknown> = {},
 ) {
-	return {
+	ensureOperatorRelayKeys();
+	const evidence = {
 		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 		id,
 		status: "pass",
@@ -130,6 +132,10 @@ function networkEvidence(
 		evidence_path: evidencePath,
 		attempts: [firewallSentinelAttempt(), networkPolicyAttempt(id)],
 		...overrides,
+	};
+	return {
+		...evidence,
+		attestation: signNetworkProbeEvidenceAttestation(evidence),
 	};
 }
 
@@ -1534,6 +1540,40 @@ describe("Hermes cutover network evidence validation", () => {
 
 		expect(networkGateDetail(networkProbes)).toContain(
 			"network probe evidence network.direct-model-provider-denied contained-internal denial proof is missing or not pass",
+		);
+	});
+
+	it("fails passing network evidence without a runner attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence);
+		const probe = networkProbes.probes[0];
+		const evidence = containedInternalNetworkEvidence(probe.id, probe.evidence_path);
+		delete evidence.attestation;
+		writeJson(probe.evidence_path, evidence);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.relay-control-allowed attestation is missing",
+		);
+	});
+
+	it("fails passing network evidence mutated after runner attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-cutover-"));
+		const networkProbes = writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence);
+		const probe = networkProbes.probes.find(
+			(candidate) => candidate.id === "network.direct-model-provider-denied",
+		);
+		if (!probe) throw new Error("missing direct-model probe");
+		const evidence = containedInternalNetworkEvidence(probe.id, probe.evidence_path);
+		evidence.attempts = [
+			{
+				...evidence.attempts[0],
+				detail: "mutated denial detail after the attestation was signed",
+			},
+		];
+		writeJson(probe.evidence_path, evidence);
+
+		expect(networkGateDetail(networkProbes)).toContain(
+			"network probe evidence network.direct-model-provider-denied attestation evidenceSha256 mismatch",
 		);
 	});
 

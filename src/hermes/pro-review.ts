@@ -23,6 +23,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/hermes/private-runtime.ts",
 	"src/hermes/foundation.ts",
 	"src/hermes/network-probe-schema.ts",
+	"src/hermes/network-probe-attestation.ts",
 	"src/hermes/network-probes.ts",
 	"src/hermes/provider-approval-binding-probe.ts",
 	"src/hermes/provider-domain-probes.ts",

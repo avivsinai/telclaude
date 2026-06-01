@@ -13,6 +13,7 @@ describe("Hermes Pro review gate", () => {
 				"tests/hermes/edge-adapter-runtime.test.ts",
 				"src/hermes/browser-computer-broker-probes.ts",
 				"tests/hermes/browser-computer-broker-probes.test.ts",
+				"src/hermes/network-probe-attestation.ts",
 				"src/hermes/network-probes.ts",
 				"tests/hermes/network-probes.test.ts",
 				"artifacts/hermes/fixtures/fixture.public.whatsapp.basic.json",
