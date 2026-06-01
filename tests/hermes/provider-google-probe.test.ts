@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "../../src/hermes/network-probe-schema.js";
 import {
 	buildGoogleProviderFixtureEvidenceBundle,
 	googleProviderFixtureEvidenceFailure,
@@ -70,9 +71,11 @@ describe("Hermes Google provider probe", () => {
 	it("builds Google provider fixture evidence bound to the probe artifact", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "google-provider-fixtures-"));
 		const probePath = await writeGoogleProviderProbeArtifact(tempDir);
+		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, ["provider:google"]);
 		const bundle = buildGoogleProviderFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			probePath,
+			networkProbePath,
 			observedAt: "2026-06-01T09:10:00.000Z",
 		});
 
@@ -84,15 +87,57 @@ describe("Hermes Google provider probe", () => {
 					status: "pass",
 				}),
 				expect.objectContaining({ id: "fixture.providers.google.replay-deny", status: "pass" }),
+				expect.objectContaining({
+					id: "fixture.providers.google.direct-provider-deny",
+					status: "pass",
+				}),
 			]),
 		);
-		expect(bundle.results.some((result) => result.id.endsWith("direct-provider-deny"))).toBe(false);
 		const readEvidence = bundle.evidence.find(
 			(evidence) => evidence.id === "fixture.providers.google.read",
 		);
 		expect(
 			googleProviderFixtureEvidenceFailure("fixture.providers.google.read", readEvidence),
 		).toBeNull();
+		const directEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.providers.google.direct-provider-deny",
+		);
+		expect(
+			googleProviderFixtureEvidenceFailure(
+				"fixture.providers.google.direct-provider-deny",
+				directEvidence,
+			),
+		).toBeNull();
+	});
+
+	it("keeps Google direct-provider-deny red without provider-specific network evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "google-provider-fixtures-"));
+		const probePath = await writeGoogleProviderProbeArtifact(tempDir);
+		const networkProbePath = writeGoogleProviderNetworkProbeArtifact(tempDir, ["provider"]);
+		const bundle = buildGoogleProviderFixtureEvidenceBundle({
+			evidenceDir: path.join(tempDir, "fixtures"),
+			probePath,
+			networkProbePath,
+			observedAt: "2026-06-01T09:10:00.000Z",
+		});
+		const directEvidence = bundle.evidence.find(
+			(evidence) => evidence.id === "fixture.providers.google.direct-provider-deny",
+		);
+
+		expect(bundle.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "fixture.providers.google.direct-provider-deny",
+					status: "fail",
+				}),
+			]),
+		);
+		expect(
+			googleProviderFixtureEvidenceFailure(
+				"fixture.providers.google.direct-provider-deny",
+				directEvidence,
+			),
+		).toContain("networkDeny attempt provider:google is missing");
 	});
 
 	it("rejects Google fixture evidence when the bound probe artifact changes", async () => {
@@ -122,5 +167,41 @@ async function writeGoogleProviderProbeArtifact(tempDir: string): Promise<string
 		observedAt: "2026-06-01T09:00:00.000Z",
 	});
 	fs.writeFileSync(probePath, JSON.stringify(evidence, null, 2), "utf8");
+	return probePath;
+}
+
+function writeGoogleProviderNetworkProbeArtifact(
+	tempDir: string,
+	attemptNames: readonly string[],
+): string {
+	const probePath = path.join(tempDir, "direct-provider-denied.json");
+	fs.writeFileSync(
+		probePath,
+		JSON.stringify(
+			{
+				schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+				id: "network.direct-provider-denied",
+				posture: "contained-internal",
+				status: "pass",
+				ran: true,
+				summary: "direct provider endpoints were denied in the Hermes runtime namespace",
+				generatedAt: "2026-06-01T09:10:00.000Z",
+				evidence_path: probePath,
+				attempts: attemptNames.map((name) => ({
+					name,
+					kind: "http",
+					target: `http://${name.replace(/[^a-z0-9-]/gi, "-")}.invalid/v1/health`,
+					expectation: "deny",
+					status: "pass",
+					observed: "denied",
+					detail: `${name} was denied`,
+					errorCode: "ENETUNREACH",
+				})),
+			},
+			null,
+			2,
+		),
+		"utf8",
+	);
 	return probePath;
 }
