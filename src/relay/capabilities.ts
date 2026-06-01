@@ -77,6 +77,7 @@ import {
 	isAnthropicTokenRequest,
 } from "./anthropic-proxy.js";
 import { buildAttachmentFilename, ensureDocumentsDir } from "./attachment-helpers.js";
+import { handleOpenAiCodexProxyRequest, isOpenAiCodexProxyRequest } from "./openai-codex-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 import {
 	handleTokenExchange,
@@ -927,6 +928,11 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 
 		if (isAnthropicProxyRequest(req.url)) {
 			await handleAnthropicProxyRequest(req, res);
+			return;
+		}
+
+		if (isOpenAiCodexProxyRequest(req.url)) {
+			await handleOpenAiCodexProxyRequest(req, res);
 			return;
 		}
 

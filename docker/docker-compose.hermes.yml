@@ -29,6 +29,7 @@ services:
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET:-/run/telclaude/hermes-live-mcp-admin.sock}
       - OPERATOR_RPC_AGENT_PUBLIC_KEY=${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}
       - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}
+      - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services,tc-hermes-contained}
     networks:
       hermes-relay-net:
@@ -48,6 +49,8 @@ services:
     extra_hosts:
       - "api.anthropic.com:192.0.2.1"
       - "api.openai.com:192.0.2.1"
+      - "auth.openai.com:192.0.2.1"
+      - "chatgpt.com:192.0.2.1"
       - "generativelanguage.googleapis.com:192.0.2.1"
       - "openrouter.ai:192.0.2.1"
       - "api.x.ai:192.0.2.1"
@@ -58,9 +61,10 @@ services:
       - API_SERVER_KEY=${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}
       - HERMES_HOME=/home/hermes/.hermes
       - HOME=/home/hermes
-      - HERMES_INFERENCE_MODEL=claude-sonnet-4-6
-      - ANTHROPIC_BASE_URL=http://telclaude:8790/v1/anthropic-proxy
-      - ANTHROPIC_API_KEY=${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}
+      - HERMES_INFERENCE_PROVIDER=openai-codex
+      - HERMES_INFERENCE_MODEL=${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}
+      - HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy
+      - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-contained-skills.allowlist
       - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills

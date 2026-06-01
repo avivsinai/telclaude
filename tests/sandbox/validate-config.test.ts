@@ -172,6 +172,9 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.OPERATOR_RPC_RELAY_PRIVATE_KEY).toBe(
 			"${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}",
 		);
+		expect(telclaudeEnv.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN).toBe(
+			"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
+		);
 		expect(hermesEnv).toEqual({
 			API_SERVER_ENABLED: "true",
 			API_SERVER_HOST: "0.0.0.0",
@@ -179,9 +182,11 @@ TELCLAUDE_LOG_LEVEL=info
 			API_SERVER_KEY: requiredApiKey,
 			HERMES_HOME: "/home/hermes/.hermes",
 			HOME: "/home/hermes",
-			HERMES_INFERENCE_MODEL: "claude-sonnet-4-6",
-			ANTHROPIC_BASE_URL: "http://telclaude:8790/v1/anthropic-proxy",
-			ANTHROPIC_API_KEY: "${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}",
+			HERMES_INFERENCE_PROVIDER: "openai-codex",
+			HERMES_INFERENCE_MODEL: "${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}",
+			HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+			TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:
+				"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
 			TELCLAUDE_HERMES_SKILL_ALLOWLIST: "/tmp/telclaude-hermes-contained-skills.allowlist",
 			TELCLAUDE_HERMES_SOURCE_SKILLS_DIR: "/opt/hermes/skills",
@@ -189,7 +194,9 @@ TELCLAUDE_LOG_LEVEL=info
 		});
 
 		expect(hermes).toContain("image: ${TELCLAUDE_HERMES_IMAGE:-nousresearch/hermes-agent@sha256:");
-		expect(hermes).toContain('entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]');
+		expect(hermes).toContain(
+			'entrypoint: ["/bin/sh", "/tmp/telclaude-hermes-contained-entrypoint.sh"]',
+		);
 		expect(hermes).toContain('command: ["gateway", "run"]');
 		expect(hermes).not.toMatch(/image:.*:latest\b/);
 		expect(hermes).toContain('user: "10000:10000"');
@@ -205,6 +212,15 @@ TELCLAUDE_LOG_LEVEL=info
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		]);
 		expect(hermes).not.toMatch(/^\s+env_file:/m);
+		expect(listValues(hermes, "extra_hosts")).toEqual([
+			'"api.anthropic.com:192.0.2.1"',
+			'"api.openai.com:192.0.2.1"',
+			'"auth.openai.com:192.0.2.1"',
+			'"chatgpt.com:192.0.2.1"',
+			'"generativelanguage.googleapis.com:192.0.2.1"',
+			'"openrouter.ai:192.0.2.1"',
+			'"api.x.ai:192.0.2.1"',
+		]);
 		expect(listValues(hermes, "tmpfs")).toEqual([
 			"/tmp:size=128M,mode=1777,noexec",
 			"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
@@ -225,8 +241,9 @@ TELCLAUDE_LOG_LEVEL=info
 		];
 		for (const key of [...Object.keys(telclaudeEnv), ...Object.keys(hermesEnv)]) {
 			if (
-				key === "ANTHROPIC_API_KEY" &&
-				hermesEnv[key] === "${ANTHROPIC_PROXY_TOKEN:?set relay-scoped Anthropic proxy token}"
+				key === "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN" &&
+				hermesEnv[key] ===
+					"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}"
 			) {
 				continue;
 			}
@@ -239,10 +256,26 @@ TELCLAUDE_LOG_LEVEL=info
 					"TELCLAUDE_HERMES_API_SERVER_KEY",
 					"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 					"OPERATOR_RPC_RELAY_PRIVATE_KEY",
-					"ANTHROPIC_PROXY_TOKEN",
+					"TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN",
 				]).toContain(variableName);
 			}
 		}
+	});
+
+	it("keeps the standalone Hermes CLI proof runner off host-gateway smoke paths", () => {
+		const scriptPath = path.resolve(process.cwd(), "scripts/hermes-contained-cli-probe.sh");
+		const script = fs.readFileSync(scriptPath, "utf8");
+
+		expect(script).toContain("network inspect \"$NETWORK_NAME\" --format '{{json .}}'");
+		expect(script).toContain('network.get("Internal") is not True');
+		expect(script).toContain("requires relay container 'telclaude' on the network");
+		expect(script).toContain("unexpected pre-existing containers");
+		expect(script).toContain("x-telclaude-model-relay-observed-peer-address");
+		expect(script).toContain('"containerIpAddress": container_ip');
+		expect(script).toContain('"provenanceSource": "docker-inspect-container-dns-and-relay-peer"');
+		expect(script).not.toContain('network create "$NETWORK_NAME"');
+		expect(script).not.toContain("telclaude:host-gateway");
+		expect(script).not.toContain("--network host");
 	});
 });
 
