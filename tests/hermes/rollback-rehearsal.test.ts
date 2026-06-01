@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 } from "../../src/hermes/foundation.js";
 import {
 	type HermesRollbackRelayClient,
@@ -85,6 +86,11 @@ describe("Hermes rollback rehearsal producer", () => {
 			observedBeforeSource: "relay-effective-mode",
 			observedAfterSource: "relay-effective-mode",
 			observedAfterControlSource: "runtime-config",
+			relayPublicKey: {
+				scope: "operator",
+				envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+				source: "process-env",
+			},
 		});
 		expect(report.checks?.every((check) => check.status === "pass")).toBe(true);
 	});

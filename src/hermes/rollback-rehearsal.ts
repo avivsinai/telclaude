@@ -1,4 +1,8 @@
-import { type InternalResponseProof, verifyInternalResponseProof } from "../internal-auth.js";
+import crypto from "node:crypto";
+import {
+	type InternalResponseProof,
+	internalResponseProofVerificationFailure,
+} from "../internal-auth.js";
 import {
 	relayGetHermesPrivateRuntimeState,
 	relaySetHermesPrivateRuntimeMode,
@@ -6,6 +10,7 @@ import {
 import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 	type HermesArtifactWriteOptions,
 	type RollbackRehearsal,
 	writeHermesJsonArtifact,
@@ -56,6 +61,7 @@ export async function runHermesRollbackRehearsal(input: {
 }): Promise<RollbackRehearsal> {
 	const now = input.now ?? (() => new Date().toISOString());
 	const checks: RollbackCheck[] = [];
+	const relayPublicKey = rollbackRelayPublicKeyFromEnv();
 	if (!input.allowRun) {
 		checks.push(fail("rollback.allowed", "rollback rehearsal requires --allow-run"));
 		return {
@@ -66,6 +72,7 @@ export async function runHermesRollbackRehearsal(input: {
 			observedAt: now(),
 			controlSurface: HERMES_ROLLBACK_CONTROL_SURFACE,
 			observationSurface: HERMES_ROLLBACK_OBSERVATION_SURFACE,
+			relayPublicKey,
 			checks,
 		};
 	}
@@ -86,11 +93,27 @@ export async function runHermesRollbackRehearsal(input: {
 				`relay durable control surface failed: ${error instanceof Error ? error.message : String(error)}`,
 			),
 		);
-		return buildEvidence(input.evidencePath, now(), checks, before, after, afterControl);
+		return buildEvidence(
+			input.evidencePath,
+			now(),
+			checks,
+			relayPublicKey,
+			before,
+			after,
+			afterControl,
+		);
 	}
 	if (!before || !afterControl || !after) {
 		checks.push(fail("rollback.controlSurface", "relay control surface returned no state"));
-		return buildEvidence(input.evidencePath, now(), checks, before, after, afterControl);
+		return buildEvidence(
+			input.evidencePath,
+			now(),
+			checks,
+			relayPublicKey,
+			before,
+			after,
+			afterControl,
+		);
 	}
 
 	const relayProofFailures = [
@@ -153,7 +176,15 @@ export async function runHermesRollbackRehearsal(input: {
 			: fail("rollback.observedSources", `after rollback source was ${after.controlSource}`),
 	);
 
-	return buildEvidence(input.evidencePath, now(), checks, before, after, afterControl);
+	return buildEvidence(
+		input.evidencePath,
+		now(),
+		checks,
+		relayPublicKey,
+		before,
+		after,
+		afterControl,
+	);
 }
 
 export function writeHermesRollbackRehearsalEvidence(
@@ -177,6 +208,7 @@ function buildEvidence(
 	evidencePath: string,
 	observedAt: string,
 	checks: RollbackCheck[],
+	relayPublicKey?: RollbackRehearsal["relayPublicKey"],
 	before?: HermesRollbackRelayState,
 	after?: HermesRollbackRelayState,
 	afterControl?: HermesRollbackRelayState,
@@ -195,6 +227,7 @@ function buildEvidence(
 		observedBeforeSource: before ? "relay-effective-mode" : undefined,
 		observedAfterSource: after ? "relay-effective-mode" : undefined,
 		observedAfterControlSource: afterControl?.controlSource,
+		relayPublicKey,
 		signedRelayTranscripts:
 			before?.relayProof && afterControl?.relayProof && after?.relayProof
 				? {
@@ -204,6 +237,18 @@ function buildEvidence(
 					}
 				: undefined,
 		checks,
+	};
+}
+
+function rollbackRelayPublicKeyFromEnv(): RollbackRehearsal["relayPublicKey"] | undefined {
+	const value = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV];
+	if (!value) return undefined;
+	return {
+		scope: "operator",
+		envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+		value,
+		sha256: `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`,
+		source: "process-env",
 	};
 }
 
@@ -225,17 +270,16 @@ function relayProofEvidenceFailures(
 	if (proof.request.body !== expectedRequest.body) {
 		failures.push(`${label} relay proof request body does not match`);
 	}
-	if (
-		!verifyInternalResponseProof(
-			proof.proof,
-			expectedRequest.method,
-			expectedRequest.path,
-			expectedRequest.body,
-			proof.responseBody,
-			{ scope: "operator" },
-		)
-	) {
-		failures.push(`${label} relay proof signature is invalid`);
+	const proofFailure = internalResponseProofVerificationFailure(
+		proof.proof,
+		expectedRequest.method,
+		expectedRequest.path,
+		expectedRequest.body,
+		proof.responseBody,
+		{ scope: "operator" },
+	);
+	if (proofFailure) {
+		failures.push(`${label} relay proof invalid: ${proofFailure}`);
 	}
 	const signedState = parseRelayStateBody(proof.responseBody);
 	if (!signedState) {

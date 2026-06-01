@@ -4024,29 +4024,67 @@ function rollbackRelayPublicKeyFailures(
 	if (evidence.relayPublicKey.sha256 !== expectedDigest) {
 		failures.push("rollback rehearsal evidence relay public key sha256 does not match value");
 	}
+	const trustedKey = trustedRollbackRelayPublicKey(evidence);
+	if (!trustedKey.valid) {
+		failures.push(trustedKey.failure);
+	}
 	return failures;
+}
+
+function trustedRollbackRelayPublicKey(
+	evidence: RollbackRehearsal,
+): { valid: true; value: string } | { valid: false; failure: string } {
+	if (!evidence.relayPublicKey) {
+		return {
+			valid: false,
+			failure: "rollback rehearsal evidence relay public key provenance is missing",
+		};
+	}
+	const trustedValue = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV]?.trim();
+	if (!trustedValue) {
+		return {
+			valid: false,
+			failure: `rollback rehearsal trusted relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing`,
+		};
+	}
+	if (evidence.relayPublicKey.value !== trustedValue) {
+		return {
+			valid: false,
+			failure:
+				"rollback rehearsal evidence relay public key does not match trusted relay public key",
+		};
+	}
+	return { valid: true, value: trustedValue };
 }
 
 function rollbackRelayTranscriptFailures(evidence: RollbackRehearsal): string[] {
 	const transcripts = evidence.signedRelayTranscripts;
 	if (!transcripts) return ["rollback rehearsal signed relay transcripts are missing"];
+	const trustedKey = trustedRollbackRelayPublicKey(evidence);
+	if (!trustedKey.valid) return [trustedKey.failure];
 	return [
-		...rollbackRelayTranscriptFailure("before", transcripts.before, evidence, {
+		...rollbackRelayTranscriptFailure("before", transcripts.before, evidence, trustedKey.value, {
 			method: "POST",
 			path: "/v1/hermes.private-runtime.status",
 			body: "{}",
 			effectiveValue: "1",
 			effectiveMode: "hermes",
 		}),
-		...rollbackRelayTranscriptFailure("afterControl", transcripts.afterControl, evidence, {
-			method: "POST",
-			path: "/v1/hermes.private-runtime.mode",
-			body: JSON.stringify({ mode: "legacy" }),
-			effectiveValue: "0",
-			controlMode: "legacy",
-			controlSource: "runtime-config",
-		}),
-		...rollbackRelayTranscriptFailure("after", transcripts.after, evidence, {
+		...rollbackRelayTranscriptFailure(
+			"afterControl",
+			transcripts.afterControl,
+			evidence,
+			trustedKey.value,
+			{
+				method: "POST",
+				path: "/v1/hermes.private-runtime.mode",
+				body: JSON.stringify({ mode: "legacy" }),
+				effectiveValue: "0",
+				controlMode: "legacy",
+				controlSource: "runtime-config",
+			},
+		),
+		...rollbackRelayTranscriptFailure("after", transcripts.after, evidence, trustedKey.value, {
 			method: "POST",
 			path: "/v1/hermes.private-runtime.status",
 			body: "{}",
@@ -4061,6 +4099,7 @@ function rollbackRelayTranscriptFailure(
 	label: "before" | "afterControl" | "after",
 	transcript: z.infer<typeof RollbackRelayTranscriptSchema>,
 	evidence: RollbackRehearsal,
+	trustedRelayPublicKey: string,
 	expected: {
 		method: string;
 		path: string;
@@ -4094,7 +4133,7 @@ function rollbackRelayTranscriptFailure(
 		{
 			scope: "operator",
 			allowStale: true,
-			relayPublicKey: evidence.relayPublicKey?.value,
+			relayPublicKey: trustedRelayPublicKey,
 		},
 	);
 	if (proofFailure) {

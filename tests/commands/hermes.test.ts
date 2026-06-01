@@ -891,6 +891,15 @@ function makeCutoverProofBundle(bundle: CutoverBundleWithoutProof) {
 	});
 }
 
+function refreshCutoverProofBundle(bundle: CutoverInputBundle): CutoverInputBundle {
+	const withoutProof = { ...bundle } as Partial<CutoverInputBundle>;
+	const staleProof = withoutProof.cutoverProofBundle;
+	if (!staleProof) throw new Error("missing cutover proof bundle");
+	delete withoutProof.cutoverProofBundle;
+	const cutover = withoutProof as CutoverBundleWithoutProof;
+	return { ...cutover, cutoverProofBundle: makeCutoverProofBundle(cutover) };
+}
+
 function writeCutoverProofSourceArtifacts(tempDir: string, bundle: CutoverBundleWithoutProof) {
 	const paths = {
 		inventory: path.join(tempDir, "inventory.json"),
@@ -981,6 +990,9 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 	};
 	const { cutoverProofBundle, ...bundleOverrides } = overrides;
 	const merged: CutoverBundleWithoutProof = { ...base, ...bundleOverrides };
+	if (typeof merged.rollbackRehearsal.relayPublicKey?.value === "string") {
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = merged.rollbackRehearsal.relayPublicKey.value;
+	}
 	const hasProfileProofOverride = Object.hasOwn(overrides, "profileGenerationProof");
 	const profileGenerationProof = hasProfileProofOverride
 		? merged.profileGenerationProof
@@ -3446,18 +3458,79 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("accepts archived rollback transcript proofs with embedded relay public-key provenance", () => {
+	it("rejects archived rollback transcript proofs without the trusted relay public-key env", () => {
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const rehearsal = writeRollbackRehearsal();
-		delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const bundleWithStaleProof = safeCutoverBundle({ rollbackRehearsal: rehearsal });
 		try {
-			const report = evaluateCutoverCheck(safeCutoverBundle({ rollbackRehearsal: rehearsal }));
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const bundle = refreshCutoverProofBundle(bundleWithStaleProof);
+			const report = evaluateCutoverCheck(bundle);
 
+			expect(report.status).toBe("fail");
 			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
-				status: "pass",
+				status: "fail",
+				detail: expect.stringContaining(
+					`trusted relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing`,
+				),
 			});
 		} finally {
 			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+		}
+	});
+
+	it("rejects rollback transcript proofs signed by an embedded attacker relay key", () => {
+		const rehearsal = writeRollbackRehearsal();
+		const trustedRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const trustedRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		if (!trustedRelayPublicKey) throw new Error("missing trusted relay public key");
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		try {
+			const attackerRelayPublicKey = {
+				...rehearsal.relayPublicKey,
+				value: attackerKeys.publicKey,
+				sha256: `sha256:${crypto
+					.createHash("sha256")
+					.update(attackerKeys.publicKey)
+					.digest("hex")}`,
+				source: "attacker-fixture",
+			};
+			const forged = {
+				...rehearsal,
+				relayPublicKey: attackerRelayPublicKey,
+				signedRelayTranscripts: {
+					before: signedRelayTranscript(
+						"/v1/hermes.private-runtime.status",
+						"{}",
+						hermesRuntimeState(),
+					),
+					afterControl: signedRelayTranscript(
+						"/v1/hermes.private-runtime.mode",
+						JSON.stringify({ mode: "legacy" }),
+						legacyRuntimeState(),
+					),
+					after: signedRelayTranscript(
+						"/v1/hermes.private-runtime.status",
+						"{}",
+						legacyRuntimeState(),
+					),
+				},
+			};
+			writeJson(rehearsal.evidence_path, forged);
+
+			const bundleWithStaleProof = safeCutoverBundle({ rollbackRehearsal: forged });
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedRelayPublicKey;
+			const bundle = refreshCutoverProofBundle(bundleWithStaleProof);
+			const failed = evaluateCutoverCheck(bundle);
+
+			expect(failed.status).toBe("fail");
+			expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+				"rollback rehearsal evidence relay public key does not match trusted relay public key",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", trustedRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", trustedRelayPublicKey);
 		}
 	});
 
@@ -3474,11 +3547,13 @@ describe("Hermes wrapper foundation", () => {
 		};
 		writeJson(rehearsal.evidence_path, tampered);
 
-		const failed = evaluateCutoverCheck(safeCutoverBundle({ rollbackRehearsal: tampered }));
+		const bundle = safeCutoverBundle({ rollbackRehearsal: tampered });
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = rehearsal.relayPublicKey.value;
+		const failed = evaluateCutoverCheck(bundle);
 
 		expect(failed.status).toBe("fail");
 		expect(failed.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
-			"rollback before relay transcript proof invalid: signature verification failed",
+			"rollback rehearsal evidence relay public key does not match trusted relay public key",
 		);
 	});
 
