@@ -53,6 +53,7 @@ import {
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
+import { redactSecrets } from "../../src/security/output-filter.js";
 
 const hermesPin = { version: "0.15.1" };
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
@@ -1047,6 +1048,85 @@ function cliHeadlessCutoverBundle(
 			],
 			adapterApiSignatures: {
 				"execution.cli_headless": `sha256:${"c".repeat(64)}`,
+			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
+		},
+	});
+}
+
+function edgeAdapterProbe(
+	surfaceId: "attachment.quarantine" | "outbound.policy",
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "pass",
+) {
+	return {
+		surface_id: surfaceId,
+		hermes_pin: hermesPin,
+		documented_seam: "Telclaude edge runtime owns attachment quarantine and outbound policy",
+		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
+		expected_result:
+			"Runtime harness proves ref-only attachments, edge-owned execution, binding, and replay denial",
+		negative_probe:
+			"Raw attachment access, raw paths/URLs, direct credentials, approval-token injection, mutation, and replay fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: `featureProbes.${surfaceId}`,
+		security_scope: "edge-adapter" as const,
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function edgeAdapterCutoverBundle(
+	surfaceId: "attachment.quarantine" | "outbound.policy",
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	const probe = edgeAdapterProbe(surfaceId, evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					required_surface_ids: [surfaceId],
+				},
+			],
+		},
+		featureProbeMatrix,
+		noForkProof: base.noForkProof,
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: surfaceId,
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				[surfaceId]: `sha256:${"e".repeat(64)}`,
 			},
 			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
@@ -2578,6 +2658,66 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("fails cutover-check when proof bundle artifact status forges green over red evidence", () => {
+		const noForkProof = writeNoForkProof({
+			hermesCheckoutClean: false,
+			statusPorcelain: " M src/index.ts",
+			diffExitCode: 1,
+			checks: [
+				{
+					name: "checkout.present",
+					status: "pass",
+					detail: "Hermes checkout found at pinned tag",
+				},
+				{
+					name: "checkout.head",
+					status: "pass",
+					detail: "HEAD is pinned commit",
+				},
+				{
+					name: "checkout.expectedRef",
+					status: "pass",
+					detail: "v2026.5.29 resolves to pinned commit",
+				},
+				{
+					name: "checkout.pinned",
+					status: "pass",
+					detail: "HEAD matches pinned Hermes ref v2026.5.29",
+				},
+				{
+					name: "checkout.statusClean",
+					status: "fail",
+					detail: "git status porcelain is not clean",
+				},
+				{
+					name: "checkout.diffClean",
+					status: "fail",
+					detail: "git diff --quiet reported changes",
+				},
+				{
+					name: "checkout.indexClean",
+					status: "pass",
+					detail: "git diff --cached --quiet is clean",
+				},
+			],
+		});
+		const bundle = safeCutoverBundle({ noForkProof });
+		const cutoverProofBundle = structuredClone(bundle.cutoverProofBundle);
+		expect(cutoverProofBundle.artifacts.noForkProof.status).toBe("fail");
+
+		cutoverProofBundle.artifacts.noForkProof.status = "pass";
+		const report = evaluateCutoverCheck({ ...bundle, cutoverProofBundle });
+
+		expect(report.status).toBe("input_error");
+		expect(report.exitCode).toBe(2);
+		expect(report.gates.find((gate) => gate.name === "proofBundle.noForkProof.valid")).toEqual(
+			expect.objectContaining({
+				status: "fail",
+				detail: expect.stringContaining("artifact status does not match on-disk semantic evidence"),
+			}),
+		);
+	});
+
 	it("fails cutover-check when proof bundle artifact timestamps do not match on-disk evidence", () => {
 		const bundle = safeCutoverBundle();
 		const cutoverProofBundle = structuredClone(bundle.cutoverProofBundle);
@@ -3436,6 +3576,114 @@ describe("Hermes wrapper foundation", () => {
 				expect.objectContaining({ name: "credentials.raw-denied", status: "pass" }),
 				expect.objectContaining({ name: "whatsapp.direct-bridge-denied", status: "pass" }),
 			]),
+		);
+	});
+
+	it("writes runtime edge probe evidence for attachment quarantine and outbound policy", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-runtime-cli-"));
+		for (const [surface, expectedControl] of [
+			["attachment.quarantine", "attachment.cross-domain-reuse-denied"],
+			["outbound.policy", "outbound.replay-denied"],
+		] as const) {
+			const evidencePath = path.join(tempDir, `${surface}.json`);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"probe",
+				surface,
+				"--allow-run",
+				"--json",
+				"--out",
+				evidencePath,
+			]);
+			const artifact = readJson(evidencePath) as {
+				probeId: string;
+				status: string;
+				source: string;
+				runtime?: {
+					operationTrace: string[];
+					checks: Array<{ name: string; status: string }>;
+					observations: { ledgerEntries: number };
+				};
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(artifact).toMatchObject({
+				probeId: surface,
+				status: "pass",
+				source: "telclaude-edge-runtime-harness",
+			});
+			expect(artifact.runtime?.operationTrace).toEqual(
+				expect.arrayContaining(["ingest", "prepareOutbound", "executeOutbound", "status", "ack"]),
+			);
+			expect(artifact.runtime?.observations.ledgerEntries).toBe(1);
+			expect(artifact.runtime?.checks).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ name: expectedControl, status: "pass" }),
+				]),
+			);
+		}
+	});
+
+	it("passes runtime-required edge cutover gates from runtime harness evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-edge-runtime-"));
+		for (const surface of ["attachment.quarantine", "outbound.policy"] as const) {
+			const evidencePath = path.join(tempDir, `${surface}.json`);
+			const probeResult = await runHermesCommand([
+				"hermes",
+				"probe",
+				surface,
+				"--allow-run",
+				"--json",
+				"--out",
+				evidencePath,
+			]);
+			expect(probeResult.exitCode, probeResult.stdout).toBe(0);
+
+			const result = await runCutoverCheckWithBundle(
+				edgeAdapterCutoverBundle(surface, evidencePath),
+			);
+			const report = JSON.parse(result.stdout) as {
+				gates: Array<{ name: string; status: string; detail: string }>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+				status: "pass",
+			});
+		}
+	});
+
+	it("fails runtime-required edge cutover gates when runtime evidence is stripped", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-edge-runtime-"));
+		const evidencePath = path.join(tempDir, "attachment-quarantine.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"attachment.quarantine",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode, probeResult.stdout).toBe(0);
+		const evidence = readJson(evidencePath) as Record<string, unknown>;
+		writeJson(evidencePath, {
+			...evidence,
+			source: "telclaude-edge-contract-unit",
+			runtime: undefined,
+		});
+
+		const result = await runCutoverCheckWithBundle(
+			edgeAdapterCutoverBundle("attachment.quarantine", evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"runtime harness evidence is missing",
 		);
 	});
 
@@ -7060,7 +7308,7 @@ sleep 5
 				workflow.source_refs.includes("config.telegram.allowedChats"),
 			)?.owner,
 		).toMatch(/^telegram-chat:/);
-		expect(inventory.sessions.rows[0].keyRef).toMatch(/^session-key:/);
+		expect(inventory.sessions.rows[0].keyRef).toMatch(/^session-ref:/);
 		expect(inventory.sessions.rows[0].sessionRef).toMatch(/^session:/);
 		expect(inventory.cron.jobs[0].ownerRef).toMatch(/^owner:/);
 		expect(inventory.cron.jobs[0].action).toMatchObject({
@@ -7078,6 +7326,7 @@ sleep 5
 		});
 
 		const serialized = JSON.stringify(inventory);
+		expect(redactSecrets(serialized)).toBe(serialized);
 		for (const secret of [
 			"RAW_TELEGRAM_TOKEN",
 			"RAW_CHAT_ID_SHOULD_NOT_LEAK",

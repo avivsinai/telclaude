@@ -337,6 +337,20 @@ function cutoverProofArtifact(artifactPath: string, sourceCommand: string, gateI
 	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
 }
 
+function resolveInventorySnapshotPath(explicitPath?: string): string | undefined {
+	if (explicitPath) return explicitPath;
+	return fs.existsSync(resolveHermesArtifactPath(DEFAULT_INVENTORY_PATH))
+		? DEFAULT_INVENTORY_PATH
+		: undefined;
+}
+
+function readInventorySnapshot(explicitPath?: string): unknown {
+	const inventoryPath = resolveInventorySnapshotPath(explicitPath);
+	return inventoryPath
+		? readJsonFile(resolveHermesArtifactPath(inventoryPath))
+		: collectHermesInventory();
+}
+
 function fileSha256(filePath: string): string {
 	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
 }
@@ -2405,9 +2419,7 @@ export function registerHermesCommand(program: Command): void {
 		.option("--out <path>", "Write queue snapshot JSON to this path")
 		.action((options: QueueSnapshotOption) => {
 			try {
-				const inventory = options.inventory
-					? readJsonFile(resolveHermesArtifactPath(options.inventory))
-					: collectHermesInventory();
+				const inventory = readInventorySnapshot(options.inventory);
 				const snapshot = buildHermesQueueSnapshot({ inventory });
 				const outPath = options.out ?? DEFAULT_QUEUE_SNAPSHOT_PATH;
 				if (options.out) {
@@ -2473,9 +2485,11 @@ export function registerHermesCommand(program: Command): void {
 					hermes: hermesPin,
 					wrapperVersion: readWrapperPackageVersion(),
 					artifacts: {
-						inventory: cutoverProofArtifact(options.inventory, "pnpm dev hermes inventory --json", [
-							"inputs.inventory",
-						]),
+						inventory: cutoverProofArtifact(
+							options.inventory,
+							`pnpm dev hermes inventory --out ${options.inventory} --json`,
+							["inputs.inventory"],
+						),
 						scopeManifest: cutoverProofArtifact(
 							options.scopeManifest,
 							"pnpm dev hermes cutover-scope --json",
@@ -2513,7 +2527,7 @@ export function registerHermesCommand(program: Command): void {
 						),
 						queueSnapshot: cutoverProofArtifact(
 							options.queueSnapshot,
-							"pnpm dev hermes queue-snapshot --json",
+							`pnpm dev hermes queue-snapshot --inventory ${options.inventory} --out ${options.queueSnapshot} --json`,
 							["inputs.queueSnapshot", "queues.owned"],
 						),
 						rollbackEvidence: cutoverProofArtifact(
@@ -2625,14 +2639,8 @@ export function registerHermesCommand(program: Command): void {
 				let input: unknown;
 				try {
 					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
-						const defaultInventoryPath = resolveHermesArtifactPath(DEFAULT_INVENTORY_PATH);
-						const inventoryPath =
-							options.inventory ??
-							(fs.existsSync(defaultInventoryPath) ? DEFAULT_INVENTORY_PATH : undefined);
-						input = buildCutoverInputBundleFromArtifacts({
-							inventory: inventoryPath
-								? readJsonFile(resolveHermesArtifactPath(inventoryPath))
-								: collectHermesInventory(),
+					input = buildCutoverInputBundleFromArtifacts({
+						inventory: readInventorySnapshot(options.inventory),
 						scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
 						cutoverProofBundle: readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
