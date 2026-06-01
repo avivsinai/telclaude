@@ -36,6 +36,15 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
+import {
+	PROVIDER_APPROVAL_BINDING_ATTESTATION_RUNNER,
+	PROVIDER_APPROVAL_BINDING_ATTESTATION_SCHEMA_VERSION,
+	PROVIDER_APPROVAL_BINDING_ATTESTATION_SOURCE,
+	type ProviderApprovalBindingAttestation,
+	providerApprovalBindingAttestationFieldsForEvidence,
+	providerApprovalBindingAttestationSignatureFailure,
+	signProviderApprovalBindingAttestation,
+} from "./provider-approval-binding-attestation.js";
 
 export const DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH =
 	"artifacts/hermes/probes/providers-approval-binding.json";
@@ -45,6 +54,7 @@ export const PROVIDER_APPROVAL_BINDING_PROBE_SOURCE = "telclaude-provider-approv
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const HexSha256Digest = z.string().regex(/^[a-f0-9]{64}$/);
 const PROBE_VAULT_SECRET = "telclaude-hermes-provider-approval-binding-probe";
 
 const ProviderApprovalBindingProbeCheckSchema = z
@@ -52,6 +62,37 @@ const ProviderApprovalBindingProbeCheckSchema = z
 		name: NonEmptyString,
 		status: z.enum(["pass", "fail"]),
 		detail: NonEmptyString,
+	})
+	.strict();
+
+const InternalResponseProofSchema = z
+	.object({
+		version: z.literal("v1"),
+		scope: NonEmptyString,
+		timestamp: NonEmptyString,
+		nonce: NonEmptyString,
+		method: NonEmptyString,
+		path: NonEmptyString,
+		requestBodySha256: HexSha256Digest,
+		responseBodySha256: HexSha256Digest,
+		signature: NonEmptyString,
+	})
+	.strict();
+
+const ProviderApprovalBindingAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(PROVIDER_APPROVAL_BINDING_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(PROVIDER_APPROVAL_BINDING_ATTESTATION_SOURCE),
+		runner: z.literal(PROVIDER_APPROVAL_BINDING_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: z.literal(PROVIDER_APPROVAL_BINDING_PROBE_SCHEMA_VERSION),
+		probeId: z.literal("providers.approval-binding"),
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		observedAt: NonEmptyString,
+		checksSha256: Sha256Digest,
+		observationsSha256: Sha256Digest,
+		evidenceSha256: Sha256Digest,
+		signature: InternalResponseProofSchema,
 	})
 	.strict();
 
@@ -77,6 +118,7 @@ export const ProviderApprovalBindingProbeEvidenceSchema = z
 				hermesTokenSidecarRejectCode: NonEmptyString.optional(),
 			})
 			.strict(),
+		runnerAttestation: ProviderApprovalBindingAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -414,7 +456,7 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 
 	const status =
 		checks.length > 0 && checks.every((check) => check.status === "pass") ? "pass" : "fail";
-	return {
+	const evidence: Omit<ProviderApprovalBindingProbeEvidence, "runnerAttestation"> = {
 		schemaVersion: PROVIDER_APPROVAL_BINDING_PROBE_SCHEMA_VERSION,
 		probeId: "providers.approval-binding",
 		status,
@@ -428,6 +470,14 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 		checks,
 		observations,
 	};
+	return status === "pass"
+		? {
+				...evidence,
+				runnerAttestation: signProviderApprovalBindingAttestation(
+					evidence,
+				) as ProviderApprovalBindingProbeEvidence["runnerAttestation"],
+			}
+		: evidence;
 }
 
 export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): string | null {
@@ -439,6 +489,8 @@ export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): 
 	const failures: string[] = [];
 	if (data.status !== "pass") failures.push(`status is ${data.status}`);
 	if (data.ran !== true) failures.push("harness did not run");
+	const attestationFailure = providerApprovalBindingRunnerAttestationFailure(data);
+	if (attestationFailure) failures.push(attestationFailure);
 	const checksByName = new Map(data.checks.map((check) => [check.name, check]));
 	for (const duplicate of duplicates(data.checks.map((check) => check.name))) {
 		failures.push(`duplicate check ${duplicate}`);
@@ -470,6 +522,33 @@ export function providerApprovalBindingProbeEvidenceFailure(evidence: unknown): 
 		failures.push("provider contentHash is not domain-separated from params/body hashes");
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function providerApprovalBindingRunnerAttestationFailure(
+	evidence: ProviderApprovalBindingProbeEvidence,
+): string | null {
+	const attestation = evidence.runnerAttestation as ProviderApprovalBindingAttestation | undefined;
+	if (!attestation) return "runnerAttestation is missing";
+	const signatureFailure = providerApprovalBindingAttestationSignatureFailure(attestation, {
+		allowStale: true,
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = providerApprovalBindingAttestationFieldsForEvidence(evidence);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"observedAt",
+		"checksSha256",
+		"observationsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			return `runnerAttestation ${field} mismatch`;
+		}
+	}
+	return null;
 }
 
 async function runGoogleSidecarTokenChecks(input: {
