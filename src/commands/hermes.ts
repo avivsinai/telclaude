@@ -126,9 +126,12 @@ import {
 } from "../hermes/private-runtime.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../hermes/private-telegram-fixture-attestation.js";
 import {
+	buildProReviewYoetzCommand,
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
 	evaluateProReviewCheck,
+	readProReviewNativeCanary,
+	validateProReviewYoetzSendOutput,
 } from "../hermes/pro-review.js";
 import {
 	DEFAULT_PROVIDER_APPROVAL_BINDING_EVIDENCE_PATH,
@@ -444,7 +447,8 @@ function writeProReviewBundle(requestPath: string, bundlePath: string): void {
 		lines.push(`### ${file}`, "", "```text", fs.readFileSync(resolved, "utf8"), "```", "");
 	}
 	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
-	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, "utf8");
+	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+	fs.chmodSync(bundlePath, 0o600);
 }
 
 type FixtureVitestInvocation = {
@@ -2648,19 +2652,28 @@ export function registerHermesCommand(program: Command): void {
 				requireApproval: true,
 			});
 			const bundlePath = resolveProReviewBundlePath(options.bundleOut);
-			const yoetzCommand = [
-				"yoetz",
-				"browser",
-				"recipe",
-				"--recipe",
-				"chatgpt",
-				"--transport",
-				"chrome-extension-native",
-				"--bundle",
-				bundlePath,
-				"--format",
-				"json",
-			];
+			const canary = (() => {
+				try {
+					return readProReviewNativeCanary(options.canary);
+				} catch {
+					return null;
+				}
+			})();
+			const yoetzCommand = canary
+				? buildProReviewYoetzCommand({ canary, bundlePath })
+				: [
+						"yoetz",
+						"browser",
+						"recipe",
+						"--recipe",
+						"chatgpt",
+						"--transport",
+						"chrome-extension-native",
+						"--bundle",
+						bundlePath,
+						"--format",
+						"json",
+					];
 			if (report.status !== "pass") {
 				const result = {
 					report,
@@ -2708,11 +2721,19 @@ export function registerHermesCommand(program: Command): void {
 				encoding: "utf8",
 				env: { ...process.env, YOETZ_AGENT: "1" },
 			});
+			const validation =
+				result.status === 0 && canary
+					? validateProReviewYoetzSendOutput({
+							stdout: result.stdout,
+							expectedExtensionInstanceId: canary.extensionInstanceId,
+						})
+					: null;
 			const send = {
-				status: result.status === 0 ? "sent" : "failed",
+				status: result.status === 0 && validation?.status === "pass" ? "sent" : "failed",
 				bundlePath,
 				yoetzCommand,
 				exitCode: result.status,
+				validation,
 				stdout: result.stdout,
 				stderr: result.stderr,
 				error: result.error?.message,
@@ -2725,7 +2746,7 @@ export function registerHermesCommand(program: Command): void {
 				if (send.stderr.trim()) console.error(send.stderr.trim());
 				if (send.error) console.error(send.error);
 			}
-			process.exitCode = result.status === 0 ? 0 : 1;
+			process.exitCode = send.status === "sent" ? 0 : 1;
 		});
 
 	hermes
