@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { SERVED_MCP_REQUIRED_PROPERTY_NAMES } from "../../src/hermes/served-mcp-containment.js";
 import {
@@ -8,8 +11,9 @@ import {
 describe("served-MCP provider-tools probe", () => {
 	it("passes only from served-MCP containment evidence with provider-tool controls", () => {
 		const sourceEvidence = servedMcpContainmentEvidence();
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
 		const evidence = buildServedMcpProviderToolsProbeEvidence({
-			sourceEvidencePath: "artifacts/hermes/probes/execution-served-mcp-containment.json",
+			sourceEvidencePath,
 			sourceEvidence,
 			observedAt: "2026-05-31T09:00:00.000Z",
 		});
@@ -31,8 +35,9 @@ describe("served-MCP provider-tools probe", () => {
 				provider_execute_without_ledger_denied: false,
 			},
 		});
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
 		const evidence = buildServedMcpProviderToolsProbeEvidence({
-			sourceEvidencePath: "artifacts/hermes/probes/execution-served-mcp-containment.json",
+			sourceEvidencePath,
 			sourceEvidence,
 			observedAt: "2026-05-31T09:00:00.000Z",
 		});
@@ -53,8 +58,9 @@ describe("served-MCP provider-tools probe", () => {
 				detail: "relay self smoke",
 			},
 		});
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
 		const evidence = buildServedMcpProviderToolsProbeEvidence({
-			sourceEvidencePath: "artifacts/hermes/probes/execution-served-mcp-containment.json",
+			sourceEvidencePath,
 			sourceEvidence,
 			observedAt: "2026-05-31T09:00:00.000Z",
 		});
@@ -64,7 +70,75 @@ describe("served-MCP provider-tools probe", () => {
 			"originKind is relay-self-smoke",
 		);
 	});
+
+	it("rejects provider-tools evidence when the source containment artifact changes", () => {
+		const sourceEvidence = servedMcpContainmentEvidence();
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
+		const evidence = buildServedMcpProviderToolsProbeEvidence({
+			sourceEvidencePath,
+			sourceEvidence,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+
+		fs.writeFileSync(
+			sourceEvidencePath,
+			`${JSON.stringify(
+				servedMcpContainmentEvidence({
+					properties: {
+						...servedMcpContainmentEvidence().properties,
+						out_of_scope_provider_denied: false,
+					},
+				}),
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		expect(servedMcpProviderToolsProbeEvidenceFailure(evidence)).toContain(
+			"source served-MCP containment artifact sha256 changed",
+		);
+	});
+
+	it("rejects provider-tools evidence when the source containment artifact is missing", () => {
+		const sourceEvidence = servedMcpContainmentEvidence();
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
+		const evidence = buildServedMcpProviderToolsProbeEvidence({
+			sourceEvidencePath,
+			sourceEvidence,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+
+		fs.unlinkSync(sourceEvidencePath);
+
+		expect(servedMcpProviderToolsProbeEvidenceFailure(evidence)).toContain(
+			"source served-MCP containment artifact is missing",
+		);
+	});
+
+	it("rejects provider-tools evidence when the source containment artifact is invalid JSON", () => {
+		const sourceEvidence = servedMcpContainmentEvidence();
+		const sourceEvidencePath = writeServedMcpSourceEvidence(sourceEvidence);
+		const evidence = buildServedMcpProviderToolsProbeEvidence({
+			sourceEvidencePath,
+			sourceEvidence,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+
+		fs.writeFileSync(sourceEvidencePath, "{not-json", "utf8");
+
+		expect(servedMcpProviderToolsProbeEvidenceFailure(evidence)).toContain(
+			"source served-MCP containment artifact is unreadable",
+		);
+	});
 });
+
+function writeServedMcpSourceEvidence(sourceEvidence: unknown): string {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "served-mcp-source-"));
+	const sourceEvidencePath = path.join(tempDir, "execution-served-mcp-containment.json");
+	fs.writeFileSync(sourceEvidencePath, `${JSON.stringify(sourceEvidence, null, 2)}\n`, "utf8");
+	return sourceEvidencePath;
+}
 
 function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 	const properties = Object.fromEntries(
