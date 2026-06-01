@@ -2,8 +2,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { edgeAdapterProbeEvidenceFailure } from "./edge-adapter-probes.js";
 import { resolveHermesArtifactPath } from "./foundation.js";
+import { sideEffectLedgerProbeEvidenceFailure } from "./mcp/side-effect-ledger-probe.js";
 import { readHermesCliHeadlessProbeReport } from "./private-runtime.js";
+import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
+import { workflowProbeEvidenceFailure } from "./workflow-probes.js";
 
 export const DEFAULT_PRO_REVIEW_REQUEST_PATH = "docs/hermes/pro-review-request.json";
 export const DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH =
@@ -11,6 +15,25 @@ export const DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH =
 export const PRO_REVIEW_REQUEST_SCHEMA_VERSION = "telclaude.hermes.pro-review-request.v1";
 export const PRO_REVIEW_NATIVE_CANARY_SCHEMA_VERSION =
 	"telclaude.hermes.pro-review-native-canary.v1";
+export const PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS = 15 * 60 * 1000;
+const PRO_REVIEW_EDGE_PROBE_PATHS = {
+	"artifacts/hermes/probes/edge-whatsapp.json": "edge.whatsapp",
+	"artifacts/hermes/probes/edge-email.json": "edge.email",
+	"artifacts/hermes/probes/edge-agentmail.json": "edge.agentmail",
+	"artifacts/hermes/probes/edge-social.json": "edge.social",
+	"artifacts/hermes/probes/identity-migration.json": "identity.migration",
+	"artifacts/hermes/probes/household-scopes.json": "household.scopes",
+	"artifacts/hermes/probes/attachment-quarantine.json": "attachment.quarantine",
+	"artifacts/hermes/probes/outbound-policy.json": "outbound.policy",
+	"artifacts/hermes/probes/public-social-isolation.json": "public.social.isolation",
+} as const;
+const PRO_REVIEW_SIGNED_PROBE_PATHS = {
+	...PRO_REVIEW_EDGE_PROBE_PATHS,
+	"artifacts/hermes/probes/sideeffect-ledger.json": "sideeffect.ledger",
+	"artifacts/hermes/probes/providers-approval-binding.json": "providers.approval-binding",
+	"artifacts/hermes/probes/workflow-cron.json": "workflow.cron",
+	"artifacts/hermes/probes/workflow-longrun.json": "workflow.longrun",
+} as const;
 export const REQUIRED_PRO_REVIEW_FILES = [
 	"docs/plans/2026-05-29-hermes-wrapper-pristine-spec.md",
 	"docs/hermes/local-colima-live-run.md",
@@ -19,21 +42,26 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/hermes/edge-adapter-contract.ts",
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
+	"src/hermes/edge-adapter-attestation.ts",
 	"src/hermes/browser-computer-broker-probes.ts",
 	"src/hermes/private-runtime.ts",
 	"src/hermes/foundation.ts",
 	"src/hermes/private-telegram-fixture-attestation.ts",
 	"src/hermes/network-probe-schema.ts",
 	"src/hermes/network-probe-attestation.ts",
+	"src/hermes/no-fork-attestation.ts",
 	"src/hermes/network-probes.ts",
 	"src/hermes/provider-approval-binding-probe.ts",
+	"src/hermes/provider-approval-binding-attestation.ts",
 	"src/hermes/provider-domain-probes.ts",
 	"src/hermes/provider-google-probe.ts",
 	"src/hermes/provider-release-policy-probe.ts",
 	"src/hermes/served-mcp-provider-tools-probe.ts",
 	"src/hermes/workflow-probes.ts",
 	"src/hermes/workflow-run-ledger.ts",
+	"src/hermes/workflow-run-ledger-attestation.ts",
 	"src/hermes/mcp/side-effect-ledger-probe.ts",
+	"src/hermes/mcp/side-effect-ledger-attestation.ts",
 	"src/hermes/mcp/provider-routing.ts",
 	"src/hermes/mcp/side-effect-ledger.ts",
 	"src/hermes/mcp/side-effect-human-approval.ts",
@@ -312,11 +340,26 @@ export type ProReviewYoetzSendValidation = {
 	readonly detail: string;
 };
 
+const PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS = [
+	/^OPENAI(?:_|$)/i,
+	/^ANTHROPIC(?:_|$)/i,
+	/^OPENROUTER(?:_|$)/i,
+	/^GEMINI(?:_|$)/i,
+	/^GOOGLE(?:_|$)/i,
+	/^XAI(?:_|$)/i,
+	/^MISTRAL(?:_|$)/i,
+	/^GROQ(?:_|$)/i,
+	/^COHERE(?:_|$)/i,
+	/^YOETZ_.*(?:API|KEY|TOKEN|TRANSPORT|FALLBACK|CDP)/i,
+	/^(?:CDP|CHROME_REMOTE_DEBUGGING|DEV_BROWSER|AGENT_BROWSER|BROWSERLESS)(?:_|$)/i,
+] as const;
+
 export function evaluateProReviewCheck(
 	input: {
 		readonly requestPath?: string;
 		readonly canaryPath?: string;
 		readonly requireApproval?: boolean;
+		readonly now?: Date;
 	} = {},
 ): ProReviewCheckReport {
 	const requestPath = input.requestPath ?? DEFAULT_PRO_REVIEW_REQUEST_PATH;
@@ -329,7 +372,7 @@ export function evaluateProReviewCheck(
 		gates.push(...requestPolicyGates(request, requestPath, canaryPath, input.requireApproval));
 	}
 	if (request && canary) {
-		gates.push(...canaryPolicyGates(canary, request));
+		gates.push(...canaryPolicyGates(canary, request, input));
 	}
 
 	const status = gates.some((gate) => gate.status === "fail")
@@ -393,6 +436,7 @@ function requestPolicyGates(
 	requireApproval: boolean | undefined,
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
+	const requireGreenEvidence = requiresSendReadyProReviewEvidence(request, requireApproval);
 	gates.push(
 		request.reviewer === "ChatGPT Pro Extended via Yoetz native extension"
 			? pass("request.reviewer", "reviewer is ChatGPT Pro Extended via Yoetz native extension")
@@ -457,7 +501,7 @@ function requestPolicyGates(
 			? pass("request.selectedFiles", "all selected Pro review files exist")
 			: fail("request.selectedFiles", `selected file(s) missing: ${missingFiles.join(", ")}`),
 	);
-	gates.push(...semanticEvidenceGates(request));
+	gates.push(...semanticEvidenceGates(request, { requireGreenEvidence }));
 
 	const approval = request.privateWorkspaceDisclosure;
 	if (approval.approved) {
@@ -512,9 +556,21 @@ function requestPolicyGates(
 	return gates;
 }
 
+function requiresSendReadyProReviewEvidence(
+	request: ProReviewRequest,
+	requireApproval: boolean | undefined,
+): boolean {
+	return (
+		requireApproval === true ||
+		request.privateWorkspaceDisclosure.approved === true ||
+		request.status !== "pending_operator_disclosure_approval"
+	);
+}
+
 function canaryPolicyGates(
 	canary: ProReviewNativeCanary,
 	request: ProReviewRequest,
+	options: { readonly requireApproval?: boolean; readonly now?: Date },
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
 	gates.push(pass("nativeCanary.transport", "live canary transport is chrome-extension-native"));
@@ -563,12 +619,41 @@ function canaryPolicyGates(
 			? pass("nativeCanary.timestamps", "native canary timestamps are parseable and ordered")
 			: fail("nativeCanary.timestamps", "native canary timestamps are invalid or out of order"),
 	);
+	if (
+		options.requireApproval === true ||
+		request.privateWorkspaceDisclosure.approved === true ||
+		request.status !== "pending_operator_disclosure_approval"
+	) {
+		gates.push(nativeCanaryFreshnessGate(reverifiedAtMs, options.now ?? new Date()));
+	}
 	gates.push(
 		request.fallbackAllowed === false
 			? pass("nativeCanary.noFallback", "canary evidence is compatible with no-fallback request")
 			: fail("nativeCanary.noFallback", "request allows fallback"),
 	);
 	return gates;
+}
+
+function nativeCanaryFreshnessGate(reverifiedAtMs: number, now: Date): ProReviewGate {
+	if (Number.isNaN(reverifiedAtMs)) {
+		return fail("nativeCanary.freshness", "native canary reverifiedAt timestamp is invalid");
+	}
+	const nowMs = now.getTime();
+	if (!Number.isFinite(nowMs)) {
+		return fail("nativeCanary.freshness", "current time is invalid");
+	}
+	const ageMs = nowMs - reverifiedAtMs;
+	if (ageMs < 0) {
+		return fail("nativeCanary.freshness", "native canary reverifiedAt is in the future");
+	}
+	if (ageMs > PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS) {
+		const ageMinutes = Math.floor(ageMs / 60_000);
+		return fail(
+			"nativeCanary.freshness",
+			`native canary reverification is stale at ${ageMinutes} minute(s) old`,
+		);
+	}
+	return pass("nativeCanary.freshness", "native canary reverification is fresh");
 }
 
 function payloadDigestFailures(request: ProReviewRequest): string[] {
@@ -629,15 +714,28 @@ function digestFile(file: string): string {
 	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(resolved)).digest("hex")}`;
 }
 
-function semanticEvidenceGates(request: ProReviewRequest): ProReviewGate[] {
+function semanticEvidenceGates(
+	request: ProReviewRequest,
+	options: { readonly requireGreenEvidence: boolean },
+): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
 	if (request.selectedFiles.includes("artifacts/hermes/probes/execution-cli-headless.json")) {
-		gates.push(cliHeadlessEvidenceGate("artifacts/hermes/probes/execution-cli-headless.json"));
+		gates.push(
+			cliHeadlessEvidenceGate(
+				"artifacts/hermes/probes/execution-cli-headless.json",
+				options.requireGreenEvidence,
+			),
+		);
+	}
+	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_SIGNED_PROBE_PATHS)) {
+		if (request.selectedFiles.includes(reportPath)) {
+			gates.push(signedProbeEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence));
+		}
 	}
 	return gates;
 }
 
-function cliHeadlessEvidenceGate(reportPath: string): ProReviewGate {
+function cliHeadlessEvidenceGate(reportPath: string, requireGreenEvidence: boolean): ProReviewGate {
 	const resolved = resolveHermesArtifactPath(reportPath);
 	let raw: unknown;
 	try {
@@ -673,10 +771,48 @@ function cliHeadlessEvidenceGate(reportPath: string): ProReviewGate {
 	if (explicitRedFailure) {
 		return fail("request.cliHeadlessEvidence", explicitRedFailure);
 	}
+	if (requireGreenEvidence) {
+		return fail(
+			"request.cliHeadlessEvidence",
+			`cli_headless evidence is explicitly red and cannot be sent: ${String(
+				raw.summary ?? "readiness failed",
+			)}`,
+		);
+	}
 	return pass(
 		"request.cliHeadlessEvidence",
 		`cli_headless evidence is explicitly red: ${String(raw.summary ?? "readiness failed")}`,
 	);
+}
+
+function signedProbeEvidenceGate(
+	reportPath: string,
+	surfaceId: string,
+	requireGreenEvidence: boolean,
+): ProReviewGate {
+	const name = `request.semanticEvidence.${surfaceId}`;
+	const read = readJsonObject(reportPath);
+	if (!read.ok) return fail(name, `${surfaceId} evidence cannot be read: ${read.error}`);
+	if (read.value.status !== "pass") {
+		if (read.value.status !== "fail") {
+			return fail(name, `${surfaceId} evidence status is ${String(read.value.status)}`);
+		}
+		if (requireGreenEvidence) {
+			return fail(name, `${surfaceId} evidence is explicitly red and cannot be sent`);
+		}
+		return pass(name, `${surfaceId} evidence is explicitly red`);
+	}
+	const failure =
+		surfaceId === "sideeffect.ledger"
+			? sideEffectLedgerProbeEvidenceFailure(surfaceId, read.value)
+			: surfaceId === "providers.approval-binding"
+				? providerApprovalBindingProbeEvidenceFailure(read.value)
+				: surfaceId === "workflow.cron" || surfaceId === "workflow.longrun"
+					? workflowProbeEvidenceFailure(surfaceId, read.value)
+					: edgeAdapterProbeEvidenceFailure(surfaceId, read.value);
+	return failure
+		? fail(name, `${surfaceId} pass evidence is not accepted by the current validator: ${failure}`)
+		: pass(name, `${surfaceId} pass evidence passes current semantic validator`);
 }
 
 function explicitCliHeadlessRedFailure(raw: Record<string, unknown>): string | null {
@@ -750,86 +886,172 @@ function nativeStatusCommandFailures(
 	if (!allowed) {
 		return ["native status command is not the Yoetz extension status/reconnect command"];
 	}
-	return extensionBoundJsonCommandFailures(command, "native status", expectedExtensionInstanceId, {
-		requireExtensionInstance: true,
-	});
+	return nativeExtensionCommandShapeFailures(
+		command,
+		"native status",
+		expectedExtensionInstanceId,
+		{
+			allowedVerbs: ["status", "reconnect"],
+			live: "forbidden",
+		},
+	);
 }
 
 function dryCanaryCommandFailures(command: string, expectedExtensionInstanceId: string): string[] {
 	if (!command.startsWith("YOETZ_AGENT=1 yoetz browser extension canary --chatgpt")) {
 		return ["dry canary command is not the Yoetz extension dry canary command"];
 	}
-	const failures = extensionBoundJsonCommandFailures(
-		command,
-		"dry canary",
-		expectedExtensionInstanceId,
-		{
-			requireExtensionInstance: true,
-		},
-	);
-	if (hasFlag(command, "--live")) {
-		failures.push("dry canary command includes --live");
-	}
-	return failures;
+	return nativeExtensionCommandShapeFailures(command, "dry canary", expectedExtensionInstanceId, {
+		allowedVerbs: ["canary"],
+		live: "forbidden",
+	});
 }
 
 function liveCanaryCommandFailures(command: string, expectedExtensionInstanceId: string): string[] {
 	if (!command.startsWith("YOETZ_AGENT=1 yoetz browser extension canary --chatgpt")) {
 		return ["live canary command is not the Yoetz extension live canary command"];
 	}
-	const failures = extensionBoundJsonCommandFailures(
-		command,
-		"live canary",
-		expectedExtensionInstanceId,
-		{
-			requireExtensionInstance: true,
-		},
-	);
-	if (!hasFlag(command, "--live")) {
-		failures.push("live canary command does not include --live");
-	}
-	return failures;
+	return nativeExtensionCommandShapeFailures(command, "live canary", expectedExtensionInstanceId, {
+		allowedVerbs: ["canary"],
+		live: "required",
+	});
 }
 
-function extensionBoundJsonCommandFailures(
+function nativeExtensionCommandShapeFailures(
 	command: string,
 	label: string,
 	expectedExtensionInstanceId: string,
-	options: { readonly requireExtensionInstance: boolean },
+	options: {
+		readonly allowedVerbs: readonly string[];
+		readonly live: "required" | "forbidden";
+	},
 ): string[] {
 	const failures = [];
-	const boundExtensionInstance = flagValue(command, "--extension-instance-id");
-	if (!boundExtensionInstance) {
-		if (options.requireExtensionInstance) {
-			failures.push(`${label} command does not bind an extension instance`);
+	const tokens = command.trim().split(/\s+/).filter(Boolean);
+	const expectedPrefix = ["YOETZ_AGENT=1", "yoetz", "browser", "extension"];
+	for (const [index, expected] of expectedPrefix.entries()) {
+		if (tokens[index] !== expected) {
+			failures.push(`${label} command does not use the Yoetz native extension command`);
+			return failures;
 		}
+	}
+	const verb = tokens[4];
+	if (!verb || !options.allowedVerbs.includes(verb)) {
+		failures.push(`${label} command uses unexpected Yoetz extension verb ${String(verb)}`);
+		return failures;
+	}
+	const parsed = parseNativeExtensionFlags(tokens.slice(5));
+	failures.push(...parsed.failures.map((failure) => `${label} command ${failure}`));
+
+	if (parsed.flagCounts.chatgpt !== 1) {
+		failures.push(`${label} command must include exactly one --chatgpt`);
+	}
+	if (parsed.flagCounts.extensionInstanceId > 1) {
+		failures.push(`${label} command includes multiple --extension-instance-id flags`);
+	}
+	if (parsed.flagCounts.format > 1) {
+		failures.push(`${label} command includes multiple --format flags`);
+	}
+	const boundExtensionInstance = parsed.extensionInstanceId;
+	if (!boundExtensionInstance) {
+		failures.push(`${label} command does not bind an extension instance`);
 	} else if (boundExtensionInstance !== expectedExtensionInstanceId) {
 		failures.push(
 			`${label} command binds extension instance ${boundExtensionInstance}, expected ${expectedExtensionInstanceId}`,
 		);
 	}
-	if (!/\s--format\s+json(?:\s|$)/.test(command)) {
+	if (!parsed.format) {
 		failures.push(`${label} command does not request JSON output`);
+	} else if (parsed.format !== "json") {
+		failures.push(`${label} command requests ${parsed.format} output instead of json`);
+	}
+	if (options.live === "required" && parsed.flagCounts.live !== 1) {
+		failures.push(`${label} command does not include --live`);
+	}
+	if (options.live === "forbidden" && parsed.flagCounts.live > 0) {
+		failures.push(`${label} command includes --live`);
+	}
+	if (parsed.flagCounts.live > 1) {
+		failures.push(`${label} command includes multiple --live flags`);
 	}
 	return failures;
 }
 
-function hasFlag(command: string, flag: string): boolean {
-	const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	return new RegExp(`(?:^|\\s)${escapedFlag}(?:\\s|$)`).test(command);
-}
-
-function flagValue(command: string, flag: string): string | null {
-	const escapedFlag = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const match = command.match(new RegExp(`(?:^|\\s)${escapedFlag}\\s+(\\S+)`));
-	return match?.[1] ?? null;
+function parseNativeExtensionFlags(tokens: readonly string[]): {
+	readonly extensionInstanceId: string | null;
+	readonly format: string | null;
+	readonly flagCounts: {
+		readonly chatgpt: number;
+		readonly live: number;
+		readonly extensionInstanceId: number;
+		readonly format: number;
+	};
+	readonly failures: readonly string[];
+} {
+	let chatgpt = 0;
+	let live = 0;
+	let extensionInstanceIdCount = 0;
+	let formatCount = 0;
+	let extensionInstanceId: string | null = null;
+	let format: string | null = null;
+	const failures: string[] = [];
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		if (token === "--chatgpt") {
+			chatgpt += 1;
+			continue;
+		}
+		if (token === "--live") {
+			live += 1;
+			continue;
+		}
+		if (token === "--extension-instance-id") {
+			extensionInstanceIdCount += 1;
+			const value = tokens[index + 1];
+			if (!value || value.startsWith("--")) {
+				failures.push("--extension-instance-id is missing a value");
+			} else {
+				extensionInstanceId = value;
+				index += 1;
+			}
+			continue;
+		}
+		if (token === "--format") {
+			formatCount += 1;
+			const value = tokens[index + 1];
+			if (!value || value.startsWith("--")) {
+				failures.push("--format is missing a value");
+			} else {
+				format = value;
+				index += 1;
+			}
+			continue;
+		}
+		failures.push(`includes unexpected token ${token}`);
+	}
+	return {
+		extensionInstanceId,
+		format,
+		flagCounts: {
+			chatgpt,
+			live,
+			extensionInstanceId: extensionInstanceIdCount,
+			format: formatCount,
+		},
+		failures,
+	};
 }
 
 function containsBlockedFallback(command: string): boolean {
 	return [
 		/(?:^|\s)--cdp(?:\s|=|$)/i,
 		/(?:^|\s)--api-key(?:\s|=|$)/i,
+		/(?:^|\s)--transport\s+(?!chrome-extension-native(?:\s|$))/i,
+		/(?:^|\s)--allow-[\w-]*fallback(?:\s|=|$)/i,
+		/(?:^|\s)--fallback(?:\s|=|$)/i,
 		/\bbrowser\s+recipe\b/i,
+		/\bdev-browser\b/i,
+		/\bagent-browser\b/i,
 		/\bmanual\b/i,
 		/\bclaude\b/i,
 		/\bamq\b/i,
@@ -869,6 +1091,35 @@ export function buildProReviewYoetzCommand(input: {
 		"--var",
 		`extension_instance_id=${input.canary.extensionInstanceId}`,
 	];
+}
+
+export function buildProReviewNativeYoetzEnv(
+	source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(source)) {
+		if (value === undefined) continue;
+		if (key === "YOETZ_AGENT") continue;
+		if (PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS.some((pattern) => pattern.test(key))) {
+			continue;
+		}
+		env[key] = value;
+	}
+	env.YOETZ_AGENT = "1";
+	return env;
+}
+
+function readJsonObject(
+	reportPath: string,
+): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
+	const resolved = resolveHermesArtifactPath(reportPath);
+	try {
+		const raw = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+		if (!isRecord(raw)) return { ok: false, error: "evidence must be a JSON object" };
+		return { ok: true, value: raw };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
 }
 
 export function validateProReviewYoetzSendOutput(input: {
@@ -913,11 +1164,10 @@ export function validateProReviewYoetzSendOutput(input: {
 	} else if (!Array.isArray(parsed.warnings)) {
 		failures.push("warnings is not an array");
 	}
-	const extensionInstanceId = parsed.extension_instance_id ?? parsed.extensionInstanceId;
-	if (
-		extensionInstanceId !== undefined &&
-		extensionInstanceId !== input.expectedExtensionInstanceId
-	) {
+	const extensionInstanceId = parsed.extension_instance_id;
+	if (typeof extensionInstanceId !== "string") {
+		failures.push("extension_instance_id is missing or not a string");
+	} else if (extensionInstanceId !== input.expectedExtensionInstanceId) {
 		failures.push(
 			`extension_instance_id is ${String(
 				extensionInstanceId,
