@@ -315,9 +315,14 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"household.scopes": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
 	"attachment.quarantine": [
 		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
 		"src/hermes/edge-adapter-probes.ts",
 	],
-	"outbound.policy": ["src/hermes/edge-adapter-contract.ts", "src/hermes/edge-adapter-probes.ts"],
+	"outbound.policy": [
+		"src/hermes/edge-adapter-contract.ts",
+		"src/hermes/edge-adapter-runtime.ts",
+		"src/hermes/edge-adapter-probes.ts",
+	],
 	"public.social.isolation": [
 		"src/hermes/edge-adapter-contract.ts",
 		"src/hermes/edge-adapter-probes.ts",
@@ -406,8 +411,10 @@ const P0_PARITY_DIGEST_FILES = [
 	"docs/hermes/no-fork-proof.json",
 	"docs/hermes/rollback-rehearsal.json",
 	"src/hermes/edge-adapter-contract.ts",
+	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
 	"tests/hermes/edge-adapter-contract.test.ts",
+	"tests/hermes/edge-adapter-runtime.test.ts",
 	"tests/hermes/edge-adapter-probes.test.ts",
 	"tests/hermes/mcp-side-effect-ledger-probe.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
@@ -1425,6 +1432,7 @@ export function buildCutoverProofBundle(input: {
 				const value = JSON.parse(text) as unknown;
 				const redaction = scanCutoverProofArtifactRedaction(text);
 				const leakScan = scanCutoverProofArtifactLeaks(text);
+				const semanticFailures = cutoverProofArtifactSemanticFailures(key, value);
 				return [
 					key,
 					{
@@ -1434,7 +1442,12 @@ export function buildCutoverProofBundle(input: {
 						artifactPath: artifact.artifactPath,
 						sha256: sha256Digest(bytes),
 						sourceCommand: artifact.sourceCommand,
-						status: redaction.status === "pass" && leakScan.status === "pass" ? "pass" : "fail",
+						status:
+							redaction.status === "pass" &&
+							leakScan.status === "pass" &&
+							semanticFailures.length === 0
+								? "pass"
+								: "fail",
 						redaction,
 						leakScan,
 						gateIds: artifact.gateIds,
@@ -1444,6 +1457,47 @@ export function buildCutoverProofBundle(input: {
 			}),
 		),
 	});
+}
+
+function cutoverProofArtifactSemanticFailures(
+	key: CutoverProofArtifactKey,
+	value: unknown,
+): string[] {
+	if (key === "noForkProof") {
+		const parsed = NoForkProofSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`no-fork proof schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return noForkProofEvidenceFailures(parsed.data);
+	}
+
+	if (key === "networkProbeBundle") {
+		const parsed = ProbeBundleSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`network probe bundle schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		const probeById = new Map(parsed.data.probes.map((probe) => [probe.id, probe]));
+		return [
+			...(parsed.data.probes.length === 0 ? ["network probe bundle is empty"] : []),
+			...findDuplicates(parsed.data.probes.map((probe) => probe.id)).map(
+				(id) => `duplicate network probe ${id}`,
+			),
+			...REQUIRED_CUTOVER_NETWORK_PROBE_IDS.flatMap((probeId) =>
+				probeById.has(probeId) ? [] : [`missing network probe ${probeId}`],
+			),
+			...parsed.data.probes.flatMap((probe) => networkProbeEvidenceFailures(probe)),
+		];
+	}
+
+	if (key === "rollbackEvidence") {
+		const parsed = RollbackRehearsalSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`rollback rehearsal schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return rollbackRehearsalEvidenceFailures(parsed.data);
+	}
+
+	return [];
 }
 
 export function collectFeatureProbeEvidence(
@@ -2883,6 +2937,13 @@ function checkCutoverProofBundle(input: {
 		if (!loaded.ok) {
 			failures.push(loaded.failure);
 		} else {
+			const semanticFailures = cutoverProofArtifactSemanticFailures(key, loaded.value);
+			const expectedStatus =
+				loaded.redaction.status === "pass" &&
+				loaded.leakScan.status === "pass" &&
+				semanticFailures.length === 0
+					? "pass"
+					: "fail";
 			if (artifact.sha256 !== loaded.sha256) {
 				failures.push("artifact hash does not match on-disk bytes");
 			}
@@ -2908,8 +2969,10 @@ function checkCutoverProofBundle(input: {
 			) {
 				failures.push("artifact recorded scan results do not match on-disk bytes");
 			}
+			if (artifact.status !== expectedStatus) {
+				failures.push("artifact status does not match on-disk semantic evidence");
+			}
 		}
-		if (artifact.status !== "pass") failures.push("artifact status is not pass");
 		if (artifact.checkIds.length === 0) failures.push("artifact check IDs are missing");
 		if (artifact.schemaVersion !== schemaVersionOf(value)) {
 			failures.push("artifact schema version does not match checker input");

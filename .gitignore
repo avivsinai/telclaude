@@ -36,6 +36,7 @@ package-lock.json
 # Telclaude data (runtime)
 .telclaude/
 .telclaude-media/
+artifacts/
 
 # Claude Code local settings
 .claude/settings.local.json

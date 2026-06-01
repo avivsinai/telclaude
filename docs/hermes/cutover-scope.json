@@ -25,6 +25,303 @@
         "model.relay"
       ],
       "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "public.whatsapp.identity",
+      "owner": "public-identity:whatsapp",
+      "trust_domain": "public",
+      "current_behavior": "Telclaude does not yet expose production WhatsApp identity through the Hermes wrapper.",
+      "hermes_target_behavior": "A dedicated WhatsApp identity is edge-owned by Telclaude, sanitized into Hermes public or household profiles, and sends outbound replies through Telclaude approval, redaction, budgets, and audit.",
+      "cutover_class": "P0",
+      "cutover_requirement": "WhatsApp ingress, outbound, status, attachment quarantine, identity binding, and direct-Hermes credential denial must pass from edge-mediated shadow evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.public.whatsapp.basic",
+        "fixture.household.whatsapp.benign"
+      ],
+      "negative_fixture_ids": [
+        "fixture.public.whatsapp.unknown-deny",
+        "fixture.household.whatsapp.provider-unscoped-deny"
+      ],
+      "required_surface_ids": [
+        "edge.whatsapp",
+        "identity.migration",
+        "household.scopes",
+        "attachment.quarantine",
+        "outbound.policy"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "public.email.identity",
+      "owner": "public-identity:email",
+      "trust_domain": "public",
+      "current_behavior": "Telclaude does not yet expose production email identity through the Hermes wrapper.",
+      "hermes_target_behavior": "A dedicated mailbox is edge-owned by Telclaude, sanitized into Hermes public or household profiles, and sends outbound mail through prepared refs, redaction, budgets, and audit.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Email ingress, threading, attachments, outbound send/reply, identity binding, and direct IMAP/SMTP credential denial must pass from edge-mediated shadow evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.public.email.basic",
+        "fixture.household.email.scoped"
+      ],
+      "negative_fixture_ids": [
+        "fixture.public.email.wrong-thread-deny",
+        "fixture.household.email.private-memory-deny"
+      ],
+      "required_surface_ids": [
+        "edge.email",
+        "identity.migration",
+        "household.scopes",
+        "attachment.quarantine",
+        "outbound.policy"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "public.agentmail.identity",
+      "owner": "public-identity:agentmail",
+      "trust_domain": "public",
+      "current_behavior": "AgentMail is not yet wrapped by Telclaude custody for production Hermes use.",
+      "hermes_target_behavior": "AgentMail polling or webhook delivery is mediated by Telclaude sidecar or vault custody; Hermes receives sanitized mail events and uses prepared outbound refs only.",
+      "cutover_class": "P0",
+      "cutover_requirement": "AgentMail read/send paths, key custody, allowed-sender policy, thread mapping, and direct key absence in Hermes must pass from edge-mediated shadow evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.public.agentmail.basic"
+      ],
+      "negative_fixture_ids": [
+        "fixture.public.agentmail.direct-key-deny"
+      ],
+      "required_surface_ids": [
+        "edge.agentmail",
+        "identity.migration",
+        "outbound.policy"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "public.social.identity",
+      "owner": "public-identity:social",
+      "trust_domain": "public-social",
+      "current_behavior": "Telclaude social identity, queues, and posting approvals remain outside Hermes wrapper cutover evidence.",
+      "hermes_target_behavior": "Social timeline, post, reply, and DM events are sanitized into an isolated Hermes public-social profile while credentials, budgets, approvals, and posting audit stay Telclaude-owned.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Timeline ingestion, draft post, approved posting, reply approval, public-memory isolation, and autonomous-budget denial must pass from edge-mediated shadow evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.public.social.timeline",
+        "fixture.public.social.reply"
+      ],
+      "negative_fixture_ids": [
+        "fixture.public.social.private-leak-deny",
+        "fixture.public.social.budget-deny"
+      ],
+      "required_surface_ids": [
+        "edge.social",
+        "identity.migration",
+        "public.social.isolation",
+        "outbound.policy"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "household.assistant",
+      "owner": "household:family",
+      "trust_domain": "household",
+      "current_behavior": "Family WhatsApp/email assistant flows are not yet represented in Hermes wrapper cutover evidence.",
+      "hermes_target_behavior": "Family members use WhatsApp or email through Telclaude edge identity, per-person scopes, consent, household memory, provider release checks, and strong-link provider access.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Contact-only benign tasks, strong-link provider reads, number-only provider denial, private-memory denial, per-recipient reachability, and sensitive-action approval must pass from shadow evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.household.whatsapp.benign",
+        "fixture.household.email.scoped",
+        "fixture.household.provider.strong-link-read"
+      ],
+      "negative_fixture_ids": [
+        "fixture.household.private-memory-deny",
+        "fixture.household.provider-number-only-deny",
+        "fixture.household.cross-recipient-deny"
+      ],
+      "required_surface_ids": [
+        "household.scopes",
+        "identity.migration",
+        "edge.whatsapp",
+        "edge.email",
+        "providers.release-policy"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "providers.bank",
+      "owner": "provider:bank",
+      "trust_domain": "provider",
+      "current_behavior": "Bank provider powers remain Telclaude sidecar flows without Hermes wrapper parity evidence.",
+      "hermes_target_behavior": "Hermes can use bank reads and prepare actions only through Telclaude-derived MCP/provider tools, sidecar custody, identity scope checks, release policy, and signed write approvals.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Balances, transactions, statements, transfer draft, approved transfer execution, wrong-actor denial, replay denial, and direct provider/vault denial must pass.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.providers.bank.read",
+        "fixture.providers.bank.prepare-transfer",
+        "fixture.providers.bank.approved-transfer"
+      ],
+      "negative_fixture_ids": [
+        "fixture.providers.bank.wrong-actor-deny",
+        "fixture.providers.bank.replay-deny",
+        "fixture.providers.bank.direct-provider-deny"
+      ],
+      "required_surface_ids": [
+        "providers.bank",
+        "providers.approval-binding",
+        "providers.release-policy",
+        "served_mcp.provider-tools"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "providers.clalit",
+      "owner": "provider:clalit",
+      "trust_domain": "provider",
+      "current_behavior": "Clalit and health provider powers remain outside Hermes wrapper parity evidence.",
+      "hermes_target_behavior": "Hermes can use Clalit/health reads and prepare actions only through Telclaude-derived MCP/provider tools, sidecar custody, identity scope checks, release policy, urgent-language handling, and signed write approvals.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Appointments, lab/referral/medication reads, message drafts, booking prepare/execute, emergency escalation, wrong-actor denial, replay denial, and direct provider/vault denial must pass.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.providers.clalit.read",
+        "fixture.providers.clalit.prepare-message",
+        "fixture.providers.clalit.approved-booking"
+      ],
+      "negative_fixture_ids": [
+        "fixture.providers.clalit.wrong-actor-deny",
+        "fixture.providers.clalit.emergency-escalate",
+        "fixture.providers.clalit.direct-provider-deny"
+      ],
+      "required_surface_ids": [
+        "providers.clalit",
+        "providers.approval-binding",
+        "providers.release-policy",
+        "served_mcp.provider-tools"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "providers.government",
+      "owner": "provider:government",
+      "trust_domain": "provider",
+      "current_behavior": "Government provider powers remain outside Hermes wrapper parity evidence.",
+      "hermes_target_behavior": "Hermes can use government status/document reads and prepare submissions only through Telclaude-derived MCP/provider tools, sidecar custody, identity scope checks, release policy, and signed write approvals.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Status lookup, document fetch, form draft, approved submission, wrong-actor denial, replay denial, and direct provider/vault denial must pass.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.providers.government.read",
+        "fixture.providers.government.prepare-form",
+        "fixture.providers.government.approved-submit"
+      ],
+      "negative_fixture_ids": [
+        "fixture.providers.government.wrong-actor-deny",
+        "fixture.providers.government.replay-deny",
+        "fixture.providers.government.direct-provider-deny"
+      ],
+      "required_surface_ids": [
+        "providers.government",
+        "providers.approval-binding",
+        "providers.release-policy",
+        "served_mcp.provider-tools"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "providers.google",
+      "owner": "provider:google",
+      "trust_domain": "provider",
+      "current_behavior": "Google sidecar powers remain outside Hermes wrapper parity evidence.",
+      "hermes_target_behavior": "Hermes can use Gmail, Calendar, Drive, and Contacts reads/prepares only through Telclaude-derived MCP/provider tools, sidecar custody, identity scope checks, release policy, and signed write approvals.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Gmail/Calendar/Drive reads, draft replies/events, approved writes, wrong-actor denial, replay denial, and direct provider/vault denial must pass.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.providers.google.read",
+        "fixture.providers.google.prepare-write",
+        "fixture.providers.google.approved-write"
+      ],
+      "negative_fixture_ids": [
+        "fixture.providers.google.wrong-actor-deny",
+        "fixture.providers.google.replay-deny",
+        "fixture.providers.google.direct-provider-deny"
+      ],
+      "required_surface_ids": [
+        "providers.google",
+        "providers.approval-binding",
+        "providers.release-policy",
+        "served_mcp.provider-tools"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "cron.background.longrun",
+      "owner": "workflow:cron-background",
+      "trust_domain": "private",
+      "current_behavior": "Telclaude owns cron/background scheduling and approval waits outside Hermes wrapper parity evidence.",
+      "hermes_target_behavior": "Long-lived Hermes-backed workflows preserve workflowRunId, initiating actor, authority actor, scope, budget, freshness deadline, side-effect ledger, cancellation, and idempotent resume semantics.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Cron delivery, duplicate suppression, approval-wait resume, provider timeout, cancellation, and rollback-visible run state must pass from observed evidence.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.cron.background.delivery",
+        "fixture.longrun.approval-resume"
+      ],
+      "negative_fixture_ids": [
+        "fixture.cron.duplicate-deny",
+        "fixture.longrun.stale-resume-deny"
+      ],
+      "required_surface_ids": [
+        "workflow.cron",
+        "workflow.longrun",
+        "approval.continuation",
+        "sideeffect.ledger"
+      ],
+      "unresolved_decision_ids": []
+    },
+    {
+      "workflow_id": "browser.computer.broker",
+      "owner": "workflow:browser-computer",
+      "trust_domain": "brokered-web",
+      "current_behavior": "Browser/computer-use isolation for Hermes wrapper workflows is not yet proven across private, public, household, and provider domains.",
+      "hermes_target_behavior": "Browser and computer automation use isolated profiles/displays, no shared cookies, allowed target policies, download/upload quarantine, sidecar custody for sensitive sites, and audited handoffs.",
+      "cutover_class": "P0",
+      "cutover_requirement": "Allowed web research works while direct SMTP/IMAP, WhatsApp bridge, model, vault, provider, metadata, cross-domain, covert egress, and shared-cookie paths fail.",
+      "status": "included",
+      "rollback_owner": "operator",
+      "fixture_ids": [
+        "fixture.browser.allowed-research",
+        "fixture.computer.allowed-target"
+      ],
+      "negative_fixture_ids": [
+        "fixture.browser.cross-domain-deny",
+        "fixture.browser.cookie-leak-deny",
+        "fixture.computer.unauthorized-target-deny"
+      ],
+      "required_surface_ids": [
+        "browser.profiles",
+        "computer.broker",
+        "network.egress-broker",
+        "attachment.quarantine"
+      ],
+      "unresolved_decision_ids": []
     }
   ]
 }

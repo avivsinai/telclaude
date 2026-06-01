@@ -578,7 +578,7 @@ function sanitizeSessionRow(
 	refKey: string,
 ): HermesInventorySnapshot["sessions"]["rows"][number] {
 	return {
-		keyRef: stableRef("session-key", row.key, refKey),
+		keyRef: stableRef("session-ref", row.key, refKey),
 		kind: row.kind,
 		sessionRef: stableRef("session", row.sessionId, refKey),
 		updatedAt: new Date(row.updatedAt).toISOString(),
