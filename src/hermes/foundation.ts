@@ -10,12 +10,14 @@ import {
 } from "../internal-auth.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	BROWSER_COMPUTER_BROKER_FIXTURE_REQUIREMENTS,
 	browserComputerBrokerFixtureEvidenceFailure,
 	browserComputerBrokerProbeEvidenceFailure,
 	isBrowserComputerBrokerSurfaceId,
 } from "./browser-computer-broker-probes.js";
 import {
 	EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
+	EDGE_FIXTURE_REQUIREMENTS,
 	edgeAdapterFixtureEvidenceFailure,
 	edgeAdapterProbeEvidenceFailure,
 	isEdgeAdapterFeatureSurfaceId,
@@ -25,10 +27,12 @@ import { NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION } from "./network-probe-schema.js
 import { providerApprovalBindingProbeEvidenceFailure } from "./provider-approval-binding-probe.js";
 import {
 	isProviderDomainSurfaceId,
+	PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS,
 	providerDomainFixtureEvidenceFailure,
 	providerDomainProbeEvidenceFailure,
 } from "./provider-domain-probes.js";
 import {
+	GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS,
 	googleProviderFixtureEvidenceFailure,
 	googleProviderProbeEvidenceFailure,
 } from "./provider-google-probe.js";
@@ -36,6 +40,7 @@ import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-po
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
 import {
+	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
 	isHermesWorkflowSurfaceId,
 	workflowFixtureEvidenceFailure,
 	workflowProbeEvidenceFailure,
@@ -585,6 +590,14 @@ export const PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS = [
 		],
 	},
 ] as const;
+const REGISTERED_FIXTURE_IDS = new Set<string>([
+	...PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+	...PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+	...GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+	...EDGE_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+	...BROWSER_COMPUTER_BROKER_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+	...HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.map((requirement) => requirement.id),
+]);
 const PROFILE_GENERATION_DECISION_ID = "D-profile-generation";
 const REQUIRED_PROFILE_GENERATION_CHECK_NAMES = [
 	"profile.pin",
@@ -3638,6 +3651,9 @@ function fixtureEvidenceFailure(result: FixtureResultBundle["results"][number]):
 	if (browserComputerFailure) return browserComputerFailure;
 	const workflowFailure = workflowFixtureEvidenceFailure(result.id, evidence);
 	if (workflowFailure) return workflowFailure;
+	if (!REGISTERED_FIXTURE_IDS.has(result.id)) {
+		return `fixture ${redactDetail(result.id)} is not registered in the fixture validator catalog`;
+	}
 	return null;
 }
 
