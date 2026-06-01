@@ -134,14 +134,18 @@ describe("Telclaude live MCP relay-side server", () => {
 		});
 
 		for (const method of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
-			expect(await harness.server.handleJsonRpc(rpc(method, undefined, `method-${method}`))).toMatchObject({
+			expect(
+				await harness.server.handleJsonRpc(rpc(method, undefined, `method-${method}`)),
+			).toMatchObject({
 				id: `method-${method}`,
 				error: { code: -32601, message: "MCP method denied" },
 			});
 		}
 
 		expect(
-			resultOf<{ tools: Array<{ name: string }> }>(await harness.server.handleJsonRpc(rpc("tools/list"))),
+			resultOf<{ tools: Array<{ name: string }> }>(
+				await harness.server.handleJsonRpc(rpc("tools/list")),
+			),
 		).toEqual({
 			tools: expect.arrayContaining([expect.objectContaining({ name: "tc_provider_read" })]),
 		});
@@ -323,7 +327,10 @@ describe("Telclaude live MCP relay-side server", () => {
 
 		for (const args of forbiddenArgs) {
 			expect(
-				await harness.server.handleJsonRpc(toolCall("tc_provider_read", args), harness.privateContext),
+				await harness.server.handleJsonRpc(
+					toolCall("tc_provider_read", args),
+					harness.privateContext,
+				),
 			).toMatchObject({
 				error: {
 					code: -32602,
@@ -348,13 +355,28 @@ describe("Telclaude live MCP relay-side server", () => {
 		const harness = createHarness(cleanup);
 		const prepared = harness.ledger.prepare(providerPrepareInput());
 		const token = await tokenFor(harness, prepared);
+		harness.storeProviderApproval(prepared.ref, token);
 
-			expect(
-				resultOf(
-					await harness.server.handleJsonRpc(
-						toolCall("tc_provider_execute_write", {
+		expect(
+			await harness.server.handleJsonRpc(
+				toolCall("tc_provider_execute_write", {
+					actionRef: prepared.ref,
+					approvalToken: token,
+				}),
+				harness.privateContext,
+			),
+		).toMatchObject({ error: { code: -32001 } });
+		expect(harness.vault.verifyCalls).toHaveLength(0);
+		expect(harness.calls.providerExecute).toEqual([]);
+		expect(harness.ledger.get(prepared.ref)).toEqual(
+			expect.objectContaining({ ref: prepared.ref, status: "prepared" }),
+		);
+
+		expect(
+			resultOf(
+				await harness.server.handleJsonRpc(
+					toolCall("tc_provider_execute_write", {
 						actionRef: "missing-ref",
-						approvalToken: token,
 					}),
 					harness.privateContext,
 				),
@@ -370,12 +392,15 @@ describe("Telclaude live MCP relay-side server", () => {
 		const wrongAuthority = harness.ledger.prepare(
 			providerPrepareInput({ actorId: "other-actor", approvalRequestId: "approval-wrong-actor" }),
 		);
+		harness.storeProviderApproval(
+			wrongAuthority.ref,
+			await tokenFor(harness, wrongAuthority, "jti-wrong-authority"),
+		);
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: wrongAuthority.ref,
-						approvalToken: await tokenFor(harness, wrongAuthority, "jti-wrong-authority"),
 					}),
 					harness.privateContext,
 				),
@@ -393,13 +418,13 @@ describe("Telclaude live MCP relay-side server", () => {
 		);
 		const validAfterBad = await tokenFor(harness, badSignatureRecord, "jti-invalid-then-valid");
 		const badToken = validAfterBad.replace(/\.[^.]+$/, ".bad-signature");
+		harness.storeProviderApproval(badSignatureRecord.ref, badToken);
 
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: badSignatureRecord.ref,
-						approvalToken: badToken,
 					}),
 					harness.privateContext,
 				),
@@ -411,12 +436,12 @@ describe("Telclaude live MCP relay-side server", () => {
 			retryable: true,
 			record: expect.objectContaining({ ref: badSignatureRecord.ref, status: "prepared" }),
 		});
+		harness.storeProviderApproval(badSignatureRecord.ref, validAfterBad);
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: badSignatureRecord.ref,
-						approvalToken: validAfterBad,
 					}),
 					harness.privateContext,
 				),
@@ -435,7 +460,6 @@ describe("Telclaude live MCP relay-side server", () => {
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: prepared.ref,
-						approvalToken: token,
 					}),
 					harness.privateContext,
 				),
@@ -452,12 +476,15 @@ describe("Telclaude live MCP relay-side server", () => {
 		const replayRecord = harness.ledger.prepare(
 			providerPrepareInput({ approvalRequestId: "approval-replay" }),
 		);
+		harness.storeProviderApproval(
+			replayRecord.ref,
+			await tokenFor(harness, replayRecord, "jti-live-provider"),
+		);
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: replayRecord.ref,
-						approvalToken: await tokenFor(harness, replayRecord, "jti-live-provider"),
 					}),
 					harness.privateContext,
 				),
@@ -469,12 +496,15 @@ describe("Telclaude live MCP relay-side server", () => {
 			retryable: true,
 			record: expect.objectContaining({ ref: replayRecord.ref, status: "prepared" }),
 		});
+		harness.storeProviderApproval(
+			replayRecord.ref,
+			await tokenFor(harness, replayRecord, "jti-live-provider-retry"),
+		);
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_provider_execute_write", {
 						actionRef: replayRecord.ref,
-						approvalToken: await tokenFor(harness, replayRecord, "jti-live-provider-retry"),
 					}),
 					harness.privateContext,
 				),
@@ -484,36 +514,36 @@ describe("Telclaude live MCP relay-side server", () => {
 			record: expect.objectContaining({
 				ref: replayRecord.ref,
 				status: "executed",
-					approvalId: "jti-live-provider-retry",
-				}),
-			});
-			expect(harness.calls.providerExecute).toEqual([
-				expect.objectContaining({
-					providerId: "bank",
-					path: "/v1/fetch",
-					method: "POST",
-					userId: "operator",
-					approvalToken: "sidecar:bank:bank:transfer.execute:approval-invalid-token",
-					approvalMode: "preapproved-ledger",
-				}),
-				expect.objectContaining({
-					providerId: "bank",
-					path: "/v1/fetch",
-					method: "POST",
-					userId: "operator",
-					approvalToken: "sidecar:bank:bank:transfer.execute:approval-live-provider",
-					approvalMode: "preapproved-ledger",
-				}),
-				expect.objectContaining({
-					providerId: "bank",
-					path: "/v1/fetch",
-					method: "POST",
-					userId: "operator",
-					approvalToken: "sidecar:bank:bank:transfer.execute:approval-replay",
-					approvalMode: "preapproved-ledger",
-				}),
-			]);
+				approvalId: "jti-live-provider-retry",
+			}),
 		});
+		expect(harness.calls.providerExecute).toEqual([
+			expect.objectContaining({
+				providerId: "bank",
+				path: "/v1/fetch",
+				method: "POST",
+				userId: "operator",
+				approvalToken: "sidecar:bank:bank:transfer.execute:approval-invalid-token",
+				approvalMode: "preapproved-ledger",
+			}),
+			expect.objectContaining({
+				providerId: "bank",
+				path: "/v1/fetch",
+				method: "POST",
+				userId: "operator",
+				approvalToken: "sidecar:bank:bank:transfer.execute:approval-live-provider",
+				approvalMode: "preapproved-ledger",
+			}),
+			expect.objectContaining({
+				providerId: "bank",
+				path: "/v1/fetch",
+				method: "POST",
+				userId: "operator",
+				approvalToken: "sidecar:bank:bank:transfer.execute:approval-replay",
+				approvalMode: "preapproved-ledger",
+			}),
+		]);
+	});
 
 	it("executes outbound side effects only through the ledger", async () => {
 		const harness = createHarness(cleanup);
@@ -582,12 +612,13 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 			nowSeconds: () => 120,
 		}),
 	});
-		const calls = {
-			providerRead: [] as unknown[],
-			providerExecute: [] as unknown[],
-			memorySearch: [] as unknown[],
-			outboundPrepare: [] as unknown[],
-		};
+	const providerApprovals = new Map<string, string>();
+	const calls = {
+		providerRead: [] as unknown[],
+		providerExecute: [] as unknown[],
+		memorySearch: [] as unknown[],
+		outboundPrepare: [] as unknown[],
+	};
 	const relayClients: TelclaudeLiveMcpRelayClients = {
 		providerRead: async (request) => {
 			calls.providerRead.push(request);
@@ -619,20 +650,36 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 			authorityHandle: socialGrant.handle,
 			connection: socialConnection,
 		},
-			server: createTelclaudeLiveMcpRelayHttpServer({
-				registry,
-				ledger,
-				relayClients,
-				providerProxy: async (request) => {
-					calls.providerExecute.push(request);
-					return { status: "ok", data: { executed: true } };
-				},
-				providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
-					`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
-				bindHost: "telclaude",
-				networkName: "telclaude-hermes-relay",
-				nowMs: () => 120_000,
+		server: createTelclaudeLiveMcpRelayHttpServer({
+			registry,
+			ledger,
+			relayClients,
+			providerProxy: async (request) => {
+				calls.providerExecute.push(request);
+				return { status: "ok", data: { executed: true } };
+			},
+			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
+				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			providerApprovalTokenResolver: ({ actionRef }) => {
+				const approvalToken = providerApprovals.get(actionRef);
+				if (!approvalToken) {
+					return {
+						ok: false,
+						code: "approval_token_unavailable",
+						reason: "server-side approval token is unavailable",
+						retryable: true,
+					};
+				}
+				providerApprovals.delete(actionRef);
+				return { ok: true, approvalToken };
+			},
+			bindHost: "telclaude",
+			networkName: "telclaude-hermes-relay",
+			nowMs: () => 120_000,
 		}),
+		storeProviderApproval(actionRef: string, approvalToken: string) {
+			providerApprovals.set(actionRef, approvalToken);
+		},
 	};
 }
 

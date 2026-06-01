@@ -309,11 +309,10 @@ export async function runTelclaudeGoogleProviderProbe(input: {
 			throw new Error("Google provider probe failed to prepare a provider record");
 		}
 		harness.accept("operator-approved-google-write", providerRecord);
-		const bridge = createExecuteBridge(harness.ledger, providerProxy, vault);
+		const bridge = createExecuteBridge(harness, providerProxy, vault);
 		const executed = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: providerRecord.ref,
-				approvalToken: "operator-approved-google-write",
 			}),
 		);
 		observations.approvalVerifierCallCount = harness.verifierCalls.length;
@@ -344,13 +343,12 @@ export async function runTelclaudeGoogleProviderProbe(input: {
 		});
 		harness.accept("wrong-actor-token", wrongActorRecord);
 		const providerCallsBeforeWrongActor = providerProxyCalls.length;
-		const wrongActorBridge = createExecuteBridge(harness.ledger, providerProxy, vault, {
+		const wrongActorBridge = createExecuteBridge(harness, providerProxy, vault, {
 			actorId: "other-operator",
 		});
 		const wrongActor = resultShape(
 			await wrongActorBridge.tc_provider_execute_write({
 				actionRef: wrongActorRecord.ref,
-				approvalToken: "wrong-actor-token",
 			}),
 		);
 		pushCheck(
@@ -366,7 +364,6 @@ export async function runTelclaudeGoogleProviderProbe(input: {
 		const replay = resultShape(
 			await bridge.tc_provider_execute_write({
 				actionRef: providerRecord.ref,
-				approvalToken: "operator-approved-google-write",
 			}),
 		);
 		observations.ledgerReplayCode = typeof replay.code === "string" ? replay.code : undefined;
@@ -884,9 +881,13 @@ function createLedgerHarness(): {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly verifierCalls: TelclaudeMcpSideEffectApprovalVerification[];
 	readonly accept: (token: string, record: TelclaudeMcpSideEffectRecord) => void;
+	readonly resolveProviderApprovalToken: Parameters<
+		typeof createTelclaudeMcpLedgerExecuteDependencies
+	>[0]["providerApprovalTokenResolver"];
 } {
 	let refCounter = 0;
 	const accepted = new Map<string, string>();
+	const serverSideApprovals = new Map<string, string>();
 	const verifierCalls: TelclaudeMcpSideEffectApprovalVerification[] = [];
 	const ledger = createTelclaudeMcpSideEffectLedger({
 		makeRef: () => `google-provider-probe-${++refCounter}`,
@@ -909,12 +910,26 @@ function createLedgerHarness(): {
 		verifierCalls,
 		accept(token, record) {
 			accepted.set(token, canonicalBinding(getTelclaudeMcpSideEffectApprovalBinding(record)));
+			serverSideApprovals.set(record.ref, token);
+		},
+		resolveProviderApprovalToken({ actionRef }) {
+			const approvalToken = serverSideApprovals.get(actionRef);
+			if (!approvalToken) {
+				return {
+					ok: false,
+					code: "approval_token_unavailable",
+					reason: "server-side approval token is unavailable",
+					retryable: true,
+				};
+			}
+			serverSideApprovals.delete(actionRef);
+			return { ok: true, approvalToken };
 		},
 	};
 }
 
 function createExecuteBridge(
-	ledger: TelclaudeMcpSideEffectLedger,
+	harness: ReturnType<typeof createLedgerHarness>,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 	vault: GoogleProviderSidecarApprovalTokenSigner,
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
@@ -928,8 +943,9 @@ function createExecuteBridge(
 		outboundPrepare: async () => ({ outboundRef: "not-used" }),
 		auditNote: async () => ({ stored: true }),
 		...createTelclaudeMcpLedgerExecuteDependencies({
-			ledger,
+			ledger: harness.ledger,
 			providerProxy,
+			providerApprovalTokenResolver: harness.resolveProviderApprovalToken,
 			providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
 				vaultClient: vault,
 			}),

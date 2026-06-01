@@ -70,7 +70,6 @@ export type TelclaudeMcpProviderPrepareWriteRequest = TelclaudeMcpAuthorityStamp
 
 export type TelclaudeMcpProviderExecuteWriteRequest = TelclaudeMcpAuthorityStamp & {
 	actionRef: string;
-	approvalToken: string;
 	providerScopes: readonly string[];
 };
 
@@ -162,7 +161,6 @@ const ProviderPrepareWriteInputSchema = z
 const ProviderExecuteWriteInputSchema = z
 	.object({
 		actionRef: RefSchema,
-		approvalToken: NonEmptyString,
 	})
 	.strict();
 
@@ -272,7 +270,6 @@ export function createTelclaudeMcpBridge(
 			return dependencies.providerExecuteWrite({
 				...stamp,
 				actionRef: parsed.actionRef,
-				approvalToken: parsed.approvalToken,
 				providerScopes: normalizedAuthority.providerScopes,
 			});
 		},

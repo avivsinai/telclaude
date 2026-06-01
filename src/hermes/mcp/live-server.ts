@@ -11,7 +11,10 @@ import {
 	type TelclaudeMcpBridgeDependencies,
 	type TelclaudeMcpToolName,
 } from "./bridge.js";
-import type { TelclaudeMcpProviderSidecarApprovalTokenIssuer } from "./ledger-execute.js";
+import type {
+	TelclaudeMcpProviderApprovalTokenResolver,
+	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
+} from "./ledger-execute.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
 import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
 
@@ -90,6 +93,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly providerProxy?: (
 		request: ProviderProxyRequest,
 	) => ReturnType<typeof proxyProviderRequest>;
+	readonly providerApprovalTokenResolver?: TelclaudeMcpProviderApprovalTokenResolver;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly bindHost: string;
 	readonly networkName: string;
@@ -138,7 +142,9 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: options.ledger,
 			providerProxy: options.providerProxy ?? proxyProviderRequest,
+			providerApprovalTokenResolver: options.providerApprovalTokenResolver,
 			providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
+			nowMs: options.nowMs,
 		}),
 	};
 

@@ -382,6 +382,7 @@ export async function runTelclaudeProviderDomainProbe(input: {
 	const observations: ProviderDomainProbeEvidence["observations"] = emptyObservations(config);
 	const providerProxyCalls: ProviderProxyRequest[] = [];
 	const acceptedApprovals = new Map<string, string>();
+	const serverSideApprovals = new Map<string, string>();
 	let nowMs = 100_000;
 	let nextRef = 0;
 
@@ -428,10 +429,24 @@ export async function runTelclaudeProviderDomainProbe(input: {
 	const executeDeps = createTelclaudeMcpLedgerExecuteDependencies({
 		ledger,
 		providerProxy,
+		providerApprovalTokenResolver: ({ actionRef }) => {
+			const approvalToken = serverSideApprovals.get(actionRef);
+			if (!approvalToken) {
+				return {
+					ok: false,
+					code: "approval_token_unavailable",
+					reason: "server-side approval token is unavailable",
+					retryable: true,
+				};
+			}
+			serverSideApprovals.delete(actionRef);
+			return { ok: true, approvalToken };
+		},
 		providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce, params }) => {
 			observations.sidecarTokenIssuerCallCount += 1;
 			return `sidecar:${providerId}:${service}:${action}:${approvalNonce}:${hashJson(params)}`;
 		},
+		nowMs: () => nowMs,
 	});
 	const bridge = createTelclaudeMcpBridge(authorityFor(config.providerId), {
 		...clients,
@@ -492,10 +507,10 @@ export async function runTelclaudeProviderDomainProbe(input: {
 
 	const approvalToken = `operator-approved-${config.providerId}`;
 	acceptedApprovals.set(approvalToken, binding.contentHash);
+	serverSideApprovals.set(record.ref, approvalToken);
 	const executed = resultShape(
 		await bridge.tc_provider_execute_write({
 			actionRef: record.ref,
-			approvalToken,
 		}),
 	);
 	const writeCall = providerProxyCalls[1];
@@ -523,13 +538,13 @@ export async function runTelclaudeProviderDomainProbe(input: {
 		wrongActorToken,
 		getTelclaudeMcpSideEffectApprovalBinding(wrongActorRecord).contentHash,
 	);
+	serverSideApprovals.set(wrongActorRecord.ref, wrongActorToken);
 	const wrongActor = resultShape(
 		await createTelclaudeMcpBridge(
 			{ ...authorityFor(config.providerId), actorId: "operator:other" },
 			{ ...clients, ...executeDeps },
 		).tc_provider_execute_write({
 			actionRef: wrongActorRecord.ref,
-			approvalToken: wrongActorToken,
 		}),
 	);
 	observations.wrongActorCode = wrongActor.code;
@@ -546,13 +561,13 @@ export async function runTelclaudeProviderDomainProbe(input: {
 		wrongScopeToken,
 		getTelclaudeMcpSideEffectApprovalBinding(wrongScopeRecord).contentHash,
 	);
+	serverSideApprovals.set(wrongScopeRecord.ref, wrongScopeToken);
 	const wrongProviderScope = resultShape(
 		await createTelclaudeMcpBridge(
 			{ ...authorityFor(config.providerId), providerScopes: ["google"] },
 			{ ...clients, ...executeDeps },
 		).tc_provider_execute_write({
 			actionRef: wrongScopeRecord.ref,
-			approvalToken: wrongScopeToken,
 		}),
 	);
 	observations.wrongProviderScopeCode = wrongProviderScope.code;
@@ -566,7 +581,6 @@ export async function runTelclaudeProviderDomainProbe(input: {
 	const replay = resultShape(
 		await bridge.tc_provider_execute_write({
 			actionRef: record.ref,
-			approvalToken,
 		}),
 	);
 	observations.ledgerReplayCode = replay.code;

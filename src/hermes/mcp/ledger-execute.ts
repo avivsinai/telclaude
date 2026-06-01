@@ -12,7 +12,6 @@ import type {
 	TelclaudeMcpSideEffectLedger,
 	TelclaudeMcpSideEffectRecord,
 	TelclaudeMcpSideEffectTerminalFailure,
-	TelclaudeMcpSideEffectVerifyResult,
 } from "./side-effect-ledger.js";
 
 export type TelclaudeMcpLedgerExecuteDependencies = Pick<
@@ -34,10 +33,32 @@ export type TelclaudeMcpProviderSidecarApprovalTokenIssuer = (
 	request: TelclaudeMcpProviderSidecarApprovalTokenRequest,
 ) => string | Promise<string>;
 
+export type TelclaudeMcpProviderApprovalTokenResolution =
+	| {
+			readonly ok: true;
+			readonly approvalToken: string;
+			readonly approvalId?: string;
+	  }
+	| {
+			readonly ok: false;
+			readonly code: string;
+			readonly reason: string;
+			readonly retryable: boolean;
+	  };
+
+export type TelclaudeMcpProviderApprovalTokenResolver = (request: {
+	readonly actionRef: string;
+	readonly record: TelclaudeMcpProviderSideEffectRecord;
+}) =>
+	| TelclaudeMcpProviderApprovalTokenResolution
+	| Promise<TelclaudeMcpProviderApprovalTokenResolution>;
+
 export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly providerProxy?: ProviderProxy;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
+	readonly providerApprovalTokenResolver?: TelclaudeMcpProviderApprovalTokenResolver;
+	readonly nowMs?: () => number;
 };
 
 type ProviderProxy = (request: ProviderProxyRequest) => Promise<ProviderProxyResponse>;
@@ -49,15 +70,26 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 ): TelclaudeMcpLedgerExecuteDependencies {
 	return {
 		async providerExecuteWrite(request) {
-			const authorized = await verifyLedgerEffect(
+			const prepared = providerLedgerEffectRecord(
 				options.ledger,
-				"provider",
 				request.actionRef,
 				request,
+				options.nowMs?.() ?? Date.now(),
 			);
+			if (!prepared.ok) return prepared;
+			const resolved = await resolveProviderApprovalToken(
+				options.providerApprovalTokenResolver,
+				request.actionRef,
+				prepared.record,
+			);
+			if (!resolved.ok) return resolved;
+			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
 			if (!options.providerProxy) {
-				return options.ledger.markExecuted(request.actionRef, authorized.approvalId);
+				return options.ledger.markExecuted(
+					request.actionRef,
+					authorized.approvalId ?? resolved.approvalId,
+				);
 			}
 			const executed = await executeProviderSidecar(
 				options.providerProxy,
@@ -65,7 +97,10 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				options.providerApprovalTokenIssuer,
 			);
 			if (!executed.ok) return executed;
-			return options.ledger.markExecuted(request.actionRef, authorized.approvalId);
+			return options.ledger.markExecuted(
+				request.actionRef,
+				authorized.approvalId ?? resolved.approvalId,
+			);
 		},
 		outboundExecute(request) {
 			return authorizeLedgerEffect(options.ledger, "outbound", request.outboundRef, request);
@@ -77,7 +112,7 @@ async function authorizeLedgerEffect(
 	ledger: TelclaudeMcpSideEffectLedger,
 	expectedKind: TelclaudeMcpSideEffectRecord["kind"],
 	ref: string,
-	request: TelclaudeMcpProviderExecuteWriteRequest | TelclaudeMcpOutboundExecuteRequest,
+	request: TelclaudeMcpOutboundExecuteRequest,
 ): Promise<TelclaudeMcpSideEffectAuthorizeResult> {
 	const record = ledger.get(ref);
 	if (!record) {
@@ -98,21 +133,20 @@ async function authorizeLedgerEffect(
 	return ledger.authorize(ref, request.approvalToken);
 }
 
-async function verifyLedgerEffect(
+function providerLedgerEffectRecord(
 	ledger: TelclaudeMcpSideEffectLedger,
-	expectedKind: TelclaudeMcpSideEffectRecord["kind"],
 	ref: string,
-	request: TelclaudeMcpProviderExecuteWriteRequest | TelclaudeMcpOutboundExecuteRequest,
-): Promise<TelclaudeMcpSideEffectVerifyResult> {
+	request: TelclaudeMcpProviderExecuteWriteRequest,
+	nowMs: number,
+):
+	| { readonly ok: true; readonly record: TelclaudeMcpProviderSideEffectRecord }
+	| TelclaudeMcpSideEffectTerminalFailure {
 	const record = ledger.get(ref);
 	if (!record) {
 		return terminalFailure("effect_not_found", "side effect was not prepared");
 	}
-	if (record.kind !== expectedKind) {
-		return terminalFailure(
-			"effect_kind_mismatch",
-			`side effect kind mismatch: expected ${expectedKind}`,
-		);
+	if (record.kind !== "provider") {
+		return terminalFailure("effect_kind_mismatch", "side effect kind mismatch: expected provider");
 	}
 	if (!sameAuthority(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
@@ -120,7 +154,82 @@ async function verifyLedgerEffect(
 	if (!sameProviderScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
-	return ledger.verify(ref, request.approvalToken);
+	const terminal = providerTerminalFailureBeforeApproval(record, nowMs);
+	if (terminal) return terminal;
+	return { ok: true, record };
+}
+
+async function resolveProviderApprovalToken(
+	resolver: TelclaudeMcpProviderApprovalTokenResolver | undefined,
+	actionRef: string,
+	record: TelclaudeMcpProviderSideEffectRecord,
+): Promise<
+	TelclaudeMcpProviderApprovalTokenResolution & {
+		readonly record?: TelclaudeMcpProviderSideEffectRecord;
+	}
+> {
+	if (!resolver) {
+		return {
+			ok: false,
+			code: "provider_approval_token_resolver_missing",
+			reason: "provider approval token resolver is not configured",
+			retryable: false,
+			record,
+		};
+	}
+	let resolved: TelclaudeMcpProviderApprovalTokenResolution;
+	try {
+		resolved = await resolver({ actionRef, record });
+	} catch (error) {
+		return {
+			ok: false,
+			code: "provider_approval_token_unavailable",
+			reason: redactSecrets(error instanceof Error ? error.message : String(error)),
+			retryable: true,
+			record,
+		};
+	}
+	if (!resolved.ok) {
+		return { ...resolved, record };
+	}
+	const approvalToken = resolved.approvalToken.trim();
+	if (!approvalToken) {
+		return {
+			ok: false,
+			code: "provider_approval_token_unavailable",
+			reason: "provider approval token resolver returned an empty token",
+			retryable: true,
+			record,
+		};
+	}
+	return {
+		ok: true,
+		approvalToken,
+		...(resolved.approvalId ? { approvalId: resolved.approvalId } : {}),
+	};
+}
+
+function providerTerminalFailureBeforeApproval(
+	record: TelclaudeMcpProviderSideEffectRecord,
+	nowMs: number,
+): TelclaudeMcpSideEffectTerminalFailure | null {
+	if (record.status === "executed") {
+		return terminalFailure("effect_already_executed", "side effect has already executed", record);
+	}
+	if (record.status === "revoked") {
+		return terminalFailure("effect_revoked", "side effect was revoked", record);
+	}
+	if (record.expiresAtMs < nowMs) {
+		return terminalFailure("effect_expired", "side effect approval window expired", record);
+	}
+	if (record.actorId === record.approverActorId) {
+		return terminalFailure(
+			"provider_distinct_human_approver_required",
+			"provider side effects require approval by a distinct human approver",
+			record,
+		);
+	}
+	return null;
 }
 
 async function executeProviderSidecar(
@@ -219,12 +328,17 @@ function sameProviderScope(
 	);
 }
 
-function terminalFailure(code: string, reason: string): TelclaudeMcpSideEffectTerminalFailure {
+function terminalFailure(
+	code: string,
+	reason: string,
+	record?: TelclaudeMcpSideEffectRecord,
+): TelclaudeMcpSideEffectTerminalFailure {
 	return {
 		ok: false,
 		code,
 		reason,
 		retryable: false,
+		...(record ? { record } : {}),
 	};
 }
 

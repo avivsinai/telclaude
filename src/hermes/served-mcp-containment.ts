@@ -83,7 +83,6 @@ type ServedMcpOriginObservation =
 			readonly detail: string;
 	  };
 
-const PROVIDER_WITHOUT_LEDGER_TOKEN = "tc_probe_provider_without_ledger_token";
 const OUTBOUND_WITHOUT_LEDGER_TOKEN = "tc_probe_outbound_without_ledger_token";
 
 export async function runServedMcpContainmentProbe(
@@ -318,7 +317,6 @@ export async function runServedMcpContainmentProbe(
 		endpoint,
 		toolCall("tc_provider_execute_write", {
 			actionRef: "tc_probe_missing_provider_ref",
-			approvalToken: PROVIDER_WITHOUT_LEDGER_TOKEN,
 		}),
 		timeoutMs,
 	);
@@ -969,7 +967,6 @@ function sensitiveNeedles(options: RunServedMcpContainmentProbeOptions): string[
 		return needles;
 	});
 	return [
-		PROVIDER_WITHOUT_LEDGER_TOKEN,
 		OUTBOUND_WITHOUT_LEDGER_TOKEN,
 		"approvalToken",
 		"signature",
