@@ -50,7 +50,11 @@ import {
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
-import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
+import {
+	noForkProofChecksSha256,
+	noForkProofEvidenceSha256,
+	signNoForkRunnerAttestation,
+} from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
@@ -552,6 +556,8 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 				profileGenerationSha256: noForkSha256Digest("profile-generation"),
 				fixtureResultsSha256: noForkSha256Digest("fixture-results"),
 				transcriptSha256: noForkSha256Digest("command-transcript"),
+				checksSha256: noForkProofChecksSha256(proof.checks ?? []),
+				evidenceSha256: noForkProofEvidenceSha256(proof),
 				p0Command: ["pnpm", "dev", "hermes", "prove", "--upstream-clean", "--p0"],
 				p0ExitCode: 0,
 				p0Status: "pass",
@@ -6643,6 +6649,36 @@ describe("Hermes wrapper foundation", () => {
 		expect(status).toBe("fail");
 	});
 
+	it("classifies no-fork runner attestation summary failures as P0 bootstrap failures", () => {
+		const status = deriveNoForkP0Status({
+			gates: [
+				{
+					name: "nofork.clean",
+					status: "fail",
+					detail:
+						"no-fork proof summary hermesCheckoutClean is false; no-fork evidence hermesCheckoutClean is false; no-fork evidence runnerAttestation is missing; no-fork evidence required check runner.attestation is fail: no-fork wrapper run attestation is missing; no-fork evidence required check runner.p0 is fail: P0 fixture/cutover command did not pass",
+				},
+			],
+		} as ReturnType<typeof evaluateCutoverCheck>);
+
+		expect(status).toBe("pass");
+	});
+
+	it("does not classify signed no-fork runner invariant failures as P0 bootstrap", () => {
+		const status = deriveNoForkP0Status({
+			gates: [
+				{
+					name: "nofork.clean",
+					status: "fail",
+					detail:
+						"no-fork proof summary hermesCheckoutClean is false; no-fork evidence hermesCheckoutClean is false; no-fork evidence required check runner.noMonkeypatch is fail: monkeypatch denial was not observed; no-fork evidence check runner.noMonkeypatch is fail: monkeypatch denial was not observed",
+				},
+			],
+		} as ReturnType<typeof evaluateCutoverCheck>);
+
+		expect(status).toBe("fail");
+	});
+
 	it("does not classify final lockfile no-fork path mismatch as a P0 bootstrap failure", () => {
 		const cutover = {
 			gates: [
@@ -6827,19 +6863,19 @@ describe("Hermes wrapper foundation", () => {
 		};
 		const artifact = readJson(paths.nofork) as typeof report.noForkProof;
 
-		expect(result.exitCode, result.stdout).toBe(1);
-		expect(report.noForkProof.hermesCheckoutClean).toBe(false);
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.noForkProof.hermesCheckoutClean).toBe(true);
 		expect(report.noForkProof.runnerAttestation).toMatchObject({
 			checkoutPath,
-			p0ExitCode: 1,
-			p0Status: "fail",
+			p0ExitCode: 0,
+			p0Status: "pass",
 			signature: { path: "/v1/hermes.no-fork.runner-attestation" },
 		});
 		expect(report.noForkProof.runnerAttestation?.p0Command).toContain("--p0");
 		expect(artifact.runnerAttestation).toMatchObject(report.noForkProof.runnerAttestation ?? {});
-		expect(report.p0.status).toBe("fail");
+		expect(report.p0.status).toBe("safe");
 		expect(report.p0.gates.find((gate) => gate.name === "nofork.clean")).toMatchObject({
-			status: "fail",
+			status: "pass",
 		});
 	});
 

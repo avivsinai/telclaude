@@ -536,17 +536,35 @@ const NO_FORK_BOOTSTRAP_FAILURE_PATTERNS = [
 	/^no-fork evidence check runner\.noMonkeypatch is fail: /,
 ];
 
+const NO_FORK_BOOTSTRAP_SUMMARY_FAILURE_PATTERNS = [
+	/^no-fork proof summary hermesCheckoutClean is false$/,
+	/^no-fork evidence hermesCheckoutClean is false$/,
+];
+
+const NO_FORK_BOOTSTRAP_SIGNAL_PATTERNS = [
+	/^no-fork evidence runnerAttestation is missing$/,
+	/^no-fork evidence required check runner\.attestation is fail: no-fork wrapper run attestation is missing$/,
+	/^no-fork evidence check runner\.attestation is fail: no-fork wrapper run attestation is missing$/,
+];
+
 function isNoForkBootstrapFailure(detail: string): boolean {
 	const clauses = detail
 		.split(";")
 		.map((clause) => clause.trim())
 		.filter((clause) => clause.length > 0);
-	return (
+	let sawMissingAttestationSignal = false;
+	const allClausesAllowed =
 		clauses.length > 0 &&
-		clauses.every((clause) =>
-			NO_FORK_BOOTSTRAP_FAILURE_PATTERNS.some((pattern) => pattern.test(clause)),
-		)
-	);
+		clauses.every((clause) => {
+			if (NO_FORK_BOOTSTRAP_FAILURE_PATTERNS.some((pattern) => pattern.test(clause))) {
+				if (NO_FORK_BOOTSTRAP_SIGNAL_PATTERNS.some((pattern) => pattern.test(clause))) {
+					sawMissingAttestationSignal = true;
+				}
+				return true;
+			}
+			return NO_FORK_BOOTSTRAP_SUMMARY_FAILURE_PATTERNS.some((pattern) => pattern.test(clause));
+		});
+	return allClausesAllowed && sawMissingAttestationSignal;
 }
 
 function isProofBundleNoForkBootstrapFailure(detail: string): boolean {

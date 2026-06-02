@@ -32,8 +32,7 @@ import {
 	TELCLAUDE_MCP_SERVER_POLICY,
 } from "../../src/hermes/mcp/policy.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
-import { signNoForkRunnerAttestation } from "../../src/hermes/no-fork-attestation.js";
-import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
+import { buildNoForkProof, noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
 import {
@@ -435,30 +434,35 @@ function writeNoForkProof() {
 	const relayKeys = ensureOperatorRelayKeys();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-	const proof = {
-		schemaVersion: 1,
-		hermesCheckoutClean: true,
-		evidence_path: evidencePath,
-		checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
-		expectedRef: "v2026.5.29",
-		expectedVersion: "0.15.1",
-		head: "a".repeat(40),
-		expectedRefCommit: "a".repeat(40),
-		exactTags: ["v2026.5.29"],
-		statusPorcelain: "",
-		diffExitCode: 0,
-		cachedDiffExitCode: 0,
-		runnerAttestation: signNoForkRunnerAttestation({
-			schemaVersion: "telclaude.hermes.no-fork-runner-attestation.v1",
-			source: "telclaude-no-fork-proof-runner",
-			runner: "telclaude-hermes-no-fork-runner",
+	const checkoutPath = "/home/user/MyProjects/hermes-agent-v2026.5.29";
+	const head = "a".repeat(40);
+	const proof = buildNoForkProof({
+		checkoutPath,
+		evidencePath,
+		runner: (args, cwd) => {
+			expect(cwd).toBe(checkoutPath);
+			const response = {
+				"rev-parse --show-toplevel": { exitCode: 0, stdout: `${checkoutPath}\n` },
+				"rev-parse HEAD": { exitCode: 0, stdout: `${head}\n` },
+				"rev-parse --verify v2026.5.29^{commit}": { exitCode: 0, stdout: `${head}\n` },
+				"status --porcelain=v1": { exitCode: 0, stdout: "" },
+				"diff --quiet": { exitCode: 0, stdout: "" },
+				"diff --cached --quiet": { exitCode: 0, stdout: "" },
+				"branch --show-current": { exitCode: 0, stdout: "" },
+				"tag --points-at HEAD": { exitCode: 0, stdout: "v2026.5.29\n" },
+			}[[...args].join(" ")] ?? {
+				exitCode: 1,
+				stderr: `unexpected git args: ${[...args].join(" ")}`,
+			};
+			return {
+				exitCode: response.exitCode,
+				stdout: response.stdout ?? "",
+				stderr: response.stderr ?? "",
+			};
+		},
+		wrapperRun: {
 			startedAt: "2026-05-31T09:00:00.000Z",
 			endedAt: "2026-05-31T09:01:00.000Z",
-			checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
-			expectedRef: "v2026.5.29",
-			expectedVersion: "0.15.1",
-			head: "a".repeat(40),
-			expectedRefCommit: "a".repeat(40),
 			wrapperPackageSha256: noForkSha256Digest("wrapper-package"),
 			profileGenerationSha256: noForkSha256Digest("profile-generation"),
 			fixtureResultsSha256: noForkSha256Digest("fixture-results"),
@@ -468,83 +472,8 @@ function writeNoForkProof() {
 			p0Status: "pass",
 			runtimeSourceReplacementDenied: true,
 			monkeypatchDenied: true,
-			postRunStatusPorcelain: "",
-			postRunDiffExitCode: 0,
-			postRunCachedDiffExitCode: 0,
-		}),
-		checks: [
-			{
-				name: "checkout.present",
-				status: "pass",
-				detail: "Hermes checkout found at pinned tag",
-			},
-			{
-				name: "checkout.head",
-				status: "pass",
-				detail: "HEAD is pinned",
-			},
-			{
-				name: "checkout.expectedRef",
-				status: "pass",
-				detail: "expected ref resolved",
-			},
-			{
-				name: "checkout.pinned",
-				status: "pass",
-				detail: "HEAD matches pinned Hermes ref",
-			},
-			{
-				name: "checkout.statusClean",
-				status: "pass",
-				detail: "git status porcelain is clean",
-			},
-			{
-				name: "checkout.diffClean",
-				status: "pass",
-				detail: "git diff --quiet is clean",
-			},
-			{
-				name: "checkout.indexClean",
-				status: "pass",
-				detail: "git diff --cached --quiet is clean",
-			},
-			{
-				name: "runner.attestation",
-				status: "pass",
-				detail: "no-fork wrapper run attestation is signed",
-			},
-			{
-				name: "runner.p0",
-				status: "pass",
-				detail: "P0 fixture/cutover command passed",
-			},
-			{
-				name: "runner.noRuntimeSourceReplacement",
-				status: "pass",
-				detail: "runtime source replacement denial was observed",
-			},
-			{
-				name: "runner.noMonkeypatch",
-				status: "pass",
-				detail: "monkeypatch denial was observed",
-			},
-			{
-				name: "runner.postStatusClean",
-				status: "pass",
-				detail: "post-run git status porcelain is clean",
-			},
-			{
-				name: "runner.postDiffClean",
-				status: "pass",
-				detail: "post-run git diff --quiet is clean",
-			},
-			{
-				name: "runner.postIndexClean",
-				status: "pass",
-				detail: "post-run git diff --cached --quiet is clean",
-			},
-		],
-	};
+		},
+	});
 	writeJson(evidencePath, proof);
 	return proof;
 }
@@ -1725,6 +1654,46 @@ describe("Hermes cutover network evidence validation", () => {
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
 			"no-fork runner attestation signature is invalid",
+		);
+	});
+
+	it("fails no-fork cutover proof when checks are mutated after wrapper-run attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-attestation-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const noForkProof = {
+			...bundle.noForkProof,
+			checks: bundle.noForkProof.checks?.map((check, index) =>
+				index === 0 ? { ...check, detail: "mutated after signing" } : check,
+			),
+		};
+		writeJson(noForkProof.evidence_path, noForkProof);
+
+		const report = evaluateCutoverCheck(cutoverBundleWithNoForkProof(noForkProof));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"no-fork runner attestation checksSha256 mismatch",
+		);
+	});
+
+	it("fails no-fork cutover proof when the proof body is mutated after wrapper-run attestation", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-attestation-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const noForkProof = {
+			...bundle.noForkProof,
+			currentBranch: "main",
+		};
+		writeJson(noForkProof.evidence_path, noForkProof);
+
+		const report = evaluateCutoverCheck(cutoverBundleWithNoForkProof(noForkProof));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "nofork.clean")?.detail).toContain(
+			"no-fork runner attestation evidenceSha256 mismatch",
 		);
 	});
 
