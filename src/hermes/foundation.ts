@@ -1626,7 +1626,7 @@ const RollbackRelayPublicKeySchema = z
 	.strict();
 
 const RollbackRelayPublicKeyLockEntrySchema = RollbackRelayPublicKeySchema.extend({
-	sourceSha256: z.string().regex(SHA256_DIGEST_PATTERN).optional(),
+	sourceSha256: z.string().regex(SHA256_DIGEST_PATTERN),
 }).strict();
 
 const RollbackRelayPublicKeyLockSchema = z
@@ -5195,27 +5195,24 @@ function trustedRollbackRelayPublicKeyFromLock(
 			failure: "rollback rehearsal trusted relay public key lockfile sha256 does not match value",
 		};
 	}
-	if (locked.sourceSha256) {
-		const resolvedSourcePath = resolveHermesArtifactPath(locked.source);
-		if (!fs.existsSync(resolvedSourcePath)) {
-			return {
-				valid: false,
-				failure: `rollback rehearsal relay public key source artifact is missing: ${redactDetail(
-					locked.source,
-				)}`,
-			};
-		}
-		const sourceDigest = `sha256:${crypto
-			.createHash("sha256")
-			.update(fs.readFileSync(resolvedSourcePath))
-			.digest("hex")}`;
-		if (sourceDigest !== locked.sourceSha256) {
-			return {
-				valid: false,
-				failure:
-					"rollback rehearsal relay public key source artifact sha256 does not match lockfile",
-			};
-		}
+	const resolvedSourcePath = resolveHermesArtifactPath(locked.source);
+	if (!fs.existsSync(resolvedSourcePath)) {
+		return {
+			valid: false,
+			failure: `rollback rehearsal relay public key source artifact is missing: ${redactDetail(
+				locked.source,
+			)}`,
+		};
+	}
+	const sourceDigest = `sha256:${crypto
+		.createHash("sha256")
+		.update(fs.readFileSync(resolvedSourcePath))
+		.digest("hex")}`;
+	if (sourceDigest !== locked.sourceSha256) {
+		return {
+			valid: false,
+			failure: "rollback rehearsal relay public key source artifact sha256 does not match lockfile",
+		};
 	}
 	return { valid: true, value: locked.value };
 }
