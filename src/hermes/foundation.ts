@@ -4057,6 +4057,9 @@ function checkCutoverProofBundle(input: {
 			}
 			if (artifact.status !== expectedStatus) {
 				failures.push("artifact status does not match on-disk semantic evidence");
+				failures.push(
+					...semanticFailures.map((failure) => `artifact semantic evidence failed: ${failure}`),
+				);
 			}
 		}
 		if (artifact.checkIds.length === 0) failures.push("artifact check IDs are missing");

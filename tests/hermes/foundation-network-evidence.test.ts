@@ -1918,6 +1918,27 @@ describe("Hermes cutover network evidence validation", () => {
 		);
 	});
 
+	it("surfaces no-fork semantic failures when proof bundle status forges green", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-forged-proof-"));
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const noForkProof = { ...bundle.noForkProof };
+		delete (noForkProof as Record<string, unknown>).runnerAttestation;
+		writeJson(noForkProof.evidence_path, noForkProof);
+		const forgedBundle = cutoverBundleWithNoForkProof(noForkProof);
+		forgedBundle.cutoverProofBundle.artifacts.noForkProof.status = "pass";
+
+		const report = evaluateCutoverCheck(forgedBundle);
+		const detail = report.gates.find(
+			(gate) => gate.name === "proofBundle.noForkProof.valid",
+		)?.detail;
+
+		expect(report.status).toBe("input_error");
+		expect(detail).toContain("artifact status does not match on-disk semantic evidence");
+		expect(detail).toContain("no-fork evidence runnerAttestation is missing");
+	});
+
 	it("fails no-fork cutover proof when the wrapper-run attestation was tampered", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-nofork-attestation-"));
 		const bundle = cutoverBundle(
