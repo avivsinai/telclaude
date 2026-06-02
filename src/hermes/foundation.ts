@@ -627,6 +627,10 @@ export const HERMES_ROLLBACK_CONTROL_SURFACE =
 export const HERMES_ROLLBACK_OBSERVATION_SURFACE =
 	"relay.capabilities:/v1/hermes.private-runtime.status" as const;
 export const HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV = "OPERATOR_RPC_RELAY_PUBLIC_KEY" as const;
+export const HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV =
+	"TELCLAUDE_HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK" as const;
+export const HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_PATH =
+	"docs/hermes/rollback-relay-public-key.lock.json" as const;
 export const PRIVATE_TELEGRAM_FIXTURE_TEST_FILES = [
 	"tests/integration/telegram-control-plane.replay.test.ts",
 	"tests/telegram/command-gating.test.ts",
@@ -1618,6 +1622,17 @@ const RollbackRelayPublicKeySchema = z
 		value: NonEmptyString,
 		sha256: z.string().regex(SHA256_DIGEST_PATTERN),
 		source: NonEmptyString,
+	})
+	.strict();
+
+const RollbackRelayPublicKeyLockEntrySchema = RollbackRelayPublicKeySchema.extend({
+	sourceSha256: z.string().regex(SHA256_DIGEST_PATTERN).optional(),
+}).strict();
+
+const RollbackRelayPublicKeyLockSchema = z
+	.object({
+		schemaVersion: z.literal("telclaude.hermes.rollback-relay-public-key-lock.v1"),
+		keys: z.array(RollbackRelayPublicKeyLockEntrySchema).min(1),
 	})
 	.strict();
 
@@ -5106,21 +5121,103 @@ function trustedRollbackRelayPublicKey(
 			failure: "rollback rehearsal evidence relay public key provenance is missing",
 		};
 	}
+	if (evidence.relayPublicKey.source === "process-env") {
+		return {
+			valid: false,
+			failure: "rollback rehearsal relay public key source process-env is not cutover provenance",
+		};
+	}
 	const trustedValue = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV]?.trim();
-	if (!trustedValue) {
+	if (trustedValue) {
+		if (evidence.relayPublicKey.value !== trustedValue) {
+			return {
+				valid: false,
+				failure:
+					"rollback rehearsal evidence relay public key does not match trusted relay public key",
+			};
+		}
+		return { valid: true, value: trustedValue };
+	}
+	const lockedKey = trustedRollbackRelayPublicKeyFromLock(evidence.relayPublicKey);
+	if (!lockedKey.valid) {
 		return {
 			valid: false,
-			failure: `rollback rehearsal trusted relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing`,
+			failure: lockedKey.failure,
 		};
 	}
-	if (evidence.relayPublicKey.value !== trustedValue) {
+	return { valid: true, value: lockedKey.value };
+}
+
+function trustedRollbackRelayPublicKeyFromLock(
+	evidenceKey: z.infer<typeof RollbackRelayPublicKeySchema>,
+): { valid: true; value: string } | { valid: false; failure: string } {
+	const lockPath =
+		process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV]?.trim() ||
+		HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_PATH;
+	const resolvedLockPath = resolveHermesArtifactPath(lockPath);
+	if (!fs.existsSync(resolvedLockPath)) {
 		return {
 			valid: false,
-			failure:
-				"rollback rehearsal evidence relay public key does not match trusted relay public key",
+			failure: `rollback rehearsal trusted relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing and lockfile ${lockPath} is missing`,
 		};
 	}
-	return { valid: true, value: trustedValue };
+	let lock: z.infer<typeof RollbackRelayPublicKeyLockSchema>;
+	try {
+		lock = RollbackRelayPublicKeyLockSchema.parse(
+			safeParseJson(fs.readFileSync(resolvedLockPath, "utf8")),
+		);
+	} catch (error) {
+		return {
+			valid: false,
+			failure: `rollback rehearsal trusted relay public key lockfile is invalid: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	const locked = lock.keys.find(
+		(key) =>
+			key.scope === evidenceKey.scope &&
+			key.envKey === evidenceKey.envKey &&
+			key.value === evidenceKey.value &&
+			key.sha256 === evidenceKey.sha256 &&
+			key.source === evidenceKey.source,
+	);
+	if (!locked) {
+		return {
+			valid: false,
+			failure: "rollback rehearsal evidence relay public key is not pinned in the trusted lockfile",
+		};
+	}
+	const expectedDigest = sha256Digest(locked.value);
+	if (locked.sha256 !== expectedDigest) {
+		return {
+			valid: false,
+			failure: "rollback rehearsal trusted relay public key lockfile sha256 does not match value",
+		};
+	}
+	if (locked.sourceSha256) {
+		const resolvedSourcePath = resolveHermesArtifactPath(locked.source);
+		if (!fs.existsSync(resolvedSourcePath)) {
+			return {
+				valid: false,
+				failure: `rollback rehearsal relay public key source artifact is missing: ${redactDetail(
+					locked.source,
+				)}`,
+			};
+		}
+		const sourceDigest = `sha256:${crypto
+			.createHash("sha256")
+			.update(fs.readFileSync(resolvedSourcePath))
+			.digest("hex")}`;
+		if (sourceDigest !== locked.sourceSha256) {
+			return {
+				valid: false,
+				failure:
+					"rollback rehearsal relay public key source artifact sha256 does not match lockfile",
+			};
+		}
+	}
+	return { valid: true, value: locked.value };
 }
 
 function rollbackRelayTranscriptFailures(
