@@ -526,6 +526,13 @@ function buildNoForkP0Command(options: {
 
 const NO_FORK_BOOTSTRAP_FAILURE_PATTERNS = [
 	/^no-fork evidence runnerAttestation is missing$/,
+	/^missing no-fork evidence check runner\.attestation$/,
+	/^missing no-fork evidence check runner\.p0$/,
+	/^missing no-fork evidence check runner\.noRuntimeSourceReplacement$/,
+	/^missing no-fork evidence check runner\.noMonkeypatch$/,
+	/^missing no-fork evidence check runner\.postStatusClean$/,
+	/^missing no-fork evidence check runner\.postDiffClean$/,
+	/^missing no-fork evidence check runner\.postIndexClean$/,
 	/^no-fork evidence required check runner\.attestation is fail: /,
 	/^no-fork evidence required check runner\.p0 is fail: /,
 	/^no-fork evidence required check runner\.noRuntimeSourceReplacement is fail: /,
@@ -546,6 +553,11 @@ const NO_FORK_BOOTSTRAP_SIGNAL_PATTERNS = [
 	/^no-fork evidence required check runner\.attestation is fail: no-fork wrapper run attestation is missing$/,
 	/^no-fork evidence check runner\.attestation is fail: no-fork wrapper run attestation is missing$/,
 ];
+
+const PROOF_BUNDLE_NO_FORK_INVALID_PREFIX = "proof bundle artifact noForkProof invalid: ";
+const PROOF_BUNDLE_STATUS_MISMATCH_DETAIL =
+	"artifact status does not match on-disk semantic evidence";
+const PROOF_BUNDLE_SEMANTIC_FAILURE_PREFIX = "artifact semantic evidence failed: ";
 
 function isNoForkBootstrapFailure(detail: string): boolean {
 	const clauses = detail
@@ -568,10 +580,27 @@ function isNoForkBootstrapFailure(detail: string): boolean {
 }
 
 function isProofBundleNoForkBootstrapFailure(detail: string): boolean {
-	return (
-		detail.includes("proof bundle artifact noForkProof invalid") &&
-		detail.includes("artifact status does not match on-disk semantic evidence")
-	);
+	if (!detail.startsWith(PROOF_BUNDLE_NO_FORK_INVALID_PREFIX)) return false;
+	const clauses = detail
+		.slice(PROOF_BUNDLE_NO_FORK_INVALID_PREFIX.length)
+		.split(";")
+		.map((clause) => clause.trim())
+		.filter((clause) => clause.length > 0);
+	if (!clauses.includes(PROOF_BUNDLE_STATUS_MISMATCH_DETAIL)) return false;
+	if (
+		!clauses.every(
+			(clause) =>
+				clause === PROOF_BUNDLE_STATUS_MISMATCH_DETAIL ||
+				clause.startsWith(PROOF_BUNDLE_SEMANTIC_FAILURE_PREFIX),
+		)
+	) {
+		return false;
+	}
+	const semanticFailures = clauses
+		.filter((clause) => clause.startsWith(PROOF_BUNDLE_SEMANTIC_FAILURE_PREFIX))
+		.map((clause) => clause.slice(PROOF_BUNDLE_SEMANTIC_FAILURE_PREFIX.length).trim())
+		.filter((clause) => clause.length > 0);
+	return semanticFailures.length > 0 && isNoForkBootstrapFailure(semanticFailures.join("; "));
 }
 
 function isLockfileNoForkBootstrapFailure(detail: string): boolean {
