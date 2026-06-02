@@ -1629,6 +1629,22 @@ const RollbackRelayPublicKeyLockEntrySchema = RollbackRelayPublicKeySchema.exten
 	sourceSha256: z.string().regex(SHA256_DIGEST_PATTERN),
 }).strict();
 
+const RollbackRelayPublicKeySourceEntrySchema = z
+	.object({
+		scope: z.literal("operator"),
+		envKey: z.literal(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV),
+		value: NonEmptyString,
+		sha256: z.string().regex(SHA256_DIGEST_PATTERN),
+	})
+	.strict();
+
+const RollbackRelayPublicKeySourceSchema = z
+	.object({
+		schemaVersion: z.literal("telclaude.hermes.rollback-relay-public-key-source.v1"),
+		keys: z.array(RollbackRelayPublicKeySourceEntrySchema).min(1),
+	})
+	.strict();
+
 const RollbackRelayPublicKeyLockSchema = z
 	.object({
 		schemaVersion: z.literal("telclaude.hermes.rollback-relay-public-key-lock.v1"),
@@ -5204,17 +5220,51 @@ function trustedRollbackRelayPublicKeyFromLock(
 			)}`,
 		};
 	}
-	const sourceDigest = `sha256:${crypto
-		.createHash("sha256")
-		.update(fs.readFileSync(resolvedSourcePath))
-		.digest("hex")}`;
+	const sourceBytes = fs.readFileSync(resolvedSourcePath);
+	const sourceDigest = `sha256:${crypto.createHash("sha256").update(sourceBytes).digest("hex")}`;
 	if (sourceDigest !== locked.sourceSha256) {
 		return {
 			valid: false,
 			failure: "rollback rehearsal relay public key source artifact sha256 does not match lockfile",
 		};
 	}
+	const sourceText = sourceBytes.toString("utf8");
+	const sourceFailure = rollbackRelayPublicKeySourceArtifactFailure(sourceText, locked);
+	if (sourceFailure) {
+		return {
+			valid: false,
+			failure: sourceFailure,
+		};
+	}
 	return { valid: true, value: locked.value };
+}
+
+function rollbackRelayPublicKeySourceArtifactFailure(
+	sourceText: string,
+	locked: z.infer<typeof RollbackRelayPublicKeyLockEntrySchema>,
+): string | undefined {
+	let source: z.infer<typeof RollbackRelayPublicKeySourceSchema>;
+	try {
+		source = RollbackRelayPublicKeySourceSchema.parse(safeParseJson(sourceText));
+	} catch (error) {
+		return `rollback rehearsal relay public key source artifact is invalid: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+	}
+	const sourceKey = source.keys.find(
+		(key) =>
+			key.scope === locked.scope &&
+			key.envKey === locked.envKey &&
+			key.value === locked.value &&
+			key.sha256 === locked.sha256,
+	);
+	if (!sourceKey) {
+		return "rollback rehearsal relay public key source artifact does not contain the pinned key";
+	}
+	if (sourceKey.sha256 !== sha256Digest(sourceKey.value)) {
+		return "rollback rehearsal relay public key source artifact sha256 does not match value";
+	}
+	return undefined;
 }
 
 function rollbackRelayTranscriptFailures(
