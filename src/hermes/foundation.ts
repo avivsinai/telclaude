@@ -694,8 +694,186 @@ const REQUIRED_PROFILE_GENERATION_CHECK_NAMES = [
 	"profile.directoryInventory",
 	"profile.lockfileDigest",
 	"profile.secretOwners",
+	"profile.trustDomainRoster",
+	"profile.memoryBoundaries",
+	"profile.edgePolicies",
+	"profile.workspaceIsolation",
 ] as const;
-const PROFILE_OUTPUT_DEFINITIONS = [
+const GENERATED_HERMES_PROFILE_ALLOWED_WORKSPACES = {
+	private: ["explicit-mounts-only"],
+	"shadow-private": ["test-work-copy-only"],
+	public: ["no-private-workspace"],
+	"public-channel": ["no-private-workspace"],
+	household: ["no-private-workspace-by-default"],
+	"public-social": ["no-private-workspace"],
+	specialist: ["role-specific"],
+	control: ["read-only-manifests"],
+} as const;
+const GENERATED_HERMES_PROFILES = [
+	{
+		profileId: "tc-private-default",
+		trustDomain: "private",
+		purpose: "Private Telegram and privileged operator work",
+		execution: "contained-private",
+		workspace: "explicit-mounts-only",
+		memoryNamespaces: ["telegram:default"],
+		credentialPolicy: "no-raw-provider-or-model-secrets",
+		toolsetIds: ["private", "sideEffects"],
+		skillAllowlist: ["telegram-reply", "external-provider", "security-gate"],
+		platforms: {
+			telegram: { enabled: true, ingress: "telclaude-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-edge" },
+			email: { enabled: false, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-shadow-private-default",
+		trustDomain: "shadow-private",
+		purpose: "Replay and comparison for private workflows",
+		execution: "contained-shadow-dry-run",
+		workspace: "test-work-copy-only",
+		memoryNamespaces: ["replay:private"],
+		credentialPolicy: "dry-run-sidecars-only",
+		toolsetIds: ["private", "shadowReplay"],
+		skillAllowlist: ["telegram-reply", "security-gate"],
+		platforms: {
+			telegram: { enabled: true, ingress: "telclaude-replay-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-replay-edge" },
+			email: { enabled: false, ingress: "telclaude-replay-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-replay-edge" },
+			social: { enabled: false, ingress: "telclaude-replay-edge" },
+		},
+	},
+	{
+		profileId: "tc-public",
+		trustDomain: "public",
+		purpose: "Public identity over Telclaude-owned channel edges",
+		execution: "contained-public",
+		workspace: "no-private-workspace",
+		memoryNamespaces: ["public", "social"],
+		credentialPolicy: "public-channel-creds-in-edge-sidecars",
+		toolsetIds: ["publicChannels", "sideEffects"],
+		skillAllowlist: ["telegram-reply", "security-gate", "summarize"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: true, ingress: "telclaude-edge" },
+			email: { enabled: true, ingress: "telclaude-edge" },
+			agentmail: { enabled: true, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-public-whatsapp",
+		trustDomain: "public-channel",
+		purpose: "Public WhatsApp split profile with one-channel blast radius",
+		execution: "contained-public-channel",
+		workspace: "no-private-workspace",
+		memoryNamespaces: ["public:whatsapp"],
+		credentialPolicy: "whatsapp-creds-in-edge-sidecar",
+		toolsetIds: ["publicChannels", "sideEffects"],
+		skillAllowlist: ["telegram-reply", "security-gate"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: true, ingress: "telclaude-edge" },
+			email: { enabled: false, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-public-email",
+		trustDomain: "public-channel",
+		purpose: "Public email and AgentMail split profile with one-channel blast radius",
+		execution: "contained-public-channel",
+		workspace: "no-private-workspace",
+		memoryNamespaces: ["public:email"],
+		credentialPolicy: "email-creds-in-edge-sidecar",
+		toolsetIds: ["publicChannels", "sideEffects"],
+		skillAllowlist: ["telegram-reply", "security-gate", "summarize"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-edge" },
+			email: { enabled: true, ingress: "telclaude-edge" },
+			agentmail: { enabled: true, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-household",
+		trustDomain: "household",
+		purpose: "Family assistant with per-person authorization and consent",
+		execution: "contained-household",
+		workspace: "no-private-workspace-by-default",
+		memoryNamespaces: ["household"],
+		credentialPolicy: "channel-and-provider-creds-in-edge-or-vault-sidecars",
+		toolsetIds: ["householdChannels", "providerRead", "sideEffects"],
+		skillAllowlist: ["telegram-reply", "external-provider", "security-gate", "weather"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: true, ingress: "telclaude-edge" },
+			email: { enabled: true, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-public-social",
+		trustDomain: "public-social",
+		purpose: "Public social timeline, draft, post, and reply workflows",
+		execution: "contained-public-social",
+		workspace: "no-private-workspace",
+		memoryNamespaces: ["social"],
+		credentialPolicy: "social-creds-in-edge-sidecars",
+		toolsetIds: ["socialPublic", "sideEffects"],
+		skillAllowlist: ["social-posting", "security-gate", "summarize"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-edge" },
+			email: { enabled: false, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: true, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-worker-research",
+		trustDomain: "specialist",
+		purpose: "Specialist research worker with role-scoped tools and egress",
+		execution: "contained-specialist",
+		workspace: "role-specific",
+		memoryNamespaces: ["role:research"],
+		credentialPolicy: "role-specific-or-none",
+		toolsetIds: ["specialistResearch"],
+		skillAllowlist: ["summarize", "security-gate"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-edge" },
+			email: { enabled: false, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+	{
+		profileId: "tc-control",
+		trustDomain: "control",
+		purpose: "Operator dashboard and orchestration over read-only manifests",
+		execution: "contained-control",
+		workspace: "read-only-manifests",
+		memoryNamespaces: ["registry", "audit"],
+		credentialPolicy: "cannot-become-credential-authority",
+		toolsetIds: ["controlReadOnly"],
+		skillAllowlist: ["security-gate"],
+		platforms: {
+			telegram: { enabled: false, ingress: "telclaude-edge" },
+			whatsapp: { enabled: false, ingress: "telclaude-edge" },
+			email: { enabled: false, ingress: "telclaude-edge" },
+			agentmail: { enabled: false, ingress: "telclaude-edge" },
+			social: { enabled: false, ingress: "telclaude-edge" },
+		},
+	},
+] as const;
+const PROFILE_BASE_OUTPUT_DEFINITIONS = [
 	{ path: "config.yaml", classification: "sensitive" },
 	{ path: ".env.EXAMPLE", classification: "safe-to-diff" },
 	{ path: "secret-manifest.json", classification: "sensitive" },
@@ -715,6 +893,19 @@ const PROFILE_OUTPUT_DEFINITIONS = [
 	{ path: "quarantine/agent-authored/README.md", classification: "safe-to-diff" },
 	{ path: "provenance-manifest.json", classification: "derived" },
 	{ path: "audit-cutover-manifest.json", classification: "derived" },
+	{ path: "profile-manifest.json", classification: "derived" },
+] as const satisfies ReadonlyArray<{
+	path: string;
+	classification: GeneratedPathClass;
+}>;
+const PROFILE_OUTPUT_DEFINITIONS = [
+	{ path: "profile-roster.json", classification: "derived" },
+	...GENERATED_HERMES_PROFILES.flatMap((profile) =>
+		PROFILE_BASE_OUTPUT_DEFINITIONS.map((output) => ({
+			path: generatedProfileOutputPath(profile.profileId, output.path),
+			classification: output.classification,
+		})),
+	),
 	{ path: DEFAULT_COMPAT_LOCKFILE_PATH, classification: "derived" },
 ] as const satisfies ReadonlyArray<{
 	path: string;
@@ -2400,32 +2591,44 @@ function buildProfileFileContents(input: {
 	secretManifest: HermesGenerateDryRun["secretManifest"];
 	generatedAt: string;
 }): Map<string, string> {
-	const guardrailManifest = buildGuardrailManifest({
-		profileId: "tc-private-default",
-		now: input.generatedAt,
-	});
-	const guardrailMountPlan = buildGuardrailMountPlan({
-		profileRoot: "$HERMES_PROFILE_ROOT",
-		manifest: guardrailManifest,
-		now: input.generatedAt,
-	});
-	const profileContext = {
-		profileSchemaVersion: "1",
-		pin: input.pin,
-		lockfileDigest: input.lockfileDigest,
-		guardrailManifest,
-		guardrailMountPlan,
-	} as const;
-	return new Map(
-		PROFILE_OUTPUT_DEFINITIONS.map((output) => [
-			output.path,
-			profileFileContent(output.path, {
-				...profileContext,
-				lockfile: input.lockfile,
-				secretManifest: input.secretManifest,
-			}),
-		]),
+	const files = new Map<string, string>();
+	files.set(
+		"profile-roster.json",
+		profileRosterContent({
+			generatedAt: input.generatedAt,
+			pin: input.pin,
+			lockfileDigest: input.lockfileDigest,
+		}),
 	);
+	for (const profile of GENERATED_HERMES_PROFILES) {
+		const guardrailManifest = buildGuardrailManifest({
+			profileId: profile.profileId,
+			now: input.generatedAt,
+		});
+		const guardrailMountPlan = buildGuardrailMountPlan({
+			profileRoot: "$HERMES_PROFILE_ROOT",
+			manifest: guardrailManifest,
+			now: input.generatedAt,
+		});
+		const profileContext = {
+			profileSchemaVersion: "1",
+			pin: input.pin,
+			lockfileDigest: input.lockfileDigest,
+			lockfile: input.lockfile,
+			secretManifest: input.secretManifest,
+			guardrailManifest,
+			guardrailMountPlan,
+			profile,
+		} as const;
+		for (const output of PROFILE_BASE_OUTPUT_DEFINITIONS) {
+			files.set(
+				generatedProfileOutputPath(profile.profileId, output.path),
+				profileFileContent(output.path, profileContext),
+			);
+		}
+	}
+	files.set(DEFAULT_COMPAT_LOCKFILE_PATH, `${JSON.stringify(input.lockfile, null, 2)}\n`);
+	return files;
 }
 
 function hermesMcpServerConfig() {
@@ -2472,6 +2675,59 @@ function hermesMcpServerYamlLines(indent: string): string[] {
 	];
 }
 
+type GeneratedHermesProfile = (typeof GENERATED_HERMES_PROFILES)[number];
+
+function generatedProfileOutputPath(profileId: string, relativePath: string): string {
+	return `profiles/${profileId}/${relativePath}`;
+}
+
+function yamlListLines(indent: string, values: readonly string[]): string[] {
+	return values.map((value) => `${indent}- ${JSON.stringify(value)}`);
+}
+
+function profileGatewayPlatforms(profile: GeneratedHermesProfile) {
+	return Object.fromEntries(
+		Object.entries(profile.platforms).map(([channel, policy]) => [
+			channel,
+			{
+				...policy,
+				outbound: policy.enabled ? "telclaude-edge-only" : "disabled",
+				credentialSource: "telclaude-edge-sidecar",
+			},
+		]),
+	);
+}
+
+function profileManifest(profile: GeneratedHermesProfile) {
+	return {
+		profileId: profile.profileId,
+		trustDomain: profile.trustDomain,
+		purpose: profile.purpose,
+		generatedPath: `profiles/${profile.profileId}`,
+		execution: profile.execution,
+		workspace: profile.workspace,
+		memoryNamespaces: [...profile.memoryNamespaces],
+		credentialPolicy: profile.credentialPolicy,
+		toolsetIds: [...profile.toolsetIds],
+		skillAllowlist: [...profile.skillAllowlist],
+		platforms: profileGatewayPlatforms(profile),
+	};
+}
+
+function profileRosterContent(input: {
+	generatedAt: string;
+	pin: HermesPin;
+	lockfileDigest: string;
+}): string {
+	return jsonProfileContent({
+		schemaVersion: 1,
+		generatedAt: input.generatedAt,
+		pin: input.pin,
+		lockfileDigest: input.lockfileDigest,
+		profiles: GENERATED_HERMES_PROFILES.map(profileManifest),
+	});
+}
+
 function profileFileContent(
 	relativePath: string,
 	context: {
@@ -2482,23 +2738,36 @@ function profileFileContent(
 		secretManifest: HermesGenerateDryRun["secretManifest"];
 		guardrailManifest: GuardrailManifest;
 		guardrailMountPlan: GuardrailMountPlan;
+		profile: GeneratedHermesProfile;
 	},
 ): string {
 	switch (relativePath) {
 		case "config.yaml":
 			return [
 				'profileSchemaVersion: "1"',
+				"profile:",
+				`  id: ${context.profile.profileId}`,
+				`  trustDomain: ${context.profile.trustDomain}`,
+				`  purpose: ${JSON.stringify(context.profile.purpose)}`,
 				"runtime:",
 				"  owner: telclaude-relay",
-				"  execution: contained-private",
+				`  execution: ${context.profile.execution}`,
+				`  workspace: ${context.profile.workspace}`,
 				"model:",
 				"  provider: openai-codex-relay",
 				`  baseUrl: ${TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL}`,
 				"  credentialSource: telclaude-relay-auth-store",
 				"memory:",
 				"  provider: telclaude-relay-memory",
+				"  namespaces:",
+				...yamlListLines("    ", context.profile.memoryNamespaces),
+				"  privateNamespacePolicy: deny-cross-domain",
 				"approvals:",
 				"  provider: telclaude-signed-side-effect-ledger",
+				"edge:",
+				"  ingress: telclaude-edge",
+				"  outbound: telclaude-edge-only",
+				`  credentialPolicy: ${context.profile.credentialPolicy}`,
 				"guardrails:",
 				"  ownershipManifest: guardrails/ownership.json",
 				"  mountPlan: guardrails/mount-plan.json",
@@ -2511,6 +2780,8 @@ function profileFileContent(
 			].join("\n");
 		case ".env.EXAMPLE":
 			return [
+				`TELCLAUDE_HERMES_PROFILE_ID=${context.profile.profileId}`,
+				`TELCLAUDE_HERMES_TRUST_DOMAIN=${context.profile.trustDomain}`,
 				"HERMES_INFERENCE_PROVIDER=openai-codex",
 				`HERMES_CODEX_BASE_URL=${TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL}`,
 				"HERMES_INFERENCE_MODEL=<relay-approved-model>",
@@ -2530,7 +2801,11 @@ function profileFileContent(
 			return jsonProfileContent(context.guardrailMountPlan);
 		case "SOUL.md":
 			return [
-				"# Telclaude Hermes Private Profile",
+				`# Telclaude Hermes ${context.profile.profileId}`,
+				"",
+				context.profile.purpose,
+				"",
+				`Trust domain: ${context.profile.trustDomain}.`,
 				"",
 				"This profile runs behind the Telclaude relay. It must not own provider, model, banking, health, or public-channel credentials.",
 				"",
@@ -2560,46 +2835,63 @@ function profileFileContent(
 		case "toolsets.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				toolsets: {
 					private: ["file.read", "terminal.contained", "mcp.telclaudeRelay"],
 					sideEffects: ["mcp.prepare", "mcp.approve", "mcp.execute"],
-					publicChannels: [],
+					publicChannels: ["edge.inbound", "edge.prepareOutbound", "edge.deliver"],
+					householdChannels: ["edge.inbound", "edge.householdAuthorize", "provider.read"],
+					socialPublic: ["edge.timeline", "edge.draft", "edge.reply"],
+					shadowReplay: ["replay.read", "terminal.dryRun"],
+					specialistResearch: ["web.research", "memory.roleScoped"],
+					controlReadOnly: ["manifest.read", "audit.read"],
 				},
+				enabled: [...context.profile.toolsetIds],
 			});
 		case "terminal-backend.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				backend: "contained",
 				defaultCwd: "/workspace",
 				egress: "relay-and-denylist-probed",
+				workspace: context.profile.workspace,
 			});
 		case "gateway-platforms.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
-				platforms: {
-					telegram: { ingress: "telclaude-edge", enabled: true },
-					whatsapp: { ingress: "telclaude-edge", enabled: false },
-					email: { ingress: "telclaude-edge", enabled: false },
-				},
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
+				credentialPolicy: context.profile.credentialPolicy,
+				platforms: profileGatewayPlatforms(context.profile),
 			});
 		case "cron/export.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
 				owner: "telclaude-cron",
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				jobs: [],
 			});
 		case "memory-provider.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				provider: "telclaude-relay-memory",
 				url: "http://telclaude:8790/v1/hermes/memory",
-				namespaces: ["private"],
+				namespaces: [...context.profile.memoryNamespaces],
+				crossDomainReadPolicy: "deny",
 			});
 		case "skills-manifest.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				sources: ["telclaude-reviewed-catalog"],
-				defaultAllowlist: ["telegram-reply", "external-provider", "security-gate"],
+				defaultAllowlist: [...context.profile.skillAllowlist],
 				thirdPartySkills: "disabled-until-reviewed",
 			});
 		case "promoted-skills/README.md":
@@ -2609,6 +2901,8 @@ function profileFileContent(
 		case "provenance-manifest.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				pin: context.pin,
 				lockfileDigest: context.lockfileDigest,
 				profileSchemaVersion: context.profileSchemaVersion,
@@ -2616,6 +2910,8 @@ function profileFileContent(
 		case "audit-cutover-manifest.json":
 			return jsonProfileContent({
 				schemaVersion: 1,
+				profileId: context.profile.profileId,
+				trustDomain: context.profile.trustDomain,
 				requiredGates: [
 					"workflow.scope",
 					"decisions.resolved",
@@ -2628,10 +2924,12 @@ function profileFileContent(
 					"queues.owned",
 					"rollback.rehearsed",
 				],
+				memoryNamespaces: [...context.profile.memoryNamespaces],
+				platforms: profileGatewayPlatforms(context.profile),
 				proofPolicy: "fail-closed",
 			});
-		case DEFAULT_COMPAT_LOCKFILE_PATH:
-			return `${JSON.stringify(context.lockfile, null, 2)}\n`;
+		case "profile-manifest.json":
+			return jsonProfileContent(profileManifest(context.profile));
 		default:
 			throw new Error(`unsupported profile output ${relativePath}`);
 	}
@@ -2666,6 +2964,10 @@ function profileGenerationChecks(input: {
 		? []
 		: ["directory inventory does not match canonical generated outputs"];
 	const ownerFailures = expectedProfileSecretOwners(input.secretManifest);
+	const rosterFailures = profileTrustDomainRosterFailures(input.files);
+	const memoryBoundaryFailures = profileMemoryBoundaryFailures(input.files);
+	const edgePolicyFailures = profileEdgePolicyFailures(input.files);
+	const workspaceIsolationFailures = profileWorkspaceIsolationFailures(input.files);
 	return [
 		{
 			name: "profile.pin",
@@ -2732,7 +3034,221 @@ function profileGenerationChecks(input: {
 					? "profile secret manifest assigns model/provider secrets to vault and public-channel secrets to edge"
 					: ownerFailures.join("; "),
 		},
+		{
+			name: "profile.trustDomainRoster",
+			status: rosterFailures.length === 0 ? "pass" : "fail",
+			detail:
+				rosterFailures.length === 0
+					? "generated profile roster includes every cutover trust domain and per-profile manifest"
+					: rosterFailures.join("; "),
+		},
+		{
+			name: "profile.memoryBoundaries",
+			status: memoryBoundaryFailures.length === 0 ? "pass" : "fail",
+			detail:
+				memoryBoundaryFailures.length === 0
+					? "private, public, household, social, specialist, and control memory namespaces are separated"
+					: memoryBoundaryFailures.join("; "),
+		},
+		{
+			name: "profile.edgePolicies",
+			status: edgePolicyFailures.length === 0 ? "pass" : "fail",
+			detail:
+				edgePolicyFailures.length === 0
+					? "enabled public, household, and social channels route through Telclaude edge sidecars"
+					: edgePolicyFailures.join("; "),
+		},
+		{
+			name: "profile.workspaceIsolation",
+			status: workspaceIsolationFailures.length === 0 ? "pass" : "fail",
+			detail:
+				workspaceIsolationFailures.length === 0
+					? "non-private trust domains cannot mount the private operator workspace"
+					: workspaceIsolationFailures.join("; "),
+		},
 	];
+}
+
+function readGeneratedProfileJson(files: Map<string, string>, relativePath: string): unknown {
+	const content = files.get(relativePath);
+	if (content === undefined) {
+		throw new Error(`missing ${relativePath}`);
+	}
+	return JSON.parse(content);
+}
+
+function profileTrustDomainRosterFailures(files: Map<string, string>): string[] {
+	const failures: string[] = [];
+	let roster: unknown;
+	try {
+		roster = readGeneratedProfileJson(files, "profile-roster.json");
+	} catch (error) {
+		return [error instanceof Error ? error.message : String(error)];
+	}
+	const profiles = Array.isArray((roster as { profiles?: unknown }).profiles)
+		? ((roster as { profiles: unknown[] }).profiles as Array<Record<string, unknown>>)
+		: [];
+	if (profiles.length === 0) {
+		failures.push("profile roster has no profiles");
+	}
+	const actualById = new Map(
+		profiles
+			.filter((profile) => typeof profile.profileId === "string")
+			.map((profile) => [profile.profileId as string, profile]),
+	);
+	for (const duplicate of findDuplicates(
+		profiles
+			.map((profile) => profile.profileId)
+			.filter((profileId): profileId is string => typeof profileId === "string"),
+	)) {
+		failures.push(`duplicate generated profile ${duplicate}`);
+	}
+	for (const expectedProfile of GENERATED_HERMES_PROFILES) {
+		const expected = profileManifest(expectedProfile);
+		const actual = actualById.get(expectedProfile.profileId);
+		if (!actual) {
+			failures.push(`missing generated profile ${expectedProfile.profileId}`);
+			continue;
+		}
+		if (!sameJson(actual, expected)) {
+			failures.push(
+				`generated profile ${expectedProfile.profileId} manifest does not match contract`,
+			);
+		}
+		const manifestPath = generatedProfileOutputPath(
+			expectedProfile.profileId,
+			"profile-manifest.json",
+		);
+		try {
+			const perProfileManifest = readGeneratedProfileJson(files, manifestPath);
+			if (!sameJson(perProfileManifest, expected)) {
+				failures.push(`${manifestPath} does not match roster contract`);
+			}
+		} catch (error) {
+			failures.push(error instanceof Error ? error.message : String(error));
+		}
+	}
+	for (const actualProfileId of actualById.keys()) {
+		if (!GENERATED_HERMES_PROFILES.some((profile) => profile.profileId === actualProfileId)) {
+			failures.push(`unexpected generated profile ${actualProfileId}`);
+		}
+	}
+	return failures;
+}
+
+function profileMemoryBoundaryFailures(files: Map<string, string>): string[] {
+	const failures: string[] = [];
+	for (const profile of GENERATED_HERMES_PROFILES) {
+		const memoryPath = generatedProfileOutputPath(profile.profileId, "memory-provider.json");
+		let memory: { namespaces?: unknown; crossDomainReadPolicy?: unknown };
+		try {
+			memory = readGeneratedProfileJson(files, memoryPath) as typeof memory;
+		} catch (error) {
+			failures.push(error instanceof Error ? error.message : String(error));
+			continue;
+		}
+		if (!sameJson(memory.namespaces, [...profile.memoryNamespaces])) {
+			failures.push(`${profile.profileId} memory namespaces do not match roster`);
+		}
+		if (memory.crossDomainReadPolicy !== "deny") {
+			failures.push(`${profile.profileId} memory cross-domain reads are not denied`);
+		}
+		const namespaces = Array.isArray(memory.namespaces) ? memory.namespaces : [];
+		if (
+			profile.trustDomain !== "private" &&
+			namespaces.some(
+				(namespace) => typeof namespace === "string" && namespace.startsWith("telegram:"),
+			)
+		) {
+			failures.push(`${profile.profileId} non-private profile can read private Telegram memory`);
+		}
+		if (
+			(profile.trustDomain === "public" ||
+				profile.trustDomain === "public-channel" ||
+				profile.trustDomain === "public-social") &&
+			namespaces.some((namespace) => typeof namespace === "string" && namespace === "household")
+		) {
+			failures.push(`${profile.profileId} public profile can read household memory`);
+		}
+	}
+	return failures;
+}
+
+function profileEdgePolicyFailures(files: Map<string, string>): string[] {
+	const failures: string[] = [];
+	for (const profile of GENERATED_HERMES_PROFILES) {
+		const gatewayPath = generatedProfileOutputPath(profile.profileId, "gateway-platforms.json");
+		let gateway: { platforms?: unknown; credentialPolicy?: unknown };
+		try {
+			gateway = readGeneratedProfileJson(files, gatewayPath) as typeof gateway;
+		} catch (error) {
+			failures.push(error instanceof Error ? error.message : String(error));
+			continue;
+		}
+		if (gateway.credentialPolicy !== profile.credentialPolicy) {
+			failures.push(`${profile.profileId} gateway credential policy does not match roster`);
+		}
+		const platforms =
+			gateway.platforms && typeof gateway.platforms === "object"
+				? (gateway.platforms as Record<string, Record<string, unknown>>)
+				: {};
+		for (const [channel, policy] of Object.entries(platforms)) {
+			if (policy.enabled !== true) continue;
+			if (policy.ingress !== "telclaude-edge" && policy.ingress !== "telclaude-replay-edge") {
+				failures.push(`${profile.profileId} ${channel} ingress is not Telclaude edge owned`);
+			}
+			if (policy.outbound !== "telclaude-edge-only") {
+				failures.push(`${profile.profileId} ${channel} outbound is not Telclaude edge-only`);
+			}
+			if (policy.credentialSource !== "telclaude-edge-sidecar") {
+				failures.push(`${profile.profileId} ${channel} credential source is not edge sidecar`);
+			}
+		}
+	}
+	return failures;
+}
+
+function profileWorkspaceIsolationFailures(files: Map<string, string>): string[] {
+	const failures: string[] = [];
+	let roster: { profiles?: unknown };
+	try {
+		roster = readGeneratedProfileJson(files, "profile-roster.json") as typeof roster;
+	} catch (error) {
+		return [error instanceof Error ? error.message : String(error)];
+	}
+	const profiles = Array.isArray(roster.profiles)
+		? (roster.profiles as Array<Record<string, unknown>>)
+		: [];
+	for (const profile of profiles) {
+		const profileId = profile.profileId;
+		const trustDomain = profile.trustDomain;
+		const workspace = profile.workspace;
+		if (
+			typeof profileId !== "string" ||
+			typeof trustDomain !== "string" ||
+			typeof workspace !== "string"
+		) {
+			failures.push("generated profile workspace entry is malformed");
+			continue;
+		}
+		const allowedWorkspaces =
+			GENERATED_HERMES_PROFILE_ALLOWED_WORKSPACES[
+				trustDomain as keyof typeof GENERATED_HERMES_PROFILE_ALLOWED_WORKSPACES
+			];
+		if (!allowedWorkspaces) {
+			failures.push(`${profileId} uses unknown trust domain ${trustDomain}`);
+			continue;
+		}
+		if (!(allowedWorkspaces as readonly string[]).includes(workspace)) {
+			failures.push(
+				`${profileId} workspace ${workspace} is not allowed for ${trustDomain} trust domain`,
+			);
+		}
+		if (trustDomain !== "private" && workspace === "explicit-mounts-only") {
+			failures.push(`${profileId} non-private profile can mount private operator workspace`);
+		}
+	}
+	return failures;
 }
 
 function expectedProfileSecretOwners(

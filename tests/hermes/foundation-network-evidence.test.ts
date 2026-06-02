@@ -131,11 +131,12 @@ function profileDecision(evidencePath: string) {
 
 it("generates Hermes-loadable MCP config with the deny-by-default Telclaude policy", () => {
 	const proof = writeProfileProof(compatLockfile);
+	const privateProfileRoot = path.join(proof.outDir, "profiles", "tc-private-default");
 	const mcpConfig = readJson<{
 		mcp_servers?: Record<string, unknown>;
 		telclaudePolicy?: Record<string, unknown>;
-	}>(path.join(proof.outDir, "mcp.json"));
-	const configYaml = fs.readFileSync(path.join(proof.outDir, "config.yaml"), "utf8");
+	}>(path.join(privateProfileRoot, "mcp.json"));
+	const configYaml = fs.readFileSync(path.join(privateProfileRoot, "config.yaml"), "utf8");
 	const relayServer = mcpConfig.mcp_servers?.[TELCLAUDE_HERMES_MCP_SERVER_NAME];
 
 	expect(relayServer).toMatchObject({
@@ -174,6 +175,77 @@ it("generates Hermes-loadable MCP config with the deny-by-default Telclaude poli
 	]) {
 		expect(configYaml).toContain(requiredPolicyLine);
 	}
+});
+
+it("generates a complete cutover profile roster with isolated memory and edge-owned channels", () => {
+	const proof = writeProfileProof(compatLockfile);
+	const roster = readJson<{
+		profiles?: Array<{
+			profileId: string;
+			trustDomain: string;
+			generatedPath: string;
+			memoryNamespaces: string[];
+			credentialPolicy: string;
+			platforms: Record<
+				string,
+				{ enabled: boolean; ingress: string; outbound: string; credentialSource: string }
+			>;
+		}>;
+	}>(path.join(proof.outDir, "profile-roster.json"));
+	const profileById = new Map(roster.profiles?.map((profile) => [profile.profileId, profile]));
+
+	for (const expected of [
+		["tc-private-default", "private"],
+		["tc-shadow-private-default", "shadow-private"],
+		["tc-public", "public"],
+		["tc-public-whatsapp", "public-channel"],
+		["tc-public-email", "public-channel"],
+		["tc-household", "household"],
+		["tc-public-social", "public-social"],
+		["tc-worker-research", "specialist"],
+		["tc-control", "control"],
+	] as const) {
+		const [profileId, trustDomain] = expected;
+		const profile = profileById.get(profileId);
+		expect(profile).toMatchObject({
+			profileId,
+			trustDomain,
+			generatedPath: `profiles/${profileId}`,
+		});
+		expect(
+			readJson(path.join(proof.outDir, "profiles", profileId, "profile-manifest.json")),
+		).toEqual(profile);
+	}
+
+	expect(profileById.get("tc-private-default")?.memoryNamespaces).toEqual(["telegram:default"]);
+	for (const profile of roster.profiles ?? []) {
+		const memoryProvider = readJson<{ namespaces: string[]; crossDomainReadPolicy: string }>(
+			path.join(proof.outDir, profile.generatedPath, "memory-provider.json"),
+		);
+		expect(memoryProvider.namespaces).toEqual(profile.memoryNamespaces);
+		expect(memoryProvider.crossDomainReadPolicy).toBe("deny");
+		if (profile.trustDomain !== "private") {
+			expect(memoryProvider.namespaces.some((namespace) => namespace.startsWith("telegram:"))).toBe(
+				false,
+			);
+		}
+		for (const platform of Object.values(profile.platforms)) {
+			if (!platform.enabled) continue;
+			expect(["telclaude-edge", "telclaude-replay-edge"]).toContain(platform.ingress);
+			expect(platform).toMatchObject({
+				outbound: "telclaude-edge-only",
+				credentialSource: "telclaude-edge-sidecar",
+			});
+		}
+	}
+	expect(proof.checks).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ name: "profile.trustDomainRoster", status: "pass" }),
+			expect.objectContaining({ name: "profile.memoryBoundaries", status: "pass" }),
+			expect.objectContaining({ name: "profile.edgePolicies", status: "pass" }),
+			expect.objectContaining({ name: "profile.workspaceIsolation", status: "pass" }),
+		]),
+	);
 });
 
 function networkEvidence(

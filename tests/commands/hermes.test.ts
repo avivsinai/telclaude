@@ -2950,28 +2950,18 @@ describe("Hermes wrapper foundation", () => {
 		});
 
 		expect(manifest.outputs.some((output) => output.classification === "secret")).toBe(false);
-		expect(manifest.outputs.map((output) => output.path)).toEqual([
-			"config.yaml",
-			".env.EXAMPLE",
-			"secret-manifest.json",
-			"SOUL.md",
-			"guardrails/ownership.json",
-			"guardrails/mount-plan.json",
-			"plugins.json",
-			"plugins/model-providers/README.md",
-			"mcp.json",
-			"toolsets.json",
-			"terminal-backend.json",
-			"gateway-platforms.json",
-			"cron/export.json",
-			"memory-provider.json",
-			"skills-manifest.json",
-			"promoted-skills/README.md",
-			"quarantine/agent-authored/README.md",
-			"provenance-manifest.json",
-			"audit-cutover-manifest.json",
-			"docs/hermes/hermes-compat.lock.json",
-		]);
+		const outputPaths = manifest.outputs.map((output) => output.path);
+		expect(outputPaths).toEqual(
+			expect.arrayContaining([
+				"profile-roster.json",
+				"profiles/tc-private-default/config.yaml",
+				"profiles/tc-public/gateway-platforms.json",
+				"profiles/tc-household/memory-provider.json",
+				"profiles/tc-control/profile-manifest.json",
+				"docs/hermes/hermes-compat.lock.json",
+			]),
+		);
+		expect(outputPaths).not.toContain("config.yaml");
 		expect(JSON.stringify(manifest)).not.toContain("sk-");
 		expect(manifest.secretManifest.map((secret) => secret.owner)).toEqual([
 			"telclaude-vault",
@@ -3064,7 +3054,9 @@ describe("Hermes wrapper foundation", () => {
 		expect(result.exitCode, result.stdout).toBe(0);
 		expect(proof.status).toBe("pass");
 		expect(proof.lockfileDigest).toBe(computeHermesArtifactDigest(compatLockfile));
-		expect(proof.outputs.map((output) => output.path)).toContain("gateway-platforms.json");
+		expect(proof.outputs.map((output) => output.path)).toContain(
+			"profiles/tc-public/gateway-platforms.json",
+		);
 		expect(result.stdout).toContain("profile-generation-proof.json");
 	});
 
@@ -5240,7 +5232,7 @@ describe("Hermes wrapper foundation", () => {
 		const proof = structuredClone(base.profileGenerationProof) as NonNullable<
 			CutoverInputBundle["profileGenerationProof"]
 		>;
-		const configPath = path.join(proof.outDir, "config.yaml");
+		const configPath = path.join(proof.outDir, "profiles", "tc-private-default", "config.yaml");
 		const tamperedConfig = fs
 			.readFileSync(configPath, "utf8")
 			.replace(
@@ -5272,7 +5264,7 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "profileGeneration.proven")?.detail).toContain(
-			"profile output config.yaml does not match canonical generator output",
+			"profile output profiles/tc-private-default/config.yaml does not match canonical generator output",
 		);
 	});
 
