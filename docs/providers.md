@@ -155,7 +155,7 @@ Network isolation:
 For built-in setups, prefer the CLI:
 
 ```bash
-telclaude providers setup google --base-url http://google-services:3001
+telclaude providers setup google --base-url http://google-services:3002
 ```
 
 That command:
@@ -251,7 +251,7 @@ The Google Services sidecar (`src/google-services/`) demonstrates the full patte
 - `src/google-services/token-manager.ts` — OAuth token retrieval from vault socket
 - `src/google-services/handlers/` — Per-service dispatch (gmail.ts, calendar.ts, drive.ts, contacts.ts)
 
-**Setup:** `telclaude providers setup google --base-url http://google-services:3001` configures Google OAuth, provider config, and the network allowlist in one flow.
+**Setup:** `telclaude providers setup google --base-url http://google-services:3002` configures Google OAuth, provider config, and the network allowlist in one flow.
 
 ## CLI Commands
 

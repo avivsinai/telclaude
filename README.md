@@ -298,7 +298,7 @@ Metadata endpoints (169.254.169.254) and link-local addresses remain blocked reg
 ## External providers (sidecars)
 Telclaude integrates with private REST API sidecars via relay-proxied requests. Agents never call provider endpoints directly (enforced at both application and firewall layers).
 
-**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude providers setup google --base-url http://google-services:3001`.
+**Built-in provider:** Google Services (Gmail, Calendar, Drive, Contacts) -- 4 services, 20 actions with approval-gated mutations. Setup: `telclaude providers setup google --base-url http://google-services:3002`.
 
 **Configuration:**
 - Add providers to `telclaude.json` under `providers[]` (id, baseUrl, services list).

@@ -1,15 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const cachedDNSLookupImpl = vi.hoisted(() => vi.fn());
-const isNonOverridableBlockImpl = vi.hoisted(() =>
-	vi.fn((ip: string) => ip === "169.254.169.254"),
-);
+const isNonOverridableBlockImpl = vi.hoisted(() => vi.fn((ip: string) => ip === "169.254.169.254"));
 const isPrivateIPImpl = vi.hoisted(() =>
-	vi.fn((ip: string) =>
-		/^10\./.test(ip) ||
-		/^127\./.test(ip) ||
-		/^192\.168\./.test(ip) ||
-		/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip),
+	vi.fn(
+		(ip: string) =>
+			/^10\./.test(ip) ||
+			/^127\./.test(ip) ||
+			/^192\.168\./.test(ip) ||
+			/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip),
 	),
 );
 
@@ -40,12 +39,16 @@ describe("validateProviderBaseUrlInput", () => {
 	});
 
 	it("rejects plain-http public hostnames", async () => {
-		await expect(validateProviderBaseUrlInput("http://example.com")).rejects.toThrow(/must use https/i);
+		await expect(validateProviderBaseUrlInput("http://example.com")).rejects.toThrow(
+			/must use https/i,
+		);
 	});
 
 	it("allows container hostnames over http", async () => {
 		cachedDNSLookupImpl.mockResolvedValueOnce([]);
-		await expect(validateProviderBaseUrlInput("http://google-services:3001")).resolves.toMatchObject({
+		await expect(
+			validateProviderBaseUrlInput("http://google-services:3002"),
+		).resolves.toMatchObject({
 			hostname: "google-services",
 			protocol: "http:",
 		});

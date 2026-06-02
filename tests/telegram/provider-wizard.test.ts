@@ -77,7 +77,7 @@ describe("provider add wizard", () => {
 				providers: [
 					{
 						id: "google",
-						baseUrl: "http://google-services:3001",
+						baseUrl: "http://google-services:3002",
 						services: ["gmail", "calendar"],
 						description: "Google Services sidecar",
 					},
