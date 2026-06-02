@@ -1,0 +1,11 @@
+{
+	"schemaVersion": "telclaude.hermes.rollback-relay-public-key-source.v1",
+	"keys": [
+		{
+			"scope": "operator",
+			"envKey": "OPERATOR_RPC_RELAY_PUBLIC_KEY",
+			"value": "MCowBQYDK2VwAyEALL4mSH2VjpmSEcy1ctJ9N82nazF06q5xeNF7fkKBffo=",
+			"sha256": "sha256:86b23df0e60a9b6f3bdc94ba7c66585d759a1aa9a3d343302f2afa833f499fba"
+		}
+	]
+}
