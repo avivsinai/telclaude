@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { getProviderCatalogEntry } from "../providers/catalog.js";
 import type { ProviderProxyRequest } from "../relay/provider-proxy.js";
 import { createTelclaudeMcpBridge, type TelclaudeMcpAuthority } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
@@ -306,6 +307,7 @@ const PROVIDER_CONFIGS: Record<
 		readonly expectedProviderAccountRef: string;
 		readonly idempotencyKey: string;
 		readonly secretCanary: string;
+		readonly requiredCatalogServices: readonly string[];
 		readonly extraRequiredChecks: readonly string[];
 	}
 > = {
@@ -319,6 +321,7 @@ const PROVIDER_CONFIGS: Record<
 		expectedProviderAccountRef: "bank:primary",
 		idempotencyKey: "provider-bank-transfer-probe",
 		secretCanary: "bank-refresh-token-never-release",
+		requiredCatalogServices: ["bank"],
 		extraRequiredChecks: ["bank.final-render-bound"],
 	},
 	"providers.clalit": {
@@ -331,6 +334,7 @@ const PROVIDER_CONFIGS: Record<
 		expectedProviderAccountRef: "clalit:primary",
 		idempotencyKey: "provider-clalit-booking-probe",
 		secretCanary: "clalit-oauth-token-never-release",
+		requiredCatalogServices: ["clalit"],
 		extraRequiredChecks: ["clalit.emergency-escalation-denied"],
 	},
 	"providers.government": {
@@ -343,6 +347,7 @@ const PROVIDER_CONFIGS: Record<
 		expectedProviderAccountRef: "government:primary",
 		idempotencyKey: "provider-government-submit-probe",
 		secretCanary: "government-session-cookie-never-release",
+		requiredCatalogServices: ["government"],
 		extraRequiredChecks: ["government.final-render-bound"],
 	},
 };
@@ -380,6 +385,15 @@ export async function runTelclaudeProviderDomainProbe(input: {
 
 	const checks: ProbeCheck[] = [];
 	const observations: ProviderDomainProbeEvidence["observations"] = emptyObservations(config);
+	const catalogFailures = providerCatalogRegistrationFailures(config);
+	pushCheck(
+		checks,
+		`${config.providerId}.catalog-registered`,
+		catalogFailures.length === 0,
+		catalogFailures.length === 0
+			? `${config.providerId} provider is registered in the provider catalog with required services`
+			: catalogFailures.join("; "),
+	);
 	const providerProxyCalls: ProviderProxyRequest[] = [];
 	const acceptedApprovals = new Map<string, string>();
 	const serverSideApprovals = new Map<string, string>();
@@ -643,6 +657,26 @@ export async function runTelclaudeProviderDomainProbe(input: {
 	};
 }
 
+function providerCatalogRegistrationFailures(
+	config: (typeof PROVIDER_CONFIGS)[ProviderDomainSurfaceId],
+): string[] {
+	const catalogEntry = getProviderCatalogEntry(config.providerId);
+	if (!catalogEntry) return [`provider catalog entry ${config.providerId} is missing`];
+	const missingServices = config.requiredCatalogServices.filter(
+		(service) => !catalogEntry.services.includes(service),
+	);
+	const failures =
+		missingServices.length === 0
+			? []
+			: [
+					`provider catalog entry ${config.providerId} is missing service(s): ${missingServices.join(", ")}`,
+				];
+	if (!catalogEntry.defaultBaseUrl) {
+		failures.push(`provider catalog entry ${config.providerId} has no defaultBaseUrl`);
+	}
+	return failures;
+}
+
 export function providerDomainProbeEvidenceFailure(
 	surfaceId: ProviderDomainSurfaceId,
 	evidence: unknown,
@@ -670,6 +704,12 @@ export function providerDomainProbeEvidenceFailure(
 		const check = checksByName.get(name);
 		if (!check) failures.push(`check ${name} is missing`);
 		else if (check.status !== "pass") failures.push(`check ${name} is ${check.status}`);
+	}
+	const catalogCheckName = `${config.providerId}.catalog-registered`;
+	const catalogCheck = checksByName.get(catalogCheckName);
+	if (!catalogCheck) failures.push(`check ${catalogCheckName} is missing`);
+	else if (catalogCheck.status !== "pass") {
+		failures.push(`check ${catalogCheckName} is ${catalogCheck.status}`);
 	}
 	for (const name of config.extraRequiredChecks) {
 		const check = checksByName.get(name);

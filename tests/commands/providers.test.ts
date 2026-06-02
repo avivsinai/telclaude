@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { getProviderCatalogEntry } from "../../src/providers/catalog.js";
 import {
 	buildCatalogProviderInput,
 	buildCustomProviderInput,
@@ -7,6 +6,7 @@ import {
 	upsertConfiguredProvider,
 	upsertProviderPrivateEndpoint,
 } from "../../src/commands/providers.js";
+import { getProviderCatalogEntry } from "../../src/providers/catalog.js";
 
 describe("providers config helpers", () => {
 	it("adds a configured provider from the catalog", () => {
@@ -14,7 +14,10 @@ describe("providers config helpers", () => {
 		const entry = getProviderCatalogEntry("google");
 		expect(entry).toBeDefined();
 
-		upsertConfiguredProvider(rawConfig, buildCatalogProviderInput(entry!, "http://google-services:3001/"));
+		upsertConfiguredProvider(
+			rawConfig,
+			buildCatalogProviderInput(entry!, "http://google-services:3001/"),
+		);
 
 		expect(rawConfig.providers).toEqual([
 			{
@@ -24,6 +27,43 @@ describe("providers config helpers", () => {
 				description: "Google Services sidecar for Gmail, Calendar, Drive, and Contacts.",
 			},
 		]);
+	});
+
+	it.each([
+		["bank", "http://bank-provider:3001", ["bank"], "Banking Provider"],
+		["clalit", "http://clalit-provider:3001", ["clalit"], "Clalit Provider"],
+		["government", "http://government-provider:3001", ["government"], "Government Provider"],
+	] as const)("adds the %s provider-domain sidecar from the catalog", (providerId, baseUrl, services, displayName) => {
+		const rawConfig: Record<string, unknown> = {};
+		const entry = getProviderCatalogEntry(providerId);
+		if (!entry) throw new Error(`missing provider catalog entry ${providerId}`);
+		expect(entry).toMatchObject({
+			id: providerId,
+			displayName,
+			services,
+			defaultBaseUrl: baseUrl,
+		});
+
+		upsertConfiguredProvider(rawConfig, buildCatalogProviderInput(entry, `${baseUrl}/`));
+		upsertProviderPrivateEndpoint(rawConfig, buildCatalogProviderInput(entry, baseUrl));
+
+		expect(rawConfig.providers).toEqual([
+			expect.objectContaining({
+				id: providerId,
+				baseUrl,
+				services,
+			}),
+		]);
+		expect(rawConfig.security).toEqual({
+			network: {
+				privateEndpoints: [
+					expect.objectContaining({
+						label: `provider-${providerId}`,
+						ports: [3001],
+					}),
+				],
+			},
+		});
 	});
 
 	it("replaces an existing provider entry by id", () => {
@@ -40,7 +80,10 @@ describe("providers config helpers", () => {
 		const entry = getProviderCatalogEntry("google");
 		expect(entry).toBeDefined();
 
-		upsertConfiguredProvider(rawConfig, buildCatalogProviderInput(entry!, "http://google-services:3001"));
+		upsertConfiguredProvider(
+			rawConfig,
+			buildCatalogProviderInput(entry!, "http://google-services:3001"),
+		);
 
 		expect(rawConfig.providers).toEqual([
 			{
