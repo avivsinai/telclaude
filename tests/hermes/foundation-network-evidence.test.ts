@@ -835,6 +835,17 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 				detail: "direct model-provider egress denied",
 			},
 			{
+				name: "modelRelay.modelProvider",
+				status: "pass",
+				detail: "model provider config uses relay-owned OpenAI Codex credential custody",
+			},
+			{
+				name: "profile.relayCredentialReference",
+				status: "pass",
+				detail:
+					"generated profile references the relay OpenAI Codex proxy and relay credential store",
+			},
+			{
 				name: "profile.noRawModelCredentials",
 				status: "pass",
 				detail: "scanned profile files contain no raw model credentials",
@@ -859,11 +870,28 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			expectedPeerSource: "configured-contained-ip",
 			detail: "model relay peer origin was observed by the relay endpoint",
 		},
+		modelProvider: {
+			provider: "openai-codex",
+			baseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			baseUrlHost: "telclaude",
+			model: "gpt-5.5",
+			modelSource: "env:HERMES_INFERENCE_MODEL",
+			authLocation: "hermes-auth-store:openai-codex",
+			authScope: "relay-openai-codex-subscription-proxy",
+			tokenScoping: "static-shared",
+			auxiliaryAuthSource: "manual:telclaude-relay",
+			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			auxiliaryBaseUrlHost: "telclaude",
+			refreshTokenPolicy: "non-refreshable-placeholder",
+		},
 		observation: {
-			relayUrl: "http://telclaude:8790/v1/models",
+			relayUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			profileDir: "/home/hermes/.hermes",
-			scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
+			scannedProfileFiles: [
+				"/home/hermes/.hermes/config.yaml",
+				"/home/hermes/.hermes/secret-manifest.json",
+			],
 		},
 		...overrides,
 	};
@@ -2048,12 +2076,139 @@ describe("Hermes cutover model-relay evidence validation", () => {
 			}),
 		);
 
-		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+		const bundle = modelRelayCutoverBundle(evidencePath);
+
+		const report = evaluateCutoverCheck({
+			...bundle,
+			featureProbeEvidence: {
+				schemaVersion: 1,
+				results: [
+					{
+						surface_id: "model.relay",
+						status: "pass",
+						evidence_path: evidencePath,
+						detail: "self-attested pass must not satisfy model.relay",
+					},
+				],
+			},
+		});
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"gate directModel.denied is missing",
 		);
+	});
+
+	it("fails live model-relay cutover when observed evidence is stale", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				generatedAt: "2026-05-01T00:00:00.000Z",
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath), {
+			liveCutover: true,
+			now: new Date("2026-06-02T00:00:00.000Z"),
+		});
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"model-relay evidence generatedAt is stale or future-dated",
+		);
+	});
+
+	it("fails old-shaped model-relay evidence without positive credential custody proof", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		const evidence = modelRelayEvidence({
+			gates: modelRelayEvidence().gates.filter(
+				(gate) =>
+					gate.name !== "modelRelay.modelProvider" &&
+					gate.name !== "profile.relayCredentialReference",
+			),
+		});
+		delete (evidence as Record<string, unknown>).modelProvider;
+		writeJson(evidencePath, evidence);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		const detail = report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail;
+		expect(detail).toContain("modelProvider is missing");
+		expect(detail).toContain("gate profile.relayCredentialReference is missing");
+	});
+
+	it("fails model-relay evidence with a direct-provider custody URL", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				modelProvider: {
+					...modelRelayEvidence().modelProvider,
+					baseUrl: "https://chatgpt.com/backend-api/codex",
+					baseUrlHost: "chatgpt.com",
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"modelProvider.baseUrl is not a relay OpenAI Codex proxy URL",
+		);
+	});
+
+	it("fails model-relay evidence when custody URL is not bound to the observed relay URL", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				observation: {
+					relayUrl: "http://telclaude:8790/v1/models",
+					directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+					profileDir: "/home/hermes/.hermes",
+					scannedProfileFiles: [
+						"/home/hermes/.hermes/config.yaml",
+						"/home/hermes/.hermes/secret-manifest.json",
+					],
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"modelProvider.baseUrl does not match observation.relayUrl",
+		);
+	});
+
+	it("fails model-relay evidence with extra credential-bearing schema fields", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				modelProvider: {
+					...modelRelayEvidence().modelProvider,
+					access_token: "relay-token-leak",
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		const detail = report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail;
+		expect(detail).toContain("invalid feature probe evidence model.relay");
+		expect(detail).toContain("modelProvider");
+		expect(detail).toContain("Unrecognized key");
 	});
 
 	it("fails when model-relay evidence used a fake direct-model URL", () => {
@@ -2063,7 +2218,7 @@ describe("Hermes cutover model-relay evidence validation", () => {
 			evidencePath,
 			modelRelayEvidence({
 				observation: {
-					relayUrl: "http://telclaude:8790/v1/models",
+					relayUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 					directModelUrl: "http://127.0.0.1:9/v1/models",
 					profileDir: "/home/hermes/.hermes",
 					scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],

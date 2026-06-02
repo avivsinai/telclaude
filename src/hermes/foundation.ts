@@ -272,7 +272,7 @@ const CliHeadlessProbeEvidenceSchema = z
 				auxiliaryBaseUrlHost: z.string().optional(),
 				refreshTokenPolicy: z.literal("non-refreshable-placeholder").optional(),
 			})
-			.passthrough()
+			.strict()
 			.optional(),
 		provenance: z
 			.object({
@@ -349,9 +349,11 @@ const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
 ] as const;
 const REQUIRED_MODEL_RELAY_CONTAINED_GATES = [
 	"modelRelay.allowed",
+	"modelRelay.modelProvider",
 	"modelRelay.origin",
 	"relay.reachable",
 	"directModel.denied",
+	"profile.relayCredentialReference",
 	"profile.noRawModelCredentials",
 	"profile.noDirectModelHosts",
 	"profile.scanComplete",
@@ -940,6 +942,8 @@ const ModelRelayProbeEvidenceSchema = z
 		posture: NetworkProbePostureSchema.optional(),
 		status: z.enum(["pass", "fail", "pending"]),
 		ran: z.boolean(),
+		summary: NonEmptyString.optional(),
+		generatedAt: NonEmptyString,
 		origin: z
 			.object({
 				kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
@@ -950,7 +954,24 @@ const ModelRelayProbeEvidenceSchema = z
 				expectedPeerSource: z.literal("configured-contained-ip").optional(),
 				detail: NonEmptyString,
 			})
-			.passthrough(),
+			.strict(),
+		modelProvider: z
+			.object({
+				provider: z.literal("openai-codex"),
+				baseUrl: NonEmptyString,
+				baseUrlHost: NonEmptyString,
+				model: z.string(),
+				modelSource: z.enum(["env:HERMES_INFERENCE_MODEL", "missing"]),
+				authLocation: z.literal("hermes-auth-store:openai-codex"),
+				authScope: z.literal("relay-openai-codex-subscription-proxy"),
+				tokenScoping: z.enum(["static-shared", "peer-bound"]),
+				auxiliaryAuthSource: z.literal("manual:telclaude-relay").optional(),
+				auxiliaryBaseUrl: z.string().optional(),
+				auxiliaryBaseUrlHost: z.string().optional(),
+				refreshTokenPolicy: z.literal("non-refreshable-placeholder").optional(),
+			})
+			.strict()
+			.optional(),
 		observation: z
 			.object({
 				relayUrl: NonEmptyString.optional(),
@@ -958,7 +979,7 @@ const ModelRelayProbeEvidenceSchema = z
 				profileDir: NonEmptyString.optional(),
 				scannedProfileFiles: z.array(NonEmptyString).optional(),
 			})
-			.passthrough(),
+			.strict(),
 		gates: z.array(
 			z
 				.object({
@@ -966,10 +987,10 @@ const ModelRelayProbeEvidenceSchema = z
 					status: z.enum(["pass", "fail", "pending"]),
 					detail: NonEmptyString,
 				})
-				.passthrough(),
+				.strict(),
 		),
 	})
-	.passthrough();
+	.strict();
 
 const NetworkProbeAttemptSchema = z
 	.object({
@@ -2032,10 +2053,7 @@ function cutoverProofArtifactSemanticFailures(
 					return [`feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`];
 				}
 				if (probe.surface_id !== "execution.cli_headless") return [];
-				const cliEvidence = collectCliHeadlessProbeEvidence(probe, options);
-				return cliEvidence.status === "pass"
-					? []
-					: [`feature probe ${probe.surface_id} evidence failed: ${cliEvidence.detail}`];
+				return collectedFeatureProbeFailures(probe, options);
 			}),
 		];
 	}
@@ -2086,7 +2104,7 @@ export function collectFeatureProbeEvidence(
 			return [collectApiServerContainmentProbeEvidence(probe)];
 		}
 		if (probe.surface_id === "model.relay") {
-			return [collectModelRelayProbeEvidence(probe)];
+			return [collectModelRelayProbeEvidence(probe, options)];
 		}
 		if (isEdgeAdapterFeatureSurfaceId(probe.surface_id)) {
 			return [collectEdgeAdapterProbeEvidence(probe, options)];
@@ -3662,7 +3680,11 @@ export function evaluateCutoverCheck(
 	const requiredSurfaceFailures = requiredSurfaceIds.flatMap((surfaceId) => {
 		const probe = probeBySurfaceId.get(surfaceId);
 		if (!probe) return [`missing feature probe ${surfaceId}`];
-		const failure = featureProbeFailure(probe, featureProbeEvidenceBySurfaceId.get(surfaceId));
+		const failure = featureProbeFailure(
+			probe,
+			featureProbeEvidenceBySurfaceId.get(surfaceId),
+			validationOptions,
+		);
 		if (failure) return [failure];
 		return [];
 	});
@@ -3674,6 +3696,7 @@ export function evaluateCutoverCheck(
 			const failure = featureProbeFailure(
 				probe,
 				featureProbeEvidenceBySurfaceId.get(probe.surface_id),
+				validationOptions,
 			);
 			return failure ? [failure] : [];
 		}),
@@ -6261,6 +6284,7 @@ function collectApiServerContainmentProbeEvidence(
 
 function collectModelRelayProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
 	let evidence: unknown;
@@ -6292,6 +6316,12 @@ function collectModelRelayProbeEvidence(
 	const failures: string[] = [];
 	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
 	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"model-relay evidence generatedAt",
+		parsed.data.generatedAt,
+		options,
+	);
+	if (freshnessFailure) failures.push(freshnessFailure);
 	if (parsed.data.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
 		failures.push(
 			`posture is ${parsed.data.posture ?? "missing"}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
@@ -6324,6 +6354,9 @@ function collectModelRelayProbeEvidence(
 			"origin is not a server-observed tc-hermes-contained peer matching the configured contained IP",
 		);
 	}
+	failures.push(
+		...modelRelayModelProviderFailures(parsed.data.modelProvider, parsed.data.observation.relayUrl),
+	);
 	if (!parsed.data.observation.profileDir) {
 		failures.push("observation.profileDir is missing");
 	}
@@ -6353,6 +6386,75 @@ function collectModelRelayProbeEvidence(
 		evidence_path: probe.evidence_path,
 		detail: `feature probe evidence ${probe.surface_id} observed model relay reachability, direct-model denial, and profile credential absence`,
 	};
+}
+
+function modelRelayModelProviderFailures(
+	modelProvider: z.infer<typeof ModelRelayProbeEvidenceSchema>["modelProvider"],
+	relayUrl: string | undefined,
+): string[] {
+	const failures: string[] = [];
+	if (!modelProvider) return ["modelProvider is missing"];
+	if (!relayUrl) {
+		failures.push("observation.relayUrl is missing");
+	} else if (modelProvider.baseUrl.replace(/\/+$/, "") !== relayUrl.replace(/\/+$/, "")) {
+		failures.push("modelProvider.baseUrl does not match observation.relayUrl");
+	}
+	if (modelProvider.provider !== "openai-codex") {
+		failures.push("modelProvider.provider is not openai-codex");
+	}
+	if (modelProvider.authScope !== "relay-openai-codex-subscription-proxy") {
+		failures.push("modelProvider.authScope is not relay-openai-codex-subscription-proxy");
+	}
+	if (modelProvider.authLocation !== "hermes-auth-store:openai-codex") {
+		failures.push("modelProvider.authLocation is not hermes-auth-store:openai-codex");
+	}
+	if (!modelProvider.model.trim()) {
+		failures.push("modelProvider.model is missing");
+	}
+	if (modelProvider.modelSource !== "env:HERMES_INFERENCE_MODEL") {
+		failures.push("modelProvider.modelSource is not env:HERMES_INFERENCE_MODEL");
+	}
+	if (!isRelayOpenAiCodexProxyUrl(modelProvider.baseUrl)) {
+		failures.push("modelProvider.baseUrl is not a relay OpenAI Codex proxy URL");
+	}
+	try {
+		if (modelProvider.baseUrlHost !== new URL(modelProvider.baseUrl).hostname) {
+			failures.push("modelProvider.baseUrlHost does not match baseUrl");
+		}
+	} catch {
+		failures.push("modelProvider.baseUrl is not parseable");
+	}
+	if (modelProvider.auxiliaryAuthSource !== "manual:telclaude-relay") {
+		failures.push("modelProvider.auxiliaryAuthSource is not manual:telclaude-relay");
+	}
+	if (modelProvider.refreshTokenPolicy !== "non-refreshable-placeholder") {
+		failures.push("modelProvider.refreshTokenPolicy is not non-refreshable-placeholder");
+	}
+	if (!modelProvider.auxiliaryBaseUrl) {
+		failures.push("modelProvider.auxiliaryBaseUrl is missing");
+	} else if (!isRelayOpenAiCodexProxyUrl(modelProvider.auxiliaryBaseUrl)) {
+		failures.push("modelProvider.auxiliaryBaseUrl is not a relay OpenAI Codex proxy URL");
+	} else if (
+		relayUrl &&
+		modelProvider.auxiliaryBaseUrl.replace(/\/+$/, "") !== relayUrl.replace(/\/+$/, "")
+	) {
+		failures.push("modelProvider.auxiliaryBaseUrl does not match observation.relayUrl");
+	}
+	if (!modelProvider.auxiliaryBaseUrlHost) {
+		failures.push("modelProvider.auxiliaryBaseUrlHost is missing");
+	} else {
+		try {
+			if (
+				modelProvider.auxiliaryBaseUrl &&
+				modelProvider.auxiliaryBaseUrlHost !== new URL(modelProvider.auxiliaryBaseUrl).hostname
+			) {
+				failures.push("modelProvider.auxiliaryBaseUrlHost does not match auxiliaryBaseUrl");
+			}
+		} catch {
+			failures.push("modelProvider.auxiliaryBaseUrl is not parseable");
+		}
+	}
+	return failures;
 }
 
 function requiredModelRelayGateNames(
@@ -6409,16 +6511,39 @@ function featureProbeEvidenceFailure(
 function featureProbeFailure(
 	probe: FeatureProbeMatrix["probes"][number],
 	evidence: FeatureProbeEvidenceBundle["results"][number] | undefined,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	if (probe.status !== "pass") {
 		return `feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`;
 	}
+	const observedFailures = collectedFeatureProbeFailures(probe, options);
+	if (observedFailures.length > 0) return observedFailures.join("; ");
+	if (isObservedFeatureProbeSurface(probe.surface_id)) return null;
 	if (evidence) {
 		return evidence.status === "pass"
 			? null
 			: `feature probe ${probe.surface_id} evidence failed: ${evidence.detail}`;
 	}
 	return `feature probe ${probe.surface_id} requires observed evidence`;
+}
+
+function isObservedFeatureProbeSurface(surfaceId: string): boolean {
+	return surfaceId === "execution.cli_headless" || surfaceId === "model.relay";
+}
+
+function collectedFeatureProbeFailures(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): string[] {
+	const observed =
+		probe.surface_id === "execution.cli_headless"
+			? collectCliHeadlessProbeEvidence(probe, options)
+			: probe.surface_id === "model.relay"
+				? collectModelRelayProbeEvidence(probe, options)
+				: null;
+	return observed && observed.status !== "pass"
+		? [`feature probe ${probe.surface_id} evidence failed: ${observed.detail}`]
+		: [];
 }
 
 function formatValidationResult(
