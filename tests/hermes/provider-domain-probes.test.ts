@@ -43,6 +43,14 @@ describe("Hermes provider-domain probes", () => {
 		expect(evidence.observations.wrongProviderScopeCode).toBe("effect_authority_mismatch");
 		expect(evidence.observations.ledgerReplayCode).toBe("effect_already_executed");
 		expect(evidence.observations.rawCredentialObserved).toBe(false);
+		expect(evidence.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: `${evidence.observations.providerId}.catalog-registered`,
+					status: "pass",
+				}),
+			]),
+		);
 		expect(providerDomainProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
 	});
 
@@ -81,6 +89,21 @@ describe("Hermes provider-domain probes", () => {
 				),
 			}),
 		).toContain("check bank.wrong-provider-scope-denied is missing");
+	});
+
+	it("rejects provider-domain evidence missing catalog registration proof", async () => {
+		const evidence = await runTelclaudeProviderDomainProbe({
+			surfaceId: "providers.bank",
+			allowRun: true,
+			observedAt: "2026-06-01T09:00:00.000Z",
+		});
+
+		expect(
+			providerDomainProbeEvidenceFailure("providers.bank", {
+				...evidence,
+				checks: evidence.checks.filter((check) => check.name !== "bank.catalog-registered"),
+			}),
+		).toContain("check bank.catalog-registered is missing");
 	});
 
 	it("rejects pass-looking evidence with raw provider credential material", async () => {

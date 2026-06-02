@@ -50,6 +50,30 @@
 			"oauthServiceId": "google",
 			"setupCommand": "providers setup google",
 			"defaultBaseUrl": "http://google-services:3001"
+		},
+		{
+			"id": "bank",
+			"displayName": "Banking Provider",
+			"description": "Banking sidecar for read, transfer preparation, approved transfer execution, and replay-denial probes.",
+			"services": ["bank"],
+			"setupCommand": "providers setup bank",
+			"defaultBaseUrl": "http://bank-provider:3001"
+		},
+		{
+			"id": "clalit",
+			"displayName": "Clalit Provider",
+			"description": "Health-provider sidecar for appointment reads, message or booking preparation, approved booking execution, and emergency-escalation probes.",
+			"services": ["clalit"],
+			"setupCommand": "providers setup clalit",
+			"defaultBaseUrl": "http://clalit-provider:3001"
+		},
+		{
+			"id": "government",
+			"displayName": "Government Provider",
+			"description": "Government-services sidecar for status reads, form preparation, approved submission, and replay-denial probes.",
+			"services": ["government"],
+			"setupCommand": "providers setup government",
+			"defaultBaseUrl": "http://government-provider:3001"
 		}
 	]
 }
