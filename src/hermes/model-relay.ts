@@ -15,6 +15,8 @@ export const DEFAULT_MODEL_RELAY_EVIDENCE_PATH = "artifacts/hermes/probes/model-
 export const MODEL_RELAY_OBSERVED_PEER_HEADER = "x-telclaude-model-relay-observed-peer-address";
 export const DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME = "tc-hermes-contained";
 export const DEFAULT_MODEL_RELAY_POSTURE = "agent-iptables" as const;
+const TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL = "http://telclaude:8790/v1/openai-codex-proxy";
+const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 
 type ModelRelayStatus = "pass" | "fail" | "pending";
 export type ModelRelayPosture = (typeof NETWORK_PROBE_POSTURES)[number];
@@ -28,6 +30,20 @@ type FetchLike = (
 	input: Parameters<typeof fetch>[0],
 	init?: Parameters<typeof fetch>[1],
 ) => ReturnType<typeof fetch>;
+type ModelRelayProvider = {
+	readonly provider: "openai-codex";
+	readonly baseUrl: string;
+	readonly baseUrlHost: string;
+	readonly model: string;
+	readonly modelSource: `env:${typeof HERMES_INFERENCE_MODEL_ENV}` | "missing";
+	readonly authLocation: "hermes-auth-store:openai-codex";
+	readonly authScope: "relay-openai-codex-subscription-proxy";
+	readonly tokenScoping: "static-shared" | "peer-bound";
+	readonly auxiliaryAuthSource: "manual:telclaude-relay";
+	readonly auxiliaryBaseUrl: string;
+	readonly auxiliaryBaseUrlHost: string;
+	readonly refreshTokenPolicy: "non-refreshable-placeholder";
+};
 type ModelRelayOrigin = {
 	readonly kind: "contained-peer" | "relay-self-smoke" | "unknown";
 	readonly containerName?: string;
@@ -48,6 +64,7 @@ export type HermesModelRelayReport = {
 	readonly generatedAt: string;
 	readonly gates: readonly ModelRelayGate[];
 	readonly origin: ModelRelayOrigin;
+	readonly modelProvider?: ModelRelayProvider;
 	readonly observation?: {
 		readonly relayUrl?: string;
 		readonly directModelUrl: string;
@@ -116,6 +133,12 @@ const DIRECT_MODEL_PROVIDER_HOSTS = new Set([
 	"openrouter.ai",
 	"api.x.ai",
 ]);
+const RELAY_PROVIDER_PATTERN = /\bprovider:\s*openai-codex-relay\b/i;
+const RELAY_CREDENTIAL_SOURCE_PATTERN = /\bcredentialSource:\s*telclaude-relay-auth-store\b/i;
+const RELAY_RAW_CREDENTIAL_POLICY_PATTERN =
+	/(?:\brawCredentialPolicy:\s*relay-owned-only\b|"rawCredentialPolicy"\s*:\s*"relay-owned-only")/i;
+const PROFILE_CONFIG_PATH = "config.yaml";
+const PROFILE_SECRET_MANIFEST_PATH = "secret-manifest.json";
 const MAX_PROFILE_FILES = 5_000;
 const MAX_PROFILE_FILE_BYTES = 1_000_000;
 
@@ -144,6 +167,8 @@ export async function runHermesModelRelayProbe(
 	const profileDir = options.profileDir?.trim();
 	const gates: ModelRelayGate[] = [];
 	gates.push(pass("modelRelay.allowed", "operator allowed live model-relay evidence"));
+	const modelProvider = buildModelRelayProvider(relayUrl);
+	gates.push(modelRelayProviderGate(modelProvider));
 	if (posture === "agent-iptables") {
 		gates.push(firewallSentinelGate(options.firewallSentinelPath));
 	}
@@ -174,6 +199,7 @@ export async function runHermesModelRelayProbe(
 				: "Hermes model relay evidence failed",
 		gates,
 		origin,
+		modelProvider,
 		observation: {
 			...(relayUrl ? { relayUrl: redactSecrets(relayUrl) } : {}),
 			directModelUrl: redactSecrets(directModelUrl),
@@ -203,6 +229,64 @@ function firewallSentinelGate(sentinelPath: string | undefined): ModelRelayGate 
 	return present
 		? pass("firewall.sentinel", "firewall sentinel is present")
 		: fail("firewall.sentinel", "firewall sentinel is missing; model-relay evidence is unsafe");
+}
+
+function buildModelRelayProvider(relayUrl: string | undefined): ModelRelayProvider {
+	const baseUrl = relayUrl?.trim() || TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL;
+	const parsed = safeUrl(baseUrl);
+	const model = process.env[HERMES_INFERENCE_MODEL_ENV]?.trim() || "";
+	return {
+		provider: "openai-codex",
+		baseUrl,
+		baseUrlHost: parsed?.hostname ?? "",
+		model,
+		modelSource: model ? `env:${HERMES_INFERENCE_MODEL_ENV}` : "missing",
+		authLocation: "hermes-auth-store:openai-codex",
+		authScope: "relay-openai-codex-subscription-proxy",
+		tokenScoping: "static-shared",
+		auxiliaryAuthSource: "manual:telclaude-relay",
+		auxiliaryBaseUrl: baseUrl,
+		auxiliaryBaseUrlHost: parsed?.hostname ?? "",
+		refreshTokenPolicy: "non-refreshable-placeholder",
+	};
+}
+
+function modelRelayProviderGate(modelProvider: ModelRelayProvider): ModelRelayGate {
+	const failures: string[] = [];
+	if (!modelProvider.model.trim()) failures.push("model is missing");
+	if (modelProvider.modelSource !== `env:${HERMES_INFERENCE_MODEL_ENV}`) {
+		failures.push(`modelSource is ${modelProvider.modelSource}`);
+	}
+	if (!isRelayOpenAiCodexProxyUrl(modelProvider.baseUrl)) {
+		failures.push("baseUrl is not the Telclaude relay OpenAI Codex proxy");
+	}
+	if (modelProvider.baseUrlHost !== "telclaude") {
+		failures.push(`baseUrlHost is ${modelProvider.baseUrlHost}`);
+	}
+	if (modelProvider.authLocation !== "hermes-auth-store:openai-codex") {
+		failures.push(`authLocation is ${modelProvider.authLocation}`);
+	}
+	if (modelProvider.authScope !== "relay-openai-codex-subscription-proxy") {
+		failures.push(`authScope is ${modelProvider.authScope}`);
+	}
+	if (modelProvider.auxiliaryAuthSource !== "manual:telclaude-relay") {
+		failures.push(`auxiliaryAuthSource is ${modelProvider.auxiliaryAuthSource}`);
+	}
+	if (!isRelayOpenAiCodexProxyUrl(modelProvider.auxiliaryBaseUrl)) {
+		failures.push("auxiliaryBaseUrl is not the Telclaude relay OpenAI Codex proxy");
+	}
+	if (modelProvider.auxiliaryBaseUrlHost !== "telclaude") {
+		failures.push(`auxiliaryBaseUrlHost is ${modelProvider.auxiliaryBaseUrlHost}`);
+	}
+	if (modelProvider.refreshTokenPolicy !== "non-refreshable-placeholder") {
+		failures.push(`refreshTokenPolicy is ${modelProvider.refreshTokenPolicy}`);
+	}
+	return failures.length === 0
+		? pass(
+				"modelRelay.modelProvider",
+				"model provider config uses relay-owned OpenAI Codex credential custody",
+			)
+		: fail("modelRelay.modelProvider", failures.join("; "));
 }
 
 async function relayReachableGate(
@@ -276,6 +360,10 @@ function scanProfileDir(profileDir: string | undefined): {
 		return {
 			gates: [
 				fail(
+					"profile.relayCredentialReference",
+					"profile directory is required to prove relay credential reference",
+				),
+				fail(
 					"profile.noRawModelCredentials",
 					"profile directory is required to prove model credential absence",
 				),
@@ -290,6 +378,10 @@ function scanProfileDir(profileDir: string | undefined): {
 		return {
 			gates: [
 				fail(
+					"profile.relayCredentialReference",
+					`profile directory missing: ${redactSecrets(resolved)}`,
+				),
+				fail(
 					"profile.noRawModelCredentials",
 					`profile directory missing: ${redactSecrets(resolved)}`,
 				),
@@ -303,6 +395,7 @@ function scanProfileDir(profileDir: string | undefined): {
 	const findings: string[] = [];
 	const directHostFindings: string[] = [];
 	const scannedFiles: string[] = [];
+	const profileContents = new Map<string, string>();
 	const inventory = listProfileFiles(resolved);
 	for (const filePath of inventory.scannedFiles) {
 		scannedFiles.push(filePath);
@@ -314,6 +407,7 @@ function scanProfileDir(profileDir: string | undefined): {
 			continue;
 		}
 		const content = fs.readFileSync(filePath, "utf8");
+		profileContents.set(toPortablePath(relativePath), content);
 		for (const pattern of MODEL_CREDENTIAL_PATTERNS) {
 			if (pattern.test(content)) {
 				findings.push(relativePath);
@@ -330,6 +424,7 @@ function scanProfileDir(profileDir: string | undefined): {
 
 	return {
 		gates: [
+			relayCredentialReferenceGate(profileContents),
 			findings.length === 0
 				? pass(
 						"profile.noRawModelCredentials",
@@ -358,6 +453,36 @@ function scanProfileDir(profileDir: string | undefined): {
 		],
 		scannedFiles,
 	};
+}
+
+function relayCredentialReferenceGate(
+	profileContents: ReadonlyMap<string, string>,
+): ModelRelayGate {
+	const config = profileContents.get(PROFILE_CONFIG_PATH) ?? "";
+	const secretManifest = profileContents.get(PROFILE_SECRET_MANIFEST_PATH) ?? "";
+	const missing: string[] = [];
+	if (!profileContents.has(PROFILE_CONFIG_PATH)) missing.push(PROFILE_CONFIG_PATH);
+	if (!profileContents.has(PROFILE_SECRET_MANIFEST_PATH))
+		missing.push(PROFILE_SECRET_MANIFEST_PATH);
+	if (!RELAY_PROVIDER_PATTERN.test(config)) missing.push("config.yaml openai-codex-relay provider");
+	if (!config.includes(TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL)) {
+		missing.push("config.yaml Telclaude OpenAI Codex relay proxy baseUrl");
+	}
+	if (!RELAY_CREDENTIAL_SOURCE_PATTERN.test(config)) {
+		missing.push("config.yaml telclaude-relay-auth-store credentialSource");
+	}
+	if (!RELAY_RAW_CREDENTIAL_POLICY_PATTERN.test(secretManifest)) {
+		missing.push("secret-manifest.json relay-owned-only rawCredentialPolicy");
+	}
+	return missing.length === 0
+		? pass(
+				"profile.relayCredentialReference",
+				"generated profile references the relay OpenAI Codex proxy and relay credential store",
+			)
+		: fail(
+				"profile.relayCredentialReference",
+				`generated profile is missing ${missing.join(", ")}`,
+			);
 }
 
 function listProfileFiles(root: string): { scannedFiles: string[]; skippedFiles: string[] } {
@@ -495,6 +620,31 @@ function isDirectModelProviderUrl(value: string): boolean {
 		return DIRECT_MODEL_PROVIDER_HOSTS.has(new URL(value).hostname.toLowerCase());
 	} catch {
 		return false;
+	}
+}
+
+function isRelayOpenAiCodexProxyUrl(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return (
+			parsed.protocol === "http:" &&
+			parsed.hostname === "telclaude" &&
+			parsed.port === "8790" &&
+			parsed.pathname.replace(/\/+$/, "") === "/v1/openai-codex-proxy" &&
+			parsed.search === "" &&
+			parsed.hash === "" &&
+			value.replace(/\/+$/, "") === TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL
+		);
+	} catch {
+		return false;
+	}
+}
+
+function safeUrl(value: string): URL | undefined {
+	try {
+		return new URL(value);
+	} catch {
+		return undefined;
 	}
 }
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 	type HermesModelRelayReport,
@@ -12,22 +12,24 @@ import {
 
 describe("Hermes model-relay probe", () => {
 	const tempDirs: string[] = [];
-	const servers: http.Server[] = [];
 	const directModelUrl = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
+	const relayProxyUrl = "http://telclaude:8790/v1/openai-codex-proxy";
 	const containedIp = "172.29.92.11";
 	const relayIp = "172.29.92.10";
+	const originalInferenceModel = process.env.HERMES_INFERENCE_MODEL;
+
+	beforeEach(() => {
+		process.env.HERMES_INFERENCE_MODEL = "gpt-5.5";
+	});
 
 	afterEach(async () => {
-		await Promise.all(
-			servers.splice(0).map(
-				(server) =>
-					new Promise<void>((resolve) => {
-						server.close(() => resolve());
-					}),
-			),
-		);
 		for (const dir of tempDirs.splice(0)) {
 			fs.rmSync(dir, { recursive: true, force: true });
+		}
+		if (originalInferenceModel === undefined) {
+			delete process.env.HERMES_INFERENCE_MODEL;
+		} else {
+			process.env.HERMES_INFERENCE_MODEL = originalInferenceModel;
 		}
 	});
 
@@ -43,16 +45,148 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("keeps the firewall sentinel gate for agent-iptables posture", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
+		writeRelayCredentialProfile(profileDir);
+		const sentinel = path.join(tempDir, "firewall-active");
+		fs.writeFileSync(sentinel, "active\n");
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(report.modelProvider).toMatchObject({
+			provider: "openai-codex",
+			baseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			baseUrlHost: "telclaude",
+			model: "gpt-5.5",
+			modelSource: "env:HERMES_INFERENCE_MODEL",
+			authLocation: "hermes-auth-store:openai-codex",
+			authScope: "relay-openai-codex-subscription-proxy",
+			auxiliaryAuthSource: "manual:telclaude-relay",
+			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			auxiliaryBaseUrlHost: "telclaude",
+			refreshTokenPolicy: "non-refreshable-placeholder",
+		});
+		expect(report.posture).toBe("agent-iptables");
+		expect(gate(report, "firewall.sentinel")).toMatchObject({ status: "pass" });
+		expect(gate(report, "modelRelay.modelProvider")).toMatchObject({ status: "pass" });
+		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
+		expect(gate(report, "relay.reachable")).toMatchObject({ status: "pass" });
+		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
+	it("passes contained-internal posture without a fake firewall sentinel", async () => {
+		const relayUrl = relayProxyUrl;
+		const { profileDir } = makeCleanProfile();
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(report.posture).toBe("contained-internal");
+		expect(report.gates.some((candidate) => candidate.name === "firewall.sentinel")).toBe(false);
+		expect(gate(report, "modelRelay.modelProvider")).toMatchObject({ status: "pass" });
+		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
+		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
+	it("fails closed when direct model-provider egress is reachable", async () => {
+		const relayUrl = relayProxyUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			fetchImpl: modelRelayFetch("reachable"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "directModel.denied")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("reached HTTP status 401"),
+		});
+	});
+
+	it("fails closed when the generated profile lacks a relay credential reference", async () => {
+		const relayUrl = relayProxyUrl;
+		const tempDir = makeTempDir();
+		const profileDir = path.join(tempDir, "profile");
+		fs.mkdirSync(profileDir);
+		fs.writeFileSync(path.join(profileDir, "config.yaml"), "model_provider: none\n");
+		const sentinel = path.join(tempDir, "firewall-active");
+		fs.writeFileSync(sentinel, "active\n");
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("openai-codex-relay provider"),
+		});
+	});
+
+	it("does not accept relay reference strings outside canonical profile files", async () => {
+		const relayUrl = relayProxyUrl;
+		const tempDir = makeTempDir();
+		const profileDir = path.join(tempDir, "profile");
+		fs.mkdirSync(profileDir);
+		fs.writeFileSync(path.join(profileDir, "config.yaml"), "model_provider: none\n");
 		fs.writeFileSync(
-			path.join(profileDir, "config.yaml"),
-			"model_provider: telclaude-relay\nmodel_base_url: http://telclaude:8790/v1/models\n",
+			path.join(profileDir, "README.md"),
+			[
+				"provider: openai-codex-relay",
+				"baseUrl: http://telclaude:8790/v1/openai-codex-proxy",
+				"credentialSource: telclaude-relay-auth-store",
+				'{"rawCredentialPolicy":"relay-owned-only"}',
+			].join("\n"),
 		);
 		const sentinel = path.join(tempDir, "firewall-active");
 		fs.writeFileSync(sentinel, "active\n");
@@ -66,82 +200,19 @@ describe("Hermes model-relay probe", () => {
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
 			relayPeerAddress: relayIp,
-			fetchImpl: directModelFetch("denied"),
-			timeoutMs: 200,
-		});
-
-		expect(report.status).toBe("pass");
-		expect(report.posture).toBe("agent-iptables");
-		expect(gate(report, "firewall.sentinel")).toMatchObject({ status: "pass" });
-		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
-		expect(gate(report, "relay.reachable")).toMatchObject({ status: "pass" });
-		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
-	});
-
-	it("passes contained-internal posture without a fake firewall sentinel", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
-		const { profileDir } = makeCleanProfile();
-
-		const report = await runHermesModelRelayProbe({
-			allowRun: true,
-			posture: "contained-internal",
-			relayUrl,
-			directModelUrl,
-			profileDir,
-			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
-			expectedPeerAddress: containedIp,
-			relayPeerAddress: relayIp,
-			fetchImpl: directModelFetch("denied"),
-			timeoutMs: 200,
-		});
-
-		expect(report.status).toBe("pass");
-		expect(report.posture).toBe("contained-internal");
-		expect(report.gates.some((candidate) => candidate.name === "firewall.sentinel")).toBe(false);
-		expect(gate(report, "modelRelay.origin")).toMatchObject({ status: "pass" });
-		expect(gate(report, "directModel.denied")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
-		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
-	});
-
-	it("fails closed when direct model-provider egress is reachable", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
-		const { profileDir, sentinel } = makeCleanProfile();
-
-		const report = await runHermesModelRelayProbe({
-			allowRun: true,
-			relayUrl,
-			directModelUrl,
-			profileDir,
-			firewallSentinelPath: sentinel,
-			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
-			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("reachable"),
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
 		expect(report.status).toBe("fail");
-		expect(gate(report, "directModel.denied")).toMatchObject({
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
 			status: "fail",
-			detail: expect.stringContaining("reached HTTP status 401"),
+			detail: expect.stringContaining("secret-manifest.json"),
 		});
 	});
 
 	it("fails closed when the relay endpoint is not a successful response", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(500).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -152,7 +223,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied", { status: 500 }),
 			timeoutMs: 200,
 		});
 
@@ -164,10 +235,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("does not treat a direct model-provider timeout as positive denial evidence", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -178,7 +246,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("timeout"),
+			fetchImpl: modelRelayFetch("timeout"),
 			timeoutMs: 20,
 		});
 
@@ -190,10 +258,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed before network probing when the direct model URL is synthetic", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const syntheticDirectModelUrl = await closedLocalUrl();
 		const { profileDir, sentinel } = makeCleanProfile();
 
@@ -205,6 +270,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
@@ -216,9 +282,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when firewall or contained-origin proof is missing", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -226,7 +290,7 @@ describe("Hermes model-relay probe", () => {
 			relayUrl,
 			directModelUrl,
 			profileDir,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied", { observedPeerAddress: undefined }),
 			timeoutMs: 200,
 		});
 
@@ -239,10 +303,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("scans script files for model credentials instead of skipping them", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(path.join(profileDir, "provider.py"), "ANTHROPIC_API_KEY='sk-secret'\n");
 
@@ -254,7 +315,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
@@ -267,10 +328,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed on auth.json, Codex OAuth state, JWTs, and cookie/session tokens", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(
 			path.join(profileDir, "auth.json"),
@@ -308,7 +366,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
@@ -323,10 +381,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when profile files cannot be fully scanned", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(path.join(profileDir, "oversized.bin"), Buffer.alloc(1_000_001));
 
@@ -338,7 +393,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
@@ -350,10 +405,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when generated profile contains raw model credentials or direct model hosts", async () => {
-		const relayUrl = await startServer((_req, res) => {
-			res.setHeader(MODEL_RELAY_OBSERVED_PEER_HEADER, containedIp);
-			res.writeHead(204).end();
-		});
+		const relayUrl = relayProxyUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
@@ -372,7 +424,7 @@ describe("Hermes model-relay probe", () => {
 			firewallSentinelPath: sentinel,
 			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 			expectedPeerAddress: containedIp,
-			fetchImpl: directModelFetch("denied"),
+			fetchImpl: modelRelayFetch("denied"),
 			timeoutMs: 200,
 		});
 
@@ -386,15 +438,6 @@ describe("Hermes model-relay probe", () => {
 			detail: expect.stringContaining(".env"),
 		});
 	});
-
-	async function startServer(handler: http.RequestListener): Promise<string> {
-		const server = http.createServer(handler);
-		servers.push(server);
-		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		const address = server.address();
-		if (!address || typeof address === "string") throw new Error("server did not bind TCP");
-		return `http://127.0.0.1:${address.port}`;
-	}
 
 	async function closedLocalUrl(): Promise<string> {
 		const server = http.createServer((_req, res) => res.writeHead(204).end());
@@ -410,10 +453,27 @@ describe("Hermes model-relay probe", () => {
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
-		fs.writeFileSync(path.join(profileDir, "config.yaml"), "model_provider: telclaude-relay\n");
+		writeRelayCredentialProfile(profileDir);
 		const sentinel = path.join(tempDir, "firewall-active");
 		fs.writeFileSync(sentinel, "active\n");
 		return { profileDir, sentinel };
+	}
+
+	function writeRelayCredentialProfile(profileDir: string): void {
+		fs.writeFileSync(
+			path.join(profileDir, "config.yaml"),
+			[
+				"model:",
+				"  provider: openai-codex-relay",
+				`  baseUrl: ${relayProxyUrl}`,
+				"  credentialSource: telclaude-relay-auth-store",
+				"",
+			].join("\n"),
+		);
+		fs.writeFileSync(
+			path.join(profileDir, "secret-manifest.json"),
+			`${JSON.stringify({ schemaVersion: 1, rawCredentialPolicy: "relay-owned-only" }, null, 2)}\n`,
+		);
 	}
 
 	function makeTempDir(): string {
@@ -422,9 +482,21 @@ describe("Hermes model-relay probe", () => {
 		return dir;
 	}
 
-	function directModelFetch(result: "denied" | "reachable" | "timeout"): typeof fetch {
+	function modelRelayFetch(
+		result: "denied" | "reachable" | "timeout",
+		relay: { status?: number; observedPeerAddress?: string } = {},
+	): typeof fetch {
 		const realFetch = globalThis.fetch;
 		return async (input, init) => {
+			if (String(input) === relayProxyUrl) {
+				const headers = new Headers();
+				const observedPeerAddress =
+					"observedPeerAddress" in relay ? relay.observedPeerAddress : containedIp;
+				if (observedPeerAddress) {
+					headers.set(MODEL_RELAY_OBSERVED_PEER_HEADER, observedPeerAddress);
+				}
+				return new Response(null, { status: relay.status ?? 204, headers });
+			}
 			if (String(input) !== directModelUrl) return realFetch(input, init);
 			if (result === "reachable") return new Response(null, { status: 401 });
 			if (result === "denied") throw positiveDenialError();
