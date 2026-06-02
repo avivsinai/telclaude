@@ -138,6 +138,7 @@ const RELAY_PROVIDER_PATTERN = /\bprovider:\s*openai-codex-relay\b/i;
 const RELAY_CREDENTIAL_SOURCE_PATTERN = /\bcredentialSource:\s*telclaude-relay-auth-store\b/i;
 const RELAY_RAW_CREDENTIAL_POLICY_PATTERN =
 	/(?:\brawCredentialPolicy:\s*relay-owned-only\b|"rawCredentialPolicy"\s*:\s*"relay-owned-only")/i;
+const MCP_RELAY_TOKEN_FILE_REFERENCE_PATTERN = /"auth"\s*:\s*"relay-token-file"/g;
 const PROFILE_CONFIG_PATH = "config.yaml";
 const PROFILE_SECRET_MANIFEST_PATH = "secret-manifest.json";
 const MAX_PROFILE_FILES = 5_000;
@@ -410,8 +411,9 @@ function scanProfileDir(profileDir: string | undefined): {
 		}
 		const content = fs.readFileSync(filePath, "utf8");
 		profileContents.set(toPortablePath(relativePath), content);
+		const credentialScanContent = normalizeAllowedCredentialReferences(relativePath, content);
 		for (const pattern of MODEL_CREDENTIAL_PATTERNS) {
-			if (pattern.test(content)) {
+			if (pattern.test(credentialScanContent)) {
 				findings.push(relativePath);
 				break;
 			}
@@ -455,6 +457,14 @@ function scanProfileDir(profileDir: string | undefined): {
 		],
 		scannedFiles,
 	};
+}
+
+function normalizeAllowedCredentialReferences(relativePath: string, content: string): string {
+	if (toPortablePath(relativePath) !== "mcp.json") return content;
+	return content.replace(
+		MCP_RELAY_TOKEN_FILE_REFERENCE_PATTERN,
+		'"auth":"<relay-token-file-reference>"',
+	);
 }
 
 function relayCredentialReferenceGate(

@@ -335,6 +335,87 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
 	});
 
+	it("accepts the canonical MCP relay token-file reference", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		fs.writeFileSync(
+			path.join(profileDir, "mcp.json"),
+			`${JSON.stringify(
+				{
+					schemaVersion: 1,
+					servers: {
+						telclaudeRelay: {
+							transport: "http",
+							url: "http://telclaude:8790/v1/hermes/mcp",
+							auth: "relay-token-file",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
+	it("fails closed when generated MCP config contains raw bearer material", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		fs.writeFileSync(
+			path.join(profileDir, "mcp.json"),
+			`${JSON.stringify(
+				{
+					schemaVersion: 1,
+					servers: {
+						telclaudeRelay: {
+							transport: "http",
+							url: "http://telclaude:8790/v1/hermes/mcp",
+							auth: "Bearer bearer-token-value-1234567890",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("mcp.json"),
+		});
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+	});
+
 	it("fails closed on auth.json, Codex OAuth state, JWTs, and cookie/session tokens", async () => {
 		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();

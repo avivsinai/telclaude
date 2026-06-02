@@ -123,9 +123,11 @@ import {
 } from "../hermes/no-fork-proof.js";
 import {
 	buildHermesCliProbeInvocation,
+	buildHermesOpenAiCodexRelayAuthStorePayload,
 	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
 	type HermesCliProbeReport,
 	type HermesLaunchInvocation,
+	parseHermesRelayProofEvidence,
 	readHermesCliHeadlessProbeReport,
 	runHermesCliHeadlessProbe,
 	runHermesLaunchInvocation,
@@ -978,6 +980,10 @@ function resolveHermesHome(value: string | undefined): string {
 	);
 }
 
+const HERMES_CODEX_BASE_URL_ENV = "HERMES_CODEX_BASE_URL";
+const OPENAI_CODEX_PROXY_PROOF_LATEST_URL =
+	"http://telclaude:8790/v1/openai-codex-proxy/_telclaude/relay-proof/latest";
+
 function runHermesLaunchInvocationInDockerExec(
 	invocation: HermesLaunchInvocation,
 	options: { dockerBin?: string; containerName: string; timeoutMs?: number },
@@ -985,7 +991,10 @@ function runHermesLaunchInvocationInDockerExec(
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	startedAt?: string;
+	endedAt?: string;
 	runtime?: HermesCliProbeReport["runtime"];
+	relayProof?: HermesCliProbeReport["relayProof"];
 }> {
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
 	const runtime = collectDockerExecRuntimeEvidence(
@@ -993,6 +1002,23 @@ function runHermesLaunchInvocationInDockerExec(
 		options.containerName,
 		options.timeoutMs,
 	);
+	const authSetup = prepareDockerExecHermesAuthStore(
+		dockerBin,
+		options.containerName,
+		invocation,
+		options.timeoutMs,
+	);
+	if (authSetup.stderr) {
+		return Promise.resolve({
+			exitCode: 1,
+			stdout: "",
+			stderr: [runtime.stderr, authSetup.stderr].filter(Boolean).join("\n"),
+			...(authSetup.observedAt
+				? { startedAt: authSetup.observedAt, endedAt: authSetup.observedAt }
+				: {}),
+			...(runtime.evidence ? { runtime: runtime.evidence } : {}),
+		});
+	}
 	const args = ["exec", "-i", "-w", invocation.cwd];
 	for (const [key, value] of Object.entries(invocation.env).sort(([left], [right]) =>
 		left.localeCompare(right),
@@ -1000,11 +1026,19 @@ function runHermesLaunchInvocationInDockerExec(
 		args.push("-e", `${key}=${value}`);
 	}
 	args.push(options.containerName, invocation.command, ...invocation.args);
+	const childStartedAt = new Date().toISOString();
 	const result = spawnSync(dockerBin, args, {
 		encoding: "utf8",
 		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
 		timeout: options.timeoutMs,
 	});
+	const childEndedAt = new Date().toISOString();
+	const relayProof = collectDockerExecRelayProof(
+		dockerBin,
+		options.containerName,
+		invocation,
+		options.timeoutMs,
+	);
 	return Promise.resolve({
 		exitCode: result.status ?? (result.signal ? 124 : 1),
 		stdout: result.stdout ?? "",
@@ -1012,11 +1046,129 @@ function runHermesLaunchInvocationInDockerExec(
 			runtime.stderr,
 			result.stderr ?? "",
 			result.error ? `failed to launch docker exec Hermes probe: ${result.error.message}` : "",
+			relayProof.stderr,
 		]
 			.filter(Boolean)
 			.join("\n"),
+		startedAt: childStartedAt,
+		endedAt: childEndedAt,
 		...(runtime.evidence ? { runtime: runtime.evidence } : {}),
+		...(relayProof.evidence ? { relayProof: relayProof.evidence } : {}),
 	});
+}
+
+function prepareDockerExecHermesAuthStore(
+	dockerBin: string,
+	containerName: string,
+	invocation: HermesLaunchInvocation,
+	timeoutMs: number | undefined,
+): { stderr: string; observedAt?: string } {
+	const relayToken = invocation.authSetup?.openAiCodexRelayToken?.trim();
+	if (!relayToken) return { stderr: "" };
+	const hermesHome = invocation.env.HERMES_HOME?.trim();
+	if (!hermesHome) return { stderr: "HERMES_HOME is required for docker exec auth setup" };
+	const relayBaseUrl = invocation.env[HERMES_CODEX_BASE_URL_ENV]?.trim();
+	if (!relayBaseUrl)
+		return { stderr: "HERMES_CODEX_BASE_URL is required for docker exec auth setup" };
+	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(relayToken, relayBaseUrl);
+	const script = [
+		"import json, os, sys",
+		"home = sys.argv[1]",
+		"payload = json.load(sys.stdin)",
+		"os.makedirs(home, mode=0o700, exist_ok=True)",
+		"path = os.path.join(home, 'auth.json')",
+		"tmp_path = f'{path}.tmp'",
+		"with open(tmp_path, 'w', encoding='utf-8') as handle:",
+		"    json.dump(payload, handle, indent=2, sort_keys=True)",
+		"    handle.write('\\n')",
+		"os.chmod(tmp_path, 0o600)",
+		"os.replace(tmp_path, path)",
+		"os.chmod(path, 0o600)",
+	].join("\n");
+	const result = spawnSync(
+		dockerBin,
+		["exec", "-i", containerName, "python", "-c", script, hermesHome],
+		{
+			encoding: "utf8",
+			env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+			input: `${JSON.stringify(payload)}\n`,
+			timeout: timeoutMs,
+		},
+	);
+	if (result.status === 0) return { stderr: "" };
+	const rawStderr = result.stderr || result.error?.message || "unknown error";
+	return {
+		stderr: `failed to prepare docker exec Hermes auth store: ${redactDockerExecAuthHelperOutput(
+			rawStderr,
+			relayToken,
+			payload,
+		)}`,
+		observedAt: new Date().toISOString(),
+	};
+}
+
+function redactDockerExecAuthHelperOutput(
+	value: string,
+	relayToken: string,
+	payload: Record<string, unknown>,
+): string {
+	let redacted = value;
+	const replacements = [
+		relayToken,
+		JSON.stringify(payload),
+		JSON.stringify(payload, null, 2),
+	].filter((item) => item.length > 0);
+	for (const item of replacements) {
+		redacted = redacted.split(item).join("[REDACTED]");
+	}
+	return redacted;
+}
+
+function collectDockerExecRelayProof(
+	dockerBin: string,
+	containerName: string,
+	invocation: HermesLaunchInvocation,
+	timeoutMs: number | undefined,
+): { evidence?: HermesCliProbeReport["relayProof"]; stderr: string } {
+	const hermesHome = invocation.env.HERMES_HOME?.trim();
+	if (!hermesHome) return { stderr: "HERMES_HOME is required for docker exec relay proof" };
+	const script = [
+		"import json, os, sys, urllib.request",
+		"home = sys.argv[1]",
+		"auth_path = os.path.join(home, 'auth.json')",
+		"with open(auth_path, encoding='utf-8') as handle:",
+		"    auth = json.load(handle)",
+		"token = auth.get('providers', {}).get('openai-codex', {}).get('tokens', {}).get('access_token', '')",
+		"if not token:",
+		"    raise RuntimeError('relay token missing from Hermes auth store')",
+		`request = urllib.request.Request(${JSON.stringify(
+			OPENAI_CODEX_PROXY_PROOF_LATEST_URL,
+		)}, headers={'Authorization': f'Bearer {token}'}, method='GET')`,
+		"with urllib.request.urlopen(request, timeout=10) as response:",
+		"    proof = json.loads(response.read().decode('utf-8'))",
+		"print(json.dumps(proof, sort_keys=True))",
+	].join("\n");
+	const result = spawnSync(dockerBin, ["exec", containerName, "python", "-c", script, hermesHome], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: timeoutMs,
+	});
+	if (result.status !== 0) {
+		return {
+			stderr: `failed to collect docker exec Hermes relay proof: ${
+				result.stderr || result.error?.message || "unknown error"
+			}`,
+		};
+	}
+	try {
+		return { evidence: parseHermesRelayProofEvidence(JSON.parse(result.stdout)), stderr: "" };
+	} catch (error) {
+		return {
+			stderr: `failed to parse docker exec Hermes relay proof: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
 }
 
 function collectDockerExecRuntimeEvidence(

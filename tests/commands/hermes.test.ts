@@ -8408,7 +8408,7 @@ echo should-not-run
 		expect(readJson(evidencePath)).toMatchObject({ status: "fail", ran: false });
 	});
 
-	it("does not pass cli-headless docker exec evidence without relay proof", async () => {
+	it("fails cli-headless docker exec evidence without relay proof", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
 		const callsPath = path.join(tempDir, "docker-calls.txt");
@@ -8420,10 +8420,20 @@ if [ "$1" = "inspect" ]; then
   printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
   exit 0
 fi
-if [ "$1" = "exec" ] && [ "$3" = "python" ]; then
+case "$*" in
+*"socket.gethostbyname"*)
   printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
   exit 0
-fi
+  ;;
+*"json.load(sys.stdin)"*)
+  cat >/dev/null
+  exit 0
+  ;;
+*"relay-proof/latest"*)
+  printf '%s\\n' 'proof endpoint unavailable' >&2
+  exit 9
+  ;;
+esac
 printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 `,
 		);
@@ -8455,29 +8465,313 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 		const report = JSON.parse(result.stdout) as {
 			status: string;
 			summary: string;
-			runtime: Record<string, unknown>;
 			stdoutPreview: string;
+			relayProof?: unknown;
 		};
 
-		expect(result.exitCode, result.stdout).toBe(1);
+		expect(result.exitCode).toBe(1);
 		expect(report.status).toBe("fail");
+		expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
 		expect(report.summary).toBe(
 			"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
 		);
-		expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
-		expect(report.runtime).toMatchObject({
-			kind: "contained-docker",
-			containerName: "tc-hermes-contained",
-			networkName: "telclaude-hermes-relay",
-			relayResolvedAddress: "172.29.92.10",
-			containerIpAddress: "172.29.92.11",
-			observedPeerAddress: "172.29.92.11",
-			provenanceSource: "docker-inspect-container-dns-and-relay-peer",
-		});
+		expect(report.relayProof).toBeUndefined();
 		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
 		expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
-		expect(readJson(evidencePath)).toMatchObject({ status: "fail", runtime: report.runtime });
-	});
+		expect(readJson(evidencePath)).toMatchObject({
+			status: "fail",
+			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
+		});
+	}, 20_000);
+
+	it("does not run cli-headless docker exec when auth-store preparation fails", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const markerPath = path.join(tempDir, "ran-hermes");
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "inspect" ]; then
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  exit 0
+fi
+case "$*" in
+*"socket.gethostbyname"*)
+  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  exit 0
+  ;;
+*"json.load(sys.stdin)"*)
+  cat >&2
+  printf '%s\\n' 'auth store write denied' >&2
+  exit 7
+  ;;
+esac
+touch "${markerPath}"
+printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+`,
+		);
+
+		const result = await runHermesCommandWithEnv(
+			[
+				"hermes",
+				"probe",
+				"execution.cli_headless",
+				"--allow-run",
+				"--json",
+				"--docker-bin",
+				dockerBin,
+				"--docker-exec-container",
+				"tc-hermes-contained",
+				"--hermes-bin",
+				"/opt/hermes/hermes",
+				"--hermes-home",
+				"/home/hermes/.hermes",
+				"--cwd",
+				"/tmp",
+				"--prompt",
+				"Reply with exactly HERMES_OK_DOCKEREXEC",
+				"--out",
+				evidencePath,
+			],
+			cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.5" }),
+		);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			summary: string;
+			stderrPreview: string;
+			stdoutPreview: string;
+		};
+
+		expect(result.exitCode).toBe(1);
+		expect(report.status).toBe("fail");
+		expect(report.summary).toBe(
+			"Hermes CLI oneshot probe reported runtime failure: relay OpenAI Codex auth store is not configured",
+		);
+		expect(report.stdoutPreview).toBe("");
+		expect(report.stderrPreview).toContain("failed to prepare docker exec Hermes auth store");
+		expect(report.stderrPreview).toContain("[REDACTED]");
+		expect(fs.existsSync(markerPath)).toBe(false);
+		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
+		expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
+		expect(readJson(evidencePath)).toMatchObject({
+			status: "fail",
+			summary:
+				"Hermes CLI oneshot probe reported runtime failure: relay OpenAI Codex auth store is not configured",
+		});
+	}, 20_000);
+
+	it("rejects cli-headless docker exec relay proof observed after the child exits", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const proofPath = path.join(tempDir, "relay-proof.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = cliHeadlessRelaySigningKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
+		fs.writeFileSync(
+			proofPath,
+			`${JSON.stringify(
+				cliHeadlessRelayProof({
+					requestId: "codex-proof-after-exit",
+					model: "gpt-5.5",
+					proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_DOCKEREXEC"),
+					observedAt: new Date(Date.now() + 5_000).toISOString(),
+				}),
+			)}\n`,
+		);
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "inspect" ]; then
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  exit 0
+fi
+case "$*" in
+*"socket.gethostbyname"*)
+  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  exit 0
+  ;;
+*"json.load(sys.stdin)"*)
+  cat >/dev/null
+  exit 0
+  ;;
+*"relay-proof/latest"*)
+  cat "${proofPath}"
+  exit 0
+  ;;
+esac
+printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+`,
+		);
+
+		try {
+			const result = await runHermesCommandWithEnv(
+				[
+					"hermes",
+					"probe",
+					"execution.cli_headless",
+					"--allow-run",
+					"--json",
+					"--docker-bin",
+					dockerBin,
+					"--docker-exec-container",
+					"tc-hermes-contained",
+					"--hermes-bin",
+					"/opt/hermes/hermes",
+					"--hermes-home",
+					"/home/hermes/.hermes",
+					"--cwd",
+					"/tmp",
+					"--prompt",
+					"Reply with exactly HERMES_OK_DOCKEREXEC",
+					"--out",
+					evidencePath,
+				],
+				cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.5" }),
+			);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				summary: string;
+				stdoutPreview: string;
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report.status).toBe("fail");
+			expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
+			expect(report.summary).toBe(
+				"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof observedAt is outside the probe window",
+			);
+			expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
+			expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
+			expect(readJson(evidencePath)).toMatchObject({
+				status: "fail",
+				summary:
+					"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof observedAt is outside the probe window",
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+		}
+	}, 20_000);
+
+	it("passes cli-headless docker exec evidence with a signed relay proof", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
+		const evidencePath = path.join(tempDir, "evidence.json");
+		const proofPath = path.join(tempDir, "relay-proof.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = cliHeadlessRelaySigningKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
+		const proofObservedAt = new Date(Date.now() + 1500).toISOString();
+		fs.writeFileSync(
+			proofPath,
+			`${JSON.stringify(
+				cliHeadlessRelayProof({
+					requestId: "codex-proof-docker-exec",
+					model: "gpt-5.5",
+					proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_DOCKEREXEC"),
+					observedAt: proofObservedAt,
+				}),
+			)}\n`,
+		);
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "inspect" ]; then
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  exit 0
+fi
+case "$*" in
+*"socket.gethostbyname"*)
+  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  exit 0
+  ;;
+*"json.load(sys.stdin)"*)
+  cat >/dev/null
+  exit 0
+  ;;
+*"relay-proof/latest"*)
+  sleep 2
+  cat "${proofPath}"
+  exit 0
+  ;;
+esac
+sleep 3
+printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+`,
+		);
+
+		try {
+			const result = await runHermesCommandWithEnv(
+				[
+					"hermes",
+					"probe",
+					"execution.cli_headless",
+					"--allow-run",
+					"--json",
+					"--docker-bin",
+					dockerBin,
+					"--docker-exec-container",
+					"tc-hermes-contained",
+					"--hermes-bin",
+					"/opt/hermes/hermes",
+					"--hermes-home",
+					"/home/hermes/.hermes",
+					"--cwd",
+					"/tmp",
+					"--prompt",
+					"Reply with exactly HERMES_OK_DOCKEREXEC",
+					"--out",
+					evidencePath,
+				],
+				cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.5" }),
+			);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				summary: string;
+				runtime: Record<string, unknown>;
+				relayProof: Record<string, unknown>;
+				stdoutPreview: string;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.status).toBe("pass");
+			expect(report.summary).toBe("Hermes CLI oneshot probe completed successfully");
+			expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
+			expect(report.runtime).toMatchObject({
+				kind: "contained-docker",
+				containerName: "tc-hermes-contained",
+				networkName: "telclaude-hermes-relay",
+				relayResolvedAddress: "172.29.92.10",
+				containerIpAddress: "172.29.92.11",
+				observedPeerAddress: "172.29.92.11",
+				provenanceSource: "docker-inspect-container-dns-and-relay-peer",
+			});
+			expect(report.relayProof).toMatchObject({
+				source: "telclaude-openai-codex-proxy",
+				path: "/backend-api/codex/responses",
+				observedPeerAddress: "172.29.92.11",
+				upstreamStatus: 200,
+				model: "gpt-5.5",
+			});
+			expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
+			expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
+			expect(readJson(evidencePath)).toMatchObject({
+				status: "pass",
+				runtime: report.runtime,
+				relayProof: report.relayProof,
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+		}
+	}, 20_000);
 
 	it("does not execute or write api-server containment evidence without --allow-run", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-api-server-probe-"));
