@@ -2961,6 +2961,10 @@ export function registerHermesCommand(program: Command): void {
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(async (options: RollbackRehearsalOption) => {
 			try {
+				if (options.allowRun === true) {
+					const relayVerificationFailure = operatorRelayVerificationEnvFailure();
+					if (relayVerificationFailure) throw new Error(relayVerificationFailure);
+				}
 				const outPath = resolveHermesArtifactPath(options.out);
 				const evidencePath = options.evidencePath?.trim() || options.out;
 				const report = await runHermesRollbackRehearsal({
