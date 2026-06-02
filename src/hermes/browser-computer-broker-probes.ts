@@ -3,6 +3,20 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
+import {
+	BROWSER_COMPUTER_BROKER_ATTESTATION_RUNNER,
+	BROWSER_COMPUTER_BROKER_ATTESTATION_SCHEMA_VERSION,
+	BROWSER_COMPUTER_BROKER_ATTESTATION_SOURCE,
+	type BrowserComputerBrokerAttestation,
+	browserComputerBrokerAttestationFieldsForEvidence,
+	browserComputerBrokerAttestationSignatureFailure,
+	signBrowserComputerBrokerAttestation,
+} from "./browser-computer-broker-attestation.js";
 
 export const BROWSER_COMPUTER_BROKER_PROBE_SCHEMA_VERSION =
 	"telclaude.hermes.browser-computer-broker-probe.v1";
@@ -14,6 +28,10 @@ export const BROWSER_COMPUTER_BROKER_FIXTURE_SOURCE =
 export const BROWSER_COMPUTER_BROKER_FIXTURE_RUNNER =
 	"telclaude-browser-computer-broker-fixture-generator";
 export const DEFAULT_BROWSER_COMPUTER_BROKER_FIXTURE_EVIDENCE_DIR = "artifacts/hermes/fixtures";
+export const NETWORK_EGRESS_BROKER_RUN_REPORT_SCHEMA_VERSION =
+	"telclaude.hermes.network-egress-broker-run.v1";
+export const NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE =
+	"machine-observed-network-egress-broker-report";
 
 export const BROWSER_COMPUTER_BROKER_SURFACE_IDS = [
 	"browser.profiles",
@@ -34,6 +52,30 @@ export const DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS: Record<
 
 const NonEmptyString = z.string().trim().min(1);
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const NetworkEgressAttemptKindSchema = z.enum([
+	"public-research",
+	"provider",
+	"model",
+	"vault",
+	"metadata",
+	"private-network",
+	"smtp",
+	"imap",
+	"whatsapp-bridge",
+	"dns-53",
+	"doh",
+	"dot",
+	"connect-proxy",
+	"websocket",
+	"webrtc",
+	"ip-literal",
+	"dns-rebinding",
+	"localhost-callback",
+	"unquarantined-upload",
+	"browser-provider-bypass",
+	"computer-covert-egress",
+]);
+type NetworkEgressAttemptKind = z.infer<typeof NetworkEgressAttemptKindSchema>;
 
 const BrowserComputerBrokerProbeCheckSchema = z
 	.object({
@@ -66,6 +108,38 @@ const BrowserComputerBrokerProbeObservationSchema = z
 	})
 	.strict();
 
+const InternalResponseProofSchema = z
+	.object({
+		version: NonEmptyString,
+		scope: NonEmptyString,
+		timestamp: NonEmptyString,
+		nonce: NonEmptyString,
+		method: NonEmptyString,
+		path: NonEmptyString,
+		requestBodySha256: NonEmptyString,
+		responseBodySha256: NonEmptyString,
+		signature: NonEmptyString,
+	})
+	.strict();
+
+const BrowserComputerBrokerAttestationSchema = z
+	.object({
+		schemaVersion: z.literal(BROWSER_COMPUTER_BROKER_ATTESTATION_SCHEMA_VERSION),
+		source: z.literal(BROWSER_COMPUTER_BROKER_ATTESTATION_SOURCE),
+		runner: z.literal(BROWSER_COMPUTER_BROKER_ATTESTATION_RUNNER),
+		probeEvidenceSchemaVersion: NonEmptyString,
+		probeId: z.enum(BROWSER_COMPUTER_BROKER_SURFACE_IDS),
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		observedAt: NonEmptyString,
+		evidenceSource: NonEmptyString,
+		checksSha256: Sha256Digest,
+		observationsSha256: Sha256Digest,
+		evidenceSha256: Sha256Digest,
+		signature: InternalResponseProofSchema,
+	})
+	.strict();
+
 export const BrowserComputerBrokerProbeEvidenceSchema = z
 	.object({
 		schemaVersion: z.literal(BROWSER_COMPUTER_BROKER_PROBE_SCHEMA_VERSION),
@@ -77,6 +151,7 @@ export const BrowserComputerBrokerProbeEvidenceSchema = z
 		summary: NonEmptyString,
 		checks: z.array(BrowserComputerBrokerProbeCheckSchema).min(1),
 		observations: BrowserComputerBrokerProbeObservationSchema,
+		runnerAttestation: BrowserComputerBrokerAttestationSchema.optional(),
 	})
 	.strict();
 
@@ -87,6 +162,122 @@ type BrowserComputerBrokerProbeCheck = z.infer<typeof BrowserComputerBrokerProbe
 type BrowserComputerBrokerProbeObservation = z.infer<
 	typeof BrowserComputerBrokerProbeObservationSchema
 >;
+
+const NetworkEgressBrokerRunAttemptSchema = z
+	.object({
+		name: NonEmptyString,
+		kind: NetworkEgressAttemptKindSchema,
+		target: NonEmptyString,
+		expectation: z.enum(["allow", "deny"]),
+		status: z.enum(["pass", "fail"]),
+		observed: NonEmptyString,
+		detail: NonEmptyString,
+		route: NonEmptyString.optional(),
+		httpStatus: z.number().int().optional(),
+		errorName: NonEmptyString.optional(),
+		errorCode: NonEmptyString.optional(),
+		durationMs: z.number().nonnegative().optional(),
+	})
+	.strict();
+
+const NetworkEgressBrokerRunReportSchema = z
+	.object({
+		schemaVersion: z.literal(NETWORK_EGRESS_BROKER_RUN_REPORT_SCHEMA_VERSION),
+		surfaceId: z.literal("network.egress-broker"),
+		ran: z.literal(true),
+		observedAt: NonEmptyString,
+		source: z.literal(NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE),
+		summary: NonEmptyString,
+		attempts: z.array(NetworkEgressBrokerRunAttemptSchema).min(1),
+	})
+	.strict();
+
+const NETWORK_EGRESS_DENIAL_TARGETS = [
+	{ kind: "provider", target: "https://bank.example.invalid/login" },
+	{ kind: "model", target: "https://api.openai.com/v1/responses" },
+	{ kind: "vault", target: "http://vault:8222/v1/secrets" },
+	{ kind: "metadata", target: "http://169.254.169.254/latest/meta-data" },
+	{ kind: "private-network", target: "http://10.0.0.12/admin" },
+	{ kind: "smtp", target: "smtp://mail.example.invalid:587" },
+	{ kind: "imap", target: "imap://mail.example.invalid:993" },
+	{ kind: "whatsapp-bridge", target: "ws://whatsapp-bridge.internal/socket" },
+	{ kind: "dns-53", target: "udp://8.8.8.8:53" },
+	{ kind: "doh", target: "https://dns.google/dns-query" },
+	{ kind: "dot", target: "tls://1.1.1.1:853" },
+	{ kind: "connect-proxy", target: "CONNECT proxy.example.invalid:443" },
+	{ kind: "websocket", target: "wss://exfil.example.invalid/socket" },
+	{ kind: "webrtc", target: "webrtc://peer/exfil" },
+	{ kind: "ip-literal", target: "https://203.0.113.99/upload" },
+	{ kind: "dns-rebinding", target: "https://rebind.example.invalid" },
+	{ kind: "localhost-callback", target: "http://127.0.0.1:33221/callback" },
+	{ kind: "unquarantined-upload", target: "https://example.org/upload/raw-local-path" },
+	{ kind: "browser-provider-bypass", target: "https://clalit.example.invalid/session" },
+	{ kind: "computer-covert-egress", target: "app://terminal/curl-exfil" },
+] as const satisfies readonly { kind: NetworkEgressAttemptKind; target: string }[];
+
+const NETWORK_EGRESS_CHECK_REQUIREMENTS = [
+	{
+		name: "egress.direct-provider-denied",
+		kinds: ["provider"],
+		detail: "Direct provider egress was denied by live broker evidence",
+	},
+	{
+		name: "egress.direct-model-denied",
+		kinds: ["model"],
+		detail: "Direct model-provider egress was denied by live broker evidence",
+	},
+	{
+		name: "egress.direct-vault-denied",
+		kinds: ["vault"],
+		detail: "Direct vault egress was denied by live broker evidence",
+	},
+	{
+		name: "egress.metadata-private-denied",
+		kinds: ["metadata", "private-network"],
+		detail: "Metadata and private-network egress were denied by live broker evidence",
+	},
+	{
+		name: "egress.smtp-imap-whatsapp-denied",
+		kinds: ["smtp", "imap", "whatsapp-bridge"],
+		detail: "Direct SMTP, IMAP, and WhatsApp bridge egress were denied by live broker evidence",
+	},
+	{
+		name: "egress.dns-doh-dot-denied",
+		kinds: ["dns-53", "doh", "dot"],
+		detail: "Raw DNS, DoH, and DoT egress were denied by live broker evidence",
+	},
+	{
+		name: "egress.proxy-tunnel-webrtc-websocket-denied",
+		kinds: ["connect-proxy", "websocket", "webrtc"],
+		detail:
+			"CONNECT/proxy tunneling, WebSocket, and WebRTC egress were denied by live broker evidence",
+	},
+	{
+		name: "egress.ip-literal-localhost-callback-denied",
+		kinds: ["ip-literal", "dns-rebinding", "localhost-callback"],
+		detail:
+			"IP literal, DNS rebinding, and localhost callback egress were denied by live broker evidence",
+	},
+	{
+		name: "egress.upload-without-quarantine-denied",
+		kinds: ["unquarantined-upload"],
+		detail: "Upload-without-quarantine egress was denied by live broker evidence",
+	},
+	{
+		name: "egress.browser-provider-bypass-denied",
+		kinds: ["browser-provider-bypass"],
+		detail: "Browser-to-provider bypass egress was denied by live broker evidence",
+	},
+	{
+		name: "egress.computer-covert-denied",
+		kinds: ["computer-covert-egress"],
+		detail: "Computer-use covert egress was denied by live broker evidence",
+	},
+] as const satisfies readonly {
+	name: (typeof BROWSER_COMPUTER_REQUIRED_CHECKS)["network.egress-broker"][number];
+	kinds: readonly NetworkEgressAttemptKind[];
+	detail: string;
+}[];
 
 const BROWSER_COMPUTER_REQUIRED_CHECKS: Record<BrowserComputerBrokerSurfaceId, readonly string[]> =
 	{
@@ -228,9 +419,75 @@ export function runTelclaudeBrowserComputerBrokerProbe(input: {
 	return networkEgressProbe(input.surfaceId, observedAt);
 }
 
+export function readNetworkEgressBrokerRunReport(reportPath: string): unknown {
+	return JSON.parse(fs.readFileSync(reportPath, "utf8")) as unknown;
+}
+
+export function buildNetworkEgressBrokerProbeEvidenceFromReport(
+	rawReport: unknown,
+): BrowserComputerBrokerProbeEvidence {
+	const report = parseNetworkEgressBrokerRunReport(rawReport);
+	const allowedAttempts = report.attempts.filter(
+		(attempt) =>
+			attempt.kind === "public-research" &&
+			attempt.expectation === "allow" &&
+			attempt.status === "pass",
+	);
+	const passingDeniedKinds = new Set(
+		report.attempts
+			.filter((attempt) => attempt.expectation === "deny" && attempt.status === "pass")
+			.map((attempt) => attempt.kind),
+	);
+	const denialAttempts = report.attempts.filter(
+		(attempt) => attempt.expectation === "deny" && attempt.status === "pass",
+	);
+	const checks: BrowserComputerBrokerProbeCheck[] = [];
+	pushCheck(
+		checks,
+		"egress.allowed-public-through-broker",
+		allowedAttempts.some((attempt) => attempt.route === "telclaude-egress-broker"),
+		allowedAttempts.some((attempt) => attempt.route === "telclaude-egress-broker")
+			? "Allowed public research egress was observed through the Telclaude broker"
+			: "Allowed public research egress was not observed through the Telclaude broker",
+	);
+	for (const requirement of NETWORK_EGRESS_CHECK_REQUIREMENTS) {
+		const missingKinds = requirement.kinds.filter((kind) => !passingDeniedKinds.has(kind));
+		pushCheck(
+			checks,
+			requirement.name,
+			missingKinds.length === 0,
+			missingKinds.length === 0
+				? requirement.detail
+				: `Missing live denied egress kinds: ${missingKinds.join(", ")}`,
+		);
+	}
+	const evidence = brokerProbeReport("network.egress-broker", report.observedAt, checks, {
+		...emptyObservations(),
+		egressAllowedAuditHash: hashJson(allowedAttempts),
+		egressDenialMatrixHash: hashJson(denialAttempts),
+		egressDnsDenialHash: hashJson(
+			denialAttempts.filter((attempt) => ["dns-53", "doh", "dot"].includes(attempt.kind)),
+		),
+		egressCovertDenialHash: hashJson(
+			denialAttempts.filter((attempt) =>
+				["connect-proxy", "websocket", "webrtc", "computer-covert-egress"].includes(attempt.kind),
+			),
+		),
+		auditEntryCount: report.attempts.filter((attempt) => attempt.status === "pass").length,
+		deniedAttemptCount: denialAttempts.length,
+		directEgressDenialCount: passingDeniedKinds.size,
+	});
+	if (evidence.status !== "pass") return evidence;
+	return {
+		...evidence,
+		runnerAttestation: signBrowserComputerBrokerAttestation(evidence),
+	};
+}
+
 export function browserComputerBrokerProbeEvidenceFailure(
 	surfaceId: BrowserComputerBrokerSurfaceId,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const parsed = BrowserComputerBrokerProbeEvidenceSchema.safeParse(evidence);
 	if (!parsed.success) {
@@ -259,10 +516,47 @@ export function browserComputerBrokerProbeEvidenceFailure(
 	if (surfaceId === "network.egress-broker" && data.observations.directEgressDenialCount < 12) {
 		failures.push(`directEgressDenialCount is ${data.observations.directEgressDenialCount}`);
 	}
+	const runnerAttestationFailure = brokerRunnerAttestationFailure(data, surfaceId, options);
+	if (runnerAttestationFailure) failures.push(runnerAttestationFailure);
 	if (surfaceId !== "network.egress-broker" && data.observations.quarantineRefCount < 1) {
 		failures.push(`quarantineRefCount is ${data.observations.quarantineRefCount}`);
 	}
 	return failures.length > 0 ? failures.join("; ") : null;
+}
+
+function brokerRunnerAttestationFailure(
+	data: BrowserComputerBrokerProbeEvidence,
+	surfaceId: BrowserComputerBrokerSurfaceId,
+	options: HermesSignedEvidenceValidationOptions,
+): string | null {
+	if (surfaceId !== "network.egress-broker") return null;
+	const attestation = data.runnerAttestation as BrowserComputerBrokerAttestation | undefined;
+	if (!attestation) return "runnerAttestation is missing";
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"runnerAttestation observedAt",
+		attestation.observedAt,
+		options,
+	);
+	if (freshnessFailure) return freshnessFailure;
+	const signatureFailure = browserComputerBrokerAttestationSignatureFailure(attestation, {
+		allowStale: hermesAllowsStaleAttestations(options),
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = browserComputerBrokerAttestationFieldsForEvidence(data);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"observedAt",
+		"evidenceSource",
+		"checksSha256",
+		"observationsSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) return `runnerAttestation ${field} mismatch`;
+	}
+	return null;
 }
 
 const BrowserComputerBrokerFixtureEvidenceSchema = z
@@ -648,28 +942,7 @@ function networkEgressProbe(
 		status: "allowed",
 		auditRef: "audit:egress:public-research-1",
 	};
-	const requiredDenialTargets = [
-		["provider", "https://bank.example.invalid/login"],
-		["model", "https://api.openai.com/v1/responses"],
-		["vault", "http://vault:8222/v1/secrets"],
-		["metadata", "http://169.254.169.254/latest/meta-data"],
-		["private-network", "http://10.0.0.12/admin"],
-		["smtp", "smtp://mail.example.invalid:587"],
-		["imap", "imap://mail.example.invalid:993"],
-		["whatsapp-bridge", "ws://whatsapp-bridge.internal/socket"],
-		["dns-53", "udp://8.8.8.8:53"],
-		["doh", "https://dns.google/dns-query"],
-		["dot", "tls://1.1.1.1:853"],
-		["connect-proxy", "CONNECT proxy.example.invalid:443"],
-		["websocket", "wss://exfil.example.invalid/socket"],
-		["webrtc", "webrtc://peer/exfil"],
-		["ip-literal", "https://203.0.113.99/upload"],
-		["dns-rebinding", "https://rebind.example.invalid"],
-		["localhost-callback", "http://127.0.0.1:33221/callback"],
-		["unquarantined-upload", "https://example.org/upload/raw-local-path"],
-		["browser-provider-bypass", "https://clalit.example.invalid/session"],
-		["computer-covert-egress", "app://terminal/curl-exfil"],
-	].map(([kind, target]) => ({
+	const requiredDenialTargets = NETWORK_EGRESS_DENIAL_TARGETS.map(({ kind, target }) => ({
 		kind,
 		target,
 		route: "telclaude-egress-broker",
@@ -768,6 +1041,28 @@ function networkEgressProbe(
 		deniedAttemptCount: 0,
 		directEgressDenialCount: 0,
 	});
+}
+
+function parseNetworkEgressBrokerRunReport(
+	rawReport: unknown,
+): z.infer<typeof NetworkEgressBrokerRunReportSchema> {
+	const parsed = NetworkEgressBrokerRunReportSchema.safeParse(rawReport);
+	if (!parsed.success) {
+		throw new Error(`invalid network egress-broker run report: ${flattenZodError(parsed.error)}`);
+	}
+	const duplicateKinds = duplicates(parsed.data.attempts.map((attempt) => attempt.kind));
+	if (duplicateKinds.includes("public-research")) {
+		throw new Error("network egress-broker run report duplicates public-research");
+	}
+	const duplicatedDeniedKinds = duplicateKinds.filter((kind) => kind !== "public-research");
+	if (duplicatedDeniedKinds.length > 0) {
+		throw new Error(
+			`network egress-broker run report duplicates denied kinds: ${duplicatedDeniedKinds.join(
+				", ",
+			)}`,
+		);
+	}
+	return parsed.data;
 }
 
 function buildBrokerFixtureEvidence(

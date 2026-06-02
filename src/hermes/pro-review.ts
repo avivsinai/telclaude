@@ -114,6 +114,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/hermes/edge-adapter-runtime.ts",
 	"src/hermes/edge-adapter-probes.ts",
 	"src/hermes/edge-adapter-attestation.ts",
+	"src/hermes/browser-computer-broker-attestation.ts",
 	"src/hermes/browser-computer-broker-probes.ts",
 	"src/hermes/private-runtime.ts",
 	"src/hermes/foundation.ts",

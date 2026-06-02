@@ -29,8 +29,10 @@ import {
 import type { HermesSignedEvidenceValidationOptions } from "../hermes/attestation-validation.js";
 import {
 	buildBrowserComputerBrokerFixtureEvidenceBundle,
+	buildNetworkEgressBrokerProbeEvidenceFromReport,
 	DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS,
 	isBrowserComputerBrokerSurfaceId,
+	readNetworkEgressBrokerRunReport,
 	runTelclaudeBrowserComputerBrokerProbe,
 } from "../hermes/browser-computer-broker-probes.js";
 import {
@@ -2723,12 +2725,50 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (isBrowserComputerBrokerSurfaceId(surface)) {
-				const report = runTelclaudeBrowserComputerBrokerProbe({
-					surfaceId: surface,
-					allowRun: options.allowRun === true,
-				});
+				let report: ReturnType<typeof runTelclaudeBrowserComputerBrokerProbe>;
+				try {
+					if (options.fromReport?.trim()) {
+						if (options.allowRun === true) {
+							throw new Error("Use either --from-report or --allow-run, not both.");
+						}
+						if (surface !== "network.egress-broker") {
+							throw new Error("--from-report is supported only for network.egress-broker");
+						}
+						report = buildNetworkEgressBrokerProbeEvidenceFromReport(
+							readNetworkEgressBrokerRunReport(resolveHermesArtifactPath(options.fromReport)),
+						);
+					} else {
+						report = runTelclaudeBrowserComputerBrokerProbe({
+							surfaceId: surface,
+							allowRun: options.allowRun === true,
+						});
+					}
+				} catch (error) {
+					report = {
+						schemaVersion: "telclaude.hermes.browser-computer-broker-probe.v1",
+						probeId: surface,
+						status: "fail",
+						ran: false,
+						observedAt: new Date().toISOString(),
+						source: "telclaude-browser-computer-broker-harness",
+						summary: error instanceof Error ? error.message : String(error),
+						checks: [
+							{
+								name: `${surface}.exception`,
+								status: "fail",
+								detail: error instanceof Error ? error.message : String(error),
+							},
+						],
+						observations: {
+							auditEntryCount: 0,
+							deniedAttemptCount: 0,
+							quarantineRefCount: 0,
+							directEgressDenialCount: 0,
+						},
+					};
+				}
 				let outPath: string | undefined;
-				if (options.allowRun === true || options.out) {
+				if (options.allowRun === true || options.fromReport?.trim() || options.out) {
 					outPath = resolveHermesArtifactPath(
 						options.out ?? DEFAULT_BROWSER_COMPUTER_BROKER_EVIDENCE_PATHS[surface],
 					);
