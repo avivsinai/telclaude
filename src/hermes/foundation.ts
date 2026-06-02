@@ -2093,6 +2093,14 @@ function cutoverProofArtifactSemanticFailures(
 		];
 	}
 
+	if (key === "compatibilityLockfile") {
+		const parsed = CompatibilityLockfileSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`compatibility lockfile schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [];
+	}
+
 	if (key === "fixtureResults") {
 		const parsed = FixtureResultBundleSchema.safeParse(value);
 		if (!parsed.success) {
