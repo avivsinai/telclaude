@@ -374,6 +374,7 @@ const DIRECT_MODEL_RELAY_PROVIDER_HOSTS = new Set([
 	"api.x.ai",
 ]);
 const TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL = "http://telclaude:8790/v1/openai-codex-proxy";
+const TELCLAUDE_MODEL_RELAY_PROBE_URL = "http://telclaude:8790/v1/models";
 const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 	"execution.cli_headless": [
 		"src/hermes/private-runtime.ts",
@@ -6557,6 +6558,8 @@ function collectModelRelayProbeEvidence(
 		failures.push("observation.relayUrl is missing");
 	} else if (isDirectModelRelayProviderUrl(parsed.data.observation.relayUrl)) {
 		failures.push("observation.relayUrl points at a direct model-provider host");
+	} else if (!isRelayModelProbeUrl(parsed.data.observation.relayUrl)) {
+		failures.push("observation.relayUrl is not the Telclaude model relay probe endpoint");
 	}
 	if (!isDirectModelRelayProviderUrl(parsed.data.observation.directModelUrl)) {
 		failures.push("observation.directModelUrl is not a recognized direct model-provider URL");
@@ -6620,11 +6623,6 @@ function modelRelayModelProviderFailures(
 ): string[] {
 	const failures: string[] = [];
 	if (!modelProvider) return ["modelProvider is missing"];
-	if (!relayUrl) {
-		failures.push("observation.relayUrl is missing");
-	} else if (modelProvider.baseUrl.replace(/\/+$/, "") !== relayUrl.replace(/\/+$/, "")) {
-		failures.push("modelProvider.baseUrl does not match observation.relayUrl");
-	}
 	if (modelProvider.provider !== "openai-codex") {
 		failures.push("modelProvider.provider is not openai-codex");
 	}
@@ -6643,6 +6641,9 @@ function modelRelayModelProviderFailures(
 	if (!isRelayOpenAiCodexProxyUrl(modelProvider.baseUrl)) {
 		failures.push("modelProvider.baseUrl is not a relay OpenAI Codex proxy URL");
 	}
+	if (relayUrl && !sameRelayOrigin(modelProvider.baseUrl, relayUrl)) {
+		failures.push("modelProvider.baseUrl is not bound to observation.relayUrl origin");
+	}
 	try {
 		if (modelProvider.baseUrlHost !== new URL(modelProvider.baseUrl).hostname) {
 			failures.push("modelProvider.baseUrlHost does not match baseUrl");
@@ -6660,11 +6661,8 @@ function modelRelayModelProviderFailures(
 		failures.push("modelProvider.auxiliaryBaseUrl is missing");
 	} else if (!isRelayOpenAiCodexProxyUrl(modelProvider.auxiliaryBaseUrl)) {
 		failures.push("modelProvider.auxiliaryBaseUrl is not a relay OpenAI Codex proxy URL");
-	} else if (
-		relayUrl &&
-		modelProvider.auxiliaryBaseUrl.replace(/\/+$/, "") !== relayUrl.replace(/\/+$/, "")
-	) {
-		failures.push("modelProvider.auxiliaryBaseUrl does not match observation.relayUrl");
+	} else if (relayUrl && !sameRelayOrigin(modelProvider.auxiliaryBaseUrl, relayUrl)) {
+		failures.push("modelProvider.auxiliaryBaseUrl is not bound to observation.relayUrl origin");
 	}
 	if (!modelProvider.auxiliaryBaseUrlHost) {
 		failures.push("modelProvider.auxiliaryBaseUrlHost is missing");
@@ -6710,6 +6708,37 @@ function isRelayOpenAiCodexProxyUrl(value: string): boolean {
 			parsed.search === "" &&
 			parsed.hash === "" &&
 			value.replace(/\/+$/, "") === TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL
+		);
+	} catch {
+		return false;
+	}
+}
+
+function isRelayModelProbeUrl(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return (
+			parsed.protocol === "http:" &&
+			parsed.hostname === "telclaude" &&
+			parsed.port === "8790" &&
+			parsed.pathname.replace(/\/+$/, "") === "/v1/models" &&
+			parsed.search === "" &&
+			parsed.hash === "" &&
+			value.replace(/\/+$/, "") === TELCLAUDE_MODEL_RELAY_PROBE_URL
+		);
+	} catch {
+		return false;
+	}
+}
+
+function sameRelayOrigin(left: string, right: string): boolean {
+	try {
+		const leftUrl = new URL(left);
+		const rightUrl = new URL(right);
+		return (
+			leftUrl.protocol === rightUrl.protocol &&
+			leftUrl.hostname === rightUrl.hostname &&
+			leftUrl.port === rightUrl.port
 		);
 	} catch {
 		return false;
