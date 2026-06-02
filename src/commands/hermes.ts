@@ -2752,19 +2752,7 @@ export function registerHermesCommand(program: Command): void {
 				if (options.allowRun === true) {
 					const relaySigningFailure = operatorRelaySigningEnvFailure();
 					if (relaySigningFailure) {
-						const report = {
-							schemaVersion: "telclaude.hermes.probe-report.v1",
-							status: "input_error",
-							surface,
-							detail: relaySigningFailure,
-						};
-						if (options.json) {
-							printJson(report);
-						} else {
-							console.log(`Hermes probe ${surface}: input_error`);
-							console.log(`- FAIL surface: ${relaySigningFailure}`);
-						}
-						process.exitCode = 1;
+						failHermesProbeInput(surface, options, relaySigningFailure);
 						return;
 					}
 				}

@@ -10,6 +10,7 @@ describe("Hermes signed probe CLI preflight", () => {
 		["edge.whatsapp", "edge-whatsapp.json"],
 		["sideeffect.ledger", "sideeffect-ledger.json"],
 		["providers.approval-binding", "providers-approval-binding.json"],
+		["workflow.cron", "workflow-cron.json"],
 	] as const)("refuses %s live evidence writes without the operator relay signing key", async (surface, fileName) => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-probe-no-signing-key-"));
 		const evidencePath = path.join(tempDir, fileName);
