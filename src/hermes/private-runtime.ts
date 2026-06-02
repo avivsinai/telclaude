@@ -229,6 +229,8 @@ type HermesLaunchResult = {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	startedAt?: string;
+	endedAt?: string;
 	runtime?: HermesCliRuntimeEvidence;
 	relayProof?: HermesCliRelayProof;
 };
@@ -477,9 +479,11 @@ export async function runHermesCliHeadlessProbe(input: {
 		});
 	}
 
-	const startedAt = new Date().toISOString();
+	const probeStartedAt = new Date().toISOString();
 	const result = await input.runProcess(input.invocation);
-	const endedAt = new Date().toISOString();
+	const probeEndedAt = new Date().toISOString();
+	const startedAt = result.startedAt ?? probeStartedAt;
+	const endedAt = result.endedAt ?? probeEndedAt;
 	const runtimeFailure = hermesCliRuntimeFailure(result.stdout, result.stderr);
 	const expectedToken = hermesCliExpectedProofToken(input.invocation);
 	const hasPositiveProof = expectedToken ? result.stdout.includes(expectedToken) : false;
@@ -611,6 +615,7 @@ export async function runHermesLaunchInvocation(
 		try {
 			prepareHermesLaunchAuthStore(invocation, launchEnv);
 		} catch (error) {
+			const failedAt = new Date().toISOString();
 			resolve(
 				hermesLaunchResult({
 					exitCode: 126,
@@ -622,11 +627,14 @@ export async function runHermesLaunchInvocation(
 						}`,
 					),
 					hermesHome: launchEnv.HERMES_HOME,
+					startedAt: failedAt,
+					endedAt: failedAt,
 				}),
 			);
 			return;
 		}
 
+		const childStartedAt = new Date().toISOString();
 		const child = spawn(invocation.command, invocation.args, {
 			cwd: invocation.cwd,
 			env: launchEnv,
@@ -658,6 +666,8 @@ export async function runHermesLaunchInvocation(
 					stdout,
 					stderr: appendLine(stderr, `failed to launch Hermes probe: ${error.message}`),
 					hermesHome: launchEnv.HERMES_HOME,
+					startedAt: childStartedAt,
+					endedAt: new Date().toISOString(),
 				}),
 			);
 		});
@@ -675,6 +685,8 @@ export async function runHermesLaunchInvocation(
 							? appendLine(stderr, `Hermes probe terminated by ${signal}`)
 							: stderr,
 					hermesHome: launchEnv.HERMES_HOME,
+					startedAt: childStartedAt,
+					endedAt: new Date().toISOString(),
 				}),
 			);
 		});
@@ -686,6 +698,8 @@ function hermesLaunchResult(input: {
 	stdout: string;
 	stderr: string;
 	hermesHome?: string;
+	startedAt?: string;
+	endedAt?: string;
 }): HermesLaunchResult {
 	const runtimeEvidence = readHermesRuntimeEvidence(input.hermesHome);
 	const relayProofEvidence = readHermesRelayProofEvidence(input.hermesHome);
@@ -702,6 +716,8 @@ function hermesLaunchResult(input: {
 		exitCode: input.exitCode,
 		stdout: input.stdout,
 		stderr,
+		...(input.startedAt ? { startedAt: input.startedAt } : {}),
+		...(input.endedAt ? { endedAt: input.endedAt } : {}),
 		...(runtimeEvidence.runtime ? { runtime: runtimeEvidence.runtime } : {}),
 		...(relayProofEvidence.relayProof ? { relayProof: relayProofEvidence.relayProof } : {}),
 	};
@@ -858,7 +874,7 @@ function runtimeString(raw: Record<string, unknown>, key: string): string {
 	return value.trim();
 }
 
-function parseHermesRelayProofEvidence(raw: unknown): HermesCliRelayProof {
+export function parseHermesRelayProofEvidence(raw: unknown): HermesCliRelayProof {
 	if (!isRecord(raw)) {
 		throw new Error("relay proof evidence must be a JSON object");
 	}
@@ -1180,6 +1196,10 @@ function hermesCliRuntimeFailure(stdout: string, stderr: string): string | null 
 		[/Anthropic credentials not configured/i, "relay Anthropic credentials are not configured"],
 		[/Codex auth .*missing/i, "relay OpenAI Codex auth store is not configured"],
 		[/Missing Authentication header/i, "relay OpenAI Codex credentials are not configured"],
+		[
+			/failed to prepare docker exec Hermes auth store/i,
+			"relay OpenAI Codex auth store is not configured",
+		],
 	];
 	for (const [pattern, reason] of patterns) {
 		if (pattern.test(combined)) return reason;
@@ -1377,14 +1397,11 @@ function prepareHermesLaunchAuthStore(
 	delete launchEnv[HERMES_RELAY_OPENAI_CODEX_AUTH_ENV];
 }
 
-function writeHermesOpenAiCodexRelayAuthStore(
-	hermesHome: string,
+export function buildHermesOpenAiCodexRelayAuthStorePayload(
 	relayToken: string,
 	relayBaseUrl: string,
-): void {
-	fs.mkdirSync(hermesHome, { recursive: true, mode: 0o700 });
-	const authPath = path.join(hermesHome, "auth.json");
-	const payload = {
+): Record<string, unknown> {
+	return {
 		version: 1,
 		active_provider: HERMES_RELAY_OPENAI_CODEX_PROVIDER,
 		providers: {
@@ -1411,6 +1428,16 @@ function writeHermesOpenAiCodexRelayAuthStore(
 			],
 		},
 	};
+}
+
+function writeHermesOpenAiCodexRelayAuthStore(
+	hermesHome: string,
+	relayToken: string,
+	relayBaseUrl: string,
+): void {
+	fs.mkdirSync(hermesHome, { recursive: true, mode: 0o700 });
+	const authPath = path.join(hermesHome, "auth.json");
+	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(relayToken, relayBaseUrl);
 	const tmpPath = `${authPath}.tmp.${process.pid}`;
 	fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, {
 		encoding: "utf8",
