@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +8,24 @@ import {
 	renderFirewallAllowedDomainsShellScript,
 } from "../../src/sandbox/firewall-domains.js";
 import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "../../src/sandbox/domains.js";
+
+const initFirewallPath = path.resolve("docker/init-firewall.sh");
+
+function extractShellFunction(source: string, name: string): string {
+	const match = source.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?\\n\\}`));
+	if (!match) throw new Error(`Missing shell function: ${name}`);
+	return match[0];
+}
+
+function runShellHarness(script: string, args: string[]): string[] {
+	const output = execFileSync("bash", ["-c", script, "firewall-domain-harness", ...args], {
+		encoding: "utf8",
+	});
+	return output
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean);
+}
 
 describe("firewall domain generation", () => {
 	it("keeps exact sandbox domains in the generated firewall allowlist", () => {
@@ -31,5 +50,75 @@ describe("firewall domain generation", () => {
 		const generatedPath = path.resolve("docker/allowed-domains.generated.sh");
 		const actual = fs.readFileSync(generatedPath, "utf8");
 		expect(actual).toBe(renderFirewallAllowedDomainsShellScript());
+	});
+
+	it("lets the Docker firewall consume configured additional domains", () => {
+		const initScript = fs.readFileSync(initFirewallPath, "utf8");
+		expect(initScript).toContain("security?.network?.additionalDomains");
+		expect(initScript).toContain("append_allowed_domain");
+		expect(initScript).toContain('ALLOWED_DOMAINS+=("$normalized")');
+	});
+
+	it("validates additional firewall domains before appending them", () => {
+		const initScript = fs.readFileSync(initFirewallPath, "utf8");
+		const harness = [
+			"set -eu",
+			'ALLOWED_DOMAINS=("api.openai.com")',
+			extractShellFunction(initScript, "append_allowed_domain"),
+			'for domain in "$@"; do append_allowed_domain "$domain"; done',
+			'printf "%s\\n" "${ALLOWED_DOMAINS[@]}"',
+		].join("\n");
+
+		const lines = runShellHarness(harness, [
+			" ChatGPT.COM ",
+			"chatgpt.com",
+			"api.openai.com",
+			"*.evil.com",
+			"a;rm -rf /",
+			"host:443",
+			"example..com",
+			".hidden.example",
+			"bad_domain.example",
+		]);
+
+		expect(lines.filter((line) => !line.startsWith("[firewall] WARNING"))).toEqual([
+			"api.openai.com",
+			"chatgpt.com",
+		]);
+		expect(lines.filter((line) => line.startsWith("[firewall] WARNING"))).toHaveLength(6);
+	});
+
+	it("keeps private and metadata IP literals out of firewall domain accepts", () => {
+		const initScript = fs.readFileSync(initFirewallPath, "utf8");
+		const harness = [
+			"set -eu",
+			'BLOCKED_METADATA_IPS=("169.254.169.254" "169.254.170.2" "100.100.100.200")',
+			extractShellFunction(initScript, "is_public_ip"),
+			'for ip in "$@"; do',
+			'  if is_public_ip "$ip"; then printf "%s:public\\n" "$ip"; else printf "%s:blocked\\n" "$ip"; fi',
+			"done",
+		].join("\n");
+
+		expect(
+			runShellHarness(harness, [
+				"169.254.169.254",
+				"169.254.170.2",
+				"100.100.100.200",
+				"10.0.0.1",
+				"172.16.0.1",
+				"192.168.1.1",
+				"100.64.0.1",
+				"104.18.32.47",
+			]),
+		).toEqual([
+			"169.254.169.254:blocked",
+			"169.254.170.2:blocked",
+			"100.100.100.200:blocked",
+			"10.0.0.1:blocked",
+			"172.16.0.1:blocked",
+			"192.168.1.1:blocked",
+			"100.64.0.1:blocked",
+			"104.18.32.47:public",
+		]);
 	});
 });
