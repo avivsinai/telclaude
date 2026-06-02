@@ -16,6 +16,7 @@ describe("Hermes adapter signature files", () => {
 	it("keeps network probe attestation registered only for the egress-broker seam", () => {
 		expect(hermesAdapterSignatureFilesForSurface("network.egress-broker")).toEqual(
 			expect.arrayContaining([
+				"src/hermes/browser-computer-broker-attestation.ts",
 				"src/hermes/network-probe-attestation.ts",
 				"src/hermes/network-probes.ts",
 			]),

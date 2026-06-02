@@ -550,6 +550,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/edge-adapter-contract.ts",
 	],
 	"network.egress-broker": [
+		"src/hermes/browser-computer-broker-attestation.ts",
 		"src/hermes/browser-computer-broker-probes.ts",
 		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
@@ -2204,7 +2205,7 @@ export function collectFeatureProbeEvidence(
 			return [collectGoogleProviderProbeEvidence(probe)];
 		}
 		if (isBrowserComputerBrokerSurfaceId(probe.surface_id)) {
-			return [collectBrowserComputerBrokerProbeEvidence(probe)];
+			return [collectBrowserComputerBrokerProbeEvidence(probe, options)];
 		}
 		if (isHermesWorkflowSurfaceId(probe.surface_id)) {
 			return [collectWorkflowProbeEvidence(probe, options)];
@@ -6329,6 +6330,7 @@ function collectGoogleProviderProbeEvidence(
 
 function collectBrowserComputerBrokerProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
 ): FeatureProbeEvidenceBundle["results"][number] {
 	if (!isBrowserComputerBrokerSurfaceId(probe.surface_id)) {
 		return featureProbeEvidenceFailure(
@@ -6354,7 +6356,7 @@ function collectBrowserComputerBrokerProbeEvidence(
 			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
 		);
 	}
-	const failure = browserComputerBrokerProbeEvidenceFailure(probe.surface_id, evidence);
+	const failure = browserComputerBrokerProbeEvidenceFailure(probe.surface_id, evidence, options);
 	if (failure) {
 		return featureProbeEvidenceFailure(
 			probe,
