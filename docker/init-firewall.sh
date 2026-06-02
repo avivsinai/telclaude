@@ -32,6 +32,70 @@ NETWORK_MODE="${TELCLAUDE_NETWORK_MODE:-restricted}"
 # Generated from src/sandbox/firewall-domains.ts.
 source "$(dirname "$0")/allowed-domains.generated.sh"
 
+TELCLAUDE_CONFIG_PATH="${TELCLAUDE_CONFIG:-/data/telclaude.json}"
+
+append_allowed_domain() {
+    local domain="$1"
+    local normalized
+    normalized=$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    if [ -z "$normalized" ]; then
+        return 0
+    fi
+    case "$normalized" in
+        *'*'*|*'/'*|*':'*|*' '*|*'..'*|.*|*.)
+            echo "[firewall] WARNING: skipping unsupported additional domain: $domain"
+            return 0
+            ;;
+        *[!a-z0-9.-]*)
+            echo "[firewall] WARNING: skipping unsupported additional domain: $domain"
+            return 0
+            ;;
+    esac
+    for existing in "${ALLOWED_DOMAINS[@]}"; do
+        if [ "$existing" = "$normalized" ]; then
+            return 0
+        fi
+    done
+    ALLOWED_DOMAINS+=("$normalized")
+}
+
+ADDITIONAL_DOMAINS_RAW=""
+if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+    ADDITIONAL_DOMAINS_RAW="$(
+        TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
+const fs = require("fs");
+const configPath = process.env.TELCLAUDE_CONFIG_PATH || "/data/telclaude.json";
+if (!fs.existsSync(configPath)) process.exit(0);
+let JSON5;
+try { JSON5 = require("/app/node_modules/json5"); } catch {
+  try { JSON5 = require("json5"); } catch { process.exit(0); }
+}
+let raw;
+try { raw = fs.readFileSync(configPath, "utf8"); } catch { process.exit(0); }
+let cfg;
+try { cfg = JSON5.parse(raw); } catch { process.exit(0); }
+const domains = cfg?.security?.network?.additionalDomains;
+if (!Array.isArray(domains)) process.exit(0);
+const seen = new Set();
+const output = [];
+for (const domain of domains) {
+  if (typeof domain !== "string") continue;
+  const normalized = domain.trim().toLowerCase();
+  if (!normalized || seen.has(normalized)) continue;
+  seen.add(normalized);
+  output.push(normalized);
+}
+process.stdout.write(output.join("\n"));
+NODE
+    )"
+fi
+
+if [ -n "$ADDITIONAL_DOMAINS_RAW" ]; then
+    while IFS= read -r domain; do
+        append_allowed_domain "$domain"
+    done <<< "$ADDITIONAL_DOMAINS_RAW"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Internal service allowlist (relay/agent RPC)
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -60,7 +124,6 @@ append_internal_host() {
 # Auto-include provider hosts from telclaude.json (for sidecar services)
 # Set TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1 on agent containers to prevent direct
 # provider access — agents must route through the relay proxy.
-TELCLAUDE_CONFIG_PATH="${TELCLAUDE_CONFIG:-/data/telclaude.json}"
 PROVIDER_HOSTS_RAW=""
 if [ "${TELCLAUDE_FIREWALL_SKIP_PROVIDERS:-0}" = "1" ]; then
     echo "[firewall] skipping provider hosts (TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1)"
