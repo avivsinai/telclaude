@@ -298,6 +298,7 @@ type FixtureResultOption = JsonOption & {
 	includeEdgeAdapter?: boolean;
 	includeProviderDomain?: boolean;
 	includeWorkflow?: boolean;
+	onlyProviderDomain?: boolean;
 	onlyWorkflow?: boolean;
 	skipPrivateTelegram?: boolean;
 	mergeExisting?: boolean;
@@ -1579,6 +1580,10 @@ export function registerHermesCommand(program: Command): void {
 			"Generate provider-domain fixture evidence from provider-domain probe artifacts",
 		)
 		.option(
+			"--only-provider-domain",
+			"Refresh only provider-domain fixture evidence and preserve existing fixture results",
+		)
+		.option(
 			"--include-browser-computer",
 			"Generate browser/computer broker fixture evidence from broker probe artifacts",
 		)
@@ -1604,9 +1609,13 @@ export function registerHermesCommand(program: Command): void {
 		.action((options: FixtureResultOption) => {
 			try {
 				const observedAt = options.observedAt ?? new Date().toISOString();
+				const includeProviderDomain =
+					options.includeProviderDomain === true || options.onlyProviderDomain === true;
 				const includeWorkflow = options.includeWorkflow === true || options.onlyWorkflow === true;
 				const skipPrivateTelegram =
-					options.skipPrivateTelegram === true || options.onlyWorkflow === true;
+					options.skipPrivateTelegram === true ||
+					options.onlyProviderDomain === true ||
+					options.onlyWorkflow === true;
 				if (skipPrivateTelegram && options.testReport) {
 					throw new Error("Use either --skip-private-telegram or --test-report, not both.");
 				}
@@ -1634,14 +1643,14 @@ export function registerHermesCommand(program: Command): void {
 							});
 						})();
 				const providerDomainBundle =
-					options.includeProviderDomain === true
+					includeProviderDomain === true
 						? buildProviderDomainFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,
 							})
 						: undefined;
 				const googleProviderBundle =
-					options.includeProviderDomain === true
+					includeProviderDomain === true
 						? buildGoogleProviderFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,

@@ -6720,6 +6720,66 @@ describe("Hermes wrapper foundation", () => {
 		expect(fs.existsSync(evidenceDir)).toBe(false);
 	});
 
+	it("refreshes provider fixtures independently of private Telegram fixture execution", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-provider-only-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		writeJson(outPath, {
+			schemaVersion: 1,
+			results: [
+				{
+					id: "fixture.private.telegram.basic",
+					status: "pass",
+					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+				},
+			],
+		});
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			await withCwd(tempDir, async () => {
+				const result = await runHermesCommand([
+					"hermes",
+					"fixtures",
+					"--json",
+					"--merge-existing",
+					"--only-provider-domain",
+					"--report-out",
+					reportOut,
+					"--out",
+					outPath,
+					"--evidence-dir",
+					path.join(tempDir, "evidence"),
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					results: Array<{ id: string; status: string; evidence_path: string }>;
+				};
+
+				expect(result.exitCode).toBe(1);
+				expect(report.status).toBe("fail");
+				expect(report.results).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
+						expect.objectContaining({ id: "fixture.providers.bank.read", status: "fail" }),
+						expect.objectContaining({
+							id: "fixture.providers.google.direct-provider-deny",
+							status: "fail",
+						}),
+					]),
+				);
+				expect(result.stdout).not.toContain("Missing relay response signing key");
+				expect(fs.existsSync(reportOut)).toBe(false);
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
 	it("refuses to write imported private Telegram fixture reports", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-imported-"));
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
