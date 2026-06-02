@@ -155,7 +155,9 @@ describe("checkConfigLoaded", () => {
 	});
 
 	it("fails on malformed botToken", () => {
-		const cfg = makeMinimalConfig({ telegram: { botToken: "no-colon-here", heartbeatSeconds: 60 } });
+		const cfg = makeMinimalConfig({
+			telegram: { botToken: "no-colon-here", heartbeatSeconds: 60 },
+		});
 		const results = checkConfigLoaded(cfg);
 		const tokenCheck = results.find((r) => r.name === "config.telegram.botToken");
 		expect(tokenCheck?.status).toBe("fail");
@@ -205,7 +207,7 @@ describe("checkNetworkConfig", () => {
 
 	it("fails when providers are configured but privateEndpoints is empty", () => {
 		const cfg = makeMinimalConfig({
-			providers: [{ id: "google", baseUrl: "http://google-services:3001", services: ["gmail"] }],
+			providers: [{ id: "google", baseUrl: "http://google-services:3002", services: ["gmail"] }],
 		});
 		const results = checkNetworkConfig(cfg);
 		const endpoints = results.find((r) => r.name === "network.privateEndpoints");

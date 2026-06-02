@@ -49,7 +49,7 @@
 			"services": ["gmail", "calendar", "drive", "contacts"],
 			"oauthServiceId": "google",
 			"setupCommand": "providers setup google",
-			"defaultBaseUrl": "http://google-services:3001"
+			"defaultBaseUrl": "http://google-services:3002"
 		},
 		{
 			"id": "bank",
