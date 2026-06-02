@@ -18,6 +18,7 @@ import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
 	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
@@ -565,6 +566,52 @@ function writeRollbackRehearsal() {
 	};
 	writeJson(evidencePath, rehearsal);
 	return rehearsal;
+}
+
+function writeLockedRollbackRelayPublicKey(
+	rehearsal: ReturnType<typeof writeRollbackRehearsal>,
+	options: { sourceSha256?: string } = {},
+) {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-key-lock-"));
+	const sourcePath = path.join(tempDir, "relay-public-key-source.json");
+	const lockedRelayPublicKey = {
+		...rehearsal.relayPublicKey,
+		source: sourcePath,
+	};
+	const lockedRehearsal = {
+		...rehearsal,
+		relayPublicKey: lockedRelayPublicKey,
+	};
+	writeJson(sourcePath, {
+		environment: {
+			[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV]: rehearsal.relayPublicKey.value,
+		},
+	});
+	writeJson(rehearsal.evidence_path, lockedRehearsal);
+	const sourceSha256 = options.sourceSha256 ?? sha256FileDigest(sourcePath);
+	const lockPath = path.join(tempDir, "rollback-relay-public-key.lock.json");
+	writeJson(lockPath, {
+		schemaVersion: "telclaude.hermes.rollback-relay-public-key-lock.v1",
+		keys: [
+			{
+				...lockedRelayPublicKey,
+				sourceSha256,
+			},
+		],
+	});
+	return { lockPath, lockedRehearsal, sourcePath };
+}
+
+function sha256FileDigest(filePath: string): string {
+	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[name];
+	} else {
+		process.env[name] = value;
+	}
 }
 
 function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
@@ -1368,6 +1415,87 @@ function networkGateDetail(networkProbes: ProbeBundle): string {
 	const report = evaluateCutoverCheck(cutoverBundle(networkProbes));
 	return report.gates.find((gate) => gate.name === "networkProbes.pass")?.detail ?? "";
 }
+
+describe("Hermes cutover rollback relay key anchoring", () => {
+	it("accepts archived rollback transcripts through a trusted relay public-key lockfile", () => {
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-lock-cutover-"));
+		const rehearsal = writeRollbackRehearsal();
+		const { lockPath, lockedRehearsal } = writeLockedRollbackRelayPublicKey(rehearsal);
+		const bundle = refreshCutoverProofBundle(
+			cutoverBundle(writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence)),
+		);
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const report = evaluateCutoverCheck(
+				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+			);
+
+			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
+				status: "pass",
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("rejects archived rollback public-key locks whose source artifact digest changed", () => {
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-lock-cutover-"));
+		const rehearsal = writeRollbackRehearsal();
+		const { lockPath, lockedRehearsal, sourcePath } = writeLockedRollbackRelayPublicKey(rehearsal);
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		writeJson(sourcePath, { environment: { [HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV]: "tampered" } });
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const report = evaluateCutoverCheck(
+				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+			);
+
+			expect(report.status).toBe("fail");
+			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+				"rollback rehearsal relay public key source artifact sha256 does not match lockfile",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("rejects process-env relay public-key source as cutover provenance", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-env-cutover-"));
+		const rehearsal = writeRollbackRehearsal();
+		const processEnvRehearsal = {
+			...rehearsal,
+			relayPublicKey: {
+				...rehearsal.relayPublicKey,
+				source: "process-env",
+			},
+		};
+		writeJson(rehearsal.evidence_path, processEnvRehearsal);
+		const bundle = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+
+		const report = evaluateCutoverCheck(
+			refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: processEnvRehearsal }),
+		);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+			"rollback rehearsal relay public key source process-env is not cutover provenance",
+		);
+	});
+});
 
 describe("Hermes cutover edge-adapter evidence validation", () => {
 	it("refuses schema-only edge contract-unit evidence as cutover enforcement", () => {
