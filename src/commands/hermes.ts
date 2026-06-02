@@ -900,6 +900,26 @@ function importedNetworkProbeReportRequiresSigning(reportPath: string): boolean 
 	});
 }
 
+function failHermesProbeInput(
+	surface: string,
+	options: { readonly json?: boolean },
+	detail: string,
+): void {
+	const report = {
+		schemaVersion: "telclaude.hermes.probe-report.v1",
+		status: "input_error",
+		surface,
+		detail,
+	};
+	if (options.json) {
+		printJson(report);
+	} else {
+		console.log(`Hermes probe ${surface}: input_error`);
+		console.log(`- FAIL surface: ${detail}`);
+	}
+	process.exitCode = 1;
+}
+
 function mergeFixtureResults(
 	existing: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>,
 	generated: Array<{ id: string; status: "pass" | "fail"; evidence_path: string }>,
@@ -2499,6 +2519,13 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (isEdgeAdapterFeatureSurfaceId(surface)) {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
 				const report = buildEdgeAdapterProbeEvidence({
 					surfaceId: surface,
 					allowRun: options.allowRun === true,
@@ -2525,6 +2552,13 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (surface === "sideeffect.ledger") {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
 				const report = await runTelclaudeMcpSideEffectLedgerProbe({
 					allowRun: options.allowRun === true,
 				});
@@ -2550,6 +2584,13 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (surface === "providers.approval-binding") {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
 				const report = await runTelclaudeProviderApprovalBindingProbe({
 					allowRun: options.allowRun === true,
 				});
