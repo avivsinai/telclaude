@@ -4192,13 +4192,40 @@ function profileGenerationProofFailures(
 	);
 	if (
 		decision.evidence_path &&
-		!sameResolvedArtifactPath(decision.evidence_path, bundle.profileGenerationProof.evidence_path)
+		!profileGenerationEvidencePathMatchesDecision(
+			decision.evidence_path,
+			bundle.profileGenerationProof.evidence_path,
+		)
 	) {
 		failures.push(
 			`decision ${PROFILE_GENERATION_DECISION_ID} evidence_path does not match profile-generation proof`,
 		);
 	}
 	return failures;
+}
+
+function profileGenerationEvidencePathMatchesDecision(
+	decisionEvidencePath: string,
+	proofEvidencePath: string,
+): boolean {
+	if (sameResolvedArtifactPath(decisionEvidencePath, proofEvidencePath)) return true;
+	return isExternalProfileGenerationProofOverride(decisionEvidencePath, proofEvidencePath);
+}
+
+function isExternalProfileGenerationProofOverride(
+	decisionEvidencePath: string,
+	proofEvidencePath: string,
+): boolean {
+	const repoRoot = gitTopLevel(process.cwd());
+	if (!repoRoot) return false;
+	const decisionRelative = path.relative(repoRoot, resolveHermesArtifactPath(decisionEvidencePath));
+	if (decisionRelative !== DEFAULT_PROFILE_GENERATION_PROOF_PATH) return false;
+	const proofRelative = path.relative(repoRoot, resolveHermesArtifactPath(proofEvidencePath));
+	return (
+		path.isAbsolute(proofRelative) ||
+		proofRelative === ".." ||
+		proofRelative.startsWith(`..${path.sep}`)
+	);
 }
 
 function profileGenerationEvidenceFailures(
