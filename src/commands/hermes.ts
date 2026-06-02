@@ -641,32 +641,31 @@ function isProofBundleNoForkBootstrapFailure(detail: string): boolean {
 	return semanticFailures.length > 0 && isNoForkBootstrapFailure(semanticFailures.join("; "));
 }
 
-function isLockfileNoForkBootstrapFailure(detail: string): boolean {
-	return detail === "lockfile noForkProofEvidencePath does not match no-fork evidence path";
+function isNoForkBootstrapGate(gate: { name: string; detail: string }): boolean {
+	if (gate.name === "nofork.clean") return isNoForkBootstrapFailure(gate.detail);
+	if (gate.name === "proofBundle.noForkProof" || gate.name === "proofBundle.noForkProof.valid") {
+		return isProofBundleNoForkBootstrapFailure(gate.detail);
+	}
+	return false;
 }
 
-type NoForkP0StatusDerivationOptions = {
-	readonly allowLockfileNoForkPathBootstrap?: boolean;
-};
+function isPreliminaryNoForkLockfilePathMismatch(gate: { name: string; detail: string }): boolean {
+	return (
+		gate.name === "lockfile.consistent" &&
+		gate.detail === "lockfile noForkProofEvidencePath does not match no-fork evidence path"
+	);
+}
 
 export function deriveNoForkP0Status(
 	cutover: ReturnType<typeof evaluateCutoverCheck>,
-	options: NoForkP0StatusDerivationOptions = {},
 ): "pass" | "fail" {
 	const failingGates = cutover.gates.filter((gate) => gate.status !== "pass");
 	if (failingGates.length === 0) return "pass";
+	const hasNoForkBootstrapGate = failingGates.some((gate) => isNoForkBootstrapGate(gate));
 	if (
 		failingGates.every((gate) => {
-			if (gate.name === "nofork.clean") return isNoForkBootstrapFailure(gate.detail);
-			if (gate.name === "proofBundle.noForkProof.valid") {
-				return isProofBundleNoForkBootstrapFailure(gate.detail);
-			}
-			if (gate.name === "lockfile.consistent") {
-				return (
-					options.allowLockfileNoForkPathBootstrap === true &&
-					isLockfileNoForkBootstrapFailure(gate.detail)
-				);
-			}
+			if (isNoForkBootstrapGate(gate)) return true;
+			if (hasNoForkBootstrapGate && isPreliminaryNoForkLockfilePathMismatch(gate)) return true;
 			return false;
 		})
 	) {
@@ -687,13 +686,6 @@ function profileProofDeniesSourceReplacement(profileProof: unknown): boolean {
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function lockfileNoForkPathMatchesOutput(lockfile: unknown, outputPath: string): boolean {
-	if (!isJsonRecord(lockfile) || typeof lockfile.noForkProofEvidencePath !== "string") {
-		return false;
-	}
-	return path.resolve(lockfile.noForkProofEvidencePath) === path.resolve(outputPath);
 }
 
 function resolveProReviewBundlePath(bundleOut: string | undefined): string {
@@ -1908,10 +1900,6 @@ export function registerHermesCommand(program: Command): void {
 							readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						);
 						const lockfile = readJsonFile(resolveHermesArtifactPath(options.lockfile));
-						const allowLockfileNoForkPathBootstrap = lockfileNoForkPathMatchesOutput(
-							lockfile,
-							options.out,
-						);
 						const evaluateP0Cutover = (noForkPath: string) => {
 							const cutoverProofBundle = buildCutoverProofBundle({
 								hermes: proofTemplate.hermes,
@@ -1953,9 +1941,7 @@ export function registerHermesCommand(program: Command): void {
 							);
 						};
 						const preliminaryCutover = evaluateP0Cutover(preliminaryNoForkPath);
-						const p0Status = deriveNoForkP0Status(preliminaryCutover, {
-							allowLockfileNoForkPathBootstrap,
-						});
+						const p0Status = deriveNoForkP0Status(preliminaryCutover);
 						const endedAt = new Date().toISOString();
 						const p0Command = buildNoForkP0Command(options);
 						const transcript = {
