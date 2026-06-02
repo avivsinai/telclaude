@@ -128,6 +128,65 @@ describe("cutover proof bundle", () => {
 		expect(proofBundle.artifacts.compatibilityLockfile.status).toBe("fail");
 	});
 
+	it.each([
+		"inventory",
+		"scopeManifest",
+		"decisionLog",
+		"queueSnapshot",
+	] as const)("marks malformed %s artifacts failed", (artifactKey) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-proof-core-"));
+		const paths = {
+			inventory: writeJson(tempDir, "inventory.json", { schemaVersion: 1 }),
+			scopeManifest: writeJson(tempDir, "scope.json", { schemaVersion: 1 }),
+			decisionLog: writeJson(tempDir, "decisions.json", { schemaVersion: 1 }),
+			compatibilityLockfile: writeJson(tempDir, "lockfile.json", { schemaVersion: 1 }),
+			featureProbeMatrix: writeJson(tempDir, "feature-probes.json", {
+				schemaVersion: 1,
+				probes: [featureProbe("pass")],
+			}),
+			fixtureResults: writeJson(tempDir, "fixtures.json", {
+				schemaVersion: 1,
+				results: [fixtureResult("pass")],
+			}),
+			noForkProof: writeJson(tempDir, "no-fork-proof.json", {
+				schemaVersion: 1,
+				hermesCheckoutClean: true,
+				evidence_path: "artifacts/hermes/no-fork.json",
+				checks: [],
+			}),
+			networkProbeBundle: writeJson(tempDir, "network-probes.json", {
+				schemaVersion: 1,
+				probes: REQUIRED_NETWORK_PROBES.map((id) => networkProbe(id, "pass")),
+			}),
+			queueSnapshot: writeJson(tempDir, "queue.json", { schemaVersion: 1 }),
+			rollbackEvidence: writeJson(tempDir, "rollback.json", {
+				schemaVersion: 1,
+				passed: true,
+				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
+			}),
+		};
+
+		const proofBundle = buildCutoverProofBundle({
+			hermes: { version: "0.15.1" },
+			wrapperVersion: "0.7.1",
+			now: new Date("2026-06-01T00:00:00.000Z"),
+			artifacts: {
+				inventory: proofArtifact(paths.inventory, ["inputs.inventory"]),
+				scopeManifest: proofArtifact(paths.scopeManifest, ["inputs.scopeManifest"]),
+				decisionLog: proofArtifact(paths.decisionLog, ["inputs.decisionLog"]),
+				compatibilityLockfile: proofArtifact(paths.compatibilityLockfile, ["inputs.lockfile"]),
+				featureProbeMatrix: proofArtifact(paths.featureProbeMatrix, ["inputs.featureProbeMatrix"]),
+				fixtureResults: proofArtifact(paths.fixtureResults, ["inputs.fixtureResults"]),
+				noForkProof: proofArtifact(paths.noForkProof, ["inputs.noForkProof"]),
+				networkProbeBundle: proofArtifact(paths.networkProbeBundle, ["inputs.networkProbes"]),
+				queueSnapshot: proofArtifact(paths.queueSnapshot, ["inputs.queueSnapshot"]),
+				rollbackEvidence: proofArtifact(paths.rollbackEvidence, ["inputs.rollbackRehearsal"]),
+			},
+		});
+
+		expect(proofBundle.artifacts[artifactKey].status).toBe("fail");
+	});
+
 	it("marks feature-probe artifacts failed when any probe is red", () => {
 		const proofBundle = buildProofBundleForFeatureAndFixtureStatus("fail", "fail");
 

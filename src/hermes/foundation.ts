@@ -2093,6 +2093,30 @@ function cutoverProofArtifactSemanticFailures(
 		];
 	}
 
+	if (key === "inventory") {
+		const parsed = InventorySnapshotSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`inventory schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [];
+	}
+
+	if (key === "scopeManifest") {
+		const parsed = CutoverScopeManifestSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`scope manifest schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [];
+	}
+
+	if (key === "decisionLog") {
+		const parsed = DecisionLogSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`decision log schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [];
+	}
+
 	if (key === "compatibilityLockfile") {
 		const parsed = CompatibilityLockfileSchema.safeParse(value);
 		if (!parsed.success) {
@@ -2125,6 +2149,14 @@ function cutoverProofArtifactSemanticFailures(
 			return [`rollback rehearsal schema invalid: ${flattenZodError(parsed.error)}`];
 		}
 		return rollbackRehearsalEvidenceFailures(parsed.data, options);
+	}
+
+	if (key === "queueSnapshot") {
+		const parsed = QueueOwnershipSnapshotSchema.safeParse(value);
+		if (!parsed.success) {
+			return [`queue snapshot schema invalid: ${flattenZodError(parsed.error)}`];
+		}
+		return [];
 	}
 
 	return [];
