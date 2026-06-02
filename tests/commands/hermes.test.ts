@@ -12,6 +12,16 @@ import { deriveNoForkP0Status, registerHermesCommand } from "../../src/commands/
 import type { TelclaudeConfig } from "../../src/config/config.js";
 import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approval-continuation.js";
 import {
+	type BrowserComputerBrokerSurfaceId,
+	buildBrowserComputerBrokerFixtureEvidenceBundle,
+	runTelclaudeBrowserComputerBrokerProbe,
+} from "../../src/hermes/browser-computer-broker-probes.js";
+import {
+	buildEdgeAdapterFixtureEvidenceBundle,
+	buildEdgeAdapterProbeEvidence,
+	type EdgeAdapterFeatureSurfaceId,
+} from "../../src/hermes/edge-adapter-probes.js";
+import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
 	buildCutoverProofBundle,
@@ -49,6 +59,7 @@ import {
 } from "../../src/hermes/inventory.js";
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
+import { runTelclaudeMcpSideEffectLedgerProbe } from "../../src/hermes/mcp/side-effect-ledger-probe.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import {
 	noForkProofChecksSha256,
@@ -58,10 +69,22 @@ import {
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
+import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
+import {
+	buildProviderDomainFixtureEvidenceBundle,
+	type ProviderDomainSurfaceId as HermesProviderDomainSurfaceId,
+	runTelclaudeProviderDomainProbe,
+} from "../../src/hermes/provider-domain-probes.js";
+import {
+	buildGoogleProviderFixtureEvidenceBundle,
+	runTelclaudeGoogleProviderProbe,
+} from "../../src/hermes/provider-google-probe.js";
+import { runTelclaudeProviderReleasePolicyProbe } from "../../src/hermes/provider-release-policy-probe.js";
 import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
+import { buildServedMcpProviderToolsProbeEvidence } from "../../src/hermes/served-mcp-provider-tools-probe.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
@@ -2368,6 +2391,8 @@ function cliHeadlessReadinessFailureEvidence(): Record<string, unknown> {
 }
 
 function proReviewCanary(overrides: Record<string, unknown> = {}) {
+	const reverifiedAt = new Date().toISOString();
+	const observedAt = new Date(Date.now() - 60_000).toISOString();
 	return {
 		schemaVersion: "telclaude.hermes.pro-review-native-canary.v1",
 		status: "pass",
@@ -2385,8 +2410,8 @@ function proReviewCanary(overrides: Record<string, unknown> = {}) {
 		expectedResponse: "OK",
 		response: "OK",
 		warnings: [],
-		observedAt: "2026-05-31T17:00:00.000Z",
-		reverifiedAt: "2026-05-31T17:04:51Z",
+		observedAt,
+		reverifiedAt,
 		dryCanary: {
 			command:
 				"YOETZ_AGENT=1 yoetz browser extension canary --chatgpt --extension-instance-id ext_test --format json",
@@ -2525,25 +2550,293 @@ function proReviewRequest(
 	return request;
 }
 
-function writeRequiredProReviewWorkspace(root: string): void {
+async function writeRequiredProReviewWorkspace(
+	root: string,
+	options: { readonly semanticEvidence?: "red" | "green" } = {},
+): Promise<void> {
+	if (options.semanticEvidence === "green") {
+		await writeGreenProReviewSemanticArtifacts(root);
+	}
 	for (const file of REQUIRED_PRO_REVIEW_FILES) {
 		const resolved = path.join(root, file);
+		if (fs.existsSync(resolved)) continue;
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
-			writeJson(resolved, cliHeadlessEvidence());
-		} else if (file.startsWith("artifacts/hermes/probes/")) {
-			writeJson(resolved, {
-				schemaVersion: "telclaude.hermes.pro-review-red-probe-fixture.v1",
-				status: "fail",
-				summary: `explicitly red Pro-review fixture for ${file}`,
-			});
+			writeJson(resolved, cliHeadlessReadinessFailureEvidence());
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
+		} else if (file.startsWith("artifacts/hermes/") && file.endsWith(".json")) {
+			writeJson(resolved, proReviewReadinessRedEvidence(file));
 		} else {
 			fs.writeFileSync(resolved, `test fixture for ${file}\n`, "utf8");
 		}
 	}
 }
+
+async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void> {
+	ensureOperatorRelayKeys();
+	const observedAt = new Date().toISOString();
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/execution-cli-headless.json"),
+		cliHeadlessEvidence(),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/pro-review-native-canary.json"),
+		proReviewCanary(),
+	);
+	for (const [relativePath, surfaceId] of Object.entries(PRO_REVIEW_EDGE_PROBE_ARTIFACTS)) {
+		writeJson(
+			rootArtifact(root, relativePath),
+			buildEdgeAdapterProbeEvidence({ surfaceId, allowRun: true, observedAt }),
+		);
+	}
+	for (const [relativePath, surfaceId] of Object.entries(
+		PRO_REVIEW_BROWSER_COMPUTER_PROBE_ARTIFACTS,
+	)) {
+		writeJson(
+			rootArtifact(root, relativePath),
+			greenBrowserComputerBrokerProbeEvidence(surfaceId, observedAt),
+		);
+	}
+	for (const [relativePath, surfaceId] of Object.entries(
+		PRO_REVIEW_PROVIDER_DOMAIN_PROBE_ARTIFACTS,
+	)) {
+		writeJson(
+			rootArtifact(root, relativePath),
+			await runTelclaudeProviderDomainProbe({ surfaceId, allowRun: true, observedAt }),
+		);
+	}
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/providers-google.json"),
+		await runTelclaudeGoogleProviderProbe({ allowRun: true, observedAt }),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/providers-release-policy.json"),
+		runTelclaudeProviderReleasePolicyProbe({ allowRun: true, observedAt }),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/sideeffect-ledger.json"),
+		await runTelclaudeMcpSideEffectLedgerProbe({ allowRun: true, observedAt }),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/providers-approval-binding.json"),
+		await runTelclaudeProviderApprovalBindingProbe({ allowRun: true, observedAt }),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/workflow-cron.json"),
+		runHermesWorkflowProbe({ surfaceId: "workflow.cron", allowRun: true, observedAt }),
+	);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/workflow-longrun.json"),
+		runHermesWorkflowProbe({ surfaceId: "workflow.longrun", allowRun: true, observedAt }),
+	);
+	for (const [relativePath, probeId] of Object.entries(PRO_REVIEW_NETWORK_PROBE_ARTIFACTS)) {
+		writeJson(
+			rootArtifact(root, relativePath),
+			passingProReviewNetworkProbeEvidence(probeId, relativePath, observedAt),
+		);
+	}
+	const servedMcpSourcePath = rootArtifact(
+		root,
+		"artifacts/hermes/probes/execution-served-mcp-containment.json",
+	);
+	const servedMcpSource = servedMcpContainmentEvidence();
+	writeJson(servedMcpSourcePath, servedMcpSource);
+	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/served-mcp-provider-tools.json"),
+		buildServedMcpProviderToolsProbeEvidence({
+			sourceEvidencePath: servedMcpSourcePath,
+			sourceEvidence: servedMcpSource,
+			observedAt,
+		}),
+	);
+	writeFixtureEvidenceBundle(
+		buildEdgeAdapterFixtureEvidenceBundle({
+			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
+			observedAt,
+			probePaths: {
+				...mapRecordValues(PRO_REVIEW_EDGE_PROBE_ARTIFACTS, (_surfaceId, relativePath) =>
+					rootArtifact(root, relativePath),
+				),
+				"providers.release-policy": rootArtifact(
+					root,
+					"artifacts/hermes/probes/providers-release-policy.json",
+				),
+			},
+		}),
+		root,
+	);
+	writeFixtureEvidenceBundle(
+		buildProviderDomainFixtureEvidenceBundle({
+			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
+			observedAt,
+			probePaths: mapRecordValues(
+				PRO_REVIEW_PROVIDER_DOMAIN_PROBE_ARTIFACTS,
+				(_surfaceId, relativePath) => rootArtifact(root, relativePath),
+			),
+			networkProbePath: rootArtifact(root, "artifacts/hermes/network/direct-provider-denied.json"),
+		}),
+		root,
+	);
+	writeFixtureEvidenceBundle(
+		buildGoogleProviderFixtureEvidenceBundle({
+			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
+			observedAt,
+			probePath: rootArtifact(root, "artifacts/hermes/probes/providers-google.json"),
+			networkProbePath: rootArtifact(root, "artifacts/hermes/network/direct-provider-denied.json"),
+		}),
+		root,
+	);
+	writeFixtureEvidenceBundle(
+		buildBrowserComputerBrokerFixtureEvidenceBundle({
+			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
+			observedAt,
+			probePaths: mapRecordValues(
+				PRO_REVIEW_BROWSER_COMPUTER_PROBE_ARTIFACTS,
+				(_surfaceId, relativePath) => rootArtifact(root, relativePath),
+			),
+		}),
+		root,
+	);
+	writeFixtureEvidenceBundle(
+		buildHermesWorkflowFixtureEvidenceBundle({
+			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
+			observedAt,
+			probePaths: {
+				"workflow.cron": rootArtifact(root, "artifacts/hermes/probes/workflow-cron.json"),
+				"workflow.longrun": rootArtifact(root, "artifacts/hermes/probes/workflow-longrun.json"),
+			},
+		}),
+		root,
+	);
+}
+
+function rootArtifact(root: string, relativePath: string): string {
+	return path.join(root, relativePath);
+}
+
+function passingProReviewNetworkProbeEvidence(
+	id: string,
+	evidencePath: string,
+	generatedAt: string,
+) {
+	const attempts =
+		id === "network.direct-provider-denied"
+			? passingNetworkProbeAttempts(id)
+			: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)];
+	return withNetworkProbeAttestation({
+		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
+		id,
+		posture: "contained-internal",
+		status: "pass",
+		ran: true,
+		summary:
+			id === "network.relay-control-allowed"
+				? `${id} observed expected relay reachability`
+				: `${id} observed only expected denials`,
+		generatedAt,
+		evidence_path: evidencePath,
+		attempts,
+	});
+}
+
+function greenBrowserComputerBrokerProbeEvidence(
+	surfaceId: BrowserComputerBrokerSurfaceId,
+	observedAt: string,
+): ReturnType<typeof runTelclaudeBrowserComputerBrokerProbe> {
+	const evidence = runTelclaudeBrowserComputerBrokerProbe({
+		surfaceId,
+		allowRun: true,
+		observedAt,
+	});
+	if (surfaceId !== "network.egress-broker") return evidence;
+	return {
+		...evidence,
+		status: "pass",
+		summary: "network.egress-broker broker probe passed in command test fixture",
+		checks: evidence.checks.map((check) => ({
+			...check,
+			status: "pass",
+			detail: check.detail.replace(
+				"requires live machine-observed egress evidence",
+				"is supplied by the command test fixture",
+			),
+		})),
+		observations: {
+			...evidence.observations,
+			deniedAttemptCount: Math.max(evidence.observations.deniedAttemptCount, 20),
+			directEgressDenialCount: Math.max(evidence.observations.directEgressDenialCount, 20),
+		},
+	};
+}
+
+function writeFixtureEvidenceBundle(
+	bundle: {
+		readonly evidence: readonly Record<string, unknown>[];
+	},
+	root: string,
+): void {
+	for (const evidence of bundle.evidence) {
+		const evidencePath = evidence.evidence_path;
+		if (typeof evidencePath !== "string") throw new Error("fixture evidence_path is missing");
+		const relativeEvidencePath = path.relative(root, evidencePath).split(path.sep).join("/");
+		writeJson(evidencePath, { ...evidence, evidence_path: relativeEvidencePath });
+	}
+}
+
+function proReviewReadinessRedEvidence(file: string): Record<string, unknown> {
+	return {
+		schemaVersion: "telclaude.hermes.pro-review-red-semantic-evidence.v1",
+		id: path.basename(file, ".json"),
+		probeId: path.basename(file, ".json"),
+		status: "fail",
+		ran: false,
+		summary: `readiness-only red evidence for ${file}`,
+	};
+}
+
+function mapRecordValues<T extends string, V extends string>(
+	record: Record<string, V>,
+	mapper: (value: V, key: string) => T,
+): Record<V, T> {
+	return Object.fromEntries(
+		Object.entries(record).map(([key, value]) => [value, mapper(value, key)]),
+	) as Record<V, T>;
+}
+
+const PRO_REVIEW_EDGE_PROBE_ARTIFACTS: Record<string, EdgeAdapterFeatureSurfaceId> = {
+	"artifacts/hermes/probes/edge-whatsapp.json": "edge.whatsapp",
+	"artifacts/hermes/probes/edge-email.json": "edge.email",
+	"artifacts/hermes/probes/edge-agentmail.json": "edge.agentmail",
+	"artifacts/hermes/probes/edge-social.json": "edge.social",
+	"artifacts/hermes/probes/identity-migration.json": "identity.migration",
+	"artifacts/hermes/probes/household-scopes.json": "household.scopes",
+	"artifacts/hermes/probes/attachment-quarantine.json": "attachment.quarantine",
+	"artifacts/hermes/probes/outbound-policy.json": "outbound.policy",
+	"artifacts/hermes/probes/public-social-isolation.json": "public.social.isolation",
+};
+
+const PRO_REVIEW_BROWSER_COMPUTER_PROBE_ARTIFACTS: Record<string, BrowserComputerBrokerSurfaceId> =
+	{
+		"artifacts/hermes/probes/browser-profiles.json": "browser.profiles",
+		"artifacts/hermes/probes/computer-broker.json": "computer.broker",
+		"artifacts/hermes/probes/network-egress-broker.json": "network.egress-broker",
+	};
+
+const PRO_REVIEW_PROVIDER_DOMAIN_PROBE_ARTIFACTS: Record<string, HermesProviderDomainSurfaceId> = {
+	"artifacts/hermes/probes/providers-bank.json": "providers.bank",
+	"artifacts/hermes/probes/providers-clalit.json": "providers.clalit",
+	"artifacts/hermes/probes/providers-government.json": "providers.government",
+};
+
+const PRO_REVIEW_NETWORK_PROBE_ARTIFACTS: Record<string, string> = {
+	"artifacts/hermes/network/relay-control-allowed.json": "network.relay-control-allowed",
+	"artifacts/hermes/network/direct-provider-denied.json": "network.direct-provider-denied",
+	"artifacts/hermes/network/direct-vault-denied.json": "network.direct-vault-denied",
+	"artifacts/hermes/network/direct-model-provider-denied.json":
+		"network.direct-model-provider-denied",
+	"artifacts/hermes/network/dns-exfil-denied.json": "network.dns-exfil-denied",
+};
 
 async function withCwd<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
 	const previous = process.cwd();
@@ -5631,8 +5924,8 @@ describe("Hermes wrapper foundation", () => {
 				gates: Array<{ name: string; status: string }>;
 			};
 
-			expect(check.exitCode, check.stdout).toBe(1);
-			expect(report.status).toBe("fail");
+			expect(check.exitCode, check.stdout).toBe(2);
+			expect(report.status).toBe("pending");
 			expect(report.gates.find((gate) => gate.name === "request.payloadBinding")).toMatchObject({
 				status: "pass",
 			});
@@ -5741,7 +6034,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("fails Pro review readiness when exact private disclosure approval is required but absent", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
 		const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
 		await withCwd(tempDir, async () => {
@@ -5774,7 +6067,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("allows Pro review readiness to carry explicitly red cli_headless evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-red-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		await withCwd(tempDir, async () => {
 			const requestPath = "docs/hermes/pro-review-request.json";
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
@@ -5815,7 +6108,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("refuses Pro review send unless native evidence and exact private disclosure approval pass", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		await withCwd(tempDir, async () => {
 			const requestPath = "docs/hermes/pro-review-request.json";
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
@@ -5851,9 +6144,118 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("refuses approved Pro review send when selected evidence is explicitly red", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-red-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
+			writeJson(canaryPath, proReviewCanary());
+			const baseRequest = proReviewRequest(canaryPath);
+			writeJson(
+				requestPath,
+				proReviewRequest(canaryPath, {
+					status: "approved",
+					privateWorkspaceDisclosure: {
+						...(baseRequest.privateWorkspaceDisclosure as Record<string, unknown>),
+						approved: true,
+						approvalId: "approval-1",
+						operator: "aviv",
+						approvedAt: new Date().toISOString(),
+						payloadSha256: (baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
+					},
+				}),
+			);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--bundle-out",
+				bundlePath,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				send: { status: string; reason: string; yoetzCommand?: string[] };
+				report: { gates: Array<{ name: string; status: string; detail: string }> };
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report.send.status).toBe("refused");
+			expect(report.send.reason).toBe("pro-review-check did not pass with approval required");
+			expect(report.send.yoetzCommand).toBeUndefined();
+			expect(
+				report.report.gates.find((gate) => gate.name === "request.cliHeadlessEvidence"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("explicitly red and cannot be sent"),
+			});
+			expect(fs.existsSync(path.join(tempDir, bundlePath))).toBe(false);
+		});
+	});
+
+	it("prepares Pro review send only through the canary-bound native extension instance", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
+			writeJson(canaryPath, proReviewCanary());
+			const baseRequest = proReviewRequest(canaryPath);
+			writeJson(
+				requestPath,
+				proReviewRequest(canaryPath, {
+					status: "approved",
+					privateWorkspaceDisclosure: {
+						...(baseRequest.privateWorkspaceDisclosure as Record<string, unknown>),
+						approved: true,
+						approvalId: "approval-1",
+						operator: "aviv",
+						approvedAt: new Date().toISOString(),
+						payloadSha256: (baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
+					},
+				}),
+			);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--bundle-out",
+				bundlePath,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				send: { status: string; bundlePath: string; yoetzCommand: string[] };
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.send.status).toBe("ready");
+			expect(report.send.yoetzCommand).toEqual(
+				expect.arrayContaining([
+					"--transport",
+					"chrome-extension-native",
+					"--var",
+					"extension_instance_id=ext_test",
+				]),
+			);
+			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
+			expect(report.send.yoetzCommand).not.toContain("--cdp");
+			expect(fs.statSync(path.join(tempDir, bundlePath)).mode & 0o777).toBe(0o600);
+		});
+	});
+
 	it("fails Pro review evidence when a required selected file is missing", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-required-"));
-		writeRequiredProReviewWorkspace(tempDir);
+		await writeRequiredProReviewWorkspace(tempDir);
 		await withCwd(tempDir, async () => {
 			const requestPath = "docs/hermes/pro-review-request.json";
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
