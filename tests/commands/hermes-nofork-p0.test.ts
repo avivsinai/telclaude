@@ -54,6 +54,41 @@ describe("deriveNoForkP0Status", () => {
 		expect(status).toBe("pass");
 	});
 
+	it("classifies current proof-bundle no-fork semantic bootstrap gate names", () => {
+		const status = deriveNoForkP0Status(
+			cutoverWithGates([
+				{
+					name: "proofBundle.noForkProof",
+					status: "fail",
+					detail:
+						"proof bundle artifact noForkProof invalid: artifact status does not match on-disk semantic evidence; artifact semantic evidence failed: no-fork evidence runnerAttestation is missing; artifact semantic evidence failed: missing no-fork evidence check runner.attestation; artifact semantic evidence failed: missing no-fork evidence check runner.p0",
+				},
+			]),
+		);
+
+		expect(status).toBe("pass");
+	});
+
+	it("classifies preliminary lockfile path mismatch only with no-fork bootstrap evidence", () => {
+		const status = deriveNoForkP0Status(
+			cutoverWithGates([
+				{
+					name: "nofork.clean",
+					status: "fail",
+					detail:
+						"no-fork evidence runnerAttestation is missing; missing no-fork evidence check runner.attestation; missing no-fork evidence check runner.p0",
+				},
+				{
+					name: "lockfile.consistent",
+					status: "fail",
+					detail: "lockfile noForkProofEvidencePath does not match no-fork evidence path",
+				},
+			]),
+		);
+
+		expect(status).toBe("pass");
+	});
+
 	it("does not classify proof-bundle no-fork mismatches without semantic bootstrap evidence", () => {
 		const status = deriveNoForkP0Status(
 			cutoverWithGates([

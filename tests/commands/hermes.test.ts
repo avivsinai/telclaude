@@ -7093,7 +7093,6 @@ describe("Hermes wrapper foundation", () => {
 		} as ReturnType<typeof evaluateCutoverCheck>;
 
 		expect(deriveNoForkP0Status(cutover)).toBe("fail");
-		expect(deriveNoForkP0Status(cutover, { allowLockfileNoForkPathBootstrap: true })).toBe("pass");
 	});
 
 	it("evaluates P0 cutover gates when prove is run with --p0", async () => {
