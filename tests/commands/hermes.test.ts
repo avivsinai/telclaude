@@ -7519,6 +7519,58 @@ describe("Hermes wrapper foundation", () => {
 		expect(fs.existsSync(runReportPath)).toBe(false);
 	});
 
+	it("refuses network-probe report promotion with deferred attestation before writing artifacts", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-deferred-"));
+		const sourceDir = path.join(tempDir, "source");
+		const outPath = path.join(tempDir, "network-probes.json");
+		const evidenceDir = path.join(tempDir, "canonical");
+		const runReportOut = path.join(tempDir, "network-probes.run-report.json");
+		ensureOperatorRelayKeys();
+		const evidence = requiredNetworkProbeIds.map((id) => {
+			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
+			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
+				id,
+				evidencePath,
+			);
+			return unsignedEvidence;
+		});
+		const reportPath = path.join(tempDir, "run-report.json");
+		writeJson(reportPath, {
+			schemaVersion: "telclaude.hermes.network-probe-run.v1",
+			posture: "contained-internal",
+			status: "pass",
+			ran: true,
+			summary: "Hermes network denial probes passed",
+			bundle: { schemaVersion: 1, probes: [] },
+			evidence,
+		});
+
+		const result = await runHermesCommand([
+			"hermes",
+			"network-probes",
+			"--json",
+			"--from-report",
+			reportPath,
+			"--defer-attestation",
+			"--run-report-out",
+			runReportOut,
+			"--out",
+			outPath,
+			"--evidence-dir",
+			evidenceDir,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+		expect(result.exitCode).toBe(1);
+		expect(report).toMatchObject({
+			status: "fail",
+			summary: "Use either --from-report or --defer-attestation, not both.",
+		});
+		expect(fs.existsSync(outPath)).toBe(false);
+		expect(fs.existsSync(evidenceDir)).toBe(false);
+		expect(fs.existsSync(runReportOut)).toBe(false);
+	});
+
 	it("promotes a machine-observed network-probe run report into canonical artifacts", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-"));
 		const sourceDir = path.join(tempDir, "source");
