@@ -11,6 +11,8 @@ import {
 	NO_FORK_RUNNER_ATTESTATION_RUNNER,
 	NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
 	NO_FORK_RUNNER_ATTESTATION_SOURCE,
+	noForkProofChecksSha256,
+	noForkProofEvidenceSha256,
 	signNoForkRunnerAttestation,
 } from "./no-fork-attestation.js";
 
@@ -166,43 +168,12 @@ export function buildNoForkProof(input: {
 	const postCachedDiff = checkoutExists
 		? runner(["diff", "--cached", "--quiet"], checkoutPath)
 		: failedGit();
-	const signedRunnerAttestation =
-		input.wrapperRun && head && expectedRefCommit
-			? signNoForkRunnerAttestation({
-					schemaVersion: NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
-					source: NO_FORK_RUNNER_ATTESTATION_SOURCE,
-					runner: NO_FORK_RUNNER_ATTESTATION_RUNNER,
-					startedAt: input.wrapperRun.startedAt,
-					endedAt: input.wrapperRun.endedAt,
-					checkoutPath,
-					expectedRef,
-					expectedVersion,
-					head,
-					expectedRefCommit,
-					wrapperPackageSha256: input.wrapperRun.wrapperPackageSha256,
-					profileGenerationSha256: input.wrapperRun.profileGenerationSha256,
-					fixtureResultsSha256: input.wrapperRun.fixtureResultsSha256,
-					transcriptSha256: input.wrapperRun.transcriptSha256,
-					p0Command: input.wrapperRun.p0Command,
-					p0ExitCode: input.wrapperRun.p0ExitCode,
-					p0Status: input.wrapperRun.p0Status,
-					runtimeSourceReplacementDenied: input.wrapperRun.runtimeSourceReplacementDenied,
-					monkeypatchDenied: input.wrapperRun.monkeypatchDenied,
-					postRunStatusPorcelain: postStatusPorcelain,
-					postRunDiffExitCode: postDiff.exitCode,
-					postRunCachedDiffExitCode: postCachedDiff.exitCode,
-				})
-			: undefined;
-	const runnerAttestation = signedRunnerAttestation
-		? {
-				...signedRunnerAttestation,
-				p0Command: [...signedRunnerAttestation.p0Command],
-			}
-		: undefined;
+	const wrapperRun = input.wrapperRun;
+	const runnerAttestationAvailable = !!wrapperRun && !!head && !!expectedRefCommit;
 	checks.push({
 		name: "runner.attestation",
-		status: runnerAttestation ? "pass" : "fail",
-		detail: runnerAttestation
+		status: runnerAttestationAvailable ? "pass" : "fail",
+		detail: runnerAttestationAvailable
 			? "no-fork wrapper run attestation is signed"
 			: "no-fork wrapper run attestation is missing",
 	});
@@ -257,7 +228,7 @@ export function buildNoForkProof(input: {
 	});
 
 	const hermesCheckoutClean = checks.every((check) => check.status === "pass");
-	return {
+	const unsignedReport: Omit<NoForkProofReport, "runnerAttestation"> = {
 		schemaVersion: 1,
 		hermesCheckoutClean,
 		evidence_path: evidencePath,
@@ -273,8 +244,46 @@ export function buildNoForkProof(input: {
 		statusPorcelain,
 		diffExitCode: diff.exitCode,
 		cachedDiffExitCode: cachedDiff.exitCode,
-		...(runnerAttestation ? { runnerAttestation } : {}),
 		checks,
+	};
+	const signedRunnerAttestation =
+		runnerAttestationAvailable && wrapperRun && head && expectedRefCommit
+			? signNoForkRunnerAttestation({
+					schemaVersion: NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
+					source: NO_FORK_RUNNER_ATTESTATION_SOURCE,
+					runner: NO_FORK_RUNNER_ATTESTATION_RUNNER,
+					startedAt: wrapperRun.startedAt,
+					endedAt: wrapperRun.endedAt,
+					checkoutPath,
+					expectedRef,
+					expectedVersion,
+					head,
+					expectedRefCommit,
+					wrapperPackageSha256: wrapperRun.wrapperPackageSha256,
+					profileGenerationSha256: wrapperRun.profileGenerationSha256,
+					fixtureResultsSha256: wrapperRun.fixtureResultsSha256,
+					transcriptSha256: wrapperRun.transcriptSha256,
+					checksSha256: noForkProofChecksSha256(checks),
+					evidenceSha256: noForkProofEvidenceSha256(unsignedReport),
+					p0Command: wrapperRun.p0Command,
+					p0ExitCode: wrapperRun.p0ExitCode,
+					p0Status: wrapperRun.p0Status,
+					runtimeSourceReplacementDenied: wrapperRun.runtimeSourceReplacementDenied,
+					monkeypatchDenied: wrapperRun.monkeypatchDenied,
+					postRunStatusPorcelain: postStatusPorcelain,
+					postRunDiffExitCode: postDiff.exitCode,
+					postRunCachedDiffExitCode: postCachedDiff.exitCode,
+				})
+			: undefined;
+	const runnerAttestation = signedRunnerAttestation
+		? {
+				...signedRunnerAttestation,
+				p0Command: [...signedRunnerAttestation.p0Command],
+			}
+		: undefined;
+	return {
+		...unsignedReport,
+		...(runnerAttestation ? { runnerAttestation } : {}),
 	};
 }
 

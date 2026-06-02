@@ -58,6 +58,8 @@ import {
 	NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION,
 	NO_FORK_RUNNER_ATTESTATION_SOURCE,
 	type NoForkRunnerAttestation,
+	noForkProofChecksSha256,
+	noForkProofEvidenceSha256,
 	noForkRunnerAttestationSignatureFailure,
 } from "./no-fork-attestation.js";
 import {
@@ -1494,6 +1496,8 @@ export const NoForkProofSchema = z
 				profileGenerationSha256: z.string().regex(SHA256_DIGEST_PATTERN),
 				fixtureResultsSha256: z.string().regex(SHA256_DIGEST_PATTERN),
 				transcriptSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				checksSha256: z.string().regex(SHA256_DIGEST_PATTERN),
+				evidenceSha256: z.string().regex(SHA256_DIGEST_PATTERN),
 				p0Command: z.array(NonEmptyString),
 				p0ExitCode: z.number().int(),
 				p0Status: z.enum(["pass", "fail"]),
@@ -4906,6 +4910,14 @@ function noForkRunnerAttestationFailures(
 		if (attestation[field] !== evidence[field]) {
 			failures.push(`no-fork runner attestation ${field} does not match evidence`);
 		}
+	}
+	const expectedChecksSha256 = noForkProofChecksSha256(evidence.checks ?? []);
+	if (attestation.checksSha256 !== expectedChecksSha256) {
+		failures.push("no-fork runner attestation checksSha256 mismatch");
+	}
+	const expectedEvidenceSha256 = noForkProofEvidenceSha256(evidence);
+	if (attestation.evidenceSha256 !== expectedEvidenceSha256) {
+		failures.push("no-fork runner attestation evidenceSha256 mismatch");
 	}
 	const startedAtMs = Date.parse(attestation.startedAt);
 	const endedAtMs = Date.parse(attestation.endedAt);

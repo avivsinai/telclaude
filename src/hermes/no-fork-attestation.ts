@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
 	buildInternalResponseProof,
 	type InternalResponseProof,
@@ -10,6 +11,29 @@ export const NO_FORK_RUNNER_ATTESTATION_SOURCE = "telclaude-no-fork-proof-runner
 export const NO_FORK_RUNNER_ATTESTATION_RUNNER = "telclaude-hermes-no-fork-runner";
 export const NO_FORK_RUNNER_ATTESTATION_PATH = "/v1/hermes.no-fork.runner-attestation";
 const NO_FORK_RUNNER_ATTESTATION_SCOPE = "operator";
+
+type NoForkProofCheckLike = {
+	readonly name: string;
+	readonly status: string;
+	readonly detail: string;
+};
+
+type NoForkProofEvidenceLike = {
+	readonly schemaVersion: number;
+	readonly hermesCheckoutClean: boolean;
+	readonly evidence_path: string;
+	readonly checkoutPath?: string;
+	readonly expectedRef?: string;
+	readonly expectedVersion?: string;
+	readonly head?: string;
+	readonly expectedRefCommit?: string;
+	readonly currentBranch?: string;
+	readonly exactTags?: readonly string[];
+	readonly statusPorcelain?: string;
+	readonly diffExitCode?: number;
+	readonly cachedDiffExitCode?: number;
+	readonly checks?: readonly NoForkProofCheckLike[];
+};
 
 export type NoForkRunnerAttestationSignedFields = {
 	readonly schemaVersion: typeof NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION;
@@ -26,6 +50,8 @@ export type NoForkRunnerAttestationSignedFields = {
 	readonly profileGenerationSha256: `sha256:${string}`;
 	readonly fixtureResultsSha256: `sha256:${string}`;
 	readonly transcriptSha256: `sha256:${string}`;
+	readonly checksSha256: `sha256:${string}`;
+	readonly evidenceSha256: `sha256:${string}`;
 	readonly p0Command: readonly string[];
 	readonly p0ExitCode: number;
 	readonly p0Status: "pass" | "fail";
@@ -79,6 +105,35 @@ export function noForkRunnerAttestationSignatureFailure(
 	);
 }
 
+export function noForkProofChecksSha256(
+	checks: readonly NoForkProofCheckLike[],
+): `sha256:${string}` {
+	return sha256Digest(JSON.stringify(checks));
+}
+
+export function noForkProofEvidenceSha256(evidence: NoForkProofEvidenceLike): `sha256:${string}` {
+	return sha256Digest(noForkProofEvidenceSignedPayload(evidence));
+}
+
+function noForkProofEvidenceSignedPayload(evidence: NoForkProofEvidenceLike): string {
+	return JSON.stringify({
+		schemaVersion: evidence.schemaVersion,
+		hermesCheckoutClean: evidence.hermesCheckoutClean,
+		evidence_path: evidence.evidence_path,
+		checkoutPath: evidence.checkoutPath ?? null,
+		expectedRef: evidence.expectedRef ?? null,
+		expectedVersion: evidence.expectedVersion ?? null,
+		head: evidence.head ?? null,
+		expectedRefCommit: evidence.expectedRefCommit ?? null,
+		currentBranch: evidence.currentBranch ?? null,
+		exactTags: evidence.exactTags ?? [],
+		statusPorcelain: evidence.statusPorcelain ?? null,
+		diffExitCode: evidence.diffExitCode ?? null,
+		cachedDiffExitCode: evidence.cachedDiffExitCode ?? null,
+		checks: evidence.checks ?? [],
+	});
+}
+
 function noForkRunnerAttestationSignedPayload(
 	attestation: NoForkRunnerAttestationSignedFields,
 ): string {
@@ -97,6 +152,8 @@ function noForkRunnerAttestationSignedPayload(
 		profileGenerationSha256: attestation.profileGenerationSha256,
 		fixtureResultsSha256: attestation.fixtureResultsSha256,
 		transcriptSha256: attestation.transcriptSha256,
+		checksSha256: attestation.checksSha256,
+		evidenceSha256: attestation.evidenceSha256,
 		p0Command: [...attestation.p0Command],
 		p0ExitCode: attestation.p0ExitCode,
 		p0Status: attestation.p0Status,
@@ -106,4 +163,8 @@ function noForkRunnerAttestationSignedPayload(
 		postRunDiffExitCode: attestation.postRunDiffExitCode,
 		postRunCachedDiffExitCode: attestation.postRunCachedDiffExitCode,
 	});
+}
+
+function sha256Digest(value: string): `sha256:${string}` {
+	return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
 }

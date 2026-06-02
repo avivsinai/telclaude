@@ -59,6 +59,8 @@ describe("Hermes no-fork proof", () => {
 			checkoutPath,
 			head: HEAD,
 			expectedRefCommit: HEAD,
+			checksSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			evidenceSha256: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
 			p0Status: "pass",
 			p0ExitCode: 0,
 			postRunStatusPorcelain: "",
