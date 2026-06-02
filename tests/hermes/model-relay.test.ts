@@ -14,12 +14,15 @@ describe("Hermes model-relay probe", () => {
 	const tempDirs: string[] = [];
 	const directModelUrl = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 	const relayProxyUrl = "http://telclaude:8790/v1/openai-codex-proxy";
+	const relayProbeUrl = "http://telclaude:8790/v1/models";
 	const containedIp = "172.29.92.11";
 	const relayIp = "172.29.92.10";
 	const originalInferenceModel = process.env.HERMES_INFERENCE_MODEL;
+	const originalCodexBaseUrl = process.env.HERMES_CODEX_BASE_URL;
 
 	beforeEach(() => {
 		process.env.HERMES_INFERENCE_MODEL = "gpt-5.5";
+		process.env.HERMES_CODEX_BASE_URL = relayProxyUrl;
 	});
 
 	afterEach(async () => {
@@ -30,6 +33,11 @@ describe("Hermes model-relay probe", () => {
 			delete process.env.HERMES_INFERENCE_MODEL;
 		} else {
 			process.env.HERMES_INFERENCE_MODEL = originalInferenceModel;
+		}
+		if (originalCodexBaseUrl === undefined) {
+			delete process.env.HERMES_CODEX_BASE_URL;
+		} else {
+			process.env.HERMES_CODEX_BASE_URL = originalCodexBaseUrl;
 		}
 	});
 
@@ -45,7 +53,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("keeps the firewall sentinel gate for agent-iptables posture", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
@@ -93,7 +101,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("passes contained-internal posture without a fake firewall sentinel", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -122,7 +130,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when direct model-provider egress is reachable", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -145,7 +153,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when the generated profile lacks a relay credential reference", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
@@ -174,7 +182,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("does not accept relay reference strings outside canonical profile files", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
@@ -212,7 +220,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when the relay endpoint is not a successful response", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -235,7 +243,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("does not treat a direct model-provider timeout as positive denial evidence", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -258,7 +266,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed before network probing when the direct model URL is synthetic", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const syntheticDirectModelUrl = await closedLocalUrl();
 		const { profileDir, sentinel } = makeCleanProfile();
 
@@ -282,7 +290,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when firewall or contained-origin proof is missing", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir } = makeCleanProfile();
 
 		const report = await runHermesModelRelayProbe({
@@ -303,7 +311,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("scans script files for model credentials instead of skipping them", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(path.join(profileDir, "provider.py"), "ANTHROPIC_API_KEY='sk-secret'\n");
 
@@ -328,7 +336,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed on auth.json, Codex OAuth state, JWTs, and cookie/session tokens", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(
 			path.join(profileDir, "auth.json"),
@@ -381,7 +389,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when profile files cannot be fully scanned", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
 		fs.writeFileSync(path.join(profileDir, "oversized.bin"), Buffer.alloc(1_000_001));
 
@@ -405,7 +413,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	it("fails closed when generated profile contains raw model credentials or direct model hosts", async () => {
-		const relayUrl = relayProxyUrl;
+		const relayUrl = relayProbeUrl;
 		const tempDir = makeTempDir();
 		const profileDir = path.join(tempDir, "profile");
 		fs.mkdirSync(profileDir);
@@ -488,7 +496,7 @@ describe("Hermes model-relay probe", () => {
 	): typeof fetch {
 		const realFetch = globalThis.fetch;
 		return async (input, init) => {
-			if (String(input) === relayProxyUrl) {
+			if (String(input) === relayProbeUrl) {
 				const headers = new Headers();
 				const observedPeerAddress =
 					"observedPeerAddress" in relay ? relay.observedPeerAddress : containedIp;

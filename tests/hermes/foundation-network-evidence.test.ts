@@ -867,7 +867,7 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			refreshTokenPolicy: "non-refreshable-placeholder",
 		},
 		observation: {
-			relayUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			relayUrl: "http://telclaude:8790/v1/models",
 			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			profileDir: "/home/hermes/.hermes",
 			scannedProfileFiles: [
@@ -2438,14 +2438,14 @@ describe("Hermes cutover model-relay evidence validation", () => {
 		);
 	});
 
-	it("fails model-relay evidence when custody URL is not bound to the observed relay URL", () => {
+	it("fails model-relay evidence when the observed relay URL is not the probe endpoint", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
 		const evidencePath = path.join(tempDir, "model-relay.json");
 		writeJson(
 			evidencePath,
 			modelRelayEvidence({
 				observation: {
-					relayUrl: "http://telclaude:8790/v1/models",
+					relayUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 					directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 					profileDir: "/home/hermes/.hermes",
 					scannedProfileFiles: [
@@ -2460,7 +2460,7 @@ describe("Hermes cutover model-relay evidence validation", () => {
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
-			"modelProvider.baseUrl does not match observation.relayUrl",
+			"observation.relayUrl is not the Telclaude model relay probe endpoint",
 		);
 	});
 
@@ -2493,7 +2493,7 @@ describe("Hermes cutover model-relay evidence validation", () => {
 			evidencePath,
 			modelRelayEvidence({
 				observation: {
-					relayUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+					relayUrl: "http://telclaude:8790/v1/models",
 					directModelUrl: "http://127.0.0.1:9/v1/models",
 					profileDir: "/home/hermes/.hermes",
 					scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],

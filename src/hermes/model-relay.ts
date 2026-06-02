@@ -17,6 +17,7 @@ export const DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME = "tc-hermes-contained
 export const DEFAULT_MODEL_RELAY_POSTURE = "agent-iptables" as const;
 const TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL = "http://telclaude:8790/v1/openai-codex-proxy";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
+const HERMES_CODEX_BASE_URL_ENV = "HERMES_CODEX_BASE_URL";
 
 type ModelRelayStatus = "pass" | "fail" | "pending";
 export type ModelRelayPosture = (typeof NETWORK_PROBE_POSTURES)[number];
@@ -167,7 +168,7 @@ export async function runHermesModelRelayProbe(
 	const profileDir = options.profileDir?.trim();
 	const gates: ModelRelayGate[] = [];
 	gates.push(pass("modelRelay.allowed", "operator allowed live model-relay evidence"));
-	const modelProvider = buildModelRelayProvider(relayUrl);
+	const modelProvider = buildModelRelayProvider();
 	gates.push(modelRelayProviderGate(modelProvider));
 	if (posture === "agent-iptables") {
 		gates.push(firewallSentinelGate(options.firewallSentinelPath));
@@ -231,8 +232,9 @@ function firewallSentinelGate(sentinelPath: string | undefined): ModelRelayGate 
 		: fail("firewall.sentinel", "firewall sentinel is missing; model-relay evidence is unsafe");
 }
 
-function buildModelRelayProvider(relayUrl: string | undefined): ModelRelayProvider {
-	const baseUrl = relayUrl?.trim() || TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL;
+function buildModelRelayProvider(): ModelRelayProvider {
+	const baseUrl =
+		process.env[HERMES_CODEX_BASE_URL_ENV]?.trim() || TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL;
 	const parsed = safeUrl(baseUrl);
 	const model = process.env[HERMES_INFERENCE_MODEL_ENV]?.trim() || "";
 	return {
