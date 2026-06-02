@@ -1076,6 +1076,82 @@ function cutoverBundleWithNoForkProof(
 	};
 }
 
+it("accepts an external live profile proof for the canonical tracked decision path", () => {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-override-"));
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const report = evaluateCutoverCheck(
+		refreshCutoverProofBundle({
+			...base,
+			decisionLog: {
+				schemaVersion: 1,
+				decisions: [profileDecision("docs/hermes/profile-generation-proof.json")],
+			},
+		}),
+	);
+
+	expect(report.gates.find((gate) => gate.name === "profileGeneration.proven")).toMatchObject({
+		status: "pass",
+	});
+});
+
+it("rejects profile proof evidence path mismatches outside the canonical tracked override", () => {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-mismatch-"));
+	const base = cutoverBundle(
+		writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+	);
+	const report = evaluateCutoverCheck(
+		refreshCutoverProofBundle({
+			...base,
+			decisionLog: {
+				schemaVersion: 1,
+				decisions: [profileDecision("docs/hermes/other-profile-generation-proof.json")],
+			},
+		}),
+	);
+
+	expect(report.gates.find((gate) => gate.name === "profileGeneration.proven")).toMatchObject({
+		status: "fail",
+		detail: expect.stringContaining(
+			"decision D-profile-generation evidence_path does not match profile-generation proof",
+		),
+	});
+});
+
+it("rejects in-repo profile proof paths for the canonical tracked decision path", () => {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-in-repo-"));
+	const repoTempDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-hermes-profile-proof-"));
+	try {
+		const base = cutoverBundle(
+			writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence),
+		);
+		const proof = structuredClone(base.profileGenerationProof);
+		if (!proof) throw new Error("missing profile proof fixture");
+		proof.evidence_path = path.join(repoTempDir, "profile-generation-proof.json");
+		writeJson(proof.evidence_path, proof);
+		const report = evaluateCutoverCheck(
+			refreshCutoverProofBundle({
+				...base,
+				profileGenerationProof: proof,
+				decisionLog: {
+					schemaVersion: 1,
+					decisions: [profileDecision("docs/hermes/profile-generation-proof.json")],
+				},
+			}),
+		);
+
+		expect(report.gates.find((gate) => gate.name === "profileGeneration.proven")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				"decision D-profile-generation evidence_path does not match profile-generation proof",
+			),
+		});
+	} finally {
+		fs.rmSync(repoTempDir, { recursive: true, force: true });
+	}
+});
+
 function modelRelayCutoverBundle(evidencePath: string): CutoverInputBundle {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
 	const matrix = {
