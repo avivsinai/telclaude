@@ -11,7 +11,37 @@ import {
 	REQUIRED_PRO_REVIEW_FILES,
 } from "../../src/hermes/pro-review.js";
 
+const REQUIRED_PRO_REVIEW_CONTROL_FILES = [
+	"CLAUDE.md",
+	"SECURITY.md",
+	"docs/architecture.md",
+	"docs/hermes/cutover-scope.json",
+	"docs/hermes/decisions.json",
+	"docs/hermes/feature-probes.json",
+	"docs/hermes/hermes-compat.lock.json",
+	"docs/hermes/inventory.json",
+	"docs/hermes/no-fork-proof.json",
+	"docs/hermes/profile-generation-proof.json",
+	"docs/hermes/queue-snapshot.json",
+	"docs/hermes/rollback-relay-public-key.lock.json",
+	"docs/hermes/rollback-relay-public-key-source.82ac7ed-egress.json",
+] as const;
+
 describe("Hermes Pro review dirty selected-file policy", () => {
+	it("requires current cleanup-safe Hermes control files", () => {
+		expect(REQUIRED_PRO_REVIEW_FILES.slice(0, REQUIRED_PRO_REVIEW_CONTROL_FILES.length)).toEqual(
+			REQUIRED_PRO_REVIEW_CONTROL_FILES,
+		);
+		expect(REQUIRED_PRO_REVIEW_FILES).not.toEqual(
+			expect.arrayContaining([
+				"docs/plans/2026-05-29-hermes-wrapper-pristine-spec.md",
+				"docs/hermes/local-colima-live-run.md",
+				"docs/hermes/fixture-results.json",
+				"docs/hermes/network-probes.json",
+			]),
+		);
+	});
+
 	it("does not make the core Pro-review check depend on git worktree cleanliness", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-core-policy-"));
 		await withCwd(tempDir, async () => {
