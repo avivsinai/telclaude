@@ -30,6 +30,9 @@ describe("Hermes Pro review gate", () => {
 				"tests/hermes/edge-adapter-runtime.test.ts",
 				"src/hermes/browser-computer-broker-probes.ts",
 				"tests/hermes/browser-computer-broker-probes.test.ts",
+				"src/hermes/model-relay.ts",
+				"tests/hermes/model-relay.test.ts",
+				"artifacts/hermes/probes/model-relay.json",
 				"src/hermes/edge-adapter-attestation.ts",
 				"src/hermes/network-probe-attestation.ts",
 				"src/hermes/no-fork-attestation.ts",
@@ -280,9 +283,13 @@ describe("Hermes Pro review gate", () => {
 	});
 
 	it("builds final Pro review sends against the validated native extension instance", () => {
+		const payloadSha256 = computeTextDigest("approved payload");
+		const bundleSha256 = computeTextDigest("exact bundle");
 		const command = buildProReviewYoetzCommand({
 			canary: proReviewCanary() as ProReviewNativeCanary,
 			bundlePath: "/tmp/pro-review.md",
+			payloadSha256,
+			bundleSha256,
 		});
 
 		expect(command).toEqual(
@@ -291,47 +298,80 @@ describe("Hermes Pro review gate", () => {
 				"chrome-extension-native",
 				"--var",
 				"extension_instance_id=ext_test",
+				"--var",
+				`payload_sha256=${payloadSha256}`,
+				"--var",
+				`bundle_sha256=${bundleSha256}`,
 			]),
 		);
 		expect(command).not.toContain("--allow-cdp-fallback");
 		expect(command).not.toContain("--cdp");
 	});
 
-	it("scrubs API and CDP fallback env before invoking Yoetz native extension", () => {
+	it("allowlists only safe native Yoetz env and scans allowed values for secrets", () => {
 		const env = buildProReviewNativeYoetzEnv({
 			PATH: "/bin",
 			HOME: "/home/test",
+			USER: "test",
+			LOGNAME: "test",
+			SHELL: "/bin/zsh",
+			LANG: "en_US.UTF-8",
+			LC_ALL: "TOKEN=abcdefghijklmnopqrstuvwxyz123456",
+			TMPDIR: "/tmp/hermes",
 			OPENAI_API_KEY: "raw-openai",
 			OPENROUTER_API_KEY: "raw-openrouter",
 			ANTHROPIC_API_KEY: "raw-anthropic",
+			NPM_TOKEN: "raw-npm-token",
 			YOETZ_OPENAI_API_KEY: "raw-yoetz-openai",
 			YOETZ_BROWSER_TRANSPORT: "dev-browser",
 			YOETZ_CDP_URL: "http://127.0.0.1:9222",
 			CHROME_REMOTE_DEBUGGING_PORT: "9222",
 			DEV_BROWSER_CDP_URL: "http://127.0.0.1:9222",
 			BROWSERLESS_API_KEY: "browserless",
+			CI_SAFE_BUT_AMBIENT: "plain-value",
+			XDG_CONFIG_HOME: "/tmp/sk-proj-abcdefghijklmnopqrstuvwxyz1234567890",
+			YOETZ_DIR: "/home/test/.yoetz",
 			YOETZ_HOME: "/home/test/.yoetz",
+			YOETZ_CHATGPT_NATIVE_EXTENSION_DIR: "/opt/yoetz/chatgpt-native-extension",
+			YOETZ_CHROME_NATIVE_MESSAGING_DIR: "/home/test/chrome-native-messaging",
+			YOETZ_CHROME_EXTENSION_NATIVE_SOCKET: "/tmp/yoetz-native.sock",
 			YOETZ_AGENT: "0",
 		});
 
 		expect(env).toMatchObject({
 			PATH: "/bin",
 			HOME: "/home/test",
+			USER: "test",
+			LOGNAME: "test",
+			SHELL: "/bin/zsh",
+			LANG: "en_US.UTF-8",
+			TMPDIR: "/tmp/hermes",
+			YOETZ_DIR: "/home/test/.yoetz",
 			YOETZ_HOME: "/home/test/.yoetz",
+			YOETZ_CHATGPT_NATIVE_EXTENSION_DIR: "/opt/yoetz/chatgpt-native-extension",
+			YOETZ_CHROME_NATIVE_MESSAGING_DIR: "/home/test/chrome-native-messaging",
+			YOETZ_CHROME_EXTENSION_NATIVE_SOCKET: "/tmp/yoetz-native.sock",
 			YOETZ_AGENT: "1",
 		});
 		expect(env.OPENAI_API_KEY).toBeUndefined();
 		expect(env.OPENROUTER_API_KEY).toBeUndefined();
 		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(env.NPM_TOKEN).toBeUndefined();
 		expect(env.YOETZ_OPENAI_API_KEY).toBeUndefined();
 		expect(env.YOETZ_BROWSER_TRANSPORT).toBeUndefined();
 		expect(env.YOETZ_CDP_URL).toBeUndefined();
 		expect(env.CHROME_REMOTE_DEBUGGING_PORT).toBeUndefined();
 		expect(env.DEV_BROWSER_CDP_URL).toBeUndefined();
 		expect(env.BROWSERLESS_API_KEY).toBeUndefined();
+		expect(env.CI_SAFE_BUT_AMBIENT).toBeUndefined();
+		expect(env.XDG_CONFIG_HOME).toBeUndefined();
+		expect(env.LC_ALL).toBeUndefined();
 	});
 
 	it("validates Yoetz native final-send JSON before reporting sent", () => {
+		const approvedPayloadSha256 = computeTextDigest("approved payload");
+		const bundleSha256 = computeTextDigest("exact bundle");
+
 		expect(
 			validateProReviewYoetzSendOutput({
 				stdout: JSON.stringify({
@@ -343,8 +383,12 @@ describe("Hermes Pro review gate", () => {
 					fallback_used: false,
 					auto_paste_fallback: false,
 					extension_instance_id: "ext_test",
+					payloadSha256: approvedPayloadSha256,
+					bundleSha256,
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({ status: "pass" });
 
@@ -360,6 +404,8 @@ describe("Hermes Pro review gate", () => {
 					auto_paste_fallback: false,
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
@@ -379,6 +425,8 @@ describe("Hermes Pro review gate", () => {
 					extensionInstanceId: "ext_test",
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
@@ -398,10 +446,70 @@ describe("Hermes Pro review gate", () => {
 					extension_instance_id: "ext_other",
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("transport is dev-browser"),
+		});
+	});
+
+	it("rejects Yoetz final-send output bound to a different approved payload", () => {
+		const approvedPayloadSha256 = computeTextDigest("approved payload");
+		const otherPayloadSha256 = computeTextDigest("other payload");
+		const bundleSha256 = computeTextDigest("exact bundle");
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+					extension_instance_id: "ext_test",
+					payloadSha256: otherPayloadSha256,
+					bundleSha256,
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(`payloadSha256 is ${otherPayloadSha256}`),
+		});
+	});
+
+	it("rejects Yoetz final-send output bound to a different bundle", () => {
+		const approvedPayloadSha256 = computeTextDigest("approved payload");
+		const bundleSha256 = computeTextDigest("exact bundle");
+		const otherBundleSha256 = computeTextDigest("other bundle");
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+					extension_instance_id: "ext_test",
+					payloadSha256: approvedPayloadSha256,
+					bundleSha256: otherBundleSha256,
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(`bundleSha256 is ${otherBundleSha256}`),
 		});
 	});
 
@@ -836,6 +944,8 @@ function writeRequiredProReviewWorkspace(root: string): void {
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
 			writeJson(resolved, cliHeadlessReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/model-relay.json") {
+			writeJson(resolved, modelRelayReadinessFailureEvidence());
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
 		} else if (isSignedProbeArtifact(file)) {
@@ -891,6 +1001,31 @@ function cliHeadlessReadinessFailureEvidence(): Record<string, unknown> {
 			],
 		},
 		findings: [],
+	};
+}
+
+function modelRelayReadinessFailureEvidence(): Record<string, unknown> {
+	return {
+		schemaVersion: "telclaude.hermes.model-relay.v1",
+		probeId: "model.relay",
+		status: "fail",
+		ran: false,
+		generatedAt: "2026-06-01T09:00:00.000Z",
+		summary: "model.relay readiness failed before live relay probe",
+		origin: {
+			kind: "unknown",
+			detail: "model relay probe did not run",
+		},
+		observation: {
+			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+		},
+		gates: [
+			{
+				name: "modelRelay.allowed",
+				status: "fail",
+				detail: "model relay probe was not allowed to run in this fixture",
+			},
+		],
 	};
 }
 

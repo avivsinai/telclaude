@@ -3956,15 +3956,23 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 				return;
 			}
-			const yoetzCommand = buildProReviewYoetzCommand({ canary: nativeCanary, bundlePath });
-
 			writeProReviewBundle(options.request, bundlePath);
+			const payloadSha256 = report.payloadSha256;
+			const bundleSha256 = fileSha256(bundlePath);
+			const yoetzCommand = buildProReviewYoetzCommand({
+				canary: nativeCanary,
+				bundlePath,
+				payloadSha256,
+				bundleSha256,
+			});
 			if (!options.execute) {
 				const result = {
 					report,
 					send: {
 						status: "ready",
 						bundlePath,
+						payloadSha256,
+						bundleSha256,
 						yoetzCommand,
 						note: "not sent; pass --execute to invoke Yoetz native extension",
 					},
@@ -3989,11 +3997,15 @@ export function registerHermesCommand(program: Command): void {
 					? validateProReviewYoetzSendOutput({
 							stdout: result.stdout,
 							expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
+							expectedPayloadSha256: payloadSha256,
+							expectedBundleSha256: bundleSha256,
 						})
 					: null;
 			const send = {
 				status: result.status === 0 && validation?.status === "pass" ? "sent" : "failed",
 				bundlePath,
+				payloadSha256,
+				bundleSha256,
 				yoetzCommand,
 				exitCode: result.status,
 				validation,

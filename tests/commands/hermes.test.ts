@@ -6,7 +6,7 @@ import net, { type AddressInfo, type Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shutdownTokenClient } from "../../src/agent/token-client.js";
 import { deriveNoForkP0Status, registerHermesCommand } from "../../src/commands/hermes.js";
 import type { TelclaudeConfig } from "../../src/config/config.js";
@@ -14,6 +14,9 @@ import { REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS } from "../../src/hermes/approva
 import {
 	type BrowserComputerBrokerSurfaceId,
 	buildBrowserComputerBrokerFixtureEvidenceBundle,
+	buildNetworkEgressBrokerProbeEvidenceFromReport,
+	NETWORK_EGRESS_BROKER_RUN_REPORT_SCHEMA_VERSION,
+	NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE,
 	runTelclaudeBrowserComputerBrokerProbe,
 } from "../../src/hermes/browser-computer-broker-probes.js";
 import {
@@ -100,6 +103,13 @@ import {
 import { redactSecrets } from "../../src/security/output-filter.js";
 
 const hermesPin = { version: "0.15.1" };
+const CLI_HEADLESS_TEST_RELAY_IP = "10.88.93.10";
+const CLI_HEADLESS_TEST_CONTAINED_IP = "10.88.93.11";
+const CLI_HEADLESS_WRONG_CONTAINED_IP = "10.88.93.12";
+const ORIGINAL_HERMES_RUNTIME_IP_ENV = {
+	TELCLAUDE_HERMES_RELAY_IP: process.env.TELCLAUDE_HERMES_RELAY_IP,
+	TELCLAUDE_HERMES_CONTAINED_IP: process.env.TELCLAUDE_HERMES_CONTAINED_IP,
+};
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
 const cliHeadlessRelaySigningKeys = generateKeyPair();
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
@@ -871,6 +881,11 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 				detail: "operator allowed live model-relay evidence",
 			},
 			{
+				name: "modelRelay.modelProvider",
+				status: "pass",
+				detail: "model provider config uses relay-owned OpenAI Codex credential custody",
+			},
+			{
 				name: "relay.reachable",
 				status: "pass",
 				detail: "model relay endpoint reached with HTTP status 204",
@@ -885,6 +900,11 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 				name: "directModel.denied",
 				status: "pass",
 				detail: "direct model-provider egress denied",
+			},
+			{
+				name: "profile.relayCredentialReference",
+				status: "pass",
+				detail: "generated profile references the relay OpenAI Codex proxy credential store",
 			},
 			{
 				name: "profile.noRawModelCredentials",
@@ -905,17 +925,34 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 		origin: {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "192.0.2.11",
+			observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "192.0.2.11",
+			expectedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 			expectedPeerSource: "configured-contained-ip",
 			detail: "model relay peer origin was observed by the relay endpoint",
 		},
+		modelProvider: {
+			provider: "openai-codex",
+			baseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			baseUrlHost: "telclaude",
+			model: "gpt-5.5",
+			modelSource: "env:HERMES_INFERENCE_MODEL",
+			authLocation: "hermes-auth-store:openai-codex",
+			authScope: "relay-openai-codex-subscription-proxy",
+			tokenScoping: "static-shared",
+			auxiliaryAuthSource: "manual:telclaude-relay",
+			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
+			auxiliaryBaseUrlHost: "telclaude",
+			refreshTokenPolicy: "non-refreshable-placeholder",
+		},
 		observation: {
 			relayUrl: "http://telclaude:8790/v1/models",
-			directModelUrl: "https://api.anthropic.com/v1/models",
+			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			profileDir: "/home/hermes/.hermes",
-			scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
+			scannedProfileFiles: [
+				"/home/hermes/.hermes/config.yaml",
+				"/home/hermes/.hermes/secret-manifest.json",
+			],
 		},
 		...overrides,
 	};
@@ -2317,9 +2354,9 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
 		hostname: "tc-hermes-contained",
 		relayHost: "telclaude",
-		relayResolvedAddress: "192.0.2.10",
-		containerIpAddress: "192.0.2.11",
-		observedPeerAddress: "192.0.2.11",
+		relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
+		containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
 	const relayProof = cliHeadlessRelayProof();
@@ -2393,7 +2430,7 @@ function cliHeadlessRelayProof(
 		requestId: "codex-proof-1",
 		method: "POST",
 		path: "/backend-api/codex/responses",
-		observedPeerAddress: "192.0.2.11",
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
@@ -2636,6 +2673,10 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 		cliHeadlessEvidence(),
 	);
 	writeJson(
+		rootArtifact(root, "artifacts/hermes/probes/model-relay.json"),
+		passingModelRelayEvidence(),
+	);
+	writeJson(
 		rootArtifact(root, "artifacts/hermes/pro-review-native-canary.json"),
 		proReviewCanary(),
 	);
@@ -2771,29 +2812,72 @@ function greenBrowserComputerBrokerProbeEvidence(
 	surfaceId: BrowserComputerBrokerSurfaceId,
 	observedAt: string,
 ): ReturnType<typeof runTelclaudeBrowserComputerBrokerProbe> {
-	const evidence = runTelclaudeBrowserComputerBrokerProbe({
+	if (surfaceId === "network.egress-broker") {
+		ensureOperatorRelaySigningKeys();
+		return buildNetworkEgressBrokerProbeEvidenceFromReport(
+			completeNetworkEgressBrokerRunReport(observedAt),
+		);
+	}
+	return runTelclaudeBrowserComputerBrokerProbe({
 		surfaceId,
 		allowRun: true,
 		observedAt,
 	});
-	if (surfaceId !== "network.egress-broker") return evidence;
+}
+
+function completeNetworkEgressBrokerRunReport(observedAt: string): Record<string, unknown> {
+	const deniedKinds = [
+		"provider",
+		"model",
+		"vault",
+		"metadata",
+		"private-network",
+		"smtp",
+		"imap",
+		"whatsapp-bridge",
+		"dns-53",
+		"doh",
+		"dot",
+		"connect-proxy",
+		"websocket",
+		"webrtc",
+		"ip-literal",
+		"dns-rebinding",
+		"localhost-callback",
+		"unquarantined-upload",
+		"browser-provider-bypass",
+		"computer-covert-egress",
+	] as const;
 	return {
-		...evidence,
-		status: "pass",
-		summary: "network.egress-broker broker probe passed in command test fixture",
-		checks: evidence.checks.map((check) => ({
-			...check,
-			status: "pass",
-			detail: check.detail.replace(
-				"requires live machine-observed egress evidence",
-				"is supplied by the command test fixture",
-			),
-		})),
-		observations: {
-			...evidence.observations,
-			deniedAttemptCount: Math.max(evidence.observations.deniedAttemptCount, 20),
-			directEgressDenialCount: Math.max(evidence.observations.directEgressDenialCount, 20),
-		},
+		schemaVersion: NETWORK_EGRESS_BROKER_RUN_REPORT_SCHEMA_VERSION,
+		surfaceId: "network.egress-broker",
+		ran: true,
+		observedAt,
+		source: NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE,
+		summary: "machine-observed egress broker denials passed",
+		attempts: [
+			{
+				name: "public-research",
+				kind: "public-research",
+				target: "https://example.org/research/benign",
+				expectation: "allow",
+				status: "pass",
+				observed: "reachable",
+				detail: "allowed public research egress reached the broker",
+				route: "telclaude-egress-broker",
+				httpStatus: 200,
+			},
+			...deniedKinds.map((kind) => ({
+				name: `${kind}-denied`,
+				kind,
+				target: `egress-test://${kind}`,
+				expectation: "deny",
+				status: "pass",
+				observed: "denied",
+				detail: `${kind} egress was denied by the contained runtime policy`,
+				errorCode: "ENETUNREACH",
+			})),
+		],
 	};
 }
 
@@ -3024,9 +3108,9 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 		origin: {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "192.0.2.11",
+			observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "192.0.2.11",
+			expectedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 			expectedPeerSource: "configured-contained-ip",
 			detail: "probe peer origin was observed by live MCP server",
 		},
@@ -3095,6 +3179,22 @@ function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
 }
 
 describe("Hermes wrapper foundation", () => {
+	beforeEach(() => {
+		process.env.TELCLAUDE_HERMES_RELAY_IP = CLI_HEADLESS_TEST_RELAY_IP;
+		process.env.TELCLAUDE_HERMES_CONTAINED_IP = CLI_HEADLESS_TEST_CONTAINED_IP;
+	});
+
+	afterEach(() => {
+		restoreEnv(
+			"TELCLAUDE_HERMES_RELAY_IP",
+			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_RELAY_IP,
+		);
+		restoreEnv(
+			"TELCLAUDE_HERMES_CONTAINED_IP",
+			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_CONTAINED_IP,
+		);
+	});
+
 	it("parses explicit Hermes pins without accepting an empty pin", () => {
 		expect(parseHermesPin(undefined)).toBeNull();
 		expect(parseHermesPin("abcdef1")).toEqual({ commit: "abcdef1" });
@@ -4956,7 +5056,7 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
-			"feature probe model.relay requires observed evidence",
+			"feature probe model.relay evidence failed",
 		);
 	});
 
@@ -5789,7 +5889,7 @@ describe("Hermes wrapper foundation", () => {
 					relayResolvedAddress: "192.168.5.2",
 				},
 			}),
-			detail: "runtime relayResolvedAddress is 192.168.5.2, expected 192.0.2.10",
+			detail: `runtime relayResolvedAddress is 192.168.5.2, expected ${CLI_HEADLESS_TEST_RELAY_IP}`,
 		},
 		{
 			name: "editable runtime provenance",
@@ -5825,7 +5925,7 @@ describe("Hermes wrapper foundation", () => {
 			name: "relay proof from wrong peer",
 			evidence: cliHeadlessEvidence({
 				relayProof: cliHeadlessRelayProof({
-					observedPeerAddress: "192.0.2.12",
+					observedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
 				}),
 			}),
 			detail: "relay proof observedPeerAddress does not match runtime observedPeerAddress",
@@ -7123,17 +7223,36 @@ describe("Hermes wrapper foundation", () => {
 				bundlePath,
 			]);
 			const report = JSON.parse(result.stdout) as {
-				send: { status: string; bundlePath: string; yoetzCommand: string[] };
+				send: {
+					status: string;
+					bundlePath: string;
+					payloadSha256: string;
+					bundleSha256: string;
+					yoetzCommand: string[];
+				};
 			};
 
 			expect(result.exitCode, result.stdout).toBe(0);
 			expect(report.send.status).toBe("ready");
+			expect(report.send.payloadSha256).toBe(
+				(baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
+			);
+			expect(report.send.bundleSha256).toBe(
+				`sha256:${crypto
+					.createHash("sha256")
+					.update(fs.readFileSync(path.join(tempDir, bundlePath)))
+					.digest("hex")}`,
+			);
 			expect(report.send.yoetzCommand).toEqual(
 				expect.arrayContaining([
 					"--transport",
 					"chrome-extension-native",
 					"--var",
 					"extension_instance_id=ext_test",
+					"--var",
+					`payload_sha256=${report.send.payloadSha256}`,
+					"--var",
+					`bundle_sha256=${report.send.bundleSha256}`,
 				]),
 			);
 			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
@@ -9238,12 +9357,12 @@ echo should-not-run
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -9315,12 +9434,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -9408,12 +9527,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -9505,12 +9624,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -9569,15 +9688,15 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 				kind: "contained-docker",
 				containerName: "tc-hermes-contained",
 				networkName: "telclaude-hermes-relay",
-				relayResolvedAddress: "192.0.2.10",
-				containerIpAddress: "192.0.2.11",
-				observedPeerAddress: "192.0.2.11",
+				relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
+				containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+				observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 				provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 			});
 			expect(report.relayProof).toMatchObject({
 				source: "telclaude-openai-codex-proxy",
 				path: "/backend-api/codex/responses",
-				observedPeerAddress: "192.0.2.11",
+				observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 				upstreamStatus: 200,
 				model: "gpt-5.5",
 			});
@@ -9651,9 +9770,9 @@ cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'
   "imageDigest": "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
   "hostname": "tc-hermes-contained",
   "relayHost": "telclaude",
-  "relayResolvedAddress": "192.0.2.10",
-  "containerIpAddress": "192.0.2.11",
-  "observedPeerAddress": "192.0.2.11",
+  "relayResolvedAddress": "${CLI_HEADLESS_TEST_RELAY_IP}",
+  "containerIpAddress": "${CLI_HEADLESS_TEST_CONTAINED_IP}",
+  "observedPeerAddress": "${CLI_HEADLESS_TEST_CONTAINED_IP}",
   "provenanceSource": "docker-inspect-container-dns-and-relay-peer"
 }
 JSON
@@ -9669,7 +9788,7 @@ const proof = {
   requestId: "codex-proof-1",
   method: "POST",
   path: "/backend-api/codex/responses",
-  observedPeerAddress: "192.0.2.11",
+  observedPeerAddress: "${CLI_HEADLESS_TEST_CONTAINED_IP}",
   upstreamStatus: 200,
   model: "gpt-5.3-codex",
   requestBodySha256: "sha256:${"a".repeat(64)}",
@@ -10540,8 +10659,8 @@ sleep 5
 				origin: {
 					kind: "contained-peer",
 					containerName: "tc-hermes-contained",
-					observedPeerAddress: "192.0.2.11",
-					expectedPeerAddress: "192.0.2.11",
+					observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+					expectedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 					detail: "operator declared contained peer origin",
 				},
 			}),
@@ -10568,9 +10687,9 @@ sleep 5
 				origin: {
 					kind: "relay-self-smoke",
 					containerName: "telclaude",
-					observedPeerAddress: "192.0.2.10",
+					observedPeerAddress: CLI_HEADLESS_TEST_RELAY_IP,
 					observedPeerSource: "server-peer-echo",
-					expectedPeerAddress: "192.0.2.11",
+					expectedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 					expectedPeerSource: "configured-contained-ip",
 					detail: "probe peer origin matched relay namespace",
 				},

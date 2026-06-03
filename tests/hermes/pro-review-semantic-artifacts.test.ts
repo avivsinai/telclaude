@@ -39,6 +39,39 @@ describe("Hermes Pro review semantic artifact gate", () => {
 				evidence_path: "artifacts/hermes/network/direct-provider-denied.json",
 				attempts: [],
 			});
+			writeJson("artifacts/hermes/probes/model-relay.json", {
+				schemaVersion: "telclaude.hermes.model-relay.v1",
+				probeId: "model.relay",
+				posture: "contained-internal",
+				status: "pass",
+				ran: true,
+				summary: "forged pass-looking model relay probe",
+				generatedAt: "2026-06-01T09:00:00.000Z",
+				origin: {
+					kind: "contained-peer",
+					containerName: "tc-hermes-contained",
+					observedPeerAddress: "10.99.0.11",
+					observedPeerSource: "server-peer-echo",
+					expectedPeerAddress: "10.99.0.11",
+					expectedPeerSource: "configured-contained-ip",
+					detail: "forged origin",
+				},
+				observation: {
+					relayUrl: "http://telclaude:8790/v1/models",
+					directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+					profileDir: "/home/hermes/.hermes",
+					scannedProfileFiles: ["/home/hermes/.hermes/config.yaml"],
+				},
+				gates: [
+					{ name: "modelRelay.allowed", status: "pass", detail: "forged pass" },
+					{ name: "modelRelay.origin", status: "pass", detail: "forged pass" },
+					{ name: "relay.reachable", status: "pass", detail: "forged pass" },
+					{ name: "directModel.denied", status: "pass", detail: "forged pass" },
+					{ name: "profile.noRawModelCredentials", status: "pass", detail: "forged pass" },
+					{ name: "profile.noDirectModelHosts", status: "pass", detail: "forged pass" },
+					{ name: "profile.scanComplete", status: "pass", detail: "forged pass" },
+				],
+			});
 			writeProReviewRequest();
 
 			const report = evaluateProReviewCheck();
@@ -69,6 +102,12 @@ describe("Hermes Pro review semantic artifact gate", () => {
 			).toMatchObject({
 				status: "fail",
 				detail: expect.stringContaining("has no attempts"),
+			});
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.model.relay"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("modelProvider is missing"),
 			});
 		});
 	});
