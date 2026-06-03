@@ -39,6 +39,7 @@ import {
 	buildMissingDefaultRollbackRehearsal,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
+	computeHermesArtifactDigest,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
 	DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
 	DEFAULT_CUTOVER_SCOPE_PATH,
@@ -51,7 +52,6 @@ import {
 	DEFAULT_PROFILE_GENERATION_PROOF_PATH,
 	DEFAULT_QUEUE_SNAPSHOT_PATH,
 	DEFAULT_ROLLBACK_REHEARSAL_PATH,
-	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	evaluateGuardrailMutation,
 	type FeatureProbeMatrix,
@@ -109,6 +109,7 @@ import {
 	runHermesWorkflowProbe,
 } from "../../src/hermes/workflow-probes.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
+import { verifyOpenAiCodexPeerBoundProxyToken } from "../../src/relay/openai-codex-proxy.js";
 import {
 	type OpenAiCodexRelayProof,
 	type OpenAiCodexRelayProofSignedFields,
@@ -9517,6 +9518,7 @@ echo should-not-run
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
 		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const authPayloadPath = path.join(tempDir, "auth-payload.json");
 		const dockerBin = writeExecutable(
 			tempDir,
 			`#!/bin/sh
@@ -9531,7 +9533,7 @@ case "$*" in
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
-  cat >/dev/null
+  cat >"${authPayloadPath}"
   exit 0
   ;;
 *"relay-proof/latest"*)
@@ -9581,6 +9583,35 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
 		);
 		expect(report.relayProof).toBeUndefined();
+		const authPayload = readJson(authPayloadPath) as {
+			providers: {
+				"openai-codex": {
+					tokens: {
+						access_token: string;
+					};
+				};
+			};
+			credential_pool: {
+				"openai-codex": Array<{
+					access_token: string;
+				}>;
+			};
+		};
+		const accessToken = authPayload.providers["openai-codex"].tokens.access_token;
+		expect(accessToken).not.toBe("relay-scoped-proxy-token");
+		expect(authPayload.credential_pool["openai-codex"][0]?.access_token).toBe(accessToken);
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
+				secret: "relay-scoped-proxy-token",
+				peerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+			}),
+		).toMatchObject({ ok: true, tokenScope: "run" });
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
+				secret: "relay-scoped-proxy-token",
+				peerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
+			}),
+		).toMatchObject({ ok: false, reason: "peer address mismatch" });
 		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
 		expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
 		expect(readJson(evidencePath)).toMatchObject({

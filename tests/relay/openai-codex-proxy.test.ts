@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -389,7 +391,7 @@ describe("OpenAI Codex relay proxy", () => {
 		).toMatchObject({ ok: true, runId: "gateway-run-container", tokenScope: "server" });
 	});
 
-	it("accepts peer-bound relay tokens minted by the contained entrypoint inline node script", () => {
+	it("accepts peer-bound relay tokens minted by the contained entrypoint shell function", () => {
 		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
 		if (!secret) throw new Error("missing test relay proxy token secret");
 
@@ -412,7 +414,7 @@ describe("OpenAI Codex relay proxy", () => {
 				expect(payload.expiresAt).toBeNull();
 			} else {
 				expect(typeof payload.expiresAt).toBe("number");
-				expect(payload.expiresAt).toBeGreaterThan(payload.issuedAt);
+				expect(payload.expiresAt - payload.issuedAt).toBe(300_000);
 			}
 			expect(
 				verifyOpenAiCodexPeerBoundProxyToken(token, {
@@ -671,21 +673,48 @@ function mintEntrypointPeerBoundToken(input: {
 	peerAddress: string;
 	tokenScope: "run" | "server";
 }): string {
-	const script = entrypointMintScript();
-	return execFileSync(process.execPath, ["-", input.secret, input.peerAddress, input.tokenScope], {
-		input: script,
-		encoding: "utf8",
-	}).trim();
+	const tempDir = mkdtempSync(path.join(tmpdir(), "tc-entrypoint-token-parity-"));
+	try {
+		const fakeHostname = path.join(tempDir, "hostname");
+		writeFileSync(
+			fakeHostname,
+			[
+				"#!/bin/sh",
+				'if [ "$1" = "-i" ]; then',
+				'  printf "%s\\n" "$ENTRYPOINT_TEST_PEER_ADDRESS"',
+				"  exit 0",
+				"fi",
+				'exec /bin/hostname "$@"',
+				"",
+			].join("\n"),
+		);
+		chmodSync(fakeHostname, 0o755);
+
+		return execFileSync("/bin/sh", ["-s", input.secret, input.tokenScope], {
+			input: [
+				"set -eu",
+				entrypointMintFunction(),
+				'mint_peer_bound_codex_relay_token "$1" "$2"',
+				"",
+			].join("\n"),
+			encoding: "utf8",
+			env: {
+				...process.env,
+				ENTRYPOINT_TEST_PEER_ADDRESS: input.peerAddress,
+				PATH: `${tempDir}:${process.env.PATH ?? ""}`,
+			},
+		}).trim();
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
 }
 
-function entrypointMintScript(): string {
+function entrypointMintFunction(): string {
 	const entrypoint = readFileSync("docker/hermes-contained-entrypoint.sh", "utf8");
-	const match = entrypoint.match(
-		/node - "\$secret" "\$peer_address" "\$token_scope" <<'NODE'\n(?<script>[\s\S]*?)\nNODE/,
-	);
-	const script = match?.groups?.script;
-	if (!script) throw new Error("could not extract contained entrypoint token mint script");
-	return script;
+	const match = entrypoint.match(/mint_peer_bound_codex_relay_token\(\) \{\n[\s\S]*?\nNODE\n\}/);
+	const mintFunction = match?.[0];
+	if (!mintFunction) throw new Error("could not extract contained entrypoint token mint function");
+	return mintFunction;
 }
 
 function decodePeerBoundTokenPayload(token: string): {

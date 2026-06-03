@@ -22,6 +22,7 @@ const logger = getChildLogger({ module: "openai-codex-proxy" });
 const PROXY_PREFIX = "/v1/openai-codex-proxy";
 const PROXY_PROOF_LATEST_PATH = `${PROXY_PREFIX}/_telclaude/relay-proof/latest`;
 const PEER_BOUND_PROXY_TOKEN_PREFIX = "tc-openai-codex-relay-v1";
+export const OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS = 5 * 60_000;
 const CODEX_ORIGIN = "https://chatgpt.com";
 const CODEX_BASE_PATH = "/backend-api/codex";
 const CODEX_VAULT_TARGET = process.env.TELCLAUDE_OPENAI_CODEX_VAULT_TARGET ?? "openai-codex";

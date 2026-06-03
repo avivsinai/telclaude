@@ -7,7 +7,10 @@ import type { PermissionTier } from "../config/config.js";
 import type { InternalResponseProof } from "../internal-auth.js";
 import { telegramMemorySource } from "../memory/source.js";
 import type { MemorySource } from "../memory/types.js";
-import { mintOpenAiCodexPeerBoundProxyToken } from "../relay/openai-codex-proxy.js";
+import {
+	mintOpenAiCodexPeerBoundProxyToken,
+	OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
+} from "../relay/openai-codex-proxy.js";
 import {
 	extractOpenAiCodexRelayProofToken,
 	OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
@@ -43,7 +46,6 @@ const HERMES_RELAY_OPENAI_CODEX_PROXY_URL = "http://telclaude:8790/v1/openai-cod
 const HERMES_RELAY_OPENAI_CODEX_PROVIDER = "openai-codex";
 const HERMES_RELAY_OPENAI_CODEX_POOL_SOURCE = "manual:telclaude-relay";
 const HERMES_RELAY_OPENAI_CODEX_NONREFRESHABLE_TOKEN = "telclaude-relay-token-is-not-refreshable";
-const HERMES_RELAY_OPENAI_CODEX_TOKEN_TTL_MS = 5 * 60_000;
 const HERMES_INFERENCE_PROVIDER_ENV = "HERMES_INFERENCE_PROVIDER";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
@@ -1399,7 +1401,7 @@ function prepareHermesLaunchAuthStore(
 		peerAddress: expectedHermesContainedIp(),
 		runId: `hermes-cli-${crypto.randomUUID()}`,
 		tokenScope: "run",
-		ttlMs: HERMES_RELAY_OPENAI_CODEX_TOKEN_TTL_MS,
+		ttlMs: OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
 	});
 	writeHermesOpenAiCodexRelayAuthStore(hermesHome, peerBoundRelayToken, relayBaseUrl);
 	delete launchEnv[HERMES_RELAY_OPENAI_CODEX_AUTH_ENV];
