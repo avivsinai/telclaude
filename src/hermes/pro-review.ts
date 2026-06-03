@@ -427,6 +427,14 @@ export type BuildProReviewRequestInput = {
 	readonly includeExistingSelectedFiles?: boolean;
 };
 
+export type ApproveProReviewRequestInput = {
+	readonly requestPath?: string;
+	readonly approvalId: string;
+	readonly operator: string;
+	readonly approvedAt?: Date | string;
+	readonly expectedPayloadSha256?: string;
+};
+
 const PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS = [
 	/^OPENAI(?:_|$)/i,
 	/^ANTHROPIC(?:_|$)/i,
@@ -503,6 +511,42 @@ export function readProReviewRequest(
 		fs.readFileSync(resolveHermesArtifactPath(requestPath), "utf8"),
 	) as unknown;
 	return ProReviewRequestSchema.parse(raw);
+}
+
+export function approveProReviewRequest(input: ApproveProReviewRequestInput): ProReviewRequest {
+	const request = readProReviewRequest(input.requestPath);
+	const approvalId = input.approvalId.trim();
+	const operator = input.operator.trim();
+	if (!approvalId) throw new Error("Pro review approval requires a non-empty approvalId.");
+	if (!operator) throw new Error("Pro review approval requires a non-empty operator.");
+	if (request.status !== "pending_operator_disclosure_approval" && request.status !== "approved") {
+		throw new Error(`Pro review request status ${request.status} cannot be approved.`);
+	}
+	const digestFailures = payloadDigestFailures(request);
+	if (digestFailures.length > 0) {
+		throw new Error(`Cannot approve stale Pro review request: ${digestFailures.join("; ")}`);
+	}
+	if (
+		input.expectedPayloadSha256 !== undefined &&
+		input.expectedPayloadSha256 !== request.payloadBinding.payloadSha256
+	) {
+		throw new Error(
+			`Approval payload ${input.expectedPayloadSha256} does not match request payload ${request.payloadBinding.payloadSha256}.`,
+		);
+	}
+	const approvedAt = normalizeApprovalTimestamp(input.approvedAt ?? new Date());
+	return ProReviewRequestSchema.parse({
+		...request,
+		status: "approved",
+		privateWorkspaceDisclosure: {
+			...request.privateWorkspaceDisclosure,
+			approved: true,
+			approvalId,
+			operator,
+			approvedAt,
+			payloadSha256: request.payloadBinding.payloadSha256,
+		},
+	});
 }
 
 export function buildProReviewRequestDraft(
@@ -585,6 +629,14 @@ function readOptionalProReviewRequest(requestPath: string | undefined): ProRevie
 
 function uniqueStrings(values: readonly string[]): string[] {
 	return Array.from(new Set(values));
+}
+
+function normalizeApprovalTimestamp(value: Date | string): string {
+	const date = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(date.getTime())) {
+		throw new Error("Pro review approval timestamp is invalid.");
+	}
+	return date.toISOString();
 }
 
 function readRequest(pathname: string, gates: ProReviewGate[]): ProReviewRequest | null {

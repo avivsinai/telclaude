@@ -138,6 +138,7 @@ import {
 } from "../hermes/private-runtime.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../hermes/private-telegram-fixture-attestation.js";
 import {
+	approveProReviewRequest,
 	buildProReviewNativeYoetzEnv,
 	buildProReviewRequestDraft,
 	buildProReviewYoetzCommand,
@@ -590,6 +591,15 @@ type ProReviewRefreshOption = JsonOption & {
 	prompt?: string;
 	selectedFile?: string[];
 	replaceSelectedFiles?: boolean;
+	write?: boolean;
+} & TrackedSeedWriteOption;
+
+type ProReviewApproveOption = JsonOption & {
+	request: string;
+	approvalId: string;
+	operator: string;
+	approvedAt?: string;
+	payloadSha256?: string;
 	write?: boolean;
 } & TrackedSeedWriteOption;
 
@@ -3775,6 +3785,62 @@ export function registerHermesCommand(program: Command): void {
 					printJson({ status: "input_error", detail });
 				} else {
 					console.log("Hermes pro-review-refresh: input_error");
+					console.log(`- FAIL: ${detail}`);
+				}
+				process.exitCode = 1;
+			}
+		});
+
+	hermes
+		.command("pro-review-approve")
+		.description("Record exact operator disclosure approval for a ChatGPT Pro review payload")
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--request <path>",
+			"ChatGPT Pro review request JSON path",
+			DEFAULT_PRO_REVIEW_REQUEST_PATH,
+		)
+		.requiredOption("--approval-id <id>", "Operator approval identifier or quoted approval text")
+		.requiredOption("--operator <name>", "Operator who approved the disclosure")
+		.option("--approved-at <iso>", "Approval timestamp; defaults to current time")
+		.option("--payload-sha256 <digest>", "Expected payloadSha256 to bind approval to")
+		.option("--write", "Write the approved request JSON")
+		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
+		.action((options: ProReviewApproveOption) => {
+			try {
+				const request = approveProReviewRequest({
+					requestPath: options.request,
+					approvalId: options.approvalId,
+					operator: options.operator,
+					approvedAt: options.approvedAt,
+					expectedPayloadSha256: options.payloadSha256,
+				});
+				const result = {
+					status: "pass",
+					requestPath: options.request,
+					written: options.write === true,
+					payloadSha256: request.payloadBinding.payloadSha256,
+					approval: request.privateWorkspaceDisclosure,
+					request,
+				};
+				if (options.write === true) {
+					writeJsonArtifact(options.request, request, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-approve: pass");
+					console.log(`- payloadSha256: ${request.payloadBinding.payloadSha256}`);
+					console.log(`- approvalId: ${String(request.privateWorkspaceDisclosure.approvalId)}`);
+					if (options.write === true) console.log(`- wrote: ${options.request}`);
+				}
+				process.exitCode = 0;
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				if (options.json) {
+					printJson({ status: "input_error", detail });
+				} else {
+					console.log("Hermes pro-review-approve: input_error");
 					console.log(`- FAIL: ${detail}`);
 				}
 				process.exitCode = 1;
