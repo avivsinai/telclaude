@@ -875,7 +875,7 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",
@@ -1386,9 +1386,9 @@ function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexR
 		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
 		hostname: "b6d8f6c9a1d4",
 		relayHost: "telclaude",
-			relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
-			containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
-			observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+		relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
+		containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
 	const stdoutPreview = "HERMES_OK_SIGNED_GATE\n";
@@ -1409,7 +1409,7 @@ function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexR
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",
@@ -1445,7 +1445,7 @@ function cliHeadlessRelayProof(
 		requestId: "codex-proof-1",
 		method: "POST",
 		path: "/backend-api/codex/responses",
-			observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
@@ -1818,13 +1818,13 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-			const report = withCliHeadlessRuntimeIpEnv(() => {
-				const evidencePath = path.join(tempDir, "execution-cli-headless.json");
-				writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
-				const bundle = cliHeadlessCutoverBundle(evidencePath);
-				process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-				return evaluateCutoverCheck(bundle);
-			});
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+			writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
+			const bundle = cliHeadlessCutoverBundle(evidencePath);
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+			return evaluateCutoverCheck(bundle);
+		});
 
 		expect(report.status).toBe("safe");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
@@ -1837,14 +1837,14 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-			const report = withCliHeadlessRuntimeIpEnv(() => {
-				const evidencePath = path.join(tempDir, "execution-cli-headless.json");
-				const signedProof = cliHeadlessRelayProof();
-				writeCliHeadlessEvidence(evidencePath, { ...signedProof, model: "gpt-5.5" });
-				const bundle = cliHeadlessCutoverBundle(evidencePath);
-				process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-				return evaluateCutoverCheck(bundle);
-			});
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+			const signedProof = cliHeadlessRelayProof();
+			writeCliHeadlessEvidence(evidencePath, { ...signedProof, model: "gpt-5.5" });
+			const bundle = cliHeadlessCutoverBundle(evidencePath);
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+			return evaluateCutoverCheck(bundle);
+		});
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
@@ -1857,18 +1857,18 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-			const report = withCliHeadlessRuntimeIpEnv(() => {
-				const evidencePath = path.join(tempDir, "execution-cli-headless.json");
-				writeCliHeadlessEvidence(
-					evidencePath,
-					cliHeadlessRelayProof({
-						proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_DIFFERENT_GATE"),
-					}),
-				);
-				const bundle = cliHeadlessCutoverBundle(evidencePath);
-				process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-				return evaluateCutoverCheck(bundle);
-			});
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+			writeCliHeadlessEvidence(
+				evidencePath,
+				cliHeadlessRelayProof({
+					proofTokenSha256: openAiCodexRelayProofTokenSha256("HERMES_OK_DIFFERENT_GATE"),
+				}),
+			);
+			const bundle = cliHeadlessCutoverBundle(evidencePath);
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+			return evaluateCutoverCheck(bundle);
+		});
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
@@ -1885,13 +1885,13 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 		const forgedProof = cliHeadlessRelayProof();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
-			const report = withCliHeadlessRuntimeIpEnv(() => {
-				const evidencePath = path.join(tempDir, "execution-cli-headless.json");
-				writeCliHeadlessEvidence(evidencePath, forgedProof);
-				const bundle = cliHeadlessCutoverBundle(evidencePath);
-				process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
-				return evaluateCutoverCheck(bundle);
-			});
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+			writeCliHeadlessEvidence(evidencePath, forgedProof);
+			const bundle = cliHeadlessCutoverBundle(evidencePath);
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+			return evaluateCutoverCheck(bundle);
+		});
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
@@ -1904,14 +1904,14 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-			const report = withCliHeadlessRuntimeIpEnv(() => {
-				const evidencePath = path.join(tempDir, "execution-cli-headless.json");
-				writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
-				const bundle = cliHeadlessCutoverBundle(evidencePath, () => {
-					delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-				});
-				return evaluateCutoverCheck(bundle);
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
+			writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
+			const bundle = cliHeadlessCutoverBundle(evidencePath, () => {
+				delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			});
+			return evaluateCutoverCheck(bundle);
+		});
 
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(

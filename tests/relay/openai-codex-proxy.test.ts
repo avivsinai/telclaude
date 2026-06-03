@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -31,7 +33,9 @@ import { generateKeyPair } from "../../src/internal-auth.js";
 import { startCapabilityServer } from "../../src/relay/capabilities.js";
 import {
 	isOpenAiCodexProxyAllowedClientAddress,
+	mintOpenAiCodexPeerBoundProxyToken,
 	resetOpenAiCodexProxyState,
+	verifyOpenAiCodexPeerBoundProxyToken,
 } from "../../src/relay/openai-codex-proxy.js";
 import {
 	type OpenAiCodexRelayProof,
@@ -114,15 +118,14 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/models?client_version=1.0.0",
 			undefined,
 			"GET",
-			{
-				Authorization: "Bearer relay-proxy-token",
+			relayAuthHeaders({
 				Cookie: "raw=inbound",
 				"ChatGPT-Account-ID": "attacker-account",
 				"OpenAI-Organization": "attacker-org",
 				"OpenAI-Project": "attacker-project",
 				Origin: "https://evil.example",
 				Referer: "https://evil.example/session",
-			},
+			}),
 		);
 
 		expect(result.status).toBe(200);
@@ -154,14 +157,14 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/responses",
 			requestBody,
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const proof = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/_telclaude/relay-proof/latest",
 			undefined,
 			"GET",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 
 		expect(response.status).toBe(200);
@@ -207,14 +210,14 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/responses",
 			requestBody,
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const firstProof = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/_telclaude/relay-proof/latest",
 			undefined,
 			"GET",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const second = await makeRequest(
@@ -222,14 +225,14 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/responses",
 			requestBody,
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const staleProof = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/_telclaude/relay-proof/latest",
 			undefined,
 			"GET",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 
 		expect(first.status).toBe(200);
@@ -249,6 +252,215 @@ describe("OpenAI Codex relay proxy", () => {
 
 		expect(result.status).toBe(401);
 		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects the reusable static proxy token before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+			Authorization: "Bearer relay-proxy-token",
+		});
+
+		expect(result.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects expired peer-bound relay tokens before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+		if (!secret) throw new Error("missing test relay proxy token secret");
+		const expiredToken = mintOpenAiCodexPeerBoundProxyToken({
+			secret,
+			peerAddress: "127.0.0.1",
+			runId: "expired-test-run",
+			now: new Date(Date.now() - 120_000),
+			ttlMs: 1_000,
+		});
+
+		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+			Authorization: `Bearer ${expiredToken}`,
+		});
+
+		expect(result.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects peer-bound relay tokens for the wrong peer before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const token = peerBoundToken({ peerAddress: "10.10.0.7", runId: "wrong-peer-test-run" });
+
+		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+			Authorization: `Bearer ${token}`,
+		});
+
+		expect(result.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects future-issued peer-bound relay tokens before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const token = peerBoundToken({
+			runId: "future-issued-test-run",
+			now: new Date(Date.now() + 10_000),
+		});
+
+		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+			Authorization: `Bearer ${token}`,
+		});
+
+		expect(result.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects peer-bound relay tokens with a bad signature before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		const token = peerBoundToken({ runId: "bad-signature-test-run" });
+		const badSignatureToken = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+
+		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+			Authorization: `Bearer ${badSignatureToken}`,
+		});
+
+		expect(result.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("rejects malformed peer-bound relay tokens before reaching ChatGPT", async () => {
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		for (const token of ["", "tc-openai-codex-relay-v1.only-two-parts", "not-peer-bound"]) {
+			const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/responses", "{}", "POST", {
+				Authorization: `Bearer ${token}`,
+			});
+			expect(result.status).toBe(401);
+		}
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it("normalizes IPv4-mapped peer addresses for peer-bound relay tokens", () => {
+		const tokenFromMappedPeer = peerBoundToken({
+			peerAddress: "::ffff:127.0.0.1",
+			runId: "mapped-mint-test-run",
+		});
+		const tokenFromIpv4Peer = peerBoundToken({
+			peerAddress: "127.0.0.1",
+			runId: "mapped-verify-test-run",
+		});
+		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+		if (!secret) throw new Error("missing test relay proxy token secret");
+
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(tokenFromMappedPeer, {
+				secret,
+				peerAddress: "127.0.0.1",
+			}),
+		).toMatchObject({ ok: true, runId: "mapped-mint-test-run", tokenScope: "run" });
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(tokenFromIpv4Peer, {
+				secret,
+				peerAddress: "::ffff:127.0.0.1",
+			}),
+		).toMatchObject({ ok: true, runId: "mapped-verify-test-run", tokenScope: "run" });
+	});
+
+	it("accepts server-scoped peer-bound relay tokens without wall-clock expiry", () => {
+		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+		if (!secret) throw new Error("missing test relay proxy token secret");
+		const token = mintOpenAiCodexPeerBoundProxyToken({
+			secret,
+			peerAddress: "127.0.0.1",
+			runId: "gateway-run-container",
+			tokenScope: "server",
+			now: new Date("2026-06-03T00:00:00.000Z"),
+		});
+
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(token, {
+				secret,
+				peerAddress: "127.0.0.1",
+				now: new Date("2126-06-03T00:00:00.000Z"),
+			}),
+		).toMatchObject({ ok: true, runId: "gateway-run-container", tokenScope: "server" });
+	});
+
+	it("accepts peer-bound relay tokens minted by the contained entrypoint inline node script", () => {
+		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+		if (!secret) throw new Error("missing test relay proxy token secret");
+
+		for (const tokenScope of ["run", "server"] as const) {
+			const token = mintEntrypointPeerBoundToken({
+				secret,
+				peerAddress: "192.0.2.11",
+				tokenScope,
+			});
+			const payload = decodePeerBoundTokenPayload(token);
+
+			expect(payload).toMatchObject({
+				version: 1,
+				tokenScope,
+				peerAddress: "192.0.2.11",
+			});
+			expect(payload.runId).toEqual(expect.stringMatching(/^hermes-contained-/));
+			expect(payload.nonce).toEqual(expect.any(String));
+			if (tokenScope === "server") {
+				expect(payload.expiresAt).toBeNull();
+			} else {
+				expect(typeof payload.expiresAt).toBe("number");
+				expect(payload.expiresAt).toBeGreaterThan(payload.issuedAt);
+			}
+			expect(
+				verifyOpenAiCodexPeerBoundProxyToken(token, {
+					secret,
+					peerAddress: "::ffff:192.0.2.11",
+					now: new Date(payload.issuedAt),
+				}),
+			).toMatchObject({
+				ok: true,
+				runId: payload.runId,
+				tokenScope,
+			});
+		}
+	});
+
+	it("rejects run-scoped peer-bound relay tokens without finite expiry", () => {
+		const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+		if (!secret) throw new Error("missing test relay proxy token secret");
+
+		expect(() =>
+			mintOpenAiCodexPeerBoundProxyToken({
+				secret,
+				peerAddress: "127.0.0.1",
+				runId: "run-without-expiry",
+				tokenScope: "run",
+				ttlMs: null,
+			}),
+		).toThrow("run-scoped OpenAI Codex relay tokens require a finite TTL");
+
+		const runTokenWithoutExpiry = signPeerBoundTokenPayload(
+			{
+				version: 1,
+				tokenScope: "run",
+				runId: "crafted-run-without-expiry",
+				peerAddress: "127.0.0.1",
+				issuedAt: Date.now(),
+				expiresAt: null,
+				nonce: "nonce",
+			},
+			secret,
+		);
+
+		expect(
+			verifyOpenAiCodexPeerBoundProxyToken(runTokenWithoutExpiry, {
+				secret,
+				peerAddress: "127.0.0.1",
+			}),
+		).toEqual({ ok: false, reason: "payload is invalid" });
 	});
 
 	it("rejects multi-valued relay tokens without throwing", async () => {
@@ -284,21 +496,21 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/https://evil.example/",
 			"{}",
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const traversal = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/v1/../models",
 			"{}",
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const doubleEncodedTraversal = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/v1/%252e%252e/models",
 			"{}",
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 
 		expect(absolute.status).toBe(400);
@@ -316,21 +528,21 @@ describe("OpenAI Codex relay proxy", () => {
 			"/v1/openai-codex-proxy/models",
 			undefined,
 			"DELETE",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const getResponses = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/responses",
 			undefined,
 			"GET",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 		const postSessions = await makeRequest(
 			baseUrl,
 			"/v1/openai-codex-proxy/sessions",
 			"{}",
 			"POST",
-			{ Authorization: "Bearer relay-proxy-token" },
+			relayAuthHeaders(),
 		);
 
 		expect(deleteModels.status).toBe(403);
@@ -345,7 +557,7 @@ describe("OpenAI Codex relay proxy", () => {
 		vi.stubGlobal("fetch", fetchSpy);
 
 		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/models", undefined, "GET", {
-			Authorization: "Bearer relay-proxy-token",
+			...relayAuthHeaders(),
 		});
 
 		expect(result.status).toBe(500);
@@ -365,7 +577,7 @@ describe("OpenAI Codex relay proxy", () => {
 		vi.stubGlobal("fetch", fetchSpy);
 
 		const result = await makeRequest(baseUrl, "/v1/openai-codex-proxy/models", undefined, "GET", {
-			Authorization: "Bearer relay-proxy-token",
+			...relayAuthHeaders(),
 		});
 
 		expect(result.status).toBe(500);
@@ -432,6 +644,68 @@ function makeRequest(
 		if (body) req.write(body);
 		req.end();
 	});
+}
+
+function relayAuthHeaders(
+	extra: Record<string, string | string[]> = {},
+): Record<string, string | string[]> {
+	return {
+		Authorization: `Bearer ${peerBoundToken({ runId: "test-run" })}`,
+		...extra,
+	};
+}
+
+function peerBoundToken(input: { peerAddress?: string; runId: string; now?: Date }): string {
+	const secret = process.env.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN;
+	if (!secret) throw new Error("missing test relay proxy token secret");
+	return mintOpenAiCodexPeerBoundProxyToken({
+		secret,
+		peerAddress: input.peerAddress ?? "127.0.0.1",
+		runId: input.runId,
+		now: input.now,
+	});
+}
+
+function mintEntrypointPeerBoundToken(input: {
+	secret: string;
+	peerAddress: string;
+	tokenScope: "run" | "server";
+}): string {
+	const script = entrypointMintScript();
+	return execFileSync(process.execPath, ["-", input.secret, input.peerAddress, input.tokenScope], {
+		input: script,
+		encoding: "utf8",
+	}).trim();
+}
+
+function entrypointMintScript(): string {
+	const entrypoint = readFileSync("docker/hermes-contained-entrypoint.sh", "utf8");
+	const match = entrypoint.match(
+		/node - "\$secret" "\$peer_address" "\$token_scope" <<'NODE'\n(?<script>[\s\S]*?)\nNODE/,
+	);
+	const script = match?.groups?.script;
+	if (!script) throw new Error("could not extract contained entrypoint token mint script");
+	return script;
+}
+
+function decodePeerBoundTokenPayload(token: string): {
+	version: 1;
+	tokenScope: "run" | "server";
+	runId: string;
+	peerAddress: string;
+	issuedAt: number;
+	expiresAt: number | null;
+	nonce: string;
+} {
+	const [, encodedPayload] = token.split(".");
+	if (!encodedPayload) throw new Error("missing token payload");
+	return JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+}
+
+function signPeerBoundTokenPayload(payload: unknown, secret: string): string {
+	const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+	const signature = crypto.createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+	return `tc-openai-codex-relay-v1.${encodedPayload}.${signature}`;
 }
 
 function fakeCodexJwt(accountId: string): string {

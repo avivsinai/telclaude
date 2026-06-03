@@ -83,6 +83,7 @@ describe("Hermes model-relay probe", () => {
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",
@@ -178,6 +179,49 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("openai-codex-relay provider"),
+		});
+	});
+
+	it("fails closed when the relay auth manifest lacks run and peer binding", async () => {
+		const relayUrl = relayProbeUrl;
+		const tempDir = makeTempDir();
+		const profileDir = path.join(tempDir, "profile");
+		fs.mkdirSync(profileDir);
+		fs.writeFileSync(
+			path.join(profileDir, "config.yaml"),
+			[
+				"model:",
+				"  provider: openai-codex-relay",
+				`  baseUrl: ${relayProxyUrl}`,
+				"  credentialSource: telclaude-relay-auth-store",
+				"",
+			].join("\n"),
+		);
+		fs.writeFileSync(
+			path.join(profileDir, "secret-manifest.json"),
+			`${JSON.stringify({ schemaVersion: 1, rawCredentialPolicy: "relay-owned-only" }, null, 2)}\n`,
+		);
+		const sentinel = path.join(tempDir, "firewall-active");
+		fs.writeFileSync(sentinel, "active\n");
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(report.modelProvider?.tokenScoping).toBe("peer-bound");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("run-peer-bound relayTokenBinding"),
 		});
 	});
 
@@ -561,7 +605,15 @@ describe("Hermes model-relay probe", () => {
 		);
 		fs.writeFileSync(
 			path.join(profileDir, "secret-manifest.json"),
-			`${JSON.stringify({ schemaVersion: 1, rawCredentialPolicy: "relay-owned-only" }, null, 2)}\n`,
+			`${JSON.stringify(
+				{
+					schemaVersion: 1,
+					rawCredentialPolicy: "relay-owned-only",
+					relayTokenBinding: "run-peer-bound",
+				},
+				null,
+				2,
+			)}\n`,
 		);
 	}
 

@@ -1088,7 +1088,7 @@ function cliHeadlessPassLookingUnsignedEvidence(): Record<string, unknown> {
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",

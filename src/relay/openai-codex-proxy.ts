@@ -21,6 +21,7 @@ const logger = getChildLogger({ module: "openai-codex-proxy" });
 
 const PROXY_PREFIX = "/v1/openai-codex-proxy";
 const PROXY_PROOF_LATEST_PATH = `${PROXY_PREFIX}/_telclaude/relay-proof/latest`;
+const PEER_BOUND_PROXY_TOKEN_PREFIX = "tc-openai-codex-relay-v1";
 const CODEX_ORIGIN = "https://chatgpt.com";
 const CODEX_BASE_PATH = "/backend-api/codex";
 const CODEX_VAULT_TARGET = process.env.TELCLAUDE_OPENAI_CODEX_VAULT_TARGET ?? "openai-codex";
@@ -38,6 +39,7 @@ const CODEX_ALLOWED_REQUESTS = [
 const MAX_CODEX_REQUEST_BODY_BYTES = Number(
 	process.env.TELCLAUDE_OPENAI_CODEX_PROXY_BODY_LIMIT ?? 1_000_000,
 );
+export type OpenAiCodexPeerBoundProxyTokenScope = "run" | "server";
 
 type CodexRelayProof = OpenAiCodexRelayProof;
 
@@ -46,6 +48,16 @@ type AuthHeader = {
 	value: string;
 	source: string;
 	extraHeaders?: Record<string, string>;
+};
+type PeerBoundProxyTokenPayload = {
+	readonly version: 1;
+	readonly tokenScope: OpenAiCodexPeerBoundProxyTokenScope;
+	readonly runId: string;
+	readonly peerAddress: string;
+	readonly issuedAt: number;
+	readonly expiresAt: number | null;
+	// Uniqueness-only marker. Replay protection comes from peer binding plus expiry on run tokens.
+	readonly nonce: string;
 };
 
 const rateLimiter = new SlidingWindowRateLimiter();
@@ -91,14 +103,24 @@ export async function handleOpenAiCodexProxyRequest(
 	}
 
 	const incomingToken = extractProxyToken(req);
-	if (!incomingToken || !constantTimeEqual(incomingToken, proxyToken)) {
+	const tokenVerification = verifyOpenAiCodexPeerBoundProxyToken(incomingToken, {
+		secret: proxyToken,
+		peerAddress: observedPeerAddress,
+	});
+	if (!tokenVerification.ok) {
 		const authType = req.headers.authorization
 			? "bearer"
 			: req.headers["x-api-key"]
 				? "x-api-key"
 				: "none";
 		logger.warn(
-			{ remoteAddress, method: req.method, url: req.url, authType },
+			{
+				remoteAddress,
+				method: req.method,
+				url: req.url,
+				authType,
+				reason: tokenVerification.reason,
+			},
 			"[openai-codex-proxy] invalid proxy token",
 		);
 		writeJson(res, 401, { error: "Unauthorized." });
@@ -544,4 +566,97 @@ export function isOpenAiCodexProxyAllowedClientAddress(address: string | null): 
 	}
 	if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
 	return false;
+}
+
+export function mintOpenAiCodexPeerBoundProxyToken(input: {
+	readonly secret: string;
+	readonly peerAddress: string;
+	readonly runId: string;
+	readonly tokenScope?: OpenAiCodexPeerBoundProxyTokenScope;
+	readonly now?: Date;
+	readonly ttlMs?: number | null;
+}): string {
+	const now = input.now?.getTime() ?? Date.now();
+	const tokenScope = input.tokenScope ?? "run";
+	if (tokenScope === "run" && input.ttlMs === null) {
+		throw new Error("run-scoped OpenAI Codex relay tokens require a finite TTL");
+	}
+	const expiresAt =
+		input.ttlMs === null || (tokenScope === "server" && input.ttlMs === undefined)
+			? null
+			: now + (input.ttlMs ?? 60_000);
+	const payload: PeerBoundProxyTokenPayload = {
+		version: 1,
+		tokenScope,
+		runId: input.runId,
+		peerAddress: normalizeObservedPeerAddress(input.peerAddress) ?? input.peerAddress,
+		issuedAt: now,
+		expiresAt,
+		nonce: crypto.randomUUID(),
+	};
+	const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+	const signature = signPeerBoundProxyToken(encodedPayload, input.secret);
+	return `${PEER_BOUND_PROXY_TOKEN_PREFIX}.${encodedPayload}.${signature}`;
+}
+
+export function verifyOpenAiCodexPeerBoundProxyToken(
+	token: string | null,
+	input: {
+		readonly secret: string;
+		readonly peerAddress: string | undefined;
+		readonly now?: Date;
+	},
+):
+	| { ok: true; runId: string; tokenScope: OpenAiCodexPeerBoundProxyTokenScope }
+	| { ok: false; reason: string } {
+	if (!token) return { ok: false, reason: "missing token" };
+	const parts = token.split(".");
+	if (parts.length !== 3 || parts[0] !== PEER_BOUND_PROXY_TOKEN_PREFIX) {
+		return { ok: false, reason: "token is not peer-bound" };
+	}
+	const [, encodedPayload, signature] = parts as [string, string, string];
+	const expectedSignature = signPeerBoundProxyToken(encodedPayload, input.secret);
+	if (!constantTimeEqual(signature, expectedSignature)) {
+		return { ok: false, reason: "signature mismatch" };
+	}
+	let payload: Partial<PeerBoundProxyTokenPayload>;
+	try {
+		payload = JSON.parse(
+			Buffer.from(encodedPayload, "base64url").toString("utf8"),
+		) as Partial<PeerBoundProxyTokenPayload>;
+	} catch {
+		return { ok: false, reason: "payload is not parseable" };
+	}
+	if (
+		payload.version !== 1 ||
+		(payload.tokenScope !== "run" && payload.tokenScope !== "server") ||
+		typeof payload.runId !== "string" ||
+		!payload.runId.trim() ||
+		typeof payload.peerAddress !== "string" ||
+		!payload.peerAddress.trim() ||
+		typeof payload.issuedAt !== "number" ||
+		!Number.isFinite(payload.issuedAt) ||
+		!(
+			(typeof payload.expiresAt === "number" && Number.isFinite(payload.expiresAt)) ||
+			(payload.tokenScope === "server" && payload.expiresAt === null)
+		) ||
+		typeof payload.nonce !== "string" ||
+		!payload.nonce.trim()
+	) {
+		return { ok: false, reason: "payload is invalid" };
+	}
+	const observedPeerAddress = normalizeObservedPeerAddress(input.peerAddress);
+	if (!observedPeerAddress || payload.peerAddress !== observedPeerAddress) {
+		return { ok: false, reason: "peer address mismatch" };
+	}
+	const now = input.now?.getTime() ?? Date.now();
+	if (typeof payload.expiresAt === "number" && payload.expiresAt <= now) {
+		return { ok: false, reason: "token expired" };
+	}
+	if (payload.issuedAt > now + 5_000) return { ok: false, reason: "token issued in the future" };
+	return { ok: true, runId: payload.runId, tokenScope: payload.tokenScope };
+}
+
+function signPeerBoundProxyToken(encodedPayload: string, secret: string): string {
+	return crypto.createHmac("sha256", secret).update(encodedPayload).digest("base64url");
 }

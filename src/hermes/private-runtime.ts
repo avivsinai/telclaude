@@ -7,6 +7,7 @@ import type { PermissionTier } from "../config/config.js";
 import type { InternalResponseProof } from "../internal-auth.js";
 import { telegramMemorySource } from "../memory/source.js";
 import type { MemorySource } from "../memory/types.js";
+import { mintOpenAiCodexPeerBoundProxyToken } from "../relay/openai-codex-proxy.js";
 import {
 	extractOpenAiCodexRelayProofToken,
 	OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION,
@@ -24,10 +25,7 @@ import {
 	type TelclaudeMcpAuthorityRegistry,
 } from "./mcp/authority-registry.js";
 import type { TelclaudeMcpAuthority, TelclaudeMcpDomain } from "./mcp/bridge.js";
-import {
-	DEFAULT_HERMES_CONTAINED_IP,
-	DEFAULT_HERMES_RELAY_IP,
-} from "./runtime-network.js";
+import { DEFAULT_HERMES_CONTAINED_IP, DEFAULT_HERMES_RELAY_IP } from "./runtime-network.js";
 import type { HermesSessionMap } from "./session-map.js";
 
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
@@ -45,6 +43,7 @@ const HERMES_RELAY_OPENAI_CODEX_PROXY_URL = "http://telclaude:8790/v1/openai-cod
 const HERMES_RELAY_OPENAI_CODEX_PROVIDER = "openai-codex";
 const HERMES_RELAY_OPENAI_CODEX_POOL_SOURCE = "manual:telclaude-relay";
 const HERMES_RELAY_OPENAI_CODEX_NONREFRESHABLE_TOKEN = "telclaude-relay-token-is-not-refreshable";
+const HERMES_RELAY_OPENAI_CODEX_TOKEN_TTL_MS = 5 * 60_000;
 const HERMES_INFERENCE_PROVIDER_ENV = "HERMES_INFERENCE_PROVIDER";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
@@ -1327,7 +1326,7 @@ function probeModelProvider(
 				: "missing",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: HERMES_RELAY_OPENAI_CODEX_POOL_SOURCE,
 			auxiliaryBaseUrl: codexBaseUrl,
 			auxiliaryBaseUrlHost: parsed.hostname,
@@ -1395,7 +1394,14 @@ function prepareHermesLaunchAuthStore(
 	if (!isRelayOpenAiCodexProxyUrl(relayBaseUrl)) {
 		throw new Error("HERMES_CODEX_BASE_URL must point at the relay OpenAI Codex proxy");
 	}
-	writeHermesOpenAiCodexRelayAuthStore(hermesHome, relayToken, relayBaseUrl);
+	const peerBoundRelayToken = mintOpenAiCodexPeerBoundProxyToken({
+		secret: relayToken,
+		peerAddress: expectedHermesContainedIp(),
+		runId: `hermes-cli-${crypto.randomUUID()}`,
+		tokenScope: "run",
+		ttlMs: HERMES_RELAY_OPENAI_CODEX_TOKEN_TTL_MS,
+	});
+	writeHermesOpenAiCodexRelayAuthStore(hermesHome, peerBoundRelayToken, relayBaseUrl);
 	delete launchEnv[HERMES_RELAY_OPENAI_CODEX_AUTH_ENV];
 }
 
