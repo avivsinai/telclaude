@@ -34,8 +34,23 @@ import {
 	buildHermesDoctorReport,
 	buildHermesGenerateDryRun,
 	buildHermesQueueSnapshot,
+	buildMissingDefaultCutoverFixtureResults,
+	buildMissingDefaultCutoverNetworkProbes,
+	buildMissingDefaultRollbackRehearsal,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
+	DEFAULT_COMPAT_LOCKFILE_PATH,
+	DEFAULT_CUTOVER_PROOF_BUNDLE_PATH,
+	DEFAULT_CUTOVER_SCOPE_PATH,
+	DEFAULT_DECISION_LOG_PATH,
+	DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+	DEFAULT_FIXTURE_RESULTS_PATH,
+	DEFAULT_INVENTORY_PATH,
+	DEFAULT_NETWORK_PROBES_PATH,
+	DEFAULT_NO_FORK_PROOF_PATH,
+	DEFAULT_PROFILE_GENERATION_PROOF_PATH,
+	DEFAULT_QUEUE_SNAPSHOT_PATH,
+	DEFAULT_ROLLBACK_REHEARSAL_PATH,
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	evaluateGuardrailMutation,
@@ -3264,6 +3279,34 @@ describe("Hermes wrapper foundation", () => {
 		expect(written.noForkProofEvidencePath).toBe("docs/hermes/no-fork-proof.json");
 	});
 
+	it("binds explicit no-fork evidence paths in compatibility lockfile drafts", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-compat-lock-nofork-"));
+		const featureProbePath = path.join(tempDir, "feature-probes.json");
+		const lockfilePath = path.join(tempDir, "hermes-compat.lock.json");
+		writeJson(featureProbePath, featureProbeMatrix);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"compat-lock",
+			"--dry-run",
+			"--pin",
+			"0.15.1",
+			"--feature-probes",
+			featureProbePath,
+			"--nofork-proof",
+			"artifacts/hermes/no-fork.attested.tokenfree.json",
+			"--out",
+			lockfilePath,
+			"--json",
+		]);
+		const written = readJson(lockfilePath) as CompatibilityLockfile;
+
+		expect(result.exitCode, result.stdout).toBeUndefined();
+		expect(written.noForkProofEvidencePath).toBe(
+			"artifacts/hermes/no-fork.attested.tokenfree.json",
+		);
+	});
+
 	it("allows red canonical seed writes before the seed is tracked by git", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-red-seed-"));
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
@@ -3922,6 +3965,122 @@ describe("Hermes wrapper foundation", () => {
 		});
 		expect(report.gates.find((gate) => gate.name === "queues.owned")).toMatchObject({
 			status: "fail",
+		});
+	});
+
+	it("cutover-check dry-run fails semantically when generated default cutover inputs are absent", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-red-defaults-"));
+		const fixtureResults = buildMissingDefaultCutoverFixtureResults();
+		const networkProbes = buildMissingDefaultCutoverNetworkProbes();
+		const rollbackRehearsal = buildMissingDefaultRollbackRehearsal();
+		const source = safeCutoverBundle({
+			fixtureResults,
+			networkProbes,
+			rollbackRehearsal,
+		});
+
+		await withCwd(tempDir, async () => {
+			writeJson(DEFAULT_INVENTORY_PATH, source.inventory);
+			writeJson(DEFAULT_CUTOVER_SCOPE_PATH, source.scopeManifest);
+			writeJson(DEFAULT_DECISION_LOG_PATH, source.decisionLog);
+			writeJson(DEFAULT_COMPAT_LOCKFILE_PATH, source.lockfile);
+			writeJson(DEFAULT_FEATURE_PROBE_MATRIX_PATH, source.featureProbeMatrix);
+			writeJson(DEFAULT_FIXTURE_RESULTS_PATH, fixtureResults);
+			writeJson(DEFAULT_NO_FORK_PROOF_PATH, source.noForkProof);
+			writeJson(DEFAULT_NETWORK_PROBES_PATH, networkProbes);
+			writeJson(DEFAULT_QUEUE_SNAPSHOT_PATH, source.queueSnapshot);
+			if (source.profileGenerationProof) {
+				writeJson(DEFAULT_PROFILE_GENERATION_PROOF_PATH, source.profileGenerationProof);
+			}
+			writeJson(DEFAULT_ROLLBACK_REHEARSAL_PATH, rollbackRehearsal);
+			const proofBundle = buildCutoverProofBundle({
+				hermes: source.lockfile.hermes,
+				wrapperVersion: source.lockfile.wrapperPackageVersion,
+				artifacts: {
+					inventory: proofArtifact(DEFAULT_INVENTORY_PATH, "pnpm dev hermes inventory --json", [
+						"inputs.inventory",
+					]),
+					scopeManifest: proofArtifact(
+						DEFAULT_CUTOVER_SCOPE_PATH,
+						"pnpm dev hermes cutover-scope --json",
+						["inputs.scopeManifest", "workflow.scope"],
+					),
+					decisionLog: proofArtifact(
+						DEFAULT_DECISION_LOG_PATH,
+						"pnpm dev hermes decision-log --json",
+						["inputs.decisionLog", "decisions.resolved"],
+					),
+					compatibilityLockfile: proofArtifact(
+						DEFAULT_COMPAT_LOCKFILE_PATH,
+						"pnpm dev hermes compat-lock --dry-run --json",
+						["inputs.lockfile", "lockfile.consistent"],
+					),
+					featureProbeMatrix: proofArtifact(
+						DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+						"pnpm dev hermes probes --json",
+						["inputs.featureProbeMatrix", "featureProbes.pass"],
+					),
+					fixtureResults: proofArtifact(
+						DEFAULT_FIXTURE_RESULTS_PATH,
+						"pnpm dev hermes fixtures --json",
+						["inputs.fixtureResults", "fixtures.pass"],
+					),
+					noForkProof: proofArtifact(
+						DEFAULT_NO_FORK_PROOF_PATH,
+						"pnpm dev hermes prove --upstream-clean --p0 --json",
+						["inputs.noForkProof", "nofork.clean"],
+					),
+					networkProbeBundle: proofArtifact(
+						DEFAULT_NETWORK_PROBES_PATH,
+						"pnpm dev hermes network-probes --json",
+						["inputs.networkProbes", "networkProbes.pass"],
+					),
+					queueSnapshot: proofArtifact(
+						DEFAULT_QUEUE_SNAPSHOT_PATH,
+						"pnpm dev hermes queue-snapshot --json",
+						["inputs.queueSnapshot", "queues.owned"],
+					),
+					rollbackEvidence: proofArtifact(
+						DEFAULT_ROLLBACK_REHEARSAL_PATH,
+						"pnpm dev hermes rollback-rehearsal --json",
+						["inputs.rollbackRehearsal", "rollback.rehearsed"],
+					),
+				},
+			});
+			writeJson(DEFAULT_CUTOVER_PROOF_BUNDLE_PATH, proofBundle);
+			fs.rmSync(DEFAULT_FIXTURE_RESULTS_PATH);
+			fs.rmSync(DEFAULT_NETWORK_PROBES_PATH);
+			fs.rmSync(DEFAULT_ROLLBACK_REHEARSAL_PATH);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"cutover-check",
+				"--strict",
+				"--dry-run",
+				"--json",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				gates: Array<{ name: string; status: string; detail: string }>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(report.status).toBe("fail");
+			for (const gateName of [
+				"proofBundle.fixtureResults",
+				"proofBundle.networkProbeBundle",
+				"proofBundle.rollbackEvidence",
+				"proofBundle.complete",
+			]) {
+				expect(report.gates.find((gate) => gate.name === gateName)).toMatchObject({
+					status: "pass",
+				});
+			}
+			for (const gateName of ["fixtures.pass", "networkProbes.pass", "rollback.rehearsed"]) {
+				expect(report.gates.find((gate) => gate.name === gateName)).toMatchObject({
+					status: "fail",
+				});
+			}
 		});
 	});
 

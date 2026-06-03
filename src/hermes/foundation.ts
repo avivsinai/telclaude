@@ -1726,6 +1726,47 @@ export const RollbackRehearsalSchema = z
 
 export type RollbackRehearsal = z.infer<typeof RollbackRehearsalSchema>;
 
+export function buildMissingDefaultCutoverFixtureResults(): FixtureResultBundle {
+	return {
+		schemaVersion: 1,
+		results: [
+			{
+				id: "fixture.default-generated-artifact.missing",
+				status: "fail",
+				evidence_path: DEFAULT_FIXTURE_RESULTS_PATH,
+			},
+		],
+	};
+}
+
+export function buildMissingDefaultCutoverNetworkProbes(): ProbeBundle {
+	return {
+		schemaVersion: 1,
+		probes: REQUIRED_CUTOVER_NETWORK_PROBE_IDS.map((id) => ({
+			id,
+			status: "fail" as const,
+			evidence_path: DEFAULT_NETWORK_PROBES_PATH,
+		})),
+	};
+}
+
+export function buildMissingDefaultRollbackRehearsal(): RollbackRehearsal {
+	return {
+		schemaVersion: 1,
+		passed: false,
+		evidence_path: DEFAULT_ROLLBACK_REHEARSAL_PATH,
+		allowedToRun: false,
+		checks: [
+			{
+				name: "rollback.defaultGeneratedArtifact",
+				status: "fail",
+				detail:
+					"default generated rollback rehearsal evidence is absent; live rehearsal remains unproven",
+			},
+		],
+	};
+}
+
 export const CutoverInputBundleSchema = z
 	.object({
 		schemaVersion: z.literal(1),
@@ -2404,6 +2445,7 @@ export function buildCompatibilityLockfileDraft(input: {
 	pin: HermesPin | null;
 	featureProbeMatrix: unknown;
 	wrapperPackageVersion: string;
+	noForkProofEvidencePath?: string;
 }): CompatibilityLockfile {
 	if (!input.pin) {
 		throw new Error(
@@ -2463,7 +2505,7 @@ export function buildCompatibilityLockfileDraft(input: {
 		paritySuiteDigests: {
 			p0: computeFileSetDigest(P0_PARITY_DIGEST_FILES),
 		},
-		noForkProofEvidencePath: DEFAULT_NO_FORK_PROOF_PATH,
+		noForkProofEvidencePath: input.noForkProofEvidencePath ?? DEFAULT_NO_FORK_PROOF_PATH,
 		sourceDriftSignals: {
 			sourceCommit: currentGitCommit(),
 			docsCommit: currentGitCommit(),
@@ -4208,7 +4250,15 @@ function checkCutoverProofBundle(input: {
 	for (const key of CUTOVER_PROOF_ARTIFACT_KEYS) {
 		const artifact = input.bundle.artifacts[key];
 		const value = cutoverProofArtifactValue(input.cutover, key);
-		const loaded = readCutoverProofArtifact(artifact);
+		const readArtifact = readCutoverProofArtifact(artifact);
+		const loaded = readArtifact.ok
+			? readArtifact
+			: (readMissingDefaultCutoverProofArtifact({
+					key,
+					artifact,
+					value,
+					liveCutover: input.liveCutover === true,
+				}) ?? readArtifact);
 		const failures: string[] = [];
 		if (!loaded.ok) {
 			failures.push(loaded.failure);
@@ -4350,6 +4400,59 @@ function readCutoverProofArtifact(
 			)}`,
 		};
 	}
+}
+
+function readMissingDefaultCutoverProofArtifact(input: {
+	key: CutoverProofArtifactKey;
+	artifact: CutoverProofBundle["artifacts"][CutoverProofArtifactKey];
+	value: unknown;
+	liveCutover: boolean;
+}):
+	| {
+			ok: true;
+			value: unknown;
+			sha256: string;
+			redaction: { status: "pass" | "fail"; summary: string };
+			leakScan: { status: "pass" | "fail"; summary: string };
+	  }
+	| undefined {
+	if (input.liveCutover) return undefined;
+	if (fs.existsSync(resolveHermesArtifactPath(input.artifact.artifactPath))) return undefined;
+	const expected = missingDefaultCutoverArtifactValue(input.key, input.artifact.artifactPath);
+	if (expected === undefined || !sameJson(input.value, expected)) return undefined;
+	const text = jsonProfileContent(expected);
+	return {
+		ok: true,
+		value: expected,
+		sha256: sha256Digest(text),
+		redaction: scanCutoverProofArtifactRedaction(text),
+		leakScan: scanCutoverProofArtifactLeaks(text),
+	};
+}
+
+function missingDefaultCutoverArtifactValue(
+	key: CutoverProofArtifactKey,
+	artifactPath: string,
+): unknown | undefined {
+	if (
+		key === "fixtureResults" &&
+		sameResolvedArtifactPath(artifactPath, DEFAULT_FIXTURE_RESULTS_PATH)
+	) {
+		return buildMissingDefaultCutoverFixtureResults();
+	}
+	if (
+		key === "networkProbeBundle" &&
+		sameResolvedArtifactPath(artifactPath, DEFAULT_NETWORK_PROBES_PATH)
+	) {
+		return buildMissingDefaultCutoverNetworkProbes();
+	}
+	if (
+		key === "rollbackEvidence" &&
+		sameResolvedArtifactPath(artifactPath, DEFAULT_ROLLBACK_REHEARSAL_PATH)
+	) {
+		return buildMissingDefaultRollbackRehearsal();
+	}
+	return undefined;
 }
 
 function emptyCutoverReportMetadata(): Omit<
