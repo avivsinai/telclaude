@@ -6572,6 +6572,9 @@ describe("Hermes wrapper foundation", () => {
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain(
 			"pro-review-refresh",
 		);
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain(
+			"pro-review-approve",
+		);
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("pro-review-check");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("pro-review-send");
 	});
@@ -6798,6 +6801,116 @@ describe("Hermes wrapper foundation", () => {
 				status: "fail",
 				detail: "private workspace disclosure is not approved",
 			});
+		});
+	});
+
+	it("records digest-bound Pro review disclosure approval through the CLI", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-approve-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const request = proReviewRequest(canaryPath);
+			const payloadSha256 = (request.payloadBinding as Record<string, string>).payloadSha256;
+			writeJson(requestPath, request);
+
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"aviv-ofc-drive-it",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-06-03T13:36:35.321Z",
+				"--payload-sha256",
+				payloadSha256,
+			]);
+			const approvalReport = JSON.parse(approval.stdout) as {
+				status: string;
+				written: boolean;
+				approval: {
+					approved: boolean;
+					approvalId: string;
+					operator: string;
+					approvedAt: string;
+					payloadSha256: string;
+				};
+			};
+
+			expect(approval.exitCode, approval.stdout).toBe(0);
+			expect(approvalReport).toMatchObject({
+				status: "pass",
+				written: true,
+				approval: {
+					approved: true,
+					approvalId: "aviv-ofc-drive-it",
+					operator: "aviv",
+					approvedAt: "2026-06-03T13:36:35.321Z",
+					payloadSha256,
+				},
+			});
+
+			const saved = JSON.parse(fs.readFileSync(requestPath, "utf8")) as {
+				status: string;
+				privateWorkspaceDisclosure: {
+					approved: boolean;
+					approvalId: string;
+					operator: string;
+					approvedAt: string;
+					payloadSha256: string;
+				};
+			};
+			expect(saved).toMatchObject({
+				status: "approved",
+				privateWorkspaceDisclosure: {
+					approved: true,
+					approvalId: "aviv-ofc-drive-it",
+					operator: "aviv",
+					approvedAt: "2026-06-03T13:36:35.321Z",
+					payloadSha256,
+				},
+			});
+		});
+	});
+
+	it("refuses Pro review disclosure approval for a stale payload digest", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-approve-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"stale-approval",
+				"--operator",
+				"aviv",
+				"--payload-sha256",
+				`sha256:${"0".repeat(64)}`,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail: string };
+			const saved = JSON.parse(fs.readFileSync(requestPath, "utf8")) as {
+				privateWorkspaceDisclosure: { approved: boolean };
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ status: "input_error" });
+			expect(report.detail).toContain("does not match request payload");
+			expect(saved.privateWorkspaceDisclosure.approved).toBe(false);
 		});
 	});
 
