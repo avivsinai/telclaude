@@ -1906,9 +1906,9 @@ export function writeHermesTextArtifact(
 }
 
 function trackedHermesSeedPath(filePath: string): string | undefined {
-	const repoRoot = gitTopLevel(process.cwd());
-	if (!repoRoot) return undefined;
 	const resolved = resolvePossiblyMissingPath(filePath);
+	const repoRoot = gitTopLevelForPath(resolved);
+	if (!repoRoot) return undefined;
 	return trackedHermesSeedPaths(repoRoot).get(resolved);
 }
 
@@ -1942,6 +1942,20 @@ function resolvePossiblyMissingPath(filePath: string): string {
 		current = parent;
 	}
 	return path.join(fs.realpathSync.native(current), ...segments);
+}
+
+function gitTopLevelForPath(filePath: string): string | undefined {
+	let current = fs.existsSync(filePath)
+		? fs.statSync(filePath).isDirectory()
+			? filePath
+			: path.dirname(filePath)
+		: path.dirname(filePath);
+	while (!fs.existsSync(current)) {
+		const parent = path.dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return gitTopLevel(current);
 }
 
 function gitTrackedHermesSeedPaths(repoRoot: string): string[] {

@@ -3251,6 +3251,28 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("refuses green canonical seed writes by absolute path from another cwd", async () => {
+		const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-green-seed-target-"));
+		const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-green-seed-cwd-"));
+		execFileSync("git", ["init"], { cwd: repoDir, stdio: "ignore" });
+		await withCwd(otherDir, async () => {
+			const seedPath = path.join(repoDir, "docs/hermes/profile-generation-proof.json");
+
+			expect(() =>
+				writeHermesJsonArtifact(
+					seedPath,
+					{
+						schemaVersion: "telclaude.hermes.profile-generation-proof.v1",
+						status: "pass",
+						checks: [{ name: "profile.pin", status: "pass", detail: "green" }],
+					},
+					{ allowTrackedSeedWrite: true },
+				),
+			).toThrow("Refusing to write green tracked Hermes seed");
+			expect(fs.existsSync(seedPath)).toBe(false);
+		});
+	});
+
 	it("writes fail-closed profile-generation proof seeds", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-red-seed-"));
 		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
