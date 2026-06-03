@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "hermes": {
+    "version": "0.15.1"
+  },
+  "featureProbeMatrixDigest": "sha256:3d576bdac0e3182d22f39d29c6329c23443649ee2288433228fd836303bfc681",
+  "featureProbes": [
+    {
+      "surface_id": "execution.cli_headless",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/execution-cli-headless.json"
+    },
+    {
+      "surface_id": "execution.approval_continuation",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
+    },
+    {
+      "surface_id": "execution.api_server_containment",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/execution-api-server-containment.json"
+    },
+    {
+      "surface_id": "execution.served_mcp_containment",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/execution-served-mcp-containment.json"
+    },
+    {
+      "surface_id": "model.relay",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/model-relay.json"
+    },
+    {
+      "surface_id": "edge.whatsapp",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/edge-whatsapp.json"
+    },
+    {
+      "surface_id": "edge.email",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/edge-email.json"
+    },
+    {
+      "surface_id": "edge.agentmail",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/edge-agentmail.json"
+    },
+    {
+      "surface_id": "edge.social",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/edge-social.json"
+    },
+    {
+      "surface_id": "identity.migration",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/identity-migration.json"
+    },
+    {
+      "surface_id": "household.scopes",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/household-scopes.json"
+    },
+    {
+      "surface_id": "attachment.quarantine",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/attachment-quarantine.json"
+    },
+    {
+      "surface_id": "outbound.policy",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/outbound-policy.json"
+    },
+    {
+      "surface_id": "public.social.isolation",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/public-social-isolation.json"
+    },
+    {
+      "surface_id": "providers.release-policy",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/providers-release-policy.json"
+    },
+    {
+      "surface_id": "providers.bank",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/providers-bank.json"
+    },
+    {
+      "surface_id": "providers.clalit",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/providers-clalit.json"
+    },
+    {
+      "surface_id": "providers.government",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/providers-government.json"
+    },
+    {
+      "surface_id": "providers.approval-binding",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/providers-approval-binding.json"
+    },
+    {
+      "surface_id": "served_mcp.provider-tools",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/served-mcp-provider-tools.json"
+    },
+    {
+      "surface_id": "providers.google",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/providers-google.json"
+    },
+    {
+      "surface_id": "workflow.cron",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/workflow-cron.json"
+    },
+    {
+      "surface_id": "workflow.longrun",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/workflow-longrun.json"
+    },
+    {
+      "surface_id": "approval.continuation",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/execution-approval-continuation.json"
+    },
+    {
+      "surface_id": "sideeffect.ledger",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/sideeffect-ledger.json"
+    },
+    {
+      "surface_id": "browser.profiles",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/browser-profiles.json"
+    },
+    {
+      "surface_id": "computer.broker",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/computer-broker.json"
+    },
+    {
+      "surface_id": "network.egress-broker",
+      "status": "fail",
+      "evidence_path": "artifacts/hermes/probes/network-egress-broker.json"
+    }
+  ],
+  "adapterApiSignatures": {
+    "execution.cli_headless": "sha256:0d86af31ec824339792fa2083939c34f060dc70a8c8b68489905e5a3fb41615d",
+    "execution.approval_continuation": "sha256:124ab5fbc322a514e14ad9ad1e7cd67a03da249cc492e5fbe899a2a7134950a0",
+    "execution.api_server_containment": "sha256:af1d146edfe9ba3ec60925629ff9f0ba81cdeb29f28d363fc3e6cd1c3cdb9cae",
+    "execution.served_mcp_containment": "sha256:e9102794082888fc74195ec7ace892a6adc8fd5ecaa2bcec10988714d072f2b6",
+    "model.relay": "sha256:009800e9ec9ac4fc407eb3589d988fae27679fe99eaff3613eaa2cb868dbdb98",
+    "edge.whatsapp": "sha256:c764c5497eac59129c328c0316b176a160320527bcbf2772d4eac61e916d8c9d",
+    "edge.email": "sha256:4e72c1832105e45fe63159c57738621f70e4b8b1aac0c9c519e036bc7e28416b",
+    "edge.agentmail": "sha256:1a2a3b3c4a22285d5f98d4d74fdf0919c7cc92492d749eec04c65a4539520465",
+    "edge.social": "sha256:4023f18ec95319d336451486f555a3898b205b61d20e8fe986ebadba36f02243",
+    "identity.migration": "sha256:b345c69b132a1293ea71d8b2d9b2159eba948ff0079e4f7df6d45c79c186276f",
+    "household.scopes": "sha256:84d735c8f0a3ba45f556e150b0ca631e63a7bb95c8ba511f3e2c5dbfab8ae6b8",
+    "attachment.quarantine": "sha256:e7541a599ee33f57dc4850d1421514ef386a61722515f13f6ad098ea4395d0ac",
+    "outbound.policy": "sha256:a4ddf85f798b31e7aa61c31e720d7ca2e4c791f54770b951ff81874d12b9d90d",
+    "public.social.isolation": "sha256:39e83d5cfec0ee033d5d741e632d121ddb4075ccc0d62a320eba450e3c232d70",
+    "providers.release-policy": "sha256:07e90d675e7243b7e7948228221e21af7da049d5ce873616024d7485fcd95272",
+    "providers.bank": "sha256:9d27b32cb73744c4a4f496555d2d1a27b23b93e4adc85c2e17c04aba64c0eff7",
+    "providers.clalit": "sha256:9f915672465c5dcd3e172af69f5914a56152299ff747788069c8885a03fc8d9f",
+    "providers.government": "sha256:a7268c361ecb29b38a3ca328f1c698002bcb2f1b977f49f9b8fc01edb9717b8d",
+    "providers.approval-binding": "sha256:06d6d99fd044ba27623c2861f20a0b9833d4b59ebc6f31ebf3362bb69f3d0d81",
+    "served_mcp.provider-tools": "sha256:44933aa72864435d4580ab9374ad53adcc54e9290db18e14602c222ebd14e836",
+    "providers.google": "sha256:ba09cc8b7b6a4b992b351df6b80e5d3c2077193fd2f282c0f5152a19fb6c9560",
+    "workflow.cron": "sha256:af7b6630ade0fa30ec84947337674f1d6d3c9a969c229002f7c5b41dd9c4a33c",
+    "workflow.longrun": "sha256:1f4022699ac999d3b9d113b22bdfbc4a9a807f1d9146bbbcfcb44095f9cfe389",
+    "approval.continuation": "sha256:7b35f8a2fced9dbaeb6b4257a0b5aec8c756f063d5735dcf7e8add4ba76ea3e2",
+    "sideeffect.ledger": "sha256:94997cfa842f18ca711bd8ca09539d086e76db399ff5259a4320aa0267cc8cd9",
+    "browser.profiles": "sha256:822d1ca15b6c13af8ea61ade2e6f94b412966ef6e3aba8530cc695847feef773",
+    "computer.broker": "sha256:0f2de05899de354db8c8dd006ec32538c097d16ab4772b114512252ab62c6f51",
+    "network.egress-broker": "sha256:d45602b59d670e3659a30446051132705d2cac6fde9fa13dece47f35ac06d8dd"
+  },
+  "capabilities": {
+    "plugins": [
+      "platform-adapter",
+      "tool-registration",
+      "curated-skills-profile"
+    ],
+    "mcp": [
+      "stdio",
+      "http_relay_internal_network",
+      "events_wait",
+      "permissions_list_open",
+      "permissions_respond"
+    ],
+    "modelProviders": [
+      "openai-codex-relay",
+      "relay-owned-provider"
+    ],
+    "memoryProviders": [
+      "telclaude-memory-provider"
+    ]
+  },
+  "requiredUpgradeTests": [
+    "pnpm dev hermes doctor --probes --compat-lock --json",
+    "pnpm dev hermes cutover-check --strict --dry-run --json",
+    "pnpm dev hermes prove --upstream-clean --p0"
+  ],
+  "generatedProfileSchemaVersion": "1",
+  "wrapperPackageVersion": "0.7.1",
+  "paritySuiteDigests": {
+    "p0": "sha256:50bf19fbb6b7346c59ba7b83c49de0ae67f274352f16d5974bed5b2d414094bf"
+  },
+  "noForkProofEvidencePath": "docs/hermes/no-fork-proof.json",
+  "sourceDriftSignals": {
+    "sourceCommit": "f70941db46b39459486f90d0a3ad0f8216cfb73d",
+    "docsCommit": "f70941db46b39459486f90d0a3ad0f8216cfb73d"
+  }
+}

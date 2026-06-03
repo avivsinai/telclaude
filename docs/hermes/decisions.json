@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "decisions": [
+    {
+      "id": "D-first-cutover-workflow-set",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "pre-cutover",
+      "affected_workflows": [
+        "telegram-chat.telegram-chat-eafeee3bce50006d5d19"
+      ],
+      "cutover_impact": "Cutover remains blocked until D-first-cutover-workflow-set is resolved by an operator-owned decision."
+    },
+    {
+      "id": "D-private-execution-contract",
+      "status": "unresolved",
+      "owner": "operator",
+      "deadline_phase": "pre-cutover",
+      "affected_workflows": [
+        "telegram-chat.telegram-chat-eafeee3bce50006d5d19"
+      ],
+      "cutover_impact": "Cutover remains blocked until D-private-execution-contract is resolved by an operator-owned decision."
+    }
+  ]
+}

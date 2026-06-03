@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "telclaude.hermes.profile-generation-proof.v1",
+  "status": "fail",
+  "evidence_path": "docs/hermes/profile-generation-proof.json",
+  "generatedAt": "2026-06-03T11:28:28.227Z",
+  "outDir": "/tmp/tc-hermes",
+  "pin": {
+    "version": "0.15.1"
+  },
+  "profileSchemaVersion": "1",
+  "lockfileDigest": "sha256:dd273d078b3750a67ea6dbf5eb265029fc150505eb3903db05c35da2aad79dcf",
+  "manifestDigest": "sha256:d4c6d27108f222bdff7f041a021c7181195937a7e676f1e1eda41d64c17d5542",
+  "treeDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "outputs": [],
+  "directoryInventory": [],
+  "secretManifest": [
+    {
+      "id": "model-provider-credentials",
+      "owner": "telclaude-vault"
+    },
+    {
+      "id": "provider-sidecar-credentials",
+      "owner": "telclaude-vault"
+    },
+    {
+      "id": "public-channel-credentials",
+      "owner": "telclaude-edge"
+    }
+  ],
+  "checks": [
+    {
+      "name": "profile.redSeed",
+      "status": "fail",
+      "detail": "Tracked profile-generation seed is intentionally red; generate live proof outside the tracked seed path before promotion."
+    }
+  ]
+}

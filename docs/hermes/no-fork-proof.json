@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "hermesCheckoutClean": false,
+  "evidence_path": "docs/hermes/no-fork-proof.json",
+  "checkoutPath": "/Users/avivsinai/MyProjects/telclaude-hermes-wrapper-phase0/hermes-agent",
+  "expectedRef": "v2026.5.29",
+  "expectedVersion": "0.15.1",
+  "exactTags": [],
+  "statusPorcelain": "",
+  "diffExitCode": 1,
+  "cachedDiffExitCode": 1,
+  "checks": [
+    {
+      "name": "checkout.present",
+      "status": "fail",
+      "detail": "Hermes checkout not found at /Users/avivsinai/MyProjects/telclaude-hermes-wrapper-phase0/hermes-agent"
+    },
+    {
+      "name": "checkout.head",
+      "status": "fail",
+      "detail": "HEAD could not be resolved"
+    },
+    {
+      "name": "checkout.expectedRef",
+      "status": "fail",
+      "detail": "v2026.5.29 could not be resolved"
+    },
+    {
+      "name": "checkout.pinned",
+      "status": "fail",
+      "detail": "HEAD unknown does not match v2026.5.29 unknown"
+    },
+    {
+      "name": "checkout.statusClean",
+      "status": "fail",
+      "detail": "git status failed"
+    },
+    {
+      "name": "checkout.diffClean",
+      "status": "fail",
+      "detail": "working tree diff is not clean"
+    },
+    {
+      "name": "checkout.indexClean",
+      "status": "fail",
+      "detail": "index diff is not clean"
+    },
+    {
+      "name": "runner.attestation",
+      "status": "fail",
+      "detail": "no-fork wrapper run attestation is missing"
+    },
+    {
+      "name": "runner.p0",
+      "status": "fail",
+      "detail": "P0 fixture/cutover command did not pass"
+    },
+    {
+      "name": "runner.noRuntimeSourceReplacement",
+      "status": "fail",
+      "detail": "runtime source replacement denial was not observed"
+    },
+    {
+      "name": "runner.noMonkeypatch",
+      "status": "fail",
+      "detail": "monkeypatch denial was not observed"
+    },
+    {
+      "name": "runner.postStatusClean",
+      "status": "fail",
+      "detail": "post-run git status failed"
+    },
+    {
+      "name": "runner.postDiffClean",
+      "status": "fail",
+      "detail": "post-run diff is not clean"
+    },
+    {
+      "name": "runner.postIndexClean",
+      "status": "fail",
+      "detail": "post-run index diff is not clean"
+    }
+  ]
+}

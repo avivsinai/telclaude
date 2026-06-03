@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-03T11:10:52.436Z",
+  "status": "complete",
+  "source": {
+    "configPath": "/Users/avivsinai/.telclaude/telclaude.json",
+    "runtimeConfigPath": "/Users/avivsinai/.telclaude/telclaude.runtime.json",
+    "privateConfigPresent": false,
+    "dataDir": "/Users/avivsinai/.telclaude"
+  },
+  "summary": {
+    "workflows": 1,
+    "actors": 1,
+    "sessions": 1,
+    "providers": 0,
+    "socialServices": 0,
+    "cronJobs": 0,
+    "pendingQueues": {
+      "approvals": 0,
+      "planApprovals": 0,
+      "cards": 0,
+      "backgroundJobs": 3,
+      "socialItems": 0,
+      "curatorItems": 0,
+      "pairingPendingRequests": 0,
+      "pairingActiveLockouts": 0
+    },
+    "issues": 1
+  },
+  "config": {
+    "security": {
+      "profile": "simple",
+      "defaultTier": "READ_ONLY",
+      "userOverrides": 0,
+      "privateEndpoints": 0
+    },
+    "telegram": {
+      "botTokenPresent": true,
+      "allowedChatCount": 1,
+      "webhookConfigured": false,
+      "heartbeatEnabled": false,
+      "groupChatEnabled": false
+    },
+    "profiles": [],
+    "cron": {
+      "enabled": true,
+      "pollIntervalSeconds": 15,
+      "timeoutSeconds": 900
+    },
+    "network": {
+      "mode": "restricted",
+      "privateEndpointCount": 0
+    },
+    "dashboard": {
+      "enabled": false,
+      "port": 3005
+    },
+    "webhooks": {
+      "enabled": false,
+      "port": 3015
+    }
+  },
+  "actors": [
+    {
+      "id": "telegram-chat:eafeee3bce50006d5d19",
+      "kind": "telegram-chat",
+      "trust_domain": "private",
+      "source_ref": "config.telegram.allowedChats"
+    }
+  ],
+  "sessions": {
+    "rows": [
+      {
+        "keyRef": "session-ref:eafeee3bce50006d5d19",
+        "kind": "direct",
+        "sessionRef": "session:8bb6205d4c8d17ae3fa6",
+        "updatedAt": "2025-12-14T11:32:00.724Z",
+        "ageMs": 14773131710,
+        "systemSent": true
+      }
+    ],
+    "staleCount": 1
+  },
+  "cron": {
+    "config": {
+      "enabled": true,
+      "pollIntervalSeconds": 15,
+      "timeoutSeconds": 900
+    },
+    "summary": {
+      "totalJobs": 0,
+      "enabledJobs": 0,
+      "runningJobs": 0,
+      "nextRunAtMs": null
+    },
+    "coverage": {
+      "allSocial": false,
+      "hasPrivateHeartbeat": false,
+      "socialServiceIds": []
+    },
+    "jobs": []
+  },
+  "social": {
+    "services": [],
+    "activity": []
+  },
+  "providers": [],
+  "queues": {
+    "approvals": {
+      "pending": 0,
+      "expired": 0
+    },
+    "planApprovals": {
+      "pending": 0,
+      "expired": 0
+    },
+    "cards": {
+      "active": 0,
+      "expired": 0,
+      "byStatus": {}
+    },
+    "backgroundJobs": {
+      "active": 3,
+      "byStatus": {
+        "queued": 3
+      }
+    },
+    "pairing": {
+      "pendingRequests": 0,
+      "activePairs": 0,
+      "activeLockouts": 0
+    },
+    "allowlist": {
+      "active": 0,
+      "total": 0
+    },
+    "curator": {
+      "open": 0,
+      "byStatus": {}
+    },
+    "social": {
+      "activeItems": 0
+    },
+    "webhooks": {
+      "enabled": 0,
+      "total": 0
+    },
+    "memory": {
+      "entries": 0,
+      "episodes": 0
+    }
+  },
+  "workflows": [
+    {
+      "workflow_id": "telegram-chat.telegram-chat-eafeee3bce50006d5d19",
+      "owner": "telegram-chat:eafeee3bce50006d5d19",
+      "trust_domain": "private",
+      "active": true,
+      "current_surface": "Telclaude Telegram relay",
+      "hermes_target": "Hermes private profile behind Telclaude edge",
+      "status": "inventory_only",
+      "p_class": "P0",
+      "source_refs": [
+        "config.telegram.allowedChats"
+      ],
+      "queue_refs": [],
+      "fixture_ids": [],
+      "unresolved_decision_ids": [
+        "D-private-execution-contract"
+      ],
+      "risk_notes": [
+        "Requires identity, approval, and session replay fixtures before inclusion."
+      ]
+    }
+  ],
+  "risks": [
+    "active background jobs exist"
+  ],
+  "collectorErrors": []
+}
