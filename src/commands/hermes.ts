@@ -52,6 +52,9 @@ import {
 	buildHermesGenerateDryRun,
 	buildHermesProfileGenerationRedSeed,
 	buildHermesQueueSnapshot,
+	buildMissingDefaultCutoverFixtureResults,
+	buildMissingDefaultCutoverNetworkProbes,
+	buildMissingDefaultRollbackRehearsal,
 	CutoverProofBundleSchema,
 	collectFeatureProbeEvidence,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
@@ -759,6 +762,35 @@ function readInventorySnapshot(explicitPath?: string): unknown {
 	return inventoryPath
 		? readJsonFile(resolveHermesArtifactPath(inventoryPath))
 		: collectHermesInventory();
+}
+
+function defaultCutoverArtifactIsMissing(filePath: string, defaultPath: string): boolean {
+	const resolvedPath = resolveHermesArtifactPath(filePath);
+	return resolvedPath === resolveHermesArtifactPath(defaultPath) && !fs.existsSync(resolvedPath);
+}
+
+function readCutoverFixtureResults(filePath: string, options: { dryRun: boolean }): unknown {
+	if (options.dryRun && defaultCutoverArtifactIsMissing(filePath, DEFAULT_FIXTURE_RESULTS_PATH)) {
+		return buildMissingDefaultCutoverFixtureResults();
+	}
+	return readJsonFile(resolveHermesArtifactPath(filePath));
+}
+
+function readCutoverNetworkProbes(filePath: string, options: { dryRun: boolean }): unknown {
+	if (options.dryRun && defaultCutoverArtifactIsMissing(filePath, DEFAULT_NETWORK_PROBES_PATH)) {
+		return buildMissingDefaultCutoverNetworkProbes();
+	}
+	return readJsonFile(resolveHermesArtifactPath(filePath));
+}
+
+function readCutoverRollbackRehearsal(filePath: string, options: { dryRun: boolean }): unknown {
+	if (
+		options.dryRun &&
+		defaultCutoverArtifactIsMissing(filePath, DEFAULT_ROLLBACK_REHEARSAL_PATH)
+	) {
+		return buildMissingDefaultRollbackRehearsal();
+	}
+	return readJsonFile(resolveHermesArtifactPath(filePath));
 }
 
 function buildHermesDecisionLogDraft(input: { inventory?: unknown } = {}): DecisionLog {
@@ -4278,16 +4310,16 @@ export function registerHermesCommand(program: Command): void {
 							allowStaleAttestations: !liveCutover,
 							now,
 						}),
-						fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
+						fixtureResults: readCutoverFixtureResults(options.fixtures, { dryRun }),
 						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
 						profileGenerationProof: readOptionalJsonFile(
 							resolveHermesArtifactPath(options.profileProof),
 						),
-						networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
+						networkProbes: readCutoverNetworkProbes(options.networkProbes, { dryRun }),
 						queueSnapshot: options.queueSnapshot
 							? readJsonFile(resolveHermesArtifactPath(options.queueSnapshot))
 							: undefined,
-						rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
+						rollbackRehearsal: readCutoverRollbackRehearsal(options.rollback, { dryRun }),
 					});
 				} catch (error) {
 					const report = {
@@ -4432,6 +4464,11 @@ export function registerHermesCommand(program: Command): void {
 			"Feature-probe matrix JSON path",
 			DEFAULT_FEATURE_PROBE_MATRIX_PATH,
 		)
+		.option(
+			"--nofork-proof <path>",
+			"No-fork proof evidence path to bind in the compatibility lockfile",
+			DEFAULT_NO_FORK_PROOF_PATH,
+		)
 		.option("--out <path>", "Write compatibility lockfile JSON to this path")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(
@@ -4439,6 +4476,7 @@ export function registerHermesCommand(program: Command): void {
 				options: JsonOption &
 					PinOption & {
 						featureProbes: string;
+						noforkProof: string;
 						out?: string;
 					} & TrackedSeedWriteOption,
 			) => {
@@ -4447,6 +4485,7 @@ export function registerHermesCommand(program: Command): void {
 						pin: resolvePin(options),
 						featureProbeMatrix: readJsonFile(resolveHermesArtifactPath(options.featureProbes)),
 						wrapperPackageVersion: readWrapperPackageVersion(),
+						noForkProofEvidencePath: options.noforkProof,
 					});
 					if (options.out) {
 						writeJsonArtifact(

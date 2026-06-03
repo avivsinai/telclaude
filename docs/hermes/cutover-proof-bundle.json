@@ -1,0 +1,260 @@
+{
+  "schemaVersion": "telclaude.hermes.cutover-proof-bundle.v1",
+  "generatedAt": "2026-06-03T21:19:18.339Z",
+  "hermes": {
+    "version": "0.15.1"
+  },
+  "wrapper": {
+    "version": "0.7.1"
+  },
+  "artifacts": {
+    "inventory": {
+      "key": "inventory",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T11:10:52.436Z",
+      "artifactPath": "docs/hermes/inventory.json",
+      "sha256": "sha256:f339c712aff0231fda0419c0e5dcd9fe78d1a4c252bc61a2b99cc9a7071957fd",
+      "sourceCommand": "pnpm dev hermes inventory --json",
+      "status": "pass",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.inventory"
+      ],
+      "checkIds": [
+        "inputs.inventory"
+      ]
+    },
+    "scopeManifest": {
+      "key": "scopeManifest",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/cutover-scope.json",
+      "sha256": "sha256:0ad7e8f437251c65a74ca7ab9362c98904c49b608d15c3742787be2003d074b8",
+      "sourceCommand": "pnpm dev hermes cutover-scope --json",
+      "status": "pass",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.scopeManifest",
+        "workflow.scope"
+      ],
+      "checkIds": [
+        "inputs.scopeManifest",
+        "workflow.scope"
+      ]
+    },
+    "decisionLog": {
+      "key": "decisionLog",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/decisions.json",
+      "sha256": "sha256:343e00ab676976eba160bb40bb9c4e0fd877223cc0d295ff8d6494c4f33245c4",
+      "sourceCommand": "pnpm dev hermes decision-log --json",
+      "status": "pass",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.decisionLog",
+        "decisions.resolved"
+      ],
+      "checkIds": [
+        "inputs.decisionLog",
+        "decisions.resolved"
+      ]
+    },
+    "compatibilityLockfile": {
+      "key": "compatibilityLockfile",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/hermes-compat.lock.json",
+      "sha256": "sha256:abc60e11139dfca87f0b402cb1683944be72a6f1c32b7063ca39dcc5ce4798a6",
+      "sourceCommand": "pnpm dev hermes compat-lock --dry-run --json",
+      "status": "pass",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.lockfile",
+        "lockfile.consistent"
+      ],
+      "checkIds": [
+        "inputs.lockfile",
+        "lockfile.consistent"
+      ]
+    },
+    "featureProbeMatrix": {
+      "key": "featureProbeMatrix",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/feature-probes.json",
+      "sha256": "sha256:9194b081aae79bfb3e3752a78948b90dcb2e0449e8925dd662a35e9b9f465eee",
+      "sourceCommand": "pnpm dev hermes probes --json",
+      "status": "fail",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.featureProbeMatrix",
+        "featureProbes.pass"
+      ],
+      "checkIds": [
+        "inputs.featureProbeMatrix",
+        "featureProbes.pass"
+      ]
+    },
+    "fixtureResults": {
+      "key": "fixtureResults",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/fixture-results.json",
+      "sha256": "sha256:3c47832eb369d26b6019b58612a3ed22f824a1738bb727de5a0cca6b440af1f3",
+      "sourceCommand": "pnpm dev hermes fixtures --json",
+      "status": "fail",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.fixtureResults",
+        "fixtures.pass"
+      ],
+      "checkIds": [
+        "inputs.fixtureResults",
+        "fixtures.pass"
+      ]
+    },
+    "noForkProof": {
+      "key": "noForkProof",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/no-fork-proof.json",
+      "sha256": "sha256:7d7a965064c88e386b575c03d7773ba811df5f7745d7478c9b319750e1dba8e8",
+      "sourceCommand": "pnpm dev hermes prove --upstream-clean --p0 --json",
+      "status": "fail",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.noForkProof",
+        "nofork.clean"
+      ],
+      "checkIds": [
+        "inputs.noForkProof",
+        "nofork.clean"
+      ]
+    },
+    "networkProbeBundle": {
+      "key": "networkProbeBundle",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/network-probes.json",
+      "sha256": "sha256:2e7cd84ad6adbef5818d7d1b831cc1bab1f5e72424a71a5653368c0027e50c9b",
+      "sourceCommand": "pnpm dev hermes network-probes --json",
+      "status": "fail",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.networkProbes",
+        "networkProbes.pass"
+      ],
+      "checkIds": [
+        "inputs.networkProbes",
+        "networkProbes.pass"
+      ]
+    },
+    "queueSnapshot": {
+      "key": "queueSnapshot",
+      "schemaVersion": "unknown",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/queue-snapshot.json",
+      "sha256": "sha256:69fb75d09ec2acd66d80ea766292cc9c826563f65b0d67aca58db22f16938836",
+      "sourceCommand": "pnpm dev hermes queue-snapshot --json",
+      "status": "pass",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.queueSnapshot",
+        "queues.owned"
+      ],
+      "checkIds": [
+        "inputs.queueSnapshot",
+        "queues.owned"
+      ]
+    },
+    "rollbackEvidence": {
+      "key": "rollbackEvidence",
+      "schemaVersion": "1",
+      "generatedAt": "2026-06-03T21:19:18.339Z",
+      "artifactPath": "docs/hermes/rollback-rehearsal.json",
+      "sha256": "sha256:ae947c653d19a52ce932fb0c01fcc0e4736abba48cbba7ddd0a063e7f07288c0",
+      "sourceCommand": "pnpm dev hermes rollback-rehearsal --json",
+      "status": "fail",
+      "redaction": {
+        "status": "pass",
+        "summary": "artifact bytes contain no credential-shaped text requiring redaction"
+      },
+      "leakScan": {
+        "status": "pass",
+        "summary": "artifact bytes passed structured secret scan"
+      },
+      "gateIds": [
+        "inputs.rollbackRehearsal",
+        "rollback.rehearsed"
+      ],
+      "checkIds": [
+        "inputs.rollbackRehearsal",
+        "rollback.rehearsed"
+      ]
+    }
+  }
+}

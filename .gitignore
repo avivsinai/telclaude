@@ -110,6 +110,7 @@ docs/hermes/*.json
 !docs/hermes/inventory.json
 !docs/hermes/queue-snapshot.json
 !docs/hermes/no-fork-proof.json
+!docs/hermes/cutover-proof-bundle.json
 !docs/hermes/profile-generation-proof.json
 !docs/hermes/rollback-relay-public-key.lock.json
 !docs/hermes/rollback-relay-public-key-source.*.json
