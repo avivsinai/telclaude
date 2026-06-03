@@ -411,6 +411,7 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/hermes/network-probe-attestation.ts",
 		"src/hermes/network-probes.ts",
 		"src/hermes/private-runtime.ts",
+		"src/relay/capabilities.ts",
 		"src/relay/openai-codex-proxy.ts",
 		"src/relay/openai-codex-relay-proof.ts",
 	],
@@ -6732,31 +6733,63 @@ function collectModelRelayProbeEvidence(
 		);
 	}
 
+	const failures = modelRelayProbeEvidenceFailures(parsed.data, options);
+	if (failures.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
+		);
+	}
+
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed model relay reachability, direct-model denial, and profile credential absence`,
+	};
+}
+
+export function modelRelayProbeEvidenceFailure(
+	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string | null {
+	const parsed = ModelRelayProbeEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return `invalid model-relay evidence: ${flattenZodError(parsed.error)}`;
+	}
+	const failures = modelRelayProbeEvidenceFailures(parsed.data, options);
+	return failures.length > 0 ? `model-relay evidence did not pass: ${failures.join("; ")}` : null;
+}
+
+function modelRelayProbeEvidenceFailures(
+	evidence: z.infer<typeof ModelRelayProbeEvidenceSchema>,
+	options: HermesSignedEvidenceValidationOptions,
+): string[] {
 	const failures: string[] = [];
-	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
-	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (evidence.status !== "pass") failures.push(`status is ${evidence.status}`);
+	if (evidence.ran !== true) failures.push(`ran is ${String(evidence.ran)}`);
 	const freshnessFailure = hermesAttestationFreshnessFailure(
 		"model-relay evidence generatedAt",
-		parsed.data.generatedAt,
+		evidence.generatedAt,
 		options,
 	);
 	if (freshnessFailure) failures.push(freshnessFailure);
-	if (parsed.data.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
+	if (evidence.posture !== REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE) {
 		failures.push(
-			`posture is ${parsed.data.posture ?? "missing"}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
+			`posture is ${evidence.posture ?? "missing"}; expected ${REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE}`,
 		);
 	}
-	if (!parsed.data.observation.relayUrl) {
+	if (!evidence.observation.relayUrl) {
 		failures.push("observation.relayUrl is missing");
-	} else if (isDirectModelRelayProviderUrl(parsed.data.observation.relayUrl)) {
+	} else if (isDirectModelRelayProviderUrl(evidence.observation.relayUrl)) {
 		failures.push("observation.relayUrl points at a direct model-provider host");
-	} else if (!isRelayModelProbeUrl(parsed.data.observation.relayUrl)) {
+	} else if (!isRelayModelProbeUrl(evidence.observation.relayUrl)) {
 		failures.push("observation.relayUrl is not the Telclaude model relay probe endpoint");
 	}
-	if (!isDirectModelRelayProviderUrl(parsed.data.observation.directModelUrl)) {
+	if (!isDirectModelRelayProviderUrl(evidence.observation.directModelUrl)) {
 		failures.push("observation.directModelUrl is not a recognized direct model-provider URL");
 	}
-	const origin = parsed.data.origin;
+	const origin = evidence.origin;
 	if (origin.kind === "relay-self-smoke") {
 		failures.push("origin is relay-self-smoke");
 	}
@@ -6776,17 +6809,17 @@ function collectModelRelayProbeEvidence(
 		);
 	}
 	failures.push(
-		...modelRelayModelProviderFailures(parsed.data.modelProvider, parsed.data.observation.relayUrl),
+		...modelRelayModelProviderFailures(evidence.modelProvider, evidence.observation.relayUrl),
 	);
-	if (!parsed.data.observation.profileDir) {
+	if (!evidence.observation.profileDir) {
 		failures.push("observation.profileDir is missing");
 	}
-	if ((parsed.data.observation.scannedProfileFiles ?? []).length === 0) {
+	if ((evidence.observation.scannedProfileFiles ?? []).length === 0) {
 		failures.push("observation.scannedProfileFiles is empty");
 	}
 
-	const gateByName = new Map(parsed.data.gates.map((gate) => [gate.name, gate]));
-	for (const gateName of requiredModelRelayGateNames(parsed.data.posture)) {
+	const gateByName = new Map(evidence.gates.map((gate) => [gate.name, gate]));
+	for (const gateName of requiredModelRelayGateNames(evidence.posture)) {
 		const gate = gateByName.get(gateName);
 		if (!gate) {
 			failures.push(`gate ${gateName} is missing`);
@@ -6794,19 +6827,7 @@ function collectModelRelayProbeEvidence(
 			failures.push(`gate ${gateName} is ${gate.status}: ${redactDetail(gate.detail)}`);
 		}
 	}
-	if (failures.length > 0) {
-		return featureProbeEvidenceFailure(
-			probe,
-			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
-		);
-	}
-
-	return {
-		surface_id: probe.surface_id,
-		status: "pass",
-		evidence_path: probe.evidence_path,
-		detail: `feature probe evidence ${probe.surface_id} observed model relay reachability, direct-model denial, and profile credential absence`,
-	};
+	return failures;
 }
 
 function modelRelayModelProviderFailures(

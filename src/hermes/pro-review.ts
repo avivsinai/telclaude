@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { filterOutput } from "../security/output-filter.js";
 import {
 	type BrowserComputerBrokerSurfaceId,
 	browserComputerBrokerProbeEvidenceFailure,
@@ -9,6 +10,7 @@ import {
 import { edgeAdapterProbeEvidenceFailure } from "./edge-adapter-probes.js";
 import {
 	hermesFixtureEvidenceFileFailure,
+	modelRelayProbeEvidenceFailure,
 	REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
 	resolveHermesArtifactPath,
 } from "./foundation.js";
@@ -96,8 +98,10 @@ const PRO_REVIEW_PROVIDER_RELEASE_POLICY_PROBE_PATH =
 const PRO_REVIEW_SERVED_MCP_PROVIDER_TOOLS_PROBE_PATH =
 	"artifacts/hermes/probes/served-mcp-provider-tools.json";
 const PRO_REVIEW_CLI_HEADLESS_PROBE_PATH = "artifacts/hermes/probes/execution-cli-headless.json";
+const PRO_REVIEW_MODEL_RELAY_PROBE_PATH = "artifacts/hermes/probes/model-relay.json";
 const PRO_REVIEW_KNOWN_PROBE_ARTIFACT_PATHS = new Set<string>([
 	PRO_REVIEW_CLI_HEADLESS_PROBE_PATH,
+	PRO_REVIEW_MODEL_RELAY_PROBE_PATH,
 	...Object.keys(PRO_REVIEW_SIGNED_PROBE_PATHS),
 	...Object.keys(PRO_REVIEW_BROWSER_COMPUTER_PROBE_PATHS),
 	...Object.keys(PRO_REVIEW_PROVIDER_DOMAIN_PROBE_PATHS),
@@ -128,6 +132,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/hermes/browser-computer-broker-probes.ts",
 	"src/hermes/private-runtime.ts",
 	"src/hermes/foundation.ts",
+	"src/hermes/model-relay.ts",
 	"src/hermes/private-telegram-fixture-attestation.ts",
 	"src/hermes/network-probe-schema.ts",
 	"src/hermes/network-probe-attestation.ts",
@@ -153,6 +158,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"src/hermes/mcp/live-server.ts",
 	"src/hermes/mcp/live-runtime.ts",
 	"src/commands/hermes.ts",
+	"src/relay/capabilities.ts",
 	"src/relay/provider-proxy.ts",
 	"src/relay/openai-codex-proxy.ts",
 	"src/relay/openai-codex-relay-proof.ts",
@@ -199,6 +205,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"artifacts/hermes/probes/sideeffect-ledger.json",
 	"artifacts/hermes/probes/workflow-cron.json",
 	"artifacts/hermes/probes/workflow-longrun.json",
+	"artifacts/hermes/probes/model-relay.json",
 	"artifacts/hermes/fixtures/fixture.providers.bank.read.json",
 	"artifacts/hermes/fixtures/fixture.providers.bank.prepare-transfer.json",
 	"artifacts/hermes/fixtures/fixture.providers.bank.approved-transfer.json",
@@ -245,6 +252,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"tests/hermes/browser-computer-broker-probes.test.ts",
 	"tests/hermes/network-probes.test.ts",
 	"tests/hermes/foundation-network-evidence.test.ts",
+	"tests/hermes/model-relay.test.ts",
 	"tests/integration/telegram-control-plane.replay.test.ts",
 	"tests/telegram/command-gating.test.ts",
 	"tests/hermes/provider-approval-binding-probe.test.ts",
@@ -262,6 +270,7 @@ export const REQUIRED_PRO_REVIEW_FILES = [
 	"tests/hermes/mcp-live-relay-clients.test.ts",
 	"tests/hermes/mcp-live-server.test.ts",
 	"tests/commands/hermes.test.ts",
+	"tests/relay/model-relay-peer-echo.test.ts",
 	"tests/relay/provider-proxy.test.ts",
 	"tests/hermes/private-runtime.test.ts",
 	"tests/sandbox/validate-config.test.ts",
@@ -291,7 +300,8 @@ export type ProReviewCheckReport = {
 	};
 };
 
-const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const Sha256DigestSchema = z.string().regex(SHA256_DIGEST_PATTERN);
 const NonEmptyString = z.string().min(1);
 
 const ProReviewRequestSchema = z
@@ -435,19 +445,33 @@ export type ApproveProReviewRequestInput = {
 	readonly expectedPayloadSha256?: string;
 };
 
-const PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS = [
-	/^OPENAI(?:_|$)/i,
-	/^ANTHROPIC(?:_|$)/i,
-	/^OPENROUTER(?:_|$)/i,
-	/^GEMINI(?:_|$)/i,
-	/^GOOGLE(?:_|$)/i,
-	/^XAI(?:_|$)/i,
-	/^MISTRAL(?:_|$)/i,
-	/^GROQ(?:_|$)/i,
-	/^COHERE(?:_|$)/i,
-	/^YOETZ_.*(?:API|KEY|TOKEN|TRANSPORT|FALLBACK|CDP)/i,
-	/^(?:CDP|CHROME_REMOTE_DEBUGGING|DEV_BROWSER|AGENT_BROWSER|BROWSERLESS)(?:_|$)/i,
-] as const;
+const PRO_REVIEW_NATIVE_YOETZ_ENV_ALLOWED_KEYS = new Set([
+	"PATH",
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"SHELL",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"TERM",
+	"NO_COLOR",
+	"FORCE_COLOR",
+	"CLICOLOR",
+	"CLICOLOR_FORCE",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_STATE_HOME",
+	"XDG_CACHE_HOME",
+	"YOETZ_DIR",
+	"YOETZ_HOME",
+	"YOETZ_CHATGPT_NATIVE_EXTENSION_DIR",
+	"YOETZ_CHROME_NATIVE_MESSAGING_DIR",
+	"YOETZ_CHROME_EXTENSION_NATIVE_SOCKET",
+]);
 
 export function evaluateProReviewCheck(
 	input: {
@@ -955,6 +979,16 @@ function semanticEvidenceGates(
 			cliHeadlessEvidenceGate(PRO_REVIEW_CLI_HEADLESS_PROBE_PATH, options.requireGreenEvidence),
 		);
 	}
+	if (request.selectedFiles.includes(PRO_REVIEW_MODEL_RELAY_PROBE_PATH)) {
+		gates.push(
+			jsonSemanticEvidenceGate(
+				PRO_REVIEW_MODEL_RELAY_PROBE_PATH,
+				"model.relay",
+				options.requireGreenEvidence,
+				modelRelayProbeEvidenceFailure,
+			),
+		);
+	}
 	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_SIGNED_PROBE_PATHS)) {
 		if (request.selectedFiles.includes(reportPath)) {
 			gates.push(signedProbeEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence));
@@ -1427,8 +1461,10 @@ export function readProReviewNativeCanary(
 export function buildProReviewYoetzCommand(input: {
 	readonly canary: ProReviewNativeCanary;
 	readonly bundlePath: string;
+	readonly payloadSha256?: string;
+	readonly bundleSha256?: string;
 }): string[] {
-	return [
+	const command = [
 		"yoetz",
 		"browser",
 		"recipe",
@@ -1443,6 +1479,13 @@ export function buildProReviewYoetzCommand(input: {
 		"--var",
 		`extension_instance_id=${input.canary.extensionInstanceId}`,
 	];
+	if (input.payloadSha256) {
+		command.push("--var", `payload_sha256=${input.payloadSha256}`);
+	}
+	if (input.bundleSha256) {
+		command.push("--var", `bundle_sha256=${input.bundleSha256}`);
+	}
+	return command;
 }
 
 export function buildProReviewNativeYoetzEnv(
@@ -1452,13 +1495,16 @@ export function buildProReviewNativeYoetzEnv(
 	for (const [key, value] of Object.entries(source)) {
 		if (value === undefined) continue;
 		if (key === "YOETZ_AGENT") continue;
-		if (PRO_REVIEW_NATIVE_YOETZ_ENV_DENY_PATTERNS.some((pattern) => pattern.test(key))) {
-			continue;
-		}
+		if (!PRO_REVIEW_NATIVE_YOETZ_ENV_ALLOWED_KEYS.has(key)) continue;
+		if (proReviewNativeYoetzEnvValueLooksSecret(key, value)) continue;
 		env[key] = value;
 	}
 	env.YOETZ_AGENT = "1";
 	return env;
+}
+
+function proReviewNativeYoetzEnvValueLooksSecret(key: string, value: string): boolean {
+	return filterOutput(`${key}=${value}`).blocked;
 }
 
 function readJsonObject(
@@ -1477,6 +1523,8 @@ function readJsonObject(
 export function validateProReviewYoetzSendOutput(input: {
 	readonly stdout: string;
 	readonly expectedExtensionInstanceId: string;
+	readonly expectedPayloadSha256?: string;
+	readonly expectedBundleSha256?: string;
 }): ProReviewYoetzSendValidation {
 	let parsed: unknown;
 	try {
@@ -1526,13 +1574,52 @@ export function validateProReviewYoetzSendOutput(input: {
 			)}, expected ${input.expectedExtensionInstanceId}`,
 		);
 	}
+	failures.push(
+		...digestEchoFailures(
+			"payloadSha256",
+			digestEchoValue(parsed, "payloadSha256", "payload_sha256"),
+			input.expectedPayloadSha256,
+		),
+	);
+	failures.push(
+		...digestEchoFailures(
+			"bundleSha256",
+			digestEchoValue(parsed, "bundleSha256", "bundle_sha256"),
+			input.expectedBundleSha256,
+		),
+	);
 	return failures.length === 0
-		? { status: "pass", detail: "Yoetz native send reported Extended Pro without fallback" }
+		? {
+				status: "pass",
+				detail:
+					"Yoetz native send reported Extended Pro without fallback and matched payload/bundle digests",
+			}
 		: { status: "fail", detail: failures.join("; ") };
 }
 
 function isExtendedProModel(value: unknown): boolean {
 	return value === "Extended Pro" || value === "extended-pro";
+}
+
+function digestEchoValue(
+	parsed: Record<string, unknown>,
+	camelKey: "payloadSha256" | "bundleSha256",
+	snakeKey: "payload_sha256" | "bundle_sha256",
+): unknown {
+	return parsed[camelKey] ?? parsed[snakeKey];
+}
+
+function digestEchoFailures(
+	field: "payloadSha256" | "bundleSha256",
+	actual: unknown,
+	expected: string | undefined,
+): string[] {
+	if (typeof actual !== "string") return [`${field} is missing or not a string`];
+	if (!SHA256_DIGEST_PATTERN.test(actual)) return [`${field} is not a sha256 digest`];
+	if (expected === undefined) return [`expected ${field} is missing`];
+	if (!SHA256_DIGEST_PATTERN.test(expected)) return [`expected ${field} is not a sha256 digest`];
+	if (actual !== expected) return [`${field} is ${actual}, expected ${expected}`];
+	return [];
 }
 
 function readAndParse<T>(
