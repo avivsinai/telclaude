@@ -1,0 +1,2 @@
+export const DEFAULT_HERMES_RELAY_IP = "192.0.2.10";
+export const DEFAULT_HERMES_CONTAINED_IP = "192.0.2.11";

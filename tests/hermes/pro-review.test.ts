@@ -19,6 +19,9 @@ import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provi
 import { runHermesWorkflowProbe } from "../../src/hermes/workflow-probes.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
 
+const CLI_HEADLESS_TEST_RELAY_IP = "10.99.0.10";
+const CLI_HEADLESS_TEST_CONTAINED_IP = "10.99.0.11";
+
 describe("Hermes Pro review gate", () => {
 	it("requires edge runtime authorizer files in the native Pro payload", () => {
 		expect(REQUIRED_PRO_REVIEW_FILES).toEqual(
@@ -467,7 +470,7 @@ describe("Hermes Pro review gate", () => {
 			);
 			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
 
-			const report = evaluateProReviewCheck();
+			const report = withHermesRuntimeIpEnv(() => evaluateProReviewCheck());
 			const gate = report.gates.find((item) => item.name === "request.cliHeadlessEvidence");
 
 			expect(report.status).toBe("fail");
@@ -914,9 +917,9 @@ function cliHeadlessPassLookingUnsignedEvidence(): Record<string, unknown> {
 		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
 		hostname: "tc-hermes-contained",
 		relayHost: "telclaude",
-		relayResolvedAddress: "172.29.92.10",
-		containerIpAddress: "172.29.92.11",
-		observedPeerAddress: "172.29.92.11",
+		relayResolvedAddress: CLI_HEADLESS_TEST_RELAY_IP,
+		containerIpAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
 	const relayProof = {
@@ -925,7 +928,7 @@ function cliHeadlessPassLookingUnsignedEvidence(): Record<string, unknown> {
 		requestId: "codex-proof-unsigned",
 		method: "POST",
 		path: "/backend-api/codex/responses",
-		observedPeerAddress: "172.29.92.11",
+		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
@@ -998,6 +1001,19 @@ async function withOperatorRelayKeys<T>(callback: () => Promise<T>): Promise<T> 
 	} finally {
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+	}
+}
+
+function withHermesRuntimeIpEnv<T>(callback: () => T): T {
+	const originalRelayIp = process.env.TELCLAUDE_HERMES_RELAY_IP;
+	const originalContainedIp = process.env.TELCLAUDE_HERMES_CONTAINED_IP;
+	process.env.TELCLAUDE_HERMES_RELAY_IP = CLI_HEADLESS_TEST_RELAY_IP;
+	process.env.TELCLAUDE_HERMES_CONTAINED_IP = CLI_HEADLESS_TEST_CONTAINED_IP;
+	try {
+		return callback();
+	} finally {
+		restoreEnv("TELCLAUDE_HERMES_RELAY_IP", originalRelayIp);
+		restoreEnv("TELCLAUDE_HERMES_CONTAINED_IP", originalContainedIp);
 	}
 }
 

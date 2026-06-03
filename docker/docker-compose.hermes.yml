@@ -20,20 +20,20 @@ services:
       - TELCLAUDE_HERMES_API_BASE_URL=http://tc-hermes-contained:8642
       - TELCLAUDE_HERMES_API_KEY=${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}
       - TELCLAUDE_HERMES_LIVE_MCP_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ENABLED:-0}
-      - TELCLAUDE_HERMES_LIVE_MCP_HOST=${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}
+      - TELCLAUDE_HERMES_LIVE_MCP_HOST=${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
       - TELCLAUDE_HERMES_LIVE_MCP_PORT=8793
       - TELCLAUDE_HERMES_LIVE_MCP_PATH=/mcp
       - TELCLAUDE_HERMES_LIVE_MCP_NETWORK=telclaude-hermes-relay
-      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-172.29.92.11}
+      - TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS=${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}
       - TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET=${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET:-/run/telclaude/hermes-live-mcp-admin.sock}
-      - OPERATOR_RPC_AGENT_PUBLIC_KEY=${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev dev keygen operator}
-      - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev dev keygen operator}
+      - OPERATOR_RPC_AGENT_PUBLIC_KEY=${OPERATOR_RPC_AGENT_PUBLIC_KEY:?set from pnpm dev keygen operator}
+      - OPERATOR_RPC_RELAY_PRIVATE_KEY=${OPERATOR_RPC_RELAY_PRIVATE_KEY:?set from pnpm dev keygen operator}
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services,tc-hermes-contained}
     networks:
       hermes-relay-net:
-        ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}
+        ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}
     # The live MCP admin socket is created after the entrypoint drops to uid
     # 1000, so the relay runtime dir must be node-owned and private.
     tmpfs: !override
@@ -87,7 +87,7 @@ services:
     cpus: 2
     networks:
       hermes-relay-net:
-        ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.29.92.11}
+        ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}
     restart: unless-stopped
     healthcheck:
       test:
@@ -109,4 +109,4 @@ networks:
     internal: true
     ipam:
       config:
-        - subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-172.29.92.0/24}
+        - subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}

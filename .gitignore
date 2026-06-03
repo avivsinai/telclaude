@@ -98,6 +98,18 @@ secrets/
 **/.env.*
 env.local
 env.*.local
+!.env.example
+!**/.env.example
+
+# Hermes generated evidence and auth state
+docs/hermes/*.json
+!docs/hermes/rollback-relay-public-key.lock.json
+!docs/hermes/rollback-relay-public-key-source.*.json
+docs/hermes/**/auth.json
+docs/hermes/**/*.key
+docs/hermes/**/*.pem
+docs/hermes/**/.cache/
+docs/hermes/**/cache/
 
 # Backup files that may contain secrets
 *.backup

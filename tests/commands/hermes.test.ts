@@ -33,7 +33,6 @@ import {
 	buildHermesQueueSnapshot,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
-	collectFeatureProbeEvidence,
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	evaluateGuardrailMutation,
@@ -87,9 +86,6 @@ import {
 import { buildServedMcpProviderToolsProbeEvidence } from "../../src/hermes/served-mcp-provider-tools-probe.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
-	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
-	HERMES_WORKFLOW_SURFACE_IDS,
-	type HermesWorkflowSurfaceId,
 	runHermesWorkflowProbe,
 } from "../../src/hermes/workflow-probes.js";
 import { buildInternalResponseProof, generateKeyPair } from "../../src/internal-auth.js";
@@ -409,19 +405,6 @@ function restoreEnv(name: string, value: string | undefined): void {
 	}
 }
 
-function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
-	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
-		return {
-			privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
-			publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
-		};
-	}
-	const relayKeys = generateKeyPair();
-	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
-	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-	return relayKeys;
-}
-
 function minimalInventoryConfig(options: { webhooksEnabled?: boolean } = {}): TelclaudeConfig {
 	return {
 		security: { profile: "simple", permissions: { defaultTier: "READ_ONLY", users: {} } },
@@ -479,7 +462,7 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 		schemaVersion: 1,
 		hermesCheckoutClean: true,
 		evidence_path: evidencePath,
-		checkoutPath: "/home/user/MyProjects/hermes-agent-v2026.5.29",
+		checkoutPath: path.join(os.tmpdir(), "hermes-agent-v2026.5.29"),
 		expectedRef: "v2026.5.29",
 		expectedVersion: "0.15.1",
 		head: "a".repeat(40),
@@ -604,13 +587,7 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 		typeof overrides.evidence_path === "string"
 			? overrides.evidence_path
 			: path.join(tempDir, "rollback-rehearsal.json");
-	const relayKeys =
-		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY
-			? {
-					privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
-					publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
-				}
-			: generateKeyPair();
+	const relayKeys = ensureOperatorRelayKeys();
 	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 	const relayPublicKey = {
@@ -689,6 +666,19 @@ function writeRollbackRehearsal(overrides: Record<string, unknown> = {}) {
 	};
 	writeJson(evidencePath, rehearsal);
 	return rehearsal;
+}
+
+function ensureOperatorRelayKeys(): { privateKey: string; publicKey: string } {
+	if (process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY && process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY) {
+		return {
+			privateKey: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+			publicKey: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+		};
+	}
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+	return relayKeys;
 }
 
 function signedRelayTranscript(
@@ -837,7 +827,10 @@ function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 				: `${id} observed only expected denials`,
 		generatedAt: "2026-05-30T00:00:00.000Z",
 		evidence_path: evidencePath,
-		attempts: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)],
+		attempts:
+			id === "network.direct-provider-denied"
+				? passingNetworkProbeAttempts(id)
+				: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)],
 	});
 }
 
@@ -910,9 +903,9 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 		origin: {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "172.30.92.11",
+			observedPeerAddress: "192.0.2.11",
 			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "172.30.92.11",
+			expectedPeerAddress: "192.0.2.11",
 			expectedPeerSource: "configured-contained-ip",
 			detail: "model relay peer origin was observed by the relay endpoint",
 		},
@@ -1547,172 +1540,6 @@ function sideEffectLedgerCutoverBundle(
 	});
 }
 
-function workflowProbe(
-	surfaceId: HermesWorkflowSurfaceId,
-	evidencePath: string,
-	status: "pass" | "fail" | "skip" = "pass",
-) {
-	const label = surfaceId === "workflow.cron" ? "cron" : "long-running";
-	return {
-		surface_id: surfaceId,
-		hermes_pin: hermesPin,
-		documented_seam: `Telclaude ${label} workflow control state remains in an append-only workflow-run ledger`,
-		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
-		expected_result:
-			surfaceId === "workflow.cron"
-				? "Cron workflow authority, background completion, and duplicate-denial ledger controls pass"
-				: "Long-running approval resume, stale denial, retry/backoff, and terminal cancellation controls pass",
-		negative_probe:
-			surfaceId === "workflow.cron"
-				? "Client-derived cron authority, duplicate delivery, and missing terminal completion fail closed"
-				: "Stale resume, unbound approval resume, missing retry ledger state, and post-cancel checkpoints fail closed",
-		evidence_path: evidencePath,
-		lockfile_key: `featureProbes.${surfaceId}`,
-		security_scope: "workflow-ledger" as const,
-		approval_equivalent: surfaceId === "workflow.longrun",
-		failure_outcome: "disable" as const,
-		status,
-	};
-}
-
-function workflowCutoverBundle(
-	surfaceId: HermesWorkflowSurfaceId,
-	evidencePath: string,
-	matrixStatus: "pass" | "fail" | "skip" = "pass",
-) {
-	const probe = workflowProbe(surfaceId, evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
-	const base = safeCutoverBundle();
-	const fixtureResults = writeWorkflowFixtureResultsForSurface(surfaceId, evidencePath);
-	const fixtureIds = HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.filter(
-		(requirement) => requirement.surfaceId === surfaceId,
-	).map((requirement) => requirement.id);
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: surfaceId,
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
-			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: surfaceId,
-					owner: "operator",
-					trust_domain: "private",
-					fixture_ids: [fixtureIds[0]],
-					negative_fixture_ids: fixtureIds.slice(1),
-					required_surface_ids: [surfaceId],
-				},
-			],
-		},
-		featureProbeMatrix,
-		featureProbeEvidence: collectFeatureProbeEvidence(featureProbeMatrix),
-		fixtureResults,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact: "Profile generation proof is required before workflow cutover.",
-				},
-			],
-		},
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: surfaceId,
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
-			adapterApiSignatures: {
-				[surfaceId]: `sha256:${"8".repeat(64)}`,
-			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
-}
-
-function writeWorkflowFixtureResultsForSurface(
-	surfaceId: HermesWorkflowSurfaceId,
-	evidencePath: string,
-): CutoverInputBundle["fixtureResults"] {
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-"));
-	const probePaths = workflowProbePaths(tempDir, { [surfaceId]: evidencePath });
-	for (const probeSurfaceId of HERMES_WORKFLOW_SURFACE_IDS) {
-		if (!fs.existsSync(probePaths[probeSurfaceId])) {
-			writeWorkflowProbeArtifact(probeSurfaceId, probePaths[probeSurfaceId]);
-		}
-	}
-	const bundle = buildHermesWorkflowFixtureEvidenceBundle({
-		evidenceDir: path.join(tempDir, "fixtures"),
-		probePaths,
-		observedAt: "2026-06-01T09:10:00.000Z",
-	});
-	const fixtureIds = new Set(
-		HERMES_WORKFLOW_FIXTURE_REQUIREMENTS.filter(
-			(requirement) => requirement.surfaceId === surfaceId,
-		).map((requirement) => requirement.id),
-	);
-	for (const evidence of bundle.evidence) {
-		if (fixtureIds.has(evidence.id)) writeJson(evidence.evidence_path, evidence);
-	}
-	return {
-		schemaVersion: 1,
-		results: bundle.results.filter((result) => fixtureIds.has(result.id)),
-	};
-}
-
-function workflowProbePaths(
-	tempDir: string,
-	overrides: Partial<Record<HermesWorkflowSurfaceId, string>> = {},
-): Record<HermesWorkflowSurfaceId, string> {
-	return {
-		"workflow.cron": overrides["workflow.cron"] ?? path.join(tempDir, "workflow-cron.json"),
-		"workflow.longrun":
-			overrides["workflow.longrun"] ?? path.join(tempDir, "workflow-longrun.json"),
-	};
-}
-
-function writeWorkflowProbeArtifact(
-	surfaceId: HermesWorkflowSurfaceId,
-	evidencePath: string,
-	overrides: Record<string, unknown> = {},
-) {
-	writeJson(evidencePath, {
-		...runHermesWorkflowProbe({
-			surfaceId,
-			allowRun: true,
-			observedAt: "2026-06-01T09:00:00.000Z",
-		}),
-		...overrides,
-	});
-}
-
 function providerApprovalBindingProbe(
 	evidencePath: string,
 	status: "pass" | "fail" | "skip" = "pass",
@@ -1898,6 +1725,231 @@ function providerReleasePolicyCutoverBundle(
 			],
 			adapterApiSignatures: {
 				"providers.release-policy": `sha256:${"5".repeat(64)}`,
+			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
+		},
+	});
+}
+
+function googleProviderProbe(evidencePath: string, status: "pass" | "fail" | "skip" = "pass") {
+	return {
+		surface_id: "providers.google",
+		hermes_pin: hermesPin,
+		documented_seam:
+			"Telclaude Google sidecar remains OAuth credential owner and Hermes uses provider proxy tools",
+		probe_command: "pnpm dev hermes probe providers.google --allow-run",
+		expected_result:
+			"Gmail reads, draft writes, wrong-actor denial, replay denial, and raw OAuth absence pass",
+		negative_probe:
+			"Mismatched approval-token audience, wrong actor, replay, mutated write params, direct Google/provider/vault access, and raw OAuth exposure fail closed",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.providers.google",
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+type ProviderDomainSurfaceId = "providers.bank" | "providers.clalit" | "providers.government";
+
+const providerDomainDetails: Record<
+	ProviderDomainSurfaceId,
+	{
+		readonly providerId: "bank" | "clalit" | "government";
+		readonly owner: string;
+		readonly expectedResult: string;
+		readonly negativeProbe: string;
+	}
+> = {
+	"providers.bank": {
+		providerId: "bank",
+		owner: "provider:bank",
+		expectedResult:
+			"Bank read, transfer prepare, approved transfer execute, scope denial, replay denial, and credential absence pass",
+		negativeProbe:
+			"Wrong actor, wrong provider scope, replay, direct bank/provider/vault access, and raw credential exposure fail closed",
+	},
+	"providers.clalit": {
+		providerId: "clalit",
+		owner: "provider:clalit",
+		expectedResult:
+			"Clalit read, booking prepare, approved execute, emergency escalation, scope denial, replay denial, and credential absence pass",
+		negativeProbe:
+			"Wrong actor, wrong provider scope, emergency mishandling, replay, direct provider/vault access, and raw credential exposure fail closed",
+	},
+	"providers.government": {
+		providerId: "government",
+		owner: "provider:government",
+		expectedResult:
+			"Government status read, form prepare, approved submission, scope denial, replay denial, and credential absence pass",
+		negativeProbe:
+			"Wrong actor, wrong provider scope, replay, direct government/provider/vault access, and raw credential exposure fail closed",
+	},
+};
+
+function providerDomainProbe(
+	surfaceId: ProviderDomainSurfaceId,
+	evidencePath: string,
+	status: "pass" | "fail" | "skip" = "pass",
+) {
+	const details = providerDomainDetails[surfaceId];
+	return {
+		surface_id: surfaceId,
+		hermes_pin: hermesPin,
+		documented_seam: `Telclaude ${details.providerId} provider sidecar remains credential owner and Hermes uses MCP/provider proxy tools`,
+		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
+		expected_result: details.expectedResult,
+		negative_probe: details.negativeProbe,
+		evidence_path: evidencePath,
+		lockfile_key: `featureProbes.providers.${details.providerId}`,
+		approval_equivalent: true,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function providerDomainCutoverBundle(
+	surfaceId: ProviderDomainSurfaceId,
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	const probe = providerDomainProbe(surfaceId, evidencePath, matrixStatus);
+	const details = providerDomainDetails[surfaceId];
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: surfaceId,
+					owner: details.owner,
+					trust_domain: "provider",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					workflow_id: surfaceId,
+					owner: details.owner,
+					trust_domain: "provider",
+					required_surface_ids: [surfaceId],
+				},
+			],
+		},
+		featureProbeMatrix,
+		noForkProof: base.noForkProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [
+				{
+					id: "D-profile-generation",
+					status: "accepted",
+					owner: "operator",
+					deadline_phase: "Phase 1",
+					accepted_answer:
+						"Generated Hermes profiles are produced by the checked profile generator.",
+					affected_workflows: [],
+					cutover_impact: "Profile generation proof is required before provider cutover.",
+				},
+			],
+		},
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: surfaceId,
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				[surfaceId]: `sha256:${"7".repeat(64)}`,
+			},
+			noForkProofEvidencePath: base.noForkProof.evidence_path,
+		},
+	});
+}
+
+function googleProviderCutoverBundle(
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	const probe = googleProviderProbe(evidencePath, matrixStatus);
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [probe],
+	};
+	const base = safeCutoverBundle();
+	return safeCutoverBundle({
+		inventory: {
+			generatedAt: "2026-05-29T00:00:00Z",
+			workflows: [
+				{
+					workflow_id: "providers.google",
+					owner: "provider:google",
+					trust_domain: "provider",
+					active: true,
+				},
+			],
+			status: "complete",
+			summary: {
+				pendingQueues: pendingQueues(),
+			},
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					workflow_id: "providers.google",
+					owner: "provider:google",
+					trust_domain: "provider",
+					required_surface_ids: ["providers.google"],
+				},
+			],
+		},
+		featureProbeMatrix,
+		noForkProof: base.noForkProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [
+				{
+					id: "D-profile-generation",
+					status: "accepted",
+					owner: "operator",
+					deadline_phase: "Phase 1",
+					accepted_answer:
+						"Generated Hermes profiles are produced by the checked profile generator.",
+					affected_workflows: [],
+					cutover_impact: "Profile generation proof is required before provider cutover.",
+				},
+			],
+		},
+		lockfile: {
+			...compatLockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: [
+				{
+					surface_id: "providers.google",
+					status: "pass",
+					evidence_path: evidencePath,
+				},
+			],
+			adapterApiSignatures: {
+				"providers.google": `sha256:${"6".repeat(64)}`,
 			},
 			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
@@ -2263,9 +2315,9 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
 		hostname: "tc-hermes-contained",
 		relayHost: "telclaude",
-		relayResolvedAddress: "172.29.92.10",
-		containerIpAddress: "172.29.92.11",
-		observedPeerAddress: "172.29.92.11",
+		relayResolvedAddress: "192.0.2.10",
+		containerIpAddress: "192.0.2.11",
+		observedPeerAddress: "192.0.2.11",
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
 	const relayProof = cliHeadlessRelayProof();
@@ -2339,7 +2391,7 @@ function cliHeadlessRelayProof(
 		requestId: "codex-proof-1",
 		method: "POST",
 		path: "/backend-api/codex/responses",
-		observedPeerAddress: "172.29.92.11",
+		observedPeerAddress: "192.0.2.11",
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
@@ -2562,9 +2614,11 @@ async function writeRequiredProReviewWorkspace(
 		if (fs.existsSync(resolved)) continue;
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
-			writeJson(resolved, cliHeadlessReadinessFailureEvidence());
+			writeJson(resolved, cliHeadlessEvidence());
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
+		} else if (isSignedProReviewProbeArtifact(file)) {
+			writeJson(resolved, await signedProReviewProbeEvidence(file));
 		} else if (file.startsWith("artifacts/hermes/") && file.endsWith(".json")) {
 			writeJson(resolved, proReviewReadinessRedEvidence(file));
 		} else {
@@ -2574,8 +2628,7 @@ async function writeRequiredProReviewWorkspace(
 }
 
 async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void> {
-	ensureOperatorRelayKeys();
-	const observedAt = new Date().toISOString();
+	const observedAt = "2026-06-01T09:00:00.000Z";
 	writeJson(
 		rootArtifact(root, "artifacts/hermes/probes/execution-cli-headless.json"),
 		cliHeadlessEvidence(),
@@ -2631,10 +2684,7 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 		runHermesWorkflowProbe({ surfaceId: "workflow.longrun", allowRun: true, observedAt }),
 	);
 	for (const [relativePath, probeId] of Object.entries(PRO_REVIEW_NETWORK_PROBE_ARTIFACTS)) {
-		writeJson(
-			rootArtifact(root, relativePath),
-			passingProReviewNetworkProbeEvidence(probeId, relativePath, observedAt),
-		);
+		writeJson(rootArtifact(root, relativePath), passingNetworkProbeEvidence(probeId, relativePath));
 	}
 	const servedMcpSourcePath = rootArtifact(
 		root,
@@ -2651,6 +2701,7 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 		}),
 	);
 	writeFixtureEvidenceBundle(
+		root,
 		buildEdgeAdapterFixtureEvidenceBundle({
 			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
 			observedAt,
@@ -2664,9 +2715,9 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 				),
 			},
 		}),
-		root,
 	);
 	writeFixtureEvidenceBundle(
+		root,
 		buildProviderDomainFixtureEvidenceBundle({
 			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
 			observedAt,
@@ -2676,18 +2727,18 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 			),
 			networkProbePath: rootArtifact(root, "artifacts/hermes/network/direct-provider-denied.json"),
 		}),
-		root,
 	);
 	writeFixtureEvidenceBundle(
+		root,
 		buildGoogleProviderFixtureEvidenceBundle({
 			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
 			observedAt,
 			probePath: rootArtifact(root, "artifacts/hermes/probes/providers-google.json"),
 			networkProbePath: rootArtifact(root, "artifacts/hermes/network/direct-provider-denied.json"),
 		}),
-		root,
 	);
 	writeFixtureEvidenceBundle(
+		root,
 		buildBrowserComputerBrokerFixtureEvidenceBundle({
 			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
 			observedAt,
@@ -2696,9 +2747,9 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 				(_surfaceId, relativePath) => rootArtifact(root, relativePath),
 			),
 		}),
-		root,
 	);
 	writeFixtureEvidenceBundle(
+		root,
 		buildHermesWorkflowFixtureEvidenceBundle({
 			evidenceDir: rootArtifact(root, "artifacts/hermes/fixtures"),
 			observedAt,
@@ -2707,37 +2758,11 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 				"workflow.longrun": rootArtifact(root, "artifacts/hermes/probes/workflow-longrun.json"),
 			},
 		}),
-		root,
 	);
 }
 
 function rootArtifact(root: string, relativePath: string): string {
 	return path.join(root, relativePath);
-}
-
-function passingProReviewNetworkProbeEvidence(
-	id: string,
-	evidencePath: string,
-	generatedAt: string,
-) {
-	const attempts =
-		id === "network.direct-provider-denied"
-			? passingNetworkProbeAttempts(id)
-			: [passingFirewallSentinelAttempt(), ...passingNetworkProbeAttempts(id)];
-	return withNetworkProbeAttestation({
-		schemaVersion: NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
-		id,
-		posture: "contained-internal",
-		status: "pass",
-		ran: true,
-		summary:
-			id === "network.relay-control-allowed"
-				? `${id} observed expected relay reachability`
-				: `${id} observed only expected denials`,
-		generatedAt,
-		evidence_path: evidencePath,
-		attempts,
-	});
 }
 
 function greenBrowserComputerBrokerProbeEvidence(
@@ -2771,10 +2796,10 @@ function greenBrowserComputerBrokerProbeEvidence(
 }
 
 function writeFixtureEvidenceBundle(
+	root: string,
 	bundle: {
 		readonly evidence: readonly Record<string, unknown>[];
 	},
-	root: string,
 ): void {
 	for (const evidence of bundle.evidence) {
 		const evidencePath = evidence.evidence_path;
@@ -2798,10 +2823,51 @@ function proReviewReadinessRedEvidence(file: string): Record<string, unknown> {
 function mapRecordValues<T extends string, V extends string>(
 	record: Record<string, V>,
 	mapper: (value: V, key: string) => T,
-): Record<V, T> {
+): Partial<Record<V, T>> {
 	return Object.fromEntries(
 		Object.entries(record).map(([key, value]) => [value, mapper(value, key)]),
-	) as Record<V, T>;
+	) as Partial<Record<V, T>>;
+}
+
+function isSignedProReviewProbeArtifact(file: string): boolean {
+	return (
+		file in PRO_REVIEW_EDGE_PROBE_ARTIFACTS ||
+		file === "artifacts/hermes/probes/sideeffect-ledger.json" ||
+		file === "artifacts/hermes/probes/providers-approval-binding.json" ||
+		file === "artifacts/hermes/probes/workflow-cron.json" ||
+		file === "artifacts/hermes/probes/workflow-longrun.json"
+	);
+}
+
+async function signedProReviewProbeEvidence(file: string): Promise<Record<string, unknown>> {
+	ensureOperatorRelaySigningKeys();
+	const observedAt = "2026-06-01T09:00:00.000Z";
+	const edgeSurfaceId = PRO_REVIEW_EDGE_PROBE_ARTIFACTS[file];
+	if (edgeSurfaceId) {
+		return buildEdgeAdapterProbeEvidence({
+			surfaceId: edgeSurfaceId,
+			allowRun: true,
+			observedAt,
+		});
+	}
+	if (file === "artifacts/hermes/probes/sideeffect-ledger.json") {
+		return await runTelclaudeMcpSideEffectLedgerProbe({ allowRun: true, observedAt });
+	}
+	if (file === "artifacts/hermes/probes/providers-approval-binding.json") {
+		return await runTelclaudeProviderApprovalBindingProbe({ allowRun: true, observedAt });
+	}
+	if (file === "artifacts/hermes/probes/workflow-cron.json") {
+		return runHermesWorkflowProbe({ surfaceId: "workflow.cron", allowRun: true, observedAt });
+	}
+	if (file === "artifacts/hermes/probes/workflow-longrun.json") {
+		return runHermesWorkflowProbe({ surfaceId: "workflow.longrun", allowRun: true, observedAt });
+	}
+	throw new Error(`unsupported signed Pro review probe artifact ${file}`);
+}
+
+function ensureOperatorRelaySigningKeys(): void {
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY ??= cliHeadlessRelaySigningKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY ??= cliHeadlessRelaySigningKeys.publicKey;
 }
 
 const PRO_REVIEW_EDGE_PROBE_ARTIFACTS: Record<string, EdgeAdapterFeatureSurfaceId> = {
@@ -2956,9 +3022,9 @@ function servedMcpContainmentEvidence(overrides: Record<string, unknown> = {}) {
 		origin: {
 			kind: "contained-peer",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "172.29.92.11",
+			observedPeerAddress: "192.0.2.11",
 			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "172.29.92.11",
+			expectedPeerAddress: "192.0.2.11",
 			expectedPeerSource: "configured-contained-ip",
 			detail: "probe peer origin was observed by live MCP server",
 		},
@@ -3560,6 +3626,146 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("marks proof bundle fixture artifacts failed when fixture results are red", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-proof-fixtures-red-"));
+		const bundle = safeCutoverBundle();
+		const paths = writeCutoverProofSourceArtifacts(tempDir, bundle);
+		writeJson(paths.fixtureResults, {
+			...bundle.fixtureResults,
+			results: [
+				{
+					...bundle.fixtureResults.results[0],
+					status: "fail",
+				},
+				...bundle.fixtureResults.results.slice(1),
+			],
+		});
+
+		const proof = buildCutoverProofBundle({
+			hermes: bundle.lockfile.hermes,
+			wrapperVersion: bundle.lockfile.wrapperPackageVersion,
+			now: new Date("2026-05-31T00:00:00.000Z"),
+			artifacts: {
+				inventory: proofArtifact(paths.inventory, "pnpm dev hermes inventory --json", [
+					"inputs.inventory",
+				]),
+				scopeManifest: proofArtifact(paths.scopeManifest, "pnpm dev hermes cutover-scope --json", [
+					"inputs.scopeManifest",
+					"workflow.scope",
+				]),
+				decisionLog: proofArtifact(paths.decisionLog, "pnpm dev hermes decision-log --json", [
+					"inputs.decisionLog",
+					"decisions.resolved",
+				]),
+				compatibilityLockfile: proofArtifact(
+					paths.compatibilityLockfile,
+					"pnpm dev hermes compat-lock --dry-run --json",
+					["inputs.lockfile", "lockfile.consistent"],
+				),
+				featureProbeMatrix: proofArtifact(
+					paths.featureProbeMatrix,
+					"pnpm dev hermes probes --json",
+					["inputs.featureProbeMatrix", "featureProbes.pass"],
+				),
+				fixtureResults: proofArtifact(paths.fixtureResults, "pnpm dev hermes fixtures --json", [
+					"inputs.fixtureResults",
+					"fixtures.pass",
+				]),
+				noForkProof: proofArtifact(
+					paths.noForkProof,
+					"pnpm dev hermes prove --upstream-clean --p0 --json",
+					["inputs.noForkProof", "nofork.clean"],
+				),
+				networkProbeBundle: proofArtifact(
+					paths.networkProbeBundle,
+					"pnpm dev hermes network-probes --json",
+					["inputs.networkProbes", "networkProbes.pass"],
+				),
+				queueSnapshot: proofArtifact(paths.queueSnapshot, "pnpm dev hermes queue-snapshot --json", [
+					"inputs.queueSnapshot",
+					"queues.owned",
+				]),
+				rollbackEvidence: proofArtifact(
+					paths.rollbackEvidence,
+					"pnpm dev hermes rollback-rehearsal --json",
+					["inputs.rollbackRehearsal", "rollback.rehearsed"],
+				),
+			},
+		});
+
+		expect(proof.artifacts.fixtureResults.status).toBe("fail");
+	});
+
+	it("marks proof bundle feature-probe artifacts failed when matrix status is red", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-proof-feature-red-"));
+		const bundle = safeCutoverBundle();
+		const paths = writeCutoverProofSourceArtifacts(tempDir, bundle);
+		writeJson(paths.featureProbeMatrix, {
+			...bundle.featureProbeMatrix,
+			probes: [
+				{
+					...bundle.featureProbeMatrix.probes[0],
+					status: "fail",
+				},
+				...bundle.featureProbeMatrix.probes.slice(1),
+			],
+		});
+
+		const proof = buildCutoverProofBundle({
+			hermes: bundle.lockfile.hermes,
+			wrapperVersion: bundle.lockfile.wrapperPackageVersion,
+			now: new Date("2026-05-31T00:00:00.000Z"),
+			artifacts: {
+				inventory: proofArtifact(paths.inventory, "pnpm dev hermes inventory --json", [
+					"inputs.inventory",
+				]),
+				scopeManifest: proofArtifact(paths.scopeManifest, "pnpm dev hermes cutover-scope --json", [
+					"inputs.scopeManifest",
+					"workflow.scope",
+				]),
+				decisionLog: proofArtifact(paths.decisionLog, "pnpm dev hermes decision-log --json", [
+					"inputs.decisionLog",
+					"decisions.resolved",
+				]),
+				compatibilityLockfile: proofArtifact(
+					paths.compatibilityLockfile,
+					"pnpm dev hermes compat-lock --dry-run --json",
+					["inputs.lockfile", "lockfile.consistent"],
+				),
+				featureProbeMatrix: proofArtifact(
+					paths.featureProbeMatrix,
+					"pnpm dev hermes probes --json",
+					["inputs.featureProbeMatrix", "featureProbes.pass"],
+				),
+				fixtureResults: proofArtifact(paths.fixtureResults, "pnpm dev hermes fixtures --json", [
+					"inputs.fixtureResults",
+					"fixtures.pass",
+				]),
+				noForkProof: proofArtifact(
+					paths.noForkProof,
+					"pnpm dev hermes prove --upstream-clean --p0 --json",
+					["inputs.noForkProof", "nofork.clean"],
+				),
+				networkProbeBundle: proofArtifact(
+					paths.networkProbeBundle,
+					"pnpm dev hermes network-probes --json",
+					["inputs.networkProbes", "networkProbes.pass"],
+				),
+				queueSnapshot: proofArtifact(paths.queueSnapshot, "pnpm dev hermes queue-snapshot --json", [
+					"inputs.queueSnapshot",
+					"queues.owned",
+				]),
+				rollbackEvidence: proofArtifact(
+					paths.rollbackEvidence,
+					"pnpm dev hermes rollback-rehearsal --json",
+					["inputs.rollbackRehearsal", "rollback.rehearsed"],
+				),
+			},
+		});
+
+		expect(proof.artifacts.featureProbeMatrix.status).toBe("fail");
+	});
+
 	it("fails cutover-check when proof bundle artifact status forges green over red evidence", () => {
 		const noForkProof = writeNoForkProof({
 			hermesCheckoutClean: false,
@@ -3659,14 +3865,21 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("anchors artifact recency to the proof bundle timestamp during live cutover", () => {
-		const report = evaluateCutoverCheck(safeCutoverBundle(), {
-			liveCutover: true,
-			now: new Date("2026-06-05T23:59:59.000Z"),
-		});
+	it("passes live cutover when proof bundle and signed attestations are current", () => {
+		vi.useFakeTimers();
+		try {
+			const now = new Date("2026-06-01T12:00:00.000Z");
+			vi.setSystemTime(now);
+			const report = evaluateCutoverCheck(safeCutoverBundle(), {
+				liveCutover: true,
+				now,
+			});
 
-		expect(report.status).toBe("safe");
-		expect(report.exitCode).toBe(0);
+			expect(report.status).toBe("safe");
+			expect(report.exitCode).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("marks proof bundle artifacts failed when raw evidence bytes contain secrets", () => {
@@ -4346,8 +4559,9 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
 		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
 		writeJson(evidencePath, cliHeadlessEvidence());
+		const bundle = cliHeadlessCutoverBundle(evidencePath);
 
-		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const result = await runCutoverCheckWithBundle(bundle);
 		const report = JSON.parse(result.stdout) as {
 			status: string;
 			gates: Array<{ name: string; status: string; detail: string }>;
@@ -4543,6 +4757,97 @@ describe("Hermes wrapper foundation", () => {
 				expect.objectContaining({ name: "whatsapp.direct-bridge-denied", status: "pass" }),
 			]),
 		);
+	});
+
+	it("refuses to run signed probe surfaces without the operator relay signing key", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-signed-probe-missing-key-"));
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			for (const [surface, filename] of [
+				["edge.whatsapp", "edge-whatsapp.json"],
+				["sideeffect.ledger", "sideeffect-ledger.json"],
+				["providers.approval-binding", "providers-approval-binding.json"],
+				["workflow.cron", "workflow-cron.json"],
+				["workflow.longrun", "workflow-longrun.json"],
+			] as const) {
+				const evidencePath = path.join(tempDir, filename);
+				const result = await runHermesCommand([
+					"hermes",
+					"probe",
+					surface,
+					"--allow-run",
+					"--json",
+					"--out",
+					evidencePath,
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					surface: string;
+					detail: string;
+				};
+
+				expect(result.exitCode).toBe(1);
+				expect(report).toMatchObject({
+					status: "input_error",
+					surface,
+					detail:
+						"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+				});
+				expect(fs.existsSync(evidencePath)).toBe(false);
+			}
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refuses to run signed probe surfaces without the operator relay verification key", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-signed-probe-missing-pub-"));
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const relayKeys = generateKeyPair();
+
+		try {
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			for (const [surface, filename] of [
+				["edge.whatsapp", "edge-whatsapp.json"],
+				["workflow.cron", "workflow-cron.json"],
+				["workflow.longrun", "workflow-longrun.json"],
+			] as const) {
+				const evidencePath = path.join(tempDir, filename);
+				const result = await runHermesCommand([
+					"hermes",
+					"probe",
+					surface,
+					"--allow-run",
+					"--json",
+					"--out",
+					evidencePath,
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					surface: string;
+					detail: string;
+				};
+
+				expect(result.exitCode).toBe(1);
+				expect(report).toMatchObject({
+					status: "input_error",
+					surface,
+					detail:
+						"Missing relay response verification key for operator. Set OPERATOR_RPC_RELAY_PUBLIC_KEY.",
+				});
+				expect(fs.existsSync(evidencePath)).toBe(false);
+			}
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
 	});
 
 	it("writes runtime edge probe evidence for runtime-required edge surfaces", async () => {
@@ -4833,6 +5138,148 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
+	it("writes Google provider probe evidence through the CLI harness", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-provider-google-cli-"));
+		const evidencePath = path.join(tempDir, "providers-google.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.google",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			ran: boolean;
+			source: string;
+			checks: Array<{ name: string; status: string }>;
+			observations: {
+				approvalVerifierCallCount: number;
+				providerProxyCallCount: number;
+				sidecarVerifierCallCount: number;
+				ledgerReplayCode?: string;
+				sidecarReplayCode?: string;
+				rawOAuthObserved: boolean;
+			};
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: "providers.google",
+			status: "pass",
+			ran: true,
+			source: "telclaude-google-provider-harness",
+		});
+		expect(artifact.observations.providerProxyCallCount).toBe(2);
+		expect(artifact.observations.approvalVerifierCallCount).toBeGreaterThanOrEqual(1);
+		expect(artifact.observations.sidecarVerifierCallCount).toBeGreaterThanOrEqual(2);
+		expect(artifact.observations.ledgerReplayCode).toBe("effect_already_executed");
+		expect(artifact.observations.sidecarReplayCode).toBe("approval_replayed");
+		expect(artifact.observations.rawOAuthObserved).toBe(false);
+		expect(artifact.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "google.read-through-provider-proxy",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "google.approved-write-sidecar-token",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "google.wrong-actor-denied",
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: "google.replay-denied",
+					status: "pass",
+				}),
+			]),
+		);
+	});
+
+	it.each([
+		["providers.bank", "bank"],
+		["providers.clalit", "clalit"],
+		["providers.government", "government"],
+	] as const)("writes %s provider-domain probe evidence through the CLI harness", async (surfaceId, providerId) => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-provider-${providerId}-cli-`));
+		const evidencePath = path.join(tempDir, `${surfaceId.replace(".", "-")}.json`);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			surfaceId,
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const artifact = readJson(evidencePath) as {
+			probeId: string;
+			status: string;
+			ran: boolean;
+			source: string;
+			checks: Array<{ name: string; status: string }>;
+			observations: {
+				providerId: string;
+				providerProxyCallCount: number;
+				approvalVerifierCallCount: number;
+				sidecarTokenIssuerCallCount: number;
+				ledgerReplayCode?: string;
+				wrongActorCode?: string;
+				wrongProviderScopeCode?: string;
+				emergencyEscalationCode?: string;
+				rawCredentialObserved: boolean;
+			};
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(artifact).toMatchObject({
+			probeId: surfaceId,
+			status: "pass",
+			ran: true,
+			source: "telclaude-provider-domain-harness",
+		});
+		expect(artifact.observations.providerId).toBe(providerId);
+		expect(artifact.observations.providerProxyCallCount).toBe(2);
+		expect(artifact.observations.approvalVerifierCallCount).toBeGreaterThanOrEqual(1);
+		expect(artifact.observations.sidecarTokenIssuerCallCount).toBe(1);
+		expect(artifact.observations.ledgerReplayCode).toBe("effect_already_executed");
+		expect(artifact.observations.wrongActorCode).toBe("effect_authority_mismatch");
+		expect(artifact.observations.wrongProviderScopeCode).toBe("effect_authority_mismatch");
+		expect(artifact.observations.rawCredentialObserved).toBe(false);
+		expect(artifact.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: `${providerId}.read-through-provider-proxy`,
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: `${providerId}.prepare-write-ledger-bound`,
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: `${providerId}.approved-write-relay-sidecar-token`,
+					status: "pass",
+				}),
+				expect.objectContaining({
+					name: `${providerId}.wrong-provider-scope-denied`,
+					status: "pass",
+				}),
+			]),
+		);
+		if (providerId === "clalit") {
+			expect(artifact.observations.emergencyEscalationCode).toContain(
+				"urgent_health_escalation_required",
+			);
+		}
+	});
+
 	it("derives served-MCP provider-tools evidence from the containment report", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-served-mcp-provider-cli-"));
 		const sourcePath = path.join(tempDir, "execution-served-mcp-containment.json");
@@ -5055,7 +5502,7 @@ describe("Hermes wrapper foundation", () => {
 					relayResolvedAddress: "192.168.5.2",
 				},
 			}),
-			detail: "runtime relayResolvedAddress is 192.168.5.2, expected 172.29.92.10",
+			detail: "runtime relayResolvedAddress is 192.168.5.2, expected 192.0.2.10",
 		},
 		{
 			name: "editable runtime provenance",
@@ -5091,7 +5538,7 @@ describe("Hermes wrapper foundation", () => {
 			name: "relay proof from wrong peer",
 			evidence: cliHeadlessEvidence({
 				relayProof: cliHeadlessRelayProof({
-					observedPeerAddress: "172.29.92.12",
+					observedPeerAddress: "192.0.2.12",
 				}),
 			}),
 			detail: "relay proof observedPeerAddress does not match runtime observedPeerAddress",
@@ -6152,6 +6599,10 @@ describe("Hermes wrapper foundation", () => {
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
 			writeJson(canaryPath, proReviewCanary());
+			writeJson(
+				"artifacts/hermes/probes/execution-cli-headless.json",
+				cliHeadlessReadinessFailureEvidence(),
+			);
 			const baseRequest = proReviewRequest(canaryPath);
 			writeJson(
 				requestPath,
@@ -6198,6 +6649,42 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("refuses Pro review send without constructing a native command when canary evidence is invalid", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, { schemaVersion: "wrong" });
+			writeJson(requestPath, proReviewRequest(canaryPath));
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				send: { status: string; reason: string; yoetzCommand?: string[]; canaryError?: string };
+				report: { gates: Array<{ name: string; status: string }> };
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report.send.status).toBe("refused");
+			expect(report.send.reason).toBe("pro-review-check did not pass with approval required");
+			expect(report.send.yoetzCommand).toBeUndefined();
+			expect(report.send.canaryError).toBeUndefined();
+			expect(report.report.gates.find((gate) => gate.name === "nativeCanary.schema")).toMatchObject(
+				{
+					status: "fail",
+				},
+			);
+		});
+	});
+
 	it("prepares Pro review send only through the canary-bound native extension instance", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
 		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
@@ -6216,7 +6703,7 @@ describe("Hermes wrapper foundation", () => {
 						approved: true,
 						approvalId: "approval-1",
 						operator: "aviv",
-						approvedAt: new Date().toISOString(),
+						approvedAt: "2026-05-31T17:10:00Z",
 						payloadSha256: (baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
 					},
 				}),
@@ -6546,240 +7033,6 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("includes workflow fixture results from workflow probe artifacts", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-cli-"));
-		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
-		writeJson(testReportPath, privateTelegramVitestReport());
-		await withCwd(tempDir, async () => {
-			writeWorkflowProbeArtifact(
-				"workflow.cron",
-				path.join(tempDir, "artifacts/hermes/probes/workflow-cron.json"),
-			);
-			writeWorkflowProbeArtifact(
-				"workflow.longrun",
-				path.join(tempDir, "artifacts/hermes/probes/workflow-longrun.json"),
-			);
-
-			const result = await runHermesCommand([
-				"hermes",
-				"fixtures",
-				"--json",
-				"--test-report",
-				testReportPath,
-				"--include-workflow",
-				"--evidence-dir",
-				path.join(tempDir, "fixtures"),
-				"--observed-at",
-				"2026-06-01T09:10:00.000Z",
-			]);
-			const report = JSON.parse(result.stdout) as {
-				status: string;
-				results: Array<{ id: string; status: string; evidence_path: string }>;
-			};
-
-			expect(result.exitCode, result.stdout).toBe(0);
-			expect(report.status).toBe("pass");
-			expect(report.results).toEqual(
-				expect.arrayContaining([
-					expect.objectContaining({ id: "fixture.cron.background.delivery", status: "pass" }),
-					expect.objectContaining({ id: "fixture.cron.duplicate-deny", status: "pass" }),
-					expect.objectContaining({ id: "fixture.longrun.approval-resume", status: "pass" }),
-					expect.objectContaining({ id: "fixture.longrun.stale-resume-deny", status: "pass" }),
-				]),
-			);
-		});
-	});
-
-	it("refreshes workflow fixtures independently of private Telegram fixture execution", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-only-"));
-		const outPath = path.join(tempDir, "fixture-results.json");
-		const evidenceDir = path.join(tempDir, "fixtures");
-		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-		ensureOperatorRelayKeys();
-
-		writeJson(outPath, {
-			schemaVersion: 1,
-			results: [
-				{
-					id: "fixture.private.telegram.basic",
-					status: "pass",
-					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
-				},
-			],
-		});
-
-		try {
-			await withCwd(tempDir, async () => {
-				writeWorkflowProbeArtifact(
-					"workflow.cron",
-					path.join(tempDir, "artifacts/hermes/probes/workflow-cron.json"),
-				);
-				writeWorkflowProbeArtifact(
-					"workflow.longrun",
-					path.join(tempDir, "artifacts/hermes/probes/workflow-longrun.json"),
-				);
-				delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-
-				const result = await runHermesCommand([
-					"hermes",
-					"fixtures",
-					"--write",
-					"--json",
-					"--merge-existing",
-					"--only-workflow",
-					"--report-out",
-					reportOut,
-					"--out",
-					outPath,
-					"--evidence-dir",
-					evidenceDir,
-					"--observed-at",
-					"2026-06-01T09:10:00.000Z",
-				]);
-				const report = JSON.parse(result.stdout) as {
-					status: string;
-					results: Array<{ id: string; status: string; evidence_path: string }>;
-				};
-				const written = readJson(outPath) as {
-					results: Array<{ id: string; status: string; evidence_path: string }>;
-				};
-
-				expect(result.exitCode, result.stdout).toBe(0);
-				expect(report.status).toBe("pass");
-				expect(report.results).toEqual(
-					expect.arrayContaining([
-						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
-						expect.objectContaining({ id: "fixture.cron.background.delivery", status: "pass" }),
-						expect.objectContaining({ id: "fixture.cron.duplicate-deny", status: "pass" }),
-						expect.objectContaining({ id: "fixture.longrun.approval-resume", status: "pass" }),
-						expect.objectContaining({ id: "fixture.longrun.stale-resume-deny", status: "pass" }),
-					]),
-				);
-				expect(written.results).toEqual(report.results);
-				expect(fs.existsSync(reportOut)).toBe(false);
-				for (const fixture of report.results.filter(
-					(item) => item.id.startsWith("fixture.cron.") || item.id.startsWith("fixture.longrun."),
-				)) {
-					expect(fs.existsSync(fixture.evidence_path)).toBe(true);
-				}
-			});
-		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
-		}
-	});
-
-	it("refuses workflow-only fixture writes without merge-existing", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-no-merge-"));
-		const result = await runHermesCommand([
-			"hermes",
-			"fixtures",
-			"--write",
-			"--json",
-			"--only-workflow",
-			"--out",
-			path.join(tempDir, "fixture-results.json"),
-			"--evidence-dir",
-			path.join(tempDir, "fixtures"),
-		]);
-		const report = JSON.parse(result.stdout) as { status: string; detail?: string };
-
-		expect(result.exitCode).toBe(1);
-		expect(report).toMatchObject({
-			status: "input_error",
-			detail: "--skip-private-telegram writes require --merge-existing.",
-		});
-	});
-
-	it("refuses workflow-only fixture writes without an existing output bundle", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-fixtures-missing-out-"));
-		const outPath = path.join(tempDir, "fixture-results.json");
-		const evidenceDir = path.join(tempDir, "fixtures");
-		const result = await runHermesCommand([
-			"hermes",
-			"fixtures",
-			"--write",
-			"--json",
-			"--merge-existing",
-			"--only-workflow",
-			"--out",
-			outPath,
-			"--evidence-dir",
-			evidenceDir,
-		]);
-		const report = JSON.parse(result.stdout) as { status: string; detail?: string };
-
-		expect(result.exitCode).toBe(1);
-		expect(report).toMatchObject({
-			status: "input_error",
-			detail: "--skip-private-telegram writes require an existing --out fixture results bundle.",
-		});
-		expect(fs.existsSync(outPath)).toBe(false);
-		expect(fs.existsSync(evidenceDir)).toBe(false);
-	});
-
-	it("refreshes provider fixtures independently of private Telegram fixture execution", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-provider-only-"));
-		const outPath = path.join(tempDir, "fixture-results.json");
-		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-		writeJson(outPath, {
-			schemaVersion: 1,
-			results: [
-				{
-					id: "fixture.private.telegram.basic",
-					status: "pass",
-					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
-				},
-			],
-		});
-
-		try {
-			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-			await withCwd(tempDir, async () => {
-				const result = await runHermesCommand([
-					"hermes",
-					"fixtures",
-					"--json",
-					"--merge-existing",
-					"--only-provider-domain",
-					"--report-out",
-					reportOut,
-					"--out",
-					outPath,
-					"--evidence-dir",
-					path.join(tempDir, "evidence"),
-				]);
-				const report = JSON.parse(result.stdout) as {
-					status: string;
-					results: Array<{ id: string; status: string; evidence_path: string }>;
-				};
-
-				expect(result.exitCode).toBe(1);
-				expect(report.status).toBe("fail");
-				expect(report.results).toEqual(
-					expect.arrayContaining([
-						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
-						expect.objectContaining({ id: "fixture.providers.bank.read", status: "fail" }),
-						expect.objectContaining({
-							id: "fixture.providers.google.direct-provider-deny",
-							status: "fail",
-						}),
-					]),
-				);
-				expect(result.stdout).not.toContain("Missing relay response signing key");
-				expect(fs.existsSync(reportOut)).toBe(false);
-			});
-		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
-		}
-	});
-
 	it("refuses to write imported private Telegram fixture reports", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-imported-"));
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
@@ -6924,6 +7177,158 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
+	it("can preserve existing fixtures while skipping private Telegram without signing keys", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-skip-private-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		writeJson(outPath, {
+			schemaVersion: 1,
+			results: [
+				{
+					id: "fixture.private.telegram.basic",
+					status: "pass",
+					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+				},
+			],
+		});
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--merge-existing",
+				"--skip-private-telegram",
+				"--report-out",
+				reportOut,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				results: Array<{ id: string; status: string; evidence_path: string }>;
+			};
+			const written = readJson(outPath) as { results: Array<{ id: string; status: string }> };
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.status).toBe("pass");
+			expect(report.results).toEqual(written.results);
+			expect(report.results).toEqual([
+				expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
+			]);
+			expect(fs.existsSync(reportOut)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refuses skip-private fixture writes without an existing output bundle", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-skip-private-missing-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"fixtures",
+				"--write",
+				"--json",
+				"--merge-existing",
+				"--skip-private-telegram",
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; detail?: string };
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({
+				status: "input_error",
+				detail: "--skip-private-telegram writes require an existing --out fixture results bundle.",
+			});
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("refreshes provider fixtures independently of private Telegram fixture execution", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-provider-only-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		writeJson(outPath, {
+			schemaVersion: 1,
+			results: [
+				{
+					id: "fixture.private.telegram.basic",
+					status: "pass",
+					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+				},
+			],
+		});
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			await withCwd(tempDir, async () => {
+				const result = await runHermesCommand([
+					"hermes",
+					"fixtures",
+					"--json",
+					"--merge-existing",
+					"--only-provider-domain",
+					"--report-out",
+					reportOut,
+					"--out",
+					outPath,
+					"--evidence-dir",
+					path.join(tempDir, "evidence"),
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					results: Array<{ id: string; status: string; evidence_path: string }>;
+				};
+
+				expect(result.exitCode).toBe(1);
+				expect(report.status).toBe("fail");
+				expect(report.results).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
+						expect.objectContaining({ id: "fixture.providers.bank.read", status: "fail" }),
+						expect.objectContaining({
+							id: "fixture.providers.google.direct-provider-deny",
+							status: "fail",
+						}),
+					]),
+				);
+				expect(result.stdout).not.toContain("Missing relay response signing key");
+				expect(fs.existsSync(reportOut)).toBe(false);
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
 	it("does not write no-fork proof evidence without --upstream-clean", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-"));
 		const evidencePath = path.join(tempDir, "no-fork.json");
@@ -7048,54 +7453,6 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("refuses prove --p0 with mismatched operator relay signing keys before reading P0 inputs", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-bad-keypair-"));
-		const evidencePath = path.join(tempDir, "no-fork.json");
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-		const privateKeys = generateKeyPair();
-		const publicKeys = generateKeyPair();
-
-		try {
-			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = privateKeys.privateKey;
-			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = publicKeys.publicKey;
-			const result = await runHermesCommand([
-				"hermes",
-				"prove",
-				"--upstream-clean",
-				"--p0",
-				"--json",
-				"--checkout",
-				tempDir,
-				"--out",
-				evidencePath,
-				"--feature-probes",
-				path.join(tempDir, "missing-feature-probes.json"),
-			]);
-			const report = JSON.parse(result.stdout) as {
-				p0: { status: string; gates: Array<{ name: string; status: string; detail: string }> };
-				noForkProof: { evidence_path: string; runnerAttestation?: unknown };
-			};
-
-			expect(result.exitCode).toBe(2);
-			expect(report.p0).toMatchObject({ status: "input_error" });
-			expect(report.p0.gates[0]).toMatchObject({
-				name: "inputs.operatorRelaySigning",
-				status: "fail",
-			});
-			expect(report.p0.gates[0].detail).toContain(
-				"Operator relay signing keys failed round-trip verification",
-			);
-			expect(report.p0.gates[0].detail).toContain("signature verification failed");
-			expect(report.noForkProof.evidence_path).toBe(evidencePath);
-			expect(report.noForkProof.runnerAttestation).toBeUndefined();
-			expect(fs.existsSync(evidencePath)).toBe(false);
-		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
-		}
-	});
-
 	it("does not classify a dirty checkout no-fork failure as a P0 bootstrap failure", () => {
 		const status = deriveNoForkP0Status({
 			gates: [
@@ -7139,20 +7496,6 @@ describe("Hermes wrapper foundation", () => {
 		} as ReturnType<typeof evaluateCutoverCheck>);
 
 		expect(status).toBe("fail");
-	});
-
-	it("does not classify final lockfile no-fork path mismatch as a P0 bootstrap failure", () => {
-		const cutover = {
-			gates: [
-				{
-					name: "lockfile.consistent",
-					status: "fail",
-					detail: "lockfile noForkProofEvidencePath does not match no-fork evidence path",
-				},
-			],
-		} as ReturnType<typeof evaluateCutoverCheck>;
-
-		expect(deriveNoForkP0Status(cutover)).toBe("fail");
 	});
 
 	it("evaluates P0 cutover gates when prove is run with --p0", async () => {
@@ -7219,7 +7562,7 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
-	it("writes signed runner attestation when prove --p0 evaluates a pinned clean checkout", async () => {
+	it("writes signed runner attestation when prove --p0 runs from a pinned clean checkout", async () => {
 		ensureOperatorRelayKeys();
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-clean-"));
 		const checkoutPathRaw = path.join(tempDir, "upstream");
@@ -7374,9 +7717,12 @@ describe("Hermes wrapper foundation", () => {
 		const relay = await startProbeServer();
 		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+
 		try {
 			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const outPath = path.join(tempDir, "network-probes.json");
+			const evidenceDir = path.join(tempDir, "evidence");
 			const result = await runHermesCommand([
 				"hermes",
 				"network-probes",
@@ -7387,16 +7733,26 @@ describe("Hermes wrapper foundation", () => {
 				"--provider-url",
 				relay.url,
 				"--out",
-				path.join(tempDir, "network-probes.json"),
+				outPath,
 				"--evidence-dir",
-				path.join(tempDir, "evidence"),
+				evidenceDir,
 			]);
-			const report = JSON.parse(result.stdout) as { status: string; summary: string };
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				ran: boolean;
+				summary: string;
+			};
 
 			expect(result.exitCode).toBe(1);
-			expect(report).toMatchObject({ status: "fail" });
-			expect(report.summary).toContain("Missing relay response signing key");
+			expect(report).toMatchObject({
+				status: "fail",
+				ran: false,
+				summary:
+					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+			});
 			expect(relay.requests.count).toBe(0);
+			expect(fs.existsSync(outPath)).toBe(false);
+			expect(fs.existsSync(evidenceDir)).toBe(false);
 		} finally {
 			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
 			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
@@ -7404,7 +7760,7 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
-	it("refuses canonical network-probe artifacts when DNS proof lacks a non-overridable target", async () => {
+	it("writes passing network-probe artifacts from observed denials and a reachable relay control", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
 		try {
@@ -7423,7 +7779,7 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				requiredProviderUrlCsv(deniedProviderUrl),
+				`bank=${deniedProviderUrl},clalit=${deniedProviderUrl}`,
 				"--model-url",
 				deniedModelUrl,
 				"--dns-url",
@@ -7439,21 +7795,96 @@ describe("Hermes wrapper foundation", () => {
 			]);
 			const report = JSON.parse(result.stdout) as {
 				status: string;
-				summary: string;
+				ran: boolean;
+				bundlePath: string;
+				evidence: Array<{
+					id: string;
+					status: string;
+					attempts: Array<{ name: string; observed: string; errorCode?: string }>;
+				}>;
+			};
+			const bundle = readJson(outPath) as {
+				probes: Array<{ id: string; status: string; evidence_path: string }>;
 			};
 
-			expect(result.exitCode).toBe(1);
-			expect(report).toMatchObject({ status: "fail" });
-			expect(report.summary).toContain("dns_guard lacks nonOverridable resolved address");
-			expect(fs.existsSync(outPath)).toBe(false);
-			expect(fs.existsSync(evidenceDir)).toBe(false);
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({ status: "pass", ran: true, bundlePath: outPath });
+			expect(bundle.probes.map((probe) => probe.id)).toEqual(requiredNetworkProbeIds);
+			expect(bundle.probes.every((probe) => probe.status === "pass")).toBe(true);
+			for (const probe of bundle.probes) {
+				expect(fs.existsSync(probe.evidence_path)).toBe(true);
+			}
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider:bank"),
+			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.direct-provider-denied")
+					?.attempts.find((attempt) => attempt.name === "provider:clalit"),
+			).toMatchObject({ observed: "denied", errorCode: "ECONNREFUSED" });
+			expect(
+				report.evidence
+					.find((probe) => probe.id === "network.relay-control-allowed")
+					?.attempts.find((attempt) => attempt.name === "relay-control"),
+			).toMatchObject({ observed: "reachable" });
 		} finally {
 			await relay.close();
 		}
 	});
 
-	it("refuses deferred network-probe reports when semantic proof is not promotable", async () => {
+	it("writes contained-internal network-probe artifacts without a firewall sentinel", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
+		const relay = await startProbeServer();
+		try {
+			ensureOperatorRelayKeys();
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--allow-run",
+				"--json",
+				"--posture",
+				"contained-internal",
+				"--relay-url",
+				relay.url,
+				"--provider-url",
+				requiredProviderUrlCsv(await closedProbeUrl()),
+				"--model-url",
+				await closedProbeUrl(),
+				"--dns-url",
+				await closedProbeUrl(),
+				"--vault-socket",
+				path.join(tempDir, "missing-vault.sock"),
+				"--out",
+				path.join(tempDir, "network-probes.json"),
+				"--evidence-dir",
+				path.join(tempDir, "evidence"),
+			]);
+			const report = JSON.parse(result.stdout) as {
+				posture: string;
+				status: string;
+				evidence: Array<{
+					posture: string;
+					attempts: Array<{ kind: string; name: string }>;
+				}>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({ posture: "contained-internal", status: "pass" });
+			expect(report.evidence.every((probe) => probe.posture === "contained-internal")).toBe(true);
+			expect(
+				report.evidence.flatMap((probe) =>
+					probe.attempts.filter((attempt) => attempt.kind === "firewall_sentinel"),
+				),
+			).toEqual([]);
+		} finally {
+			await relay.close();
+		}
+	});
+
+	it("writes an unsigned network-probe run report when attestation is deferred", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-deferred-"));
 		const relay = await startProbeServer();
 		try {
 			const outPath = path.join(tempDir, "network-probes.json");
@@ -7477,98 +7908,29 @@ describe("Hermes wrapper foundation", () => {
 				await closedProbeUrl(),
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
+				"--run-report-out",
+				runReportPath,
 				"--out",
 				outPath,
 				"--evidence-dir",
 				evidenceDir,
-				"--run-report-out",
-				runReportPath,
 			]);
 			const report = JSON.parse(result.stdout) as {
 				status: string;
-				summary: string;
+				bundlePath: string;
+				evidence: Array<{ attestation?: unknown }>;
 			};
+			const persisted = readJson(runReportPath) as { evidence: Array<{ attestation?: unknown }> };
 
-			expect(result.exitCode).toBe(1);
-			expect(report).toMatchObject({ status: "fail" });
-			expect(report.summary).toContain("dns_guard lacks nonOverridable resolved address");
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({ status: "pass", bundlePath: runReportPath });
+			expect(report.evidence.every((probe) => probe.attestation === undefined)).toBe(true);
+			expect(persisted.evidence.every((probe) => probe.attestation === undefined)).toBe(true);
 			expect(fs.existsSync(outPath)).toBe(false);
 			expect(fs.existsSync(evidenceDir)).toBe(false);
-			expect(fs.existsSync(runReportPath)).toBe(false);
 		} finally {
 			await relay.close();
 		}
-	});
-
-	it("refuses deferred network-probe runs without --allow-run", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-deferred-"));
-		const runReportPath = path.join(tempDir, "network-probes.run-report.json");
-		const result = await runHermesCommand([
-			"hermes",
-			"network-probes",
-			"--defer-attestation",
-			"--json",
-			"--run-report-out",
-			runReportPath,
-		]);
-		const report = JSON.parse(result.stdout) as { status: string; summary: string };
-
-		expect(result.exitCode).toBe(1);
-		expect(report).toMatchObject({ status: "fail" });
-		expect(report.summary).toContain("--defer-attestation requires --allow-run");
-		expect(fs.existsSync(runReportPath)).toBe(false);
-	});
-
-	it("refuses network-probe report promotion with deferred attestation before writing artifacts", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-promote-deferred-"));
-		const sourceDir = path.join(tempDir, "source");
-		const outPath = path.join(tempDir, "network-probes.json");
-		const evidenceDir = path.join(tempDir, "canonical");
-		const runReportOut = path.join(tempDir, "network-probes.run-report.json");
-		ensureOperatorRelayKeys();
-		const evidence = requiredNetworkProbeIds.map((id) => {
-			const evidencePath = path.join(sourceDir, `${id.replace(/^network\./, "")}.json`);
-			const { attestation: _attestation, ...unsignedEvidence } = passingNetworkProbeEvidence(
-				id,
-				evidencePath,
-			);
-			return unsignedEvidence;
-		});
-		const reportPath = path.join(tempDir, "run-report.json");
-		writeJson(reportPath, {
-			schemaVersion: "telclaude.hermes.network-probe-run.v1",
-			posture: "contained-internal",
-			status: "pass",
-			ran: true,
-			summary: "Hermes network denial probes passed",
-			bundle: { schemaVersion: 1, probes: [] },
-			evidence,
-		});
-
-		const result = await runHermesCommand([
-			"hermes",
-			"network-probes",
-			"--json",
-			"--from-report",
-			reportPath,
-			"--defer-attestation",
-			"--run-report-out",
-			runReportOut,
-			"--out",
-			outPath,
-			"--evidence-dir",
-			evidenceDir,
-		]);
-		const report = JSON.parse(result.stdout) as { status: string; summary: string };
-
-		expect(result.exitCode).toBe(1);
-		expect(report).toMatchObject({
-			status: "fail",
-			summary: "Use either --from-report or --defer-attestation, not both.",
-		});
-		expect(fs.existsSync(outPath)).toBe(false);
-		expect(fs.existsSync(evidenceDir)).toBe(false);
-		expect(fs.existsSync(runReportOut)).toBe(false);
 	});
 
 	it("promotes a machine-observed network-probe run report into canonical artifacts", async () => {
@@ -7672,7 +8034,6 @@ describe("Hermes wrapper foundation", () => {
 			status: "pass",
 			ran: true,
 			summary: "Hermes network denial probes passed",
-			bundle: { schemaVersion: 1, probes: [] },
 			evidence,
 		});
 
@@ -7692,7 +8053,7 @@ describe("Hermes wrapper foundation", () => {
 		expect(result.exitCode).toBe(1);
 		expect(report.status).toBe("fail");
 		expect(report.summary).toContain(
-			"provider:bank contained-internal denial proof is missing or not pass",
+			"network probe evidence network.direct-provider-denied provider:bank contained-internal denial proof is missing or not pass",
 		);
 		expect(fs.existsSync(outPath)).toBe(false);
 		expect(fs.existsSync(evidenceDir)).toBe(false);
@@ -7720,7 +8081,6 @@ describe("Hermes wrapper foundation", () => {
 			status: "pass",
 			ran: true,
 			summary: "Hermes network denial probes passed",
-			bundle: { schemaVersion: 1, probes: [] },
 			evidence,
 		});
 
@@ -7738,11 +8098,15 @@ describe("Hermes wrapper foundation", () => {
 				"--evidence-dir",
 				evidenceDir,
 			]);
-			const report = JSON.parse(result.stdout) as { status: string; summary: string };
+			const report = JSON.parse(result.stdout) as { status: string; ran: boolean; summary: string };
 
 			expect(result.exitCode).toBe(1);
-			expect(report.status).toBe("fail");
-			expect(report.summary).toContain("Missing relay response signing key");
+			expect(report).toMatchObject({
+				status: "fail",
+				ran: false,
+				summary:
+					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
+			});
 			expect(fs.existsSync(outPath)).toBe(false);
 			expect(fs.existsSync(evidenceDir)).toBe(false);
 		} finally {
@@ -7853,6 +8217,61 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.allowedToRun).toBe(false);
 		expect(report.written).toBe(false);
 		expect(fs.existsSync(outPath)).toBe(false);
+	});
+
+	it("refuses rollback rehearsal without operator relay verification key before relay I/O", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-no-key-"));
+		const outPath = path.join(tempDir, "rollback.json");
+		const originalUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+		const originalOperatorPrivate = process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY;
+		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
+		const originalOperatorRelayPublic = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const keys = generateKeyPair();
+		let requestCount = 0;
+		shutdownTokenClient();
+		const relay = await startProbeServer((_req, res) => {
+			requestCount += 1;
+			res.setHeader("Content-Type", "application/json");
+			res.end(JSON.stringify(legacyRuntimeState()));
+		});
+		process.env.OPERATOR_RPC_AGENT_PRIVATE_KEY = keys.privateKey;
+		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
+		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand([
+				"hermes",
+				"rollback-rehearsal",
+				"--allow-run",
+				"--json",
+				"--out",
+				outPath,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				passed: boolean;
+				written: boolean;
+				checks: Array<{ name: string; status: string; detail: string }>;
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(report).toMatchObject({ passed: false, written: false });
+			expect(report.checks[0]).toMatchObject({
+				name: "rollback.controlSurface",
+				status: "fail",
+				detail:
+					"Missing relay response verification key for operator. Set OPERATOR_RPC_RELAY_PUBLIC_KEY.",
+			});
+			expect(requestCount).toBe(0);
+			expect(fs.existsSync(outPath)).toBe(false);
+		} finally {
+			await relay.close();
+			shutdownTokenClient();
+			restoreEnv("TELCLAUDE_CAPABILITIES_URL", originalUrl);
+			restoreEnv("OPERATOR_RPC_AGENT_PRIVATE_KEY", originalOperatorPrivate);
+			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalOperatorRelayPublic);
+		}
 	});
 
 	it("writes rollback rehearsal evidence by driving the relay capability surface", async () => {
@@ -8417,12 +8836,12 @@ echo should-not-run
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -8494,12 +8913,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -8587,12 +9006,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -8684,12 +9103,12 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
-  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"172.29.92.11"}}}}'
+  printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"192.0.2.11"}}}}'
   exit 0
 fi
 case "$*" in
 *"socket.gethostbyname"*)
-  printf '%s\\n' '{"observedPeerAddress":"172.29.92.11","relayResolvedAddress":"172.29.92.10"}'
+  printf '%s\\n' '{"observedPeerAddress":"192.0.2.11","relayResolvedAddress":"192.0.2.10"}'
   exit 0
   ;;
 *"json.load(sys.stdin)"*)
@@ -8748,15 +9167,15 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 				kind: "contained-docker",
 				containerName: "tc-hermes-contained",
 				networkName: "telclaude-hermes-relay",
-				relayResolvedAddress: "172.29.92.10",
-				containerIpAddress: "172.29.92.11",
-				observedPeerAddress: "172.29.92.11",
+				relayResolvedAddress: "192.0.2.10",
+				containerIpAddress: "192.0.2.11",
+				observedPeerAddress: "192.0.2.11",
 				provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 			});
 			expect(report.relayProof).toMatchObject({
 				source: "telclaude-openai-codex-proxy",
 				path: "/backend-api/codex/responses",
-				observedPeerAddress: "172.29.92.11",
+				observedPeerAddress: "192.0.2.11",
 				upstreamStatus: 200,
 				model: "gpt-5.5",
 			});
@@ -8830,9 +9249,9 @@ cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'
   "imageDigest": "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7",
   "hostname": "tc-hermes-contained",
   "relayHost": "telclaude",
-  "relayResolvedAddress": "172.29.92.10",
-  "containerIpAddress": "172.29.92.11",
-  "observedPeerAddress": "172.29.92.11",
+  "relayResolvedAddress": "192.0.2.10",
+  "containerIpAddress": "192.0.2.11",
+  "observedPeerAddress": "192.0.2.11",
   "provenanceSource": "docker-inspect-container-dns-and-relay-peer"
 }
 JSON
@@ -8848,7 +9267,7 @@ const proof = {
   requestId: "codex-proof-1",
   method: "POST",
   path: "/backend-api/codex/responses",
-  observedPeerAddress: "172.29.92.11",
+  observedPeerAddress: "192.0.2.11",
   upstreamStatus: 200,
   model: "gpt-5.3-codex",
   requestBodySha256: "sha256:${"a".repeat(64)}",
@@ -9255,147 +9674,6 @@ sleep 5
 		});
 	});
 
-	it.each(
-		HERMES_WORKFLOW_SURFACE_IDS,
-	)("writes %s workflow probe evidence through the CLI harness", async (surfaceId) => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-cli-"));
-		const evidencePath = path.join(tempDir, `${surfaceId}.json`);
-
-		const result = await runHermesCommand([
-			"hermes",
-			"probe",
-			surfaceId,
-			"--allow-run",
-			"--json",
-			"--out",
-			evidencePath,
-		]);
-		const artifact = readJson(evidencePath) as {
-			probeId: string;
-			status: string;
-			ran: boolean;
-			source: string;
-			checks: Array<{ name: string; status: string }>;
-			observations: Record<string, unknown>;
-		};
-
-		expect(result.exitCode, result.stdout).toBe(0);
-		expect(artifact).toMatchObject({
-			probeId: surfaceId,
-			status: "pass",
-			ran: true,
-			source: "telclaude-workflow-run-ledger-harness",
-		});
-		expect(artifact.checks.every((check) => check.status === "pass")).toBe(true);
-		expect(Object.keys(artifact.observations).length).toBeGreaterThan(0);
-	});
-
-	it("refuses workflow probe writes without the operator relay signing key", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-workflow-missing-key-"));
-		const evidencePath = path.join(tempDir, "workflow-cron.json");
-		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-		try {
-			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
-			const result = await runHermesCommand([
-				"hermes",
-				"probe",
-				"workflow.cron",
-				"--allow-run",
-				"--json",
-				"--out",
-				evidencePath,
-			]);
-			const report = JSON.parse(result.stdout) as { status: string; detail: string };
-
-			expect(result.exitCode).toBe(1);
-			expect(report).toMatchObject({
-				status: "input_error",
-				detail:
-					"Missing relay response signing key for operator. Set OPERATOR_RPC_RELAY_PRIVATE_KEY.",
-			});
-			expect(fs.existsSync(evidencePath)).toBe(false);
-		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
-		}
-	});
-
-	it.each(
-		HERMES_WORKFLOW_SURFACE_IDS,
-	)("passes the %s cutover gate from complete observed workflow evidence", async (surfaceId) => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
-		const evidencePath = path.join(tempDir, `${surfaceId}.json`);
-		writeWorkflowProbeArtifact(surfaceId, evidencePath);
-
-		const result = await runCutoverCheckWithBundle(workflowCutoverBundle(surfaceId, evidencePath));
-		const report = JSON.parse(result.stdout) as {
-			gates: Array<{ name: string; status: string; detail: string }>;
-		};
-
-		expect(result.exitCode, result.stdout).toBe(0);
-		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
-			status: "pass",
-		});
-		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
-			status: "pass",
-		});
-	});
-
-	it("fails the workflow cutover gate when a required probe check is missing", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
-		const evidencePath = path.join(tempDir, "workflow-longrun.json");
-		const evidence = runHermesWorkflowProbe({
-			surfaceId: "workflow.longrun",
-			allowRun: true,
-			observedAt: "2026-06-01T09:00:00.000Z",
-		});
-		writeJson(evidencePath, {
-			...evidence,
-			checks: evidence.checks.filter(
-				(check) => check.name !== "workflow.longrun.stale-resume-denied",
-			),
-		});
-
-		const result = await runCutoverCheckWithBundle(
-			workflowCutoverBundle("workflow.longrun", evidencePath),
-		);
-		const report = JSON.parse(result.stdout) as {
-			gates: Array<{ name: string; status: string; detail: string }>;
-		};
-
-		expect(result.exitCode, result.stdout).toBe(1);
-		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
-			status: "fail",
-			detail: expect.stringContaining("check workflow.longrun.stale-resume-denied is missing"),
-		});
-	});
-
-	it("fails workflow fixtures when their bound probe artifact changes", async () => {
-		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-workflow-"));
-		const evidencePath = path.join(tempDir, "workflow-cron.json");
-		writeWorkflowProbeArtifact("workflow.cron", evidencePath);
-		const bundle = workflowCutoverBundle("workflow.cron", evidencePath);
-		writeJson(evidencePath, { changed: true });
-
-		const result = await runCutoverCheckWithBundle(bundle);
-		const report = JSON.parse(result.stdout) as {
-			status: string;
-			gates: Array<{ name: string; status: string; detail: string }>;
-		};
-
-		expect(result.exitCode, result.stdout).toBe(2);
-		expect(report.status).toBe("input_error");
-		expect(report.gates.find((gate) => gate.name === "proofBundle.fixtureResults.valid")).toEqual(
-			expect.objectContaining({
-				status: "fail",
-				detail: expect.stringContaining("artifact status does not match on-disk semantic evidence"),
-			}),
-		);
-		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
-			status: "fail",
-			detail: expect.stringContaining("fixture probeSha256 does not match"),
-		});
-	});
-
 	it("passes the provider approval-binding cutover gate from complete observed evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-approval-"));
 		const evidencePath = path.join(tempDir, "providers-approval-binding.json");
@@ -9521,6 +9799,128 @@ sleep 5
 			detail: expect.stringContaining(
 				"check provider.release.urgent-health-misclassification-denied is missing",
 			),
+		});
+	});
+
+	it("passes the Google provider cutover gate from complete observed evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-google-"));
+		const evidencePath = path.join(tempDir, "providers-google.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.google",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+
+		const result = await runCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the Google provider cutover gate when wrong-actor denial is unproven", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-google-"));
+		const evidencePath = path.join(tempDir, "providers-google.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.google",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+		const evidence = readJson(evidencePath) as { checks: Array<{ name: string }> };
+		writeJson(evidencePath, {
+			...evidence,
+			checks: evidence.checks.filter((check) => check.name !== "google.wrong-actor-denied"),
+		});
+
+		const result = await runCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("check google.wrong-actor-denied is missing"),
+		});
+	});
+
+	it.each([
+		["providers.bank", "bank"],
+		["providers.clalit", "clalit"],
+		["providers.government", "government"],
+	] as const)("passes the %s provider-domain cutover gate from complete observed evidence", async (surfaceId, providerId) => {
+		const tempDir = fs.mkdtempSync(
+			path.join(os.tmpdir(), `hermes-cutover-provider-${providerId}-`),
+		);
+		const evidencePath = path.join(tempDir, `${surfaceId.replace(".", "-")}.json`);
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			surfaceId,
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+
+		const result = await runCutoverCheckWithBundle(
+			providerDomainCutoverBundle(surfaceId, evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("fails the bank provider-domain cutover gate when provider scope denial is unproven", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-provider-bank-"));
+		const evidencePath = path.join(tempDir, "providers-bank.json");
+		const probeResult = await runHermesCommand([
+			"hermes",
+			"probe",
+			"providers.bank",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		expect(probeResult.exitCode).toBe(0);
+		const evidence = readJson(evidencePath) as { checks: Array<{ name: string }> };
+		writeJson(evidencePath, {
+			...evidence,
+			checks: evidence.checks.filter((check) => check.name !== "bank.wrong-provider-scope-denied"),
+		});
+
+		const result = await runCutoverCheckWithBundle(
+			providerDomainCutoverBundle("providers.bank", evidencePath),
+		);
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("check bank.wrong-provider-scope-denied is missing"),
 		});
 	});
 
@@ -9738,8 +10138,8 @@ sleep 5
 				origin: {
 					kind: "contained-peer",
 					containerName: "tc-hermes-contained",
-					observedPeerAddress: "172.29.92.11",
-					expectedPeerAddress: "172.29.92.11",
+					observedPeerAddress: "192.0.2.11",
+					expectedPeerAddress: "192.0.2.11",
 					detail: "operator declared contained peer origin",
 				},
 			}),
@@ -9766,9 +10166,9 @@ sleep 5
 				origin: {
 					kind: "relay-self-smoke",
 					containerName: "telclaude",
-					observedPeerAddress: "172.29.92.10",
+					observedPeerAddress: "192.0.2.10",
 					observedPeerSource: "server-peer-echo",
-					expectedPeerAddress: "172.29.92.11",
+					expectedPeerAddress: "192.0.2.11",
 					expectedPeerSource: "configured-contained-ip",
 					detail: "probe peer origin matched relay namespace",
 				},

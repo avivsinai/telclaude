@@ -16,7 +16,8 @@ import {
 	signNoForkRunnerAttestation,
 } from "./no-fork-attestation.js";
 
-export const DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH = "/home/user/MyProjects/hermes-agent";
+export const HERMES_UPSTREAM_CHECKOUT_PATH_ENV = "HERMES_CHECKOUT_PATH";
+export const DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH = "hermes-agent";
 export const DEFAULT_HERMES_UPSTREAM_REF = "v2026.5.29";
 export const DEFAULT_HERMES_UPSTREAM_VERSION = "0.15.1";
 export const DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH = "artifacts/hermes/no-fork.json";
@@ -69,7 +70,11 @@ export function buildNoForkProof(input: {
 	readonly runner?: NoForkGitRunner;
 	readonly wrapperRun?: NoForkWrapperRunEvidence;
 }): NoForkProofReport {
-	const checkoutPath = path.resolve(input.checkoutPath ?? DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH);
+	const checkoutPath = path.resolve(
+		input.checkoutPath ??
+			process.env[HERMES_UPSTREAM_CHECKOUT_PATH_ENV] ??
+			DEFAULT_HERMES_UPSTREAM_CHECKOUT_PATH,
+	);
 	const expectedRef = nonEmpty(input.expectedRef, DEFAULT_HERMES_UPSTREAM_REF);
 	const expectedVersion = nonEmpty(input.expectedVersion, DEFAULT_HERMES_UPSTREAM_VERSION);
 	const evidencePath = input.evidencePath ?? DEFAULT_HERMES_NO_FORK_EVIDENCE_PATH;

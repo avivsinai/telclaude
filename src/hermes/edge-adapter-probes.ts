@@ -1522,7 +1522,7 @@ function runRuntimeHarness(
 			runtime.authorizePublicSocialIsolation({
 				actorRef: socialInbound.actorRef,
 				conversationRef: socialInbound.conversationRef,
-				workspaceMount: "/home/user/MyProjects",
+				workspaceMount: "/workspace/private",
 				budgetRemaining: 1,
 			}),
 		"public-social.private-workspace-denied",
@@ -2141,7 +2141,7 @@ function runControlChecks(
 			validConversationRef("social", "public-social").profileId === "tc-public-social",
 		"public-social.private-workspace-denied": !ConversationRefSchema.safeParse({
 			...validConversationRef("social", "public-social"),
-			workspaceMount: "/home/user/MyProjects",
+			workspaceMount: "/workspace/private",
 		}).success,
 		"public-social.private-memory-denied": !ConversationRefSchema.safeParse({
 			...validConversationRef("social", "public-social"),
