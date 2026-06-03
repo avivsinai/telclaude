@@ -203,6 +203,10 @@ import {
 	relayGetHermesPrivateRuntimeState,
 	relaySetHermesPrivateRuntimeMode,
 } from "../relay/capabilities-client.js";
+import {
+	mintOpenAiCodexPeerBoundProxyToken,
+	OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
+} from "../relay/openai-codex-proxy.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -1365,6 +1369,7 @@ function runHermesLaunchInvocationInDockerExec(
 		dockerBin,
 		options.containerName,
 		invocation,
+		runtime.evidence,
 		options.timeoutMs,
 	);
 	if (authSetup.stderr) {
@@ -1421,6 +1426,7 @@ function prepareDockerExecHermesAuthStore(
 	dockerBin: string,
 	containerName: string,
 	invocation: HermesLaunchInvocation,
+	runtime: HermesCliProbeReport["runtime"] | undefined,
 	timeoutMs: number | undefined,
 ): { stderr: string; observedAt?: string } {
 	const relayToken = invocation.authSetup?.openAiCodexRelayToken?.trim();
@@ -1430,7 +1436,18 @@ function prepareDockerExecHermesAuthStore(
 	const relayBaseUrl = invocation.env[HERMES_CODEX_BASE_URL_ENV]?.trim();
 	if (!relayBaseUrl)
 		return { stderr: "HERMES_CODEX_BASE_URL is required for docker exec auth setup" };
-	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(relayToken, relayBaseUrl);
+	const peerAddress = runtime?.observedPeerAddress?.trim();
+	if (!peerAddress) {
+		return { stderr: "runtime observedPeerAddress is required for docker exec auth setup" };
+	}
+	const peerBoundRelayToken = mintOpenAiCodexPeerBoundProxyToken({
+		secret: relayToken,
+		peerAddress,
+		runId: `hermes-docker-exec-${crypto.randomUUID()}`,
+		tokenScope: "run",
+		ttlMs: OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
+	});
+	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(peerBoundRelayToken, relayBaseUrl);
 	const script = [
 		"import json, os, sys",
 		"home = sys.argv[1]",
@@ -1477,11 +1494,21 @@ function redactDockerExecAuthHelperOutput(
 		relayToken,
 		JSON.stringify(payload),
 		JSON.stringify(payload, null, 2),
+		...collectJsonStringValues(payload),
 	].filter((item) => item.length > 0);
 	for (const item of replacements) {
 		redacted = redacted.split(item).join("[REDACTED]");
 	}
 	return redacted;
+}
+
+function collectJsonStringValues(value: unknown): string[] {
+	if (typeof value === "string") return [value];
+	if (Array.isArray(value)) return value.flatMap((item) => collectJsonStringValues(item));
+	if (value && typeof value === "object") {
+		return Object.values(value).flatMap((item) => collectJsonStringValues(item));
+	}
+	return [];
 }
 
 function collectDockerExecRelayProof(
