@@ -21,6 +21,7 @@ import {
 } from "../../src/hermes/private-runtime.js";
 import { HermesSessionMap } from "../../src/hermes/session-map.js";
 import { generateKeyPair } from "../../src/internal-auth.js";
+import { verifyOpenAiCodexPeerBoundProxyToken } from "../../src/relay/openai-codex-proxy.js";
 import {
 	type OpenAiCodexRelayProof,
 	type OpenAiCodexRelayProofSignedFields,
@@ -834,7 +835,7 @@ describe("Hermes private runtime seam", () => {
 				modelSource: "env:HERMES_INFERENCE_MODEL",
 				authLocation: "hermes-auth-store:openai-codex",
 				authScope: "relay-openai-codex-subscription-proxy",
-				tokenScoping: "static-shared",
+				tokenScoping: "peer-bound",
 				auxiliaryAuthSource: "manual:telclaude-relay",
 				auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 				auxiliaryBaseUrlHost: "telclaude",
@@ -879,7 +880,20 @@ describe("Hermes private runtime seam", () => {
 					"openai-codex": Array<Record<string, unknown>>;
 				};
 			};
-			expect(auth.providers["openai-codex"].tokens.access_token).toBe("relay-scoped-proxy-token");
+			const accessToken = auth.providers["openai-codex"].tokens.access_token;
+			expect(accessToken).not.toBe("relay-scoped-proxy-token");
+			expect(
+				verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
+					secret: "relay-scoped-proxy-token",
+					peerAddress: TEST_HERMES_CONTAINED_IP,
+				}),
+			).toMatchObject({ ok: true, tokenScope: "run" });
+			expect(
+				verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
+					secret: "relay-scoped-proxy-token",
+					peerAddress: "10.88.92.99",
+				}),
+			).toMatchObject({ ok: false, reason: "peer address mismatch" });
 			expect(auth.providers["openai-codex"].tokens.refresh_token).toBe(
 				"telclaude-relay-token-is-not-refreshable",
 			);
@@ -889,7 +903,7 @@ describe("Hermes private runtime seam", () => {
 				auth_type: "api_key",
 				priority: 0,
 				source: "manual:telclaude-relay",
-				access_token: "relay-scoped-proxy-token",
+				access_token: accessToken,
 				base_url: "http://telclaude:8790/v1/openai-codex-proxy",
 			});
 			expect(JSON.stringify(auth)).not.toContain("https://chatgpt.com");

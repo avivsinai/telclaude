@@ -939,7 +939,7 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",
@@ -2376,7 +2376,7 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 			modelSource: "env:HERMES_INFERENCE_MODEL",
 			authLocation: "hermes-auth-store:openai-codex",
 			authScope: "relay-openai-codex-subscription-proxy",
-			tokenScoping: "static-shared",
+			tokenScoping: "peer-bound",
 			auxiliaryAuthSource: "manual:telclaude-relay",
 			auxiliaryBaseUrl: "http://telclaude:8790/v1/openai-codex-proxy",
 			auxiliaryBaseUrlHost: "telclaude",
@@ -3498,6 +3498,12 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.status).toBe("pass");
 		expect(report.evidence_path).toBe(proofOut);
 		expect(fs.existsSync(path.join(profileDir, "docs/hermes/hermes-compat.lock.json"))).toBe(true);
+		expect(
+			readJson(path.join(profileDir, "profiles/tc-private-default/secret-manifest.json")),
+		).toMatchObject({
+			rawCredentialPolicy: "relay-owned-only",
+			relayTokenBinding: "run-peer-bound",
+		});
 		expect(fs.readFileSync(trackedProofPath, "utf8")).toBe(before);
 	});
 
@@ -6025,7 +6031,7 @@ describe("Hermes wrapper foundation", () => {
 					modelSource: "env:HERMES_INFERENCE_MODEL",
 					authLocation: "hermes-auth-store:openai-codex",
 					authScope: "relay-openai-codex-subscription-proxy",
-					tokenScoping: "static-shared",
+					tokenScoping: "peer-bound",
 				},
 			}),
 			detail: "modelProvider.baseUrl is not a relay OpenAI Codex proxy URL",
@@ -6041,7 +6047,7 @@ describe("Hermes wrapper foundation", () => {
 					modelSource: "env:HERMES_INFERENCE_MODEL",
 					authLocation: "hermes-auth-store:openai-codex",
 					authScope: "relay-openai-codex-subscription-proxy",
-					tokenScoping: "static-shared",
+					tokenScoping: "peer-bound",
 				},
 			}),
 			detail: "modelProvider.baseUrl is not a relay OpenAI Codex proxy URL",
@@ -6086,7 +6092,7 @@ describe("Hermes wrapper foundation", () => {
 					modelSource: "env:HERMES_INFERENCE_MODEL",
 					authLocation: "hermes-auth-store:openai-codex",
 					authScope: "relay-openai-codex-subscription-proxy",
-					tokenScoping: "static-shared",
+					tokenScoping: "peer-bound",
 				},
 			}),
 			detail: "modelProvider.model is missing",
@@ -6102,7 +6108,7 @@ describe("Hermes wrapper foundation", () => {
 					modelSource: "missing",
 					authLocation: "hermes-auth-store:openai-codex",
 					authScope: "relay-openai-codex-subscription-proxy",
-					tokenScoping: "static-shared",
+					tokenScoping: "peer-bound",
 				},
 			}),
 			detail: "modelProvider.modelSource is not env:HERMES_INFERENCE_MODEL",

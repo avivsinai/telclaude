@@ -138,6 +138,8 @@ const RELAY_PROVIDER_PATTERN = /\bprovider:\s*openai-codex-relay\b/i;
 const RELAY_CREDENTIAL_SOURCE_PATTERN = /\bcredentialSource:\s*telclaude-relay-auth-store\b/i;
 const RELAY_RAW_CREDENTIAL_POLICY_PATTERN =
 	/(?:\brawCredentialPolicy:\s*relay-owned-only\b|"rawCredentialPolicy"\s*:\s*"relay-owned-only")/i;
+const RELAY_TOKEN_BINDING_PATTERN =
+	/(?:\brelayTokenBinding:\s*run-peer-bound\b|"relayTokenBinding"\s*:\s*"run-peer-bound")/i;
 const MCP_RELAY_TOKEN_FILE_REFERENCE_PATTERN = /"auth"\s*:\s*"relay-token-file"/g;
 const PROFILE_CONFIG_PATH = "config.yaml";
 const PROFILE_SECRET_MANIFEST_PATH = "secret-manifest.json";
@@ -246,7 +248,7 @@ function buildModelRelayProvider(): ModelRelayProvider {
 		modelSource: model ? `env:${HERMES_INFERENCE_MODEL_ENV}` : "missing",
 		authLocation: "hermes-auth-store:openai-codex",
 		authScope: "relay-openai-codex-subscription-proxy",
-		tokenScoping: "static-shared",
+		tokenScoping: "peer-bound",
 		auxiliaryAuthSource: "manual:telclaude-relay",
 		auxiliaryBaseUrl: baseUrl,
 		auxiliaryBaseUrlHost: parsed?.hostname ?? "",
@@ -272,6 +274,9 @@ function modelRelayProviderGate(modelProvider: ModelRelayProvider): ModelRelayGa
 	if (modelProvider.authScope !== "relay-openai-codex-subscription-proxy") {
 		failures.push(`authScope is ${modelProvider.authScope}`);
 	}
+	if (modelProvider.tokenScoping !== "peer-bound") {
+		failures.push(`tokenScoping is ${modelProvider.tokenScoping}`);
+	}
 	if (modelProvider.auxiliaryAuthSource !== "manual:telclaude-relay") {
 		failures.push(`auxiliaryAuthSource is ${modelProvider.auxiliaryAuthSource}`);
 	}
@@ -287,7 +292,7 @@ function modelRelayProviderGate(modelProvider: ModelRelayProvider): ModelRelayGa
 	return failures.length === 0
 		? pass(
 				"modelRelay.modelProvider",
-				"model provider config uses relay-owned OpenAI Codex credential custody",
+				"model provider config uses peer-bound relay-owned OpenAI Codex credential custody",
 			)
 		: fail("modelRelay.modelProvider", failures.join("; "));
 }
@@ -486,10 +491,13 @@ function relayCredentialReferenceGate(
 	if (!RELAY_RAW_CREDENTIAL_POLICY_PATTERN.test(secretManifest)) {
 		missing.push("secret-manifest.json relay-owned-only rawCredentialPolicy");
 	}
+	if (!RELAY_TOKEN_BINDING_PATTERN.test(secretManifest)) {
+		missing.push("secret-manifest.json run-peer-bound relayTokenBinding");
+	}
 	return missing.length === 0
 		? pass(
 				"profile.relayCredentialReference",
-				"generated profile references the relay OpenAI Codex proxy and relay credential store",
+				"generated profile references peer-bound relay OpenAI Codex credential custody",
 			)
 		: fail(
 				"profile.relayCredentialReference",

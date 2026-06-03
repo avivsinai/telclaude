@@ -3080,6 +3080,7 @@ function profileFileContent(
 				schemaVersion: 1,
 				secrets: context.secretManifest,
 				rawCredentialPolicy: "relay-owned-only",
+				relayTokenBinding: "run-peer-bound",
 			});
 		case "guardrails/ownership.json":
 			return jsonProfileContent(context.guardrailManifest);
@@ -5981,6 +5982,9 @@ function collectCliHeadlessProbeEvidence(
 		if (modelProvider.authLocation !== "hermes-auth-store:openai-codex") {
 			failures.push("modelProvider.authLocation is not hermes-auth-store:openai-codex");
 		}
+		if (modelProvider.tokenScoping !== "peer-bound") {
+			failures.push("modelProvider.tokenScoping is not peer-bound");
+		}
 		if (!modelProvider.model.trim()) {
 			failures.push("modelProvider.model is missing");
 		}
@@ -6844,6 +6848,9 @@ function modelRelayModelProviderFailures(
 	}
 	if (modelProvider.authLocation !== "hermes-auth-store:openai-codex") {
 		failures.push("modelProvider.authLocation is not hermes-auth-store:openai-codex");
+	}
+	if (modelProvider.tokenScoping !== "peer-bound") {
+		failures.push("modelProvider.tokenScoping is not peer-bound");
 	}
 	if (!modelProvider.model.trim()) {
 		failures.push("modelProvider.model is missing");

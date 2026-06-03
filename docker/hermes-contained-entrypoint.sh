@@ -77,6 +77,35 @@ cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
 
+mint_peer_bound_codex_relay_token() {
+	secret=$1
+	token_scope=$2
+	peer_address=$(hostname -i 2>/dev/null | awk '{print $1}')
+	[ -n "$peer_address" ] || die "could not determine contained peer address for Codex relay token"
+	node - "$secret" "$peer_address" "$token_scope" <<'NODE'
+const crypto = require("node:crypto");
+const secret = process.argv[2];
+const peerAddress = process.argv[3];
+const tokenScope = process.argv[4];
+if (tokenScope !== "run" && tokenScope !== "server") {
+  throw new Error(`unsupported token scope: ${tokenScope}`);
+}
+const now = Date.now();
+const payload = {
+  version: 1,
+  tokenScope,
+  runId: `hermes-contained-${crypto.randomUUID()}`,
+  peerAddress,
+  issuedAt: now,
+  expiresAt: tokenScope === "server" ? null : now + 300000,
+  nonce: crypto.randomUUID(),
+};
+const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+const signature = crypto.createHmac("sha256", secret).update(encodedPayload).digest("base64url");
+process.stdout.write(`tc-openai-codex-relay-v1.${encodedPayload}.${signature}`);
+NODE
+}
+
 if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
 	[ -n "$CODEX_MODEL" ] || die "HERMES_INFERENCE_MODEL is required for openai-codex"
 	[ "$CODEX_BASE_URL" = "http://telclaude:8790/v1/openai-codex-proxy" ] || \
@@ -92,6 +121,11 @@ if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
 			die "HERMES_INFERENCE_MODEL contains unsupported characters"
 			;;
 	esac
+	CODEX_TOKEN_SCOPE=run
+	if [ "${1:-}" = "gateway" ] && [ "${2:-}" = "run" ]; then
+		CODEX_TOKEN_SCOPE=server
+	fi
+	CODEX_PEER_BOUND_TOKEN=$(mint_peer_bound_codex_relay_token "$CODEX_RELAY_TOKEN" "$CODEX_TOKEN_SCOPE")
 
 	umask 077
 	cat > "${HERMES_HOME}/config.yaml" <<EOF
@@ -111,7 +145,7 @@ EOF
       "auth_mode": "telclaude-relay",
       "last_refresh": "1970-01-01T00:00:00.000Z",
       "tokens": {
-        "access_token": "${CODEX_RELAY_TOKEN}",
+        "access_token": "${CODEX_PEER_BOUND_TOKEN}",
         "refresh_token": "telclaude-relay-token-is-not-refreshable"
       }
     }
@@ -124,7 +158,7 @@ EOF
         "auth_type": "api_key",
         "priority": 0,
         "source": "manual:telclaude-relay",
-        "access_token": "${CODEX_RELAY_TOKEN}",
+        "access_token": "${CODEX_PEER_BOUND_TOKEN}",
         "base_url": "http://telclaude:8790/v1/openai-codex-proxy"
       }
     ]
@@ -133,7 +167,7 @@ EOF
 EOF
 	mv "$tmp_auth" "${HERMES_HOME}/auth.json"
 	chmod 600 "${HERMES_HOME}/auth.json"
-	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN
+	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE
 fi
 
 exec /opt/hermes/hermes "$@"
