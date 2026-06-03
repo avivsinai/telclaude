@@ -376,9 +376,9 @@ describe("OpenAI Codex relay proxy", () => {
 		expect(isOpenAiCodexProxyAllowedClientAddress("127.0.0.1")).toBe(true);
 		expect(isOpenAiCodexProxyAllowedClientAddress("::1")).toBe(true);
 		expect(isOpenAiCodexProxyAllowedClientAddress("10.10.0.5")).toBe(true);
-		expect(isOpenAiCodexProxyAllowedClientAddress("172.29.92.11")).toBe(true);
+		expect(isOpenAiCodexProxyAllowedClientAddress("10.10.0.6")).toBe(true);
 		expect(isOpenAiCodexProxyAllowedClientAddress("192.168.1.22")).toBe(true);
-		expect(isOpenAiCodexProxyAllowedClientAddress("::ffff:172.29.92.11")).toBe(true);
+		expect(isOpenAiCodexProxyAllowedClientAddress("::ffff:10.10.0.6")).toBe(true);
 		expect(isOpenAiCodexProxyAllowedClientAddress("fd00::10")).toBe(true);
 
 		expect(isOpenAiCodexProxyAllowedClientAddress("100.64.1.5")).toBe(false);

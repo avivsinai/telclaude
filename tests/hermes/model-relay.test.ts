@@ -15,8 +15,8 @@ describe("Hermes model-relay probe", () => {
 	const directModelUrl = "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0";
 	const relayProxyUrl = "http://telclaude:8790/v1/openai-codex-proxy";
 	const relayProbeUrl = "http://telclaude:8790/v1/models";
-	const containedIp = "172.29.92.11";
-	const relayIp = "172.29.92.10";
+	const containedIp = "192.0.2.11";
+	const relayIp = "192.0.2.10";
 	const originalInferenceModel = process.env.HERMES_INFERENCE_MODEL;
 	const originalCodexBaseUrl = process.env.HERMES_CODEX_BASE_URL;
 

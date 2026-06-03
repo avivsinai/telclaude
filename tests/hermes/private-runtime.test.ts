@@ -31,7 +31,12 @@ import {
 const ORIGINAL_ENV = {
 	OPERATOR_RPC_RELAY_PRIVATE_KEY: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
 	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+	TELCLAUDE_HERMES_RELAY_IP: process.env.TELCLAUDE_HERMES_RELAY_IP,
+	TELCLAUDE_HERMES_CONTAINED_IP: process.env.TELCLAUDE_HERMES_CONTAINED_IP,
 };
+
+const TEST_HERMES_RELAY_IP = "10.88.92.10";
+const TEST_HERMES_CONTAINED_IP = "10.88.92.11";
 
 type TestContainedDockerRuntime = {
 	kind: "contained-docker";
@@ -55,11 +60,15 @@ describe("Hermes private runtime seam", () => {
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		process.env.TELCLAUDE_HERMES_RELAY_IP = TEST_HERMES_RELAY_IP;
+		process.env.TELCLAUDE_HERMES_CONTAINED_IP = TEST_HERMES_CONTAINED_IP;
 	});
 
 	afterEach(() => {
 		restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY");
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
+		restoreEnv("TELCLAUDE_HERMES_RELAY_IP");
+		restoreEnv("TELCLAUDE_HERMES_CONTAINED_IP");
 	});
 
 	it("normalizes Hermes runtime events into Telclaude StreamChunks", async () => {
@@ -585,7 +594,7 @@ describe("Hermes private runtime seam", () => {
 			relayProof: expect.objectContaining({
 				source: "telclaude-openai-codex-proxy",
 				path: "/backend-api/codex/responses",
-				observedPeerAddress: "172.29.92.11",
+				observedPeerAddress: TEST_HERMES_CONTAINED_IP,
 				upstreamStatus: 200,
 				model: "gpt-5.3-codex",
 			}),
@@ -834,7 +843,7 @@ describe("Hermes private runtime seam", () => {
 			relayProof: expect.objectContaining({
 				source: "telclaude-openai-codex-proxy",
 				path: "/backend-api/codex/responses",
-				observedPeerAddress: "172.29.92.11",
+				observedPeerAddress: TEST_HERMES_CONTAINED_IP,
 				upstreamStatus: 200,
 				model: "gpt-5.3-codex",
 			}),
@@ -985,7 +994,7 @@ describe("Hermes private runtime seam", () => {
 
 			expect(result.runtime).toBeUndefined();
 			expect(result.stderr).toContain(
-				"failed to read Hermes runtime evidence: runtime evidence relayResolvedAddress is 192.168.5.2, expected 172.29.92.10",
+				`failed to read Hermes runtime evidence: runtime evidence relayResolvedAddress is 192.168.5.2, expected ${TEST_HERMES_RELAY_IP}`,
 			);
 		} finally {
 			fs.rmSync(hermesHome, { recursive: true, force: true });
@@ -1159,9 +1168,9 @@ function containedDockerRuntime(
 		imageDigest: "sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7" as const,
 		hostname: "b6d8f6c9a1d4",
 		relayHost: "telclaude" as const,
-		relayResolvedAddress: "172.29.92.10",
-		containerIpAddress: "172.29.92.11",
-		observedPeerAddress: "172.29.92.11",
+		relayResolvedAddress: TEST_HERMES_RELAY_IP,
+		containerIpAddress: TEST_HERMES_CONTAINED_IP,
+		observedPeerAddress: TEST_HERMES_CONTAINED_IP,
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer" as const,
 		...overrides,
 	};
@@ -1177,7 +1186,7 @@ function relayProof(
 		requestId: "codex-proof-1",
 		method: "POST",
 		path: "/backend-api/codex/responses",
-		observedPeerAddress: "172.29.92.11",
+		observedPeerAddress: TEST_HERMES_CONTAINED_IP,
 		upstreamStatus: 200,
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,

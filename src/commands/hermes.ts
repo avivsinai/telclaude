@@ -99,7 +99,6 @@ import {
 	writeHermesModelRelayEvidence,
 } from "../hermes/model-relay.js";
 import {
-	assertHermesNetworkProbeRunReport,
 	DEFAULT_DNS_EXFIL_PROBE_URL,
 	DEFAULT_FIREWALL_SENTINEL_PATH,
 	DEFAULT_MODEL_PROVIDER_PROBE_URL,
@@ -303,7 +302,6 @@ type FixtureResultOption = JsonOption & {
 	includeProviderDomain?: boolean;
 	includeWorkflow?: boolean;
 	onlyProviderDomain?: boolean;
-	onlyWorkflow?: boolean;
 	skipPrivateTelegram?: boolean;
 	mergeExisting?: boolean;
 	out: string;
@@ -531,7 +529,7 @@ function buildNoForkP0Command(options: {
 	readonly profileProof: string;
 	readonly rollback: string;
 }): readonly string[] {
-	return [
+	const command = [
 		"telclaude",
 		"hermes",
 		"prove",
@@ -565,6 +563,7 @@ function buildNoForkP0Command(options: {
 		"--rollback",
 		options.rollback,
 	];
+	return command;
 }
 
 const NO_FORK_BOOTSTRAP_FAILURE_PATTERNS = [
@@ -646,19 +645,8 @@ function isProofBundleNoForkBootstrapFailure(detail: string): boolean {
 	return semanticFailures.length > 0 && isNoForkBootstrapFailure(semanticFailures.join("; "));
 }
 
-function isNoForkBootstrapGate(gate: { name: string; detail: string }): boolean {
-	if (gate.name === "nofork.clean") return isNoForkBootstrapFailure(gate.detail);
-	if (gate.name === "proofBundle.noForkProof" || gate.name === "proofBundle.noForkProof.valid") {
-		return isProofBundleNoForkBootstrapFailure(gate.detail);
-	}
-	return false;
-}
-
-function isPreliminaryNoForkLockfilePathMismatch(gate: { name: string; detail: string }): boolean {
-	return (
-		gate.name === "lockfile.consistent" &&
-		gate.detail === "lockfile noForkProofEvidencePath does not match no-fork evidence path"
-	);
+function isLockfileNoForkBootstrapFailure(detail: string): boolean {
+	return detail === "lockfile noForkProofEvidencePath does not match no-fork evidence path";
 }
 
 export function deriveNoForkP0Status(
@@ -666,11 +654,15 @@ export function deriveNoForkP0Status(
 ): "pass" | "fail" {
 	const failingGates = cutover.gates.filter((gate) => gate.status !== "pass");
 	if (failingGates.length === 0) return "pass";
-	const hasNoForkBootstrapGate = failingGates.some((gate) => isNoForkBootstrapGate(gate));
 	if (
 		failingGates.every((gate) => {
-			if (isNoForkBootstrapGate(gate)) return true;
-			if (hasNoForkBootstrapGate && isPreliminaryNoForkLockfilePathMismatch(gate)) return true;
+			if (gate.name === "nofork.clean") return isNoForkBootstrapFailure(gate.detail);
+			if (gate.name === "proofBundle.noForkProof.valid") {
+				return isProofBundleNoForkBootstrapFailure(gate.detail);
+			}
+			if (gate.name === "lockfile.consistent") {
+				return isLockfileNoForkBootstrapFailure(gate.detail);
+			}
 			return false;
 		})
 	) {
@@ -1044,6 +1036,7 @@ function runHermesLaunchInvocationInDockerExec(
 		stdout: result.stdout ?? "",
 		stderr: [
 			runtime.stderr,
+			authSetup.stderr,
 			result.stderr ?? "",
 			result.error ? `failed to launch docker exec Hermes probe: ${result.error.message}` : "",
 			relayProof.stderr,
@@ -1750,10 +1743,6 @@ export function registerHermesCommand(program: Command): void {
 			"Generate workflow fixture evidence from workflow probe artifacts",
 		)
 		.option(
-			"--only-workflow",
-			"Refresh only workflow fixture evidence and preserve existing fixture results",
-		)
-		.option(
 			"--skip-private-telegram",
 			"Do not rerun private Telegram fixtures; use with --merge-existing for targeted refreshes",
 		)
@@ -1765,11 +1754,8 @@ export function registerHermesCommand(program: Command): void {
 				const observedAt = options.observedAt ?? new Date().toISOString();
 				const includeProviderDomain =
 					options.includeProviderDomain === true || options.onlyProviderDomain === true;
-				const includeWorkflow = options.includeWorkflow === true || options.onlyWorkflow === true;
 				const skipPrivateTelegram =
-					options.skipPrivateTelegram === true ||
-					options.onlyProviderDomain === true ||
-					options.onlyWorkflow === true;
+					options.skipPrivateTelegram === true || options.onlyProviderDomain === true;
 				if (skipPrivateTelegram && options.testReport) {
 					throw new Error("Use either --skip-private-telegram or --test-report, not both.");
 				}
@@ -1811,7 +1797,7 @@ export function registerHermesCommand(program: Command): void {
 							})
 						: undefined;
 				const workflowBundle =
-					includeWorkflow === true
+					options.includeWorkflow === true
 						? buildHermesWorkflowFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,
@@ -2062,7 +2048,6 @@ export function registerHermesCommand(program: Command): void {
 						const proofTemplate = CutoverProofBundleSchema.parse(
 							readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						);
-						const lockfile = readJsonFile(resolveHermesArtifactPath(options.lockfile));
 						const evaluateP0Cutover = (noForkPath: string) => {
 							const cutoverProofBundle = buildCutoverProofBundle({
 								hermes: proofTemplate.hermes,
@@ -2091,7 +2076,7 @@ export function registerHermesCommand(program: Command): void {
 									scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
 									decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
 									cutoverProofBundle,
-									lockfile,
+									lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
 									featureProbeMatrix,
 									featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix),
 									fixtureResults: readJsonFile(resolveHermesArtifactPath(options.fixtures)),
@@ -3091,25 +3076,15 @@ export function registerHermesCommand(program: Command): void {
 		.action(async (options: NetworkProbeOption) => {
 			try {
 				let report: Awaited<ReturnType<typeof runHermesNetworkProbes>>;
-				const fromReport = options.fromReport?.trim();
-				if (options.deferAttestation === true && !fromReport && options.allowRun !== true) {
-					throw new Error("--defer-attestation requires --allow-run.");
-				}
-				if (fromReport) {
+				if (options.fromReport?.trim()) {
 					if (options.allowRun === true) {
 						throw new Error("Use either --from-report or --allow-run, not both.");
 					}
-					if (options.deferAttestation === true) {
-						throw new Error("Use either --from-report or --defer-attestation, not both.");
-					}
-					const reportRequiresSigning = importedNetworkProbeReportRequiresSigning(fromReport);
-					if (reportRequiresSigning) {
+					if (importedNetworkProbeReportRequiresSigning(options.fromReport)) {
 						assertOperatorRelaySigningEnv();
 					}
 					report = writeHermesNetworkProbeArtifacts(
-						readHermesNetworkProbeRunReport(fromReport, {
-							requireAttestation: reportRequiresSigning ? false : undefined,
-						}),
+						readHermesNetworkProbeRunReport(options.fromReport, { requireAttestation: false }),
 						{
 							outPath: options.out,
 							evidenceDir: options.evidenceDir,
@@ -3151,8 +3126,8 @@ export function registerHermesCommand(program: Command): void {
 				}
 
 				if (options.deferAttestation === true) {
-					if (report.status === "pass") {
-						report = assertHermesNetworkProbeRunReport(report, { requireAttestation: false });
+					if (options.fromReport?.trim()) {
+						throw new Error("Use either --from-report or --defer-attestation, not both.");
 					}
 					if (options.runReportOut?.trim()) {
 						writeJsonArtifact(options.runReportOut, report, trackedSeedWriteOptions(options));

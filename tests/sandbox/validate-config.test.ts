@@ -144,21 +144,21 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaude).toContain("tc-hermes-contained:");
 		expect(telclaude).toContain("condition: service_healthy");
 		expect(telclaude).toContain("hermes-relay-net:");
-		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-172.29.92.10}");
+		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}");
 		expect(listValues(telclaude, "tmpfs")).toEqual([
 			"/tmp:size=512M,mode=1777",
 			"/home/node:size=256M,uid=1000,gid=1000,mode=0755",
 			"/run/telclaude:size=1M,uid=1000,gid=1000,mode=0700,noexec",
 		]);
 		expect(hermes).toContain("hermes-relay-net:");
-		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-172.29.92.11}");
+		expect(hermes).toContain("ipv4_address: ${TELCLAUDE_HERMES_CONTAINED_IP:-192.0.2.11}");
 		expect(compose).toContain("name: telclaude-hermes-relay");
 		expect(compose).toContain("internal: true");
-		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-172.29.92.0/24}");
+		expect(compose).toContain("subnet: ${TELCLAUDE_HERMES_RELAY_SUBNET:-192.0.2.0/24}");
 
 		expect(telclaudeEnv.TELCLAUDE_HERMES_API_KEY).toBe(requiredApiKey);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS).toBe(
-			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-172.29.92.11}",
+			"${TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS:-192.0.2.11}",
 		);
 		expect(telclaudeEnv.TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED).toBe(
 			"${TELCLAUDE_HERMES_LIVE_MCP_ADMIN_ENABLED:-0}",

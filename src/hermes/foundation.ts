@@ -86,6 +86,10 @@ import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-po
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
 import {
+	DEFAULT_HERMES_CONTAINED_IP,
+	DEFAULT_HERMES_RELAY_IP,
+} from "./runtime-network.js";
+import {
 	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
 	isHermesWorkflowSurfaceId,
 	workflowFixtureEvidenceFailure,
@@ -128,8 +132,6 @@ const HERMES_CLI_HEADLESS_RUNTIME_PROVENANCE_SOURCE = "docker-inspect-container-
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION = OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION;
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = OPENAI_CODEX_RELAY_PROOF_SOURCE;
 const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
-const DEFAULT_HERMES_RELAY_IP = "172.29.92.10";
-const DEFAULT_HERMES_CONTAINED_IP = "172.29.92.11";
 export const PROFILE_GENERATION_PROOF_SCHEMA_VERSION =
 	"telclaude.hermes.profile-generation-proof.v1";
 export const GUARDRAIL_MANIFEST_SCHEMA_VERSION = "telclaude.hermes.guardrail-manifest.v1";

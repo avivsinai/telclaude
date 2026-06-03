@@ -128,13 +128,13 @@ describe("Telclaude MCP authority registry", () => {
 			endpointId: "endpoint-social",
 			networkNamespace: "netns-social",
 			profileId: "social",
-		});
-		const grantA = registry.register({
-			connection: connectionA,
-			authority: baseAuthority({ providerScopes: ["calendar"] }),
-			nowMs: 1_000,
-			ttlMs: 10_000,
-		});
+			});
+			const grantA = registry.register({
+				connection: connectionA,
+				authority: baseAuthority({ providerScopes: ["google"] }),
+				nowMs: 1_000,
+				ttlMs: 10_000,
+			});
 		const grantB = registry.register({
 			connection: connectionB,
 			authority: baseAuthority({

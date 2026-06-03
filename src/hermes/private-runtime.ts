@@ -24,6 +24,10 @@ import {
 	type TelclaudeMcpAuthorityRegistry,
 } from "./mcp/authority-registry.js";
 import type { TelclaudeMcpAuthority, TelclaudeMcpDomain } from "./mcp/bridge.js";
+import {
+	DEFAULT_HERMES_CONTAINED_IP,
+	DEFAULT_HERMES_RELAY_IP,
+} from "./runtime-network.js";
 import type { HermesSessionMap } from "./session-map.js";
 
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
@@ -49,8 +53,6 @@ const HERMES_CLI_HEADLESS_RUNTIME_PROVENANCE_SOURCE = "docker-inspect-container-
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION = OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION;
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = OPENAI_CODEX_RELAY_PROOF_SOURCE;
 const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
-const DEFAULT_HERMES_RELAY_IP = "172.29.92.10";
-const DEFAULT_HERMES_CONTAINED_IP = "172.29.92.11";
 
 export type HermesRuntimeRequest = {
 	prompt: string;

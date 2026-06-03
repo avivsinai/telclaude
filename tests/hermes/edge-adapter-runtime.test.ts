@@ -430,7 +430,7 @@ describe("Telclaude edge adapter runtime", () => {
 				runtime.authorizePublicSocialIsolation({
 					actorRef: socialInbound.actorRef,
 					conversationRef: socialInbound.conversationRef,
-					workspaceMount: "/home/user/MyProjects",
+					workspaceMount: "/workspace/private",
 					budgetRemaining: 1,
 				}),
 			"public-social.private-workspace-denied",
