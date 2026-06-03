@@ -62,7 +62,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Pull latest
-        run: git -C ~/telclaude pull --ff-only
+        run: git -C ~/telclaude fetch origin +refs/heads/main:refs/remotes/origin/main && git -C ~/telclaude reset --hard origin/main
 
       - name: Build and deploy
         run: cd ~/telclaude && ./docker/build.sh && cd docker && docker compose up -d --wait --wait-timeout 180
