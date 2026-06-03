@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "workflows": [
+    {
+      "workflow_id": "telegram-chat.telegram-chat-eafeee3bce50006d5d19",
+      "owner": "telegram-chat:eafeee3bce50006d5d19",
+      "trust_domain": "private",
+      "current_behavior": "Telclaude Telegram relay",
+      "hermes_target_behavior": "Hermes private profile behind Telclaude edge",
+      "cutover_class": "P0",
+      "cutover_requirement": "Resolve parity evidence before inclusion.",
+      "status": "excluded",
+      "fixture_ids": [],
+      "negative_fixture_ids": [],
+      "required_surface_ids": [],
+      "unresolved_decision_ids": [
+        "D-first-cutover-workflow-set"
+      ]
+    }
+  ]
+}

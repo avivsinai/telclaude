@@ -83,12 +83,9 @@ import {
 	googleProviderProbeEvidenceFailure,
 } from "./provider-google-probe.js";
 import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
+import { DEFAULT_HERMES_CONTAINED_IP, DEFAULT_HERMES_RELAY_IP } from "./runtime-network.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
-import {
-	DEFAULT_HERMES_CONTAINED_IP,
-	DEFAULT_HERMES_RELAY_IP,
-} from "./runtime-network.js";
 import {
 	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
 	isHermesWorkflowSurfaceId,
@@ -1854,6 +1851,7 @@ export type HermesArtifactWriteOptions = {
 };
 
 const trackedSeedPathCache = new Map<string, Map<string, string>>();
+const HERMES_RED_ONLY_TRACKED_SEED_PATHS = new Set<string>(HERMES_TRACKED_SEED_PATHS);
 
 export function assertHermesArtifactWritesAllowed(
 	filePaths: readonly string[],
@@ -1880,6 +1878,7 @@ export function writeHermesJsonArtifact(
 	value: unknown,
 	options: HermesArtifactWriteOptions = {},
 ): void {
+	assertTrackedHermesSeedValueIsRed(filePath, value, options);
 	writeHermesTextArtifact(filePath, `${JSON.stringify(value, null, 2)}\n`, options);
 }
 
@@ -1888,6 +1887,14 @@ export function writeHermesTextArtifact(
 	content: string,
 	options: HermesArtifactWriteOptions = {},
 ): void {
+	const trackedSeedPath = trackedHermesSeedPath(filePath);
+	if (
+		trackedSeedPath &&
+		HERMES_RED_ONLY_TRACKED_SEED_PATHS.has(trackedSeedPath) &&
+		options.allowTrackedSeedWrite === true
+	) {
+		assertTrackedHermesSeedValueIsRed(filePath, JSON.parse(content) as unknown, options);
+	}
 	assertHermesArtifactWriteAllowed(filePath, options);
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
 	const tmpPath = `${filePath}.tmp.${process.pid}`;
@@ -1901,17 +1908,19 @@ export function writeHermesTextArtifact(
 function trackedHermesSeedPath(filePath: string): string | undefined {
 	const repoRoot = gitTopLevel(process.cwd());
 	if (!repoRoot) return undefined;
-	const resolved = path.resolve(filePath);
+	const resolved = resolvePossiblyMissingPath(filePath);
 	return trackedHermesSeedPaths(repoRoot).get(resolved);
 }
 
 function trackedHermesSeedPaths(repoRoot: string): Map<string, string> {
-	const normalizedRoot = path.resolve(repoRoot);
+	const normalizedRoot = resolvePossiblyMissingPath(repoRoot);
 	const cached = trackedSeedPathCache.get(normalizedRoot);
 	if (cached) return cached;
 
-	const paths = gitTrackedHermesSeedPaths(normalizedRoot);
-	const seedPaths = paths.length > 0 ? paths : [...HERMES_TRACKED_SEED_PATHS];
+	const seedPaths = unique([
+		...HERMES_TRACKED_SEED_PATHS,
+		...gitTrackedHermesSeedPaths(normalizedRoot),
+	]);
 	const next = new Map(
 		seedPaths
 			.filter((seedPath) => seedPath.startsWith("docs/hermes/") && seedPath.endsWith(".json"))
@@ -1919,6 +1928,20 @@ function trackedHermesSeedPaths(repoRoot: string): Map<string, string> {
 	);
 	trackedSeedPathCache.set(normalizedRoot, next);
 	return next;
+}
+
+function resolvePossiblyMissingPath(filePath: string): string {
+	const resolved = path.resolve(filePath);
+	if (fs.existsSync(resolved)) return fs.realpathSync.native(resolved);
+	let current = path.dirname(resolved);
+	const segments: string[] = [path.basename(resolved)];
+	while (!fs.existsSync(current)) {
+		const parent = path.dirname(current);
+		if (parent === current) return resolved;
+		segments.unshift(path.basename(current));
+		current = parent;
+	}
+	return path.join(fs.realpathSync.native(current), ...segments);
 }
 
 function gitTrackedHermesSeedPaths(repoRoot: string): string[] {
@@ -1946,6 +1969,116 @@ function gitTopLevel(cwd: string): string | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+function assertTrackedHermesSeedValueIsRed(
+	filePath: string,
+	value: unknown,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	const trackedSeedPath = trackedHermesSeedPath(filePath);
+	if (
+		!trackedSeedPath ||
+		!HERMES_RED_ONLY_TRACKED_SEED_PATHS.has(trackedSeedPath) ||
+		options.allowTrackedSeedWrite !== true
+	) {
+		return;
+	}
+	if (trackedHermesSeedValueIsRed(trackedSeedPath, value)) return;
+	throw new Error(
+		`Refusing to write green tracked Hermes seed ${trackedSeedPath}. Tracked cutover seeds must stay fail-closed/red; write green evidence outside docs/hermes or after an explicit seed-promotion decision.`,
+	);
+}
+
+function trackedHermesSeedValueIsRed(seedPath: string, value: unknown): boolean {
+	if (!isRecord(value)) return true;
+	switch (seedPath) {
+		case DEFAULT_FEATURE_PROBE_MATRIX_PATH:
+			return !nonEmptyArrayEvery(value.probes, (probe) => recordString(probe, "status") === "pass");
+		case DEFAULT_COMPAT_LOCKFILE_PATH:
+			return !nonEmptyArrayEvery(
+				value.featureProbes,
+				(probe) => recordString(probe, "status") === "pass",
+			);
+		case DEFAULT_CUTOVER_SCOPE_PATH:
+			return !nonEmptyArrayEvery(
+				value.workflows,
+				(workflow) =>
+					recordString(workflow, "status") === "included" &&
+					Array.isArray(asRecord(workflow)?.unresolved_decision_ids) &&
+					(asRecord(workflow)?.unresolved_decision_ids as unknown[]).length === 0,
+			);
+		case DEFAULT_DECISION_LOG_PATH:
+			return !nonEmptyArrayEvery(
+				value.decisions,
+				(decision) => recordString(decision, "status") === "accepted",
+			);
+		case DEFAULT_FIXTURE_RESULTS_PATH:
+			return !nonEmptyArrayEvery(
+				value.results,
+				(result) => recordString(result, "status") === "pass",
+			);
+		case DEFAULT_INVENTORY_PATH:
+			return !inventorySeedLooksGreen(value);
+		case DEFAULT_NETWORK_PROBES_PATH:
+			return !nonEmptyArrayEvery(value.probes, (probe) => recordString(probe, "status") === "pass");
+		case DEFAULT_QUEUE_SNAPSHOT_PATH:
+			return value.unownedActiveCount !== 0;
+		case DEFAULT_NO_FORK_PROOF_PATH:
+			return !(
+				value.hermesCheckoutClean === true &&
+				nonEmptyArrayEvery(value.checks, (check) => recordString(check, "status") === "pass")
+			);
+		case DEFAULT_CUTOVER_PROOF_BUNDLE_PATH:
+			return !cutoverProofBundleSeedLooksGreen(value);
+		case DEFAULT_PROFILE_GENERATION_PROOF_PATH:
+			return !(
+				value.status === "pass" &&
+				nonEmptyArrayEvery(value.checks, (check) => recordString(check, "status") === "pass")
+			);
+		case DEFAULT_ROLLBACK_REHEARSAL_PATH:
+			return !(
+				value.passed === true &&
+				nonEmptyArrayEvery(value.checks, (check) => recordString(check, "status") === "pass")
+			);
+		default:
+			return false;
+	}
+}
+
+function inventorySeedLooksGreen(value: Record<string, unknown>): boolean {
+	if (value.status !== "complete") return false;
+	if (Array.isArray(value.risks) && value.risks.length > 0) return false;
+	const pendingQueues = asRecord(asRecord(value.summary)?.pendingQueues);
+	if (!pendingQueues) return false;
+	return Object.values(pendingQueues).every((queueValue) => queueValue === 0);
+}
+
+function cutoverProofBundleSeedLooksGreen(value: Record<string, unknown>): boolean {
+	const artifacts = asRecord(value.artifacts);
+	if (!artifacts) return false;
+	const entries = Object.values(artifacts);
+	return (
+		entries.length > 0 && entries.every((artifact) => recordString(artifact, "status") === "pass")
+	);
+}
+
+function nonEmptyArrayEvery(value: unknown, predicate: (item: unknown) => boolean): boolean {
+	return Array.isArray(value) && value.length > 0 && value.every(predicate);
+}
+
+function recordString(value: unknown, key: string): string | undefined {
+	const record = asRecord(value);
+	const field = record?.[key];
+	return typeof field === "string" ? field : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return isRecord(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function buildCutoverInputBundleFromArtifacts(input: {
@@ -2315,7 +2448,7 @@ export function buildCompatibilityLockfileDraft(input: {
 		paritySuiteDigests: {
 			p0: computeFileSetDigest(P0_PARITY_DIGEST_FILES),
 		},
-		noForkProofEvidencePath: "artifacts/hermes/no-fork.json",
+		noForkProofEvidencePath: DEFAULT_NO_FORK_PROOF_PATH,
 		sourceDriftSignals: {
 			sourceCommit: currentGitCommit(),
 			docsCommit: currentGitCommit(),
@@ -2512,6 +2645,47 @@ export function writeHermesProfileGenerationProof(options: {
 		writeOptions,
 	);
 	return parsed.data;
+}
+
+export function buildHermesProfileGenerationRedSeed(options: {
+	pin: HermesPin;
+	evidencePath: string;
+	lockfile?: unknown;
+	outDir?: string;
+	now?: string;
+}): ProfileGenerationProof {
+	const pin = HermesPinSchema.parse(options.pin);
+	const generatedAt = options.now ?? new Date().toISOString();
+	const outDir = options.outDir ?? "artifacts/hermes/generated-profile-red-seed";
+	const lockfileDigest = computeHermesArtifactDigest(options.lockfile ?? null);
+	const secretManifest = profileSecretManifest();
+	const directoryInventory: ProfileGenerationProof["directoryInventory"] = [];
+	const outputs: ProfileGenerationProof["outputs"] = [];
+	const treeDigest = computeProfileTreeDigest(directoryInventory);
+	const proof: ProfileGenerationProof = {
+		schemaVersion: PROFILE_GENERATION_PROOF_SCHEMA_VERSION,
+		status: "fail",
+		evidence_path: options.evidencePath,
+		generatedAt,
+		outDir,
+		pin,
+		profileSchemaVersion: "1",
+		lockfileDigest,
+		manifestDigest: computeProfileManifestDigest(outputs, secretManifest, treeDigest),
+		treeDigest,
+		outputs,
+		directoryInventory,
+		secretManifest,
+		checks: [
+			{
+				name: "profile.redSeed",
+				status: "fail",
+				detail:
+					"Tracked profile-generation seed is intentionally red; generate live proof outside the tracked seed path before promotion.",
+			},
+		],
+	};
+	return ProfileGenerationProofSchema.parse(proof);
 }
 
 function parseCompatibilityLockfileForGeneration(value: unknown): CompatibilityLockfile {

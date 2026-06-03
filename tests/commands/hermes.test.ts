@@ -42,6 +42,7 @@ import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_TRACKED_SEED_PATHS,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
 	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
@@ -49,6 +50,7 @@ import {
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
 	validateCompatibilityLockfile,
 	validateFeatureProbeMatrix,
+	writeHermesJsonArtifact,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
 import {
@@ -3112,6 +3114,173 @@ describe("Hermes wrapper foundation", () => {
 		expect(invalidProbe.errors.join("\n")).toContain("hermes_pin");
 	});
 
+	it("generates the canonical feature-probe matrix from observed evidence", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-probes-matrix-"));
+
+		await withCwd(tempDir, async () => {
+			const result = await runHermesCommand(["hermes", "probes", "--pin", "0.15.1", "--json"]);
+			const matrix = JSON.parse(result.stdout) as FeatureProbeMatrix;
+
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(matrix.schemaVersion).toBe(1);
+			expect(matrix.probes.length).toBeGreaterThan(20);
+			expect(matrix.probes.map((probe) => probe.surface_id)).toEqual(
+				expect.arrayContaining([
+					"execution.cli_headless",
+					"model.relay",
+					"edge.whatsapp",
+					"providers.google",
+					"network.egress-broker",
+				]),
+			);
+			expect(matrix.probes.every((probe) => probe.hermes_pin.version === "0.15.1")).toBe(true);
+			expect(matrix.probes.every((probe) => probe.status === "fail")).toBe(true);
+		});
+	});
+
+	it("writes compatibility lockfile drafts to an explicit output", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-compat-lock-out-"));
+		const featureProbePath = path.join(tempDir, "feature-probes.json");
+		const lockfilePath = path.join(tempDir, "hermes-compat.lock.json");
+		writeJson(featureProbePath, featureProbeMatrix);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"compat-lock",
+			"--dry-run",
+			"--pin",
+			"0.15.1",
+			"--feature-probes",
+			featureProbePath,
+			"--out",
+			lockfilePath,
+			"--json",
+		]);
+		const written = readJson(lockfilePath) as CompatibilityLockfile;
+
+		expect(result.exitCode, result.stdout).toBeUndefined();
+		expect(written.hermes.version).toBe("0.15.1");
+		expect(written.featureProbeMatrixDigest).toBe(computeHermesArtifactDigest(featureProbeMatrix));
+		expect(written.noForkProofEvidencePath).toBe("docs/hermes/no-fork-proof.json");
+	});
+
+	it("allows red canonical seed writes before the seed is tracked by git", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-red-seed-"));
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		await withCwd(tempDir, async () => {
+			const seedPath = path.join(tempDir, "docs/hermes/feature-probes.json");
+
+			writeHermesJsonArtifact(
+				seedPath,
+				{
+					schemaVersion: 1,
+					probes: [{ surface_id: "execution.cli_headless", status: "fail" }],
+				},
+				{ allowTrackedSeedWrite: true },
+			);
+
+			expect(readJson(seedPath)).toMatchObject({
+				probes: [expect.objectContaining({ status: "fail" })],
+			});
+		});
+	});
+
+	it("refuses green canonical seed writes even with the tracked-seed flag", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-green-seed-"));
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		await withCwd(tempDir, async () => {
+			const greenSeedByPath: Record<(typeof HERMES_TRACKED_SEED_PATHS)[number], unknown> = {
+				"docs/hermes/feature-probes.json": {
+					probes: [{ surface_id: "execution.cli_headless", status: "pass" }],
+				},
+				"docs/hermes/hermes-compat.lock.json": {
+					featureProbes: [{ surface_id: "execution.cli_headless", status: "pass" }],
+				},
+				"docs/hermes/cutover-scope.json": {
+					workflows: [
+						{
+							workflow_id: "telegram.private",
+							status: "included",
+							unresolved_decision_ids: [],
+						},
+					],
+				},
+				"docs/hermes/decisions.json": {
+					decisions: [{ id: "D-first-cutover-workflow-set", status: "accepted" }],
+				},
+				"docs/hermes/fixture-results.json": {
+					results: [{ fixture_id: "fixture", status: "pass" }],
+				},
+				"docs/hermes/inventory.json": {
+					status: "complete",
+					risks: [],
+					summary: { pendingQueues: { approvals: 0, backgroundJobs: 0 } },
+				},
+				"docs/hermes/network-probes.json": {
+					probes: [{ id: "relay.allowed", status: "pass" }],
+				},
+				"docs/hermes/queue-snapshot.json": {
+					unownedActiveCount: 0,
+				},
+				"docs/hermes/no-fork-proof.json": {
+					hermesCheckoutClean: true,
+					checks: [{ name: "git.diff", status: "pass" }],
+				},
+				"docs/hermes/cutover-proof-bundle.json": {
+					artifacts: { featureProbeMatrix: { status: "pass" } },
+				},
+				"docs/hermes/profile-generation-proof.json": {
+					schemaVersion: "telclaude.hermes.profile-generation-proof.v1",
+					status: "pass",
+					checks: [{ name: "profile.pin", status: "pass", detail: "green" }],
+				},
+				"docs/hermes/rollback-rehearsal.json": {
+					passed: true,
+					checks: [{ name: "rollback.transcript", status: "pass" }],
+				},
+			};
+
+			expect(Object.keys(greenSeedByPath).sort()).toEqual([...HERMES_TRACKED_SEED_PATHS].sort());
+			for (const [seedPath, seedValue] of Object.entries(greenSeedByPath)) {
+				const resolved = path.join(tempDir, seedPath);
+				expect(() =>
+					writeHermesJsonArtifact(resolved, seedValue, { allowTrackedSeedWrite: true }),
+				).toThrow("Refusing to write green tracked Hermes seed");
+				expect(fs.existsSync(resolved)).toBe(false);
+			}
+		});
+	});
+
+	it("writes fail-closed profile-generation proof seeds", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-profile-red-seed-"));
+		execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
+		await withCwd(tempDir, async () => {
+			const proofPath = path.join(tempDir, "docs/hermes/profile-generation-proof.json");
+
+			const result = await runHermesCommand([
+				"hermes",
+				"generate",
+				"--red-seed",
+				"--pin",
+				"0.15.1",
+				"--proof-out",
+				proofPath,
+				"--write-tracked-seed",
+				"--json",
+			]);
+			const proof = readJson(proofPath) as {
+				status: string;
+				checks: Array<{ name: string; status: string }>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(proof.status).toBe("fail");
+			expect(proof.checks).toEqual([
+				expect.objectContaining({ name: "profile.redSeed", status: "fail" }),
+			]);
+		});
+	});
+
 	it("fails doctor when no pinned Hermes artifact is supplied", () => {
 		const report = buildHermesDoctorReport({ pin: null, featureProbeMatrix });
 		expect(report.status).toBe("fail");
@@ -3500,6 +3669,102 @@ describe("Hermes wrapper foundation", () => {
 		expect(result.exitCode, result.stdout).toBe(1);
 		expect(snapshot).toEqual({ unownedActiveCount: 3 });
 		expect(readJson(outPath)).toEqual(snapshot);
+	});
+
+	it("writes fail-closed decision-log drafts from inventory decisions", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-decision-log-"));
+		const inventoryPath = path.join(tempDir, "inventory.json");
+		const outPath = path.join(tempDir, "decisions.json");
+		writeJson(inventoryPath, {
+			schemaVersion: 1,
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					unresolved_decision_ids: ["D-private-execution-contract"],
+				},
+			],
+		});
+
+		const result = await runHermesCommand([
+			"hermes",
+			"decision-log",
+			"--json",
+			"--inventory",
+			inventoryPath,
+			"--out",
+			outPath,
+		]);
+		const decisionLog = JSON.parse(result.stdout) as {
+			decisions: Array<{ id: string; status: string; affected_workflows: string[] }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(readJson(outPath)).toEqual(decisionLog);
+		expect(decisionLog.decisions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "D-first-cutover-workflow-set",
+					status: "unresolved",
+					affected_workflows: ["private.telegram.basic"],
+				}),
+				expect.objectContaining({
+					id: "D-private-execution-contract",
+					status: "unresolved",
+					affected_workflows: ["private.telegram.basic"],
+				}),
+			]),
+		);
+	});
+
+	it("writes cutover-scope manifests from inventory snapshots", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-scope-"));
+		const inventoryPath = path.join(tempDir, "inventory.json");
+		const outPath = path.join(tempDir, "cutover-scope.json");
+		writeJson(inventoryPath, {
+			schemaVersion: 1,
+			workflows: [
+				{
+					workflow_id: "private.telegram.basic",
+					owner: "operator",
+					trust_domain: "private",
+					active: true,
+				},
+				{
+					workflow_id: "social.xtwitter.proactive",
+					owner: "operator",
+					trust_domain: "social",
+					active: false,
+				},
+			],
+		});
+
+		const result = await runHermesCommand([
+			"hermes",
+			"cutover-scope",
+			"--json",
+			"--inventory",
+			inventoryPath,
+			"--out",
+			outPath,
+		]);
+		const manifest = JSON.parse(result.stdout) as {
+			workflows: Array<{ workflow_id: string; status: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(readJson(outPath)).toEqual(manifest);
+		expect(manifest.workflows).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					workflow_id: "private.telegram.basic",
+					status: "excluded",
+				}),
+				expect.objectContaining({
+					workflow_id: "social.xtwitter.proactive",
+					status: "disabled",
+				}),
+			]),
+		);
 	});
 
 	it("cutover-check consumes explicit queue snapshot artifacts", async () => {
@@ -6262,8 +6527,10 @@ describe("Hermes wrapper foundation", () => {
 		const program = new Command();
 		registerHermesCommand(program);
 		const hermesCommand = program.commands.find((command) => command.name() === "hermes");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain("probes");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("network-probes");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain("queue-snapshot");
+		expect(hermesCommand?.commands.map((command) => command.name())).toContain("decision-log");
 		expect(hermesCommand?.commands.map((command) => command.name())).toContain(
 			"rollback-rehearsal",
 		);
