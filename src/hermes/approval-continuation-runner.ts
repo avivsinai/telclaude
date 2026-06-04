@@ -485,6 +485,7 @@ function fixtureRelayConversation(
 			routeKey: `fixture-route:${conversationRef}`,
 		},
 		authorizationState: "authorized",
+		humanPairingProvenance: false,
 		authorizationScopes: ["message:reply"],
 		members: [
 			{

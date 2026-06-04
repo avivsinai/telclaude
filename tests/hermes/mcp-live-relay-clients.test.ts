@@ -176,7 +176,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			idempotencyKey: "idem-provider",
 		});
 
-		const { token } = mintWhatsappConversation("dinner");
+		const { token } = mintWhatsappConversation("dinner", { humanPairingProvenance: true });
 		const turnConversationRef = mintWhatsappTurn(token, "dinner");
 		const outboundPrepared = (await clients.outboundPrepare(
 			outboundPrepare({
@@ -205,6 +205,10 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			mediaRefs: [],
 			conversationRef: token,
 			turnConversationRef,
+			approvalMetadata: expect.objectContaining({
+				pairedProvenance: true,
+				replyCapableActorSeat: true,
+			}),
 			edgePreparedRef: outboundPrepared.edgePreparedRef,
 			edgePreparedHash: outboundPrepared.edgePreparedHash,
 		});
@@ -325,6 +329,66 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		expect(ledger.list()).toEqual([]);
 		expect(mediaResolutions).toBe(0);
 		expect(edgeRuntime.prepareOutboundCalls).toBe(0);
+	});
+
+	it("derives pairedProvenance false for first-contact conversations", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const { token } = mintWhatsappConversation("first-contact");
+		const turnConversationRef = mintWhatsappTurn(token, "first-contact");
+
+		const prepared = (await clients.outboundPrepare(
+			outboundPrepare({ conversationToken: token, turnConversationRef }),
+		)) as { outboundRef: string };
+
+		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+			kind: "outbound",
+			approvalMetadata: expect.objectContaining({
+				pairedProvenance: false,
+				replyCapableActorSeat: true,
+			}),
+		});
+	});
+
+	it("derives replyCapableActorSeat false when the live actor seat lacks message:reply", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const { token } = mintWhatsappConversation("no-reply-seat", {
+			humanPairingProvenance: true,
+			members: [
+				{
+					actorId: "operator",
+					principalId: "+15557654321",
+					role: "sender",
+				},
+				{
+					actorId: "actor:no-reply-seat:recipient",
+					principalId: "+15551234567",
+					role: "recipient",
+				},
+			],
+		});
+		const turnConversationRef = mintWhatsappTurn(token, "no-reply-seat");
+
+		const prepared = (await clients.outboundPrepare(
+			outboundPrepare({ conversationToken: token, turnConversationRef }),
+		)) as { outboundRef: string };
+
+		expect(ledger.get(prepared.outboundRef)).toMatchObject({
+			kind: "outbound",
+			approvalMetadata: expect.objectContaining({
+				pairedProvenance: true,
+				replyCapableActorSeat: false,
+			}),
+		});
 	});
 
 	it("fails outbound preparation closed for unauthorized channels and non-targetable intents", async () => {
@@ -710,6 +774,7 @@ function mintWhatsappConversation(
 				actorId: "operator",
 				principalId: "+15557654321",
 				role: "sender",
+				scopes: ["message:reply"],
 			},
 			{
 				actorId: `actor:${suffix}:recipient`,

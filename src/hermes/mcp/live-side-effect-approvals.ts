@@ -43,15 +43,16 @@ export function setTelclaudeLiveMcpSideEffectApprovalBinding(
 export function requestTelclaudeLiveMcpSideEffectApproval(
 	controller: SideEffectHumanApprovalController,
 	record: TelclaudeMcpSideEffectRecord,
-): void {
+): Promise<void> {
 	const chatId = chatIdFromTelegramActor(record.approverActorId);
 	if (chatId === null) {
 		throw new Error("live MCP side-effect approverActorId must be formatted as telegram:<chat-id>");
 	}
-	const requested = controller.request({ record, chatId });
-	if (!requested.ok) {
-		throw new Error(requested.reason);
-	}
+	return controller.request({ record, chatId }).then((requested) => {
+		if (!requested.ok) {
+			throw new Error(requested.reason);
+		}
+	});
 }
 
 export async function consumeTelclaudeLiveMcpSideEffectApproval(

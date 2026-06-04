@@ -727,6 +727,7 @@ function probeRelayConversation(
 			routeKey: `probe-route:${conversationRef}`,
 		},
 		authorizationState: "authorized",
+		humanPairingProvenance: false,
 		authorizationScopes: ["message:reply"],
 		members: [
 			{

@@ -484,10 +484,8 @@ async function liveOutboundConversationFailure(
 		);
 	}
 	const targetableMembers = targetableRelayConversationMembers(conversation);
-	if (
-		targetableMembers.length === 0 ||
-		!targetableMembers.some((member) => member.actorId === record.actorId)
-	) {
+	const actorSeat = targetableMembers.find((member) => member.actorId === record.actorId);
+	if (!actorSeat?.scopes.includes("message:reply")) {
 		return terminalFailure(
 			"outbound_recipient_not_targetable",
 			"outbound conversation has no reply-capable seat for the actor",

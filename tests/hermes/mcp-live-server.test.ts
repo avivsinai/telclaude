@@ -854,6 +854,7 @@ function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayC
 			routeKey: "route-private",
 		},
 		authorizationState: "authorized",
+		humanPairingProvenance: false,
 		authorizationScopes: ["message:reply"],
 		members: [
 			{

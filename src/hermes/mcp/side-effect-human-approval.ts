@@ -53,6 +53,7 @@ export type SideEffectHumanApprovalResult =
 			readonly createdAt: number;
 			readonly expiresAt: number;
 			readonly bindingDigest: string;
+			readonly autoGranted?: boolean;
 	  }
 	| SideEffectHumanApprovalFailure;
 
@@ -85,7 +86,7 @@ export type SideEffectHumanApprovalFailure = {
 };
 
 export type SideEffectHumanApprovalController = {
-	request(input: SideEffectHumanApprovalCreateInput): SideEffectHumanApprovalResult;
+	request(input: SideEffectHumanApprovalCreateInput): Promise<SideEffectHumanApprovalResult>;
 	consume(
 		input: SideEffectHumanApprovalConsumeInput,
 	): Promise<SideEffectHumanApprovalConsumeResult>;
@@ -115,6 +116,12 @@ export type SideEffectHumanApprovalDependencies = {
 	readonly renderOutboundApproval?: (
 		record: Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }>,
 	) => string;
+	readonly autoGrant?: SideEffectHumanApprovalAutoGrantOptions;
+};
+
+export type SideEffectHumanApprovalAutoGrantOptions = {
+	readonly enabled: boolean;
+	readonly ttlMs?: number;
 };
 
 type StoredServerSideApproval = {
@@ -136,9 +143,18 @@ export function createSideEffectHumanApprovalController(
 	const serverSideApprovals = new Map<string, StoredServerSideApproval>();
 
 	return {
-		request(input) {
-			const prepared = prepareApprovalBinding(input.record, dependencies, nowMs());
+		async request(input) {
+			const authorizationNowMs = nowMs();
+			const prepared = prepareApprovalBinding(input.record, dependencies, authorizationNowMs);
 			if (!prepared.ok) return prepared;
+			const autoGrant = await maybeAutoGrantSideEffect(
+				input.record,
+				prepared,
+				dependencies,
+				authorizationNowMs,
+				serverSideApprovals,
+			);
+			if (autoGrant) return autoGrant;
 			const ttlMs = normalizeTtlMs(input.ttlMs ?? DEFAULT_HUMAN_APPROVAL_TTL_MS);
 			const created = createApproval(
 				{
@@ -278,6 +294,72 @@ export function createSideEffectHumanApprovalController(
 			};
 		},
 	};
+}
+
+async function maybeAutoGrantSideEffect(
+	record: TelclaudeMcpSideEffectRecord,
+	prepared: {
+		readonly binding: TelclaudeMcpSideEffectApprovalBinding;
+		readonly bindingDigest: string;
+	},
+	dependencies: SideEffectHumanApprovalDependencies,
+	nowMs: number,
+	serverSideApprovals: Map<string, StoredServerSideApproval>,
+): Promise<SideEffectHumanApprovalResult | null> {
+	if (dependencies.autoGrant?.enabled !== true) return null;
+	if (!autoGrantEligible(record)) return null;
+	const ttlMs = normalizeAutoGrantTtlMs(dependencies.autoGrant.ttlMs);
+	const approvalId = autoGrantJtiFor(record);
+	let minted: SideEffectHumanApprovalTokenResult | string;
+	try {
+		minted = (await dependencies.mintApprovalToken({
+			record,
+			binding: prepared.binding,
+			jti: approvalId,
+			ttlMs,
+			nowMs,
+		})) as SideEffectHumanApprovalTokenResult | string;
+	} catch (error) {
+		return failure(
+			"approval_token_mint_failed",
+			error instanceof Error ? error.message : String(error),
+			true,
+		);
+	}
+	const tokenResult = typeof minted === "string" ? { approvalToken: minted, approvalId } : minted;
+	const storedApprovalId = tokenResult.approvalId ?? approvalId;
+	serverSideApprovals.set(record.ref, {
+		actionRef: record.ref,
+		approvalToken: tokenResult.approvalToken,
+		approvalId: storedApprovalId,
+		binding: prepared.binding,
+		bindingDigest: prepared.bindingDigest,
+		expiresAtMs: nowMs + ttlMs,
+	});
+	return {
+		ok: true,
+		nonce: storedApprovalId,
+		createdAt: nowMs,
+		expiresAt: nowMs + ttlMs,
+		bindingDigest: prepared.bindingDigest,
+		autoGranted: true,
+	};
+}
+
+function autoGrantEligible(record: TelclaudeMcpSideEffectRecord): boolean {
+	if (record.kind !== "outbound") return false;
+	if (record.domain !== "private") return false;
+	if (record.authorizationState !== "authorized") return false;
+	if (!record.turnConversationRef) return false;
+	return (
+		record.approvalMetadata.source === "hermes-live-mcp" &&
+		record.approvalMetadata.pairedProvenance === true &&
+		record.approvalMetadata.replyCapableActorSeat === true
+	);
+}
+
+function autoGrantJtiFor(record: TelclaudeMcpSideEffectRecord): string {
+	return `auto-${record.ref}`;
 }
 
 function prepareApprovalBinding(
@@ -472,6 +554,14 @@ function normalizeTtlMs(value: number): number {
 		throw new Error("side-effect human approval ttlMs must be between 1 and 300000");
 	}
 	return value;
+}
+
+function normalizeAutoGrantTtlMs(value: number | undefined): number {
+	const ttlMs = value ?? MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS;
+	if (!Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS) {
+		throw new Error("side-effect auto-grant ttlMs must be between 1 and 60000");
+	}
+	return ttlMs;
 }
 
 function requiredTrimmed(value: string, field: string): string {
