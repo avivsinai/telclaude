@@ -60,6 +60,15 @@ telclaude skills scaffold my-helper --template api-client \
 Collisions (existing draft with the same name in the canonical draft root) fail with an explicit
 error — the scaffold refuses to overwrite.
 
+### Credential placeholder examples
+
+Skill examples must use neutral credential placeholders that cannot be confused
+with live secrets. Prefer forms such as `<provider-token-placeholder>`,
+`sk-...`, `ghp_xxxxxxxxxxxxxxxxxxxx`, `example-token-placeholder`, or
+`redacted`. Do not put realistic provider tokens with plausible random bodies,
+bearer tokens, cookie/session tokens, or infrastructure secret environment
+names in skill prose, code blocks, templates, references, or fixtures.
+
 ## `telclaude skills doctor`
 
 Walks every active and draft skill discovered through the canonical root

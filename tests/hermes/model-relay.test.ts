@@ -471,7 +471,9 @@ describe("Hermes model-relay probe", () => {
 			path.join(skillDir, "SKILL.md"),
 			[
 				'Authorization: "Bearer sk-..."',
+				'Authorization: "Bearer <provider-token-placeholder>"',
 				'GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"',
+				'api_token="example-token-placeholder"',
 				'api_key="EMPTY"',
 				'SOME_API_KEY: "value"',
 				'headers={"Cookie": "session=secret"}',

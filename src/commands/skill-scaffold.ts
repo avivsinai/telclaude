@@ -79,6 +79,7 @@ function renderPreview(name: string, template: SkillTemplate): string {
 		`- [ ] Trim \`allowed-tools\` to the minimum set needed. Avoid Bash/Write/Edit/NotebookEdit unless required.`,
 		`- [ ] Delete the boilerplate sections you do not need. Keep the prose tight.`,
 		`- [ ] Add or remove bundled resources in \`scripts/\`, \`references/\`, \`assets/\` to match the skill.`,
+		`- [ ] Use neutral credential placeholders (\`<provider-token-placeholder>\`, \`sk-...\`, \`ghp_xxxxxxxxxxxxxxxxxxxx\`, \`example-token-placeholder\`, \`redacted\`) instead of realistic tokens, cookies, sessions, or infrastructure secret environment names.`,
 		`- [ ] Run \`telclaude skills scan --path <this-draft-dir>\` and fix any findings.`,
 		`- [ ] Run \`telclaude skills doctor\` and confirm this skill passes.`,
 		`- [ ] When ready, promote via \`telclaude skills promote ${name}\` or \`/skills promote ${name}\`.`,
