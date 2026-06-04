@@ -216,15 +216,15 @@ describe("Telclaude MCP bridge foundation", () => {
 		await expect(
 			bridge.tc_outbound_execute({
 				outboundRef: "out_123",
-				approvalToken: "signed-token",
 			}),
 		).resolves.toEqual({ status: "sent" });
 
 		expect(calls).toEqual([
 			expect.objectContaining({ actionRef: "act_123" }),
-			expect.objectContaining({ outboundRef: "out_123", approvalToken: "signed-token" }),
+			expect.objectContaining({ outboundRef: "out_123" }),
 		]);
 		expect(calls[0]).not.toHaveProperty("approvalToken");
+		expect(calls[1]).not.toHaveProperty("approvalToken");
 		await expect(
 			bridge.tc_provider_execute_write({
 				actionRef: "act_123",
@@ -241,12 +241,11 @@ describe("Telclaude MCP bridge foundation", () => {
 			bridge.tc_outbound_execute({
 				outboundRef: "out_123",
 				approvalToken: "signed-token",
-				content: "mutated",
 			}),
 		).rejects.toThrow();
 	});
 
-	it("applies outbound channel scope and stamps attachment/audit calls", async () => {
+	it("requires relay conversation tokens for outbound prepare and stamps attachment/audit calls", async () => {
 		const calls: unknown[] = [];
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {
 			...baseDependencies(),
@@ -267,9 +266,12 @@ describe("Telclaude MCP bridge foundation", () => {
 		await expect(bridge.tc_attachment_get({ ref: "att_123" })).resolves.toEqual({ bytes: 0 });
 		await expect(
 			bridge.tc_outbound_prepare({
-				channel: "whatsapp",
-				recipient: "+15551234567",
-				content: "hello",
+				conversationToken: `conv_${"a".repeat(32)}`,
+				replyIntent: {
+					kind: "actor",
+					actorId: "actor:recipient",
+				},
+				body: "hello",
 				mediaRefs: ["att_123"],
 			}),
 		).resolves.toEqual({ outboundRef: "out_123" });
@@ -279,16 +281,64 @@ describe("Telclaude MCP bridge foundation", () => {
 
 		expect(calls).toEqual([
 			expect.objectContaining({ ref: "att_123", actorId: "operator" }),
-			expect.objectContaining({ channel: "whatsapp", recipient: "+15551234567" }),
+			expect.objectContaining({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				replyIntent: {
+					kind: "actor",
+					actorId: "actor:recipient",
+				},
+				body: "hello",
+				outboundChannels: ["whatsapp"],
+			}),
 			expect.objectContaining({ kind: "mcp.test", payload: { ok: true } }),
 		]);
+		expect(calls[1]).not.toHaveProperty("channel");
+		expect(calls[1]).not.toHaveProperty("recipient");
+		expect(calls[1]).not.toHaveProperty("conversationRef");
+		expect(calls[1]).not.toHaveProperty("approvalToken");
+	});
+
+	it("rejects old or caller-shaped outbound prepare authority", async () => {
+		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {
+			...baseDependencies(),
+			outboundPrepare: async () => {
+				throw new Error("outboundPrepare should not be called");
+			},
+		});
+
 		await expect(
 			bridge.tc_outbound_prepare({
-				channel: "email",
-				recipient: "a@example.com",
+				channel: "whatsapp",
+				recipient: "+15551234567",
 				content: "hello",
 			}),
-		).rejects.toThrow("outbound channel denied: email");
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				body: "hello",
+				recipient: "+15551234567",
+			}),
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				body: "hello",
+				conversationRef: { channel: "whatsapp" },
+			}),
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: "not-a-token",
+				body: "hello",
+			}),
+		).rejects.toThrow("invalid conversation token");
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				content: "old content key",
+			}),
+		).rejects.toThrow();
 	});
 });
 

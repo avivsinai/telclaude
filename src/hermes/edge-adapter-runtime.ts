@@ -281,6 +281,7 @@ export class TelclaudeEdgeRuntime {
 			finalRenderedBody: request.requestedBody,
 			mediaRefs: request.mediaRefs,
 			authorizingActor,
+			edgePreparedHash: preparedHash,
 			policyResult: {
 				decision: "allowed",
 				reason: "Telclaude edge policy allowed existing authorized destination",
@@ -332,6 +333,7 @@ export class TelclaudeEdgeRuntime {
 		});
 		if (
 			binding.preparedHash !== preparedHash ||
+			prepared.edgePreparedHash !== preparedHash ||
 			binding.idempotencyKey !== prepared.idempotencyKey
 		) {
 			this.deny("outbound.recipient-body-bound", "Prepared outbound binding was mutated");

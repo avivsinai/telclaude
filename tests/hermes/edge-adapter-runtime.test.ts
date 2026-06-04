@@ -121,10 +121,18 @@ describe("Telclaude edge adapter runtime", () => {
 			policyResult: { decision: "allowed" },
 			authorizingActor: inbound.actorRef,
 		});
+		expect(prepared.edgePreparedHash).toMatch(/^[a-f0-9]{64}$/);
 		expectDenied(
 			() =>
 				runtime.executeOutbound({
 					preparedOutbound: { ...prepared, finalRenderedBody: "mutated" },
+				}),
+			"outbound.recipient-body-bound",
+		);
+		expectDenied(
+			() =>
+				runtime.executeOutbound({
+					preparedOutbound: { ...prepared, edgePreparedHash: "b".repeat(64) },
 				}),
 			"outbound.recipient-body-bound",
 		);

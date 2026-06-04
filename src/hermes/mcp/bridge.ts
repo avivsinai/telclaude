@@ -2,6 +2,10 @@ import { z } from "zod";
 import { validateMemorySource } from "../../memory/source.js";
 import type { MemoryCategory, MemorySource, TrustLevel } from "../../memory/types.js";
 import { validateMemoryEntryInput } from "../../memory/validation.js";
+import {
+	isRelayConversationToken,
+	type RelayConversationReplyIntent,
+} from "../relay-conversation-store.js";
 import { TELCLAUDE_MCP_SERVER_POLICY } from "./policy.js";
 import { resolveTelclaudeProviderOperation } from "./provider-routing.js";
 
@@ -74,15 +78,15 @@ export type TelclaudeMcpAttachmentGetRequest = TelclaudeMcpAuthorityStamp & {
 };
 
 export type TelclaudeMcpOutboundPrepareRequest = TelclaudeMcpAuthorityStamp & {
-	channel: string;
-	recipient: string;
-	content: string;
+	conversationToken: string;
+	replyIntent?: RelayConversationReplyIntent;
+	body: string;
 	mediaRefs: string[];
+	outboundChannels: readonly string[];
 };
 
 export type TelclaudeMcpOutboundExecuteRequest = TelclaudeMcpAuthorityStamp & {
 	outboundRef: string;
-	approvalToken: string;
 };
 
 export type TelclaudeMcpAuditNoteRequest = TelclaudeMcpAuthorityStamp & {
@@ -170,19 +174,39 @@ const AttachmentGetInputSchema = z
 	})
 	.strip();
 
+const ReplyIntentInputSchema = z.discriminatedUnion("kind", [
+	z
+		.object({
+			kind: z.literal("thread"),
+			threadId: RefSchema,
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("actor"),
+			actorId: RefSchema,
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal("address"),
+			addressRef: RefSchema,
+		})
+		.strict(),
+]);
+
 const OutboundPrepareInputSchema = z
 	.object({
-		channel: NonEmptyString,
-		recipient: NonEmptyString.max(256),
-		content: NonEmptyString,
+		conversationToken: RefSchema.refine(isRelayConversationToken, "invalid conversation token"),
+		replyIntent: ReplyIntentInputSchema.optional(),
+		body: NonEmptyString,
 		mediaRefs: z.array(RefSchema).max(10).optional(),
 	})
-	.strip();
+	.strict();
 
 const OutboundExecuteInputSchema = z
 	.object({
 		outboundRef: RefSchema,
-		approvalToken: NonEmptyString,
 	})
 	.strict();
 
@@ -296,13 +320,13 @@ export function createTelclaudeMcpBridge(
 
 		async tc_outbound_prepare(input) {
 			const parsed = OutboundPrepareInputSchema.parse(input);
-			assertOutboundChannel(normalizedAuthority, parsed.channel);
 			return dependencies.outboundPrepare({
 				...stamp,
-				channel: parsed.channel,
-				recipient: parsed.recipient,
-				content: parsed.content,
+				conversationToken: parsed.conversationToken,
+				replyIntent: parsed.replyIntent,
+				body: parsed.body,
 				mediaRefs: parsed.mediaRefs ?? [],
+				outboundChannels: normalizedAuthority.outboundChannels,
 			});
 		},
 
@@ -311,7 +335,6 @@ export function createTelclaudeMcpBridge(
 			return dependencies.outboundExecute({
 				...stamp,
 				outboundRef: parsed.outboundRef,
-				approvalToken: parsed.approvalToken,
 			});
 		},
 
@@ -371,12 +394,6 @@ function uniqueTrimmed(values: readonly string[]): string[] {
 function assertProviderScope(authority: TelclaudeMcpAuthority, service: string): void {
 	if (!authority.providerScopes.includes(service)) {
 		throw new Error(`provider scope denied: ${service}`);
-	}
-}
-
-function assertOutboundChannel(authority: TelclaudeMcpAuthority, channel: string): void {
-	if (!authority.outboundChannels.includes(channel)) {
-		throw new Error(`outbound channel denied: ${channel}`);
 	}
 }
 
