@@ -3,6 +3,10 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+	EdgeAdapterSchemaVersions,
+	type PreparedOutbound,
+} from "../../src/hermes/edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
@@ -35,6 +39,7 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
 import type { RelayConversation } from "../../src/hermes/relay-conversation-store.js";
+import type { OutboundDeliveryDispatcher } from "../../src/relay/outbound-delivery-dispatcher.js";
 
 describe("Telclaude live MCP relay-side server", () => {
 	const cleanup: Array<() => void | Promise<void>> = [];
@@ -588,10 +593,50 @@ describe("Telclaude live MCP relay-side server", () => {
 		expect(harness.ledger.get(outbound.ref)).toEqual(
 			expect.objectContaining({ ref: outbound.ref, status: "executed" }),
 		);
+		expect(harness.calls.outboundDelivery).toEqual([
+			expect.objectContaining({
+				outboundRef: outbound.edgePreparedRef,
+				channel: "whatsapp",
+				resolvedDestination: outbound.resolvedDestination,
+				finalRenderedBody: outbound.renderedBody,
+				sideEffectLedgerRef: outbound.ref,
+			}),
+		]);
+	});
+
+	it("fails WhatsApp outbound execution closed when no delivery dispatcher is configured", async () => {
+		const harness = createHarness(cleanup, { outboundDeliveryDispatcher: undefined });
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		const token = await tokenFor(harness, outbound, "jti-live-outbound-no-dispatcher");
+		harness.storeProviderApproval(outbound.ref, token);
+
+		expect(
+			resultOf(
+				await harness.server.handleJsonRpc(
+					toolCall("tc_outbound_execute", {
+						outboundRef: outbound.ref,
+					}),
+					harness.privateContext,
+				),
+			),
+		).toEqual({
+			ok: false,
+			code: "outbound_delivery_dispatcher_missing",
+			reason: "outbound delivery dispatcher is not configured for WhatsApp",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.calls.outboundDelivery).toEqual([]);
+		expect(harness.ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		);
 	});
 });
 
-function createHarness(cleanup: Array<() => void | Promise<void>>) {
+function createHarness(
+	cleanup: Array<() => void | Promise<void>>,
+	options: { outboundDeliveryDispatcher?: OutboundDeliveryDispatcher } = {},
+) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-live-mcp-"));
 	const jtiStore = new TelclaudeMcpSideEffectJtiStore(tempDir);
 	cleanup.push(() => {
@@ -638,7 +683,12 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 		providerExecute: [] as unknown[],
 		memorySearch: [] as unknown[],
 		outboundPrepare: [] as unknown[],
+		outboundDelivery: [] as PreparedOutbound[],
 	};
+	const hasOutboundDispatcher = Object.hasOwn(options, "outboundDeliveryDispatcher");
+	const outboundDeliveryDispatcher = hasOutboundDispatcher
+		? options.outboundDeliveryDispatcher
+		: sentOutboundDeliveryDispatcher(calls.outboundDelivery);
 	const relayClients: TelclaudeLiveMcpRelayClients = {
 		providerRead: async (request) => {
 			calls.providerRead.push(request);
@@ -703,6 +753,7 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 					token: conversationRef,
 					conversationId: conversationRef,
 				}),
+			...(outboundDeliveryDispatcher ? { outboundDeliveryDispatcher } : {}),
 			bindHost: "telclaude",
 			networkName: "telclaude-hermes-relay",
 			nowMs: () => 120_000,
@@ -710,6 +761,27 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 		storeProviderApproval(actionRef: string, approvalToken: string) {
 			providerApprovals.set(actionRef, approvalToken);
 		},
+	};
+}
+
+function sentOutboundDeliveryDispatcher(calls: PreparedOutbound[]): OutboundDeliveryDispatcher {
+	return async (prepared) => {
+		calls.push(prepared);
+		return {
+			schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+			outboundRef: prepared.outboundRef,
+			platformMessageId: "wa-live-msg-1",
+			deliveryStatus: "sent",
+			timestamps: {
+				observedAt: "2026-06-04T00:00:00.000Z",
+				sentAt: "2026-06-04T00:00:00.000Z",
+			},
+			retry: {
+				attempt: 1,
+				maxAttempts: prepared.retryPolicy.maxAttempts,
+				idempotencyKey: prepared.idempotencyKey,
+			},
+		};
 	};
 }
 

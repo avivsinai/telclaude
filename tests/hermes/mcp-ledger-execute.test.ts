@@ -6,6 +6,10 @@ import { describe, expect, it } from "vitest";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
 import { JtiStore, verifyApprovalToken } from "../../src/google-services/approval.js";
 import type { FetchRequest } from "../../src/google-services/types.js";
+import {
+	EdgeAdapterSchemaVersions,
+	type PreparedOutbound,
+} from "../../src/hermes/edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpBridge,
@@ -28,6 +32,7 @@ import type {
 	RelayConversation,
 	RelayConversationInboundTurn,
 } from "../../src/hermes/relay-conversation-store.js";
+import type { OutboundDeliveryDispatcher } from "../../src/relay/outbound-delivery-dispatcher.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
@@ -460,6 +465,99 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 	});
 
+	it("executes prepared WhatsApp outbound through the outbound delivery dispatcher", async () => {
+		const harness = createLedgerHarness();
+		const resolvedDestination = {
+			kind: "address" as const,
+			addressRef: "whatsapp:+15551234567",
+			conversationId: "whatsapp:+15551234567",
+		};
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({
+				destination: "model-facing label that must not be used for delivery",
+				resolvedDestination,
+				edgePreparedHash: edgePreparedPayloadHash({
+					channel: "whatsapp",
+					resolvedDestination,
+					body: "I'll pick up dinner at 19:00.",
+					mediaRefs: [
+						{
+							quarantineId: "attachment:menu",
+							contentHash:
+								"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+						},
+					],
+				}),
+			}),
+		);
+		harness.accept("outbound-token", outbound);
+		const dispatched: PreparedOutbound[] = [];
+		const dispatcher: OutboundDeliveryDispatcher = async (prepared) => {
+			dispatched.push(prepared);
+			return {
+				schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+				outboundRef: prepared.outboundRef,
+				platformMessageId: "wa-msg-1",
+				deliveryStatus: "sent",
+				timestamps: {
+					observedAt: "2026-06-04T00:00:00.000Z",
+					sentAt: "2026-06-04T00:00:00.000Z",
+				},
+				retry: {
+					attempt: 1,
+					maxAttempts: prepared.retryPolicy.maxAttempts,
+					idempotencyKey: prepared.idempotencyKey,
+				},
+			};
+		};
+		const bridge = createBridge(harness, {
+			outboundDeliveryDispatcher: dispatcher,
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					conversationId: outbound.resolvedDestination.conversationId,
+					threadMessageIds: ["wa-thread-1"],
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "outbound-token",
+			}),
+		});
+		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]).toMatchObject({
+			outboundRef: outbound.edgePreparedRef,
+			channel: "whatsapp",
+			resolvedDestination,
+			finalRenderedBody: outbound.renderedBody,
+			idempotencyKey: outbound.idempotencyKey,
+		});
+	});
+
+	it("fails closed before approval resolution when WhatsApp outbound has no dispatcher", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+		const bridge = createBridge(harness, { outboundDeliveryDispatcher: undefined });
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_delivery_dispatcher_missing",
+			reason: "outbound delivery dispatcher is not configured for WhatsApp",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+		expect(harness.ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		);
+	});
+
 	it("rejects provider self-approval before verifier or sidecar execution", async () => {
 		const harness = createLedgerHarness();
 		const provider = harness.ledger.prepare(providerPrepareInput({ approverActorId: "operator" }));
@@ -840,6 +938,7 @@ function createBridge(
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
 	const hasOutboundResolver = Object.hasOwn(options, "resolveAuthorizedOutboundConversation");
+	const hasOutboundDispatcher = Object.hasOwn(options, "outboundDeliveryDispatcher");
 	return createTelclaudeMcpBridge(baseAuthority(authorityOverrides), {
 		...baseDependencies(),
 		...createTelclaudeMcpLedgerExecuteDependencies({
@@ -849,11 +948,30 @@ function createBridge(
 			resolveAuthorizedOutboundConversation: hasOutboundResolver
 				? options.resolveAuthorizedOutboundConversation
 				: resolveFixtureConversation,
+			outboundDeliveryDispatcher: hasOutboundDispatcher
+				? options.outboundDeliveryDispatcher
+				: sentOutboundDeliveryDispatcher,
 			nowMs: options.nowMs ?? harness.nowMs,
 			...options,
 		}),
 	});
 }
+
+const sentOutboundDeliveryDispatcher: OutboundDeliveryDispatcher = async (prepared) => ({
+	schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+	outboundRef: prepared.outboundRef,
+	platformMessageId: "wa-default-msg",
+	deliveryStatus: "sent",
+	timestamps: {
+		observedAt: "2026-06-04T00:00:00.000Z",
+		sentAt: "2026-06-04T00:00:00.000Z",
+	},
+	retry: {
+		attempt: 1,
+		maxAttempts: prepared.retryPolicy.maxAttempts,
+		idempotencyKey: prepared.idempotencyKey,
+	},
+});
 
 function resolveFixtureConversation(conversationRef: string): RelayConversation {
 	return fixtureConversation({

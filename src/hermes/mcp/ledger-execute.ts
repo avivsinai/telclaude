@@ -1,5 +1,13 @@
+import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
+import {
+	type AttachmentRef,
+	DeliveryReceiptSchema,
+	EdgeAdapterSchemaVersions,
+	type PreparedOutbound,
+	PreparedOutboundSchema,
+} from "../edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
 import type {
 	RelayConversation,
@@ -84,6 +92,7 @@ export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly nowMs?: () => number;
 };
 
@@ -143,6 +152,13 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				options.resolveAuthorizedInboundTurn,
 			);
 			if (!checked.ok) return checked;
+			if (checked.record.channel === "whatsapp" && !options.outboundDeliveryDispatcher) {
+				return terminalFailure(
+					"outbound_delivery_dispatcher_missing",
+					"outbound delivery dispatcher is not configured for WhatsApp",
+					checked.record,
+				);
+			}
 			const resolved = await resolveSideEffectApprovalToken(
 				options.sideEffectApprovalTokenResolver,
 				request.outboundRef,
@@ -151,6 +167,13 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			if (!resolved.ok) return resolved;
 			const authorized = await options.ledger.verify(request.outboundRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
+			if (options.outboundDeliveryDispatcher && checked.record.channel === "whatsapp") {
+				const delivered = await executeOutboundDelivery(
+					options.outboundDeliveryDispatcher,
+					authorized.record as TelclaudeMcpOutboundSideEffectRecord,
+				);
+				if (!delivered.ok) return delivered;
+			}
 			const executed = await options.ledger.markExecuted(
 				request.outboundRef,
 				authorized.approvalId ?? resolved.approvalId,
@@ -493,6 +516,102 @@ async function liveOutboundConversationFailure(
 		);
 	}
 	return null;
+}
+
+async function executeOutboundDelivery(
+	dispatcher: OutboundDeliveryDispatcher,
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): Promise<TelclaudeMcpSideEffectAuthorizeResult> {
+	const prepared = preparedOutboundForDelivery(record);
+	let receipt: ReturnType<typeof DeliveryReceiptSchema.parse>;
+	try {
+		receipt = DeliveryReceiptSchema.parse(await dispatcher(prepared));
+	} catch (error) {
+		return terminalFailureForRecord(
+			"outbound_delivery_failed",
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+			record,
+		);
+	}
+	if (receipt.outboundRef !== record.edgePreparedRef) {
+		return terminalFailureForRecord(
+			"outbound_delivery_receipt_mismatch",
+			"outbound delivery receipt does not match the prepared edge ref",
+			record,
+		);
+	}
+	if (!deliveryReceiptSucceeded(receipt.deliveryStatus)) {
+		return terminalFailureForRecord(
+			"outbound_delivery_failed",
+			"outbound delivery dispatcher returned failed",
+			record,
+		);
+	}
+	return { ok: true, record };
+}
+
+function preparedOutboundForDelivery(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): PreparedOutbound {
+	return PreparedOutboundSchema.parse({
+		schemaVersion: EdgeAdapterSchemaVersions.preparedOutbound,
+		outboundRef: record.edgePreparedRef,
+		channel: record.channel,
+		resolvedDestination: record.resolvedDestination,
+		finalRenderedBody: record.renderedBody,
+		mediaRefs: record.preparedMediaRefs.map((mediaRef) =>
+			attachmentRefForDelivery(record, mediaRef),
+		),
+		authorizingActor: {
+			schemaVersion: EdgeAdapterSchemaVersions.actorRef,
+			actorId: record.actorId,
+			channelIdentity: {
+				channel: record.channel,
+				principalId: record.actorId,
+			},
+			identityAssurance: "strong_link",
+			scopes: [],
+			revocation: { revoked: false },
+		},
+		edgePreparedHash: record.edgePreparedHash,
+		policyResult: {
+			decision: "allowed",
+			reason: "MCP side-effect ledger authorized outbound delivery",
+		},
+		approvalRequirement: { required: false },
+		idempotencyKey: record.idempotencyKey ?? record.ref,
+		sideEffectLedgerRef: record.ref,
+		createdAt: new Date(record.createdAtMs).toISOString(),
+		retryPolicy: {
+			maxAttempts: 3,
+			backoff: "exponential",
+			deadLetterAfterAttempts: 3,
+		},
+	});
+}
+
+function attachmentRefForDelivery(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+	mediaRef: TelclaudeMcpOutboundSideEffectRecord["preparedMediaRefs"][number],
+): AttachmentRef {
+	return {
+		schemaVersion: EdgeAdapterSchemaVersions.attachmentRef,
+		quarantineId: mediaRef.quarantineId,
+		mediaType: "application/octet-stream",
+		scanState: "clean",
+		sizeBytes: 0,
+		contentHash: mediaRef.contentHash,
+		trustLabel: "trusted",
+		expiresAt: new Date(record.expiresAtMs).toISOString(),
+		lifecycle: {
+			state: "authorized",
+			authorizedFor: [record.conversationRef],
+		},
+	};
+}
+
+function deliveryReceiptSucceeded(status: string): boolean {
+	return status === "sent" || status === "delivered" || status === "read";
 }
 
 async function executeProviderSidecar(
