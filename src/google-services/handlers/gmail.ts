@@ -26,6 +26,8 @@ export async function handleGmail(
 			return handleDownloadAttachment(gmail, request.params);
 		case "create_draft":
 			return handleCreateDraft(gmail, request.params);
+		case "send":
+			return handleSend(gmail, request.params);
 		default:
 			return { status: "error", error: `Unknown Gmail action: ${request.action}`, attachments: [] };
 	}
@@ -40,6 +42,14 @@ type Gmail = ReturnType<typeof google.gmail>;
  * limit and stays well within the memory budget even with the base64 copy.
  */
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Maximum size of an outbound `send` message (decoded). 25 MiB matches Gmail's
+ * own send limit and stays within the sidecar's 256M memory budget. Enforced on
+ * the base64url length BEFORE the API call so a single request cannot OOM-crash
+ * the process.
+ */
+const MAX_SEND_BYTES = 25 * 1024 * 1024;
 
 async function handleSearch(gmail: Gmail, params: Record<string, unknown>): Promise<FetchResponse> {
 	try {
@@ -169,6 +179,59 @@ async function handleCreateDraft(
 	} catch (err) {
 		return { status: "error", error: formatError(err), attachments: [] };
 	}
+}
+
+/**
+ * Send a pre-composed message. The relay builds the CRLF-safe RFC822 message
+ * (header injection rejected, single membership-validated recipient) and
+ * base64url-encodes it; the approval token's paramsHash binds this exact `raw`,
+ * so the sidecar sends bytes the relay authorized and does NOT re-parse headers
+ * or re-derive recipients. We only validate the encoding and bound the size.
+ */
+async function handleSend(gmail: Gmail, params: Record<string, unknown>): Promise<FetchResponse> {
+	const raw = typeof params.raw === "string" ? params.raw : "";
+	// A base64url string of length % 4 === 1 cannot encode any byte sequence —
+	// reject it alongside non-alphabet input before touching the Gmail API.
+	if (!raw || !isBase64Url(raw) || raw.length % 4 === 1) {
+		return {
+			status: "error",
+			error: "send requires a non-empty base64url `raw` message",
+			attachments: [],
+		};
+	}
+	// base64url decodes to ~3 bytes per 4 chars; reject oversized messages before
+	// the API call so a single request cannot exhaust the sidecar's 256M budget.
+	const decodedBytes = Math.floor((raw.length * 3) / 4);
+	if (decodedBytes > MAX_SEND_BYTES) {
+		return {
+			status: "error",
+			error: `Message exceeds ${MAX_SEND_BYTES}-byte send limit`,
+			attachments: [],
+		};
+	}
+	try {
+		const res = await gmail.users.messages.send({
+			userId: "me",
+			requestBody: { raw },
+		});
+		return { status: "ok", data: res.data, attachments: [] };
+	} catch (err) {
+		return { status: "error", error: formatError(err), attachments: [] };
+	}
+}
+
+/** True if every character is in the unpadded base64url alphabet (A-Za-z0-9-_). */
+function isBase64Url(value: string): boolean {
+	for (let i = 0; i < value.length; i += 1) {
+		const c = value.charCodeAt(i);
+		const isUpper = c >= 0x41 && c <= 0x5a;
+		const isLower = c >= 0x61 && c <= 0x7a;
+		const isDigit = c >= 0x30 && c <= 0x39;
+		const isDash = c === 0x2d;
+		const isUnderscore = c === 0x5f;
+		if (!(isUpper || isLower || isDigit || isDash || isUnderscore)) return false;
+	}
+	return true;
 }
 
 function sanitizeRfc822HeaderValue(value: unknown): string {

@@ -89,7 +89,7 @@ describe("google-services server", () => {
 		expect(body.services).toBeInstanceOf(Array);
 		expect(body.services.length).toBe(4);
 		expect(body.services.some((s: { id: string }) => s.id === "gmail")).toBe(true);
-		expect(body.totalActions).toBe(20);
+		expect(body.totalActions).toBe(21);
 	});
 
 	it("GET /v1/schema includes action params", async () => {

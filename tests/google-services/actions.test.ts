@@ -26,9 +26,10 @@ describe("action registry", () => {
 
 	it("lists all gmail actions", () => {
 		const actions = getActionsForService("gmail");
-		expect(actions.length).toBe(6);
+		expect(actions.length).toBe(7);
 		expect(actions.some((a) => a.id === "search")).toBe(true);
 		expect(actions.some((a) => a.id === "create_draft")).toBe(true);
+		expect(actions.some((a) => a.id === "send")).toBe(true);
 	});
 
 	it("lists all calendar actions", () => {
@@ -47,16 +48,17 @@ describe("action registry", () => {
 		expect(actions.length).toBe(3);
 	});
 
-	it("has exactly 20 total actions", () => {
-		expect(getAllActions().length).toBe(20);
+	it("has exactly 21 total actions", () => {
+		expect(getAllActions().length).toBe(21);
 	});
 
-	it("only gmail.create_draft and calendar.create_event are action type", () => {
+	it("only gmail.create_draft, gmail.send and calendar.create_event are action type", () => {
 		const actionTypes = getAllActions().filter((a) => a.type === "action");
-		expect(actionTypes.length).toBe(2);
+		expect(actionTypes.length).toBe(3);
 		expect(actionTypes.map((a) => `${a.service}.${a.id}`).sort()).toEqual([
 			"calendar.create_event",
 			"gmail.create_draft",
+			"gmail.send",
 		]);
 	});
 });
