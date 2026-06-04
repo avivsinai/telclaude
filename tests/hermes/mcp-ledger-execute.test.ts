@@ -972,6 +972,151 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		});
 	});
 
+	it("executes prepared email outbound through the outbound delivery dispatcher", async () => {
+		const harness = createLedgerHarness();
+		const resolvedDestination = {
+			kind: "address" as const,
+			addressRef: "alice@example.test",
+			conversationId: "email:alice@example.test",
+		};
+		const body = "Re: dinner — 19:00 works.";
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({
+				channel: "email",
+				destination: "alice@example.test",
+				resolvedDestination,
+				requestedBody: body,
+				renderedBody: body,
+				mediaRefs: [],
+				preparedMediaRefs: [],
+				conversationRef: "email:alice@example.test",
+				edgePreparedHash: edgePreparedPayloadHash({
+					channel: "email",
+					resolvedDestination,
+					body,
+					mediaRefs: [],
+				}),
+			}),
+		);
+		harness.accept("outbound-token", outbound);
+		const dispatched: PreparedOutbound[] = [];
+		const dispatcher: OutboundDeliveryDispatcher = async (prepared) => {
+			dispatched.push(prepared);
+			return {
+				schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+				outboundRef: prepared.outboundRef,
+				platformMessageId: "<sent@relay.test>",
+				deliveryStatus: "sent",
+				timestamps: { observedAt: "2026-06-04T00:00:00.000Z", sentAt: "2026-06-04T00:00:00.000Z" },
+				retry: {
+					attempt: 1,
+					maxAttempts: prepared.retryPolicy.maxAttempts,
+					idempotencyKey: prepared.idempotencyKey,
+				},
+			};
+		};
+		const bridge = createBridge(harness, {
+			outboundDeliveryDispatcher: dispatcher,
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					channel: "email",
+					conversationId: outbound.resolvedDestination.conversationId,
+					threadMessageIds: ["<prior@x.test>"],
+					members: [
+						{
+							actorId: "operator",
+							channel: "email",
+							principalId: "operator@relay.test",
+							principalHash:
+								"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+							role: "sender",
+							identityAssurance: "strong_link",
+							scopes: ["message:reply"],
+							revoked: false,
+						},
+					],
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "outbound-token",
+			}),
+		});
+		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]).toMatchObject({
+			outboundRef: outbound.edgePreparedRef,
+			channel: "email",
+			resolvedDestination,
+		});
+	});
+
+	it("fails closed when an email outbound has no dispatcher", async () => {
+		const harness = createLedgerHarness();
+		const resolvedDestination = {
+			kind: "address" as const,
+			addressRef: "alice@example.test",
+			conversationId: "email:alice@example.test",
+		};
+		const body = "hi";
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({
+				channel: "email",
+				destination: "alice@example.test",
+				resolvedDestination,
+				requestedBody: body,
+				renderedBody: body,
+				mediaRefs: [],
+				preparedMediaRefs: [],
+				conversationRef: "email:alice@example.test",
+				edgePreparedHash: edgePreparedPayloadHash({
+					channel: "email",
+					resolvedDestination,
+					body,
+					mediaRefs: [],
+				}),
+			}),
+		);
+		harness.accept("outbound-token", outbound);
+		const bridge = createBridge(harness, {
+			outboundDeliveryDispatcher: undefined,
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					channel: "email",
+					conversationId: outbound.resolvedDestination.conversationId,
+					members: [
+						{
+							actorId: "operator",
+							channel: "email",
+							principalId: "operator@relay.test",
+							principalHash:
+								"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+							role: "sender",
+							identityAssurance: "strong_link",
+							scopes: ["message:reply"],
+							revoked: false,
+						},
+					],
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_delivery_dispatcher_missing",
+			reason: "outbound delivery dispatcher is not configured for channel email",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		);
+	});
+
 	it("fails closed before approval resolution when WhatsApp outbound has no dispatcher", async () => {
 		const harness = createLedgerHarness();
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
@@ -981,7 +1126,7 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
 			ok: false,
 			code: "outbound_delivery_dispatcher_missing",
-			reason: "outbound delivery dispatcher is not configured for WhatsApp",
+			reason: "outbound delivery dispatcher is not configured for channel whatsapp",
 			retryable: false,
 			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
 		});
@@ -1552,7 +1697,7 @@ function baseAuthority(overrides: Partial<TelclaudeMcpAuthority> = {}): Telclaud
 		memorySource: "telegram:ops",
 		writableNamespace: "private:ops",
 		providerScopes: ["bank"],
-		outboundChannels: ["whatsapp"],
+		outboundChannels: ["whatsapp", "email"],
 		endpointId: "endpoint-private",
 		networkNamespace: "netns-private",
 		...overrides,
