@@ -39,6 +39,7 @@ export type PendingTOTPMessage = {
 	mimeType?: string;
 	username?: string;
 	senderId?: number;
+	messageThreadId?: number;
 	createdAt: number;
 	expiresAt: number;
 };
@@ -68,8 +69,8 @@ export function savePendingTOTPMessage(
 
 	db.prepare(
 		`INSERT INTO pending_totp_messages
-		 (chat_id, message_id, body, media_path, media_type, mime_type, username, sender_id, created_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 (chat_id, message_id, body, media_path, media_type, mime_type, username, sender_id, message_thread_id, created_at, expires_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(chat_id) DO UPDATE SET
 		   message_id = excluded.message_id,
 		   body = excluded.body,
@@ -78,6 +79,7 @@ export function savePendingTOTPMessage(
 		   mime_type = excluded.mime_type,
 		   username = excluded.username,
 		   sender_id = excluded.sender_id,
+		   message_thread_id = excluded.message_thread_id,
 		   created_at = excluded.created_at,
 		   expires_at = excluded.expires_at`,
 	).run(
@@ -89,6 +91,7 @@ export function savePendingTOTPMessage(
 		msg.mimeType ?? null,
 		msg.username ?? null,
 		msg.senderId ?? null,
+		msg.messageThreadId ?? null,
 		now,
 		expiresAt,
 	);
@@ -113,6 +116,7 @@ export function consumePendingTOTPMessage(chatId: number): PendingTOTPMessage | 
 		mime_type: string | null;
 		username: string | null;
 		sender_id: number | null;
+		message_thread_id: number | null;
 		created_at: number;
 		expires_at: number;
 	};
@@ -137,6 +141,7 @@ export function consumePendingTOTPMessage(chatId: number): PendingTOTPMessage | 
 		mimeType: row.mime_type ?? undefined,
 		username: row.username ?? undefined,
 		senderId: row.sender_id ?? undefined,
+		messageThreadId: row.message_thread_id ?? undefined,
 		createdAt: row.created_at,
 		expiresAt: row.expires_at,
 	};

@@ -38,6 +38,7 @@ import {
 	executeHermesPrivateQuery,
 	shouldUseHermesPrivateRuntime,
 } from "../hermes/private-execute.js";
+import type { RelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { clearHermesSessionMapping } from "../hermes/session-map.js";
 import { getChildLogger } from "../logging.js";
 import { cleanupOldMedia } from "../media/store.js";
@@ -436,6 +437,7 @@ type TelegramControlCommandContext = {
 	auditLogger: AuditLogger;
 	recentlySent: Set<string>;
 	requestId: string;
+	mcpConversationStore?: RelayConversationStore;
 };
 
 async function handleHelpCommand(
@@ -724,7 +726,7 @@ async function dispatchTelegramControlCommand(
 	match: TelegramCommandMatch,
 	context: TelegramControlCommandContext,
 ): Promise<boolean> {
-	const { bot, msg, cfg, auditLogger, recentlySent, requestId } = context;
+	const { bot, msg, cfg, auditLogger, recentlySent, requestId, mcpConversationStore } = context;
 
 	switch (match.command.id) {
 		// ── /help domain ───────────────────────────────────────────────
@@ -1143,7 +1145,14 @@ async function dispatchTelegramControlCommand(
 			return true;
 		}
 		case "approve": {
-			await handleApproveCommand(msg, match.args[0]?.trim(), cfg, auditLogger, recentlySent);
+			await handleApproveCommand(
+				msg,
+				match.args[0]?.trim(),
+				cfg,
+				auditLogger,
+				recentlySent,
+				mcpConversationStore,
+			);
 			return true;
 		}
 		case "deny": {
@@ -1239,9 +1248,82 @@ type ExecutionContext = {
 	requestId: string;
 	recentlySent: Set<string>;
 	auditLogger: AuditLogger;
+	mcpConversationStore?: RelayConversationStore;
+	turnConversationRef?: string;
 	/** Additional system prompt content appended after all other appendages. */
 	extraSystemPromptAppend?: string;
 };
+
+const TELEGRAM_INBOUND_TURN_TTL_MS = 30 * 60 * 1000;
+
+type TelegramInboundTurnAuthorityInput = {
+	chatId: number;
+	messageId: string;
+	senderId?: number;
+	messageThreadId?: number;
+	from: string;
+	to: string;
+	profileId: string;
+	sessionKey: string;
+	sessionId: string;
+	conversationStore: RelayConversationStore;
+};
+
+function mintTelegramInboundTurnAuthority(input: TelegramInboundTurnAuthorityInput): string {
+	const now = Date.now();
+	const expiresAtMs = now + TELEGRAM_INBOUND_TURN_TTL_MS;
+	const senderActorId = String(input.senderId ?? input.chatId);
+	const botActorId = input.to.trim() || "telclaude-bot";
+	const conversationId = `telegram:${input.chatId}`;
+	const threadId =
+		input.messageThreadId === undefined
+			? conversationId
+			: `${conversationId}:thread:${input.messageThreadId}`;
+	const { token } = input.conversationStore.mint({
+		channel: "social",
+		conversationId,
+		threadId,
+		profileId: input.profileId,
+		domain: "private",
+		routingSession: {
+			sessionId: input.sessionId,
+			routeKey: input.sessionKey,
+		},
+		authorizationState: "authorized",
+		authorizationScopes: ["message:reply", "telegram:reply"],
+		humanPairingProvenance: true,
+		members: [
+			{
+				actorId: senderActorId,
+				channel: "social",
+				principalId: `telegram:${senderActorId}`,
+				displayName: input.from,
+				role: "sender",
+				identityAssurance: "channel_bound",
+				scopes: ["message:reply", "telegram:inbound"],
+			},
+			{
+				actorId: botActorId,
+				channel: "social",
+				principalId: `telegram-bot:${botActorId}`,
+				role: "recipient",
+				identityAssurance: "channel_bound",
+				scopes: ["message:reply", "telegram:reply"],
+			},
+		],
+		threadMessageIds: [input.messageId],
+		inboundCursor: input.messageId,
+		expiresAtMs,
+		nowMs: now,
+	});
+	return input.conversationStore.mintInboundTurn({
+		conversationToken: token,
+		inboundMessageId: input.messageId,
+		senderActorId,
+		expiresAtMs,
+		nowMs: now,
+	}).turnRef;
+}
 
 /**
  * Execute a query via Claude SDK and send the response.
@@ -1466,6 +1548,22 @@ async function executeWithSession(
 
 		const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
 		const profileAllowedSkills = activeProfile.profile.allowedSkills;
+		const turnConversationRef =
+			ctx.turnConversationRef ??
+			(useHermesPrivateRuntime && ctx.mcpConversationStore
+				? mintTelegramInboundTurnAuthority({
+						chatId: msg.chatId,
+						messageId: msg.id,
+						senderId: msg.senderId,
+						messageThreadId: msg.messageThreadId,
+						from: ctx.from,
+						to: ctx.to,
+						profileId: activeProfile.profile.id,
+						sessionKey,
+						sessionId: sessionEntry.sessionId,
+						conversationStore: ctx.mcpConversationStore,
+					})
+				: undefined);
 		const queryStream = useHermesPrivateRuntime
 			? executeHermesPrivateQuery(queryPrompt, {
 					cwd: process.cwd(),
@@ -1484,6 +1582,7 @@ async function executeWithSession(
 					threadId: msg.messageThreadId,
 					systemPromptAppend,
 					compiledMemoryMd: memoryBundle.compiledMemoryMd,
+					...(turnConversationRef ? { mcpAuthority: { turnConversationRef } } : {}),
 				})
 			: useRemoteAgent
 				? executeRemoteQuery(queryPrompt, {
@@ -1796,6 +1895,7 @@ export type MonitorOptions = {
 	 * Useful for startup notification hooks.
 	 */
 	onReady?: () => Promise<void> | void;
+	mcpConversationStore?: RelayConversationStore;
 };
 
 /**
@@ -1812,6 +1912,7 @@ export async function monitorTelegramProvider(
 		securityProfile = "simple",
 		dryRun = false,
 		onReady,
+		mcpConversationStore,
 	} = options;
 	const cfg = loadConfig();
 	const reconnectPolicy = resolveReconnectPolicy(cfg);
@@ -2017,6 +2118,7 @@ export async function monitorTelegramProvider(
 						recentlySent,
 						securityProfile,
 						botInfo.username,
+						mcpConversationStore,
 					);
 				},
 			});
@@ -2138,6 +2240,7 @@ async function handleInboundMessage(
 	recentlySent: Set<string>,
 	securityProfile: "simple" | "strict" | "test",
 	botUsername?: string,
+	mcpConversationStore?: RelayConversationStore,
 ): Promise<void> {
 	const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
 	const userId = String(msg.chatId);
@@ -2205,6 +2308,7 @@ async function handleInboundMessage(
 			mimeType: msg.mimeType,
 			username: msg.username,
 			senderId: msg.senderId,
+			messageThreadId: msg.messageThreadId,
 		});
 
 		if (authGateResult.status === "challenge") {
@@ -2239,6 +2343,7 @@ async function handleInboundMessage(
 					mimeType: pendingMsg.mimeType,
 					username: pendingMsg.username ?? msg.username,
 					senderId: pendingMsg.senderId ?? msg.senderId,
+					messageThreadId: pendingMsg.messageThreadId ?? msg.messageThreadId,
 				};
 
 				await handleInboundMessage(
@@ -2251,6 +2356,7 @@ async function handleInboundMessage(
 					recentlySent,
 					securityProfile,
 					botUsername,
+					mcpConversationStore,
 				);
 				return;
 			}
@@ -2281,6 +2387,7 @@ async function handleInboundMessage(
 			auditLogger,
 			recentlySent,
 			requestId,
+			mcpConversationStore,
 		});
 		return;
 	}
@@ -2447,6 +2554,24 @@ async function handleInboundMessage(
 		)
 	) {
 		// Create approval and get timing info to ensure display matches actual expiry
+		const activeProfile = resolveChatProfile(msg.chatId, cfg);
+		const sessionKey = resolveSessionKeyForMessage(msg, cfg);
+		const existingSession = getSession(sessionKey);
+		const turnConversationRef =
+			shouldUseHermesPrivateRuntime() && mcpConversationStore
+				? mintTelegramInboundTurnAuthority({
+						chatId: msg.chatId,
+						messageId: msg.id,
+						senderId: msg.senderId,
+						messageThreadId: msg.messageThreadId,
+						from: msg.from,
+						to: msg.to,
+						profileId: activeProfile.profile.id,
+						sessionKey,
+						sessionId: existingSession?.sessionId ?? requestId,
+						conversationStore: mcpConversationStore,
+					})
+				: undefined;
 		const { nonce, createdAt, expiresAt } = createApproval({
 			requestId,
 			chatId: msg.chatId,
@@ -2460,6 +2585,9 @@ async function handleInboundMessage(
 			from: msg.from,
 			to: msg.to,
 			messageId: msg.id,
+			senderId: msg.senderId,
+			messageThreadId: msg.messageThreadId,
+			turnConversationRef,
 			observerClassification: observerResult.classification,
 			observerConfidence: observerResult.confidence,
 			observerReason: observerResult.reason,
@@ -2529,6 +2657,7 @@ async function handleInboundMessage(
 		requestId,
 		recentlySent,
 		auditLogger,
+		mcpConversationStore,
 	});
 }
 
@@ -2600,6 +2729,7 @@ async function handleApproveCommand(
 	cfg: TelclaudeConfig,
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
+	mcpConversationStore?: RelayConversationStore,
 ): Promise<void> {
 	if (!nonce) {
 		await msg.reply("Usage: `/approve <code>`");
@@ -2672,7 +2802,14 @@ async function handleApproveCommand(
 	const planResult = consumePlanApproval(nonce, msg.chatId);
 	if (planResult.success) {
 		await msg.reply("Plan approved. Executing...");
-		await executeApprovedPlanPhase(msg, cfg, planResult.data, auditLogger, recentlySent);
+		await executeApprovedPlanPhase(
+			msg,
+			cfg,
+			planResult.data,
+			auditLogger,
+			recentlySent,
+			mcpConversationStore,
+		);
 		return;
 	}
 
@@ -2712,7 +2849,7 @@ async function handleApproveCommand(
 	// Check if this approval should go through plan preview (Phase 1)
 	if (shouldShowPlanPreview(approval, cfg)) {
 		await msg.reply("Request approved. Generating execution plan...");
-		await executePlanPhase(msg, cfg, approval, auditLogger);
+		await executePlanPhase(msg, cfg, approval, auditLogger, mcpConversationStore);
 		return;
 	}
 
@@ -2730,9 +2867,18 @@ async function handleApproveCommand(
 		from: approval.from,
 		to: approval.to,
 		id: approval.messageId,
+		senderId: approval.senderId ?? msg.senderId,
+		messageThreadId: approval.messageThreadId,
 	};
 
-	await executeApprovedRequest(approvedMsg, cfg, approval, auditLogger, recentlySent);
+	await executeApprovedRequest(
+		approvedMsg,
+		cfg,
+		approval,
+		auditLogger,
+		recentlySent,
+		mcpConversationStore,
+	);
 }
 
 async function handleDenyCommand(
@@ -2899,6 +3045,7 @@ async function executePlanPhase(
 	cfg: TelclaudeConfig,
 	approval: PendingApproval,
 	auditLogger: AuditLogger,
+	mcpConversationStore?: RelayConversationStore,
 ): Promise<void> {
 	const identityLink = getIdentityLink(msg.chatId);
 	const userId = identityLink?.localUserId ?? String(msg.chatId);
@@ -2913,6 +3060,7 @@ async function executePlanPhase(
 
 	// Execute planning query at READ_ONLY tier within session lock
 	let planText = "";
+	let planTurnConversationRef = approval.turnConversationRef;
 	const planRedactor = createStreamingRedactor(undefined, cfg.security?.secretFilter);
 
 	await withSessionLock(
@@ -2959,6 +3107,20 @@ async function executePlanPhase(
 				.join("\n\n");
 
 			const model = resolveExecutableModelForChat(msg.chatId, activeProfile);
+			if (useHermesPrivateRuntime && !planTurnConversationRef && mcpConversationStore) {
+				planTurnConversationRef = mintTelegramInboundTurnAuthority({
+					chatId: approval.chatId,
+					messageId: approval.messageId,
+					senderId: approval.senderId,
+					messageThreadId: approval.messageThreadId,
+					from: approval.from,
+					to: approval.to,
+					profileId: activeProfile.profile.id,
+					sessionKey,
+					sessionId: sessionEntry.sessionId,
+					conversationStore: mcpConversationStore,
+				});
+			}
 			const queryStream = useHermesPrivateRuntime
 				? executeHermesPrivateQuery(queryPrompt, {
 						cwd: process.cwd(),
@@ -2972,10 +3134,13 @@ async function executePlanPhase(
 						timeoutMs: timeoutSeconds * 1000,
 						userId,
 						chatId: msg.chatId,
-						actorId: msg.senderId ?? msg.chatId,
-						threadId: msg.messageThreadId,
+						actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
+						threadId: approval.messageThreadId ?? msg.messageThreadId,
 						systemPromptAppend: planningPromptAppend,
 						compiledMemoryMd: memoryBundle.compiledMemoryMd,
+						...(planTurnConversationRef
+							? { mcpAuthority: { turnConversationRef: planTurnConversationRef } }
+							: {}),
 					})
 				: useRemoteAgent
 					? executeRemoteQuery(queryPrompt, {
@@ -2989,8 +3154,8 @@ async function executePlanPhase(
 							betas: cfg.sdk?.betas,
 							userId,
 							chatId: msg.chatId,
-							actorId: msg.senderId ?? msg.chatId,
-							threadId: msg.messageThreadId,
+							actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
+							threadId: approval.messageThreadId ?? msg.messageThreadId,
 							systemPromptAppend: planningPromptAppend,
 							compiledMemoryMd: memoryBundle.compiledMemoryMd,
 						})
@@ -3005,8 +3170,8 @@ async function executePlanPhase(
 							betas: cfg.sdk?.betas,
 							userId,
 							chatId: msg.chatId,
-							actorId: msg.senderId ?? msg.chatId,
-							threadId: msg.messageThreadId,
+							actorId: approval.senderId ?? msg.senderId ?? msg.chatId,
+							threadId: approval.messageThreadId ?? msg.messageThreadId,
 							systemPromptAppend: planningPromptAppend,
 							compiledMemoryMd: memoryBundle.compiledMemoryMd,
 						});
@@ -3074,6 +3239,9 @@ async function executePlanPhase(
 			from: approval.from,
 			to: approval.to,
 			messageId: approval.messageId,
+			senderId: approval.senderId,
+			messageThreadId: approval.messageThreadId,
+			turnConversationRef: planTurnConversationRef,
 			observerClassification: approval.observerClassification,
 			observerConfidence: approval.observerConfidence,
 			observerReason: approval.observerReason,
@@ -3099,6 +3267,9 @@ async function executePlanPhase(
 		from: approval.from,
 		to: approval.to,
 		messageId: approval.messageId,
+		senderId: approval.senderId,
+		messageThreadId: approval.messageThreadId,
+		turnConversationRef: planTurnConversationRef,
 		observerClassification: approval.observerClassification,
 		observerConfidence: approval.observerConfidence,
 		observerReason: approval.observerReason,
@@ -3141,6 +3312,7 @@ async function executeApprovedPlanPhase(
 	planApproval: PlanApproval,
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
+	mcpConversationStore?: RelayConversationStore,
 ): Promise<void> {
 	// Freshness check — use plan-specific TTL from config (expiresAt is the source of truth,
 	// set by createPlanApproval using planApprovalTtlSeconds)
@@ -3188,6 +3360,8 @@ async function executeApprovedPlanPhase(
 		from: planApproval.from,
 		to: planApproval.to,
 		id: planApproval.messageId,
+		senderId: planApproval.senderId ?? msg.senderId,
+		messageThreadId: planApproval.messageThreadId,
 	};
 
 	await executeAndReply({
@@ -3206,6 +3380,8 @@ async function executeApprovedPlanPhase(
 		recentlySent,
 		auditLogger,
 		extraSystemPromptAppend: planAppend,
+		mcpConversationStore,
+		turnConversationRef: planApproval.turnConversationRef,
 	});
 }
 
@@ -3215,6 +3391,7 @@ async function executeApprovedRequest(
 	approval: PendingApproval,
 	auditLogger: AuditLogger,
 	recentlySent: Set<string>,
+	mcpConversationStore?: RelayConversationStore,
 ): Promise<void> {
 	// SECURITY: Freshness check at execution time
 	// Even though the approval was valid when consumed, we re-validate:
@@ -3283,6 +3460,8 @@ async function executeApprovedRequest(
 		requestId: approval.requestId,
 		recentlySent,
 		auditLogger,
+		mcpConversationStore,
+		turnConversationRef: approval.turnConversationRef,
 	});
 }
 

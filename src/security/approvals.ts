@@ -66,6 +66,9 @@ export type PendingApproval = {
 	from: string;
 	to: string;
 	messageId: string;
+	senderId?: number;
+	messageThreadId?: number;
+	turnConversationRef?: string;
 	observerClassification: SecurityClassification;
 	observerConfidence: number;
 	observerReason?: string;
@@ -101,6 +104,9 @@ type ApprovalRow = {
 	from_user: string;
 	to_user: string;
 	message_id: string;
+	sender_id: number | null;
+	message_thread_id: number | null;
+	turn_conversation_ref: string | null;
 	observer_classification: string;
 	observer_confidence: number;
 	observer_reason: string | null;
@@ -259,6 +265,9 @@ function rowToApproval(row: ApprovalRow): PendingApproval {
 		from: row.from_user,
 		to: row.to_user,
 		messageId: row.message_id,
+		senderId: row.sender_id ?? undefined,
+		messageThreadId: row.message_thread_id ?? undefined,
+		turnConversationRef: row.turn_conversation_ref ?? undefined,
 		observerClassification: row.observer_classification as SecurityClassification,
 		observerConfidence: row.observer_confidence,
 		observerReason: row.observer_reason ?? undefined,
@@ -350,9 +359,10 @@ export function createApproval(
 				nonce, request_id, chat_id, created_at, expires_at, tier, body,
 				media_path, media_type, media_file_path, media_file_id,
 				username, from_user, to_user,
-				message_id, observer_classification, observer_confidence, observer_reason,
+				message_id, sender_id, message_thread_id, turn_conversation_ref,
+				observer_classification, observer_confidence, observer_reason,
 				risk_tier, tool_key, session_key, bash_command
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			nonce,
 			entry.requestId,
@@ -369,6 +379,9 @@ export function createApproval(
 			entry.from,
 			entry.to,
 			entry.messageId,
+			entry.senderId ?? null,
+			entry.messageThreadId ?? null,
+			entry.turnConversationRef ?? null,
 			entry.observerClassification,
 			entry.observerConfidence,
 			entry.observerReason ?? null,
@@ -601,6 +614,9 @@ export type PlanApproval = {
 	from: string;
 	to: string;
 	messageId: string;
+	senderId?: number;
+	messageThreadId?: number;
+	turnConversationRef?: string;
 	observerClassification: SecurityClassification;
 	observerConfidence: number;
 	observerReason?: string;
@@ -627,6 +643,9 @@ type PlanApprovalRow = {
 	from_user: string;
 	to_user: string;
 	message_id: string;
+	sender_id: number | null;
+	message_thread_id: number | null;
+	turn_conversation_ref: string | null;
 	observer_classification: string;
 	observer_confidence: number;
 	observer_reason: string | null;
@@ -651,6 +670,9 @@ function rowToPlanApproval(row: PlanApprovalRow): PlanApproval {
 		from: row.from_user,
 		to: row.to_user,
 		messageId: row.message_id,
+		senderId: row.sender_id ?? undefined,
+		messageThreadId: row.message_thread_id ?? undefined,
+		turnConversationRef: row.turn_conversation_ref ?? undefined,
 		observerClassification: row.observer_classification as SecurityClassification,
 		observerConfidence: row.observer_confidence,
 		observerReason: row.observer_reason ?? undefined,
@@ -688,8 +710,9 @@ export function createPlanApproval(
 				plan_text, session_key, session_id,
 				media_path, media_file_id, media_type,
 				username, from_user, to_user,
-				message_id, observer_classification, observer_confidence, observer_reason
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				message_id, sender_id, message_thread_id, turn_conversation_ref,
+				observer_classification, observer_confidence, observer_reason
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		).run(
 			nonce,
 			entry.requestId,
@@ -708,6 +731,9 @@ export function createPlanApproval(
 			entry.from,
 			entry.to,
 			entry.messageId,
+			entry.senderId ?? null,
+			entry.messageThreadId ?? null,
+			entry.turnConversationRef ?? null,
 			entry.observerClassification,
 			entry.observerConfidence,
 			entry.observerReason ?? null,

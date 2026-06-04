@@ -119,6 +119,7 @@ vi.mock("../../src/logging.js", () => ({
 	getChildLogger: () => loggerImpl,
 }));
 
+import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
 import { __test as autoReplyTest } from "../../src/telegram/auto-reply.js";
 import { registerAllCardRenderers } from "../../src/telegram/cards/renderers/index.js";
 import { matchTelegramControlCommand } from "../../src/telegram/control-commands.js";
@@ -328,6 +329,63 @@ describe("auto-reply executeAndReply", () => {
 			}),
 		);
 		expect(replies).toEqual(["hermes ok"]);
+	});
+
+	it("passes relay-minted Telegram turn refs only through Hermes MCP authority", async () => {
+		shouldUseHermesPrivateRuntimeImpl.mockReturnValue(true);
+		executeHermesPrivateQueryImpl.mockReturnValueOnce(
+			(async function* () {
+				yield {
+					type: "done",
+					result: {
+						response: "hermes ok",
+						success: true,
+						error: undefined,
+						costUsd: 0,
+						numTurns: 1,
+						durationMs: 3,
+					},
+				};
+			})(),
+		);
+
+		const ctx = {
+			...baseCtx(),
+			msg: { ...makeMsg(), senderId: 456, messageThreadId: 789 },
+			mcpConversationStore: createRelayConversationStore(),
+		};
+		await autoReplyTest.executeAndReply(ctx as never);
+
+		const [prompt, options] = executeHermesPrivateQueryImpl.mock.calls[0] as [
+			string,
+			{ mcpAuthority?: { turnConversationRef?: string }; systemPromptAppend?: string },
+		];
+		const turnConversationRef = options.mcpAuthority?.turnConversationRef;
+
+		expect(turnConversationRef).toBeDefined();
+		if (!turnConversationRef) throw new Error("expected Hermes MCP turnConversationRef");
+		expect(turnConversationRef).toMatch(/^turn_[0-9a-f]{32}$/);
+		const turn = ctx.mcpConversationStore.inspectInboundTurn(turnConversationRef);
+		expect(turn).not.toBeNull();
+		const conversation = turn
+			? ctx.mcpConversationStore.resolveAuthorized(turn.conversationToken)
+			: null;
+		expect(conversation).toMatchObject({
+			channel: "social",
+			conversationId: "telegram:123",
+			threadId: "telegram:123:thread:789",
+			profileId: "default",
+			mcpDomain: "private",
+			humanPairingProvenance: true,
+			authorizationScopes: ["message:reply", "telegram:reply"],
+		});
+		expect(conversation?.members.find((member) => member.actorId === "456")?.scopes).toContain(
+			"message:reply",
+		);
+		expect(prompt).toBe("please respond");
+		expect(prompt).not.toContain(turnConversationRef);
+		expect(options.systemPromptAppend ?? "").not.toContain(turnConversationRef);
+		expect(JSON.stringify(replies)).not.toContain(turnConversationRef);
 	});
 
 	it("ignores catalog-only model preferences during session execution", async () => {

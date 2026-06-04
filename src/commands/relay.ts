@@ -63,7 +63,7 @@ import {
 } from "../social/index.js";
 import { getEnabledSocialServices, isAutomaticHeartbeatEnabled } from "../social/service-config.js";
 import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
-import { monitorTelegramProvider } from "../telegram/auto-reply.js";
+import { type MonitorOptions, monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
 import { isVaultAvailable, VaultClient } from "../vault-daemon/index.js";
@@ -122,6 +122,25 @@ export type RelayOptions = {
 	probeNoTelegram?: boolean;
 	profile?: "simple" | "strict" | "test";
 };
+
+export function buildRelayTelegramMonitorOptions(input: {
+	readonly verbose?: boolean;
+	readonly abortSignal: AbortSignal;
+	readonly securityProfile: "simple" | "strict" | "test";
+	readonly dryRun: boolean;
+	readonly onReady: () => void;
+	readonly mcpConversationStore?: MonitorOptions["mcpConversationStore"];
+}): MonitorOptions {
+	return {
+		verbose: input.verbose ?? false,
+		keepAlive: true,
+		abortSignal: input.abortSignal,
+		securityProfile: input.securityProfile,
+		dryRun: input.dryRun,
+		onReady: input.onReady,
+		...(input.mcpConversationStore ? { mcpConversationStore: input.mcpConversationStore } : {}),
+	};
+}
 
 export function shouldValidateTelegramEnv(input: { readonly probeNoTelegram?: boolean }): boolean {
 	return !input.probeNoTelegram;
@@ -724,21 +743,23 @@ export function registerRelayCommand(program: Command): void {
 					return;
 				}
 
-				await monitorTelegramProvider({
-					verbose,
-					keepAlive: true,
-					abortSignal: abortController.signal,
-					securityProfile: effectiveProfile,
-					dryRun: opts.dryRun ?? false,
-					onReady: () => {
-						bufferStartupReady({
-							label: "relay",
-							version: getServiceVersion(),
-							revision: getServiceRevision(),
-						});
-						logger.info("relay ready — buffered startup notification");
-					},
-				});
+				await monitorTelegramProvider(
+					buildRelayTelegramMonitorOptions({
+						verbose,
+						abortSignal: abortController.signal,
+						securityProfile: effectiveProfile,
+						dryRun: opts.dryRun ?? false,
+						onReady: () => {
+							bufferStartupReady({
+								label: "relay",
+								version: getServiceVersion(),
+								revision: getServiceRevision(),
+							});
+							logger.info("relay ready — buffered startup notification");
+						},
+						mcpConversationStore: liveMcpConversationStore,
+					}),
+				);
 
 				// Final cleanup after monitor exits
 				for (const scheduler of schedulerHandles) {

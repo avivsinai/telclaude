@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	buildRelayTelegramMonitorOptions,
 	shouldValidateTelegramEnv,
 	validateProbeNoTelegramRelayMode,
 } from "../../src/commands/relay.js";
@@ -67,5 +68,30 @@ describe("relay command", () => {
 		expect(shouldValidateTelegramEnv({})).toBe(true);
 		expect(shouldValidateTelegramEnv({ probeNoTelegram: false })).toBe(true);
 		expect(shouldValidateTelegramEnv({ probeNoTelegram: true })).toBe(false);
+	});
+
+	it("passes the live MCP conversation store into Telegram monitoring", () => {
+		const abortController = new AbortController();
+		const onReady = () => {};
+		const mcpConversationStore = { marker: "store" } as never;
+
+		const options = buildRelayTelegramMonitorOptions({
+			verbose: true,
+			abortSignal: abortController.signal,
+			securityProfile: "strict",
+			dryRun: false,
+			onReady,
+			mcpConversationStore,
+		});
+
+		expect(options).toMatchObject({
+			verbose: true,
+			keepAlive: true,
+			abortSignal: abortController.signal,
+			securityProfile: "strict",
+			dryRun: false,
+		});
+		expect(options.onReady).toBe(onReady);
+		expect(options.mcpConversationStore).toBe(mcpConversationStore);
 	});
 });

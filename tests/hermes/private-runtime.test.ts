@@ -171,6 +171,7 @@ describe("Hermes private runtime seam", () => {
 	it("mints private MCP authority out-of-band for the runtime and revokes it on completion", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const sessions = new HermesSessionMap(() => "tc-session-1");
+		const turnConversationRef = "turn_0123456789abcdef0123456789abcdef";
 		let seenAuthority: HermesRuntimeRequest["mcpAuthority"];
 		const runtime: HermesRuntimeAdapter = {
 			run: async function* (request) {
@@ -197,6 +198,7 @@ describe("Hermes private runtime seam", () => {
 						writableNamespace: "private:ops",
 						providerScopes: ["calendar"],
 						outboundChannels: ["whatsapp"],
+						turnConversationRef,
 						endpointId: "endpoint-private",
 						networkNamespace: "netns-private",
 					},
@@ -214,6 +216,7 @@ describe("Hermes private runtime seam", () => {
 					mcpAuthority: {
 						providerScopes: ["calendar"],
 						outboundChannels: ["whatsapp"],
+						turnConversationRef,
 						endpointId: "endpoint-private",
 						networkNamespace: "netns-private",
 						ttlMs: 5_000,
@@ -249,6 +252,44 @@ describe("Hermes private runtime seam", () => {
 			ok: false,
 			code: "mcp_authority_revoked",
 		});
+	});
+
+	it("rejects malformed private MCP turn refs before invoking the runtime", async () => {
+		let runtimeInvoked = false;
+		const runtime: HermesRuntimeAdapter = {
+			run: async function* () {
+				runtimeInvoked = true;
+				yield { type: "done", response: "unexpected" };
+			},
+		};
+
+		const chunks = await collect(
+			executeHermesPrivateRuntime({
+				runtime,
+				sessions: new HermesSessionMap(() => "tc-session-1"),
+				request: baseRequest({
+					mcpAuthority: {
+						turnConversationRef: "turn_not-valid",
+					},
+				}),
+				now: () => 1_000,
+			}),
+		);
+
+		expect(runtimeInvoked).toBe(false);
+		expect(chunks).toEqual([
+			{
+				type: "done",
+				result: {
+					response: "",
+					success: false,
+					error: "MCP authority turnConversationRef must be a relay turn ref",
+					costUsd: 0,
+					numTurns: 1,
+					durationMs: 0,
+				},
+			},
+		]);
 	});
 
 	it("resumes the mapped Hermes session and clears it for /new", async () => {
