@@ -93,6 +93,7 @@ export function browserComputerBrokerAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -106,6 +107,7 @@ export function browserComputerBrokerAttestationSignatureFailure(
 		{
 			scope: BROWSER_COMPUTER_BROKER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }

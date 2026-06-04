@@ -22,6 +22,7 @@ import {
 } from "../relay/openai-codex-relay-proof.js";
 import type { StreamChunk } from "../sdk/client.js";
 import { filterOutput, redactSecrets } from "../security/output-filter.js";
+import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import {
 	hermesMcpAuthorityRegistry,
 	type TelclaudeMcpAuthorityConnection,
@@ -1011,7 +1012,10 @@ export function redactHermesRuntimeValue(value: unknown): unknown {
 	);
 }
 
-export function readHermesCliHeadlessProbeReport(reportPath: string): HermesCliProbeReport {
+export function readHermesCliHeadlessProbeReport(
+	reportPath: string,
+	options: HermesSignedEvidenceValidationOptions = {},
+): HermesCliProbeReport {
 	const raw = JSON.parse(fs.readFileSync(path.resolve(reportPath), "utf8")) as unknown;
 	if (!isRecord(raw)) {
 		throw new Error("cli-headless probe report must be a JSON object");
@@ -1120,6 +1124,7 @@ export function readHermesCliHeadlessProbeReport(reportPath: string): HermesCliP
 		startedAt: String(raw.provenance.startedAt ?? ""),
 		endedAt: String(raw.provenance.endedAt ?? ""),
 		allowStaleSignature: true,
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (relayProofFailure) {
 		throw new Error(`cli-headless probe report relay proof is invalid: ${relayProofFailure}`);
@@ -1225,6 +1230,7 @@ function hermesCliRelayProofFailure(
 		startedAt: string;
 		endedAt: string;
 		allowStaleSignature?: boolean;
+		relayPublicKey?: string;
 	},
 ): string | null {
 	if (!proof) return "relay proof is missing";
@@ -1247,6 +1253,7 @@ function hermesCliRelayProofFailure(
 	}
 	const signatureFailure = openAiCodexRelayProofSignatureFailure(proof as OpenAiCodexRelayProof, {
 		allowStale: context.allowStaleSignature,
+		relayPublicKey: context.relayPublicKey,
 	});
 	if (signatureFailure) {
 		return `relay proof signature is invalid: ${signatureFailure}`;

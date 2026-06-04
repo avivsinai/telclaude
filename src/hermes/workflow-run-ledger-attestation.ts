@@ -88,6 +88,7 @@ export function hermesWorkflowRunLedgerAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -101,6 +102,7 @@ export function hermesWorkflowRunLedgerAttestationSignatureFailure(
 		{
 			scope: HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }

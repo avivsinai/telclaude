@@ -91,6 +91,7 @@ export function edgeAdapterAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -104,6 +105,7 @@ export function edgeAdapterAttestationSignatureFailure(
 		{
 			scope: EDGE_ADAPTER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }

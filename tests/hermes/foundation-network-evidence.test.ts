@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 import {
 	buildEdgeAdapterProbeEvidence,
 	EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
+	edgeAdapterProbeEvidenceFailure,
 } from "../../src/hermes/edge-adapter-probes.js";
 import {
+	archivedHermesEvidenceValidationOptions,
 	buildCutoverProofBundle,
 	type CompatibilityLockfile,
 	type CutoverInputBundle,
@@ -24,6 +26,7 @@ import {
 	PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS,
 	type ProbeBundle,
 	REQUIRED_CUTOVER_NETWORK_PROBE_IDS,
+	trustedRelayPublicKeyForValidation,
 	writeHermesProfileGenerationProof,
 } from "../../src/hermes/foundation.js";
 import {
@@ -1529,12 +1532,73 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 
 			const report = evaluateCutoverCheck(
 				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+				{ liveCutover: false },
 			);
 
 			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
 				status: "pass",
 			});
 		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("treats unthreaded trusted relay key validation as live-only", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const rehearsal = writeRollbackRehearsal();
+		const { lockPath } = writeLockedRollbackRelayPublicKey(rehearsal);
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const trusted = trustedRelayPublicKeyForValidation();
+
+			expect(trusted).toMatchObject({
+				valid: false,
+				failure: expect.stringContaining(
+					"trusted operator relay public key env OPERATOR_RPC_RELAY_PUBLIC_KEY is missing for live validation",
+				),
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("requires the live relay public-key env even when a valid lockfile exists", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-rollback-live-lock-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const rehearsal = writeRollbackRehearsal();
+		const { lockPath, lockedRehearsal } = writeLockedRollbackRelayPublicKey(rehearsal);
+		const bundle = refreshCutoverProofBundle(
+			cutoverBundle(writeNetworkBundle(tempDir, undefined, containedInternalNetworkEvidence)),
+		);
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const report = evaluateCutoverCheck(
+				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+			);
+
+			expect(report.status).toBe("input_error");
+			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
+				"trusted operator relay public key env OPERATOR_RPC_RELAY_PUBLIC_KEY is missing for live validation",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
 			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
 			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
 		}
@@ -1556,6 +1620,7 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 
 			const report = evaluateCutoverCheck(
 				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+				{ liveCutover: false },
 			);
 
 			expect(report.status).toBe("fail");
@@ -1599,6 +1664,7 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 
 			const report = evaluateCutoverCheck(
 				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+				{ liveCutover: false },
 			);
 
 			expect(report.status).toBe("fail");
@@ -1631,6 +1697,7 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 
 			const report = evaluateCutoverCheck(
 				refreshCutoverProofBundle({ ...bundle, rollbackRehearsal: lockedRehearsal }),
+				{ liveCutover: false },
 			);
 
 			expect(report.status).toBe("fail");
@@ -1666,6 +1733,144 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 		expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")?.detail).toContain(
 			"rollback rehearsal relay public key source process-env is not cutover provenance",
 		);
+	});
+});
+
+describe("Hermes archived relay public-key validation options", () => {
+	it("accepts signed probe evidence through a trusted relay public-key lockfile", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		const { lockPath } = writeLockedRollbackRelayPublicKey(writeRollbackRehearsal());
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const failure = edgeAdapterProbeEvidenceFailure(
+				"edge.whatsapp",
+				evidence,
+				archivedHermesEvidenceValidationOptions(),
+			);
+
+			expect(failure).toBeNull();
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("rejects signed probe evidence when the archived lockfile pins a different relay key", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const trustedKeys = generateKeyPair();
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = attackerKeys.publicKey;
+		const { lockPath } = writeLockedRollbackRelayPublicKey(writeRollbackRehearsal());
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const failure = edgeAdapterProbeEvidenceFailure(
+				"edge.whatsapp",
+				evidence,
+				archivedHermesEvidenceValidationOptions(),
+			);
+
+			expect(failure).toContain(
+				"runnerAttestation signature is invalid: signature verification failed",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("uses the relay public-key env instead of falling back to a valid lockfile", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const trustedKeys = generateKeyPair();
+		const attackerKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		const { lockPath } = writeLockedRollbackRelayPublicKey(writeRollbackRehearsal());
+		try {
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = attackerKeys.publicKey;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const failure = edgeAdapterProbeEvidenceFailure(
+				"edge.whatsapp",
+				evidence,
+				archivedHermesEvidenceValidationOptions(),
+			);
+
+			expect(failure).toContain(
+				"runnerAttestation signature is invalid: signature verification failed",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
+	it("fails signed probe verification when archived validation has no env or valid lockfile", () => {
+		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const evidence = buildEdgeAdapterProbeEvidence({
+			surfaceId: "edge.whatsapp",
+			observedAt: "2026-05-31T09:00:00.000Z",
+			allowRun: true,
+		});
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = path.join(
+				os.tmpdir(),
+				"missing-hermes-rollback-relay-public-key.lock.json",
+			);
+
+			const failure = edgeAdapterProbeEvidenceFailure(
+				"edge.whatsapp",
+				evidence,
+				archivedHermesEvidenceValidationOptions(),
+			);
+
+			expect(failure).toContain(
+				"runnerAttestation signature is invalid: missing relay public key env OPERATOR_RPC_RELAY_PUBLIC_KEY",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalRelayPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
 	});
 });
 

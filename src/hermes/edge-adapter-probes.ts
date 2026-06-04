@@ -832,6 +832,7 @@ function edgeAdapterRunnerAttestationFailure(
 	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = edgeAdapterAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = edgeAdapterAttestationFieldsForEvidence(data);

@@ -540,6 +540,7 @@ function brokerRunnerAttestationFailure(
 	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = browserComputerBrokerAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = browserComputerBrokerAttestationFieldsForEvidence(data);

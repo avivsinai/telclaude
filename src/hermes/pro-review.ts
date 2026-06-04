@@ -3,12 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { filterOutput } from "../security/output-filter.js";
+import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import {
 	type BrowserComputerBrokerSurfaceId,
 	browserComputerBrokerProbeEvidenceFailure,
 } from "./browser-computer-broker-probes.js";
 import { edgeAdapterProbeEvidenceFailure } from "./edge-adapter-probes.js";
 import {
+	archivedHermesEvidenceValidationOptions,
 	hermesFixtureEvidenceFileFailure,
 	modelRelayProbeEvidenceFailure,
 	REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
@@ -973,10 +975,15 @@ function semanticEvidenceGates(
 	options: { readonly requireGreenEvidence: boolean },
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
+	const validationOptions = archivedHermesEvidenceValidationOptions();
 	gates.push(semanticEvidenceCoverageGate(request.selectedFiles));
 	if (request.selectedFiles.includes(PRO_REVIEW_CLI_HEADLESS_PROBE_PATH)) {
 		gates.push(
-			cliHeadlessEvidenceGate(PRO_REVIEW_CLI_HEADLESS_PROBE_PATH, options.requireGreenEvidence),
+			cliHeadlessEvidenceGate(
+				PRO_REVIEW_CLI_HEADLESS_PROBE_PATH,
+				options.requireGreenEvidence,
+				validationOptions,
+			),
 		);
 	}
 	if (request.selectedFiles.includes(PRO_REVIEW_MODEL_RELAY_PROBE_PATH)) {
@@ -985,20 +992,27 @@ function semanticEvidenceGates(
 				PRO_REVIEW_MODEL_RELAY_PROBE_PATH,
 				"model.relay",
 				options.requireGreenEvidence,
-				modelRelayProbeEvidenceFailure,
+				(evidence) => modelRelayProbeEvidenceFailure(evidence, validationOptions),
 			),
 		);
 	}
 	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_SIGNED_PROBE_PATHS)) {
 		if (request.selectedFiles.includes(reportPath)) {
-			gates.push(signedProbeEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence));
+			gates.push(
+				signedProbeEvidenceGate(
+					reportPath,
+					surfaceId,
+					options.requireGreenEvidence,
+					validationOptions,
+				),
+			);
 		}
 	}
 	for (const [reportPath, surfaceId] of Object.entries(PRO_REVIEW_BROWSER_COMPUTER_PROBE_PATHS)) {
 		if (request.selectedFiles.includes(reportPath)) {
 			gates.push(
 				jsonSemanticEvidenceGate(reportPath, surfaceId, options.requireGreenEvidence, (evidence) =>
-					browserComputerBrokerProbeEvidenceFailure(surfaceId, evidence),
+					browserComputerBrokerProbeEvidenceFailure(surfaceId, evidence, validationOptions),
 				),
 			);
 		}
@@ -1049,6 +1063,7 @@ function semanticEvidenceGates(
 					networkProbeEvidenceFailure(evidence, {
 						expectedId: probeId,
 						requiredPosture: REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE,
+						...validationOptions,
 					}),
 				),
 			);
@@ -1058,7 +1073,7 @@ function semanticEvidenceGates(
 		const fixtureId = path.basename(reportPath, ".json");
 		gates.push(
 			jsonSemanticEvidenceGate(reportPath, fixtureId, options.requireGreenEvidence, () =>
-				hermesFixtureEvidenceFileFailure(reportPath),
+				hermesFixtureEvidenceFileFailure(reportPath, validationOptions),
 			),
 		);
 	}
@@ -1121,7 +1136,11 @@ function jsonSemanticEvidenceGate(
 		: pass(name, `${surfaceId} pass evidence passes current semantic validator`);
 }
 
-function cliHeadlessEvidenceGate(reportPath: string, requireGreenEvidence: boolean): ProReviewGate {
+function cliHeadlessEvidenceGate(
+	reportPath: string,
+	requireGreenEvidence: boolean,
+	validationOptions: HermesSignedEvidenceValidationOptions,
+): ProReviewGate {
 	const resolved = resolveHermesArtifactPath(reportPath);
 	let raw: unknown;
 	try {
@@ -1139,7 +1158,7 @@ function cliHeadlessEvidenceGate(reportPath: string, requireGreenEvidence: boole
 	}
 	if (raw.status === "pass") {
 		try {
-			readHermesCliHeadlessProbeReport(resolved);
+			readHermesCliHeadlessProbeReport(resolved, validationOptions);
 			return pass(
 				"request.cliHeadlessEvidence",
 				"cli_headless pass evidence passes current semantic validator",
@@ -1175,6 +1194,7 @@ function signedProbeEvidenceGate(
 	reportPath: string,
 	surfaceId: string,
 	requireGreenEvidence: boolean,
+	validationOptions: HermesSignedEvidenceValidationOptions,
 ): ProReviewGate {
 	const name = `request.semanticEvidence.${surfaceId}`;
 	const read = readJsonObject(reportPath);
@@ -1190,12 +1210,12 @@ function signedProbeEvidenceGate(
 	}
 	const failure =
 		surfaceId === "sideeffect.ledger"
-			? sideEffectLedgerProbeEvidenceFailure(surfaceId, read.value)
+			? sideEffectLedgerProbeEvidenceFailure(surfaceId, read.value, validationOptions)
 			: surfaceId === "providers.approval-binding"
-				? providerApprovalBindingProbeEvidenceFailure(read.value)
+				? providerApprovalBindingProbeEvidenceFailure(read.value, validationOptions)
 				: surfaceId === "workflow.cron" || surfaceId === "workflow.longrun"
-					? workflowProbeEvidenceFailure(surfaceId, read.value)
-					: edgeAdapterProbeEvidenceFailure(surfaceId, read.value);
+					? workflowProbeEvidenceFailure(surfaceId, read.value, validationOptions)
+					: edgeAdapterProbeEvidenceFailure(surfaceId, read.value, validationOptions);
 	return failure
 		? fail(name, `${surfaceId} pass evidence is not accepted by the current validator: ${failure}`)
 		: pass(name, `${surfaceId} pass evidence passes current semantic validator`);
