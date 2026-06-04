@@ -78,6 +78,7 @@ import {
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
+import { generateApprovalToken } from "../relay/approval-token.js";
 import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
 import { startAttachmentQuarantineSweeper } from "../relay/attachment-quarantine-sweeper.js";
 import { createBrowserActDriverFactory } from "../relay/browser-act-driver.js";
@@ -101,7 +102,10 @@ import {
 	parseBrowserCatastrophicDomains,
 } from "../relay/browser-session-resolver.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
+import type { EdgeChannelConnector } from "../relay/edge-channel-connector.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
+import { createEmailConnector } from "../relay/email/connector.js";
+import { createGmailEmailTransport } from "../relay/email/gmail-transport.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { createHouseholdEmergencyControlPolicyStore } from "../relay/household-emergency-control-policy.js";
 import { createHouseholdEmergencyControlSender } from "../relay/household-emergency-control-sender.js";
@@ -131,6 +135,7 @@ import {
 } from "../relay/provider-login-coordinator.js";
 import { createReminderConfirmationControlPolicyStore } from "../relay/reminder-confirmation-control-policy.js";
 import { createReminderConfirmationControlSender } from "../relay/reminder-confirmation-control-sender.js";
+import { proxyProviderRequest } from "../relay/provider-proxy.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import { createWhatsAppHouseholdReplyBindingResolver } from "../relay/whatsapp-household-bindings.js";
 import { dispatchWhatsAppInboundToHermes } from "../relay/whatsapp-inbound-dispatcher.js";
@@ -519,8 +524,39 @@ export function registerRelayCommand(program: Command): void {
 				});
 				schedulerHandles.push(liveMcpAttachmentQuarantineSweeper);
 				const householdReminderFailureClassifier = createOutboundDeliveryFailureClassifier();
+				// Outbound email connector — registered ONLY when explicitly enabled
+				// AND the vault is available (the transport mints a vault-signed
+				// google-services approval token and never sees raw credentials). When
+				// off, no email connector is registered, so an email outbound fails
+				// closed at the executor registry. Delivery is at-most-once.
+				const emailConnectors: EdgeChannelConnector[] = [];
+				if (cfg.email.enabled && cfg.email.from && vaultAvailable) {
+					const emailVaultClient = new VaultClient(
+						vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+					);
+					emailConnectors.push(
+						createEmailConnector({
+							transport: createGmailEmailTransport({
+								issueApprovalToken: (tokenInput) =>
+									generateApprovalToken(tokenInput, emailVaultClient),
+								callProvider: proxyProviderRequest,
+							}),
+							from: cfg.email.from,
+							defaultSubject: cfg.email.defaultSubject,
+							...(cfg.email.messageIdDomain ? { messageIdDomain: cfg.email.messageIdDomain } : {}),
+						}),
+					);
+					console.log("  Email delivery: enabled (gmail.send via google-services sidecar)");
+				} else if (cfg.email.enabled) {
+					console.log(
+						"  Email delivery: DISABLED — enabled in config but vault unavailable or no from address (fail closed)",
+					);
+				}
+
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
-					registry: createDefaultEdgeOutboundExecutorRegistry(),
+					registry: createDefaultEdgeOutboundExecutorRegistry({
+						additionalConnectors: emailConnectors,
+					}),
 					resolveConversation: async (prepared) => {
 						const emergencyControl =
 							await householdEmergencyControlPolicyStore?.resolveConversation(prepared);

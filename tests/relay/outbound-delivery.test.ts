@@ -783,6 +783,23 @@ describe("outbound delivery dispatcher", () => {
 		]);
 	});
 
+	it("registers additionalConnectors (e.g. email) so the dispatcher can route them", () => {
+		// This is the seam the relay uses to wire the email connector in (gated OFF
+		// by default): an additionalConnector becomes routable by its channel.
+		const emailConnector = {
+			channel: "email" as const,
+			send: async () => ({ ok: true as const }),
+		};
+		const registry = createDefaultEdgeOutboundExecutorRegistry({
+			whatsapp: false,
+			additionalConnectors: [emailConnector],
+		});
+		expect(registry.has("email")).toBe(true);
+		expect(registry.get("email")).toBe(emailConnector);
+		// whatsapp:false means it is NOT registered, so an unconfigured channel is absent.
+		expect(registry.has("whatsapp")).toBe(false);
+	});
+
 	it("generates fresh bridge-session headers and keeps them out of the sidecar body", async () => {
 		const seen: Array<{
 			readonly url: string;
