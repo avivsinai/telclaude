@@ -60,6 +60,7 @@ import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
 	HERMES_TRACKED_SEED_PATHS,
 	NETWORK_PROBE_EVIDENCE_SCHEMA_VERSION,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
@@ -91,11 +92,13 @@ import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
+	DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS,
 	type ProviderDomainSurfaceId as HermesProviderDomainSurfaceId,
 	runTelclaudeProviderDomainProbe,
 } from "../../src/hermes/provider-domain-probes.js";
 import {
 	buildGoogleProviderFixtureEvidenceBundle,
+	DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH,
 	runTelclaudeGoogleProviderProbe,
 } from "../../src/hermes/provider-google-probe.js";
 import { runTelclaudeProviderReleasePolicyProbe } from "../../src/hermes/provider-release-policy-probe.js";
@@ -213,19 +216,86 @@ function pendingQueues(
 	return { ...emptyPendingQueues, ...overrides };
 }
 
-async function runHermesCommand(args: string[]): Promise<{ exitCode: unknown; stdout: string }> {
+type HermesCommandTestOptions = {
+	readonly cwd?: string;
+};
+
+let testCwd: string | undefined;
+
+function resolveTestPath(filePath: string): string {
+	if (path.isAbsolute(filePath)) return filePath;
+	return path.join(testCwd ?? process.cwd(), filePath);
+}
+
+const HERMES_COMMAND_PATH_OPTIONS = new Set([
+	"--bundle-out",
+	"--canary",
+	"--checkout",
+	"--cwd",
+	"--decisions",
+	"--evidence",
+	"--evidence-dir",
+	"--feature-probes",
+	"--fixtures",
+	"--from-report",
+	"--hermes-bin",
+	"--hermes-home",
+	"--inventory",
+	"--lockfile",
+	"--network-probes",
+	"--nofork",
+	"--out",
+	"--profile-dir",
+	"--profile-proof",
+	"--proof-bundle",
+	"--proof-out",
+	"--queue-snapshot",
+	"--report-out",
+	"--request",
+	"--rollback",
+	"--run-report-out",
+	"--scope",
+	"--selected-file",
+	"--test-report",
+]);
+
+function normalizeHermesCommandArgsForCwd(args: string[], cwd: string | undefined): string[] {
+	if (!cwd) return args;
+	const normalized = [...args];
+	for (let index = 0; index < normalized.length - 1; index += 1) {
+		const option = normalized[index];
+		if (!HERMES_COMMAND_PATH_OPTIONS.has(option)) continue;
+		const value = normalized[index + 1];
+		if (!value || value.startsWith("-") || path.isAbsolute(value) || /^[a-z]+:\/\//i.test(value)) {
+			continue;
+		}
+		normalized[index + 1] = path.join(cwd, value);
+		index += 1;
+	}
+	return normalized;
+}
+
+async function runHermesCommand(
+	args: string[],
+	options: HermesCommandTestOptions = {},
+): Promise<{ exitCode: unknown; stdout: string }> {
 	const output: string[] = [];
 	const logSpy = vi.spyOn(console, "log").mockImplementation((...values: unknown[]) => {
 		output.push(values.map(String).join(" "));
 	});
+	const cwd = options.cwd ?? testCwd;
+	const cwdSpy =
+		cwd && process.cwd() !== cwd ? vi.spyOn(process, "cwd").mockReturnValue(cwd) : undefined;
+	const commandArgs = normalizeHermesCommandArgsForCwd(args, cwd);
 	const program = new Command();
 	registerHermesCommand(program);
 	process.exitCode = undefined;
 	try {
-		await program.parseAsync(["node", "telclaude", ...args]);
+		await program.parseAsync(["node", "telclaude", ...commandArgs]);
 		return { exitCode: process.exitCode, stdout: output.join("\n") };
 	} finally {
 		process.exitCode = undefined;
+		cwdSpy?.mockRestore();
 		logSpy.mockRestore();
 	}
 }
@@ -233,6 +303,7 @@ async function runHermesCommand(args: string[]): Promise<{ exitCode: unknown; st
 async function runHermesCommandWithEnv(
 	args: string[],
 	env: Record<string, string>,
+	options: HermesCommandTestOptions = {},
 ): Promise<{ exitCode: unknown; stdout: string }> {
 	const original = Object.fromEntries(
 		Object.keys(env).map((key) => [key, process.env[key] as string | undefined]),
@@ -241,7 +312,7 @@ async function runHermesCommandWithEnv(
 		process.env[key] = value;
 	}
 	try {
-		return await runHermesCommand(args);
+		return await runHermesCommand(args, options);
 	} finally {
 		for (const [key, value] of Object.entries(original)) {
 			if (value === undefined) {
@@ -261,12 +332,29 @@ function writeExecutable(tempDir: string, body: string): string {
 }
 
 function readJson(filePath: string): unknown {
-	return JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+	return JSON.parse(fs.readFileSync(resolveTestPath(filePath), "utf8")) as unknown;
 }
 
 function writeJson(filePath: string, value: unknown): void {
-	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+	const resolved = resolveTestPath(filePath);
+	fs.mkdirSync(path.dirname(resolved), { recursive: true });
+	fs.writeFileSync(resolved, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeProviderFixtureProbeInputs(cwd: string): Promise<void> {
+	const observedAt = "2026-01-02T03:04:05.000Z";
+	for (const surfaceId of Object.keys(
+		DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS,
+	) as HermesProviderDomainSurfaceId[]) {
+		writeJson(
+			path.join(cwd, DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS[surfaceId]),
+			await runTelclaudeProviderDomainProbe({ surfaceId, allowRun: true, observedAt }),
+		);
+	}
+	writeJson(
+		path.join(cwd, DEFAULT_PROVIDER_GOOGLE_EVIDENCE_PATH),
+		await runTelclaudeGoogleProviderProbe({ allowRun: true, observedAt }),
+	);
 }
 
 function initPinnedHermesCheckout(checkoutPath: string): void {
@@ -391,6 +479,34 @@ async function closedProbeUrl(): Promise<string> {
 
 function requiredProviderUrlCsv(url: string): string {
 	return ["bank", "clalit", "government", "google"].map((name) => `${name}=${url}`).join(",");
+}
+
+const DETERMINISTIC_DNS_DENIAL_URL = "http://169.254.169.254:444/probe";
+
+function deterministicDnsDenialFetchCause(): Error & { code: string } {
+	const cause = new Error("connect EHOSTDOWN 169.254.169.254:444") as Error & {
+		code: string;
+	};
+	cause.code = "EHOSTDOWN";
+	return cause;
+}
+
+function fetchTarget(input: Parameters<typeof fetch>[0]): string {
+	if (typeof input === "string") return input;
+	if (input instanceof URL) return input.href;
+	return input.url;
+}
+
+function spyOnDeterministicDnsDenialFetch(): ReturnType<typeof vi.spyOn> {
+	const realFetch = globalThis.fetch;
+	return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+		if (fetchTarget(input) === DETERMINISTIC_DNS_DENIAL_URL) {
+			return Promise.reject(
+				new TypeError("fetch failed", { cause: deterministicDnsDenialFetchCause() }),
+			);
+		}
+		return realFetch(input, init);
+	});
 }
 
 async function startLiveMcpAdminSocket(response: TelclaudeLiveMcpProbeTokenBundle): Promise<{
@@ -794,7 +910,7 @@ function privateTelegramFixtureInvocation(reportPath: string, reportDigest: stri
 			"--reporter=json",
 			`--outputFile=${reportPath}`,
 		],
-		cwd: process.cwd(),
+		cwd: testCwd ?? process.cwd(),
 		exitCode: 0,
 		startedAt: "2026-05-30T00:00:00.000Z",
 		endedAt: "2026-05-30T00:00:01.000Z",
@@ -805,7 +921,7 @@ function privateTelegramFixtureInvocation(reportPath: string, reportDigest: stri
 				sourcePath,
 				`sha256:${crypto
 					.createHash("sha256")
-					.update(fs.readFileSync(path.resolve(sourcePath)))
+					.update(fs.readFileSync(resolveTestPath(sourcePath)))
 					.digest("hex")}`,
 			]),
 		),
@@ -1341,17 +1457,19 @@ function cliHeadlessCutoverBundle(
 	});
 }
 
+type RuntimeRequiredEdgeSurfaceId =
+	| "edge.whatsapp"
+	| "edge.email"
+	| "edge.agentmail"
+	| "edge.social"
+	| "identity.migration"
+	| "household.scopes"
+	| "attachment.quarantine"
+	| "outbound.policy"
+	| "public.social.isolation";
+
 function edgeAdapterProbe(
-	surfaceId:
-		| "edge.whatsapp"
-		| "edge.email"
-		| "edge.agentmail"
-		| "edge.social"
-		| "identity.migration"
-		| "household.scopes"
-		| "attachment.quarantine"
-		| "outbound.policy"
-		| "public.social.isolation",
+	surfaceId: RuntimeRequiredEdgeSurfaceId,
 	evidencePath: string,
 	status: "pass" | "fail" | "skip" = "pass",
 ) {
@@ -1374,24 +1492,16 @@ function edgeAdapterProbe(
 	};
 }
 
-function edgeAdapterCutoverBundle(
-	surfaceId:
-		| "edge.whatsapp"
-		| "edge.email"
-		| "edge.agentmail"
-		| "edge.social"
-		| "identity.migration"
-		| "household.scopes"
-		| "attachment.quarantine"
-		| "outbound.policy"
-		| "public.social.isolation",
-	evidencePath: string,
+function edgeAdapterCutoverBundleFromEvidence(
+	evidence: readonly Array<{ surfaceId: RuntimeRequiredEdgeSurfaceId; evidencePath: string }>,
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
-	const probe = edgeAdapterProbe(surfaceId, evidencePath, matrixStatus);
+	const probes = evidence.map(({ surfaceId, evidencePath }) =>
+		edgeAdapterProbe(surfaceId, evidencePath, matrixStatus),
+	);
 	const featureProbeMatrix = {
 		schemaVersion: 1 as const,
-		probes: [probe],
+		probes,
 	};
 	const base = safeCutoverBundle();
 	return safeCutoverBundle({
@@ -1415,7 +1525,7 @@ function edgeAdapterCutoverBundle(
 			workflows: [
 				{
 					...base.scopeManifest.workflows[0],
-					required_surface_ids: [surfaceId],
+					required_surface_ids: evidence.map(({ surfaceId }) => surfaceId),
 				},
 			],
 		},
@@ -1424,19 +1534,25 @@ function edgeAdapterCutoverBundle(
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: surfaceId,
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
-			adapterApiSignatures: {
-				[surfaceId]: `sha256:${"e".repeat(64)}`,
-			},
+			featureProbes: evidence.map(({ surfaceId, evidencePath }) => ({
+				surface_id: surfaceId,
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			})),
+			adapterApiSignatures: Object.fromEntries(
+				evidence.map(({ surfaceId }) => [surfaceId, `sha256:${"e".repeat(64)}`]),
+			),
 			noForkProofEvidencePath: base.noForkProof.evidence_path,
 		},
 	});
+}
+
+function edgeAdapterCutoverBundle(
+	surfaceId: RuntimeRequiredEdgeSurfaceId,
+	evidencePath: string,
+	matrixStatus: "pass" | "fail" | "skip" = "pass",
+) {
+	return edgeAdapterCutoverBundleFromEvidence([{ surfaceId, evidencePath }], matrixStatus);
 }
 
 function approvalContinuationProbe(
@@ -3007,12 +3123,28 @@ const PRO_REVIEW_NETWORK_PROBE_ARTIFACTS: Record<string, string> = {
 };
 
 async function withCwd<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
-	const previous = process.cwd();
-	process.chdir(cwd);
+	const previous = testCwd;
+	const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+	testCwd = cwd;
 	try {
 		return await callback();
 	} finally {
-		process.chdir(previous);
+		testCwd = previous;
+		cwdSpy.mockRestore();
+	}
+}
+
+async function withActualCwd<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
+	const previousCwd = process.cwd();
+	const previousTestCwd = testCwd;
+	const realCwd = fs.realpathSync.native(cwd);
+	process.chdir(realCwd);
+	testCwd = realCwd;
+	try {
+		return await callback();
+	} finally {
+		testCwd = previousTestCwd;
+		process.chdir(previousCwd);
 	}
 }
 
@@ -3034,7 +3166,7 @@ function computeSelectedFileContentsDigest(selectedFiles: readonly string[]): st
 	return computeTextDigest(
 		JSON.stringify(
 			selectedFiles.map((file) => {
-				const resolved = path.resolve(file);
+				const resolved = resolveTestPath(file);
 				if (!fs.existsSync(resolved)) return { file, missing: true };
 				return {
 					file,
@@ -3046,7 +3178,7 @@ function computeSelectedFileContentsDigest(selectedFiles: readonly string[]): st
 }
 
 function computeFileDigest(file: string): string {
-	const resolved = path.resolve(file);
+	const resolved = resolveTestPath(file);
 	if (!fs.existsSync(resolved)) return computeTextDigest(JSON.stringify({ file, missing: true }));
 	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(resolved)).digest("hex")}`;
 }
@@ -3552,50 +3684,70 @@ describe("Hermes wrapper foundation", () => {
 	});
 
 	it("refuses to promote network probes into the tracked seed path by default", async () => {
-		const trackedNetworkPath = path.resolve("docs/hermes/network-probes.json");
-		const before = fs.readFileSync(trackedNetworkPath, "utf8");
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-seed-guard-"));
-		const reportPath = path.join(tempDir, "network-run.json");
-		writeJson(reportPath, networkProbeRunReport());
+		await withCwd(tempDir, async () => {
+			execFileSync("git", ["init", "-q"], { cwd: tempDir });
+			execFileSync("git", ["config", "user.email", "hermes-wrapper-test@example.invalid"], {
+				cwd: tempDir,
+			});
+			execFileSync("git", ["config", "user.name", "Hermes Wrapper Test"], { cwd: tempDir });
+			const trackedNetworkPath = resolveTestPath(DEFAULT_NETWORK_PROBES_PATH);
+			writeJson(trackedNetworkPath, { schemaVersion: 1, probes: [] });
+			execFileSync("git", ["add", DEFAULT_NETWORK_PROBES_PATH], { cwd: tempDir });
+			execFileSync("git", ["commit", "-q", "-m", "network seed"], { cwd: tempDir });
+			const before = fs.readFileSync(trackedNetworkPath, "utf8");
+			const reportPath = path.join(tempDir, "network-run.json");
+			writeJson(reportPath, networkProbeRunReport());
 
-		const result = await runHermesCommand([
-			"hermes",
-			"network-probes",
-			"--from-report",
-			reportPath,
-			"--json",
-		]);
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--from-report",
+				reportPath,
+				"--json",
+			]);
 
-		expect(result.exitCode).toBe(1);
-		expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
+			expect(result.exitCode).toBe(1);
+			expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
+		});
 	});
 
 	it("promotes network probes to explicit temp output without touching the tracked seed", async () => {
-		const trackedNetworkPath = path.resolve("docs/hermes/network-probes.json");
-		const before = fs.readFileSync(trackedNetworkPath, "utf8");
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-temp-out-"));
-		const reportPath = path.join(tempDir, "network-run.json");
-		const outPath = path.join(tempDir, "network-probes.json");
-		const evidenceDir = path.join(tempDir, "network-evidence");
-		writeJson(reportPath, networkProbeRunReport());
+		await withCwd(tempDir, async () => {
+			execFileSync("git", ["init", "-q"], { cwd: tempDir });
+			execFileSync("git", ["config", "user.email", "hermes-wrapper-test@example.invalid"], {
+				cwd: tempDir,
+			});
+			execFileSync("git", ["config", "user.name", "Hermes Wrapper Test"], { cwd: tempDir });
+			const trackedNetworkPath = resolveTestPath(DEFAULT_NETWORK_PROBES_PATH);
+			writeJson(trackedNetworkPath, { schemaVersion: 1, probes: [] });
+			execFileSync("git", ["add", DEFAULT_NETWORK_PROBES_PATH], { cwd: tempDir });
+			execFileSync("git", ["commit", "-q", "-m", "network seed"], { cwd: tempDir });
+			const before = fs.readFileSync(trackedNetworkPath, "utf8");
+			const reportPath = path.join(tempDir, "network-run.json");
+			const outPath = path.join(tempDir, "network-probes.json");
+			const evidenceDir = path.join(tempDir, "network-evidence");
+			writeJson(reportPath, networkProbeRunReport());
 
-		const result = await runHermesCommand([
-			"hermes",
-			"network-probes",
-			"--from-report",
-			reportPath,
-			"--out",
-			outPath,
-			"--evidence-dir",
-			evidenceDir,
-			"--json",
-		]);
-		const bundle = readJson(outPath) as { probes: unknown[] };
+			const result = await runHermesCommand([
+				"hermes",
+				"network-probes",
+				"--from-report",
+				reportPath,
+				"--out",
+				outPath,
+				"--evidence-dir",
+				evidenceDir,
+				"--json",
+			]);
+			const bundle = readJson(outPath) as { probes: unknown[] };
 
-		expect(result.exitCode, result.stdout).toBe(0);
-		expect(bundle.probes).toHaveLength(requiredNetworkProbeIds.length);
-		expect(fs.existsSync(path.join(evidenceDir, "relay-control-allowed.json"))).toBe(true);
-		expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(bundle.probes).toHaveLength(requiredNetworkProbeIds.length);
+			expect(fs.existsSync(path.join(evidenceDir, "relay-control-allowed.json"))).toBe(true);
+			expect(fs.readFileSync(trackedNetworkPath, "utf8")).toBe(before);
+		});
 	});
 
 	it("fails doctor when feature probes or lockfile evidence are not production-ready", () => {
@@ -4049,9 +4201,9 @@ describe("Hermes wrapper foundation", () => {
 				},
 			});
 			writeJson(DEFAULT_CUTOVER_PROOF_BUNDLE_PATH, proofBundle);
-			fs.rmSync(DEFAULT_FIXTURE_RESULTS_PATH);
-			fs.rmSync(DEFAULT_NETWORK_PROBES_PATH);
-			fs.rmSync(DEFAULT_ROLLBACK_REHEARSAL_PATH);
+			fs.rmSync(resolveTestPath(DEFAULT_FIXTURE_RESULTS_PATH));
+			fs.rmSync(resolveTestPath(DEFAULT_NETWORK_PROBES_PATH));
+			fs.rmSync(resolveTestPath(DEFAULT_ROLLBACK_REHEARSAL_PATH));
 
 			const result = await runHermesCommand([
 				"hermes",
@@ -4680,7 +4832,7 @@ describe("Hermes wrapper foundation", () => {
 		expect(inventoryWithEnabledWebhook.risks).toContain("enabled webhooks require cutover review");
 		expect(webhookOnlyBundle.queueSnapshot).toEqual({ unownedActiveCount: 0 });
 		expect(evaluateCutoverCheck(webhookOnlyBundle).status).toBe("safe");
-	});
+	}, 20_000);
 
 	it("marks inventory partial when live queue collection fails", () => {
 		const source = safeCutoverBundle();
@@ -4962,11 +5114,16 @@ describe("Hermes wrapper foundation", () => {
 	});
 
 	it("rejects archived rollback transcript proofs without the trusted relay public-key env", () => {
-		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalRelayPublicKey = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV];
+		const originalRelayPublicKeyLock = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
 		const rehearsal = writeRollbackRehearsal();
 		const bundleWithStaleProof = safeCutoverBundle({ rollbackRehearsal: rehearsal });
 		try {
-			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			delete process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV];
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = path.join(
+				os.tmpdir(),
+				`missing-rollback-relay-key-${crypto.randomUUID()}.json`,
+			);
 			const bundle = refreshCutoverProofBundle(bundleWithStaleProof);
 			const report = evaluateCutoverCheck(bundle);
 
@@ -4978,7 +5135,8 @@ describe("Hermes wrapper foundation", () => {
 				),
 			});
 		} finally {
-			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV, originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalRelayPublicKeyLock);
 		}
 	});
 
@@ -5172,7 +5330,7 @@ describe("Hermes wrapper foundation", () => {
 		expect(featureGate?.detail).not.toContain(
 			"feature probe execution.cli_headless status is skip",
 		);
-	});
+	}, 20_000);
 
 	it("does not let model-relay pass from matrix and lockfile status alone", () => {
 		const modelRelayProbe = {
@@ -5458,6 +5616,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("passes runtime-required edge cutover gates from runtime harness evidence", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-edge-runtime-"));
+		const evidence: Array<{ surfaceId: RuntimeRequiredEdgeSurfaceId; evidencePath: string }> = [];
 		for (const surface of [
 			"edge.whatsapp",
 			"edge.email",
@@ -5480,19 +5639,18 @@ describe("Hermes wrapper foundation", () => {
 				evidencePath,
 			]);
 			expect(probeResult.exitCode, probeResult.stdout).toBe(0);
-
-			const result = await runCutoverCheckWithBundle(
-				edgeAdapterCutoverBundle(surface, evidencePath),
-			);
-			const report = JSON.parse(result.stdout) as {
-				gates: Array<{ name: string; status: string; detail: string }>;
-			};
-
-			expect(result.exitCode, result.stdout).toBe(0);
-			expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
-				status: "pass",
-			});
+			evidence.push({ surfaceId: surface, evidencePath });
 		}
+
+		const result = await runCutoverCheckWithBundle(edgeAdapterCutoverBundleFromEvidence(evidence));
+		const report = JSON.parse(result.stdout) as {
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
 	});
 
 	it("fails runtime-required edge cutover gates when runtime evidence is stripped", async () => {
@@ -6943,27 +7101,43 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
-	it("refuses to refresh the tracked Pro review request without the seed-write flag", async () => {
+	it("refreshes the ignored default Pro review request without the seed-write flag", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
-		const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
-		writeJson(canaryPath, proReviewCanary());
+		await withCwd(tempDir, async () => {
+			const requestPath = "docs/hermes/pro-review-request.json";
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			fs.writeFileSync(
+				resolveTestPath(".gitignore"),
+				"docs/hermes/*.json\n!docs/hermes/feature-probes.json\n",
+				"utf8",
+			);
+			execFileSync("git", ["init", "-q"], { cwd: tempDir });
+			writeJson(canaryPath, proReviewCanary());
 
-		const result = await runHermesCommand([
-			"hermes",
-			"pro-review-refresh",
-			"--write",
-			"--json",
-			"--request",
-			"docs/hermes/pro-review-request.json",
-			"--canary",
-			canaryPath,
-		]);
-		const report = JSON.parse(result.stdout) as { status: string; detail: string };
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--prompt",
+				"Review the attached Hermes wrapper files.",
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; requestPath: string };
 
-		expect(result.exitCode).toBe(1);
-		expect(report).toMatchObject({ status: "input_error" });
-		expect(report.detail).toContain("Refusing to write tracked Hermes seed");
-		expect(report.detail).toContain("docs/hermes/pro-review-request.json");
+			expect(result.exitCode).toBe(0);
+			expect(report).toMatchObject({ status: "pass", requestPath: resolveTestPath(requestPath) });
+			expect(fs.existsSync(resolveTestPath(requestPath))).toBe(true);
+			expect(
+				execFileSync("git", ["check-ignore", requestPath], {
+					cwd: tempDir,
+					encoding: "utf8",
+				}).trim(),
+			).toBe(requestPath);
+		});
 	});
 
 	it("refuses to refresh a tracked Pro review request that binds dirty selected files", async () => {
@@ -6981,7 +7155,11 @@ describe("Hermes wrapper foundation", () => {
 			writeJson(requestPath, proReviewRequest(canaryPath));
 			execFileSync("git", ["add", "."], { cwd: tempDir });
 			execFileSync("git", ["commit", "-q", "-m", "fixture"], { cwd: tempDir });
-			fs.appendFileSync("src/hermes/pro-review.ts", "dirty selected file\n", "utf8");
+			fs.appendFileSync(
+				resolveTestPath("src/hermes/pro-review.ts"),
+				"dirty selected file\n",
+				"utf8",
+			);
 
 			const result = await runHermesCommand([
 				"hermes",
@@ -7122,7 +7300,7 @@ describe("Hermes wrapper foundation", () => {
 				},
 			});
 
-			const saved = JSON.parse(fs.readFileSync(requestPath, "utf8")) as {
+			const saved = readJson(requestPath) as {
 				status: string;
 				privateWorkspaceDisclosure: {
 					approved: boolean;
@@ -7169,7 +7347,7 @@ describe("Hermes wrapper foundation", () => {
 				`sha256:${"0".repeat(64)}`,
 			]);
 			const report = JSON.parse(result.stdout) as { status: string; detail: string };
-			const saved = JSON.parse(fs.readFileSync(requestPath, "utf8")) as {
+			const saved = readJson(requestPath) as {
 				privateWorkspaceDisclosure: { approved: boolean };
 			};
 
@@ -7972,11 +8150,12 @@ describe("Hermes wrapper foundation", () => {
 				},
 			],
 		});
+		await writeProviderFixtureProbeInputs(tempDir);
 
 		try {
 			delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
-			await withCwd(tempDir, async () => {
+			await withActualCwd(tempDir, async () => {
 				const result = await runHermesCommand([
 					"hermes",
 					"fixtures",
@@ -8000,7 +8179,11 @@ describe("Hermes wrapper foundation", () => {
 				expect(report.results).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({ id: "fixture.private.telegram.basic", status: "pass" }),
-						expect.objectContaining({ id: "fixture.providers.bank.read", status: "fail" }),
+						expect.objectContaining({ id: "fixture.providers.bank.read", status: "pass" }),
+						expect.objectContaining({
+							id: "fixture.providers.bank.direct-provider-deny",
+							status: "fail",
+						}),
 						expect.objectContaining({
 							id: "fixture.providers.google.direct-provider-deny",
 							status: "fail",
@@ -8450,13 +8633,13 @@ describe("Hermes wrapper foundation", () => {
 	it("writes passing network-probe artifacts from observed denials and a reachable relay control", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
 			const outPath = path.join(tempDir, "network-probes.json");
 			const evidenceDir = path.join(tempDir, "evidence");
 			const deniedProviderUrl = await closedProbeUrl();
 			const deniedModelUrl = await closedProbeUrl();
-			const deniedDnsUrl = await closedProbeUrl();
 
 			const result = await runHermesCommand([
 				"hermes",
@@ -8466,11 +8649,11 @@ describe("Hermes wrapper foundation", () => {
 				"--relay-url",
 				relay.url,
 				"--provider-url",
-				`bank=${deniedProviderUrl},clalit=${deniedProviderUrl}`,
+				requiredProviderUrlCsv(deniedProviderUrl),
 				"--model-url",
 				deniedModelUrl,
 				"--dns-url",
-				deniedDnsUrl,
+				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--firewall-sentinel",
@@ -8517,6 +8700,7 @@ describe("Hermes wrapper foundation", () => {
 					?.attempts.find((attempt) => attempt.name === "relay-control"),
 			).toMatchObject({ observed: "reachable" });
 		} finally {
+			fetchSpy.mockRestore();
 			await relay.close();
 		}
 	});
@@ -8524,6 +8708,7 @@ describe("Hermes wrapper foundation", () => {
 	it("writes contained-internal network-probe artifacts without a firewall sentinel", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
+		const fetchSpy = spyOnDeterministicDnsDenialFetch();
 		try {
 			ensureOperatorRelayKeys();
 			const result = await runHermesCommand([
@@ -8540,7 +8725,7 @@ describe("Hermes wrapper foundation", () => {
 				"--model-url",
 				await closedProbeUrl(),
 				"--dns-url",
-				await closedProbeUrl(),
+				DETERMINISTIC_DNS_DENIAL_URL,
 				"--vault-socket",
 				path.join(tempDir, "missing-vault.sock"),
 				"--out",
@@ -8566,6 +8751,7 @@ describe("Hermes wrapper foundation", () => {
 				),
 			).toEqual([]);
 		} finally {
+			fetchSpy.mockRestore();
 			await relay.close();
 		}
 	});

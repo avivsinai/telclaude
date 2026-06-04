@@ -706,9 +706,12 @@ function dirtyTrackedProReviewSelectedFiles(selectedFiles: readonly string[]): r
 		stdio: ["ignore", "pipe", "ignore"],
 	});
 	if (topLevel.status !== 0 || !topLevel.stdout.trim()) return [];
-	const repoRoot = topLevel.stdout.trim();
+	const repoRoot = fs.realpathSync.native(topLevel.stdout.trim());
 	const repoRelativeFiles = selectedFiles
-		.map((file) => path.resolve(file))
+		.map((file) => {
+			const resolved = path.resolve(file);
+			return fs.existsSync(resolved) ? fs.realpathSync.native(resolved) : resolved;
+		})
 		.filter((file) => file === repoRoot || file.startsWith(`${repoRoot}${path.sep}`))
 		.map((file) => path.relative(repoRoot, file))
 		.filter((file) => file.length > 0);

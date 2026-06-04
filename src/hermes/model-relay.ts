@@ -92,6 +92,7 @@ export type HermesModelRelayProbeOptions = {
 const DEFAULT_TIMEOUT_MS = 3_000;
 const POSITIVE_DENIAL_ERROR_CODES = new Set([
 	"ECONNREFUSED",
+	"EHOSTDOWN",
 	"EHOSTUNREACH",
 	"ENETUNREACH",
 	"EACCES",
