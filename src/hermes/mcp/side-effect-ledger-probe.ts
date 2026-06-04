@@ -742,7 +742,7 @@ function outboundPrepareInput(
 	return {
 		kind: "outbound",
 		actorId: "operator",
-		approverActorId: "operator",
+		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private",
 		channel: "whatsapp",
@@ -750,6 +750,8 @@ function outboundPrepareInput(
 		renderedBody: "The transfer is prepared and waiting for approval.",
 		mediaRefs: ["att-clean-ledger-probe"],
 		conversationRef: "whatsapp:family-thread",
+		edgePreparedRef: "edge-outbound-ledger-probe",
+		edgePreparedHash: "c".repeat(64),
 		approvalRequestId: "approval-outbound-ledger-probe",
 		approvalRevision: 1,
 		approvalMetadata: { reviewer: "operator", scope: "household" },

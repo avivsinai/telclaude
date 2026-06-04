@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -424,7 +425,7 @@ function prepareOutboundSideEffect(
 	const record = ledger.prepare({
 		kind: "outbound",
 		actorId: request.actorId,
-		approverActorId: request.actorId,
+		approverActorId: "operator:approval-continuation-approver",
 		profileId: request.profileId,
 		domain: request.domain,
 		channel,
@@ -432,11 +433,32 @@ function prepareOutboundSideEffect(
 		renderedBody: request.body,
 		mediaRefs: request.mediaRefs,
 		conversationRef: request.conversationToken,
+		edgePreparedRef: `edge-outbound-${request.conversationToken}`,
+		edgePreparedHash: fixtureEdgePreparedHash(request),
 		approvalRequestId: `approval-${request.conversationToken}`,
 		approvalRevision: 1,
 		approvalMetadata: { source: "approval-continuation-probe" },
 	});
 	return { outboundRef: record.ref, approvalRequestId: record.approvalRequestId };
+}
+
+function fixtureEdgePreparedHash(request: TelclaudeMcpOutboundPrepareRequest): string {
+	return crypto
+		.createHash("sha256")
+		.update(
+			JSON.stringify({
+				channel: request.outboundChannels[0],
+				conversationToken: request.conversationToken,
+				replyIntent: request.replyIntent ?? null,
+				body: request.body,
+				mediaRefs: request.mediaRefs,
+			}),
+		)
+		.digest("hex");
+}
+
+function fixtureConversationToken(label: string): string {
+	return `conv_${crypto.createHash("sha256").update(label, "utf8").digest("hex").slice(0, 32)}`;
 }
 
 function outboundDestinationForFixture(request: TelclaudeMcpOutboundPrepareRequest): string {
@@ -484,9 +506,9 @@ async function runOutboundFixture(
 	const observations: ApprovalContinuationObservation[] = [];
 	try {
 		const prepared = (await harness.bridge.tc_outbound_prepare({
-			channel: "whatsapp",
-			recipient: "+15551234567",
-			content: "I'll pick up dinner at 19:00.",
+			conversationToken: fixtureConversationToken("outbound"),
+			replyIntent: { kind: "address", addressRef: "+15551234567" },
+			body: "I'll pick up dinner at 19:00.",
 			mediaRefs: ["attachment:menu"],
 		})) as PreparedOutbound;
 		const record = requireRecord(harness.ledger, prepared.outboundRef);
@@ -510,9 +532,9 @@ async function runCronFixture(
 	const observations: ApprovalContinuationObservation[] = [];
 	try {
 		const prepared = (await harness.bridge.tc_outbound_prepare({
-			channel: "whatsapp",
-			recipient: "+15557654321",
-			content: "Daily brief is ready.",
+			conversationToken: fixtureConversationToken("cron"),
+			replyIntent: { kind: "address", addressRef: "+15557654321" },
+			body: "Daily brief is ready.",
 			mediaRefs: [],
 		})) as PreparedOutbound;
 		const record = requireRecord(harness.ledger, prepared.outboundRef);
@@ -673,9 +695,9 @@ async function runMutatedDecisionDenied(
 	harness: ProbeHarness,
 ): Promise<ApprovalContinuationObservation> {
 	const prepared = (await harness.bridge.tc_outbound_prepare({
-		channel: "whatsapp",
-		recipient: "+15550001111",
-		content: "Original message",
+		conversationToken: fixtureConversationToken("mutated"),
+		replyIntent: { kind: "address", addressRef: "+15550001111" },
+		body: "Original message",
 		mediaRefs: [],
 	})) as PreparedOutbound;
 	const record = requireRecord(harness.ledger, prepared.outboundRef);

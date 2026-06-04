@@ -83,7 +83,7 @@ type ServedMcpOriginObservation =
 			readonly detail: string;
 	  };
 
-const OUTBOUND_WITHOUT_LEDGER_TOKEN = "tc_probe_outbound_without_ledger_token";
+const UNAUTHORIZED_OUTBOUND_CONVERSATION_TOKEN = `conv_${"0".repeat(32)}`;
 
 export async function runServedMcpContainmentProbe(
 	options: RunServedMcpContainmentProbeOptions,
@@ -296,16 +296,15 @@ export async function runServedMcpContainmentProbe(
 		fetcher,
 		endpoint,
 		toolCall("tc_outbound_prepare", {
-			channel: "telegram",
-			recipient: "family",
-			content: "hello",
+			conversationToken: UNAUTHORIZED_OUTBOUND_CONVERSATION_TOKEN,
+			body: "hello",
 		}),
 		timeoutMs,
 	);
 	checks.push(
 		passIf(
 			"out_of_scope_outbound_denied",
-			expectedRpcError(outOfScopeOutbound, -32001, "outbound channel denied"),
+			expectedRpcError(outOfScopeOutbound, -32001, "outbound conversation unavailable"),
 			"out-of-scope outbound prepare was specifically denied",
 			"out-of-scope outbound prepare was not specifically denied",
 			outOfScopeOutbound,
@@ -338,7 +337,6 @@ export async function runServedMcpContainmentProbe(
 		endpoint,
 		toolCall("tc_outbound_execute", {
 			outboundRef: "tc_probe_missing_outbound_ref",
-			approvalToken: OUTBOUND_WITHOUT_LEDGER_TOKEN,
 		}),
 		timeoutMs,
 	);
@@ -966,13 +964,9 @@ function sensitiveNeedles(options: RunServedMcpContainmentProbeOptions): string[
 		}
 		return needles;
 	});
-	return [
-		OUTBOUND_WITHOUT_LEDGER_TOKEN,
-		"approvalToken",
-		"signature",
-		"tc_mcp_",
-		...endpointNeedles,
-	].filter((needle) => needle.trim().length >= 3);
+	return ["approvalToken", "signature", "tc_mcp_", ...endpointNeedles].filter(
+		(needle) => needle.trim().length >= 3,
+	);
 }
 
 function containsSensitiveNeedle(serialized: string, needles: readonly string[]): boolean {

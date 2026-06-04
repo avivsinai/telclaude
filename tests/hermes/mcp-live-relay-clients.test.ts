@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { TelclaudeEdgeRuntime } from "../../src/hermes/edge-adapter-runtime.js";
 import type {
 	TelclaudeMcpAttachmentGetRequest,
 	TelclaudeMcpAuthorityStamp,
@@ -14,6 +15,7 @@ import type {
 import { createTelclaudeLiveMcpRelayClients } from "../../src/hermes/mcp/live-relay-clients.js";
 import { startTelclaudeLiveMcpRuntime } from "../../src/hermes/mcp/live-runtime.js";
 import { createTelclaudeMcpSideEffectLedger } from "../../src/hermes/mcp/side-effect-ledger.js";
+import { createRelayConversationStore } from "../../src/hermes/relay-conversation-store.js";
 import type { AttachmentRef } from "../../src/storage/attachment-refs.js";
 import { resetDatabase } from "../../src/storage/db.js";
 
@@ -145,6 +147,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 				return { status: "ok", data: {} };
 			},
 			providerWriteApproverActorId: "operator:provider-approver",
+			outboundApproverActorId: "operator:outbound-approver",
 		});
 
 		const providerPrepared = (await clients.providerPrepareWrite(
@@ -169,25 +172,83 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			idempotencyKey: "idem-provider",
 		});
 
+		const { token } = mintWhatsappConversation("dinner");
 		const outboundPrepared = (await clients.outboundPrepare(
 			outboundPrepare({
-				channel: "whatsapp",
-				recipient: "+15551234567",
-				content: "I'll pick up dinner at 19:00.",
-				mediaRefs: ["att_menu"],
+				conversationToken: token,
+				replyIntent: { kind: "address", addressRef: "+15551234567" },
+				body: "I'll pick up dinner at 19:00.",
 			}),
-		)) as { outboundRef: string; approvalRequestId: string };
+		)) as {
+			outboundRef: string;
+			approvalRequestId: string;
+			edgePreparedRef: string;
+			edgePreparedHash: string;
+		};
 		expect(outboundPrepared.approvalRequestId).toBe("approval-2");
+		expect(outboundPrepared.edgePreparedRef).toMatch(/^edge-out:/);
+		expect(outboundPrepared.edgePreparedHash).toMatch(/^[a-f0-9]{64}$/);
 		expect(ledger.get(outboundPrepared.outboundRef)).toMatchObject({
 			kind: "outbound",
 			status: "prepared",
 			actorId: "operator",
+			approverActorId: "operator:outbound-approver",
 			channel: "whatsapp",
 			destination: "+15551234567",
 			renderedBody: "I'll pick up dinner at 19:00.",
-			mediaRefs: ["att_menu"],
-			conversationRef: "whatsapp:+15551234567",
+			mediaRefs: [],
+			conversationRef: token,
+			edgePreparedRef: outboundPrepared.edgePreparedRef,
+			edgePreparedHash: outboundPrepared.edgePreparedHash,
 		});
+	});
+
+	it("fails outbound preparation closed when the conversation is not relay-authorized", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const denied = mintWhatsappConversation("denied", { authorizationState: "denied" });
+
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: denied.token,
+					body: "should not prepare",
+				}),
+			),
+		).rejects.toThrow("outbound conversation unavailable or unauthorized");
+		expect(ledger.list()).toEqual([]);
+	});
+
+	it("fails outbound preparation closed for unauthorized channels and non-targetable intents", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+		});
+		const { token } = mintWhatsappConversation("scope");
+
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					outboundChannels: ["email"],
+				}),
+			),
+		).rejects.toThrow("outbound channel denied: whatsapp");
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					replyIntent: { kind: "address", addressRef: "+15550000000" },
+				}),
+			),
+		).rejects.toThrow("reply intent address is not targetable");
+		expect(ledger.list()).toEqual([]);
 	});
 
 	it("fails provider write preparation closed without a distinct relay-side approver", async () => {
@@ -209,6 +270,57 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			"provider write approval denied: providerWriteApproverActorId must differ from actorId",
 		);
 		expect(selfApproverLedger.list()).toEqual([]);
+	});
+
+	it("fails outbound preparation closed without a distinct relay-side approver", async () => {
+		const missingApproverLedger = testLedger();
+		const missingApproverEdgeRuntime = new CountingEdgeRuntime();
+		let missingMediaResolutions = 0;
+		const missingApproverClients = createTelclaudeLiveMcpRelayClients({
+			ledger: missingApproverLedger,
+			edgeRuntime: missingApproverEdgeRuntime,
+			resolveOutboundMediaRefs: () => {
+				missingMediaResolutions += 1;
+				return [];
+			},
+		});
+		const { token: missingToken } = mintWhatsappConversation("missing-outbound-approver");
+		await expect(
+			missingApproverClients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: missingToken,
+					mediaRefs: ["att_should_not_resolve_missing"],
+				}),
+			),
+		).rejects.toThrow("outbound approval denied: outboundApproverActorId is not configured");
+		expect(missingApproverLedger.list()).toEqual([]);
+		expect(missingMediaResolutions).toBe(0);
+		expect(missingApproverEdgeRuntime.prepareOutboundCalls).toBe(0);
+
+		const selfApproverLedger = testLedger();
+		const selfApproverEdgeRuntime = new CountingEdgeRuntime();
+		let selfMediaResolutions = 0;
+		const selfApproverClients = createTelclaudeLiveMcpRelayClients({
+			ledger: selfApproverLedger,
+			edgeRuntime: selfApproverEdgeRuntime,
+			outboundApproverActorId: "operator",
+			resolveOutboundMediaRefs: () => {
+				selfMediaResolutions += 1;
+				return [];
+			},
+		});
+		const { token: selfToken } = mintWhatsappConversation("self-outbound-approver");
+		await expect(
+			selfApproverClients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: selfToken,
+					mediaRefs: ["att_should_not_resolve_self"],
+				}),
+			),
+		).rejects.toThrow("outbound approval denied: outboundApproverActorId must differ from actorId");
+		expect(selfApproverLedger.list()).toEqual([]);
+		expect(selfMediaResolutions).toBe(0);
+		expect(selfApproverEdgeRuntime.prepareOutboundCalls).toBe(0);
 	});
 
 	it("returns attachment metadata only and validates refs against the authority actor", async () => {
@@ -297,6 +409,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 					ledger,
 					makeApprovalRequestId: () => "runtime-approval",
 					providerWriteApproverActorId: "operator:provider-approver",
+					outboundApproverActorId: "operator:outbound-approver",
 				}),
 		});
 		try {
@@ -367,6 +480,17 @@ function makeRefs(): () => string {
 function makeApprovalIds(): () => string {
 	let id = 0;
 	return () => `approval-${++id}`;
+}
+
+class CountingEdgeRuntime extends TelclaudeEdgeRuntime {
+	prepareOutboundCalls = 0;
+
+	override prepareOutbound(
+		input: Parameters<TelclaudeEdgeRuntime["prepareOutbound"]>[0],
+	): ReturnType<TelclaudeEdgeRuntime["prepareOutbound"]> {
+		this.prepareOutboundCalls += 1;
+		return super.prepareOutbound(input);
+	}
 }
 
 function privateStamp(
@@ -454,12 +578,43 @@ function outboundPrepare(
 ): TelclaudeMcpOutboundPrepareRequest {
 	return {
 		...privateStamp(),
-		channel: "whatsapp",
-		recipient: "+15551234567",
-		content: "hello",
+		conversationToken: `conv_${"1".repeat(32)}`,
+		body: "hello",
 		mediaRefs: [],
+		outboundChannels: ["whatsapp"],
 		...overrides,
 	};
+}
+
+function mintWhatsappConversation(
+	suffix: string,
+	overrides: Partial<Parameters<ReturnType<typeof createRelayConversationStore>["mint"]>[0]> = {},
+): { token: string } {
+	const store = createRelayConversationStore();
+	return store.mint({
+		channel: "whatsapp",
+		conversationId: `conversation-${suffix}`,
+		threadId: `thread-${suffix}`,
+		profileId: "ops",
+		domain: "private",
+		routingSession: {
+			sessionId: `session-${suffix}`,
+			routeKey: `route-${suffix}`,
+		},
+		members: [
+			{
+				actorId: `actor:${suffix}:sender`,
+				principalId: "+15557654321",
+				role: "sender",
+			},
+			{
+				actorId: `actor:${suffix}:recipient`,
+				principalId: "+15551234567",
+				role: "recipient",
+			},
+		],
+		...overrides,
+	});
 }
 
 function attachmentGet(

@@ -11,11 +11,30 @@ import type { MemoryCategory, TrustLevel } from "../../memory/types.js";
 import { isValidCategory, isValidTrust } from "../../memory/validation.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
-import { type AttachmentRef, validateAttachmentRef } from "../../storage/attachment-refs.js";
+import {
+	type AttachmentRef as StoredAttachmentRef,
+	validateAttachmentRef,
+} from "../../storage/attachment-refs.js";
+import {
+	EdgeAdapterSchemaVersions,
+	type AttachmentRef as EdgeAttachmentRef,
+	type PreparedOutbound,
+} from "../edge-adapter-contract.js";
+import { TelclaudeEdgeRuntime } from "../edge-adapter-runtime.js";
+import {
+	assertTargetableReplyIntent,
+	createRelayConversationStore,
+	type RelayConversation,
+	type RelayConversationReplyIntent,
+	type RelayConversationStore,
+	relayAuthorityActorRefFor,
+	relayConversationToConversationRef,
+} from "../relay-conversation-store.js";
 import type {
 	TelclaudeMcpAttachmentGetRequest,
 	TelclaudeMcpAuditNoteRequest,
 	TelclaudeMcpMemorySearchRequest,
+	TelclaudeMcpOutboundPrepareRequest,
 	TelclaudeMcpProviderPrepareWriteRequest,
 	TelclaudeMcpProviderReadRequest,
 } from "./bridge.js";
@@ -37,6 +56,13 @@ type ProviderProxy = (request: ProviderProxyRequest) => Promise<{
 }>;
 
 type AttachmentValidator = typeof validateAttachmentRef;
+type OutboundMediaResolver = (
+	refs: readonly string[],
+	context: {
+		readonly request: TelclaudeMcpOutboundPrepareRequest;
+		readonly conversation: RelayConversation;
+	},
+) => readonly EdgeAttachmentRef[] | Promise<readonly EdgeAttachmentRef[]>;
 
 export type TelclaudeLiveMcpAuditEntry = {
 	readonly actorId: string;
@@ -54,6 +80,10 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly auditNote?: (entry: TelclaudeLiveMcpAuditEntry) => void | Promise<void>;
 	readonly makeApprovalRequestId?: () => string;
 	readonly providerWriteApproverActorId?: string;
+	readonly outboundApproverActorId?: string;
+	readonly conversationStore?: RelayConversationStore;
+	readonly edgeRuntime?: TelclaudeEdgeRuntime;
+	readonly resolveOutboundMediaRefs?: OutboundMediaResolver;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -68,6 +98,11 @@ export function createTelclaudeLiveMcpRelayClients(
 	const makeApprovalRequestId =
 		options.makeApprovalRequestId ?? (() => `mcp-approval-${crypto.randomUUID()}`);
 	const providerWriteApproverActorId = optionalTrimmed(options.providerWriteApproverActorId);
+	const outboundApproverActorId = optionalTrimmed(options.outboundApproverActorId);
+	const conversationStore = options.conversationStore ?? createRelayConversationStore();
+	const edgeRuntime = options.edgeRuntime ?? new TelclaudeEdgeRuntime();
+	const resolveOutboundMediaRefs =
+		options.resolveOutboundMediaRefs ?? defaultResolveOutboundMediaRefs;
 
 	return {
 		async providerRead(request) {
@@ -154,7 +189,56 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async outboundPrepare(request) {
 			assertAuthorityMemoryBoundary(request);
-			throw new Error("outbound conversation-token routing requires the S1 edge live path");
+			const conversation = resolveOutboundConversation(conversationStore, request);
+			assertOutboundConversationScope(request, conversation);
+			const replyIntent = request.replyIntent ?? defaultReplyIntent(conversation);
+			assertTargetableReplyIntent(conversation, replyIntent);
+			const approverActorId = outboundApproverFor(outboundApproverActorId, request.actorId);
+			const mediaRefs = await resolveOutboundMediaRefs(request.mediaRefs, {
+				request,
+				conversation,
+			});
+			const prepared = edgeRuntime.prepareOutbound({
+				authorizingActor: relayAuthorityActorRefFor(conversation),
+				request: {
+					schemaVersion: EdgeAdapterSchemaVersions.outboundRequest,
+					channel: conversation.channel,
+					recipient: replyIntent,
+					requestedBody: request.body,
+					mediaRefs,
+					conversationRef: relayConversationToConversationRef(conversation),
+					correlationId: outboundCorrelationId(request, conversation, replyIntent),
+				},
+			});
+			const record = options.ledger.prepare({
+				kind: "outbound",
+				actorId: request.actorId,
+				approverActorId,
+				profileId: request.profileId,
+				domain: request.domain,
+				channel: prepared.channel,
+				destination: destinationForPreparedOutbound(prepared),
+				renderedBody: prepared.finalRenderedBody,
+				mediaRefs: request.mediaRefs,
+				conversationRef: conversation.token,
+				edgePreparedRef: prepared.outboundRef,
+				edgePreparedHash: prepared.edgePreparedHash,
+				approvalRequestId: makeApprovalRequestId(),
+				approvalRevision: 1,
+				approvalMetadata: {
+					source: "hermes-live-mcp",
+					endpointId: request.endpointId,
+					networkNamespace: request.networkNamespace,
+					edgeSideEffectLedgerRef: prepared.sideEffectLedgerRef,
+				},
+				idempotencyKey: prepared.idempotencyKey,
+			});
+			return {
+				outboundRef: record.ref,
+				approvalRequestId: record.approvalRequestId,
+				edgePreparedRef: prepared.outboundRef,
+				edgePreparedHash: prepared.edgePreparedHash,
+			};
 		},
 
 		async auditNote(request: TelclaudeMcpAuditNoteRequest) {
@@ -188,6 +272,79 @@ function providerFetchBody(
 
 function providerErrorCode(response: { errorCode?: string; error?: string }): string {
 	return redactSecrets(response.errorCode || response.error || "provider_unavailable");
+}
+
+function resolveOutboundConversation(
+	store: RelayConversationStore,
+	request: TelclaudeMcpOutboundPrepareRequest,
+): RelayConversation {
+	const conversation = store.resolveAuthorized(request.conversationToken);
+	if (!conversation) {
+		throw new Error("outbound conversation unavailable or unauthorized");
+	}
+	return conversation;
+}
+
+function assertOutboundConversationScope(
+	request: TelclaudeMcpOutboundPrepareRequest,
+	conversation: RelayConversation,
+): void {
+	if (conversation.profileId !== request.profileId) {
+		throw new Error("outbound conversation profile mismatch");
+	}
+	if (conversation.mcpDomain !== request.domain) {
+		throw new Error("outbound conversation domain mismatch");
+	}
+	if (!request.outboundChannels.includes(conversation.channel)) {
+		throw new Error(`outbound channel denied: ${conversation.channel}`);
+	}
+}
+
+function defaultReplyIntent(conversation: RelayConversation): RelayConversationReplyIntent {
+	return { kind: "thread", threadId: conversation.threadId };
+}
+
+async function defaultResolveOutboundMediaRefs(
+	refs: readonly string[],
+): Promise<readonly EdgeAttachmentRef[]> {
+	if (refs.length > 0) {
+		throw new Error("outbound mediaRefs require an edge attachment resolver");
+	}
+	return [];
+}
+
+function destinationForPreparedOutbound(prepared: PreparedOutbound): string {
+	const destination = prepared.resolvedDestination;
+	switch (destination.kind) {
+		case "thread":
+			return destination.threadId ?? prepared.channel;
+		case "actor":
+			return destination.actorId ?? prepared.channel;
+		case "address":
+			return destination.addressRef ?? prepared.channel;
+	}
+}
+
+function outboundCorrelationId(
+	request: TelclaudeMcpOutboundPrepareRequest,
+	conversation: RelayConversation,
+	replyIntent: RelayConversationReplyIntent,
+): string {
+	const hash = crypto
+		.createHash("sha256")
+		.update(
+			JSON.stringify({
+				conversationToken: request.conversationToken,
+				endpointId: request.endpointId,
+				threadId: conversation.threadId,
+				replyIntent,
+				body: request.body,
+				mediaRefs: request.mediaRefs,
+			}),
+		)
+		.digest("hex")
+		.slice(0, 32);
+	return `mcp-outbound:${hash}`;
 }
 
 function assertProviderOperationPolicy(request: {
@@ -229,6 +386,16 @@ function providerWriteApproverFor(
 		);
 	}
 	return providerWriteApproverActorId;
+}
+
+function outboundApproverFor(outboundApproverActorId: string | undefined, actorId: string): string {
+	if (!outboundApproverActorId) {
+		throw new Error("outbound approval denied: outboundApproverActorId is not configured");
+	}
+	if (outboundApproverActorId === actorId.trim()) {
+		throw new Error("outbound approval denied: outboundApproverActorId must differ from actorId");
+	}
+	return outboundApproverActorId;
 }
 
 function optionalTrimmed(value: string | undefined): string | undefined {
@@ -280,7 +447,7 @@ function memoryEntryMatches(
 	);
 }
 
-function attachmentMetadata(attachment: AttachmentRef): Record<string, unknown> {
+function attachmentMetadata(attachment: StoredAttachmentRef): Record<string, unknown> {
 	return {
 		ref: attachment.ref,
 		providerId: attachment.providerId,

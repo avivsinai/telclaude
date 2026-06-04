@@ -262,7 +262,7 @@ describe("Telclaude live MCP relay-side server", () => {
 		});
 	});
 
-	it("denies cross-domain memory, out-of-scope provider, and out-of-scope outbound attempts", async () => {
+	it("denies cross-domain memory, out-of-scope provider, and legacy outbound attempts", async () => {
 		const harness = createHarness(cleanup);
 
 		expect(
@@ -294,7 +294,10 @@ describe("Telclaude live MCP relay-side server", () => {
 				harness.privateContext,
 			),
 		).toMatchObject({
-			error: { code: -32001, message: "outbound channel denied: telegram" },
+			error: {
+				code: -32001,
+				message: expect.stringContaining("Unrecognized keys"),
+			},
 		});
 		expect(harness.calls.memorySearch).toEqual([]);
 		expect(harness.calls.providerRead).toEqual([]);
@@ -545,29 +548,39 @@ describe("Telclaude live MCP relay-side server", () => {
 		]);
 	});
 
-	it("executes outbound side effects only through the ledger", async () => {
+	it("leaves outbound execute fail-closed until server-side approval resolution lands", async () => {
 		const harness = createHarness(cleanup);
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
-		const token = await tokenFor(harness, outbound, "jti-live-outbound");
 
+		await expect(
+			harness.server
+				.handleJsonRpc(
+					toolCall("tc_outbound_execute", {
+						outboundRef: outbound.ref,
+						approvalToken: "model-supplied-token",
+					}),
+					harness.privateContext,
+				)
+				.then(resultOf),
+		).rejects.toThrow("Unrecognized key");
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
 					toolCall("tc_outbound_execute", {
 						outboundRef: outbound.ref,
-						approvalToken: token,
 					}),
 					harness.privateContext,
 				),
 			),
 		).toEqual({
-			ok: true,
-			record: expect.objectContaining({
-				ref: outbound.ref,
-				status: "executed",
-				approvalId: "jti-live-outbound",
-			}),
+			ok: false,
+			code: "approval_required",
+			reason: "outbound side effects require server-side approval resolution by outboundRef",
+			retryable: false,
 		});
+		expect(harness.ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		);
 	});
 });
 
@@ -769,7 +782,7 @@ function outboundPrepareInput(
 	return {
 		kind: "outbound",
 		actorId: "operator",
-		approverActorId: "operator",
+		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private",
 		channel: "whatsapp",
@@ -777,6 +790,8 @@ function outboundPrepareInput(
 		renderedBody: "I'll pick up dinner at 19:00.",
 		mediaRefs: ["attachment:menu"],
 		conversationRef: "whatsapp:+15551234567",
+		edgePreparedRef: "edge-outbound-live-1",
+		edgePreparedHash: "a".repeat(64),
 		approvalRequestId: "approval-live-outbound",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },

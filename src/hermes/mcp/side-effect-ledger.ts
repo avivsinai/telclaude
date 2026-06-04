@@ -15,6 +15,7 @@ const PROVIDER_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.p
 const PROVIDER_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.body.v1";
 const OUTBOUND_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.params.v1";
 const OUTBOUND_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.body.v1";
+const EDGE_PREPARED_HASH_RE = /^[a-f0-9]{64}$/;
 
 export type TelclaudeMcpSideEffectDomain =
 	| "private"
@@ -64,6 +65,8 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly renderedBody: string;
 	readonly mediaRefs: readonly string[];
 	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly approvalMetadata: Record<string, unknown>;
@@ -112,6 +115,8 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly renderedBody: string;
 	readonly mediaRefs?: readonly string[];
 	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly approvalMetadata?: Record<string, unknown>;
@@ -154,6 +159,8 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly channel: string;
 	readonly destination: string;
 	readonly conversationRef: string;
+	readonly edgePreparedRef: string;
+	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly idempotencyKey?: string;
@@ -455,6 +462,8 @@ function prepareOutboundRecord(
 		renderedBody: requiredTrimmed(input.renderedBody, "renderedBody"),
 		mediaRefs: normalizeStringList(input.mediaRefs ?? [], "mediaRefs"),
 		conversationRef: requiredTrimmed(input.conversationRef, "conversationRef"),
+		edgePreparedRef: requiredTrimmed(input.edgePreparedRef, "edgePreparedRef"),
+		edgePreparedHash: normalizeEdgePreparedHash(input.edgePreparedHash),
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
 		approvalRevision: normalizeRevision(input.approvalRevision),
 		approvalMetadata: cloneJsonObject(input.approvalMetadata ?? {}, "approvalMetadata"),
@@ -518,6 +527,8 @@ function hashOutboundParams(record: OutboundBindingFields): string {
 		destination: record.destination,
 		mediaRefs: record.mediaRefs,
 		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		approvalMetadata: record.approvalMetadata,
@@ -536,6 +547,8 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 		renderedBody: record.renderedBody,
 		mediaRefs: record.mediaRefs,
 		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		approvalMetadata: record.approvalMetadata,
@@ -572,6 +585,8 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 		channel: record.channel,
 		destination: record.destination,
 		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		idempotencyKey: record.idempotencyKey ?? null,
@@ -615,6 +630,8 @@ function approvalBinding(
 		channel: record.channel,
 		destination: record.destination,
 		conversationRef: record.conversationRef,
+		edgePreparedRef: record.edgePreparedRef,
+		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {}),
@@ -781,6 +798,14 @@ function requiredTrimmed(value: string, field: string): string {
 	return trimmed;
 }
 
+function normalizeEdgePreparedHash(value: string): string {
+	const trimmed = requiredTrimmed(value, "edgePreparedHash");
+	if (!EDGE_PREPARED_HASH_RE.test(trimmed)) {
+		throw new Error("side-effect edgePreparedHash must be a 64-character lowercase hex digest");
+	}
+	return trimmed;
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -811,6 +836,8 @@ type OutboundBindingFields = Pick<
 	| "renderedBody"
 	| "mediaRefs"
 	| "conversationRef"
+	| "edgePreparedRef"
+	| "edgePreparedHash"
 	| "approvalRequestId"
 	| "approvalRevision"
 	| "approvalMetadata"

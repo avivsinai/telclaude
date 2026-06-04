@@ -92,6 +92,21 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 		).rejects.toThrow("jti must be 256 characters or less");
 	});
 
+	it("refuses to sign outbound approval bindings with malformed edge hashes", async () => {
+		const { binding } = outboundFixture();
+
+		await expect(
+			generateTelclaudeMcpSideEffectApprovalToken(
+				{ ...binding, edgePreparedHash: "edge-prepared-hash-1" },
+				vault,
+				{
+					nowSeconds: () => 100,
+					jti: "jti-invalid-edge-hash",
+				},
+			),
+		).rejects.toThrow("Invalid side-effect approval binding");
+	});
+
 	it("accepts a matching token once and rejects replay through the durable JTI store", async () => {
 		const { binding, record } = providerFixture();
 		const verifier = createVerifier();
@@ -413,6 +428,8 @@ function outboundPrepareInput(
 		renderedBody: "I'll pick up dinner at 19:00.",
 		mediaRefs: ["attachment:menu"],
 		conversationRef: "whatsapp:+15551234567",
+		edgePreparedRef: "edge-outbound-1",
+		edgePreparedHash: "a".repeat(64),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },
