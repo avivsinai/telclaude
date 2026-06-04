@@ -1,3 +1,6 @@
+import { createHash, randomBytes } from "node:crypto";
+import { sortKeysDeep } from "../crypto/canonical-hash.js";
+import { QUARANTINE_MAX_BYTES } from "./attachment-quarantine-store.js";
 import type {
 	ChannelSendOutcome,
 	EdgeChannelConnector,
@@ -5,7 +8,15 @@ import type {
 } from "./edge-channel-connector.js";
 
 export const WHATSAPP_SIDECAR_SEND_SCHEMA_VERSION = "telclaude.edge.whatsapp.send.v1";
+export const WHATSAPP_SIDECAR_MAX_MEDIA_BYTES = QUARANTINE_MAX_BYTES;
+export const WHATSAPP_INBOUND_RISK_WRAP_REQUIRED =
+	"WhatsApp inbound listener requires CL-1 risk wrapping before edge.ingest";
 export const TELCLAUDE_WHATSAPP_SIDECAR_URL_ENV = "TELCLAUDE_WHATSAPP_SIDECAR_URL";
+export const WHATSAPP_SIDECAR_ALLOWED_HOST = "whatsapp-bridge";
+export const WHATSAPP_SIDECAR_SESSION_KEY_HEADER = "x-telclaude-whatsapp-session-key";
+export const WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER = "x-telclaude-whatsapp-request-digest";
+export const WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER = "x-telclaude-whatsapp-session-expires-at";
+export const DEFAULT_WHATSAPP_BRIDGE_SESSION_TTL_MS = 60_000;
 
 export type WhatsAppSidecarAttachment = {
 	readonly quarantineId: string;
@@ -38,9 +49,20 @@ export type WhatsAppSidecarSendResponse =
 			readonly retryable?: boolean;
 	  };
 
+export type WhatsAppBridgeSessionMaterial = {
+	readonly sessionKey: string;
+	readonly requestDigest: string;
+	readonly expiresAtMs: number;
+};
+
 export type WhatsAppSidecarSender = (
 	request: WhatsAppSidecarSendRequest,
+	session: WhatsAppBridgeSessionMaterial,
 ) => Promise<WhatsAppSidecarSendResponse>;
+
+export type WhatsAppBridgeSessionFactory = (
+	request: WhatsAppSidecarSendRequest,
+) => Promise<WhatsAppBridgeSessionMaterial>;
 
 type FetchLike = (
 	url: URL,
@@ -58,8 +80,10 @@ type FetchLike = (
 
 export type WhatsAppEdgeChannelConnectorOptions = {
 	readonly sidecarUrl?: string;
+	readonly bridgeSessionFactory?: WhatsAppBridgeSessionFactory;
 	readonly sendToSidecar?: WhatsAppSidecarSender;
 	readonly fetch?: FetchLike;
+	readonly now?: () => number;
 };
 
 export function createWhatsAppEdgeChannelConnector(
@@ -67,6 +91,10 @@ export function createWhatsAppEdgeChannelConnector(
 ): EdgeChannelConnector {
 	const sidecarUrl = normalizeOptionalUrl(options.sidecarUrl);
 	const fetchImpl = options.fetch ?? globalFetch();
+	const bridgeSessionFactory =
+		options.bridgeSessionFactory ??
+		((request) =>
+			Promise.resolve(createWhatsAppBridgeSessionMaterial(request, { now: options.now })));
 
 	return {
 		channel: "whatsapp",
@@ -75,7 +103,12 @@ export function createWhatsAppEdgeChannelConnector(
 			if (!request.ok) return request;
 
 			if (options.sendToSidecar) {
-				return mapSidecarResponse(await options.sendToSidecar(request.request));
+				const session = await createBoundWhatsAppBridgeSession(
+					bridgeSessionFactory,
+					request.request,
+				);
+				if (!session.ok) return session;
+				return mapSidecarResponse(await options.sendToSidecar(request.request, session.session));
 			}
 			if (!sidecarUrl.ok) {
 				return {
@@ -93,7 +126,12 @@ export function createWhatsAppEdgeChannelConnector(
 					retryable: false,
 				};
 			}
-			return sendViaHttpSidecar(fetchImpl, sidecarUrl.url, request.request);
+			const session = await createBoundWhatsAppBridgeSession(bridgeSessionFactory, request.request);
+			if (!session.ok) return session;
+			return sendViaHttpSidecar(fetchImpl, sidecarUrl.url, session.session, request.request);
+		},
+		async startListener() {
+			throw new Error(WHATSAPP_INBOUND_RISK_WRAP_REQUIRED);
 		},
 	};
 }
@@ -113,6 +151,7 @@ async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext)
 	| Extract<ChannelSendOutcome, { ok: false }>
 > {
 	const attachments: WhatsAppSidecarAttachment[] = [];
+	let totalMediaBytes = 0;
 	for (const mediaRef of context.prepared.mediaRefs) {
 		const released = await context.resolveAttachment(mediaRef.quarantineId);
 		if (!released) {
@@ -120,6 +159,18 @@ async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext)
 				ok: false,
 				code: "attachment_missing",
 				reason: `prepared attachment is unavailable: ${mediaRef.quarantineId}`,
+				retryable: false,
+			};
+		}
+		totalMediaBytes += released.bytes.byteLength;
+		if (
+			released.bytes.byteLength > WHATSAPP_SIDECAR_MAX_MEDIA_BYTES ||
+			totalMediaBytes > WHATSAPP_SIDECAR_MAX_MEDIA_BYTES
+		) {
+			return {
+				ok: false,
+				code: "whatsapp_media_too_large",
+				reason: `WhatsApp sidecar media exceeds cap ${WHATSAPP_SIDECAR_MAX_MEDIA_BYTES}`,
 				retryable: false,
 			};
 		}
@@ -149,8 +200,11 @@ async function buildWhatsAppSidecarSendRequest(context: OutboundDeliveryContext)
 async function sendViaHttpSidecar(
 	fetchImpl: FetchLike,
 	sidecarUrl: URL,
+	session: WhatsAppBridgeSessionMaterial,
 	request: WhatsAppSidecarSendRequest,
 ): Promise<ChannelSendOutcome> {
+	const checkedSession = validateWhatsAppBridgeSessionMaterial(session, request);
+	if (!checkedSession.ok) return checkedSession;
 	let response: Awaited<ReturnType<FetchLike>>;
 	try {
 		response = await fetchImpl(sidecarUrl, {
@@ -159,6 +213,9 @@ async function sendViaHttpSidecar(
 				"Content-Type": "application/json",
 				Accept: "application/json",
 				"x-relay-proxy": "true",
+				[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]: checkedSession.session.sessionKey,
+				[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER]: checkedSession.session.requestDigest,
+				[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER]: new Date(session.expiresAtMs).toISOString(),
 			},
 			body: JSON.stringify(request),
 		});
@@ -278,7 +335,83 @@ function normalizeOptionalUrl(value: string | undefined):
 			reason: "WhatsApp sidecar URL must be http or https",
 		};
 	}
+	if (base.hostname !== WHATSAPP_SIDECAR_ALLOWED_HOST) {
+		return {
+			ok: false,
+			code: "whatsapp_sidecar_config_invalid",
+			reason: `WhatsApp sidecar host must be ${WHATSAPP_SIDECAR_ALLOWED_HOST}`,
+		};
+	}
 	return { ok: true, url: new URL("/v1/whatsapp/send", base) };
+}
+
+export function createWhatsAppBridgeSessionMaterial(
+	request: WhatsAppSidecarSendRequest,
+	options: { readonly now?: () => number } = {},
+): WhatsAppBridgeSessionMaterial {
+	const now = options.now?.() ?? Date.now();
+	return {
+		sessionKey: `wa-session:${randomBytes(32).toString("base64url")}`,
+		requestDigest: digestWhatsAppSidecarSendRequest(request),
+		expiresAtMs: now + DEFAULT_WHATSAPP_BRIDGE_SESSION_TTL_MS,
+	};
+}
+
+export function digestWhatsAppSidecarSendRequest(request: WhatsAppSidecarSendRequest): string {
+	const canonical = JSON.stringify(sortKeysDeep(request));
+	const digest = createHash("sha256").update(canonical).digest("hex");
+	return `sha256:${digest}`;
+}
+
+async function createBoundWhatsAppBridgeSession(
+	factory: WhatsAppBridgeSessionFactory,
+	request: WhatsAppSidecarSendRequest,
+): Promise<
+	| {
+			readonly ok: true;
+			readonly session: WhatsAppBridgeSessionMaterial;
+	  }
+	| Extract<ChannelSendOutcome, { ok: false }>
+> {
+	return validateWhatsAppBridgeSessionMaterial(await factory(request), request);
+}
+
+function validateWhatsAppBridgeSessionMaterial(
+	session: WhatsAppBridgeSessionMaterial,
+	request: WhatsAppSidecarSendRequest,
+):
+	| {
+			readonly ok: true;
+			readonly session: WhatsAppBridgeSessionMaterial;
+	  }
+	| Extract<ChannelSendOutcome, { ok: false }> {
+	const sessionKey = session.sessionKey.trim();
+	if (!sessionKey) {
+		return {
+			ok: false,
+			code: "whatsapp_bridge_session_invalid",
+			reason: "WhatsApp bridge session key is empty",
+			retryable: false,
+		};
+	}
+	const expectedDigest = digestWhatsAppSidecarSendRequest(request);
+	if (session.requestDigest !== expectedDigest) {
+		return {
+			ok: false,
+			code: "whatsapp_bridge_session_digest_mismatch",
+			reason: "WhatsApp bridge session is not bound to the sidecar request digest",
+			retryable: false,
+		};
+	}
+	if (!Number.isFinite(session.expiresAtMs) || session.expiresAtMs <= 0) {
+		return {
+			ok: false,
+			code: "whatsapp_bridge_session_invalid",
+			reason: "WhatsApp bridge session expiry is invalid",
+			retryable: false,
+		};
+	}
+	return { ok: true, session: { ...session, sessionKey } };
 }
 
 function globalFetch(): FetchLike | undefined {

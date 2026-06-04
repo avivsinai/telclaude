@@ -181,6 +181,27 @@ if [ -n "$PROVIDER_HOSTS_RAW" ]; then
     echo "[firewall] added provider hosts: ${PROVIDER_HOSTS[*]}"
 fi
 
+# Auto-include the WhatsApp bridge host only when the relay is explicitly
+# configured to call one. This avoids delaying startup on installs that do not
+# run a WhatsApp bridge while still allowing the relay-only bridge network when
+# TELCLAUDE_WHATSAPP_SIDECAR_URL is set.
+if [ -n "${TELCLAUDE_WHATSAPP_SIDECAR_URL:-}" ] && command -v node &> /dev/null; then
+    WHATSAPP_BRIDGE_HOST="$(
+        TELCLAUDE_WHATSAPP_SIDECAR_URL="$TELCLAUDE_WHATSAPP_SIDECAR_URL" node <<'NODE'
+try {
+  const url = new URL(process.env.TELCLAUDE_WHATSAPP_SIDECAR_URL || "");
+  process.stdout.write(url.hostname || "");
+} catch {}
+NODE
+    )"
+    if [ "$WHATSAPP_BRIDGE_HOST" = "whatsapp-bridge" ]; then
+        append_internal_host "$WHATSAPP_BRIDGE_HOST"
+        echo "[firewall] added WhatsApp bridge host: $WHATSAPP_BRIDGE_HOST"
+    elif [ -n "$WHATSAPP_BRIDGE_HOST" ]; then
+        echo "[firewall] warning: WhatsApp bridge host must be whatsapp-bridge, not $WHATSAPP_BRIDGE_HOST"
+    fi
+fi
+
 # Parse privateEndpoints from config (security.network.privateEndpoints[])
 # These allow agent WebFetch access to specific trusted private network hosts/CIDRs.
 PRIVATE_ENDPOINTS_RAW=""

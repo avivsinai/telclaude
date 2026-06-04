@@ -72,6 +72,10 @@ The private persona (Telegram agent) and public persona (social agent) are air-g
 
 The Google services sidecar sits on two isolated Docker networks: `relay-google` (relay communication) and `google-egress` (outbound to `googleapis.com` only, enforced by iptables rules in `init-firewall.sh`). Agent containers have no route to the sidecar — all Google queries flow through the relay, which handles approval gating, attachment storage, and audit logging. The sidecar connects to the vault via Unix socket for OAuth token retrieval and approval token signature verification, but never sees raw OAuth credentials in its environment.
 
+### Relay ↔ WhatsApp Bridge Split
+
+The WhatsApp bridge is an edge transport, not an agent/provider runtime. The relay talks to it only over the dedicated `telclaude-relay-whatsapp` Docker network, and the bridge must not join agent, Hermes, provider, workspace, media, or vault networks. Outbound sends carry relay-generated one-shot bridge-session headers bound to the exact sidecar request digest; the request JSON does not contain reusable bridge credentials. Inbound WhatsApp listeners remain dark until CL-1 wraps messages as untrusted external content before `edge.ingest`.
+
 This prevents the **confused deputy problem**: social memory could contain prompt injection from a public timeline. If the private agent processed that memory, the injected instructions would execute with elevated privileges (workspace access, FULL_ACCESS tools). The air gap ensures untrusted social content never reaches the privileged private context.
 
 ## Security Model
