@@ -103,6 +103,8 @@ services:
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       # Internal hosts allowed through firewall (relay needs to reach agents)
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social,google-services}
+      # Optional external WhatsApp bridge; attach it only to telclaude-relay-whatsapp.
+      - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-}
 
       # Drop privileges after firewall init (gosu -> node user)
       # Docker mode: SDK sandbox disabled, container provides isolation
@@ -185,6 +187,7 @@ services:
       - relay-totp-net
       - relay-vault-net
       - relay-google-net
+      - relay-whatsapp-net
       - relay-egress
       - social-relay-net
       - relay-israel-net
@@ -808,6 +811,14 @@ networks:
 
   relay-google-net:
     name: telclaude-relay-google
+    driver: bridge
+    internal: true
+
+  # Dedicated relay↔WhatsApp bridge network. Only the relay and the external
+  # whatsapp-bridge sidecar should join this network; never attach agent,
+  # Hermes, vault, provider, workspace, or media containers here.
+  relay-whatsapp-net:
+    name: telclaude-relay-whatsapp
     driver: bridge
     internal: true
 

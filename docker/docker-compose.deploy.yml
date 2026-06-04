@@ -103,6 +103,7 @@ services:
       # Network / firewall
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent,agent-social}
+      - TELCLAUDE_WHATSAPP_SIDECAR_URL=${TELCLAUDE_WHATSAPP_SIDECAR_URL:-}
       - TELCLAUDE_ACCEPT_NO_FIREWALL=${TELCLAUDE_ACCEPT_NO_FIREWALL:-0}
       - TELCLAUDE_ALLOW_DEGRADED_PROVIDERS=${TELCLAUDE_ALLOW_DEGRADED_PROVIDERS:-0}
 
@@ -165,6 +166,7 @@ services:
       - runner-relay-net
       - relay-totp-net
       - relay-vault-net
+      - relay-whatsapp-net
       - relay-egress
       - social-relay-net
 
@@ -605,6 +607,14 @@ networks:
 
   relay-vault-net:
     name: telclaude-relay-vault
+    driver: bridge
+    internal: true
+
+  # Dedicated relay↔WhatsApp bridge network. Only the relay and the external
+  # whatsapp-bridge sidecar should join this network; never attach agent,
+  # Hermes, vault, provider, workspace, or media containers here.
+  relay-whatsapp-net:
+    name: telclaude-relay-whatsapp
     driver: bridge
     internal: true
 

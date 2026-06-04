@@ -22,6 +22,13 @@ import {
 } from "../../src/relay/outbound-delivery-dispatcher.js";
 import {
 	createWhatsAppEdgeChannelConnector,
+	digestWhatsAppSidecarSendRequest,
+	WHATSAPP_INBOUND_RISK_WRAP_REQUIRED,
+	WHATSAPP_SIDECAR_ALLOWED_HOST,
+	WHATSAPP_SIDECAR_MAX_MEDIA_BYTES,
+	WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER,
+	WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER,
+	WHATSAPP_SIDECAR_SESSION_KEY_HEADER,
 	type WhatsAppSidecarSendRequest,
 } from "../../src/relay/whatsapp-edge-channel-connector.js";
 
@@ -382,14 +389,17 @@ describe("outbound delivery dispatcher", () => {
 
 	it("sends WhatsApp through the connector with resolvedDestination verbatim", async () => {
 		const sent: WhatsAppSidecarSendRequest[] = [];
+		const sessions: string[] = [];
 		const resolvedDestination = {
 			kind: "address" as const,
 			addressRef: "whatsapp:+15551234567",
 			conversationId: "relay-conversation-token",
 		};
 		const connector = createWhatsAppEdgeChannelConnector({
-			sendToSidecar: async (request) => {
+			now: () => 1717459200000,
+			sendToSidecar: async (request, session) => {
 				sent.push(request);
+				sessions.push(session.requestDigest);
 				return { ok: true, platformMessageId: "wa-msg-1", observedThreadMessageId: "wa-msg-1" };
 			},
 		});
@@ -417,6 +427,9 @@ describe("outbound delivery dispatcher", () => {
 				body: "On my way",
 				threadMessageIds: ["wa-thread-previous"],
 			}),
+		]);
+		expect(sessions).toEqual([
+			digestWhatsAppSidecarSendRequest(sent[0] as WhatsAppSidecarSendRequest),
 		]);
 	});
 
@@ -450,6 +463,382 @@ describe("outbound delivery dispatcher", () => {
 				retryable: false,
 			}),
 		]);
+	});
+
+	it("generates fresh bridge-session headers and keeps them out of the sidecar body", async () => {
+		const seen: Array<{
+			readonly url: string;
+			readonly headers: Record<string, string>;
+			readonly body: string;
+		}> = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			now: () => 1717459200000,
+			fetch: async (url, init) => {
+				seen.push({
+					url: url.toString(),
+					headers: init.headers,
+					body: init.body,
+				});
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({ ok: true, platformMessageId: `wa-http-${seen.length}` }),
+					text: async () => "",
+				};
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+		});
+
+		const request = {
+			channel: "whatsapp" as const,
+			resolvedDestination: {
+				kind: "address" as const,
+				addressRef: "whatsapp:+15551234567",
+				conversationId: "relay-conversation-token",
+			},
+		};
+		const firstReceipt = await dispatch(
+			preparedOutbound({
+				...request,
+				outboundRef: "edge-out:first",
+				idempotencyKey: "edge-idem:first",
+			}),
+		);
+		const secondReceipt = await dispatch(
+			preparedOutbound({
+				...request,
+				outboundRef: "edge-out:second",
+				idempotencyKey: "edge-idem:second",
+			}),
+		);
+
+		expect(firstReceipt.deliveryStatus).toBe("sent");
+		expect(secondReceipt.deliveryStatus).toBe("sent");
+		expect(seen).toHaveLength(2);
+		expect(seen[0]).toEqual(
+			expect.objectContaining({
+				url: "http://whatsapp-bridge:3004/v1/whatsapp/send",
+				headers: expect.objectContaining({
+					[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]: expect.stringMatching(/^wa-session:/),
+					[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER]: digestWhatsAppSidecarSendRequest(
+						JSON.parse(seen[0]?.body ?? "{}"),
+					),
+					[WHATSAPP_SIDECAR_SESSION_EXPIRES_AT_HEADER]: "2024-06-04T00:01:00.000Z",
+				}),
+			}),
+		);
+		expect(seen[1]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]).not.toBe(
+			seen[0]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER],
+		);
+		expect(seen[0]?.body).not.toContain(
+			seen[0]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER] ?? "missing-session",
+		);
+		expect(seen[1]?.body).not.toContain(
+			seen[1]?.headers[WHATSAPP_SIDECAR_SESSION_KEY_HEADER] ?? "missing-session",
+		);
+	});
+
+	it("uses injected bridge-session material when a runtime owns the one-shot issuer", async () => {
+		let seen:
+			| {
+					readonly headers: Record<string, string>;
+					readonly body: string;
+			  }
+			| undefined;
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			bridgeSessionFactory: async (request) => ({
+				sessionKey: "relay-issued-single-use-session",
+				requestDigest: digestWhatsAppSidecarSendRequest(request),
+				expiresAtMs: 1717459260000,
+			}),
+			fetch: async (_url, init) => {
+				seen = {
+					headers: init.headers,
+					body: init.body,
+				};
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({ ok: true, platformMessageId: "wa-http-1" }),
+					text: async () => "",
+				};
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+		});
+
+		await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(seen).toEqual(
+			expect.objectContaining({
+				headers: expect.objectContaining({
+					[WHATSAPP_SIDECAR_SESSION_KEY_HEADER]: "relay-issued-single-use-session",
+					[WHATSAPP_SIDECAR_REQUEST_DIGEST_HEADER]: digestWhatsAppSidecarSendRequest(
+						JSON.parse(seen?.body ?? "{}"),
+					),
+				}),
+			}),
+		);
+		expect(seen?.body).not.toContain("relay-issued-single-use-session");
+	});
+
+	it("applies bridge-session binding to injected sidecar senders", async () => {
+		let seen:
+			| {
+					readonly request: WhatsAppSidecarSendRequest;
+					readonly sessionKey: string;
+					readonly requestDigest: string;
+			  }
+			| undefined;
+		const connector = createWhatsAppEdgeChannelConnector({
+			bridgeSessionFactory: async (request) => ({
+				sessionKey: "relay-issued-single-use-session",
+				requestDigest: digestWhatsAppSidecarSendRequest(request),
+				expiresAtMs: 1717459260000,
+			}),
+			sendToSidecar: async (request, session) => {
+				seen = {
+					request,
+					sessionKey: session.sessionKey,
+					requestDigest: session.requestDigest,
+				};
+				return { ok: true, platformMessageId: "wa-direct-1" };
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("sent");
+		expect(seen?.sessionKey).toBe("relay-issued-single-use-session");
+		expect(seen?.requestDigest).toBe(
+			digestWhatsAppSidecarSendRequest(seen?.request as WhatsAppSidecarSendRequest),
+		);
+	});
+
+	it("fails closed before sidecar I/O when bridge-session digest does not match the request", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "http://whatsapp-bridge:3004",
+			bridgeSessionFactory: async () => ({
+				sessionKey: "relay-issued-single-use-session",
+				requestDigest: `sha256:${"b".repeat(64)}`,
+				expiresAtMs: 1717459260000,
+			}),
+			fetch: async () => {
+				sidecarCalls += 1;
+				throw new Error("sidecar must not be called with mismatched session binding");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_bridge_session_digest_mismatch",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("fails closed before injected sender I/O when bridge-session digest does not match", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			bridgeSessionFactory: async () => ({
+				sessionKey: "relay-issued-single-use-session",
+				requestDigest: `sha256:${"b".repeat(64)}`,
+				expiresAtMs: 1717459260000,
+			}),
+			sendToSidecar: async () => {
+				sidecarCalls += 1;
+				throw new Error("sender must not be called with mismatched session binding");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_bridge_session_digest_mismatch",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("rejects WhatsApp sidecar URLs outside the dedicated bridge hostname", async () => {
+		let sidecarCalls = 0;
+		const failures: unknown[] = [];
+		const connector = createWhatsAppEdgeChannelConnector({
+			sidecarUrl: "https://api.example.com",
+			fetch: async () => {
+				sidecarCalls += 1;
+				throw new Error("wrong sidecar host must not be fetched");
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_sidecar_config_invalid",
+				reason: `WhatsApp sidecar host must be ${WHATSAPP_SIDECAR_ALLOWED_HOST}`,
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("enforces the 25 MiB WhatsApp media cap at the sidecar boundary", async () => {
+		let sidecarCalls = 0;
+		const halfPlusOne = Math.floor(WHATSAPP_SIDECAR_MAX_MEDIA_BYTES / 2) + 1;
+		const first = quarantineStore.store({
+			bytes: new Uint8Array(halfPlusOne),
+			mediaType: "application/octet-stream",
+			conversationToken: "relay-conversation-token",
+			scanState: "clean",
+		});
+		const second = quarantineStore.store({
+			bytes: new Uint8Array(halfPlusOne),
+			mediaType: "application/octet-stream",
+			conversationToken: "relay-conversation-token",
+			scanState: "clean",
+		});
+		const connector = createWhatsAppEdgeChannelConnector({
+			sendToSidecar: async () => {
+				sidecarCalls += 1;
+				return { ok: true };
+			},
+		});
+		const failures: unknown[] = [];
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+				mediaRefs: [first, second],
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(sidecarCalls).toBe(0);
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_media_too_large",
+				retryable: false,
+			}),
+		]);
+	});
+
+	it("keeps WhatsApp inbound dark until CL-1 risk wrapping is wired", async () => {
+		const connector = createWhatsAppEdgeChannelConnector({
+			sendToSidecar: async () => ({ ok: true }),
+		});
+
+		await expect(
+			connector.startListener?.(async () => {
+				throw new Error("sink must not receive raw WhatsApp inbound");
+			}),
+		).rejects.toThrow(WHATSAPP_INBOUND_RISK_WRAP_REQUIRED);
 	});
 });
 
