@@ -306,6 +306,34 @@ export function registerRelayCommand(program: Command): void {
 						liveMcpSideEffectApprovals?.sideEffectApprovalTokenResolver,
 					resolveAuthorizedOutboundConversation: (conversationRef, nowMs) =>
 						liveMcpConversationStore.resolveAuthorized(conversationRef, nowMs),
+					resolveAuthorizedInboundTurn: (request) => {
+						const turn = request.expectedConversationRef
+							? liveMcpConversationStore.resolveAuthorizedInboundTurn(
+									request.turnConversationRef,
+									request.expectedConversationRef,
+									request.nowMs,
+								)
+							: liveMcpConversationStore.resolveInboundTurn(
+									request.turnConversationRef,
+									request.nowMs,
+								);
+						if (!turn) return null;
+						if (
+							!liveMcpConversationStore.resolveAuthorized(turn.conversationToken, request.nowMs)
+						) {
+							return null;
+						}
+						if (
+							turn.senderActorId !== request.actorId ||
+							turn.profileId !== request.profileId ||
+							turn.mcpDomain !== request.domain ||
+							(request.channel && turn.channel !== request.channel) ||
+							(request.conversationId && turn.conversationId !== request.conversationId)
+						) {
+							return null;
+						}
+						return turn;
+					},
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
 					createRelayClients: ({ ledger }) => {
 						if (liveMcpSideEffectApprovals) {

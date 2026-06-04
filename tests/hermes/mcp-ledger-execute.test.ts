@@ -24,7 +24,10 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
-import type { RelayConversation } from "../../src/hermes/relay-conversation-store.js";
+import type {
+	RelayConversation,
+	RelayConversationInboundTurn,
+} from "../../src/hermes/relay-conversation-store.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
@@ -77,6 +80,158 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
 			}),
 		]);
+	});
+
+	it("binds outbound approval and execution to the stamped relay turn authority", async () => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"a".repeat(32)}`;
+		const outbound = harness.ledger.prepare(outboundPrepareInput({ turnConversationRef }));
+		expect(getTelclaudeMcpSideEffectApprovalBinding(outbound)).toMatchObject({
+			turnConversationRef,
+		});
+		harness.accept("outbound-turn-token", outbound);
+		const turnRequests: unknown[] = [];
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedInboundTurn: (request) => {
+					turnRequests.push(request);
+					return fixtureInboundTurn({
+						ref: turnConversationRef,
+						conversationToken: outbound.conversationRef,
+						conversationId: outbound.resolvedDestination.conversationId ?? "",
+					});
+				},
+			},
+			{ turnConversationRef },
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "outbound-turn-token",
+				turnConversationRef,
+			}),
+		});
+		expect(turnRequests).toEqual([
+			expect.objectContaining({
+				turnConversationRef,
+				expectedConversationRef: outbound.conversationRef,
+				actorId: "operator",
+				profileId: "ops",
+				domain: "private",
+				channel: "whatsapp",
+				conversationId: outbound.resolvedDestination.conversationId,
+				nowMs: 100_000,
+			}),
+		]);
+		expect(harness.resolverCalls).toEqual([
+			expect.objectContaining({ actionRef: outbound.ref, recordRef: outbound.ref }),
+		]);
+		expect(harness.verifierCalls).toHaveLength(1);
+	});
+
+	it("rejects missing or wrong execute turn authority before approval resolution", async () => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"a".repeat(32)}`;
+		const outbound = harness.ledger.prepare(outboundPrepareInput({ turnConversationRef }));
+		harness.accept("outbound-turn-token", outbound);
+		const turnRequests: unknown[] = [];
+		const options = {
+			resolveAuthorizedInboundTurn: (
+				request: Parameters<
+					NonNullable<
+						Parameters<
+							typeof createTelclaudeMcpLedgerExecuteDependencies
+						>[0]["resolveAuthorizedInboundTurn"]
+					>
+				>[0],
+			) => {
+				turnRequests.push(request);
+				return fixtureInboundTurn({
+					ref: turnConversationRef,
+					conversationToken: outbound.conversationRef,
+					conversationId: outbound.resolvedDestination.conversationId ?? "",
+				});
+			},
+		};
+
+		await expect(
+			createBridge(harness, options).tc_outbound_execute({ outboundRef: outbound.ref }),
+		).resolves.toEqual({
+			ok: false,
+			code: "effect_turn_authority_mismatch",
+			reason: "side effect turn authority mismatch",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		await expect(
+			createBridge(harness, options, {
+				turnConversationRef: `turn_${"b".repeat(32)}`,
+			}).tc_outbound_execute({ outboundRef: outbound.ref }),
+		).resolves.toEqual({
+			ok: false,
+			code: "effect_turn_authority_mismatch",
+			reason: "side effect turn authority mismatch",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(turnRequests).toEqual([]);
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("rejects unavailable live turn authority before consuming approval tokens", async () => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"a".repeat(32)}`;
+		const outbound = harness.ledger.prepare(outboundPrepareInput({ turnConversationRef }));
+		harness.accept("outbound-turn-token", outbound);
+		const turnRequests: unknown[] = [];
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedInboundTurn: (request) => {
+					turnRequests.push(request);
+					return null;
+				},
+			},
+			{ turnConversationRef },
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "effect_turn_authority_unavailable",
+			reason: "side effect turn authority is unavailable",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(turnRequests).toHaveLength(1);
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("binds provider side-effect approvals to stamped turn refs when present", async () => {
+		const harness = createLedgerHarness();
+		const turnConversationRef = `turn_${"a".repeat(32)}`;
+		const provider = harness.ledger.prepare(providerPrepareInput({ turnConversationRef }));
+		expect(getTelclaudeMcpSideEffectApprovalBinding(provider)).toMatchObject({
+			turnConversationRef,
+		});
+		harness.accept("provider-turn-token", provider);
+
+		await expect(
+			createBridge(harness).tc_provider_execute_write({ actionRef: provider.ref }),
+		).resolves.toEqual({
+			ok: false,
+			code: "effect_turn_authority_mismatch",
+			reason: "side effect turn authority mismatch",
+			retryable: false,
+			record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
 	});
 
 	it("surfaces missing server-side approvals as retryable without executing the prepared ref", async () => {
@@ -804,6 +959,29 @@ function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayC
 		revokedAtMs: null,
 		revokeReason: null,
 		updatedAtMs: 100_000,
+		...overrides,
+	};
+}
+
+function fixtureInboundTurn(
+	overrides: Partial<RelayConversationInboundTurn> = {},
+): RelayConversationInboundTurn {
+	return {
+		ref: `turn_${"a".repeat(32)}`,
+		conversationToken: "whatsapp:+15551234567",
+		channel: "whatsapp",
+		conversationId: "whatsapp:+15551234567",
+		threadId: "thread-private",
+		profileId: "ops",
+		domain: "private",
+		mcpDomain: "private",
+		inboundMessageId: "message-private",
+		senderActorId: "operator",
+		senderPrincipalId: "+15551234567",
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
 		...overrides,
 	};
 }

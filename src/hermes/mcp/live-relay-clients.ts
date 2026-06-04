@@ -25,6 +25,7 @@ import {
 	assertTargetableReplyIntent,
 	createRelayConversationStore,
 	type RelayConversation,
+	type RelayConversationInboundTurn,
 	type RelayConversationReplyIntent,
 	type RelayConversationStore,
 	relayAuthorityActorRefFor,
@@ -147,6 +148,9 @@ export function createTelclaudeLiveMcpRelayClients(
 				approvalRequestId: makeApprovalRequestId(),
 				approvalRevision: 1,
 				wysiwysRender: providerApprovalRenderFor(operation),
+				...(request.turnConversationRef
+					? { turnConversationRef: request.turnConversationRef }
+					: {}),
 				...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
 			});
 			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
@@ -202,6 +206,7 @@ export function createTelclaudeLiveMcpRelayClients(
 			const replyIntent = request.replyIntent ?? defaultReplyIntent(conversation);
 			assertTargetableReplyIntent(conversation, replyIntent);
 			const approverActorId = outboundApproverFor(outboundApproverActorId, request.actorId);
+			const turn = resolveOutboundTurnAuthority(conversationStore, request, conversation);
 			const mediaRefs = await resolveOutboundMediaRefs(request.mediaRefs, {
 				request,
 				conversation,
@@ -246,6 +251,7 @@ export function createTelclaudeLiveMcpRelayClients(
 					networkNamespace: request.networkNamespace,
 					edgeSideEffectLedgerRef: prepared.sideEffectLedgerRef,
 				},
+				turnConversationRef: turn.ref,
 				idempotencyKey: prepared.idempotencyKey,
 			});
 			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
@@ -337,6 +343,31 @@ function assertOutboundConversationScope(
 	if (!targetableMembers.some((member) => member.actorId === request.actorId)) {
 		throw new Error("outbound actor is not a reply-capable conversation member");
 	}
+}
+
+function resolveOutboundTurnAuthority(
+	store: RelayConversationStore,
+	request: TelclaudeMcpOutboundPrepareRequest,
+	conversation: RelayConversation,
+): RelayConversationInboundTurn {
+	if (!request.turnConversationRef) {
+		throw new Error("outbound turn authority required");
+	}
+	const turn = store.resolveAuthorizedInboundTurn(request.turnConversationRef, conversation.token);
+	if (!turn) {
+		throw new Error("outbound turn authority unavailable or unauthorized");
+	}
+	if (
+		turn.conversationToken !== conversation.token ||
+		turn.channel !== conversation.channel ||
+		turn.conversationId !== conversation.conversationId ||
+		turn.profileId !== request.profileId ||
+		turn.mcpDomain !== request.domain ||
+		turn.senderActorId !== request.actorId
+	) {
+		throw new Error("outbound turn authority mismatch");
+	}
+	return turn;
 }
 
 function defaultReplyIntent(conversation: RelayConversation): RelayConversationReplyIntent {

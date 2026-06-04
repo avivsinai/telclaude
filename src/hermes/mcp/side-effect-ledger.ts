@@ -21,6 +21,7 @@ const OUTBOUND_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.p
 const OUTBOUND_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.body.v1";
 const EDGE_PREPARED_HASH_RE = /^[a-f0-9]{64}$/;
 const EDGE_CONTENT_HASH_RE = /^sha256:[a-f0-9]{64}$/;
+const RELAY_CONVERSATION_TURN_REF_RE = /^turn_[0-9a-f]{32}$/;
 
 export type TelclaudeMcpSideEffectDomain =
 	| "private"
@@ -56,6 +57,7 @@ export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly wysiwysRender: string;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly paramsHash: string;
 	readonly bodyHash: string;
@@ -89,6 +91,7 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly approvalMetadata: Record<string, unknown>;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly paramsHash: string;
 	readonly bodyHash: string;
@@ -119,6 +122,7 @@ export type TelclaudeMcpProviderSideEffectPrepareInput = {
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly wysiwysRender: string;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly ttlMs?: number;
 };
@@ -143,6 +147,7 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
 	readonly approvalMetadata?: Record<string, unknown>;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly ttlMs?: number;
 };
@@ -165,6 +170,7 @@ export type TelclaudeMcpProviderApprovalBinding = {
 	readonly providerAccountRef: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly paramsHash: string;
 	readonly bodyHash: string;
@@ -190,6 +196,7 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
 	readonly approvalRevision: number;
+	readonly turnConversationRef?: string;
 	readonly idempotencyKey?: string;
 	readonly paramsHash: string;
 	readonly bodyHash: string;
@@ -456,6 +463,9 @@ function prepareProviderRecord(
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
 		approvalRevision: normalizeRevision(input.approvalRevision),
 		wysiwysRender: requiredTrimmed(input.wysiwysRender, "wysiwysRender"),
+		...(input.turnConversationRef
+			? { turnConversationRef: normalizeTurnConversationRef(input.turnConversationRef) }
+			: {}),
 		...(input.idempotencyKey
 			? { idempotencyKey: requiredTrimmed(input.idempotencyKey, "idempotencyKey") }
 			: {}),
@@ -498,6 +508,9 @@ function prepareOutboundRecord(
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
 		approvalRevision: normalizeRevision(input.approvalRevision),
 		approvalMetadata: cloneJsonObject(input.approvalMetadata ?? {}, "approvalMetadata"),
+		...(input.turnConversationRef
+			? { turnConversationRef: normalizeTurnConversationRef(input.turnConversationRef) }
+			: {}),
 		...(input.idempotencyKey
 			? { idempotencyKey: requiredTrimmed(input.idempotencyKey, "idempotencyKey") }
 			: {}),
@@ -527,6 +540,7 @@ function hashProviderParams(record: ProviderBindingFields): string {
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		wysiwysRender: record.wysiwysRender,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 	});
 }
@@ -544,6 +558,7 @@ function hashProviderBody(record: ProviderBindingFields): string {
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		wysiwysRender: record.wysiwysRender,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 	});
 }
@@ -567,6 +582,7 @@ function hashOutboundParams(record: OutboundBindingFields): string {
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		approvalMetadata: record.approvalMetadata,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 	});
 }
@@ -591,6 +607,7 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
 		approvalMetadata: record.approvalMetadata,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 	});
 }
@@ -608,6 +625,7 @@ function hashProviderApprovalContent(record: TelclaudeMcpProviderSideEffectRecor
 		providerAccountRef: record.providerAccountRef,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 		paramsHash: record.paramsHash,
 		bodyHash: record.bodyHash,
@@ -632,6 +650,7 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
+		turnConversationRef: record.turnConversationRef ?? null,
 		idempotencyKey: record.idempotencyKey ?? null,
 		paramsHash: record.paramsHash,
 		bodyHash: record.bodyHash,
@@ -656,6 +675,7 @@ function approvalBinding(
 			providerAccountRef: record.providerAccountRef,
 			approvalRequestId: record.approvalRequestId,
 			approvalRevision: record.approvalRevision,
+			...(record.turnConversationRef ? { turnConversationRef: record.turnConversationRef } : {}),
 			...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {}),
 			paramsHash: record.paramsHash,
 			bodyHash: record.bodyHash,
@@ -681,6 +701,7 @@ function approvalBinding(
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
 		approvalRevision: record.approvalRevision,
+		...(record.turnConversationRef ? { turnConversationRef: record.turnConversationRef } : {}),
 		...(record.idempotencyKey ? { idempotencyKey: record.idempotencyKey } : {}),
 		paramsHash: record.paramsHash,
 		bodyHash: record.bodyHash,
@@ -933,6 +954,14 @@ function normalizeEdgePreparedHash(value: string): string {
 	return trimmed;
 }
 
+function normalizeTurnConversationRef(value: string): string {
+	const trimmed = requiredTrimmed(value, "turnConversationRef");
+	if (!RELAY_CONVERSATION_TURN_REF_RE.test(trimmed)) {
+		throw new Error("side-effect turnConversationRef must be a relay turn ref");
+	}
+	return trimmed;
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -950,6 +979,7 @@ type ProviderBindingFields = Pick<
 	| "approvalRequestId"
 	| "approvalRevision"
 	| "wysiwysRender"
+	| "turnConversationRef"
 	| "idempotencyKey"
 >;
 
@@ -972,5 +1002,6 @@ type OutboundBindingFields = Pick<
 	| "approvalRequestId"
 	| "approvalRevision"
 	| "approvalMetadata"
+	| "turnConversationRef"
 	| "idempotencyKey"
 >;

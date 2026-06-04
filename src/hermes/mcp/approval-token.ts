@@ -25,6 +25,7 @@ const JTI_DATABASE_NAME = "hermes_mcp_side_effect_approval_jti.sqlite";
 const NonEmptyString = z.string().trim().min(1);
 const HashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const EdgePreparedHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const TurnConversationRefSchema = z.string().regex(/^turn_[0-9a-f]{32}$/);
 const DomainSchema = z.enum(["private", "social", "household", "public", "specialist"]);
 const ResolvedDestinationSchema = z
 	.object({
@@ -58,6 +59,7 @@ const ProviderBindingSchema = z
 		providerAccountRef: NonEmptyString,
 		approvalRequestId: NonEmptyString,
 		approvalRevision: z.number().int().min(1),
+		turnConversationRef: TurnConversationRefSchema.optional(),
 		idempotencyKey: NonEmptyString.optional(),
 		paramsHash: HashSchema,
 		bodyHash: HashSchema,
@@ -85,6 +87,7 @@ const OutboundBindingSchema = z
 		edgePreparedHash: EdgePreparedHashSchema,
 		approvalRequestId: NonEmptyString,
 		approvalRevision: z.number().int().min(1),
+		turnConversationRef: TurnConversationRefSchema.optional(),
 		idempotencyKey: NonEmptyString.optional(),
 		paramsHash: HashSchema,
 		bodyHash: HashSchema,
