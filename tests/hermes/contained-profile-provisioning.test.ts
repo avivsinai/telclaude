@@ -29,7 +29,13 @@ describe("Hermes contained profile provisioning", () => {
 		expect(script).toContain('cp -R "');
 		expect(script).toContain('/." "$DEST_SKILLS_DIR"');
 		expect(script).toContain('export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"');
-		expect(script).toContain('exec setpriv --reuid="$HERMES_RUNTIME_UID"');
+		expect(script).toContain("exec setpriv");
+		expect(script).toContain('--reuid="$HERMES_RUNTIME_UID"');
+		expect(script).toContain('--regid="$HERMES_RUNTIME_GID"');
+		expect(script).toContain("--clear-groups");
+		expect(script).toContain("--bounding-set=-all");
+		expect(script).toContain("--inh-caps=-all");
+		expect(script).toContain("--ambient-caps=-all");
 		expect(script).toContain('exec /opt/hermes/hermes "$@"');
 	});
 
@@ -68,7 +74,7 @@ describe("Hermes contained profile provisioning", () => {
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		);
 		expect(compose).toContain('user: "0:0"');
-		for (const cap of ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]) {
+		for (const cap of ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETPCAP", "SETGID", "SETUID"]) {
 			expect(compose).toContain(`      - ${cap}`);
 		}
 		expect(compose).toMatch(

@@ -141,6 +141,64 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
 	});
 
+	it("fails runtime custody when the claimed runtime profile is writable by the runtime group", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir } = makeCleanProfile();
+		fs.chmodSync(profileDir, 0o770);
+		fs.chmodSync(path.join(profileDir, "auth.json"), 0o660);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			runtimeCustodyProfileDir: profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.runtimeCustody")).toMatchObject({ status: "fail" });
+		expect(gate(report, "profile.runtimeCustody").detail).toContain(
+			"profile directory is group-writable without sticky bit",
+		);
+		expect(gate(report, "profile.runtimeCustody").detail).toContain("auth.json has writable mode");
+	});
+
+	it("fails runtime custody for symlinked custody files instead of following them", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir } = makeCleanProfile();
+		const authPath = path.join(profileDir, "auth.json");
+		const decoyPath = path.join(profileDir, "auth-decoy.json");
+		fs.copyFileSync(authPath, decoyPath);
+		fs.rmSync(authPath);
+		fs.symlinkSync(decoyPath, authPath);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			runtimeCustodyProfileDir: profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.runtimeCustody")).toMatchObject({ status: "fail" });
+		expect(gate(report, "profile.runtimeCustody").detail).toContain(
+			"auth.json is not a regular file",
+		);
+	});
+
 	it("fails closed when direct model-provider egress is reachable", async () => {
 		const relayUrl = relayProbeUrl;
 		const { profileDir, sentinel } = makeCleanProfile();
