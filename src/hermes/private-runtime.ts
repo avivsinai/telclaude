@@ -94,6 +94,7 @@ export type HermesPrivateMcpAuthorityOptions = {
 	readonly writableNamespace?: string;
 	readonly providerScopes?: readonly string[];
 	readonly outboundChannels?: readonly string[];
+	readonly turnConversationRef?: string;
 	readonly endpointId?: string;
 	readonly networkNamespace?: string;
 	readonly ttlMs?: number;
@@ -393,6 +394,7 @@ function buildPrivateMcpAuthority(
 		writableNamespace: options?.writableNamespace ?? `${domain}:${request.profileId}`,
 		providerScopes: options?.providerScopes ?? [],
 		outboundChannels: options?.outboundChannels ?? [],
+		...(options?.turnConversationRef ? { turnConversationRef: options.turnConversationRef } : {}),
 		endpointId: options?.endpointId ?? DEFAULT_PRIVATE_MCP_ENDPOINT_ID,
 		networkNamespace: options?.networkNamespace ?? DEFAULT_PRIVATE_MCP_NETWORK_NAMESPACE,
 	};

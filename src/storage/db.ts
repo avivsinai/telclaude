@@ -142,6 +142,9 @@ function initializeSchema(database: Database.Database): void {
 			from_user TEXT NOT NULL,
 			to_user TEXT NOT NULL,
 			message_id TEXT NOT NULL,
+			sender_id INTEGER,
+			message_thread_id INTEGER,
+			turn_conversation_ref TEXT,
 			observer_classification TEXT NOT NULL,
 			observer_confidence REAL NOT NULL,
 			observer_reason TEXT
@@ -238,6 +241,7 @@ function initializeSchema(database: Database.Database): void {
 			mime_type TEXT,
 			username TEXT,
 			sender_id INTEGER,
+			message_thread_id INTEGER,
 			created_at INTEGER NOT NULL,
 			expires_at INTEGER NOT NULL
 		);
@@ -446,6 +450,9 @@ function initializeSchema(database: Database.Database): void {
 			from_user TEXT NOT NULL,
 			to_user TEXT NOT NULL,
 			message_id TEXT NOT NULL,
+			sender_id INTEGER,
+			message_thread_id INTEGER,
+			turn_conversation_ref TEXT,
 			observer_classification TEXT NOT NULL,
 			observer_confidence REAL NOT NULL,
 			observer_reason TEXT
@@ -728,6 +735,30 @@ function initializeSchema(database: Database.Database): void {
 		"ALTER TABLE hermes_relay_conversations ADD COLUMN human_pairing_provenance INTEGER NOT NULL DEFAULT 0 CHECK(human_pairing_provenance IN (0,1))",
 	);
 	ensureApprovalsColumns(database);
+	ensureColumn(
+		database,
+		"pending_totp_messages",
+		"message_thread_id",
+		"ALTER TABLE pending_totp_messages ADD COLUMN message_thread_id INTEGER",
+	);
+	ensureColumn(
+		database,
+		"plan_approvals",
+		"sender_id",
+		"ALTER TABLE plan_approvals ADD COLUMN sender_id INTEGER",
+	);
+	ensureColumn(
+		database,
+		"plan_approvals",
+		"message_thread_id",
+		"ALTER TABLE plan_approvals ADD COLUMN message_thread_id INTEGER",
+	);
+	ensureColumn(
+		database,
+		"plan_approvals",
+		"turn_conversation_ref",
+		"ALTER TABLE plan_approvals ADD COLUMN turn_conversation_ref TEXT",
+	);
 	ensureMemoryEntriesColumns(database);
 	migrateDefaultTelegramMemorySource(database);
 	// chat_id index is created in ensureMemoryEntriesColumns after the column is ensured to exist
@@ -821,6 +852,9 @@ function ensureApprovalsColumns(database: Database.Database): void {
 		"from_user",
 		"to_user",
 		"message_id",
+		"sender_id",
+		"message_thread_id",
+		"turn_conversation_ref",
 		"observer_classification",
 		"observer_confidence",
 		"observer_reason",
@@ -844,12 +878,19 @@ function ensureApprovalsColumns(database: Database.Database): void {
 		return;
 	}
 
-	// Additive migration path — if the existing table is missing only the
-	// new W1 columns (risk_tier/tool_key/session_key + the W1↔W8 bash_command
-	// column), ALTER them in instead of dropping. Older schemas that are
-	// missing *other* columns still hit the drop-and-recreate fallback.
+	// Additive migration path — if the existing table is missing only additive
+	// approval metadata, ALTER it in instead of dropping. Older schemas that
+	// are missing other columns still hit the drop-and-recreate fallback.
 	if (rows.length > 0) {
-		const additiveColumns = ["risk_tier", "tool_key", "session_key", "bash_command"];
+		const additiveColumns = [
+			"sender_id",
+			"message_thread_id",
+			"turn_conversation_ref",
+			"risk_tier",
+			"tool_key",
+			"session_key",
+			"bash_command",
+		];
 		const legacyExpected = new Set(
 			[...requiredColumns].filter((name) => !additiveColumns.includes(name)),
 		);
@@ -858,6 +899,18 @@ function ensureApprovalsColumns(database: Database.Database): void {
 			[...legacyExpected].every((name) => existing.has(name));
 
 		if (hasLegacyColumns) {
+			if (!existing.has("sender_id")) {
+				logger.info("adding sender_id column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN sender_id INTEGER");
+			}
+			if (!existing.has("message_thread_id")) {
+				logger.info("adding message_thread_id column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN message_thread_id INTEGER");
+			}
+			if (!existing.has("turn_conversation_ref")) {
+				logger.info("adding turn_conversation_ref column to approvals table");
+				database.exec("ALTER TABLE approvals ADD COLUMN turn_conversation_ref TEXT");
+			}
 			if (!existing.has("risk_tier")) {
 				logger.info("adding risk_tier column to approvals table");
 				database.exec("ALTER TABLE approvals ADD COLUMN risk_tier TEXT");
@@ -898,6 +951,9 @@ function ensureApprovalsColumns(database: Database.Database): void {
 			from_user TEXT NOT NULL,
 			to_user TEXT NOT NULL,
 			message_id TEXT NOT NULL,
+			sender_id INTEGER,
+			message_thread_id INTEGER,
+			turn_conversation_ref TEXT,
 			observer_classification TEXT NOT NULL,
 			observer_confidence REAL NOT NULL,
 			observer_reason TEXT,

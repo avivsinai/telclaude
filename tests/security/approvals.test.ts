@@ -7,11 +7,13 @@
  * - Approvals are scoped to specific chat
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	consumeApproval,
+	consumePlanApproval,
 	createApproval,
+	createPlanApproval,
 	grantAllowlist,
 	listAllowlist,
 	lookupAllowlist,
@@ -45,6 +47,9 @@ vi.mock("../../src/storage/db.js", () => {
 						from_user TEXT NOT NULL,
 						to_user TEXT NOT NULL,
 						message_id TEXT NOT NULL,
+						sender_id INTEGER,
+						message_thread_id INTEGER,
+						turn_conversation_ref TEXT,
 						observer_classification TEXT NOT NULL,
 						observer_confidence REAL NOT NULL,
 						observer_reason TEXT,
@@ -55,6 +60,34 @@ vi.mock("../../src/storage/db.js", () => {
 					);
 					CREATE INDEX IF NOT EXISTS idx_approvals_chat_id ON approvals(chat_id);
 					CREATE INDEX IF NOT EXISTS idx_approvals_expires_at ON approvals(expires_at);
+
+					CREATE TABLE IF NOT EXISTS plan_approvals (
+						nonce TEXT PRIMARY KEY,
+						request_id TEXT NOT NULL,
+						chat_id INTEGER NOT NULL,
+						created_at INTEGER NOT NULL,
+						expires_at INTEGER NOT NULL,
+						tier TEXT NOT NULL,
+						original_body TEXT NOT NULL,
+						plan_text TEXT NOT NULL,
+						session_key TEXT NOT NULL,
+						session_id TEXT NOT NULL,
+						media_path TEXT,
+						media_file_id TEXT,
+						media_type TEXT,
+						username TEXT,
+						from_user TEXT NOT NULL,
+						to_user TEXT NOT NULL,
+						message_id TEXT NOT NULL,
+						sender_id INTEGER,
+						message_thread_id INTEGER,
+						turn_conversation_ref TEXT,
+						observer_classification TEXT NOT NULL,
+						observer_confidence REAL NOT NULL,
+						observer_reason TEXT
+					);
+					CREATE INDEX IF NOT EXISTS idx_plan_approvals_chat_id ON plan_approvals(chat_id);
+					CREATE INDEX IF NOT EXISTS idx_plan_approvals_expires_at ON plan_approvals(expires_at);
 
 					CREATE TABLE IF NOT EXISTS approval_allowlist (
 						id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,7 +140,7 @@ describe("Approvals", () => {
 	function createTestApproval(chatId: number, ttlMs = 60000): string {
 		const result = createApproval(
 			{
-				requestId: "test-req-" + Math.random(),
+				requestId: `test-req-${Math.random()}`,
 				chatId,
 				tier: "WRITE_LOCAL",
 				body: "Test message",
@@ -234,6 +267,65 @@ describe("Approvals", () => {
 				expect(result.data.riskTier).toBe("medium");
 				expect(result.data.toolKey).toBe("Bash");
 				expect(result.data.sessionKey).toBe("tg:123456");
+			}
+		});
+
+		it("persists original Telegram sender, thread, and turn authority metadata", () => {
+			const chatId = 123456;
+			const turnConversationRef = "turn_0123456789abcdef0123456789abcdef";
+			const { nonce } = createApproval({
+				requestId: "rq-turn",
+				chatId,
+				tier: "FULL_ACCESS",
+				body: "send the reply",
+				from: "tg:456",
+				to: "bot:1",
+				messageId: "msg-turn",
+				senderId: 456,
+				messageThreadId: 789,
+				turnConversationRef,
+				observerClassification: "WARN",
+				observerConfidence: 0.9,
+			});
+
+			const result = consumeApproval(nonce, chatId);
+
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.senderId).toBe(456);
+				expect(result.data.messageThreadId).toBe(789);
+				expect(result.data.turnConversationRef).toBe(turnConversationRef);
+			}
+		});
+
+		it("persists plan approval Telegram metadata through the round-trip", () => {
+			const chatId = 123456;
+			const turnConversationRef = "turn_fedcba9876543210fedcba9876543210";
+			const { nonce } = createPlanApproval({
+				requestId: "rq-plan-turn",
+				chatId,
+				tier: "FULL_ACCESS",
+				originalBody: "prepare a plan",
+				planText: "Plan",
+				sessionKey: "session-1",
+				sessionId: "tc-session-1",
+				from: "tg:456",
+				to: "bot:1",
+				messageId: "msg-plan-turn",
+				senderId: 456,
+				messageThreadId: 789,
+				turnConversationRef,
+				observerClassification: "WARN",
+				observerConfidence: 0.9,
+			});
+
+			const result = consumePlanApproval(nonce, chatId);
+
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.senderId).toBe(456);
+				expect(result.data.messageThreadId).toBe(789);
+				expect(result.data.turnConversationRef).toBe(turnConversationRef);
 			}
 		});
 	});
@@ -435,18 +527,14 @@ describe("Approval allowlist (W1)", () => {
 
 	describe("risk-tier scope cap", () => {
 		it("forbids 'always' and 'session' for high-risk actions", async () => {
-			const { scopeAllowedForRisk } = await import(
-				"../../src/security/risk-tiers.js"
-			);
+			const { scopeAllowedForRisk } = await import("../../src/security/risk-tiers.js");
 			expect(scopeAllowedForRisk("high", "once")).toBe(true);
 			expect(scopeAllowedForRisk("high", "session")).toBe(false);
 			expect(scopeAllowedForRisk("high", "always")).toBe(false);
 		});
 
 		it("allows all scopes for low and medium risk", async () => {
-			const { scopeAllowedForRisk } = await import(
-				"../../src/security/risk-tiers.js"
-			);
+			const { scopeAllowedForRisk } = await import("../../src/security/risk-tiers.js");
 			for (const scope of ["once", "session", "always"] as const) {
 				expect(scopeAllowedForRisk("low", scope)).toBe(true);
 				expect(scopeAllowedForRisk("medium", scope)).toBe(true);
@@ -455,12 +543,8 @@ describe("Approval allowlist (W1)", () => {
 
 		it("classifyRisk flags destructive Bash as high", async () => {
 			const { classifyRisk } = await import("../../src/security/risk-tiers.js");
-			expect(
-				classifyRisk({ toolName: "Bash", bashCommand: "rm -rf /tmp/foo" }),
-			).toBe("high");
-			expect(classifyRisk({ toolName: "Bash", bashCommand: "ls -la" })).toBe(
-				"medium",
-			);
+			expect(classifyRisk({ toolName: "Bash", bashCommand: "rm -rf /tmp/foo" })).toBe("high");
+			expect(classifyRisk({ toolName: "Bash", bashCommand: "ls -la" })).toBe("medium");
 			expect(classifyRisk({ toolName: "Read" })).toBe("low");
 		});
 	});
