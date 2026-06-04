@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import fsSync from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config/config.js";
 import { executeCronAction } from "../cron/actions.js";
@@ -8,6 +9,12 @@ import { startCronScheduler } from "../cron/scheduler.js";
 import { getCronCoverage, getCronStatusSummary } from "../cron/store.js";
 import { readEnv } from "../env.js";
 import { setVerbose } from "../globals.js";
+import {
+	createTelclaudeMcpSideEffectApprovalVerifier,
+	generateTelclaudeMcpSideEffectApprovalToken,
+	TelclaudeMcpSideEffectJtiStore,
+} from "../hermes/mcp/approval-token.js";
+import type { TelclaudeMcpSideEffectApprovalTokenResolver } from "../hermes/mcp/ledger-execute.js";
 import {
 	createTelclaudeLiveMcpProbeAdminStarter,
 	readTelclaudeLiveMcpAdminConfig,
@@ -17,6 +24,13 @@ import {
 	readTelclaudeLiveMcpRuntimeConfig,
 	startTelclaudeLiveMcpRuntime,
 } from "../hermes/mcp/live-runtime.js";
+import {
+	requestTelclaudeLiveMcpSideEffectApproval,
+	setTelclaudeLiveMcpSideEffectApprovalBinding,
+} from "../hermes/mcp/live-side-effect-approvals.js";
+import { createGoogleProviderSidecarApprovalTokenIssuer } from "../hermes/mcp/provider-sidecar-token.js";
+import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effect-human-approval.js";
+import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
 import {
@@ -52,7 +66,7 @@ import { getServiceRevision, getServiceVersion } from "../system-metadata.js";
 import { monitorTelegramProvider } from "../telegram/auto-reply.js";
 import { handlePrivateHeartbeat } from "../telegram/heartbeat.js";
 import { CONFIG_DIR } from "../utils.js";
-import { isVaultAvailable } from "../vault-daemon/index.js";
+import { isVaultAvailable, VaultClient } from "../vault-daemon/index.js";
 import { startWebhookServer } from "../webhooks/server.js";
 import { findInstalledSkills } from "./doctor-helpers.js";
 
@@ -168,6 +182,10 @@ export function registerRelayCommand(program: Command): void {
 					process.env.TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID?.trim();
 				const liveMcpOutboundApproverActorId =
 					process.env.TELCLAUDE_HERMES_OUTBOUND_APPROVER_ACTOR_ID?.trim();
+				const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
+				const vaultAvailable = await isVaultAvailable(
+					vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+				);
 				const probeNoTelegramError = validateProbeNoTelegramRelayMode({
 					probeNoTelegram: opts.probeNoTelegram,
 					dryRun: opts.dryRun ?? false,
@@ -242,10 +260,6 @@ export function registerRelayCommand(program: Command): void {
 					startCapabilityServer();
 					console.log("  Capabilities: enabled (relay broker)");
 
-					const vaultSocketPath = process.env.TELCLAUDE_VAULT_SOCKET;
-					const vaultAvailable = await isVaultAvailable(
-						vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
-					);
 					if (vaultAvailable) {
 						schedulerHandles.push(startAnthropicOauthRefreshScheduler());
 						console.log("  Anthropic OAuth refresh: enabled (proactive vault refresh)");
@@ -280,18 +294,52 @@ export function registerRelayCommand(program: Command): void {
 					console.log("  Capabilities: disabled");
 				}
 
+				const liveMcpSideEffectApprovals =
+					liveMcpRuntimeConfig.enabled && vaultAvailable
+						? createLiveMcpSideEffectApprovalKit(vaultSocketPath)
+						: null;
+				const liveMcpConversationStore = createRelayConversationStore();
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
-					createRelayClients: ({ ledger }) =>
-						createTelclaudeLiveMcpRelayClients({
+					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval,
+					sideEffectApprovalTokenResolver:
+						liveMcpSideEffectApprovals?.sideEffectApprovalTokenResolver,
+					resolveAuthorizedOutboundConversation: (conversationRef, nowMs) =>
+						liveMcpConversationStore.resolveAuthorized(conversationRef, nowMs),
+					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
+					createRelayClients: ({ ledger }) => {
+						if (liveMcpSideEffectApprovals) {
+							setTelclaudeLiveMcpSideEffectApprovalBinding({
+								ledger,
+								controller: liveMcpSideEffectApprovals.controller,
+							});
+						}
+						return createTelclaudeLiveMcpRelayClients({
 							ledger,
+							conversationStore: liveMcpConversationStore,
 							providerWriteApproverActorId: liveMcpProviderWriteApproverActorId,
 							outboundApproverActorId: liveMcpOutboundApproverActorId,
-						}),
+							requestSideEffectApproval: liveMcpSideEffectApprovals
+								? (record) =>
+										requestTelclaudeLiveMcpSideEffectApproval(
+											liveMcpSideEffectApprovals.controller,
+											record,
+										)
+								: undefined,
+						});
+					},
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
 				if (liveMcpRuntime.enabled && liveMcpRuntime.endpoint) {
-					schedulerHandles.push({ stop: () => liveMcpRuntime.stop() });
+					schedulerHandles.push({
+						stop: async () => {
+							try {
+								await liveMcpRuntime.stop();
+							} finally {
+								liveMcpSideEffectApprovals?.close();
+							}
+						},
+					});
 					console.log(`  Hermes live MCP: enabled (${liveMcpRuntime.endpoint.url})`);
 					console.log(
 						`  Hermes provider write approver: ${
@@ -310,6 +358,13 @@ export function registerRelayCommand(program: Command): void {
 					if (liveMcpAdminConfig.enabled) {
 						console.log(`  Hermes live MCP admin: enabled (${liveMcpAdminConfig.socketPath})`);
 					}
+					console.log(
+						`  Hermes side-effect approvals: ${
+							liveMcpSideEffectApprovals
+								? "enabled (vault-backed)"
+								: "disabled (vault daemon not running)"
+						}`,
+					);
 				} else {
 					console.log("  Hermes live MCP: disabled");
 				}
@@ -670,4 +725,42 @@ export function registerRelayCommand(program: Command): void {
 				process.exit(1);
 			}
 		});
+}
+
+function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined) {
+	const vaultClient = new VaultClient(
+		vaultSocketPath ? { socketPath: vaultSocketPath } : undefined,
+	);
+	const jtiStore = new TelclaudeMcpSideEffectJtiStore(
+		path.join(CONFIG_DIR, "hermes", "mcp-side-effect-approval-jti"),
+	);
+	const controller = createSideEffectHumanApprovalController({
+		mintApprovalToken: ({ binding, jti, ttlMs, nowMs }) =>
+			generateTelclaudeMcpSideEffectApprovalToken(binding, vaultClient, {
+				jti,
+				ttlSeconds: Math.max(1, Math.ceil(ttlMs / 1_000)),
+				nowSeconds: () => Math.floor(nowMs / 1_000),
+			}),
+	});
+	const sideEffectApprovalTokenResolver: TelclaudeMcpSideEffectApprovalTokenResolver = ({
+		actionRef,
+		record,
+	}) => controller.takeServerSideApproval({ actionRef, record });
+
+	return {
+		controller,
+		verifyApproval: createTelclaudeMcpSideEffectApprovalVerifier({
+			vaultClient,
+			jtiStore,
+		}),
+		sideEffectApprovalTokenResolver,
+		providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
+			vaultClient,
+			subjectUserId: process.env.GOOGLE_USER_EMAIL,
+		}),
+		close() {
+			setTelclaudeLiveMcpSideEffectApprovalBinding(null);
+			jtiStore.close();
+		},
+	};
 }

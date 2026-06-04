@@ -5,6 +5,7 @@ import {
 	consumeApprovalMatching as consumeSecurityApprovalMatching,
 	createApproval as createSecurityApproval,
 	type PendingApproval,
+	peekPendingApprovalByNonce,
 } from "../../security/approvals.js";
 import {
 	getTelclaudeMcpSideEffectApprovalBinding,
@@ -15,7 +16,8 @@ import {
 
 const DEFAULT_HUMAN_APPROVAL_TTL_MS = 5 * 60 * 1_000;
 const MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS = 60_000;
-const TOOL_KEY_PREFIX = "hermes.side-effect-human-approval.v1";
+export const TELCLAUDE_MCP_SIDE_EFFECT_HUMAN_APPROVAL_TOOL_KEY_PREFIX =
+	"hermes.side-effect-human-approval.v1";
 
 export type SideEffectHumanApprovalCreateInput = {
 	readonly record: TelclaudeMcpSideEffectRecord;
@@ -71,6 +73,7 @@ export type SideEffectHumanApprovalTokenResolution =
 			readonly approvalToken: string;
 			readonly approvalId: string;
 			readonly binding: TelclaudeMcpSideEffectApprovalBinding;
+			readonly finalize: () => void;
 	  }
 	| SideEffectHumanApprovalFailure;
 
@@ -171,34 +174,51 @@ export function createSideEffectHumanApprovalController(
 			if (!precheck.ok) return precheck;
 			const authorityFailure = approvalAuthorityFailure(input, input.record, authorizationNowMs);
 			if (authorityFailure) return authorityFailure;
+			const approvalNonce = normalizeApprovalNonce(input.approvalNonce);
 
-			let validationFailure: SideEffectHumanApprovalFailure | null = null;
-			const consumed = consumeApprovalMatching(
-				normalizeApprovalNonce(input.approvalNonce),
-				input.chatId,
-				(approval) => {
-					validationFailure = approvalRowBindingFailure(approval, input.record, precheck);
-					return validationFailure?.reason ?? null;
-				},
+			const pending = peekPendingApprovalByNonce(approvalNonce);
+			if (!pending.success) {
+				return approvalConsumeFailure(pending.error);
+			}
+			const pendingFailure = approvalRowBindingFailure(pending.data, input.record, precheck);
+			if (pendingFailure) return pendingFailure;
+			if (pending.data.chatId !== input.chatId) {
+				return approvalConsumeFailure("This approval code belongs to a different chat.");
+			}
+			if (pending.data.expiresAt < authorizationNowMs) {
+				const expired = consumeApprovalMatching(approvalNonce, input.chatId, () => null);
+				if (!expired.success) return approvalConsumeFailure(expired.error);
+				return failure("approval_expired", "side-effect approval has expired", false);
+			}
+
+			const remainingTtlMs = Math.min(
+				MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS,
+				Math.max(1, pending.data.expiresAt - authorizationNowMs),
 			);
+			let minted: SideEffectHumanApprovalTokenResult | string;
+			try {
+				minted = await dependencies.mintApprovalToken({
+					record: input.record,
+					binding: precheck.binding,
+					jti: pending.data.nonce,
+					ttlMs: remainingTtlMs,
+					nowMs: authorizationNowMs,
+				});
+			} catch (error) {
+				return failure(
+					"approval_token_mint_failed",
+					error instanceof Error ? error.message : String(error),
+					true,
+				);
+			}
+			const consumed = consumeApprovalMatching(approvalNonce, input.chatId, (approval) => {
+				return approvalRowBindingFailure(approval, input.record, precheck)?.reason ?? null;
+			});
 			if (!consumed.success) {
-				if (validationFailure) return validationFailure;
 				return approvalConsumeFailure(consumed.error);
 			}
 			const consumedFailure = approvalRowBindingFailure(consumed.data, input.record, precheck);
 			if (consumedFailure) return consumedFailure;
-
-			const remainingTtlMs = Math.min(
-				MAX_SIDE_EFFECT_APPROVAL_TOKEN_TTL_MS,
-				Math.max(1, consumed.data.expiresAt - authorizationNowMs),
-			);
-			const minted = await dependencies.mintApprovalToken({
-				record: input.record,
-				binding: precheck.binding,
-				jti: consumed.data.nonce,
-				ttlMs: remainingTtlMs,
-				nowMs: authorizationNowMs,
-			});
 			const tokenResult =
 				typeof minted === "string"
 					? { approvalToken: minted, approvalId: consumed.data.nonce }
@@ -241,12 +261,20 @@ export function createSideEffectHumanApprovalController(
 			if (prepared.bindingDigest !== stored.bindingDigest) {
 				return failure("approval_binding_mismatch", "server-side approval binding mismatch", false);
 			}
-			serverSideApprovals.delete(stored.actionRef);
 			return {
 				ok: true,
 				approvalToken: stored.approvalToken,
 				approvalId: stored.approvalId,
 				binding: stored.binding,
+				finalize: () => {
+					const current = serverSideApprovals.get(stored.actionRef);
+					if (
+						current?.approvalId === stored.approvalId &&
+						current.bindingDigest === stored.bindingDigest
+					) {
+						serverSideApprovals.delete(stored.actionRef);
+					}
+				},
 			};
 		},
 	};
@@ -436,7 +464,7 @@ function canonicalJson(value: unknown): string {
 }
 
 function toolKeyForDigest(digest: string): string {
-	return `${TOOL_KEY_PREFIX}:${digest}`;
+	return `${TELCLAUDE_MCP_SIDE_EFFECT_HUMAN_APPROVAL_TOOL_KEY_PREFIX}:${digest}`;
 }
 
 function normalizeTtlMs(value: number): number {

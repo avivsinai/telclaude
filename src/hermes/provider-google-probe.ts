@@ -889,9 +889,9 @@ function createLedgerHarness(): {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly verifierCalls: TelclaudeMcpSideEffectApprovalVerification[];
 	readonly accept: (token: string, record: TelclaudeMcpSideEffectRecord) => void;
-	readonly resolveProviderApprovalToken: Parameters<
+	readonly resolveSideEffectApprovalToken: Parameters<
 		typeof createTelclaudeMcpLedgerExecuteDependencies
-	>[0]["providerApprovalTokenResolver"];
+	>[0]["sideEffectApprovalTokenResolver"];
 } {
 	let refCounter = 0;
 	const accepted = new Map<string, string>();
@@ -920,7 +920,7 @@ function createLedgerHarness(): {
 			accepted.set(token, canonicalBinding(getTelclaudeMcpSideEffectApprovalBinding(record)));
 			serverSideApprovals.set(record.ref, token);
 		},
-		resolveProviderApprovalToken({ actionRef }) {
+		resolveSideEffectApprovalToken({ actionRef }) {
 			const approvalToken = serverSideApprovals.get(actionRef);
 			if (!approvalToken) {
 				return {
@@ -930,8 +930,13 @@ function createLedgerHarness(): {
 					retryable: true,
 				};
 			}
-			serverSideApprovals.delete(actionRef);
-			return { ok: true, approvalToken };
+			return {
+				ok: true,
+				approvalToken,
+				finalize: () => {
+					serverSideApprovals.delete(actionRef);
+				},
+			};
 		},
 	};
 }
@@ -953,7 +958,7 @@ function createExecuteBridge(
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: harness.ledger,
 			providerProxy,
-			providerApprovalTokenResolver: harness.resolveProviderApprovalToken,
+			sideEffectApprovalTokenResolver: harness.resolveSideEffectApprovalToken,
 			providerApprovalTokenIssuer: createGoogleProviderSidecarApprovalTokenIssuer({
 				vaultClient: vault,
 			}),

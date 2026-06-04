@@ -6,8 +6,9 @@ import type {
 import { createTelclaudeMcpAuthorityRegistry } from "./authority-registry.js";
 import type { TelclaudeMcpAuthority } from "./bridge.js";
 import type {
-	TelclaudeMcpProviderApprovalTokenResolver,
+	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
+	TelclaudeMcpSideEffectApprovalTokenResolver,
 } from "./ledger-execute.js";
 import { createTelclaudeLiveMcpConnectionResolver } from "./live-connection-resolver.js";
 import {
@@ -86,7 +87,8 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly registry?: TelclaudeMcpAuthorityRegistry;
 	readonly ledger?: TelclaudeMcpSideEffectLedger;
 	readonly verifyApproval?: TelclaudeMcpSideEffectApprovalVerifier;
-	readonly providerApprovalTokenResolver?: TelclaudeMcpProviderApprovalTokenResolver;
+	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
+	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
@@ -149,7 +151,8 @@ export async function startTelclaudeLiveMcpRuntime(
 		relayClients,
 		bindHost: options.config.host,
 		networkName: options.config.networkName,
-		providerApprovalTokenResolver: options.providerApprovalTokenResolver,
+		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
+		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		nowMs: options.nowMs,
 	});

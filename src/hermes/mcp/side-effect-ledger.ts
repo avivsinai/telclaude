@@ -4,6 +4,10 @@ import {
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
 	TELCLAUDE_MCP_PROVIDER_APPROVAL_DOMAIN,
 } from "../../security/approval-domains.js";
+import type {
+	AttachmentRef as EdgeAttachmentRef,
+	PreparedOutbound,
+} from "../edge-adapter-contract.js";
 
 export {
 	TELCLAUDE_MCP_OUTBOUND_APPROVAL_DOMAIN,
@@ -16,6 +20,7 @@ const PROVIDER_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.provider.bod
 const OUTBOUND_PARAMS_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.params.v1";
 const OUTBOUND_BODY_HASH_DOMAIN = "telclaude.hermes.mcp.side-effect.outbound.body.v1";
 const EDGE_PREPARED_HASH_RE = /^[a-f0-9]{64}$/;
+const EDGE_CONTENT_HASH_RE = /^sha256:[a-f0-9]{64}$/;
 
 export type TelclaudeMcpSideEffectDomain =
 	| "private"
@@ -25,6 +30,16 @@ export type TelclaudeMcpSideEffectDomain =
 	| "specialist";
 
 export type TelclaudeMcpSideEffectStatus = "prepared" | "executed" | "revoked";
+export type TelclaudeMcpOutboundResolvedDestination = PreparedOutbound["resolvedDestination"];
+export type TelclaudeMcpOutboundPreparedMediaRef = Pick<
+	EdgeAttachmentRef,
+	"quarantineId" | "contentHash"
+>;
+export type TelclaudeMcpOutboundAuthorizationState =
+	| "authorized"
+	| "approval_required"
+	| "denied"
+	| "revoked";
 
 export type TelclaudeMcpProviderSideEffectRecord = {
 	readonly ref: string;
@@ -62,9 +77,13 @@ export type TelclaudeMcpOutboundSideEffectRecord = {
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
 	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
 	readonly renderedBody: string;
 	readonly mediaRefs: readonly string[];
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
 	readonly conversationRef: string;
+	readonly authorizationState: TelclaudeMcpOutboundAuthorizationState;
 	readonly edgePreparedRef: string;
 	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
@@ -112,9 +131,13 @@ export type TelclaudeMcpOutboundSideEffectPrepareInput = {
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
 	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
 	readonly renderedBody: string;
 	readonly mediaRefs?: readonly string[];
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
 	readonly conversationRef: string;
+	readonly authorizationState: TelclaudeMcpOutboundAuthorizationState;
 	readonly edgePreparedRef: string;
 	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
@@ -158,7 +181,11 @@ export type TelclaudeMcpOutboundApprovalBinding = {
 	readonly domain: TelclaudeMcpSideEffectDomain;
 	readonly channel: string;
 	readonly destination: string;
+	readonly resolvedDestination: TelclaudeMcpOutboundResolvedDestination;
+	readonly requestedBody: string;
+	readonly preparedMediaRefs: readonly TelclaudeMcpOutboundPreparedMediaRef[];
 	readonly conversationRef: string;
+	readonly authorizationState: TelclaudeMcpOutboundAuthorizationState;
 	readonly edgePreparedRef: string;
 	readonly edgePreparedHash: string;
 	readonly approvalRequestId: string;
@@ -320,7 +347,7 @@ export function createTelclaudeMcpSideEffectLedger(
 			if (isExpired(prepared, authorizationNowMs)) {
 				return terminalFailure("effect_expired", "side effect approval window expired", prepared);
 			}
-			const approverFailure = terminalFailureForProviderSelfApproval(prepared);
+			const approverFailure = terminalFailureForSelfApproval(prepared);
 			if (approverFailure) return approverFailure;
 
 			const binding = getTelclaudeMcpSideEffectApprovalBinding(prepared);
@@ -355,7 +382,7 @@ export function createTelclaudeMcpSideEffectLedger(
 			}
 			const currentFailure = terminalFailureForRecord(current);
 			if (currentFailure) return currentFailure;
-			const approverFailure = terminalFailureForProviderSelfApproval(current);
+			const approverFailure = terminalFailureForSelfApproval(current);
 			if (approverFailure) return approverFailure;
 
 			const executed = deepFreeze({
@@ -459,9 +486,13 @@ function prepareOutboundRecord(
 		domain: input.domain,
 		channel: requiredTrimmed(input.channel, "channel"),
 		destination: requiredTrimmed(input.destination, "destination"),
+		resolvedDestination: normalizeResolvedDestination(input.resolvedDestination),
+		requestedBody: requiredString(input.requestedBody, "requestedBody"),
 		renderedBody: requiredTrimmed(input.renderedBody, "renderedBody"),
 		mediaRefs: normalizeStringList(input.mediaRefs ?? [], "mediaRefs"),
+		preparedMediaRefs: normalizePreparedMediaRefs(input.preparedMediaRefs),
 		conversationRef: requiredTrimmed(input.conversationRef, "conversationRef"),
+		authorizationState: normalizeAuthorizationState(input.authorizationState),
 		edgePreparedRef: requiredTrimmed(input.edgePreparedRef, "edgePreparedRef"),
 		edgePreparedHash: normalizeEdgePreparedHash(input.edgePreparedHash),
 		approvalRequestId: requiredTrimmed(input.approvalRequestId, "approvalRequestId"),
@@ -525,8 +556,12 @@ function hashOutboundParams(record: OutboundBindingFields): string {
 		domain: record.domain,
 		channel: record.channel,
 		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
 		mediaRefs: record.mediaRefs,
+		preparedMediaRefs: record.preparedMediaRefs,
 		conversationRef: record.conversationRef,
+		authorizationState: record.authorizationState,
 		edgePreparedRef: record.edgePreparedRef,
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
@@ -544,9 +579,13 @@ function hashOutboundBody(record: OutboundBindingFields): string {
 		domain: record.domain,
 		channel: record.channel,
 		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
 		renderedBody: record.renderedBody,
 		mediaRefs: record.mediaRefs,
+		preparedMediaRefs: record.preparedMediaRefs,
 		conversationRef: record.conversationRef,
+		authorizationState: record.authorizationState,
 		edgePreparedRef: record.edgePreparedRef,
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
@@ -584,7 +623,11 @@ function hashOutboundApprovalContent(record: TelclaudeMcpOutboundSideEffectRecor
 		domain: record.domain,
 		channel: record.channel,
 		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
+		preparedMediaRefs: record.preparedMediaRefs,
 		conversationRef: record.conversationRef,
+		authorizationState: record.authorizationState,
 		edgePreparedRef: record.edgePreparedRef,
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
@@ -629,7 +672,11 @@ function approvalBinding(
 		domain: record.domain,
 		channel: record.channel,
 		destination: record.destination,
+		resolvedDestination: record.resolvedDestination,
+		requestedBody: record.requestedBody,
+		preparedMediaRefs: record.preparedMediaRefs,
 		conversationRef: record.conversationRef,
+		authorizationState: record.authorizationState,
 		edgePreparedRef: record.edgePreparedRef,
 		edgePreparedHash: record.edgePreparedHash,
 		approvalRequestId: record.approvalRequestId,
@@ -653,14 +700,20 @@ function terminalFailureForRecord(
 	return null;
 }
 
-function terminalFailureForProviderSelfApproval(
+function terminalFailureForSelfApproval(
 	record: TelclaudeMcpSideEffectRecord,
 ): TelclaudeMcpSideEffectTerminalFailure | null {
-	if (record.kind !== "provider") return null;
 	if (record.actorId !== record.approverActorId) return null;
+	if (record.kind === "provider") {
+		return terminalFailure(
+			"provider_distinct_human_approver_required",
+			"provider side effects require approval by a distinct human approver",
+			record,
+		);
+	}
 	return terminalFailure(
-		"provider_distinct_human_approver_required",
-		"provider side effects require approval by a distinct human approver",
+		"side_effect_distinct_human_approver_required",
+		"side effects require approval by a distinct human approver",
 		record,
 	);
 }
@@ -776,6 +829,73 @@ function normalizeStringList(values: readonly string[], field: string): readonly
 	);
 }
 
+function normalizeResolvedDestination(
+	value: TelclaudeMcpOutboundResolvedDestination,
+): TelclaudeMcpOutboundResolvedDestination {
+	const destination = cloneJsonValue(value, "resolvedDestination");
+	const conversationId = destination.conversationId
+		? requiredTrimmed(destination.conversationId, "resolvedDestination.conversationId")
+		: undefined;
+	switch (destination.kind) {
+		case "thread":
+			return {
+				kind: "thread",
+				threadId: requiredTrimmed(destination.threadId ?? "", "resolvedDestination.threadId"),
+				...(conversationId ? { conversationId } : {}),
+			};
+		case "actor":
+			return {
+				kind: "actor",
+				actorId: requiredTrimmed(destination.actorId ?? "", "resolvedDestination.actorId"),
+				...(conversationId ? { conversationId } : {}),
+			};
+		case "address":
+			return {
+				kind: "address",
+				addressRef: requiredTrimmed(destination.addressRef ?? "", "resolvedDestination.addressRef"),
+				...(conversationId ? { conversationId } : {}),
+			};
+		default:
+			throw new Error("side-effect resolvedDestination.kind is invalid");
+	}
+}
+
+function normalizePreparedMediaRefs(
+	values: readonly TelclaudeMcpOutboundPreparedMediaRef[],
+): readonly TelclaudeMcpOutboundPreparedMediaRef[] {
+	return cloneJsonValue(
+		values.map((value, index) => {
+			const quarantineId = requiredTrimmed(
+				value.quarantineId,
+				`preparedMediaRefs[${index}].quarantineId`,
+			);
+			const contentHash = requiredTrimmed(
+				value.contentHash,
+				`preparedMediaRefs[${index}].contentHash`,
+			);
+			if (!EDGE_CONTENT_HASH_RE.test(contentHash)) {
+				throw new Error("side-effect preparedMediaRefs contentHash must be a sha256 digest");
+			}
+			return { quarantineId, contentHash };
+		}),
+		"preparedMediaRefs",
+	);
+}
+
+function normalizeAuthorizationState(
+	value: TelclaudeMcpOutboundAuthorizationState,
+): TelclaudeMcpOutboundAuthorizationState {
+	if (
+		value === "authorized" ||
+		value === "approval_required" ||
+		value === "denied" ||
+		value === "revoked"
+	) {
+		return value;
+	}
+	throw new Error("side-effect authorizationState is invalid");
+}
+
 function normalizeRevision(value: number): number {
 	if (!Number.isInteger(value) || value < 1) {
 		throw new Error("approvalRevision must be a positive integer");
@@ -796,6 +916,13 @@ function requiredTrimmed(value: string, field: string): string {
 		throw new Error(`side-effect ${field} is required`);
 	}
 	return trimmed;
+}
+
+function requiredString(value: string, field: string): string {
+	if (typeof value !== "string") {
+		throw new Error(`side-effect ${field} is required`);
+	}
+	return value;
 }
 
 function normalizeEdgePreparedHash(value: string): string {
@@ -833,9 +960,13 @@ type OutboundBindingFields = Pick<
 	| "domain"
 	| "channel"
 	| "destination"
+	| "resolvedDestination"
+	| "requestedBody"
 	| "renderedBody"
 	| "mediaRefs"
+	| "preparedMediaRefs"
 	| "conversationRef"
+	| "authorizationState"
 	| "edgePreparedRef"
 	| "edgePreparedHash"
 	| "approvalRequestId"

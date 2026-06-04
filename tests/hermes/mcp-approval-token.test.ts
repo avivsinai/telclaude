@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -31,6 +32,47 @@ const providerMutations: Array<[string, Partial<TelclaudeMcpProviderApprovalBind
 	["body hash", { bodyHash: hash("2") }],
 	["content hash", { contentHash: hash("3") }],
 	["approval revision", { approvalRevision: 2 }],
+];
+
+const outboundMutations: Array<[string, Partial<TelclaudeMcpOutboundApprovalBinding>]> = [
+	["actor", { actorId: "telegram:attacker" }],
+	["approver", { approverActorId: "telegram:wrong-approver" }],
+	["profile", { profileId: "social" }],
+	["domain", { domain: "social" }],
+	["channel", { channel: "email" }],
+	["destination", { destination: "alice@example.com" }],
+	[
+		"resolved destination conversationId",
+		{
+			resolvedDestination: {
+				kind: "address",
+				addressRef: "+15550009999",
+				conversationId: "whatsapp:+15550009999",
+			},
+		},
+	],
+	["requested body", { requestedBody: "I'll pick up dinner at 20:00." }],
+	[
+		"prepared media refs",
+		{
+			preparedMediaRefs: [
+				{
+					quarantineId: "attachment:menu",
+					contentHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				},
+			],
+		},
+	],
+	["conversation ref", { conversationRef: "whatsapp:+15550009999" }],
+	["authorization state", { authorizationState: "approval_required" }],
+	["edge prepared ref", { edgePreparedRef: "edge-outbound-2" }],
+	["edge prepared hash", { edgePreparedHash: "b".repeat(64) }],
+	["params hash", { paramsHash: hash("1") }],
+	["body hash", { bodyHash: hash("2") }],
+	["content hash", { contentHash: hash("3") }],
+	["approval request", { approvalRequestId: "approval-outbound-2" }],
+	["approval revision", { approvalRevision: 2 }],
+	["idempotency key", { idempotencyKey: "idem-outbound-2" }],
 ];
 
 describe("Telclaude MCP side-effect approval tokens", () => {
@@ -212,6 +254,117 @@ describe("Telclaude MCP side-effect approval tokens", () => {
 		await expect(verifier(verification(binding, validToken, 121_000, record))).resolves.toEqual({
 			ok: true,
 			approvalId: jti,
+		});
+	});
+
+	it.each(
+		outboundMutations,
+	)("rejects caller-supplied outbound %s binding drift before signature verification and without consuming the JTI", async (_label, mutation) => {
+		const { binding, record } = outboundFixture();
+		const verifier = createVerifier();
+		const jti = `jti-outbound-request-drift-${String(_label).replaceAll(" ", "-")}`;
+		const token = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			jti,
+		});
+		const mutated = { ...binding, ...mutation };
+
+		await expect(verifier(verification(mutated, token, 120_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "Approval request binding mismatch",
+		});
+		expect(vault.verifyCalls).toHaveLength(0);
+		await expect(verifier(verification(binding, token, 121_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: jti,
+		});
+	});
+
+	it.each(
+		outboundMutations,
+	)("rejects outbound token-claims %s binding drift after signature verification and without consuming the JTI", async (_label, mutation) => {
+		const { binding, record } = outboundFixture();
+		const verifier = createVerifier();
+		const jti = `jti-outbound-token-drift-${String(_label).replaceAll(" ", "-")}`;
+		const mutated = { ...binding, ...mutation };
+		const badToken = await generateTelclaudeMcpSideEffectApprovalToken(mutated, vault, {
+			nowSeconds: () => 100,
+			jti,
+		});
+
+		await expect(verifier(verification(binding, badToken, 120_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_mismatch",
+			reason: "Approval token binding mismatch",
+		});
+
+		const validToken = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			jti,
+		});
+		await expect(verifier(verification(binding, validToken, 121_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: jti,
+		});
+	});
+
+	it("accepts social MCP domains for outbound tokens and rejects edge-only public-social domains", async () => {
+		const { binding } = outboundFixture({ domain: "social", profileId: "social" });
+
+		await expect(
+			generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+				nowSeconds: () => 100,
+				jti: "jti-social-outbound",
+			}),
+		).resolves.toMatch(/^v1\./);
+		await expect(
+			generateTelclaudeMcpSideEffectApprovalToken(
+				{ ...binding, domain: "public-social" } as unknown as TelclaudeMcpOutboundApprovalBinding,
+				vault,
+				{
+					nowSeconds: () => 100,
+					jti: "jti-public-social-outbound",
+				},
+			),
+		).rejects.toThrow("Invalid side-effect approval binding");
+	});
+
+	it("applies replay and expiry windows to outbound approval tokens", async () => {
+		const { binding, record } = outboundFixture();
+		const verifier = createVerifier();
+		const token = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			jti: "jti-outbound-replay",
+		});
+
+		await expect(verifier(verification(binding, token, 120_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: "jti-outbound-replay",
+		});
+		await expect(verifier(verification(binding, token, 121_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_replayed",
+			reason: "Approval token already used",
+		});
+
+		const expired = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 100,
+			ttlSeconds: 60,
+			jti: "jti-outbound-expired",
+		});
+		await expect(verifier(verification(binding, expired, 161_000, record))).resolves.toEqual({
+			ok: false,
+			code: "approval_expired",
+			reason: "Token expired",
+		});
+		const expiredRetry = await generateTelclaudeMcpSideEffectApprovalToken(binding, vault, {
+			nowSeconds: () => 120,
+			jti: "jti-outbound-expired",
+		});
+		await expect(verifier(verification(binding, expiredRetry, 121_000, record))).resolves.toEqual({
+			ok: true,
+			approvalId: "jti-outbound-expired",
 		});
 	});
 
@@ -417,19 +570,41 @@ function providerPrepareInput(
 function outboundPrepareInput(
 	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
 ): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const requestedBody = "I'll pick up dinner at 19:00.";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+15551234567",
+		conversationId: "whatsapp:+15551234567",
+	};
+	const preparedMediaRefs = [
+		{
+			quarantineId: "attachment:menu",
+			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	];
 	return {
 		kind: "outbound",
 		actorId: "telegram:123",
 		approverActorId: "telegram:operator",
 		profileId: "private",
 		domain: "private",
-		channel: "whatsapp",
+		channel,
 		destination: "+15551234567",
-		renderedBody: "I'll pick up dinner at 19:00.",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
 		mediaRefs: ["attachment:menu"],
+		preparedMediaRefs,
 		conversationRef: "whatsapp:+15551234567",
+		authorizationState: "authorized",
 		edgePreparedRef: "edge-outbound-1",
-		edgePreparedHash: "a".repeat(64),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },

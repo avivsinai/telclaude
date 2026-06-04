@@ -9,6 +9,11 @@ import {
 	type TelclaudeMcpSideEffectApprovalSigner,
 	TelclaudeMcpSideEffectJtiStore,
 } from "../../src/hermes/mcp/approval-token.js";
+import {
+	consumeTelclaudeLiveMcpSideEffectApproval,
+	requestTelclaudeLiveMcpSideEffectApproval,
+	setTelclaudeLiveMcpSideEffectApprovalBinding,
+} from "../../src/hermes/mcp/live-side-effect-approvals.js";
 import { createSideEffectHumanApprovalController } from "../../src/hermes/mcp/side-effect-human-approval.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
@@ -34,6 +39,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	});
 
 	afterEach(() => {
+		setTelclaudeLiveMcpSideEffectApprovalBinding(null);
 		jtiStore.close();
 		closeDb();
 		fs.rmSync(tempDir, { recursive: true, force: true });
@@ -118,6 +124,11 @@ describe("Hermes MCP side-effect human approvals", () => {
 				approvalId: request.nonce,
 			},
 		});
+		expect(controller.takeServerSideApproval({ actionRef: record.ref, record })).toMatchObject({
+			ok: true,
+			approvalId: request.nonce,
+		});
+		stored.finalize();
 		expect(controller.takeServerSideApproval({ actionRef: record.ref, record })).toMatchObject({
 			ok: false,
 			code: "approval_token_unavailable",
@@ -262,6 +273,163 @@ describe("Hermes MCP side-effect human approvals", () => {
 			ok: true,
 			approvalId: request.nonce,
 		});
+	});
+
+	it("lets live MCP /approve consume the side-effect row into the server-side token holder", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-live-approval",
+			defaultTtlMs: 300_000,
+			verifyApproval: createTelclaudeMcpSideEffectApprovalVerifier({
+				vaultClient: vault,
+				jtiStore,
+				nowSeconds: () => 100,
+			}),
+		});
+		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
+		const controller = createController();
+		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
+
+		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		const [approval] = getPendingApprovalsForChat(111);
+		expect(approval).toMatchObject({
+			sessionKey: record.ref,
+			to: "telegram:111",
+			toolKey: expect.stringMatching(/^hermes\.side-effect-human-approval\.v1:sha256:/),
+		});
+		if (!approval) throw new Error("missing side-effect approval row");
+
+		await expect(
+			consumeTelclaudeLiveMcpSideEffectApproval({
+				nonce: approval.nonce.toUpperCase(),
+				chatId: 111,
+			}),
+		).resolves.toMatchObject({
+			handled: true,
+			ok: true,
+			actionRef: record.ref,
+			approvalId: approval.nonce,
+		});
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		const stored = controller.takeServerSideApproval({
+			actionRef: record.ref,
+			record,
+			nowMs: 101_000,
+		});
+		expect(stored).toMatchObject({ ok: true, approvalId: approval.nonce });
+		if (!stored.ok) throw new Error(stored.reason);
+		await expect(ledger.authorize(record.ref, stored.approvalToken)).resolves.toMatchObject({
+			ok: true,
+			record: { ref: record.ref, status: "executed", approvalId: approval.nonce },
+		});
+		stored.finalize();
+		expect(controller.takeServerSideApproval({ actionRef: record.ref, record })).toMatchObject({
+			ok: false,
+			code: "approval_token_unavailable",
+		});
+	});
+
+	it("handles side-effect approvals without falling through to generic approve when live binding is unavailable", async () => {
+		const record = prepareProviderRecord({ approverActorId: "telegram:111" });
+		const controller = createController();
+		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		const [approval] = getPendingApprovalsForChat(111);
+		if (!approval) throw new Error("missing side-effect approval row");
+
+		await expect(
+			consumeTelclaudeLiveMcpSideEffectApproval({
+				nonce: approval.nonce,
+				chatId: 111,
+			}),
+		).resolves.toEqual({
+			handled: true,
+			ok: false,
+			reason: "Hermes side-effect approval runtime is unavailable; re-request approval.",
+		});
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+	});
+
+	it("handles wrong-chat live side-effect approvals without consuming the legitimate row", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-live-wrong-chat",
+			defaultTtlMs: 300_000,
+			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+		});
+		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
+		const controller = createController();
+		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
+		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		const [approval] = getPendingApprovalsForChat(111);
+		if (!approval) throw new Error("missing side-effect approval row");
+
+		await expect(
+			consumeTelclaudeLiveMcpSideEffectApproval({
+				nonce: approval.nonce,
+				chatId: 222,
+			}),
+		).resolves.toMatchObject({
+			handled: true,
+			ok: false,
+			reason: "This approval code belongs to a different chat.",
+		});
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+	});
+
+	it("handles expired live side-effect approvals and deletes the expired row without minting", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-live-expired",
+			defaultTtlMs: 300_000,
+			verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+		});
+		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
+		const controller = createController();
+		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
+		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		const [approval] = getPendingApprovalsForChat(111);
+		if (!approval) throw new Error("missing side-effect approval row");
+		getDb()
+			.prepare("UPDATE approvals SET expires_at = ? WHERE nonce = ?")
+			.run(99_000, approval.nonce);
+
+		await expect(
+			consumeTelclaudeLiveMcpSideEffectApproval({
+				nonce: approval.nonce,
+				chatId: 111,
+			}),
+		).resolves.toMatchObject({
+			handled: true,
+			ok: false,
+		});
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
+	it("leaves the durable approval row pending when token minting fails", async () => {
+		const record = prepareProviderRecord();
+		const controller = createController({
+			mintApprovalToken: async () => {
+				throw new Error("vault signing unavailable");
+			},
+		});
+		const request = controller.request({ record, chatId: 111 });
+		if (!request.ok) throw new Error(request.reason);
+
+		await expect(
+			controller.consume({
+				record,
+				chatId: 111,
+				approverActorId: record.approverActorId,
+				approvalNonce: request.nonce,
+			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "approval_token_mint_failed",
+			reason: "vault signing unavailable",
+			retryable: true,
+		});
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
 	});
 
 	it("rejects expired approval rows without minting", async () => {

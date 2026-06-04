@@ -9,6 +9,8 @@ import {
 	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
 } from "../attestation-validation.js";
+import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
+import type { RelayConversation } from "../relay-conversation-store.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -378,10 +380,10 @@ async function runProbe(input: {
 				actionRef: provider.ref,
 			}),
 		);
+		providerApprovals.set(outbound.ref, outboundToken);
 		const outboundResult = resultShape(
 			await bridge.tc_outbound_execute({
 				outboundRef: outbound.ref,
-				approvalToken: outboundToken,
 			}),
 		);
 		pushCheck(
@@ -458,7 +460,6 @@ async function runProbe(input: {
 		const revokedResult = resultShape(
 			await bridge.tc_outbound_execute({
 				outboundRef: revoked.ref,
-				approvalToken: "unused-revoked-token",
 			}),
 		);
 		pushCheck(
@@ -658,32 +659,37 @@ function createProbeBridge(
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
-	return createTelclaudeMcpBridge(
-		{ ...probeAuthority(), ...authorityOverrides },
-		{
-			...baseDependencies(),
-			...createTelclaudeMcpLedgerExecuteDependencies({
-				ledger,
-				providerProxy,
-				providerApprovalTokenResolver: ({ actionRef }) => {
-					const approvalToken = providerApprovals.get(actionRef);
-					if (!approvalToken) {
-						return {
-							ok: false,
-							code: "approval_token_unavailable",
-							reason: "server-side approval token is unavailable",
-							retryable: true,
-						};
-					}
-					providerApprovals.delete(actionRef);
-					return { ok: true, approvalToken };
-				},
-				providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
-					`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
-				nowMs,
-			}),
-		},
-	);
+	const authority = { ...probeAuthority(), ...authorityOverrides };
+	return createTelclaudeMcpBridge(authority, {
+		...baseDependencies(),
+		...createTelclaudeMcpLedgerExecuteDependencies({
+			ledger,
+			providerProxy,
+			sideEffectApprovalTokenResolver: ({ actionRef }) => {
+				const approvalToken = providerApprovals.get(actionRef);
+				if (!approvalToken) {
+					return {
+						ok: false,
+						code: "approval_token_unavailable",
+						reason: "server-side approval token is unavailable",
+						retryable: true,
+					};
+				}
+				return {
+					ok: true,
+					approvalToken,
+					finalize: () => {
+						providerApprovals.delete(actionRef);
+					},
+				};
+			},
+			resolveAuthorizedOutboundConversation: (conversationRef) =>
+				probeRelayConversation(conversationRef, authority),
+			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
+				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
+			nowMs,
+		}),
+	});
 }
 
 function probeAuthority(): TelclaudeMcpAuthority {
@@ -697,6 +703,51 @@ function probeAuthority(): TelclaudeMcpAuthority {
 		outboundChannels: ["whatsapp"],
 		endpointId: "endpoint-private",
 		networkNamespace: "netns-private",
+	};
+}
+
+function probeRelayConversation(
+	conversationRef: string,
+	authority: TelclaudeMcpAuthority,
+): RelayConversation {
+	const conversationId =
+		conversationRef === "whatsapp:family-thread" ? "whatsapp:family-conversation" : conversationRef;
+	const relayDomain = authority.domain === "social" ? "public-social" : authority.domain;
+	return {
+		token: conversationRef,
+		channel: "whatsapp",
+		conversationId,
+		threadId: conversationRef,
+		profileId: authority.profileId,
+		domain: relayDomain,
+		mcpDomain: authority.domain,
+		edgeDomain: relayDomain === "specialist" ? null : relayDomain,
+		routingSession: {
+			sessionId: `probe-session:${conversationRef}`,
+			routeKey: `probe-route:${conversationRef}`,
+		},
+		authorizationState: "authorized",
+		authorizationScopes: ["message:reply"],
+		members: [
+			{
+				actorId: authority.actorId,
+				channel: "whatsapp",
+				principalId: authority.actorId,
+				principalHash: fixtureContentHash(authority.actorId),
+				role: "sender",
+				identityAssurance: "strong_link",
+				scopes: ["message:reply"],
+				revoked: false,
+			},
+		],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: 100_000,
 	};
 }
 
@@ -739,25 +790,51 @@ function providerPrepareInput(
 function outboundPrepareInput(
 	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
 ): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const resolvedDestination = {
+		kind: "thread" as const,
+		threadId: "whatsapp:family-thread",
+		conversationId: "whatsapp:family-conversation",
+	};
+	const requestedBody = "The transfer is prepared and waiting for approval.";
+	const preparedMediaRefs = [
+		{
+			quarantineId: "att-clean-ledger-probe",
+			contentHash: fixtureContentHash("att-clean-ledger-probe"),
+		},
+	];
 	return {
 		kind: "outbound",
 		actorId: "operator",
 		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private",
-		channel: "whatsapp",
+		channel,
 		destination: "whatsapp:family-thread",
-		renderedBody: "The transfer is prepared and waiting for approval.",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
 		mediaRefs: ["att-clean-ledger-probe"],
+		preparedMediaRefs,
 		conversationRef: "whatsapp:family-thread",
+		authorizationState: "authorized",
 		edgePreparedRef: "edge-outbound-ledger-probe",
-		edgePreparedHash: "c".repeat(64),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: "approval-outbound-ledger-probe",
 		approvalRevision: 1,
 		approvalMetadata: { reviewer: "operator", scope: "household" },
 		idempotencyKey: "idem-outbound-ledger-probe",
 		...overrides,
 	};
+}
+
+function fixtureContentHash(ref: string): `sha256:${string}` {
+	return `sha256:${crypto.createHash("sha256").update(ref, "utf8").digest("hex")}`;
 }
 
 function pushCheck(

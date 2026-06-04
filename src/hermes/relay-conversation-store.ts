@@ -464,6 +464,10 @@ export function assertTargetableReplyIntent(
 	conversation: RelayConversation,
 	replyIntent: RelayConversationReplyIntent,
 ): void {
+	const members = targetableRelayConversationMembers(conversation);
+	if (members.length === 0) {
+		throw new Error("reply intent conversation has no targetable members");
+	}
 	if (replyIntent.kind === "thread") {
 		if (replyIntent.threadId !== conversation.threadId) {
 			throw new Error("reply intent thread is not bound to conversation");
@@ -471,7 +475,6 @@ export function assertTargetableReplyIntent(
 		return;
 	}
 
-	const members = targetableRelayConversationMembers(conversation);
 	if (replyIntent.kind === "actor") {
 		if (!members.some((member) => member.actorId === replyIntent.actorId)) {
 			throw new Error("reply intent actor is not targetable");

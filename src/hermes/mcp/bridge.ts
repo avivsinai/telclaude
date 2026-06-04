@@ -87,6 +87,7 @@ export type TelclaudeMcpOutboundPrepareRequest = TelclaudeMcpAuthorityStamp & {
 
 export type TelclaudeMcpOutboundExecuteRequest = TelclaudeMcpAuthorityStamp & {
 	outboundRef: string;
+	outboundChannels: readonly string[];
 };
 
 export type TelclaudeMcpAuditNoteRequest = TelclaudeMcpAuthorityStamp & {
@@ -335,6 +336,7 @@ export function createTelclaudeMcpBridge(
 			return dependencies.outboundExecute({
 				...stamp,
 				outboundRef: parsed.outboundRef,
+				outboundChannels: normalizedAuthority.outboundChannels,
 			});
 		},
 

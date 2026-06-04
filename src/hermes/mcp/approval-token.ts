@@ -26,6 +26,22 @@ const NonEmptyString = z.string().trim().min(1);
 const HashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const EdgePreparedHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const DomainSchema = z.enum(["private", "social", "household", "public", "specialist"]);
+const ResolvedDestinationSchema = z
+	.object({
+		kind: z.enum(["thread", "actor", "address"]),
+		threadId: NonEmptyString.optional(),
+		actorId: NonEmptyString.optional(),
+		addressRef: NonEmptyString.optional(),
+		conversationId: NonEmptyString.optional(),
+	})
+	.strict();
+const PreparedMediaRefSchema = z
+	.object({
+		quarantineId: NonEmptyString,
+		contentHash: HashSchema,
+	})
+	.strict();
+const AuthorizationStateSchema = z.enum(["authorized", "approval_required", "denied", "revoked"]);
 
 const ProviderBindingSchema = z
 	.object({
@@ -60,7 +76,11 @@ const OutboundBindingSchema = z
 		domain: DomainSchema,
 		channel: NonEmptyString,
 		destination: NonEmptyString,
+		resolvedDestination: ResolvedDestinationSchema,
+		requestedBody: z.string(),
+		preparedMediaRefs: z.array(PreparedMediaRefSchema).readonly(),
 		conversationRef: NonEmptyString,
+		authorizationState: AuthorizationStateSchema,
 		edgePreparedRef: NonEmptyString,
 		edgePreparedHash: EdgePreparedHashSchema,
 		approvalRequestId: NonEmptyString,

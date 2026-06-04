@@ -29,6 +29,7 @@ import {
 	type RelayConversationStore,
 	relayAuthorityActorRefFor,
 	relayConversationToConversationRef,
+	targetableRelayConversationMembers,
 } from "../relay-conversation-store.js";
 import type {
 	TelclaudeMcpAttachmentGetRequest,
@@ -44,7 +45,10 @@ import {
 	providerApprovalRenderFor,
 	resolveTelclaudeProviderOperation,
 } from "./provider-routing.js";
-import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
+import type {
+	TelclaudeMcpSideEffectLedger,
+	TelclaudeMcpSideEffectRecord,
+} from "./side-effect-ledger.js";
 
 const logger = getChildLogger({ module: "hermes-live-relay-clients" });
 
@@ -84,6 +88,9 @@ export type CreateTelclaudeLiveMcpRelayClientsOptions = {
 	readonly conversationStore?: RelayConversationStore;
 	readonly edgeRuntime?: TelclaudeEdgeRuntime;
 	readonly resolveOutboundMediaRefs?: OutboundMediaResolver;
+	readonly requestSideEffectApproval?: (
+		record: TelclaudeMcpSideEffectRecord,
+	) => void | Promise<void>;
 };
 
 const ALLOWED_MEMORY_FILTER_KEYS = new Set(["categories", "trust"]);
@@ -142,6 +149,7 @@ export function createTelclaudeLiveMcpRelayClients(
 				wysiwysRender: providerApprovalRenderFor(operation),
 				...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
 			});
+			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
 			return { actionRef: record.ref, approvalRequestId: record.approvalRequestId };
 		},
 
@@ -218,9 +226,16 @@ export function createTelclaudeLiveMcpRelayClients(
 				domain: request.domain,
 				channel: prepared.channel,
 				destination: destinationForPreparedOutbound(prepared),
+				resolvedDestination: prepared.resolvedDestination,
+				requestedBody: request.body,
 				renderedBody: prepared.finalRenderedBody,
 				mediaRefs: request.mediaRefs,
+				preparedMediaRefs: prepared.mediaRefs.map((mediaRef) => ({
+					quarantineId: mediaRef.quarantineId,
+					contentHash: mediaRef.contentHash,
+				})),
 				conversationRef: conversation.token,
+				authorizationState: conversation.authorizationState,
 				edgePreparedRef: prepared.outboundRef,
 				edgePreparedHash: prepared.edgePreparedHash,
 				approvalRequestId: makeApprovalRequestId(),
@@ -233,6 +248,7 @@ export function createTelclaudeLiveMcpRelayClients(
 				},
 				idempotencyKey: prepared.idempotencyKey,
 			});
+			await requestHumanApproval(options.ledger, record, options.requestSideEffectApproval);
 			return {
 				outboundRef: record.ref,
 				approvalRequestId: record.approvalRequestId,
@@ -255,6 +271,22 @@ export function createTelclaudeLiveMcpRelayClients(
 			return { stored: true };
 		},
 	};
+}
+
+async function requestHumanApproval(
+	ledger: TelclaudeMcpSideEffectLedger,
+	record: TelclaudeMcpSideEffectRecord,
+	requestSideEffectApproval:
+		| ((record: TelclaudeMcpSideEffectRecord) => void | Promise<void>)
+		| undefined,
+): Promise<void> {
+	if (!requestSideEffectApproval) return;
+	try {
+		await requestSideEffectApproval(record);
+	} catch (error) {
+		ledger.revoke(record.ref, "side-effect approval request failed");
+		throw error;
+	}
 }
 
 function providerFetchBody(
@@ -297,6 +329,13 @@ function assertOutboundConversationScope(
 	}
 	if (!request.outboundChannels.includes(conversation.channel)) {
 		throw new Error(`outbound channel denied: ${conversation.channel}`);
+	}
+	const targetableMembers = targetableRelayConversationMembers(conversation);
+	if (targetableMembers.length === 0) {
+		throw new Error("outbound conversation has no reply-capable members");
+	}
+	if (!targetableMembers.some((member) => member.actorId === request.actorId)) {
+		throw new Error("outbound actor is not a reply-capable conversation member");
 	}
 }
 

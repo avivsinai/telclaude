@@ -12,8 +12,9 @@ import {
 	type TelclaudeMcpToolName,
 } from "./bridge.js";
 import type {
-	TelclaudeMcpProviderApprovalTokenResolver,
+	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
+	TelclaudeMcpSideEffectApprovalTokenResolver,
 } from "./ledger-execute.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./ledger-execute.js";
 import type { TelclaudeMcpSideEffectLedger } from "./side-effect-ledger.js";
@@ -93,7 +94,8 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly providerProxy?: (
 		request: ProviderProxyRequest,
 	) => ReturnType<typeof proxyProviderRequest>;
-	readonly providerApprovalTokenResolver?: TelclaudeMcpProviderApprovalTokenResolver;
+	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
+	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly bindHost: string;
 	readonly networkName: string;
@@ -142,7 +144,8 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: options.ledger,
 			providerProxy: options.providerProxy ?? proxyProviderRequest,
-			providerApprovalTokenResolver: options.providerApprovalTokenResolver,
+			sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
+			resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 			providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 			nowMs: options.nowMs,
 		}),
