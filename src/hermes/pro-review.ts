@@ -1509,6 +1509,8 @@ export function buildProReviewYoetzCommand(input: {
 	readonly bundlePath: string;
 	readonly payloadSha256?: string;
 	readonly bundleSha256?: string;
+	readonly runId?: string;
+	readonly waitTimeoutMs?: number;
 }): string[] {
 	const command = [
 		"yoetz",
@@ -1530,6 +1532,12 @@ export function buildProReviewYoetzCommand(input: {
 	}
 	if (input.bundleSha256) {
 		command.push("--var", `bundle_sha256=${input.bundleSha256}`);
+	}
+	if (input.runId) {
+		command.push("--var", `run_id=${input.runId}`);
+	}
+	if (input.waitTimeoutMs !== undefined) {
+		command.push("--var", `wait_timeout_ms=${String(input.waitTimeoutMs)}`);
 	}
 	return command;
 }
@@ -1569,6 +1577,7 @@ function readJsonObject(
 export function validateProReviewYoetzSendOutput(input: {
 	readonly stdout: string;
 	readonly expectedExtensionInstanceId: string;
+	readonly expectedBundlePath: string;
 	readonly expectedPayloadSha256?: string;
 	readonly expectedBundleSha256?: string;
 }): ProReviewYoetzSendValidation {
@@ -1610,25 +1619,24 @@ export function validateProReviewYoetzSendOutput(input: {
 	} else if (!Array.isArray(parsed.warnings)) {
 		failures.push("warnings is not an array");
 	}
-	const extensionInstanceId = parsed.extension_instance_id;
-	if (typeof extensionInstanceId !== "string") {
-		failures.push("extension_instance_id is missing or not a string");
-	} else if (extensionInstanceId !== input.expectedExtensionInstanceId) {
-		failures.push(
-			`extension_instance_id is ${String(
-				extensionInstanceId,
-			)}, expected ${input.expectedExtensionInstanceId}`,
-		);
-	}
+	failures.push(...optionalBundleArtifactPathFailures(parsed, input.expectedBundlePath));
+	const extensionInstanceId = parsed.extension_instance_id ?? parsed.extensionInstanceId;
 	failures.push(
-		...digestEchoFailures(
+		...optionalStringEchoFailures(
+			"extension_instance_id",
+			extensionInstanceId,
+			input.expectedExtensionInstanceId,
+		),
+	);
+	failures.push(
+		...optionalDigestEchoFailures(
 			"payloadSha256",
 			digestEchoValue(parsed, "payloadSha256", "payload_sha256"),
 			input.expectedPayloadSha256,
 		),
 	);
 	failures.push(
-		...digestEchoFailures(
+		...optionalDigestEchoFailures(
 			"bundleSha256",
 			digestEchoValue(parsed, "bundleSha256", "bundle_sha256"),
 			input.expectedBundleSha256,
@@ -1638,7 +1646,51 @@ export function validateProReviewYoetzSendOutput(input: {
 		? {
 				status: "pass",
 				detail:
-					"Yoetz native send reported Extended Pro without fallback and matched payload/bundle digests",
+					"Yoetz native send reported Extended Pro without fallback and optional echoes matched",
+			}
+		: { status: "fail", detail: failures.join("; ") };
+}
+
+export function validateProReviewYoetzInspectOutput(input: {
+	readonly stdout: string;
+	readonly expectedRunId: string;
+}): ProReviewYoetzSendValidation {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(input.stdout);
+	} catch (error) {
+		return {
+			status: "fail",
+			detail: `Yoetz native inspect stdout is not JSON: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	if (!isRecord(parsed)) {
+		return { status: "fail", detail: "Yoetz native inspect stdout is not a JSON object" };
+	}
+	const failures: string[] = [];
+	if (parsed.status !== "ok") {
+		failures.push(`status is ${String(parsed.status)}`);
+	}
+	if (parsed.transport !== "chrome-extension-native") {
+		failures.push(`transport is ${String(parsed.transport)}`);
+	}
+	const response = parsed.response;
+	if (!isRecord(response)) {
+		failures.push("response is missing or not an object");
+	} else {
+		failures.push(
+			...stringEchoFailures("runId", response.run_id ?? response.runId, input.expectedRunId),
+		);
+		if (!Array.isArray(response.tabs) || response.tabs.length < 1) {
+			failures.push("response.tabs is missing or empty");
+		}
+	}
+	return failures.length === 0
+		? {
+				status: "pass",
+				detail: "Yoetz native inspect found the generated run id in an owned ChatGPT tab",
 			}
 		: { status: "fail", detail: failures.join("; ") };
 }
@@ -1655,15 +1707,61 @@ function digestEchoValue(
 	return parsed[camelKey] ?? parsed[snakeKey];
 }
 
-function digestEchoFailures(
+function optionalBundleArtifactPathFailures(
+	parsed: Record<string, unknown>,
+	expectedBundlePath: string | undefined,
+): string[] {
+	const artifacts = parsed.artifacts;
+	if (artifacts === undefined || artifacts === null) return [];
+	if (expectedBundlePath === undefined || !expectedBundlePath.trim()) {
+		return ["expected bundle artifact path is missing"];
+	}
+	if (!isRecord(artifacts)) return ["artifacts is missing or not an object"];
+	const actual = artifacts.bundle_md ?? artifacts.bundleMd;
+	if (typeof actual !== "string" || !actual.trim()) {
+		return ["artifacts.bundle_md is missing or not a string"];
+	}
+	const normalizedActual = path.resolve(actual);
+	const normalizedExpected = path.resolve(expectedBundlePath);
+	if (normalizedActual !== normalizedExpected) {
+		return [`artifacts.bundle_md is ${actual}, expected ${expectedBundlePath}`];
+	}
+	return [];
+}
+
+function optionalDigestEchoFailures(
 	field: "payloadSha256" | "bundleSha256",
 	actual: unknown,
 	expected: string | undefined,
 ): string[] {
+	if (actual === undefined || actual === null) return [];
 	if (typeof actual !== "string") return [`${field} is missing or not a string`];
 	if (!SHA256_DIGEST_PATTERN.test(actual)) return [`${field} is not a sha256 digest`];
 	if (expected === undefined) return [`expected ${field} is missing`];
 	if (!SHA256_DIGEST_PATTERN.test(expected)) return [`expected ${field} is not a sha256 digest`];
+	if (actual !== expected) return [`${field} is ${actual}, expected ${expected}`];
+	return [];
+}
+
+function optionalStringEchoFailures(
+	field: "extension_instance_id",
+	actual: unknown,
+	expected: string | undefined,
+): string[] {
+	if (actual === undefined || actual === null) return [];
+	if (typeof actual !== "string" || !actual.trim()) return [`${field} is missing or not a string`];
+	if (expected === undefined || !expected.trim()) return [`expected ${field} is missing`];
+	if (actual !== expected) return [`${field} is ${actual}, expected ${expected}`];
+	return [];
+}
+
+function stringEchoFailures(
+	field: "runId",
+	actual: unknown,
+	expected: string | undefined,
+): string[] {
+	if (typeof actual !== "string" || !actual.trim()) return [`${field} is missing or not a string`];
+	if (expected === undefined || !expected.trim()) return [`expected ${field} is missing`];
 	if (actual !== expected) return [`${field} is ${actual}, expected ${expected}`];
 	return [];
 }

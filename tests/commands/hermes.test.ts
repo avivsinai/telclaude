@@ -7617,25 +7617,40 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
 		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
 		await withCwd(tempDir, async () => {
-			const requestPath = "docs/hermes/pro-review-request.json";
-			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
 			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
 			writeJson(canaryPath, proReviewCanary());
-			const baseRequest = proReviewRequest(canaryPath);
-			writeJson(
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
 				requestPath,
-				proReviewRequest(canaryPath, {
-					status: "approved",
-					privateWorkspaceDisclosure: {
-						...(baseRequest.privateWorkspaceDisclosure as Record<string, unknown>),
-						approved: true,
-						approvalId: "approval-1",
-						operator: "aviv",
-						approvedAt: "2026-05-31T17:10:00Z",
-						payloadSha256: (baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
-					},
-				}),
-			);
+				"--canary",
+				canaryPath,
+			]);
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			const refreshed = JSON.parse(refresh.stdout) as { payloadSha256: string };
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"approval-1",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-05-31T17:10:00Z",
+				"--payload-sha256",
+				refreshed.payloadSha256,
+			]);
+			expect(approval.exitCode, approval.stdout).toBe(0);
 
 			const result = await runHermesCommand([
 				"hermes",
@@ -7647,6 +7662,8 @@ describe("Hermes wrapper foundation", () => {
 				canaryPath,
 				"--bundle-out",
 				bundlePath,
+				"--wait-timeout-ms",
+				"120000",
 			]);
 			const report = JSON.parse(result.stdout) as {
 				send: {
@@ -7654,15 +7671,15 @@ describe("Hermes wrapper foundation", () => {
 					bundlePath: string;
 					payloadSha256: string;
 					bundleSha256: string;
+					runId: string;
+					inspectCommand: string[];
 					yoetzCommand: string[];
 				};
 			};
 
 			expect(result.exitCode, result.stdout).toBe(0);
 			expect(report.send.status).toBe("ready");
-			expect(report.send.payloadSha256).toBe(
-				(baseRequest.payloadBinding as Record<string, unknown>).payloadSha256,
-			);
+			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
 			expect(report.send.bundleSha256).toBe(
 				`sha256:${crypto
 					.createHash("sha256")
@@ -7679,8 +7696,26 @@ describe("Hermes wrapper foundation", () => {
 					`payload_sha256=${report.send.payloadSha256}`,
 					"--var",
 					`bundle_sha256=${report.send.bundleSha256}`,
+					"--var",
+					`run_id=${report.send.runId}`,
+					"--var",
+					"wait_timeout_ms=120000",
 				]),
 			);
+			expect(report.send.runId).toMatch(/^hermes_\d{14}_[a-f0-9]{8}$/);
+			expect(report.send.inspectCommand).toEqual([
+				"yoetz",
+				"browser",
+				"extension",
+				"inspect",
+				"--chatgpt",
+				"--run-id",
+				report.send.runId,
+				"--extension-instance-id",
+				"ext_test",
+				"--format",
+				"json",
+			]);
 			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
 			expect(report.send.yoetzCommand).not.toContain("--cdp");
 			expect(fs.statSync(path.join(tempDir, bundlePath)).mode & 0o777).toBe(0o600);

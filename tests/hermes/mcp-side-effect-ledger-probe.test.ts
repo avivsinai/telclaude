@@ -43,6 +43,12 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 		});
 		expect(evidence.observations.verifierCallCount).toBeGreaterThanOrEqual(3);
 		expect(evidence.observations.providerProxyCallCount).toBe(1);
+		expect(evidence.observations.outboundDeliveryCallCount).toBe(1);
+		expect(evidence.observations.outboundEdgePreparedRef).toBe("edge-outbound-ledger-probe");
+		expect(evidence.observations.outboundDeliveryOutboundRef).toBe(
+			evidence.observations.outboundEdgePreparedRef,
+		);
+		expect(evidence.observations.outboundDeliveryIdempotencyKey).toBe("idem-outbound-ledger-probe");
 		expect(sideEffectLedgerProbeEvidenceFailure("sideeffect.ledger", evidence)).toBeNull();
 	});
 
@@ -76,6 +82,35 @@ describe("Telclaude MCP side-effect ledger probe", () => {
 				},
 			}),
 		).toContain("runnerAttestation observationsSha256 mismatch");
+	});
+
+	it("rejects pass-looking evidence that did not observe outbound delivery dispatch", async () => {
+		const evidence = await runTelclaudeMcpSideEffectLedgerProbe({
+			allowRun: true,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+
+		expect(
+			sideEffectLedgerProbeEvidenceFailure("sideeffect.ledger", {
+				...evidence,
+				observations: {
+					...evidence.observations,
+					outboundDeliveryCallCount: 0,
+					outboundDeliveryOutboundRef: "wrong-outbound-ref",
+				},
+			}),
+		).toContain("runnerAttestation observationsSha256 mismatch");
+		expect(
+			sideEffectLedgerProbeEvidenceFailure("sideeffect.ledger", {
+				...evidence,
+				runnerAttestation: undefined,
+				observations: {
+					...evidence.observations,
+					outboundDeliveryCallCount: 0,
+					outboundDeliveryOutboundRef: "wrong-outbound-ref",
+				},
+			}),
+		).toContain("outboundDeliveryCallCount is 0");
 	});
 
 	it("rejects pass-looking evidence without a signed runner attestation", async () => {
