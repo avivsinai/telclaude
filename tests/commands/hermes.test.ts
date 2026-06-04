@@ -3332,7 +3332,7 @@ describe("Hermes wrapper foundation", () => {
 		process.env.TELCLAUDE_HERMES_CONTAINED_IP = CLI_HEADLESS_TEST_CONTAINED_IP;
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		restoreEnv(
 			"TELCLAUDE_HERMES_RELAY_IP",
 			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_RELAY_IP,
@@ -3341,6 +3341,8 @@ describe("Hermes wrapper foundation", () => {
 			"TELCLAUDE_HERMES_CONTAINED_IP",
 			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_CONTAINED_IP,
 		);
+		// Let Vitest worker RPCs flush between the heavy synchronous fixture checks.
+		await new Promise<void>((resolve) => setImmediate(resolve));
 	});
 
 	it("parses explicit Hermes pins without accepting an empty pin", () => {
