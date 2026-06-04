@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
@@ -152,6 +152,7 @@ import {
 	evaluateProReviewCheck,
 	readProReviewNativeCanary,
 	readProReviewRequest,
+	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
 } from "../hermes/pro-review.js";
 import {
@@ -615,6 +616,7 @@ type ProReviewSendOption = JsonOption & {
 	canary: string;
 	bundleOut?: string;
 	execute?: boolean;
+	waitTimeoutMs?: string;
 };
 
 type PrivateRuntimeMode = "hermes" | "legacy";
@@ -1092,6 +1094,84 @@ function writeProReviewBundle(requestPath: string, bundlePath: string): void {
 	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
 	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
 	fs.chmodSync(bundlePath, 0o600);
+}
+
+function buildProReviewRunId(): string {
+	const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+	return `hermes_${timestamp}_${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function buildProReviewInspectCommand(extensionInstanceId: string, runId: string): string[] {
+	return [
+		"yoetz",
+		"browser",
+		"extension",
+		"inspect",
+		"--chatgpt",
+		"--run-id",
+		runId,
+		"--extension-instance-id",
+		extensionInstanceId,
+		"--format",
+		"json",
+	];
+}
+
+function parseProReviewWaitTimeoutMs(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error("--wait-timeout-ms must be a positive integer");
+	}
+	return parsed;
+}
+
+type ProReviewYoetzProcessResult = {
+	readonly status: number | null;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly error?: string;
+};
+
+function runProReviewYoetzCommand(
+	command: readonly string[],
+	env: NodeJS.ProcessEnv,
+): Promise<ProReviewYoetzProcessResult> {
+	const executable = command[0];
+	if (!executable) {
+		return Promise.resolve({
+			status: null,
+			stdout: "",
+			stderr: "",
+			error: "Yoetz command is empty",
+		});
+	}
+	return new Promise((resolve) => {
+		const child = spawn(executable, command.slice(1), { env });
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		const finish = (result: ProReviewYoetzProcessResult) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+		child.stdout?.setEncoding("utf8");
+		child.stdout?.on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr?.setEncoding("utf8");
+		child.stderr?.on("data", (chunk: string) => {
+			stderr += chunk;
+			process.stderr.write(chunk);
+		});
+		child.on("error", (error) => {
+			finish({ status: null, stdout, stderr, error: error.message });
+		});
+		child.on("close", (code) => {
+			finish({ status: code, stdout, stderr });
+		});
+	});
 }
 
 type FixtureVitestInvocation = {
@@ -3998,7 +4078,8 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option("--bundle-out <path>", "Write the generated Yoetz bundle to this path")
 		.option("--execute", "Actually invoke Yoetz native extension after all approval gates pass")
-		.action((options: ProReviewSendOption) => {
+		.option("--wait-timeout-ms <ms>", "Yoetz ChatGPT response wait timeout in milliseconds")
+		.action(async (options: ProReviewSendOption) => {
 			const report = evaluateProReviewCheck({
 				requestPath: options.request,
 				canaryPath: options.canary,
@@ -4054,14 +4135,38 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 				return;
 			}
+			let waitTimeoutMs: number | undefined;
+			try {
+				waitTimeoutMs = parseProReviewWaitTimeoutMs(options.waitTimeoutMs);
+			} catch (error) {
+				const result = {
+					report,
+					send: {
+						status: "refused",
+						reason: error instanceof Error ? error.message : String(error),
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: refused");
+					console.log(`- FAIL: ${result.send.reason}`);
+				}
+				process.exitCode = 1;
+				return;
+			}
 			writeProReviewBundle(options.request, bundlePath);
 			const payloadSha256 = report.payloadSha256;
 			const bundleSha256 = fileSha256(bundlePath);
+			const runId = buildProReviewRunId();
+			const inspectCommand = buildProReviewInspectCommand(nativeCanary.extensionInstanceId, runId);
 			const yoetzCommand = buildProReviewYoetzCommand({
 				canary: nativeCanary,
 				bundlePath,
 				payloadSha256,
 				bundleSha256,
+				runId,
+				waitTimeoutMs,
 			});
 			if (!options.execute) {
 				const result = {
@@ -4071,6 +4176,8 @@ export function registerHermesCommand(program: Command): void {
 						bundlePath,
 						payloadSha256,
 						bundleSha256,
+						runId,
+						inspectCommand,
 						yoetzCommand,
 						note: "not sent; pass --execute to invoke Yoetz native extension",
 					},
@@ -4086,38 +4193,84 @@ export function registerHermesCommand(program: Command): void {
 				return;
 			}
 
-			const result = spawnSync(yoetzCommand[0], yoetzCommand.slice(1), {
-				encoding: "utf8",
-				env: buildProReviewNativeYoetzEnv(),
-			});
+			console.error(
+				`Hermes pro-review-send: native run ${runId}; inspect with: YOETZ_AGENT=1 ${inspectCommand.join(" ")}`,
+			);
+			const result = await runProReviewYoetzCommand(yoetzCommand, buildProReviewNativeYoetzEnv());
 			const validation =
 				result.status === 0
 					? validateProReviewYoetzSendOutput({
 							stdout: result.stdout,
 							expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
+							expectedBundlePath: bundlePath,
 							expectedPayloadSha256: payloadSha256,
 							expectedBundleSha256: bundleSha256,
 						})
 					: null;
+			const bundleAfterSendSha256 =
+				result.status === 0 && validation?.status === "pass" ? fileSha256(bundlePath) : null;
+			const bundleValidation =
+				bundleAfterSendSha256 === null
+					? null
+					: bundleAfterSendSha256 === bundleSha256
+						? {
+								status: "pass",
+								detail: "bundle artifact hash still matches the approved pre-send bundle",
+							}
+						: {
+								status: "fail",
+								detail: `bundle artifact hash changed after send: ${bundleAfterSendSha256}, expected ${bundleSha256}`,
+							};
+			const inspectResult =
+				result.status === 0 && validation?.status === "pass" && bundleValidation?.status === "pass"
+					? await runProReviewYoetzCommand(inspectCommand, buildProReviewNativeYoetzEnv())
+					: null;
+			const inspectValidation =
+				inspectResult?.status === 0
+					? validateProReviewYoetzInspectOutput({
+							stdout: inspectResult.stdout,
+							expectedRunId: runId,
+						})
+					: null;
 			const send = {
-				status: result.status === 0 && validation?.status === "pass" ? "sent" : "failed",
+				status:
+					result.status === 0 &&
+					validation?.status === "pass" &&
+					bundleValidation?.status === "pass" &&
+					inspectResult?.status === 0 &&
+					inspectValidation?.status === "pass"
+						? "sent"
+						: "failed",
 				bundlePath,
 				payloadSha256,
 				bundleSha256,
+				bundleAfterSendSha256,
+				runId,
+				inspectCommand,
 				yoetzCommand,
 				exitCode: result.status,
 				validation,
+				bundleValidation,
 				stdout: result.stdout,
 				stderr: result.stderr,
-				error: result.error?.message,
+				error: result.error,
+				inspect: inspectResult
+					? {
+							exitCode: inspectResult.status,
+							validation: inspectValidation,
+							stdout: inspectResult.stdout,
+							stderr: inspectResult.stderr,
+							error: inspectResult.error,
+						}
+					: null,
 			};
 			if (options.json) {
 				printJson({ report, send });
 			} else {
 				console.log(`Hermes pro-review-send: ${send.status}`);
 				if (send.stdout.trim()) console.log(send.stdout.trim());
-				if (send.stderr.trim()) console.error(send.stderr.trim());
 				if (send.error) console.error(send.error);
+				if (send.inspect?.error) console.error(send.inspect.error);
 			}
 			process.exitCode = send.status === "sent" ? 0 : 1;
 		});

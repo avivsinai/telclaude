@@ -9,6 +9,7 @@ import {
 	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
 } from "../attestation-validation.js";
+import { EdgeAdapterSchemaVersions } from "../edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
 import type { RelayConversation } from "../relay-conversation-store.js";
 import {
@@ -28,6 +29,7 @@ import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
+	type TelclaudeMcpOutboundSideEffectRecord,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
@@ -114,6 +116,10 @@ export const SideEffectLedgerProbeEvidenceSchema = z
 				mutatedProviderContentHash: Sha256Digest.optional(),
 				verifierCallCount: z.number().int().nonnegative(),
 				providerProxyCallCount: z.number().int().nonnegative(),
+				outboundDeliveryCallCount: z.number().int().nonnegative(),
+				outboundEdgePreparedRef: NonEmptyString.optional(),
+				outboundDeliveryOutboundRef: NonEmptyString.optional(),
+				outboundDeliveryIdempotencyKey: NonEmptyString.optional(),
 			})
 			.strict(),
 		runnerAttestation: SideEffectLedgerAttestationSchema.optional(),
@@ -183,6 +189,22 @@ export function sideEffectLedgerProbeEvidenceFailure(
 	}
 	if (data.observations.providerProxyCallCount !== 1) {
 		failures.push(`providerProxyCallCount is ${data.observations.providerProxyCallCount}`);
+	}
+	if (data.observations.outboundDeliveryCallCount !== 1) {
+		failures.push(`outboundDeliveryCallCount is ${data.observations.outboundDeliveryCallCount}`);
+	}
+	if (!data.observations.outboundEdgePreparedRef) {
+		failures.push("outboundEdgePreparedRef is missing");
+	}
+	if (!data.observations.outboundDeliveryOutboundRef) {
+		failures.push("outboundDeliveryOutboundRef is missing");
+	} else if (
+		data.observations.outboundEdgePreparedRef &&
+		data.observations.outboundDeliveryOutboundRef !== data.observations.outboundEdgePreparedRef
+	) {
+		failures.push(
+			`outboundDeliveryOutboundRef is ${data.observations.outboundDeliveryOutboundRef}, expected ${data.observations.outboundEdgePreparedRef}`,
+		);
 	}
 	for (const [label, paramsHash, bodyHash, contentHash] of [
 		[
@@ -266,6 +288,7 @@ async function runProbe(input: {
 			observations: {
 				verifierCallCount: 0,
 				providerProxyCallCount: 0,
+				outboundDeliveryCallCount: 0,
 			},
 		};
 	}
@@ -274,6 +297,7 @@ async function runProbe(input: {
 	const observations: SideEffectLedgerProbeEvidence["observations"] = {
 		verifierCallCount: 0,
 		providerProxyCallCount: 0,
+		outboundDeliveryCallCount: 0,
 	};
 	const jtiDir = fs.mkdtempSync(path.join(os.tmpdir(), "tc-hermes-ledger-jti-"));
 	const jtiStore = new TelclaudeMcpSideEffectJtiStore(jtiDir);
@@ -300,6 +324,7 @@ async function runProbe(input: {
 		const bridge = createProbeBridge(
 			ledger,
 			providerApprovals,
+			observations,
 			() => nowMs,
 			async (request) => {
 				providerProxyCalls.push(request);
@@ -309,7 +334,7 @@ async function runProbe(input: {
 		);
 
 		const provider = ledger.prepare(providerPrepareInput());
-		const outbound = ledger.prepare(outboundPrepareInput());
+		const outbound = ledger.prepare(outboundPrepareInput()) as TelclaudeMcpOutboundSideEffectRecord;
 		const providerBinding = getTelclaudeMcpSideEffectApprovalBinding(provider);
 		const outboundBinding = getTelclaudeMcpSideEffectApprovalBinding(outbound);
 		observations.providerRef = provider.ref;
@@ -320,6 +345,7 @@ async function runProbe(input: {
 		observations.outboundParamsHash = outbound.paramsHash;
 		observations.outboundBodyHash = outbound.bodyHash;
 		observations.outboundContentHash = outboundBinding.contentHash;
+		observations.outboundEdgePreparedRef = outbound.edgePreparedRef;
 
 		pushCheck(
 			checks,
@@ -401,7 +427,10 @@ async function runProbe(input: {
 			outboundResult.ok === true &&
 				outboundResult.record?.ref === outbound.ref &&
 				outboundResult.record?.status === "executed" &&
-				outboundResult.record?.approvalId === "outbound-jti",
+				outboundResult.record?.approvalId === "outbound-jti" &&
+				observations.outboundDeliveryCallCount === 1 &&
+				observations.outboundDeliveryOutboundRef === outbound.edgePreparedRef &&
+				observations.outboundDeliveryIdempotencyKey === outbound.idempotencyKey,
 			"outbound delivery executes once after vault-signed approval verification",
 		);
 		pushCheck(
@@ -548,9 +577,16 @@ async function runProbe(input: {
 		);
 		const recordAfterProviderScopeMismatch = ledger.get(providerScopeMismatch.ref);
 		const verifierCallsAfterScopeMismatch = observations.verifierCallCount;
-		const clalitBridge = createProbeBridge(ledger, providerApprovals, () => nowMs, undefined, {
-			providerScopes: ["clalit"],
-		});
+		const clalitBridge = createProbeBridge(
+			ledger,
+			providerApprovals,
+			observations,
+			() => nowMs,
+			undefined,
+			{
+				providerScopes: ["clalit"],
+			},
+		);
 		const providerScopeAllowedResult = resultShape(
 			await clalitBridge.tc_provider_execute_write({
 				actionRef: providerScopeMismatch.ref,
@@ -655,6 +691,7 @@ async function generateProbeToken(
 function createProbeBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
 	providerApprovals: Map<string, string>,
+	observations: SideEffectLedgerProbeEvidence["observations"],
 	nowMs: () => number,
 	providerProxy: Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0]["providerProxy"],
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
@@ -685,6 +722,26 @@ function createProbeBridge(
 			},
 			resolveAuthorizedOutboundConversation: (conversationRef) =>
 				probeRelayConversation(conversationRef, authority),
+			outboundDeliveryDispatcher: async (prepared) => {
+				observations.outboundDeliveryCallCount += 1;
+				observations.outboundDeliveryOutboundRef = prepared.outboundRef;
+				observations.outboundDeliveryIdempotencyKey = prepared.idempotencyKey;
+				return {
+					schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+					outboundRef: prepared.outboundRef,
+					platformMessageId: "probe-outbound-message",
+					deliveryStatus: "sent",
+					timestamps: {
+						observedAt: new Date(nowMs()).toISOString(),
+						sentAt: new Date(nowMs()).toISOString(),
+					},
+					retry: {
+						attempt: 1,
+						maxAttempts: prepared.retryPolicy.maxAttempts,
+						idempotencyKey: prepared.idempotencyKey,
+					},
+				};
+			},
 			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
 				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
 			nowMs,

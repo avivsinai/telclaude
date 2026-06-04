@@ -13,6 +13,7 @@ import {
 	PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS,
 	type ProReviewNativeCanary,
 	REQUIRED_PRO_REVIEW_FILES,
+	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
 } from "../../src/hermes/pro-review.js";
 import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
@@ -290,6 +291,8 @@ describe("Hermes Pro review gate", () => {
 			bundlePath: "/tmp/pro-review.md",
 			payloadSha256,
 			bundleSha256,
+			runId: "hermes_20260604174011_abcdef12",
+			waitTimeoutMs: 120_000,
 		});
 
 		expect(command).toEqual(
@@ -302,6 +305,10 @@ describe("Hermes Pro review gate", () => {
 				`payload_sha256=${payloadSha256}`,
 				"--var",
 				`bundle_sha256=${bundleSha256}`,
+				"--var",
+				"run_id=hermes_20260604174011_abcdef12",
+				"--var",
+				"wait_timeout_ms=120000",
 			]),
 		);
 		expect(command).not.toContain("--allow-cdp-fallback");
@@ -371,6 +378,7 @@ describe("Hermes Pro review gate", () => {
 	it("validates Yoetz native final-send JSON before reporting sent", () => {
 		const approvedPayloadSha256 = computeTextDigest("approved payload");
 		const bundleSha256 = computeTextDigest("exact bundle");
+		const bundlePath = "/tmp/pro-review.md";
 
 		expect(
 			validateProReviewYoetzSendOutput({
@@ -382,11 +390,9 @@ describe("Hermes Pro review gate", () => {
 					warnings: [],
 					fallback_used: false,
 					auto_paste_fallback: false,
-					extension_instance_id: "ext_test",
-					payloadSha256: approvedPayloadSha256,
-					bundleSha256,
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
@@ -402,14 +408,16 @@ describe("Hermes Pro review gate", () => {
 					warnings: [],
 					fallback_used: false,
 					auto_paste_fallback: false,
+					extension_instance_id: "ext_other",
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
-			detail: expect.stringContaining("extension_instance_id is missing"),
+			detail: expect.stringContaining("extension_instance_id is ext_other"),
 		});
 
 		expect(
@@ -422,15 +430,18 @@ describe("Hermes Pro review gate", () => {
 					warnings: [],
 					fallback_used: false,
 					auto_paste_fallback: false,
-					extensionInstanceId: "ext_test",
+					artifacts: {
+						bundle_md: "/tmp/other-pro-review.md",
+					},
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
-			detail: expect.stringContaining("extension_instance_id is missing"),
+			detail: expect.stringContaining("artifacts.bundle_md is /tmp/other-pro-review.md"),
 		});
 
 		expect(
@@ -444,8 +455,12 @@ describe("Hermes Pro review gate", () => {
 					fallback_used: true,
 					auto_paste_fallback: true,
 					extension_instance_id: "ext_other",
+					artifacts: {
+						bundle_md: bundlePath,
+					},
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
@@ -459,6 +474,7 @@ describe("Hermes Pro review gate", () => {
 		const approvedPayloadSha256 = computeTextDigest("approved payload");
 		const otherPayloadSha256 = computeTextDigest("other payload");
 		const bundleSha256 = computeTextDigest("exact bundle");
+		const bundlePath = "/tmp/pro-review.md";
 
 		expect(
 			validateProReviewYoetzSendOutput({
@@ -471,10 +487,14 @@ describe("Hermes Pro review gate", () => {
 					fallback_used: false,
 					auto_paste_fallback: false,
 					extension_instance_id: "ext_test",
+					artifacts: {
+						bundle_md: bundlePath,
+					},
 					payloadSha256: otherPayloadSha256,
 					bundleSha256,
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
@@ -488,6 +508,7 @@ describe("Hermes Pro review gate", () => {
 		const approvedPayloadSha256 = computeTextDigest("approved payload");
 		const bundleSha256 = computeTextDigest("exact bundle");
 		const otherBundleSha256 = computeTextDigest("other bundle");
+		const bundlePath = "/tmp/pro-review.md";
 
 		expect(
 			validateProReviewYoetzSendOutput({
@@ -500,16 +521,72 @@ describe("Hermes Pro review gate", () => {
 					fallback_used: false,
 					auto_paste_fallback: false,
 					extension_instance_id: "ext_test",
+					artifacts: {
+						bundle_md: bundlePath,
+					},
 					payloadSha256: approvedPayloadSha256,
 					bundleSha256: otherBundleSha256,
 				}),
 				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
 				expectedPayloadSha256: approvedPayloadSha256,
 				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining(`bundleSha256 is ${otherBundleSha256}`),
+		});
+	});
+
+	it("validates Yoetz native inspect output before reporting a run-bound send", () => {
+		expect(
+			validateProReviewYoetzInspectOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					response: {
+						run_id: "hermes_20260604174011_abcdef12",
+						tabs: [{ tab_id: 123 }],
+					},
+				}),
+				expectedRunId: "hermes_20260604174011_abcdef12",
+			}),
+		).toMatchObject({ status: "pass" });
+
+		expect(
+			validateProReviewYoetzInspectOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					response: {
+						run_id: "hermes_20260604174011_stale123",
+						tabs: [{ tab_id: 123 }],
+					},
+				}),
+				expectedRunId: "hermes_20260604174011_abcdef12",
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				"runId is hermes_20260604174011_stale123, expected hermes_20260604174011_abcdef12",
+			),
+		});
+
+		expect(
+			validateProReviewYoetzInspectOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					response: {
+						run_id: "hermes_20260604174011_abcdef12",
+						tabs: [],
+					},
+				}),
+				expectedRunId: "hermes_20260604174011_abcdef12",
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("response.tabs is missing or empty"),
 		});
 	});
 
