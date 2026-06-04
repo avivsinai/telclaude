@@ -724,7 +724,9 @@ export class TelclaudeEdgeRuntime {
 		}
 		if (request.recipient.kind === "actor") {
 			const actorId = request.recipient.actorId;
-			const actor = conversationRef.recipients.find((recipient) => recipient.actorId === actorId);
+			const actor = conversationRef.recipients.find(
+				(recipient) => recipient.actorId === actorId && isTargetableRecipientRole(recipient.role),
+			);
 			if (!actor) {
 				if (conversationRef.domain === "household") {
 					this.deny(
@@ -740,9 +742,24 @@ export class TelclaudeEdgeRuntime {
 				conversationId: conversationRef.conversationId,
 			};
 		}
+		const addressRef = request.recipient.addressRef;
+		const address = conversationRef.recipients.find(
+			(recipient) =>
+				recipient.channelIdentity.principalId === addressRef &&
+				isTargetableRecipientRole(recipient.role),
+		);
+		if (!address) {
+			if (conversationRef.domain === "household") {
+				this.deny(
+					"household.cross-recipient-denied",
+					"Household outbound address is not a scoped recipient",
+				);
+			}
+			this.deny("outbound.recipient-body-bound", "Outbound address is not bound to conversation");
+		}
 		return {
 			kind: "address",
-			addressRef: request.recipient.addressRef,
+			addressRef,
 			conversationId: conversationRef.conversationId,
 		};
 	}
@@ -880,6 +897,10 @@ function actorHasScopeAction(actorRef: ActorRef, scope: string, action: string):
 function actorHasAnyAction(actorRef: ActorRef, actions: readonly string[]): boolean {
 	const allowed = new Set(actions);
 	return actorRef.scopes.some((grant) => grant.actions.some((action) => allowed.has(action)));
+}
+
+function isTargetableRecipientRole(role: ConversationRef["recipients"][number]["role"]): boolean {
+	return role === "sender" || role === "recipient";
 }
 
 function preparedPayloadHash(input: {

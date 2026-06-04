@@ -65,7 +65,7 @@ describe("Hermes served-MCP containment probe", () => {
 		expect(serialized).not.toContain("probe-private");
 		expect(serialized).not.toContain("probe-forged");
 		expect(serialized).not.toContain("tc_probe_provider_without_ledger_token");
-		expect(serialized).not.toContain("tc_probe_outbound_without_ledger_token");
+		expect(serialized).not.toContain("approvalToken");
 		expect(serialized).not.toContain(new URL(harness.url).host);
 	});
 
@@ -148,7 +148,7 @@ describe("Hermes served-MCP containment probe", () => {
 		expect(artifact).not.toContain("probe-forged");
 		expect(artifact).not.toContain("probe-wrong");
 		expect(artifact).not.toContain("tc_probe_provider_without_ledger_token");
-		expect(artifact).not.toContain("tc_probe_outbound_without_ledger_token");
+		expect(artifact).not.toContain("approvalToken");
 		expect(artifact).not.toContain(new URL(harness.url).host);
 	});
 
@@ -327,7 +327,9 @@ async function startHarness(
 		memorySearch: async () => ({ entries: [] }),
 		memoryWrite: async () => ({ accepted: 1 }),
 		attachmentGet: async () => ({ bytes: 0 }),
-		outboundPrepare: async () => ({ outboundRef: "prepared-outbound" }),
+		outboundPrepare: async () => {
+			throw new Error("outbound conversation unavailable or unauthorized");
+		},
 		auditNote: async () => ({ stored: true }),
 	};
 	const server = createTelclaudeLiveMcpRelayHttpServer({
@@ -411,7 +413,9 @@ async function startBearerHarness(cleanup: Array<() => void | Promise<void>>) {
 		memorySearch: async () => ({ entries: [] }),
 		memoryWrite: async () => ({ accepted: 1 }),
 		attachmentGet: async () => ({ bytes: 0 }),
-		outboundPrepare: async () => ({ outboundRef: "prepared-outbound" }),
+		outboundPrepare: async () => {
+			throw new Error("outbound conversation unavailable or unauthorized");
+		},
 		auditNote: async () => ({ stored: true }),
 	};
 	const server = createTelclaudeLiveMcpRelayHttpServer({

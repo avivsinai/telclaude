@@ -92,6 +92,14 @@ describe("Telclaude MCP side-effect ledger", () => {
 				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
 			}),
 		);
+		const differentEdgePreparedHash = ledger.prepare(
+			outboundInput({
+				renderedBody: "Send WhatsApp to Dan: on my way",
+				mediaRefs: ["att-b", "att-a"],
+				approvalMetadata: { reviewer: "operator", facts: { z: true, a: false } },
+				edgePreparedHash: "b".repeat(64),
+			}),
+		);
 
 		expect(first.paramsHash).toMatch(/^sha256:[a-f0-9]{64}$/);
 		expect(first.bodyHash).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -102,6 +110,11 @@ describe("Telclaude MCP side-effect ledger", () => {
 		expect(differentBody.bodyHash).not.toBe(first.bodyHash);
 		expect(differentMedia.paramsHash).not.toBe(first.paramsHash);
 		expect(differentMedia.bodyHash).not.toBe(first.bodyHash);
+		expect(differentEdgePreparedHash.paramsHash).not.toBe(first.paramsHash);
+		expect(differentEdgePreparedHash.bodyHash).not.toBe(first.bodyHash);
+		expect(() =>
+			ledger.prepare(outboundInput({ edgePreparedHash: "edge-prepared-hash-1" })),
+		).toThrow("edgePreparedHash must be a 64-character lowercase hex digest");
 	});
 
 	it("authorizes by stored ref only and passes precise stored binding to the verifier", async () => {
@@ -482,6 +495,8 @@ function outboundInput(
 		renderedBody: "Send WhatsApp to Dan: on my way",
 		mediaRefs: ["att-1"],
 		conversationRef: "whatsapp:+15551234567",
+		edgePreparedRef: "edge-outbound-1",
+		edgePreparedHash: "a".repeat(64),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { reviewer: "operator" },

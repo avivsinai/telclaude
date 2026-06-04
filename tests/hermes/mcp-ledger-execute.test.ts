@@ -25,13 +25,12 @@ import {
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
-	it("authorizes provider and outbound executes through the ledger", async () => {
+	it("authorizes provider executes and leaves outbound execute fail-closed until server resolution lands", async () => {
 		const harness = createLedgerHarness();
 		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(providerPrepareInput());
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
 		harness.accept("provider-token", provider);
-		harness.accept("outbound-token", outbound);
 
 		await expect(
 			bridge.tc_provider_execute_write({
@@ -50,13 +49,16 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				outboundRef: outbound.ref,
 				approvalToken: "outbound-token",
 			}),
-		).resolves.toEqual({
-			ok: true,
-			record: expect.objectContaining({
-				ref: outbound.ref,
-				status: "executed",
-				approvalId: "outbound-token",
+		).rejects.toThrow();
+		await expect(
+			bridge.tc_outbound_execute({
+				outboundRef: outbound.ref,
 			}),
+		).resolves.toEqual({
+			ok: false,
+			code: "approval_required",
+			reason: "outbound side effects require server-side approval resolution by outboundRef",
+			retryable: false,
 		});
 
 		expect(harness.verifierCalls).toEqual([
@@ -64,11 +66,10 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				approvalToken: "provider-token",
 				record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
 			}),
-			expect.objectContaining({
-				approvalToken: "outbound-token",
-				record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
-			}),
 		]);
+		expect(harness.ledger.get(outbound.ref)).toEqual(
+			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		);
 	});
 
 	it("surfaces missing server-side approvals as retryable without executing the prepared ref", async () => {
@@ -553,7 +554,7 @@ function outboundPrepareInput() {
 	return {
 		kind: "outbound" as const,
 		actorId: "operator",
-		approverActorId: "operator",
+		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private" as const,
 		channel: "whatsapp",
@@ -561,6 +562,8 @@ function outboundPrepareInput() {
 		renderedBody: "I'll pick up dinner at 19:00.",
 		mediaRefs: ["attachment:menu"],
 		conversationRef: "whatsapp:+15551234567",
+		edgePreparedRef: "edge-outbound-1",
+		edgePreparedHash: "a".repeat(64),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },

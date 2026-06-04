@@ -69,6 +69,64 @@ describe("Telclaude edge adapter runtime", () => {
 			conversationRef: inbound.conversationRef,
 			correlationId: "runtime-test-1",
 		};
+		expectDenied(
+			() =>
+				runtime.prepareOutbound({
+					request: {
+						...request,
+						recipient: {
+							kind: "address",
+							addressRef: "whatsapp:principal:forged-address",
+						},
+					},
+					authorizingActor: inbound.actorRef,
+				}),
+			"outbound.recipient-body-bound",
+		);
+		const conversationWithObserver = {
+			...inbound.conversationRef,
+			recipients: [
+				...inbound.conversationRef.recipients,
+				{
+					actorId: "whatsapp:actor:observer",
+					channelIdentity: {
+						channel: "whatsapp",
+						principalId: "whatsapp:principal:observer",
+					},
+					role: "observer",
+				},
+			],
+		};
+		expectDenied(
+			() =>
+				runtime.prepareOutbound({
+					request: {
+						...request,
+						recipient: {
+							kind: "actor",
+							actorId: "whatsapp:actor:observer",
+						},
+						conversationRef: conversationWithObserver,
+					},
+					authorizingActor: inbound.actorRef,
+				}),
+			"outbound.recipient-body-bound",
+		);
+		expectDenied(
+			() =>
+				runtime.prepareOutbound({
+					request: {
+						...request,
+						recipient: {
+							kind: "address",
+							addressRef: "whatsapp:principal:observer",
+						},
+						conversationRef: conversationWithObserver,
+					},
+					authorizingActor: inbound.actorRef,
+				}),
+			"outbound.recipient-body-bound",
+		);
 
 		expectDenied(
 			() =>
@@ -337,6 +395,25 @@ describe("Telclaude edge adapter runtime", () => {
 						mediaRefs: [],
 						conversationRef: inbound.conversationRef,
 						correlationId: "household-runtime-test-1",
+					},
+					authorizingActor: inbound.actorRef,
+				}),
+			"household.cross-recipient-denied",
+		);
+		expectDenied(
+			() =>
+				runtime.prepareOutbound({
+					request: {
+						schemaVersion: EdgeAdapterSchemaVersions.outboundRequest,
+						channel: "whatsapp",
+						recipient: {
+							kind: "address",
+							addressRef: "whatsapp:principal:other-family-member",
+						},
+						requestedBody: "Scoped reply",
+						mediaRefs: [],
+						conversationRef: inbound.conversationRef,
+						correlationId: "household-runtime-test-2",
 					},
 					authorizingActor: inbound.actorRef,
 				}),

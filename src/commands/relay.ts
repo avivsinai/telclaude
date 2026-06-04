@@ -166,6 +166,8 @@ export function registerRelayCommand(program: Command): void {
 				const liveMcpRuntimeConfig = readTelclaudeLiveMcpRuntimeConfig();
 				const liveMcpProviderWriteApproverActorId =
 					process.env.TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID?.trim();
+				const liveMcpOutboundApproverActorId =
+					process.env.TELCLAUDE_HERMES_OUTBOUND_APPROVER_ACTOR_ID?.trim();
 				const probeNoTelegramError = validateProbeNoTelegramRelayMode({
 					probeNoTelegram: opts.probeNoTelegram,
 					dryRun: opts.dryRun ?? false,
@@ -284,6 +286,7 @@ export function registerRelayCommand(program: Command): void {
 						createTelclaudeLiveMcpRelayClients({
 							ledger,
 							providerWriteApproverActorId: liveMcpProviderWriteApproverActorId,
+							outboundApproverActorId: liveMcpOutboundApproverActorId,
 						}),
 					admin: createTelclaudeLiveMcpProbeAdminStarter(liveMcpAdminConfig),
 				});
@@ -295,6 +298,13 @@ export function registerRelayCommand(program: Command): void {
 							liveMcpProviderWriteApproverActorId
 								? "configured"
 								: "not configured (provider writes fail closed)"
+						}`,
+					);
+					console.log(
+						`  Hermes outbound approver: ${
+							liveMcpOutboundApproverActorId
+								? "configured"
+								: "not configured (outbound sends fail closed)"
 						}`,
 					);
 					if (liveMcpAdminConfig.enabled) {

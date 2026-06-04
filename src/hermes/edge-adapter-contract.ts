@@ -3,6 +3,7 @@ import { z } from "zod";
 const NonEmptyString = z.string().trim().min(1);
 const IsoTimestamp = NonEmptyString;
 const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
+const HexDigest = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const EDGE_ADAPTER_CONTRACT_VERSION = "telclaude.hermes.edge-adapter-contract.v1";
 export const EdgeChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
@@ -202,7 +203,7 @@ export const PreparedOutboundSchema = z
 		finalRenderedBody: z.string(),
 		mediaRefs: z.array(AttachmentRefSchema),
 		authorizingActor: ActorRefSchema,
-		edgePreparedHash: NonEmptyString,
+		edgePreparedHash: HexDigest,
 		policyResult: z
 			.object({
 				decision: z.enum(["allowed", "approval_required", "denied"]),

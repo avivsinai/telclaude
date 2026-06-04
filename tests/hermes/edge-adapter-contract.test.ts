@@ -92,7 +92,7 @@ describe("Hermes edge adapter contract", () => {
 				finalRenderedBody: "On my way",
 				mediaRefs: [attachmentRef],
 				authorizingActor: actorRef,
-				edgePreparedHash: "edge-prepared-hash-1",
+				edgePreparedHash: "a".repeat(64),
 				policyResult: {
 					decision: "allowed",
 					reason: "existing allowlisted thread",
@@ -111,6 +111,38 @@ describe("Hermes edge adapter contract", () => {
 				},
 			}).success,
 		).toBe(true);
+		expect(
+			PreparedOutboundSchema.safeParse({
+				schemaVersion: EdgeAdapterSchemaVersions.preparedOutbound,
+				outboundRef: "outbound-1",
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "thread",
+					threadId: "family-thread",
+					conversationId: "wa-chat-1",
+				},
+				finalRenderedBody: "On my way",
+				mediaRefs: [attachmentRef],
+				authorizingActor: actorRef,
+				edgePreparedHash: "edge-prepared-hash-1",
+				policyResult: {
+					decision: "allowed",
+					reason: "existing allowlisted thread",
+					rules: ["existing-thread"],
+				},
+				approvalRequirement: {
+					required: false,
+				},
+				idempotencyKey: "idem-1",
+				sideEffectLedgerRef: "ledger-1",
+				createdAt: timestamp,
+				retryPolicy: {
+					maxAttempts: 3,
+					backoff: "exponential",
+					deadLetterAfterAttempts: 3,
+				},
+			}).success,
+		).toBe(false);
 		expect(
 			OutboundDecisionSchema.safeParse({
 				schemaVersion: EdgeAdapterSchemaVersions.outboundDecision,
