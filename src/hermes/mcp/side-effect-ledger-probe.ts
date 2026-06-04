@@ -219,6 +219,7 @@ function sideEffectLedgerRunnerAttestationFailure(
 	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = sideEffectLedgerAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = sideEffectLedgerAttestationFieldsForEvidence(evidence);

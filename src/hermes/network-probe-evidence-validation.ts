@@ -208,6 +208,7 @@ function validateNetworkProbeAttestation(
 	}
 	const signatureFailure = networkProbeAttestationSignatureFailure(evidence.attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) {
 		throw new Error(

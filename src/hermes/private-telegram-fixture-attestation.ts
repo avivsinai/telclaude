@@ -148,6 +148,7 @@ export function privateTelegramFixtureAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -161,6 +162,7 @@ export function privateTelegramFixtureAttestationSignatureFailure(
 		{
 			scope: PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }

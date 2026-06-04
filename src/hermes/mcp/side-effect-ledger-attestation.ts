@@ -84,6 +84,7 @@ export function sideEffectLedgerAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -97,6 +98,7 @@ export function sideEffectLedgerAttestationSignatureFailure(
 		{
 			scope: SIDE_EFFECT_LEDGER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }

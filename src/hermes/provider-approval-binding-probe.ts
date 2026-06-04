@@ -574,6 +574,7 @@ function providerApprovalBindingRunnerAttestationFailure(
 	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = providerApprovalBindingAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = providerApprovalBindingAttestationFieldsForEvidence(evidence);

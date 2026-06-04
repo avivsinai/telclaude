@@ -8,6 +8,7 @@ import { JtiStore, verifyApprovalToken } from "../google-services/approval.js";
 import type { FetchRequest } from "../google-services/types.js";
 import type { ProviderProxyRequest } from "../relay/provider-proxy.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../security/approval-domains.js";
+import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import { createTelclaudeMcpBridge, type TelclaudeMcpAuthority } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
 import { createTelclaudeLiveMcpRelayClients } from "./mcp/live-relay-clients.js";
@@ -535,6 +536,7 @@ export function buildGoogleProviderFixtureEvidenceBundle(
 export function googleProviderFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const requirement = GOOGLE_PROVIDER_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
@@ -570,7 +572,7 @@ export function googleProviderFixtureEvidenceFailure(
 		failures.push(...googleProviderFixtureContractFailures(requirement, data, probe.evidence));
 	}
 	if (requirement.kind === "direct-provider-deny") {
-		failures.push(...googleProviderDirectNetworkFixtureFailures(requirement, data));
+		failures.push(...googleProviderDirectNetworkFixtureFailures(requirement, data, options));
 	} else if (data.networkDeny) {
 		failures.push("Google provider fixture unexpectedly includes direct-provider network evidence");
 	}
@@ -755,6 +757,7 @@ function googleProviderFixtureContractFailures(
 function googleProviderDirectNetworkFixtureFailures(
 	requirement: GoogleProviderFixtureRequirement,
 	fixture: GoogleProviderFixtureEvidence,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string[] {
 	const failures: string[] = [];
 	const binding = fixture.networkDeny;
@@ -765,7 +768,7 @@ function googleProviderDirectNetworkFixtureFailures(
 	if (binding.requiredAttemptName !== requirement.networkAttemptName) {
 		failures.push("networkDeny requiredAttemptName does not match Google provider contract");
 	}
-	const network = readGoogleProviderDirectNetworkProbeArtifact(binding.probePath);
+	const network = readGoogleProviderDirectNetworkProbeArtifact(binding.probePath, options);
 	if (network.sha256 !== binding.probeSha256) {
 		failures.push("networkDeny probeSha256 does not match direct-provider network artifact");
 	}
@@ -776,6 +779,7 @@ function googleProviderDirectNetworkFixtureFailures(
 	const signedFailure = networkProbeEvidenceFailure(network.evidence, {
 		expectedId: "network.direct-provider-denied",
 		requiredAttemptNames: requirement.networkAttemptName ? [requirement.networkAttemptName] : [],
+		...options,
 	});
 	if (signedFailure) {
 		failures.push(`networkDeny signed proof failed validation: ${signedFailure}`);
@@ -833,7 +837,10 @@ function readGoogleProviderProbeArtifact(probePath: string): {
 	};
 }
 
-function readGoogleProviderDirectNetworkProbeArtifact(probePath: string): {
+function readGoogleProviderDirectNetworkProbeArtifact(
+	probePath: string,
+	options: HermesSignedEvidenceValidationOptions = {},
+): {
 	readonly path: string;
 	readonly sha256: string;
 	readonly evidence?: GoogleProviderDirectNetworkProbeEvidence;
@@ -868,6 +875,7 @@ function readGoogleProviderDirectNetworkProbeArtifact(probePath: string): {
 	}
 	const failure = networkProbeEvidenceFailure(parsed.data, {
 		expectedId: "network.direct-provider-denied",
+		...options,
 	});
 	return {
 		path: probePath,

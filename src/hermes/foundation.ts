@@ -3823,9 +3823,19 @@ function cutoverValidationOptions(
 	liveCutover: boolean,
 	now?: Date,
 ): HermesSignedEvidenceValidationOptions {
+	const trustedRelayPublicKey = trustedRelayPublicKeyForValidation({ liveCutover });
 	return {
 		allowStaleAttestations: !liveCutover,
 		...(now ? { now } : {}),
+		...(trustedRelayPublicKey.valid ? { relayPublicKey: trustedRelayPublicKey.value } : {}),
+	};
+}
+
+export function archivedHermesEvidenceValidationOptions(): HermesSignedEvidenceValidationOptions {
+	const trustedRelayPublicKey = trustedRelayPublicKeyForValidation({ liveCutover: false });
+	return {
+		allowStaleAttestations: true,
+		...(trustedRelayPublicKey.valid ? { relayPublicKey: trustedRelayPublicKey.value } : {}),
 	};
 }
 
@@ -3876,7 +3886,7 @@ export function evaluateCutoverCheck(
 ): CutoverReport {
 	const dryRun = options.dryRun ?? false;
 	const strict = options.strict ?? true;
-	const liveCutover = options.liveCutover ?? false;
+	const liveCutover = options.liveCutover ?? (strict && !dryRun);
 	if (!strict) {
 		return {
 			status: "input_error",
@@ -4830,9 +4840,17 @@ function fixtureEvidenceFailure(
 		options,
 	);
 	if (privateTelegramFailure) return privateTelegramFailure;
-	const providerDomainFailure = providerDomainFixtureEvidenceFailure(result.id, parsed.data);
+	const providerDomainFailure = providerDomainFixtureEvidenceFailure(
+		result.id,
+		parsed.data,
+		options,
+	);
 	if (providerDomainFailure) return providerDomainFailure;
-	const googleProviderFailure = googleProviderFixtureEvidenceFailure(result.id, parsed.data);
+	const googleProviderFailure = googleProviderFixtureEvidenceFailure(
+		result.id,
+		parsed.data,
+		options,
+	);
 	if (googleProviderFailure) return googleProviderFailure;
 	const edgeAdapterFailure = edgeAdapterFixtureEvidenceFailure(result.id, evidence, options);
 	if (edgeAdapterFailure) return edgeAdapterFailure;
@@ -4987,7 +5005,10 @@ function privateTelegramRunnerAttestationFailures(
 	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = privateTelegramFixtureAttestationSignatureFailure(
 		attestation as PrivateTelegramFixtureAttestation,
-		{ allowStale: hermesAllowsStaleAttestations(options) },
+		{
+			allowStale: hermesAllowsStaleAttestations(options),
+			relayPublicKey: options.relayPublicKey,
+		},
 	);
 	if (signatureFailure) {
 		failures.push(
@@ -5292,7 +5313,10 @@ function noForkRunnerAttestationFailures(
 	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = noForkRunnerAttestationSignatureFailure(
 		attestation as NoForkRunnerAttestation,
-		{ allowStale: hermesAllowsStaleAttestations(options) },
+		{
+			allowStale: hermesAllowsStaleAttestations(options),
+			relayPublicKey: options.relayPublicKey,
+		},
 	);
 	if (signatureFailure) {
 		failures.push(`no-fork runner attestation signature is invalid: ${signatureFailure}`);
@@ -5433,7 +5457,7 @@ function rollbackRehearsalEvidenceFailures(
 	if (evidence.observedAfterControlSource !== "runtime-config") {
 		failures.push("rollback rehearsal evidence observedAfterControlSource is not runtime-config");
 	}
-	failures.push(...rollbackRelayPublicKeyFailures(evidence, rollbackRehearsal));
+	failures.push(...rollbackRelayPublicKeyFailures(evidence, rollbackRehearsal, options));
 	failures.push(...rollbackRelayTranscriptFailures(evidence, options));
 	if (evidence.checks === undefined || evidence.checks.length === 0) {
 		failures.push("rollback rehearsal evidence checks are empty");
@@ -5465,6 +5489,7 @@ function rollbackRehearsalEvidenceFailures(
 function rollbackRelayPublicKeyFailures(
 	evidence: RollbackRehearsal,
 	rollbackRehearsal: RollbackRehearsal,
+	options: HermesSignedEvidenceValidationOptions,
 ): string[] {
 	const failures: string[] = [];
 	if (!rollbackRehearsal.relayPublicKey) {
@@ -5488,7 +5513,7 @@ function rollbackRelayPublicKeyFailures(
 	if (evidence.relayPublicKey.sha256 !== expectedDigest) {
 		failures.push("rollback rehearsal evidence relay public key sha256 does not match value");
 	}
-	const trustedKey = trustedRollbackRelayPublicKey(evidence);
+	const trustedKey = trustedRollbackRelayPublicKey(evidence, options);
 	if (!trustedKey.valid) {
 		failures.push(trustedKey.failure);
 	}
@@ -5497,6 +5522,7 @@ function rollbackRelayPublicKeyFailures(
 
 function trustedRollbackRelayPublicKey(
 	evidence: RollbackRehearsal,
+	options: HermesSignedEvidenceValidationOptions,
 ): { valid: true; value: string } | { valid: false; failure: string } {
 	if (!evidence.relayPublicKey) {
 		return {
@@ -5510,30 +5536,45 @@ function trustedRollbackRelayPublicKey(
 			failure: "rollback rehearsal relay public key source process-env is not cutover provenance",
 		};
 	}
+	const trusted = trustedRelayPublicKeyForValidation({
+		liveCutover: !hermesAllowsStaleAttestations(options),
+		evidenceKey: evidence.relayPublicKey,
+	});
+	return trusted.valid
+		? { valid: true, value: trusted.value }
+		: { valid: false, failure: trusted.failure };
+}
+
+export function trustedRelayPublicKeyForValidation(
+	input: {
+		readonly liveCutover?: boolean;
+		readonly evidenceKey?: z.infer<typeof RollbackRelayPublicKeySchema>;
+	} = {},
+): { valid: true; value: string; source: "env" | "lockfile" } | { valid: false; failure: string } {
+	const liveCutover = input.liveCutover ?? true;
 	const trustedValue = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV]?.trim();
 	if (trustedValue) {
-		if (evidence.relayPublicKey.value !== trustedValue) {
+		if (input.evidenceKey && input.evidenceKey.value !== trustedValue) {
 			return {
 				valid: false,
 				failure:
 					"rollback rehearsal evidence relay public key does not match trusted relay public key",
 			};
 		}
-		return { valid: true, value: trustedValue };
+		return { valid: true, value: trustedValue, source: "env" };
 	}
-	const lockedKey = trustedRollbackRelayPublicKeyFromLock(evidence.relayPublicKey);
-	if (!lockedKey.valid) {
+	if (liveCutover) {
 		return {
 			valid: false,
-			failure: lockedKey.failure,
+			failure: `trusted operator relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing for live validation`,
 		};
 	}
-	return { valid: true, value: lockedKey.value };
+	return trustedRelayPublicKeyFromLock(input.evidenceKey);
 }
 
-function trustedRollbackRelayPublicKeyFromLock(
-	evidenceKey: z.infer<typeof RollbackRelayPublicKeySchema>,
-): { valid: true; value: string } | { valid: false; failure: string } {
+function trustedRelayPublicKeyFromLock(
+	evidenceKey?: z.infer<typeof RollbackRelayPublicKeySchema>,
+): { valid: true; value: string; source: "lockfile" } | { valid: false; failure: string } {
 	const lockPath =
 		process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV]?.trim() ||
 		HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_PATH;
@@ -5557,18 +5598,24 @@ function trustedRollbackRelayPublicKeyFromLock(
 			}`,
 		};
 	}
-	const locked = lock.keys.find(
-		(key) =>
-			key.scope === evidenceKey.scope &&
-			key.envKey === evidenceKey.envKey &&
-			key.value === evidenceKey.value &&
-			key.sha256 === evidenceKey.sha256 &&
-			key.source === evidenceKey.source,
-	);
+	const locked = evidenceKey
+		? lock.keys.find(
+				(key) =>
+					key.scope === evidenceKey.scope &&
+					key.envKey === evidenceKey.envKey &&
+					key.value === evidenceKey.value &&
+					key.sha256 === evidenceKey.sha256 &&
+					key.source === evidenceKey.source,
+			)
+		: lock.keys.find(
+				(key) => key.scope === "operator" && key.envKey === HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+			);
 	if (!locked) {
 		return {
 			valid: false,
-			failure: "rollback rehearsal evidence relay public key is not pinned in the trusted lockfile",
+			failure: evidenceKey
+				? "rollback rehearsal evidence relay public key is not pinned in the trusted lockfile"
+				: "trusted relay public key lockfile has no operator key",
 		};
 	}
 	const expectedDigest = sha256Digest(locked.value);
@@ -5603,7 +5650,7 @@ function trustedRollbackRelayPublicKeyFromLock(
 			failure: sourceFailure,
 		};
 	}
-	return { valid: true, value: locked.value };
+	return { valid: true, value: locked.value, source: "lockfile" };
 }
 
 function rollbackRelayPublicKeySourceArtifactFailure(
@@ -5640,7 +5687,7 @@ function rollbackRelayTranscriptFailures(
 ): string[] {
 	const transcripts = evidence.signedRelayTranscripts;
 	if (!transcripts) return ["rollback rehearsal signed relay transcripts are missing"];
-	const trustedKey = trustedRollbackRelayPublicKey(evidence);
+	const trustedKey = trustedRollbackRelayPublicKey(evidence, options);
 	if (!trustedKey.valid) return [trustedKey.failure];
 	return [
 		...rollbackRelayTranscriptFailure(
@@ -5880,7 +5927,10 @@ function networkProbeAttestationFailures(
 	if (freshnessFailure) failures.push(freshnessFailure);
 	const signatureFailure = networkProbeAttestationSignatureFailure(
 		attestation as NetworkProbeAttestation,
-		{ allowStale: hermesAllowsStaleAttestations(options) },
+		{
+			allowStale: hermesAllowsStaleAttestations(options),
+			relayPublicKey: options.relayPublicKey,
+		},
 	);
 	if (signatureFailure) {
 		failures.push(
@@ -6221,7 +6271,10 @@ function collectCliHeadlessProbeEvidence(
 		}
 		const signatureFailure = openAiCodexRelayProofSignatureFailure(
 			relayProof as OpenAiCodexRelayProof,
-			{ allowStale: hermesAllowsStaleAttestations(options) },
+			{
+				allowStale: hermesAllowsStaleAttestations(options),
+				relayPublicKey: options.relayPublicKey,
+			},
 		);
 		if (signatureFailure) {
 			failures.push(`relay proof signature is invalid: ${signatureFailure}`);

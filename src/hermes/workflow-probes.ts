@@ -268,6 +268,7 @@ function workflowRunLedgerRunnerAttestationFailure(
 	if (freshnessFailure) return freshnessFailure;
 	const signatureFailure = hermesWorkflowRunLedgerAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
 	});
 	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
 	const expected = hermesWorkflowRunLedgerAttestationFieldsForEvidence(data);

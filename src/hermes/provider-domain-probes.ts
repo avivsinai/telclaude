@@ -5,6 +5,7 @@ import { z } from "zod";
 import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { getProviderCatalogEntry } from "../providers/catalog.js";
 import type { ProviderProxyRequest } from "../relay/provider-proxy.js";
+import type { HermesSignedEvidenceValidationOptions } from "./attestation-validation.js";
 import { createTelclaudeMcpBridge, type TelclaudeMcpAuthority } from "./mcp/bridge.js";
 import { createTelclaudeMcpLedgerExecuteDependencies } from "./mcp/ledger-execute.js";
 import { createTelclaudeLiveMcpRelayClients } from "./mcp/live-relay-clients.js";
@@ -857,6 +858,7 @@ export function buildProviderDomainFixtureEvidenceBundle(
 export function providerDomainFixtureEvidenceFailure(
 	fixtureId: string,
 	evidence: unknown,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string | null {
 	const requirement = PROVIDER_DOMAIN_FIXTURE_REQUIREMENTS.find(
 		(candidate) => candidate.id === fixtureId,
@@ -901,7 +903,7 @@ export function providerDomainFixtureEvidenceFailure(
 		failures.push(...providerDomainFixtureContractFailures(requirement, data, probe.evidence));
 	}
 	if (requirement.kind === "direct-provider-deny") {
-		failures.push(...providerDirectNetworkFixtureFailures(requirement, data));
+		failures.push(...providerDirectNetworkFixtureFailures(requirement, data, options));
 	} else if (data.networkDeny) {
 		failures.push("provider-domain fixture unexpectedly includes direct-provider network evidence");
 	}
@@ -1092,6 +1094,7 @@ function providerDomainFixtureContractFailures(
 function providerDirectNetworkFixtureFailures(
 	requirement: ProviderDomainFixtureRequirement,
 	fixture: ProviderDomainFixtureEvidence,
+	options: HermesSignedEvidenceValidationOptions = {},
 ): string[] {
 	const failures: string[] = [];
 	const binding = fixture.networkDeny;
@@ -1102,7 +1105,7 @@ function providerDirectNetworkFixtureFailures(
 	if (binding.requiredAttemptName !== requirement.networkAttemptName) {
 		failures.push("networkDeny requiredAttemptName does not match provider contract");
 	}
-	const network = readProviderDirectNetworkProbeArtifact(binding.probePath);
+	const network = readProviderDirectNetworkProbeArtifact(binding.probePath, options);
 	if (network.sha256 !== binding.probeSha256) {
 		failures.push("networkDeny probeSha256 does not match direct-provider network artifact");
 	}
@@ -1113,6 +1116,7 @@ function providerDirectNetworkFixtureFailures(
 	const signedFailure = networkProbeEvidenceFailure(network.evidence, {
 		expectedId: "network.direct-provider-denied",
 		requiredAttemptNames: requirement.networkAttemptName ? [requirement.networkAttemptName] : [],
+		...options,
 	});
 	if (signedFailure) {
 		failures.push(`networkDeny signed proof failed validation: ${signedFailure}`);
@@ -1198,7 +1202,10 @@ function readProviderDomainProbeArtifact(
 	};
 }
 
-function readProviderDirectNetworkProbeArtifact(probePath: string): {
+function readProviderDirectNetworkProbeArtifact(
+	probePath: string,
+	options: HermesSignedEvidenceValidationOptions = {},
+): {
 	readonly path: string;
 	readonly sha256: string;
 	readonly evidence?: ProviderDirectNetworkProbeEvidence;
@@ -1233,6 +1240,7 @@ function readProviderDirectNetworkProbeArtifact(probePath: string): {
 	}
 	const failure = networkProbeEvidenceFailure(parsed.data, {
 		expectedId: "network.direct-provider-denied",
+		...options,
 	});
 	return {
 		path: probePath,

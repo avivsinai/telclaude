@@ -3,6 +3,7 @@ const MAX_CUTOVER_PROOF_ARTIFACT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export type HermesSignedEvidenceValidationOptions = {
 	readonly allowStaleAttestations?: boolean;
 	readonly now?: Date;
+	readonly relayPublicKey?: string;
 };
 
 export function hermesAllowsStaleAttestations(

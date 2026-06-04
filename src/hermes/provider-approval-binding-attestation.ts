@@ -87,6 +87,7 @@ export function providerApprovalBindingAttestationSignatureFailure(
 	},
 	options?: {
 		readonly allowStale?: boolean;
+		readonly relayPublicKey?: string;
 	},
 ): string | null {
 	if (!attestation.signature) return "signature is missing";
@@ -100,6 +101,7 @@ export function providerApprovalBindingAttestationSignatureFailure(
 		{
 			scope: PROVIDER_APPROVAL_BINDING_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			relayPublicKey: options?.relayPublicKey,
 		},
 	);
 }
