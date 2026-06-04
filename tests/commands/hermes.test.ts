@@ -10381,6 +10381,65 @@ exit 0
 		expect(report.modelProvider).toBeDefined();
 	});
 
+	it("validates imported cli-headless reports with the archived relay key lock", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-promote-lock-"));
+		const sourcePath = path.join(tempDir, "execution-cli-headless-source.json");
+		const sourceKeyPath = path.join(tempDir, "rollback-relay-public-key-source.json");
+		const lockPath = path.join(tempDir, "rollback-relay-public-key.lock.json");
+		const relayPublicKeySha256 = computeTextDigest(cliHeadlessRelaySigningKeys.publicKey);
+		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+		writeJson(sourcePath, cliHeadlessEvidence());
+		writeJson(sourceKeyPath, {
+			schemaVersion: "telclaude.hermes.rollback-relay-public-key-source.v1",
+			keys: [
+				{
+					scope: "operator",
+					envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+					value: cliHeadlessRelaySigningKeys.publicKey,
+					sha256: relayPublicKeySha256,
+				},
+			],
+		});
+		writeJson(lockPath, {
+			schemaVersion: "telclaude.hermes.rollback-relay-public-key-lock.v1",
+			keys: [
+				{
+					scope: "operator",
+					envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+					value: cliHeadlessRelaySigningKeys.publicKey,
+					sha256: relayPublicKeySha256,
+					source: sourceKeyPath,
+					sourceSha256: computeFileDigest(sourceKeyPath),
+				},
+			],
+		});
+
+		try {
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+
+			const result = await runHermesCommand([
+				"hermes",
+				"probe",
+				"execution.cli_headless",
+				"--json",
+				"--from-report",
+				sourcePath,
+			]);
+			const report = JSON.parse(result.stdout) as { status: string; summary: string };
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report).toMatchObject({
+				status: "pass",
+				summary: "Hermes CLI oneshot probe completed successfully",
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
 	it("refuses imported cli-headless reports with mismatched output provenance", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-promote-digest-"));
 		const sourcePath = path.join(tempDir, "execution-cli-headless-source.json");

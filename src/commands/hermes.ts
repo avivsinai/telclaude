@@ -2868,7 +2868,10 @@ export function registerHermesCommand(program: Command): void {
 						if (options.allowRun === true) {
 							throw new Error("Use either --from-report or --allow-run, not both.");
 						}
-						report = readHermesCliHeadlessProbeReport(fromReport);
+						report = readHermesCliHeadlessProbeReport(
+							fromReport,
+							archivedHermesEvidenceValidationOptions(),
+						);
 						if (options.out) {
 							throw new Error(
 								"Imported cli-headless reports cannot write evidence; run --allow-run in the contained runtime to update canonical evidence.",
