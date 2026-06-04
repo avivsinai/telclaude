@@ -519,7 +519,7 @@ describe("Hermes private runtime seam", () => {
 		const githubToken = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 		const findings = findHermesLaunchSecretFindings({
 			command: "hermes",
-			args: ["-z", `hello ${telegramToken}`],
+			args: ["chat", "-q", `hello ${telegramToken}`],
 			cwd: "/repo",
 			env: {
 				HERMES_HOME: "/tmp/hermes",
@@ -539,7 +539,7 @@ describe("Hermes private runtime seam", () => {
 				reason: "credential-like environment value",
 			},
 			{
-				location: "argv[1]",
+				location: "argv[2]",
 				reason: "credential-like process argument",
 			},
 		]);
@@ -590,7 +590,7 @@ describe("Hermes private runtime seam", () => {
 			allowRun: true,
 			invocation,
 			runProcess: async (launch) => {
-				expect(launch.args).toEqual(["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"]);
+				expect(launch.args).toEqual(["chat", "-q", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"]);
 				expect(launch.env).toEqual({
 					HERMES_HOME: "/tmp/tc-hermes-probe",
 					NO_COLOR: "1",
@@ -619,7 +619,7 @@ describe("Hermes private runtime seam", () => {
 			summary: "Hermes CLI oneshot probe completed successfully",
 			invocation: {
 				command: "/usr/local/bin/hermes",
-				args: ["-z", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"],
+				args: ["chat", "-q", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"],
 				cwd: process.cwd(),
 				envKeys: [
 					"HERMES_CODEX_BASE_URL",
@@ -837,7 +837,7 @@ describe("Hermes private runtime seam", () => {
 			allowRun: true,
 			invocation,
 			runProcess: async (launch) => {
-				expect(launch.args).toEqual(["-z", "Reply with exactly HERMES_OK_53822847"]);
+				expect(launch.args).toEqual(["chat", "-q", "Reply with exactly HERMES_OK_53822847"]);
 				expect(launch.env).toEqual({
 					HERMES_HOME: "/tmp/tc-hermes-probe",
 					NO_COLOR: "1",
@@ -906,6 +906,7 @@ describe("Hermes private runtime seam", () => {
 					env: {
 						HERMES_HOME: hermesHome,
 						HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+						HERMES_INFERENCE_MODEL: "gpt-5.5",
 					},
 					authSetup: {
 						openAiCodexRelayToken: "relay-scoped-proxy-token",
@@ -947,6 +948,15 @@ describe("Hermes private runtime seam", () => {
 				access_token: accessToken,
 				base_url: "http://telclaude:8790/v1/openai-codex-proxy",
 			});
+			expect(
+				JSON.parse(fs.readFileSync(path.join(hermesHome, "secret-manifest.json"), "utf8")),
+			).toMatchObject({
+				rawCredentialPolicy: "relay-owned-only",
+				relayTokenBinding: "run-peer-bound",
+			});
+			expect(fs.readFileSync(path.join(hermesHome, "config.yaml"), "utf8")).toContain(
+				"  provider: openai-codex\n  default: gpt-5.5\n  api_mode: codex_responses\n  openai_runtime: auto",
+			);
 			expect(JSON.stringify(auth)).not.toContain("https://chatgpt.com");
 		} finally {
 			fs.rmSync(hermesHome, { recursive: true, force: true });

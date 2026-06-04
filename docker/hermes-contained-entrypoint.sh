@@ -24,6 +24,8 @@ copy_description_chain() {
 SOURCE_SKILLS_DIR=${TELCLAUDE_HERMES_SOURCE_SKILLS_DIR:-/opt/hermes/skills}
 ALLOWLIST_PATH=${TELCLAUDE_HERMES_SKILL_ALLOWLIST:-/tmp/telclaude-hermes-contained-skills.allowlist}
 HERMES_HOME=${HERMES_HOME:-/home/hermes/.hermes}
+HERMES_RUNTIME_UID=${TELCLAUDE_HERMES_RUNTIME_UID:-10000}
+HERMES_RUNTIME_GID=${TELCLAUDE_HERMES_RUNTIME_GID:-10000}
 CURATED_SKILLS_DIR=${TELCLAUDE_HERMES_CURATED_BUNDLED_SKILLS:-/home/hermes/.telclaude-curated-bundled-skills}
 DEST_SKILLS_DIR="${HERMES_HOME}/skills"
 CODEX_PROVIDER=${HERMES_INFERENCE_PROVIDER:-}
@@ -46,7 +48,13 @@ esac
 
 rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"
 mkdir -p "$CURATED_SKILLS_DIR" "$HERMES_HOME"
-chmod 700 "$HERMES_HOME"
+if [ "$(id -u)" = "0" ]; then
+	chown "0:$HERMES_RUNTIME_GID" "$HERMES_HOME"
+	chmod 1770 "$HERMES_HOME"
+	chown "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" "$CURATED_SKILLS_DIR"
+else
+	chmod 700 "$HERMES_HOME"
+fi
 
 count=0
 while IFS= read -r rel || [ -n "$rel" ]; do
@@ -75,6 +83,12 @@ done < "$ALLOWLIST_PATH"
 mkdir -p "$DEST_SKILLS_DIR"
 cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
+if [ "$(id -u)" = "0" ]; then
+	chown -R "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" \
+		"$CURATED_SKILLS_DIR" \
+		"$DEST_SKILLS_DIR" \
+		"${HERMES_HOME}/telclaude-contained-skills.allowlist"
+fi
 export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
 
 mint_peer_bound_codex_relay_token() {
@@ -135,6 +149,13 @@ model:
   api_mode: codex_responses
   openai_runtime: auto
 EOF
+	cat > "${HERMES_HOME}/secret-manifest.json" <<'EOF'
+{
+  "schemaVersion": 1,
+  "rawCredentialPolicy": "relay-owned-only",
+  "relayTokenBinding": "run-peer-bound"
+}
+EOF
 	tmp_auth="${HERMES_HOME}/auth.json.tmp.$$"
 	cat > "$tmp_auth" <<EOF
 {
@@ -166,8 +187,24 @@ EOF
 }
 EOF
 	mv "$tmp_auth" "${HERMES_HOME}/auth.json"
-	chmod 600 "${HERMES_HOME}/auth.json"
+	if [ "$(id -u)" = "0" ]; then
+		chown "0:$HERMES_RUNTIME_GID" \
+			"${HERMES_HOME}/config.yaml" \
+			"${HERMES_HOME}/secret-manifest.json" \
+			"${HERMES_HOME}/auth.json"
+		chmod 0440 \
+			"${HERMES_HOME}/config.yaml" \
+			"${HERMES_HOME}/secret-manifest.json" \
+			"${HERMES_HOME}/auth.json"
+	else
+		chmod 600 "${HERMES_HOME}/config.yaml" "${HERMES_HOME}/secret-manifest.json" "${HERMES_HOME}/auth.json"
+	fi
 	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE
+fi
+
+if [ "$(id -u)" = "0" ]; then
+	command -v setpriv >/dev/null 2>&1 || die "setpriv is required to drop privileges"
+	exec setpriv --reuid="$HERMES_RUNTIME_UID" --regid="$HERMES_RUNTIME_GID" --clear-groups /opt/hermes/hermes "$@"
 fi
 
 exec /opt/hermes/hermes "$@"

@@ -29,7 +29,30 @@ describe("Hermes contained profile provisioning", () => {
 		expect(script).toContain('cp -R "');
 		expect(script).toContain('/." "$DEST_SKILLS_DIR"');
 		expect(script).toContain('export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"');
+		expect(script).toContain('exec setpriv --reuid="$HERMES_RUNTIME_UID"');
 		expect(script).toContain('exec /opt/hermes/hermes "$@"');
+	});
+
+	it("writes model-relay custody proof into the runtime Hermes profile", () => {
+		const script = fs.readFileSync(entrypointPath, "utf8");
+
+		expect(script).not.toContain("PROFILE_PROOF_DIR");
+		expect(script).not.toContain(".hermes-profile-proof");
+		expect(script).toContain(`cat > "\${HERMES_HOME}/config.yaml" <<EOF`);
+		expect(script).toContain("  provider: openai-codex");
+		expect(script).toContain("  api_mode: codex_responses");
+		expect(script).toContain("  openai_runtime: auto");
+		expect(script).toContain(`cat > "\${HERMES_HOME}/secret-manifest.json" <<'EOF'`);
+		expect(script).toContain('"rawCredentialPolicy": "relay-owned-only"');
+		expect(script).toContain('"relayTokenBinding": "run-peer-bound"');
+		expect(script).toContain(`mv "$tmp_auth" "\${HERMES_HOME}/auth.json"`);
+		expect(script).toContain(`chown "0:$HERMES_RUNTIME_GID" "$HERMES_HOME"`);
+		expect(script).toContain(`chmod 1770 "$HERMES_HOME"`);
+		expect(script).toContain(`chown "0:$HERMES_RUNTIME_GID"`);
+		expect(script).toContain("chmod 0440");
+		expect(script).toContain(
+			`chmod 600 "\${HERMES_HOME}/config.yaml" "\${HERMES_HOME}/secret-manifest.json" "\${HERMES_HOME}/auth.json"`,
+		);
 	});
 
 	it("wires the curated provisioning script into the no-fork Hermes compose overlay", () => {
@@ -41,14 +64,18 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain(
 			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
 		);
-			expect(compose).toContain(
-				"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
-			);
-			expect(compose).toMatch(
-				/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-192\.0\.2\.10\}/,
-			);
-		});
+		expect(compose).toContain(
+			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
+		);
+		expect(compose).toContain('user: "0:0"');
+		for (const cap of ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]) {
+			expect(compose).toContain(`      - ${cap}`);
+		}
+		expect(compose).toMatch(
+			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-192\.0\.2\.10\}/,
+		);
 	});
+});
 
 function readAllowlist(): string[] {
 	return fs

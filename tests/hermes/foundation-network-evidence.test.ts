@@ -843,7 +843,12 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 				name: "profile.relayCredentialReference",
 				status: "pass",
 				detail:
-					"generated profile references the relay OpenAI Codex proxy and relay credential store",
+					"runtime Hermes profile references peer-bound relay OpenAI Codex credential custody",
+			},
+			{
+				name: "profile.runtimeCustody",
+				status: "pass",
+				detail: "runtime credential custody files are root-owned and read-only",
 			},
 			{
 				name: "profile.noRawModelCredentials",
@@ -889,6 +894,7 @@ function modelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
 			profileDir: "/home/hermes/.hermes",
 			scannedProfileFiles: [
+				"/home/hermes/.hermes/auth.json",
 				"/home/hermes/.hermes/config.yaml",
 				"/home/hermes/.hermes/secret-manifest.json",
 			],
@@ -1369,7 +1375,7 @@ function cliHeadlessCutoverBundle(
 function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexRelayProof): void {
 	const invocation = {
 		command: "/usr/local/bin/hermes",
-		args: ["-z", "Reply with exactly HERMES_OK_SIGNED_GATE"],
+		args: ["chat", "-q", "Reply with exactly HERMES_OK_SIGNED_GATE"],
 		cwd: process.cwd(),
 		envKeys: [
 			"HERMES_CODEX_BASE_URL",
@@ -2617,6 +2623,32 @@ describe("Hermes cutover model-relay evidence validation", () => {
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"model-relay evidence generatedAt is stale or future-dated",
+		);
+	});
+
+	it("fails model-relay evidence that did not scan the runtime auth store", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-cutover-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
+		writeJson(
+			evidencePath,
+			modelRelayEvidence({
+				observation: {
+					relayUrl: "http://telclaude:8790/v1/models",
+					directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+					profileDir: "/home/hermes/.hermes",
+					scannedProfileFiles: [
+						"/home/hermes/.hermes/config.yaml",
+						"/home/hermes/.hermes/secret-manifest.json",
+					],
+				},
+			}),
+		);
+
+		const report = evaluateCutoverCheck(modelRelayCutoverBundle(evidencePath));
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			"observation.scannedProfileFiles is missing /home/hermes/.hermes/auth.json",
 		);
 	});
 

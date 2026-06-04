@@ -1032,7 +1032,7 @@ function modelRelayReadinessFailureEvidence(): Record<string, unknown> {
 function cliHeadlessPassLookingUnsignedEvidence(): Record<string, unknown> {
 	const invocation = {
 		command: "scripts/hermes-contained-cli-probe.sh",
-		args: ["-z", "Reply with exactly HERMES_OK_CODEX_SUB"],
+		args: ["chat", "-q", "Reply with exactly HERMES_OK_CODEX_SUB"],
 		cwd: "/repo",
 		envKeys: [
 			"HERMES_CODEX_BASE_URL",

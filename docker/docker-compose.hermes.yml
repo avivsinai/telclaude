@@ -72,9 +72,15 @@ services:
     volumes:
       - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
       - ./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro
-    user: "10000:10000"
+    user: "0:0"
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
     security_opt:
       - no-new-privileges:true
     read_only: true

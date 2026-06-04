@@ -9,6 +9,7 @@ import {
 	MODEL_RELAY_OBSERVED_PEER_HEADER,
 	runHermesModelRelayProbe,
 } from "../../src/hermes/model-relay.js";
+import { mintOpenAiCodexPeerBoundProxyToken } from "../../src/relay/openai-codex-proxy.js";
 
 describe("Hermes model-relay probe", () => {
 	const tempDirs: string[] = [];
@@ -17,12 +18,16 @@ describe("Hermes model-relay probe", () => {
 	const relayProbeUrl = "http://telclaude:8790/v1/models";
 	const containedIp = "192.0.2.11";
 	const relayIp = "192.0.2.10";
+	const proxyTokenEnv = "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN";
+	const proxyTokenSecret = "test-openai-codex-proxy-token";
 	const originalInferenceModel = process.env.HERMES_INFERENCE_MODEL;
 	const originalCodexBaseUrl = process.env.HERMES_CODEX_BASE_URL;
+	const originalProxyToken = process.env[proxyTokenEnv];
 
 	beforeEach(() => {
 		process.env.HERMES_INFERENCE_MODEL = "gpt-5.5";
 		process.env.HERMES_CODEX_BASE_URL = relayProxyUrl;
+		process.env[proxyTokenEnv] = proxyTokenSecret;
 	});
 
 	afterEach(async () => {
@@ -38,6 +43,11 @@ describe("Hermes model-relay probe", () => {
 			delete process.env.HERMES_CODEX_BASE_URL;
 		} else {
 			process.env.HERMES_CODEX_BASE_URL = originalCodexBaseUrl;
+		}
+		if (originalProxyToken === undefined) {
+			delete process.env[proxyTokenEnv];
+		} else {
+			process.env[proxyTokenEnv] = originalProxyToken;
 		}
 	});
 
@@ -99,6 +109,7 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
 		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
 		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+		expect(report.observation?.scannedProfileFiles).toContain(path.join(profileDir, "auth.json"));
 	});
 
 	it("passes contained-internal posture without a fake firewall sentinel", async () => {
@@ -178,7 +189,286 @@ describe("Hermes model-relay probe", () => {
 		expect(report.status).toBe("fail");
 		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
 			status: "fail",
-			detail: expect.stringContaining("openai-codex-relay provider"),
+			detail: expect.stringContaining("openai-codex provider"),
+		});
+	});
+
+	it("fails closed when the relay auth token is not bound to the expected peer", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		writeRelayCredentialProfile(profileDir, "192.0.2.99");
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("peer-bound access_token"),
+		});
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("auth.json"),
+		});
+	});
+
+	it("fails closed when the relay auth token signature is forged", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const validToken = makePeerBoundToken(containedIp);
+		replaceRelayAuthToken(profileDir, `${validToken.slice(0, -1)}x`);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("signature mismatch"),
+		});
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("auth.json"),
+		});
+	});
+
+	it("fails closed when the relay auth token is expired", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		replaceRelayAuthToken(
+			profileDir,
+			mintOpenAiCodexPeerBoundProxyToken({
+				secret: proxyTokenSecret,
+				peerAddress: containedIp,
+				runId: "expired-run",
+				tokenScope: "run",
+				now: new Date(Date.now() - 10 * 60_000),
+				ttlMs: 60_000,
+			}),
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("token expired"),
+		});
+	});
+
+	it("fails closed when the relay auth token is issued in the future", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		replaceRelayAuthToken(
+			profileDir,
+			mintOpenAiCodexPeerBoundProxyToken({
+				secret: proxyTokenSecret,
+				peerAddress: containedIp,
+				runId: "future-run",
+				tokenScope: "run",
+				now: new Date(Date.now() + 60_000),
+				ttlMs: 60_000,
+			}),
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("token issued in the future"),
+		});
+	});
+
+	it("fails closed when auth.json contains alternate provider or credential paths", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const authPath = path.join(profileDir, "auth.json");
+		const authStore = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+			providers: Record<string, unknown>;
+			credential_pool: Record<string, unknown[]>;
+		};
+		authStore.providers.openai = {
+			auth_mode: "api-key",
+			tokens: { access_token: "sk-proj-raw-provider-key-1234567890" },
+		};
+		authStore.credential_pool["openai-codex"].push({
+			id: "fallback-direct",
+			label: "Fallback direct key",
+			auth_type: "api_key",
+			priority: 1,
+			source: "manual",
+			access_token: "sk-proj-raw-provider-key-1234567890",
+			base_url: "https://chatgpt.com/backend-api/codex",
+		});
+		fs.writeFileSync(authPath, `${JSON.stringify(authStore, null, 2)}\n`);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("providers only openai-codex"),
+		});
+		expect(gate(report, "profile.relayCredentialReference").detail).toContain(
+			"credential_pool.openai-codex exactly one entry",
+		);
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("auth.json"),
+		});
+		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("auth.json"),
+		});
+	});
+
+	it("scans bundled skill files as runtime profile content", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const skillDir = path.join(profileDir, "skills", "example");
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(skillDir, "SKILL.md"),
+			"Example only: do not place OPENAI_API_KEY or Codex OAuth files in this profile.\n",
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(report.observation?.scannedProfileFiles).toContain(path.join(skillDir, "SKILL.md"));
+	});
+
+	it("does not fail bundled skill docs for placeholder credential examples", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const skillDir = path.join(profileDir, "skills", "example");
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(skillDir, "SKILL.md"),
+			[
+				'Authorization: "Bearer sk-..."',
+				'GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxxxxxxxxxxxxxxxxxxx"',
+				'api_key="EMPTY"',
+				'SOME_API_KEY: "value"',
+				'headers={"Cookie": "session=secret"}',
+				"session = requests.Session()",
+				"session = onnxruntime.InferenceSession(",
+				"access_token = get_valid_token()",
+				"",
+			].join("\n"),
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+		expect(report.observation?.scannedProfileFiles).toContain(path.join(skillDir, "SKILL.md"));
+	});
+
+	it("fails closed when bundled skill files contain credential-like material", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const skillDir = path.join(profileDir, "skills", "example");
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(skillDir, "SKILL.md"),
+			"OPENAI_API_KEY=sk-proj-liveleak1234567890abcdef\n",
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(path.join("skills", "example", "SKILL.md")),
 		});
 	});
 
@@ -592,16 +882,52 @@ describe("Hermes model-relay probe", () => {
 		return { profileDir, sentinel };
 	}
 
-	function writeRelayCredentialProfile(profileDir: string): void {
+	function writeRelayCredentialProfile(profileDir: string, peerAddress = containedIp): void {
 		fs.writeFileSync(
 			path.join(profileDir, "config.yaml"),
 			[
 				"model:",
-				"  provider: openai-codex-relay",
-				`  baseUrl: ${relayProxyUrl}`,
-				"  credentialSource: telclaude-relay-auth-store",
+				"  provider: openai-codex",
+				"  default: gpt-5.5",
+				"  api_mode: codex_responses",
+				"  openai_runtime: auto",
 				"",
 			].join("\n"),
+		);
+		const peerBoundToken = makePeerBoundToken(peerAddress);
+		fs.writeFileSync(
+			path.join(profileDir, "auth.json"),
+			`${JSON.stringify(
+				{
+					version: 1,
+					active_provider: "openai-codex",
+					providers: {
+						"openai-codex": {
+							auth_mode: "telclaude-relay",
+							last_refresh: "1970-01-01T00:00:00.000Z",
+							tokens: {
+								access_token: peerBoundToken,
+								refresh_token: "telclaude-relay-token-is-not-refreshable",
+							},
+						},
+					},
+					credential_pool: {
+						"openai-codex": [
+							{
+								id: "telclaude-relay",
+								label: "Telclaude OpenAI Codex relay",
+								auth_type: "api_key",
+								priority: 0,
+								source: "manual:telclaude-relay",
+								access_token: peerBoundToken,
+								base_url: relayProxyUrl,
+							},
+						],
+					},
+				},
+				null,
+				2,
+			)}\n`,
 		);
 		fs.writeFileSync(
 			path.join(profileDir, "secret-manifest.json"),
@@ -615,6 +941,26 @@ describe("Hermes model-relay probe", () => {
 				2,
 			)}\n`,
 		);
+	}
+
+	function makePeerBoundToken(peerAddress: string): string {
+		return mintOpenAiCodexPeerBoundProxyToken({
+			secret: proxyTokenSecret,
+			peerAddress,
+			runId: "test-run",
+			tokenScope: "server",
+		});
+	}
+
+	function replaceRelayAuthToken(profileDir: string, token: string): void {
+		const authPath = path.join(profileDir, "auth.json");
+		const authStore = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+			providers: { "openai-codex": { tokens: { access_token: string } } };
+			credential_pool: { "openai-codex": Array<{ access_token: string }> };
+		};
+		authStore.providers["openai-codex"].tokens.access_token = token;
+		authStore.credential_pool["openai-codex"][0].access_token = token;
+		fs.writeFileSync(authPath, `${JSON.stringify(authStore, null, 2)}\n`);
 	}
 
 	function makeTempDir(): string {
