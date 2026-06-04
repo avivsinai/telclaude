@@ -150,8 +150,10 @@ import {
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
 	evaluateProReviewCheck,
+	type ProReviewShard,
 	readProReviewNativeCanary,
 	readProReviewRequest,
+	readProReviewShardItemContent,
 	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
 } from "../hermes/pro-review.js";
@@ -599,6 +601,7 @@ type ProReviewRefreshOption = JsonOption & {
 	prompt?: string;
 	selectedFile?: string[];
 	replaceSelectedFiles?: boolean;
+	shardMaxSourceBytes?: string;
 	write?: boolean;
 } & TrackedSeedWriteOption;
 
@@ -1096,6 +1099,67 @@ function writeProReviewBundle(requestPath: string, bundlePath: string): void {
 	fs.chmodSync(bundlePath, 0o600);
 }
 
+function writeProReviewShardBundle(
+	requestPath: string,
+	bundlePath: string,
+	shard: ProReviewShard,
+): void {
+	const request = readProReviewRequest(requestPath);
+	const lines = [
+		"# Telclaude Hermes Wrapper Pro Review Shard",
+		"",
+		"## Request",
+		"",
+		request.prompt,
+		"",
+		"## Root Native Review Binding",
+		"",
+		`- transport: ${String(request.transport)}`,
+		`- model: ${String(request.model)}`,
+		`- fallbackAllowed: ${String(request.fallbackAllowed)}`,
+		`- payloadSha256: ${String(request.payloadBinding.payloadSha256)}`,
+		`- shardPlanSha256: ${String(request.payloadBinding.shardPlanSha256 ?? "")}`,
+		"",
+		"## Shard Binding",
+		"",
+		`- shardId: ${shard.shardId}`,
+		`- shardIndex: ${shard.index + 1}/${shard.count}`,
+		`- shardSha256: ${shard.shardSha256}`,
+		`- sourceBytes: ${shard.sourceBytes}`,
+		`- focus: ${shard.focus}`,
+		"",
+		"Review this shard only. At the top of your response, echo these exact binding lines:",
+		`payloadSha256: ${String(request.payloadBinding.payloadSha256)}`,
+		`shardPlanSha256: ${String(request.payloadBinding.shardPlanSha256 ?? "")}`,
+		`shardId: ${shard.shardId}`,
+		`shardSha256: ${shard.shardSha256}`,
+		"Then return a Findings section and a Residual risk section.",
+		"Do not review outside this shard or claim full-context coverage.",
+		"",
+		"## Files",
+		"",
+	];
+	for (const item of shard.items) {
+		lines.push(
+			`### ${item.path}:${item.startLine}-${item.endLine}`,
+			"",
+			"```text",
+			readProReviewShardItemContent(item),
+			"```",
+			"",
+		);
+	}
+	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
+	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+	fs.chmodSync(bundlePath, 0o600);
+}
+
+function proReviewShardBundlePath(bundlePath: string, shard: ProReviewShard): string {
+	const extension = path.extname(bundlePath) || ".md";
+	const basename = path.basename(bundlePath, extension);
+	return path.join(path.dirname(bundlePath), `${basename}.${shard.shardId}${extension}`);
+}
+
 function buildProReviewRunId(): string {
 	const timestamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
 	return `hermes_${timestamp}_${crypto.randomBytes(4).toString("hex")}`;
@@ -1122,6 +1186,15 @@ function parseProReviewWaitTimeoutMs(value: string | undefined): number | undefi
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed) || parsed <= 0) {
 		throw new Error("--wait-timeout-ms must be a positive integer");
+	}
+	return parsed;
+}
+
+function parseProReviewShardMaxSourceBytes(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed <= 0) {
+		throw new Error("--shard-max-source-bytes must be a positive integer");
 	}
 	return parsed;
 }
@@ -3919,16 +3992,22 @@ export function registerHermesCommand(program: Command): void {
 		.option("--prompt <text>", "Prompt text for a new request when no request exists")
 		.option("--selected-file <path>", "Additional selected file path", collectOption, [])
 		.option("--replace-selected-files", "Use only required files plus --selected-file entries")
+		.option(
+			"--shard-max-source-bytes <bytes>",
+			"Build a root-bound sharded native Pro review plan with this max source-byte budget",
+		)
 		.option("--write", "Write the refreshed request JSON")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: ProReviewRefreshOption) => {
 			try {
+				const shardMaxSourceBytes = parseProReviewShardMaxSourceBytes(options.shardMaxSourceBytes);
 				const request = buildProReviewRequestDraft({
 					existingRequestPath: options.request,
 					canaryPath: options.canary,
 					prompt: options.prompt,
 					selectedFiles: options.selectedFile ?? [],
 					includeExistingSelectedFiles: options.replaceSelectedFiles !== true,
+					shardMaxSourceBytes,
 				});
 				assertProReviewTrackedSeedSelectedFilesClean(request.selectedFiles, options);
 				const result = {
@@ -3938,6 +4017,8 @@ export function registerHermesCommand(program: Command): void {
 					payloadSha256: request.payloadBinding.payloadSha256,
 					selectedFileContentsSha256: request.payloadBinding.selectedFileContentsSha256,
 					transportEvidenceSha256: request.payloadBinding.transportEvidenceSha256,
+					reviewMode: request.reviewMode ?? "single",
+					shardCount: request.shardPlan?.shards.length ?? 0,
 					approval: request.privateWorkspaceDisclosure,
 					selectedFiles: request.selectedFiles,
 					request,
@@ -4153,6 +4234,181 @@ export function registerHermesCommand(program: Command): void {
 					console.log(`- FAIL: ${result.send.reason}`);
 				}
 				process.exitCode = 1;
+				return;
+			}
+			const request = readProReviewRequest(options.request);
+			if ((request.reviewMode ?? "single") === "sharded" && request.shardPlan) {
+				const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+				const shards = request.shardPlan.shards.map((shard) => {
+					const shardBundlePath = proReviewShardBundlePath(bundlePath, shard);
+					writeProReviewShardBundle(options.request, shardBundlePath, shard);
+					const bundleSha256 = fileSha256(shardBundlePath);
+					const runId = `${buildProReviewRunId()}_${shard.shardId}`;
+					const inspectCommand = buildProReviewInspectCommand(
+						nativeCanary.extensionInstanceId,
+						runId,
+					);
+					const yoetzCommand = buildProReviewYoetzCommand({
+						canary: nativeCanary,
+						bundlePath: shardBundlePath,
+						payloadSha256: report.payloadSha256,
+						bundleSha256,
+						runId,
+						waitTimeoutMs,
+						shard,
+						shardPlanSha256,
+					});
+					return {
+						shardId: shard.shardId,
+						index: shard.index,
+						count: shard.count,
+						focus: shard.focus,
+						bundlePath: shardBundlePath,
+						payloadSha256: report.payloadSha256,
+						shardPlanSha256,
+						shardSha256: shard.shardSha256,
+						bundleSha256,
+						runId,
+						inspectCommand,
+						yoetzCommand,
+						shard,
+					};
+				});
+				if (!options.execute) {
+					const readyShards = shards.map(({ shard, ...metadata }) => metadata);
+					const result = {
+						report,
+						send: {
+							status: "ready_sharded",
+							mode: "sharded",
+							payloadSha256: report.payloadSha256,
+							shardPlanSha256,
+							shardCount: shards.length,
+							shards: readyShards,
+							note: "not sent; pass --execute to invoke Yoetz native extension for every shard",
+						},
+					};
+					if (options.json) {
+						printJson(result);
+					} else {
+						console.log("Hermes pro-review-send: ready_sharded");
+						console.log(`- shards: ${shards.length}`);
+					}
+					process.exitCode = 0;
+					return;
+				}
+
+				const executedShards = [];
+				for (const shardSend of shards) {
+					console.error(
+						`Hermes pro-review-send: native shard ${shardSend.shardId} run ${shardSend.runId}; inspect with: YOETZ_AGENT=1 ${shardSend.inspectCommand.join(" ")}`,
+					);
+					const result = await runProReviewYoetzCommand(
+						shardSend.yoetzCommand,
+						buildProReviewNativeYoetzEnv(),
+					);
+					const validation =
+						result.status === 0
+							? validateProReviewYoetzSendOutput({
+									stdout: result.stdout,
+									expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
+									expectedBundlePath: shardSend.bundlePath,
+									expectedPayloadSha256: report.payloadSha256,
+									expectedBundleSha256: shardSend.bundleSha256,
+									expectedShard: shardSend.shard,
+									expectedShardPlanSha256: shardPlanSha256,
+								})
+							: null;
+					const bundleAfterSendSha256 =
+						result.status === 0 && validation?.status === "pass"
+							? fileSha256(shardSend.bundlePath)
+							: null;
+					const bundleValidation =
+						bundleAfterSendSha256 === null
+							? null
+							: bundleAfterSendSha256 === shardSend.bundleSha256
+								? {
+										status: "pass",
+										detail: "shard bundle artifact hash still matches the approved pre-send bundle",
+									}
+								: {
+										status: "fail",
+										detail: `shard bundle artifact hash changed after send: ${bundleAfterSendSha256}, expected ${shardSend.bundleSha256}`,
+									};
+					const inspectResult =
+						result.status === 0 &&
+						validation?.status === "pass" &&
+						bundleValidation?.status === "pass"
+							? await runProReviewYoetzCommand(
+									shardSend.inspectCommand,
+									buildProReviewNativeYoetzEnv(),
+								)
+							: null;
+					const inspectValidation =
+						inspectResult?.status === 0
+							? validateProReviewYoetzInspectOutput({
+									stdout: inspectResult.stdout,
+									expectedRunId: shardSend.runId,
+								})
+							: null;
+					const shardStatus =
+						result.status === 0 &&
+						validation?.status === "pass" &&
+						bundleValidation?.status === "pass" &&
+						inspectResult?.status === 0 &&
+						inspectValidation?.status === "pass"
+							? "sent"
+							: "failed";
+					executedShards.push({
+						status: shardStatus,
+						shardId: shardSend.shardId,
+						index: shardSend.index,
+						count: shardSend.count,
+						focus: shardSend.focus,
+						bundlePath: shardSend.bundlePath,
+						payloadSha256: shardSend.payloadSha256,
+						shardPlanSha256: shardSend.shardPlanSha256,
+						shardSha256: shardSend.shardSha256,
+						bundleSha256: shardSend.bundleSha256,
+						bundleAfterSendSha256,
+						runId: shardSend.runId,
+						inspectCommand: shardSend.inspectCommand,
+						yoetzCommand: shardSend.yoetzCommand,
+						exitCode: result.status,
+						validation,
+						bundleValidation,
+						stdout: result.stdout,
+						stderr: result.stderr,
+						error: result.error,
+						inspect: inspectResult
+							? {
+									exitCode: inspectResult.status,
+									validation: inspectValidation,
+									stdout: inspectResult.stdout,
+									stderr: inspectResult.stderr,
+									error: inspectResult.error,
+								}
+							: null,
+					});
+					if (shardStatus !== "sent") break;
+				}
+				const allSent =
+					executedShards.length === shards.length &&
+					executedShards.every((shard) => shard.status === "sent");
+				const send = {
+					status: allSent ? "sent_sharded" : "failed",
+					mode: "sharded",
+					payloadSha256: report.payloadSha256,
+					shardPlanSha256,
+					shardCount: shards.length,
+					shards: executedShards,
+				};
+				if (options.json) {
+					printJson({ report, send });
+				} else {
+					console.log(`Hermes pro-review-send: ${send.status}`);
+				}
+				process.exitCode = send.status === "sent_sharded" ? 0 : 1;
 				return;
 			}
 			writeProReviewBundle(options.request, bundlePath);

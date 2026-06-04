@@ -38,6 +38,7 @@ export const DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH =
 export const PRO_REVIEW_REQUEST_SCHEMA_VERSION = "telclaude.hermes.pro-review-request.v1";
 export const PRO_REVIEW_NATIVE_CANARY_SCHEMA_VERSION =
 	"telclaude.hermes.pro-review-native-canary.v1";
+export const PRO_REVIEW_SHARD_PLAN_SCHEMA_VERSION = "telclaude.hermes.pro-review-shard-plan.v1";
 export const PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS = 15 * 60 * 1000;
 const PRO_REVIEW_PAYLOAD_BINDING_FIELDS = [
 	"reviewer",
@@ -50,6 +51,11 @@ const PRO_REVIEW_PAYLOAD_BINDING_FIELDS = [
 	"selectedFiles",
 	"selectedFileContentsSha256",
 	"transportEvidenceSha256",
+] as const;
+const PRO_REVIEW_SHARDED_PAYLOAD_BINDING_FIELDS = [
+	...PRO_REVIEW_PAYLOAD_BINDING_FIELDS,
+	"reviewMode",
+	"shardPlanSha256",
 ] as const;
 const REQUIRED_PRO_REVIEW_BLOCKED_FALLBACKS = [
 	"cdp",
@@ -305,6 +311,42 @@ export type ProReviewCheckReport = {
 const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const Sha256DigestSchema = z.string().regex(SHA256_DIGEST_PATTERN);
 const NonEmptyString = z.string().min(1);
+const PositiveInteger = z.number().int().positive();
+
+const ProReviewShardItemSchema = z
+	.object({
+		path: NonEmptyString,
+		startLine: PositiveInteger,
+		endLine: PositiveInteger,
+		bytes: z.number().int().nonnegative(),
+		sha256: Sha256DigestSchema,
+	})
+	.strict();
+
+const ProReviewShardSchema = z
+	.object({
+		shardId: NonEmptyString,
+		index: z.number().int().nonnegative(),
+		count: PositiveInteger,
+		selectedFiles: z.array(NonEmptyString).min(1),
+		selectedFilesSha256: Sha256DigestSchema,
+		itemContentsSha256: Sha256DigestSchema,
+		sourceBytes: z.number().int().nonnegative(),
+		focus: NonEmptyString,
+		items: z.array(ProReviewShardItemSchema).min(1),
+		shardSha256: Sha256DigestSchema,
+	})
+	.strict();
+
+const ProReviewShardPlanSchema = z
+	.object({
+		schemaVersion: z.literal(PRO_REVIEW_SHARD_PLAN_SCHEMA_VERSION),
+		strategy: z.literal("selected-file-line-byte-budget-v1"),
+		maxShardSourceBytes: PositiveInteger,
+		bundleTemplateVersion: z.literal("pro-review-shard-bundle.v1"),
+		shards: z.array(ProReviewShardSchema).min(1),
+	})
+	.strict();
 
 const ProReviewRequestSchema = z
 	.object({
@@ -331,28 +373,48 @@ const ProReviewRequestSchema = z
 		payloadBinding: z
 			.object({
 				digestAlgorithm: z.literal("sha256"),
-				canonicalJsonFields: z.tuple([
-					z.literal("reviewer"),
-					z.literal("transport"),
-					z.literal("model"),
-					z.literal("fallbackAllowed"),
-					z.literal("transportEvidence"),
-					z.literal("blockedFallbacks"),
-					z.literal("prompt"),
-					z.literal("selectedFiles"),
-					z.literal("selectedFileContentsSha256"),
-					z.literal("transportEvidenceSha256"),
-				]),
+				canonicalJsonFields: z
+					.tuple([
+						z.literal("reviewer"),
+						z.literal("transport"),
+						z.literal("model"),
+						z.literal("fallbackAllowed"),
+						z.literal("transportEvidence"),
+						z.literal("blockedFallbacks"),
+						z.literal("prompt"),
+						z.literal("selectedFiles"),
+						z.literal("selectedFileContentsSha256"),
+						z.literal("transportEvidenceSha256"),
+					])
+					.or(
+						z.tuple([
+							z.literal("reviewer"),
+							z.literal("transport"),
+							z.literal("model"),
+							z.literal("fallbackAllowed"),
+							z.literal("transportEvidence"),
+							z.literal("blockedFallbacks"),
+							z.literal("prompt"),
+							z.literal("selectedFiles"),
+							z.literal("selectedFileContentsSha256"),
+							z.literal("transportEvidenceSha256"),
+							z.literal("reviewMode"),
+							z.literal("shardPlanSha256"),
+						]),
+					),
 				payloadSha256: Sha256DigestSchema,
 				promptSha256: Sha256DigestSchema,
 				selectedFilesSha256: Sha256DigestSchema,
 				selectedFileContentsSha256: Sha256DigestSchema,
 				transportEvidenceSha256: Sha256DigestSchema,
+				shardPlanSha256: Sha256DigestSchema.nullable().optional(),
 				notes: NonEmptyString,
 			})
 			.strict(),
 		selectedFiles: z.array(NonEmptyString).min(1),
 		blockedFallbacks: z.array(NonEmptyString),
+		reviewMode: z.enum(["single", "sharded"]).optional(),
+		shardPlan: ProReviewShardPlanSchema.optional(),
 	})
 	.strict();
 
@@ -425,6 +487,8 @@ const ProReviewNativeCanarySchema = z
 
 export type ProReviewRequest = z.infer<typeof ProReviewRequestSchema>;
 export type ProReviewNativeCanary = z.infer<typeof ProReviewNativeCanarySchema>;
+export type ProReviewShardPlan = z.infer<typeof ProReviewShardPlanSchema>;
+export type ProReviewShard = ProReviewShardPlan["shards"][number];
 
 export type ProReviewYoetzSendValidation = {
 	readonly status: "pass" | "fail";
@@ -437,6 +501,7 @@ export type BuildProReviewRequestInput = {
 	readonly prompt?: string;
 	readonly selectedFiles?: readonly string[];
 	readonly includeExistingSelectedFiles?: boolean;
+	readonly shardMaxSourceBytes?: number;
 };
 
 export type ApproveProReviewRequestInput = {
@@ -596,6 +661,12 @@ export function buildProReviewRequestDraft(
 	]);
 	const selectedFileContentsSha256 = digestSelectedFileContents(selectedFiles);
 	const transportEvidenceSha256 = digestFile(transportEvidence);
+	const reviewMode = input.shardMaxSourceBytes === undefined ? "single" : "sharded";
+	const shardPlan =
+		input.shardMaxSourceBytes === undefined
+			? undefined
+			: buildProReviewShardPlan(selectedFiles, input.shardMaxSourceBytes);
+	const shardPlanSha256 = shardPlan ? digestJson(shardPlan) : null;
 	const payload = {
 		reviewer: "ChatGPT Pro Extended via Yoetz native extension",
 		transport: "chrome-extension-native",
@@ -607,6 +678,7 @@ export function buildProReviewRequestDraft(
 		selectedFiles,
 		selectedFileContentsSha256,
 		transportEvidenceSha256,
+		...(reviewMode === "sharded" ? { reviewMode, shardPlanSha256 } : {}),
 	};
 	return {
 		schemaVersion: PRO_REVIEW_REQUEST_SCHEMA_VERSION,
@@ -631,18 +703,24 @@ export function buildProReviewRequestDraft(
 		},
 		payloadBinding: {
 			digestAlgorithm: "sha256",
-			canonicalJsonFields: [...PRO_REVIEW_PAYLOAD_BINDING_FIELDS],
+			canonicalJsonFields:
+				reviewMode === "sharded"
+					? [...PRO_REVIEW_SHARDED_PAYLOAD_BINDING_FIELDS]
+					: [...PRO_REVIEW_PAYLOAD_BINDING_FIELDS],
 			payloadSha256: digestJson(payload),
 			promptSha256: digestText(prompt),
 			selectedFilesSha256: digestJson(selectedFiles),
 			selectedFileContentsSha256,
 			transportEvidenceSha256,
+			...(reviewMode === "sharded" ? { shardPlanSha256 } : {}),
 			notes:
 				existing?.payloadBinding.notes ??
 				"A future approval is valid only for this exact prompt, selectedFiles list, selected file contents digest, and native-extension evidence digest.",
 		},
 		selectedFiles,
 		blockedFallbacks,
+		reviewMode,
+		...(shardPlan ? { shardPlan } : {}),
 	};
 }
 
@@ -651,6 +729,125 @@ function readOptionalProReviewRequest(requestPath: string | undefined): ProRevie
 	if (!fs.existsSync(resolved)) return null;
 	const raw = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
 	return ProReviewRequestSchema.parse(raw);
+}
+
+export function buildProReviewShardPlan(
+	selectedFiles: readonly string[],
+	maxShardSourceBytes: number,
+): ProReviewShardPlan {
+	if (!Number.isInteger(maxShardSourceBytes) || maxShardSourceBytes <= 0) {
+		throw new Error("--shard-max-source-bytes must be a positive integer");
+	}
+	const items = selectedFiles.flatMap((file) =>
+		proReviewShardItemsForFile(file, maxShardSourceBytes),
+	);
+	const buckets: Array<typeof items> = [];
+	let current: typeof items = [];
+	let currentBytes = 0;
+	for (const item of items) {
+		if (current.length > 0 && currentBytes + item.bytes > maxShardSourceBytes) {
+			buckets.push(current);
+			current = [];
+			currentBytes = 0;
+		}
+		current.push(item);
+		currentBytes += item.bytes;
+	}
+	if (current.length > 0) buckets.push(current);
+	const count = buckets.length;
+	const shards = buckets.map((bucket, index) => {
+		const selected = uniqueStrings(bucket.map((item) => item.path));
+		const sourceBytes = bucket.reduce((sum, item) => sum + item.bytes, 0);
+		const base = {
+			shardId: `shard-${String(index + 1).padStart(3, "0")}`,
+			index,
+			count,
+			selectedFiles: selected,
+			selectedFilesSha256: digestJson(selected),
+			itemContentsSha256: digestJson(
+				bucket.map((item) => ({
+					path: item.path,
+					startLine: item.startLine,
+					endLine: item.endLine,
+					sha256: item.sha256,
+				})),
+			),
+			sourceBytes,
+			focus: proReviewShardFocus(selected),
+			items: bucket,
+		};
+		return {
+			...base,
+			shardSha256: digestJson(base),
+		};
+	});
+	return {
+		schemaVersion: PRO_REVIEW_SHARD_PLAN_SCHEMA_VERSION,
+		strategy: "selected-file-line-byte-budget-v1",
+		maxShardSourceBytes,
+		bundleTemplateVersion: "pro-review-shard-bundle.v1",
+		shards,
+	};
+}
+
+function proReviewShardItemsForFile(file: string, maxShardSourceBytes: number) {
+	const content = fs.readFileSync(resolveHermesArtifactPath(file), "utf8");
+	const lines = splitLinesPreservingNewline(content);
+	const items: Array<{
+		path: string;
+		startLine: number;
+		endLine: number;
+		bytes: number;
+		sha256: string;
+	}> = [];
+	let chunk = "";
+	let startLine = 1;
+	let lineNumber = 1;
+	for (const line of lines) {
+		const lineBytes = Buffer.byteLength(line);
+		if (lineBytes > maxShardSourceBytes) {
+			throw new Error(
+				`${file}:${lineNumber} is ${lineBytes} byte(s), exceeding --shard-max-source-bytes ${maxShardSourceBytes}; split the line or choose a larger shard budget`,
+			);
+		}
+		if (chunk && Buffer.byteLength(chunk) + lineBytes > maxShardSourceBytes) {
+			items.push(proReviewShardItem(file, startLine, lineNumber - 1, chunk));
+			chunk = "";
+			startLine = lineNumber;
+		}
+		chunk += line;
+		lineNumber += 1;
+	}
+	if (chunk || lines.length === 0) {
+		items.push(proReviewShardItem(file, startLine, Math.max(startLine, lineNumber - 1), chunk));
+	}
+	return items;
+}
+
+function proReviewShardItem(file: string, startLine: number, endLine: number, content: string) {
+	return {
+		path: file,
+		startLine,
+		endLine,
+		bytes: Buffer.byteLength(content),
+		sha256: digestText(content),
+	};
+}
+
+function splitLinesPreservingNewline(content: string): string[] {
+	return content.match(/[^\n]*\n|[^\n]+/g) ?? [];
+}
+
+function proReviewShardFocus(selectedFiles: readonly string[]): string {
+	if (selectedFiles.some((file) => file.includes("pro-review"))) return "native Pro review gate";
+	if (selectedFiles.some((file) => file.includes("model-relay") || file.includes("openai-codex"))) {
+		return "model relay custody";
+	}
+	if (selectedFiles.some((file) => file.includes("network"))) return "network containment";
+	if (selectedFiles.some((file) => file.includes("fixture"))) return "fixture evidence";
+	if (selectedFiles.some((file) => file.includes("rollback"))) return "rollback proof";
+	if (selectedFiles.some((file) => file.includes("no-fork"))) return "no-fork proof";
+	return "Hermes cutover proof evidence";
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
@@ -757,6 +954,7 @@ function requestPolicyGates(
 			? pass("request.selectedFiles", "all selected Pro review files exist")
 			: fail("request.selectedFiles", `selected file(s) missing: ${missingFiles.join(", ")}`),
 	);
+	gates.push(...shardPlanGates(request));
 	gates.push(...semanticEvidenceGates(request, { requireGreenEvidence }));
 
 	const approval = request.privateWorkspaceDisclosure;
@@ -810,6 +1008,98 @@ function requestPolicyGates(
 			: pending("request.path", "request path is nonstandard but explicit"),
 	);
 	return gates;
+}
+
+function shardPlanGates(request: ProReviewRequest): ProReviewGate[] {
+	const reviewMode = request.reviewMode ?? "single";
+	if (reviewMode === "single") {
+		return request.shardPlan
+			? [fail("request.shardPlan", "single Pro review request must not include shardPlan")]
+			: [pass("request.shardPlan", "single Pro review request has no shard plan")];
+	}
+	if (!request.shardPlan) {
+		return [fail("request.shardPlan", "sharded Pro review request is missing shardPlan")];
+	}
+	const failures = shardPlanFailures(request);
+	return [
+		failures.length === 0
+			? pass(
+					"request.shardPlan",
+					`shard plan covers ${request.selectedFiles.length} selected file(s) in ${request.shardPlan.shards.length} shard(s)`,
+				)
+			: fail("request.shardPlan", failures.join("; ")),
+	];
+}
+
+function shardPlanFailures(request: ProReviewRequest): string[] {
+	if (!request.shardPlan) return ["shardPlan is missing"];
+	const failures: string[] = [];
+	let expectedPlan: ProReviewShardPlan | null = null;
+	try {
+		expectedPlan = buildProReviewShardPlan(
+			request.selectedFiles,
+			request.shardPlan.maxShardSourceBytes,
+		);
+	} catch (error) {
+		failures.push(
+			`shardPlan could not be rebuilt from current selected files: ${errorMessage(error)}`,
+		);
+	}
+	if (expectedPlan && digestJson(request.shardPlan) !== digestJson(expectedPlan)) {
+		failures.push("shardPlan does not match current selected file contents");
+	}
+	const coveredFiles = uniqueStrings(
+		request.shardPlan.shards.flatMap((shard) => shard.items.map((item) => item.path)),
+	);
+	if (JSON.stringify(coveredFiles) !== JSON.stringify(request.selectedFiles)) {
+		failures.push("shardPlan file coverage does not match selectedFiles order");
+	}
+	for (const shard of request.shardPlan.shards) {
+		const base = {
+			shardId: shard.shardId,
+			index: shard.index,
+			count: shard.count,
+			selectedFiles: shard.selectedFiles,
+			selectedFilesSha256: shard.selectedFilesSha256,
+			itemContentsSha256: shard.itemContentsSha256,
+			sourceBytes: shard.sourceBytes,
+			focus: shard.focus,
+			items: shard.items,
+		};
+		if (digestJson(base) !== shard.shardSha256) {
+			failures.push(`${shard.shardId} shardSha256 does not match shard metadata`);
+		}
+		if (shard.count !== request.shardPlan.shards.length) {
+			failures.push(`${shard.shardId} count does not match shardPlan length`);
+		}
+		if (shard.index < 0 || shard.index >= request.shardPlan.shards.length) {
+			failures.push(`${shard.shardId} index is out of range`);
+		}
+		for (const item of shard.items) {
+			let content: string;
+			try {
+				content = readProReviewShardItemContent(item);
+			} catch (error) {
+				failures.push(
+					`${shard.shardId} item ${item.path}:${item.startLine}-${item.endLine} could not be read: ${errorMessage(error)}`,
+				);
+				continue;
+			}
+			if (digestText(content) !== item.sha256) {
+				failures.push(
+					`${shard.shardId} item ${item.path}:${item.startLine}-${item.endLine} sha256 does not match current file contents`,
+				);
+			}
+		}
+	}
+	return failures;
+}
+
+export function readProReviewShardItemContent(item: ProReviewShard["items"][number]): string {
+	const content = fs.readFileSync(resolveHermesArtifactPath(item.path), "utf8");
+	return splitLinesPreservingNewline(content)
+		.slice(item.startLine - 1, item.endLine)
+		.join("");
 }
 
 function requiresSendReadyProReviewEvidence(
@@ -916,6 +1206,8 @@ function payloadDigestFailures(request: ProReviewRequest): string[] {
 	const failures = [];
 	const selectedFileContentsSha256 = digestSelectedFileContents(request.selectedFiles);
 	const transportEvidenceSha256 = digestFile(request.transportEvidence);
+	const reviewMode = request.reviewMode ?? "single";
+	const shardPlanSha256 = request.shardPlan ? digestJson(request.shardPlan) : null;
 	const payload = {
 		reviewer: request.reviewer,
 		transport: request.transport,
@@ -927,10 +1219,21 @@ function payloadDigestFailures(request: ProReviewRequest): string[] {
 		selectedFiles: request.selectedFiles,
 		selectedFileContentsSha256,
 		transportEvidenceSha256,
+		...(reviewMode === "sharded" ? { reviewMode, shardPlanSha256 } : {}),
 	};
 	const expectedPayload = digestJson(payload);
 	const expectedPrompt = digestText(request.prompt);
 	const expectedSelectedFiles = digestJson(request.selectedFiles);
+	const expectedCanonicalFields =
+		reviewMode === "sharded"
+			? [...PRO_REVIEW_SHARDED_PAYLOAD_BINDING_FIELDS]
+			: [...PRO_REVIEW_PAYLOAD_BINDING_FIELDS];
+	if (
+		JSON.stringify(request.payloadBinding.canonicalJsonFields) !==
+		JSON.stringify(expectedCanonicalFields)
+	) {
+		failures.push("canonicalJsonFields do not match review mode");
+	}
 	if (request.payloadBinding.payloadSha256 !== expectedPayload) {
 		failures.push(
 			"payloadSha256 does not match review content, selected files, and native evidence",
@@ -947,6 +1250,16 @@ function payloadDigestFailures(request: ProReviewRequest): string[] {
 	}
 	if (request.payloadBinding.transportEvidenceSha256 !== transportEvidenceSha256) {
 		failures.push("transportEvidenceSha256 does not match transport evidence file");
+	}
+	if (reviewMode === "sharded") {
+		if (!request.shardPlan) {
+			failures.push("sharded review request is missing shardPlan");
+		}
+		if (request.payloadBinding.shardPlanSha256 !== shardPlanSha256) {
+			failures.push("shardPlanSha256 does not match shardPlan");
+		}
+	} else if (request.shardPlan) {
+		failures.push("single review request must not include shardPlan");
 	}
 	return failures;
 }
@@ -1504,14 +1817,18 @@ export function readProReviewNativeCanary(
 	return parsed.value;
 }
 
-export function buildProReviewYoetzCommand(input: {
+type BuildProReviewYoetzCommandInput = {
 	readonly canary: ProReviewNativeCanary;
 	readonly bundlePath: string;
 	readonly payloadSha256?: string;
 	readonly bundleSha256?: string;
 	readonly runId?: string;
 	readonly waitTimeoutMs?: number;
-}): string[] {
+	readonly shard?: ProReviewShard;
+	readonly shardPlanSha256?: string;
+};
+
+export function buildProReviewYoetzCommand(input: BuildProReviewYoetzCommandInput): string[] {
 	const command = [
 		"yoetz",
 		"browser",
@@ -1526,12 +1843,23 @@ export function buildProReviewYoetzCommand(input: {
 		"json",
 		"--var",
 		`extension_instance_id=${input.canary.extensionInstanceId}`,
+		"--var",
+		`prompt=${buildProReviewYoetzPrompt(input)}`,
 	];
 	if (input.payloadSha256) {
 		command.push("--var", `payload_sha256=${input.payloadSha256}`);
 	}
 	if (input.bundleSha256) {
 		command.push("--var", `bundle_sha256=${input.bundleSha256}`);
+	}
+	if (input.shardPlanSha256) {
+		command.push("--var", `shard_plan_sha256=${input.shardPlanSha256}`);
+	}
+	if (input.shard) {
+		command.push("--var", `shard_id=${input.shard.shardId}`);
+		command.push("--var", `shard_sha256=${input.shard.shardSha256}`);
+		command.push("--var", `shard_index=${String(input.shard.index)}`);
+		command.push("--var", `shard_count=${String(input.shard.count)}`);
 	}
 	if (input.runId) {
 		command.push("--var", `run_id=${input.runId}`);
@@ -1540,6 +1868,25 @@ export function buildProReviewYoetzCommand(input: {
 		command.push("--var", `wait_timeout_ms=${String(input.waitTimeoutMs)}`);
 	}
 	return command;
+}
+
+function buildProReviewYoetzPrompt(input: BuildProReviewYoetzCommandInput): string {
+	if (!input.shard) {
+		return [
+			"Review the attached Hermes Pro-review bundle.",
+			"Return a Findings section and a Residual risk section.",
+		].join("\n");
+	}
+	return [
+		"Review only the attached Hermes Pro-review shard.",
+		"At the top of your response, echo these exact binding lines:",
+		`payloadSha256: ${input.payloadSha256 ?? ""}`,
+		`shardPlanSha256: ${input.shardPlanSha256 ?? ""}`,
+		`shardId: ${input.shard.shardId}`,
+		`shardSha256: ${input.shard.shardSha256}`,
+		"Then return a Findings section and a Residual risk section.",
+		"Do not review outside this shard or claim full-context coverage.",
+	].join("\n");
 }
 
 export function buildProReviewNativeYoetzEnv(
@@ -1580,6 +1927,8 @@ export function validateProReviewYoetzSendOutput(input: {
 	readonly expectedBundlePath: string;
 	readonly expectedPayloadSha256?: string;
 	readonly expectedBundleSha256?: string;
+	readonly expectedShard?: ProReviewShard;
+	readonly expectedShardPlanSha256?: string;
 }): ProReviewYoetzSendValidation {
 	let parsed: unknown;
 	try {
@@ -1642,11 +1991,35 @@ export function validateProReviewYoetzSendOutput(input: {
 			input.expectedBundleSha256,
 		),
 	);
+	failures.push(
+		...optionalDigestEchoFailures(
+			"shardPlanSha256",
+			digestEchoValue(parsed, "shardPlanSha256", "shard_plan_sha256"),
+			input.expectedShardPlanSha256,
+		),
+	);
+	failures.push(
+		...optionalStringEchoFailures("shard_id", parsed.shard_id, input.expectedShard?.shardId),
+	);
+	failures.push(
+		...optionalDigestEchoFailures(
+			"shardSha256",
+			digestEchoValue(parsed, "shardSha256", "shard_sha256"),
+			input.expectedShard?.shardSha256,
+		),
+	);
+	failures.push(
+		...proReviewResponseFailures(parsed.response, {
+			expectedPayloadSha256: input.expectedPayloadSha256,
+			expectedShard: input.expectedShard,
+			expectedShardPlanSha256: input.expectedShardPlanSha256,
+		}),
+	);
 	return failures.length === 0
 		? {
 				status: "pass",
 				detail:
-					"Yoetz native send reported Extended Pro without fallback and optional echoes matched",
+					"Yoetz native send reported Extended Pro without fallback, optional echoes matched, and response looked like a review",
 			}
 		: { status: "fail", detail: failures.join("; ") };
 }
@@ -1701,8 +2074,8 @@ function isExtendedProModel(value: unknown): boolean {
 
 function digestEchoValue(
 	parsed: Record<string, unknown>,
-	camelKey: "payloadSha256" | "bundleSha256",
-	snakeKey: "payload_sha256" | "bundle_sha256",
+	camelKey: "payloadSha256" | "bundleSha256" | "shardPlanSha256" | "shardSha256",
+	snakeKey: "payload_sha256" | "bundle_sha256" | "shard_plan_sha256" | "shard_sha256",
 ): unknown {
 	return parsed[camelKey] ?? parsed[snakeKey];
 }
@@ -1730,7 +2103,7 @@ function optionalBundleArtifactPathFailures(
 }
 
 function optionalDigestEchoFailures(
-	field: "payloadSha256" | "bundleSha256",
+	field: "payloadSha256" | "bundleSha256" | "shardPlanSha256" | "shardSha256",
 	actual: unknown,
 	expected: string | undefined,
 ): string[] {
@@ -1744,7 +2117,7 @@ function optionalDigestEchoFailures(
 }
 
 function optionalStringEchoFailures(
-	field: "extension_instance_id",
+	field: "extension_instance_id" | "shard_id",
 	actual: unknown,
 	expected: string | undefined,
 ): string[] {
@@ -1752,6 +2125,49 @@ function optionalStringEchoFailures(
 	if (typeof actual !== "string" || !actual.trim()) return [`${field} is missing or not a string`];
 	if (expected === undefined || !expected.trim()) return [`expected ${field} is missing`];
 	if (actual !== expected) return [`${field} is ${actual}, expected ${expected}`];
+	return [];
+}
+
+function proReviewResponseFailures(
+	response: unknown,
+	binding: {
+		readonly expectedPayloadSha256?: string;
+		readonly expectedShard?: ProReviewShard;
+		readonly expectedShardPlanSha256?: string;
+	} = {},
+): string[] {
+	if (typeof response !== "string") return ["response is missing or not a string"];
+	const trimmed = response.trim();
+	if (trimmed.length < 80) {
+		return [`response is too short to be a review (${trimmed.length} character(s))`];
+	}
+	if (trimmed === "I") return ["response is the known one-character ChatGPT truncation"];
+	const failures: string[] = [];
+	if (!/\bFindings\s*:/i.test(trimmed))
+		failures.push("response does not contain a Findings section");
+	if (!/\bResidual risk\s*:/i.test(trimmed)) {
+		failures.push("response does not contain a Residual risk section");
+	}
+	if (binding.expectedShard) {
+		failures.push(
+			...responseBindingLineFailures(trimmed, "payloadSha256", binding.expectedPayloadSha256),
+			...responseBindingLineFailures(trimmed, "shardPlanSha256", binding.expectedShardPlanSha256),
+			...responseBindingLineFailures(trimmed, "shardId", binding.expectedShard.shardId),
+			...responseBindingLineFailures(trimmed, "shardSha256", binding.expectedShard.shardSha256),
+		);
+	}
+	return failures;
+}
+
+function responseBindingLineFailures(
+	response: string,
+	field: "payloadSha256" | "shardPlanSha256" | "shardId" | "shardSha256",
+	expected: string | undefined,
+): string[] {
+	if (expected === undefined || !expected.trim()) return [`expected ${field} is missing`];
+	if (!response.includes(`${field}: ${expected}`)) {
+		return [`response does not echo ${field}: ${expected}`];
+	}
 	return [];
 }
 
@@ -1796,6 +2212,10 @@ function digestJson(value: unknown): string {
 
 function digestText(value: string): string {
 	return `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeArtifactPath(value: string): string {

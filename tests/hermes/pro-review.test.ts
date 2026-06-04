@@ -8,6 +8,7 @@ import { computeHermesArtifactDigest } from "../../src/hermes/foundation.js";
 import { runTelclaudeMcpSideEffectLedgerProbe } from "../../src/hermes/mcp/side-effect-ledger-probe.js";
 import {
 	buildProReviewNativeYoetzEnv,
+	buildProReviewRequestDraft,
 	buildProReviewYoetzCommand,
 	evaluateProReviewCheck,
 	PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS,
@@ -390,6 +391,8 @@ describe("Hermes Pro review gate", () => {
 					warnings: [],
 					fallback_used: false,
 					auto_paste_fallback: false,
+					response:
+						"Findings:\n- No P0/P1 findings in this validated fixture.\nResidual risk:\n- Fixture response only proves validator shape.",
 				}),
 				expectedExtensionInstanceId: "ext_test",
 				expectedBundlePath: bundlePath,
@@ -467,6 +470,186 @@ describe("Hermes Pro review gate", () => {
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("transport is dev-browser"),
+		});
+	});
+
+	it("rejects Yoetz final-send output with a truncated one-character review", () => {
+		const approvedPayloadSha256 = computeTextDigest("approved payload");
+		const bundleSha256 = computeTextDigest("exact bundle");
+		const bundlePath = "/tmp/pro-review.md";
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+					response: "I",
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("response is too short"),
+		});
+	});
+
+	it("fails sharded Pro review checks when shard plan contents are tampered", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-shard-tamper-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const request = buildProReviewRequestDraft({
+				canaryPath,
+				prompt: "Review the attached Hermes wrapper files.",
+				shardMaxSourceBytes: 500,
+			});
+			const tamperedShardPlan = {
+				...request.shardPlan,
+				shards: request.shardPlan?.shards.slice(1),
+			};
+			writeJson("docs/hermes/pro-review-request.json", {
+				...request,
+				shardPlan: tamperedShardPlan,
+			});
+
+			const report = evaluateProReviewCheck();
+			const gate = report.gates.find((item) => item.name === "request.shardPlan");
+
+			expect(report.status).toBe("fail");
+			expect(gate).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("shardPlan does not match current selected file contents"),
+			});
+		});
+	});
+
+	it("fails sharded Pro review checks when a selected shard file disappears", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-shard-stale-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const request = buildProReviewRequestDraft({
+				canaryPath,
+				prompt: "Review the attached Hermes wrapper files.",
+				shardMaxSourceBytes: 500,
+			});
+			writeJson("docs/hermes/pro-review-request.json", request);
+			fs.rmSync(path.resolve(request.selectedFiles[0]));
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.status).toBe("fail");
+			expect(report.gates.find((item) => item.name === "request.selectedFiles")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(request.selectedFiles[0]),
+			});
+			expect(report.gates.find((item) => item.name === "request.shardPlan")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(
+					"shardPlan could not be rebuilt from current selected files",
+				),
+			});
+		});
+	});
+
+	it("rejects sharding source files with a single line larger than the shard budget", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-long-line-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const longLinePath = "src/hermes/oversized-pro-review-line.ts";
+			fs.mkdirSync(path.dirname(path.resolve(longLinePath)), { recursive: true });
+			fs.writeFileSync(path.resolve(longLinePath), `${"x".repeat(600)}\n`, "utf8");
+
+			expect(() =>
+				buildProReviewRequestDraft({
+					canaryPath,
+					prompt: "Review the attached Hermes wrapper files.",
+					selectedFiles: [longLinePath],
+					shardMaxSourceBytes: 500,
+				}),
+			).toThrow("exceeding --shard-max-source-bytes 500");
+		});
+	});
+
+	it("requires sharded Yoetz responses to echo the exact shard binding", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-shard-echo-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const request = buildProReviewRequestDraft({
+				canaryPath,
+				prompt: "Review the attached Hermes wrapper files.",
+				shardMaxSourceBytes: 500,
+			});
+			const shard = request.shardPlan?.shards[0];
+			const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+			if (!shard || !shardPlanSha256) throw new Error("expected sharded test request");
+			const bundleSha256 = computeTextDigest("exact shard bundle");
+			const baseOutput = {
+				status: "ok",
+				transport: "chrome-extension-native",
+				model_used: "extended-pro",
+				model_selection_status: "selected",
+				warnings: [],
+				fallback_used: false,
+				auto_paste_fallback: false,
+			};
+
+			expect(
+				validateProReviewYoetzSendOutput({
+					stdout: JSON.stringify({
+						...baseOutput,
+						response:
+							"Findings:\n- This looks like a review but omits the shard binding.\nResidual risk:\n- Missing binding should fail.",
+					}),
+					expectedExtensionInstanceId: "ext_test",
+					expectedBundlePath: "/tmp/pro-review.shard-001.md",
+					expectedPayloadSha256: request.payloadBinding.payloadSha256,
+					expectedBundleSha256: bundleSha256,
+					expectedShard: shard,
+					expectedShardPlanSha256: shardPlanSha256,
+				}),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(`response does not echo shardId: ${shard.shardId}`),
+			});
+
+			expect(
+				validateProReviewYoetzSendOutput({
+					stdout: JSON.stringify({
+						...baseOutput,
+						response: [
+							`payloadSha256: ${request.payloadBinding.payloadSha256}`,
+							`shardPlanSha256: ${shardPlanSha256}`,
+							`shardId: ${shard.shardId}`,
+							`shardSha256: ${shard.shardSha256}`,
+							"Findings:",
+							"- No P0/P1 findings in this bound shard fixture.",
+							"Residual risk:",
+							"- Fixture response only proves validator shape and binding echoes.",
+						].join("\n"),
+					}),
+					expectedExtensionInstanceId: "ext_test",
+					expectedBundlePath: "/tmp/pro-review.shard-001.md",
+					expectedPayloadSha256: request.payloadBinding.payloadSha256,
+					expectedBundleSha256: bundleSha256,
+					expectedShard: shard,
+					expectedShardPlanSha256: shardPlanSha256,
+				}),
+			).toMatchObject({ status: "pass" });
 		});
 	});
 
