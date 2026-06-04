@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -17,6 +18,7 @@ import {
 import { createSideEffectHumanApprovalController } from "../../src/hermes/mcp/side-effect-human-approval.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
+	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
@@ -50,11 +52,11 @@ describe("Hermes MCP side-effect human approvals", () => {
 		}
 	});
 
-	it("creates a durable approval row bound to WYSIWYG render and the full side-effect binding", () => {
+	it("creates a durable approval row bound to WYSIWYG render and the full side-effect binding", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
 
-		const request = controller.request({ record, chatId: 111, username: "operator" });
+		const request = await controller.request({ record, chatId: 111, username: "operator" });
 
 		expect(request).toMatchObject({
 			ok: true,
@@ -92,7 +94,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 		});
 		const record = ledger.prepare(providerPrepareInput());
 		const controller = createController();
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		const consumed = await controller.consume({
@@ -138,7 +140,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("rejects wrong approver before consuming the legitimate pending approval", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		await expect(
@@ -162,14 +164,14 @@ describe("Hermes MCP side-effect human approvals", () => {
 		).resolves.toMatchObject({ ok: true, approvalId: request.nonce });
 	});
 
-	it("rejects self approval before creating a security approval row", () => {
+	it("rejects self approval before creating a security approval row", async () => {
 		const record = prepareProviderRecord({
 			actorId: "telegram:actor",
 			approverActorId: "telegram:actor",
 		});
 		const controller = createController();
 
-		expect(controller.request({ record, chatId: 111 })).toEqual({
+		await expect(controller.request({ record, chatId: 111 })).resolves.toEqual({
 			ok: false,
 			code: "approval_self_approval_denied",
 			reason: "side effects require approval by a distinct human approver",
@@ -181,7 +183,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("rejects wrong chat and durable body drift without consuming or minting", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		await expect(
@@ -210,7 +212,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("rejects params drift and WYSIWYG render divergence without burning the pending approval", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		await expect(
@@ -249,7 +251,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("uses the durable approval row across controller restart and fails closed if the token holder is lost", async () => {
 		const record = prepareProviderRecord();
 		const issuer = createController();
-		const request = issuer.request({ record, chatId: 111 });
+		const request = await issuer.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		const restartedRelay = createController();
@@ -290,7 +292,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 		const controller = createController();
 		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
 
-		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record);
 		const [approval] = getPendingApprovalsForChat(111);
 		expect(approval).toMatchObject({
 			sessionKey: record.ref,
@@ -332,7 +334,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("handles side-effect approvals without falling through to generic approve when live binding is unavailable", async () => {
 		const record = prepareProviderRecord({ approverActorId: "telegram:111" });
 		const controller = createController();
-		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record);
 		const [approval] = getPendingApprovalsForChat(111);
 		if (!approval) throw new Error("missing side-effect approval row");
 
@@ -359,7 +361,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
 		const controller = createController();
 		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
-		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record);
 		const [approval] = getPendingApprovalsForChat(111);
 		if (!approval) throw new Error("missing side-effect approval row");
 
@@ -386,7 +388,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 		const record = ledger.prepare(providerPrepareInput({ approverActorId: "telegram:111" }));
 		const controller = createController();
 		setTelclaudeLiveMcpSideEffectApprovalBinding({ ledger, controller });
-		requestTelclaudeLiveMcpSideEffectApproval(controller, record);
+		await requestTelclaudeLiveMcpSideEffectApproval(controller, record);
 		const [approval] = getPendingApprovalsForChat(111);
 		if (!approval) throw new Error("missing side-effect approval row");
 		getDb()
@@ -413,7 +415,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 				throw new Error("vault signing unavailable");
 			},
 		});
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 
 		await expect(
@@ -435,7 +437,7 @@ describe("Hermes MCP side-effect human approvals", () => {
 	it("rejects expired approval rows without minting", async () => {
 		const record = prepareProviderRecord();
 		const controller = createController();
-		const request = controller.request({ record, chatId: 111 });
+		const request = await controller.request({ record, chatId: 111 });
 		if (!request.ok) throw new Error(request.reason);
 		getDb()
 			.prepare("UPDATE approvals SET expires_at = ? WHERE nonce = ?")
@@ -450,6 +452,74 @@ describe("Hermes MCP side-effect human approvals", () => {
 			}),
 		).resolves.toMatchObject({ ok: false, code: "approval_expired" });
 		expect(getPendingApprovalsForChat(111)).toHaveLength(0);
+		expect(vault.signCalls).toHaveLength(0);
+	});
+
+	it("auto-grants eligible private outbound replies without creating a human approval row", async () => {
+		const ledger = createTelclaudeMcpSideEffectLedger({
+			nowMs: () => 100_000,
+			makeRef: () => "effect-auto-private",
+			defaultTtlMs: 300_000,
+			verifyApproval: createTelclaudeMcpSideEffectApprovalVerifier({
+				vaultClient: vault,
+				jtiStore,
+				nowSeconds: () => 100,
+			}),
+		});
+		const record = ledger.prepare(outboundPrepareInput());
+		const controller = createController({ autoGrant: { enabled: true } });
+
+		const request = await controller.request({ record, chatId: 111 });
+
+		expect(request).toMatchObject({
+			ok: true,
+			autoGranted: true,
+			nonce: "auto-effect-auto-private",
+		});
+		expect(getPendingApprovalsForChat(111)).toEqual([]);
+		expect(vault.signCalls).toHaveLength(1);
+		const stored = controller.takeServerSideApproval({
+			actionRef: record.ref,
+			record,
+			nowMs: 101_000,
+		});
+		expect(stored).toMatchObject({ ok: true, approvalId: "auto-effect-auto-private" });
+		if (!stored.ok) throw new Error(stored.reason);
+		await expect(ledger.verify(record.ref, stored.approvalToken)).resolves.toMatchObject({
+			ok: true,
+			approvalId: "auto-effect-auto-private",
+		});
+		await expect(ledger.verify(record.ref, stored.approvalToken)).resolves.toMatchObject({
+			ok: false,
+			code: "approval_replayed",
+		});
+	});
+
+	it("refuses auto-grant for providers, public/social outbound, and missing relay provenance", async () => {
+		const controller = createController({ autoGrant: { enabled: true } });
+		const provider = prepareProviderRecord();
+		const social = prepareOutboundRecord({ domain: "social", profileId: "social" });
+		const unproven = prepareOutboundRecord({
+			approvalMetadata: {
+				source: "hermes-live-mcp",
+				pairedProvenance: false,
+				replyCapableActorSeat: true,
+			},
+		});
+
+		const providerRequest = await controller.request({ record: provider, chatId: 111 });
+		const socialRequest = await controller.request({ record: social, chatId: 222 });
+		const unprovenRequest = await controller.request({ record: unproven, chatId: 333 });
+
+		expect(providerRequest).toMatchObject({ ok: true });
+		expect(providerRequest).not.toHaveProperty("autoGranted");
+		expect(socialRequest).toMatchObject({ ok: true });
+		expect(socialRequest).not.toHaveProperty("autoGranted");
+		expect(unprovenRequest).toMatchObject({ ok: true });
+		expect(unprovenRequest).not.toHaveProperty("autoGranted");
+		expect(getPendingApprovalsForChat(111)).toHaveLength(1);
+		expect(getPendingApprovalsForChat(222)).toHaveLength(1);
+		expect(getPendingApprovalsForChat(333)).toHaveLength(1);
 		expect(vault.signCalls).toHaveLength(0);
 	});
 
@@ -506,6 +576,20 @@ function prepareProviderRecord(
 	return record;
 }
 
+function prepareOutboundRecord(
+	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
+): Extract<TelclaudeMcpSideEffectRecord, { kind: "outbound" }> {
+	const ledger = createTelclaudeMcpSideEffectLedger({
+		nowMs: () => 100_000,
+		makeRef: () => `effect-human-outbound-${++fixtureRefCounter}`,
+		defaultTtlMs: 300_000,
+		verifyApproval: async () => ({ ok: false, code: "approval_required", reason: "unused" }),
+	});
+	const record = ledger.prepare(outboundPrepareInput(overrides));
+	if (record.kind !== "outbound") throw new Error("expected outbound record");
+	return record;
+}
+
 function providerPrepareInput(
 	overrides: Partial<Omit<TelclaudeMcpProviderSideEffectPrepareInput, "kind">> = {},
 ): TelclaudeMcpProviderSideEffectPrepareInput {
@@ -524,6 +608,51 @@ function providerPrepareInput(
 		approvalRevision: 1,
 		wysiwysRender: "Transfer ILS 100 to saved recipient",
 		idempotencyKey: "idem-provider-1",
+		...overrides,
+	};
+}
+
+function outboundPrepareInput(
+	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const requestedBody = "I'll pick up dinner at 19:00.";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+15551234567",
+		conversationId: "whatsapp:+15551234567",
+	};
+	const preparedMediaRefs: TelclaudeMcpOutboundSideEffectPrepareInput["preparedMediaRefs"] = [];
+	return {
+		kind: "outbound",
+		actorId: "telegram:123",
+		approverActorId: "telegram:operator",
+		profileId: "private",
+		domain: "private",
+		channel: "whatsapp",
+		destination: "+15551234567",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
+		mediaRefs: [],
+		preparedMediaRefs,
+		conversationRef: `conv_${"1".repeat(32)}`,
+		authorizationState: "authorized",
+		edgePreparedRef: "edge-outbound-1",
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel: "whatsapp",
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
+		approvalRequestId: "approval-outbound-1",
+		approvalRevision: 1,
+		approvalMetadata: {
+			source: "hermes-live-mcp",
+			pairedProvenance: true,
+			replyCapableActorSeat: true,
+		},
+		turnConversationRef: `turn_${"1".repeat(32)}`,
+		idempotencyKey: "idem-outbound-1",
 		...overrides,
 	};
 }

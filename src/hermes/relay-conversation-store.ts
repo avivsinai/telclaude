@@ -90,6 +90,7 @@ export type RelayConversation = {
 		readonly routeKey: string;
 	};
 	readonly authorizationState: AuthorizationState;
+	readonly humanPairingProvenance: boolean;
 	readonly authorizationScopes: readonly string[];
 	readonly members: readonly RelayConversationMember[];
 	readonly threadMessageIds: readonly string[];
@@ -113,6 +114,7 @@ export type RelayConversationMintInput = {
 		readonly routeKey: string;
 	};
 	readonly authorizationState?: AuthorizationState;
+	readonly humanPairingProvenance?: boolean;
 	readonly authorizationScopes?: readonly string[];
 	readonly members: readonly RelayConversationMemberInput[];
 	readonly threadMessageIds?: readonly string[];
@@ -228,6 +230,7 @@ type RelayConversationRow = {
 	routing_session_id: string;
 	route_key: string;
 	authorization_state: AuthorizationState;
+	human_pairing_provenance: number;
 	authorization_scopes_json: string;
 	members_json: string;
 	thread_message_ids_json: string;
@@ -666,6 +669,7 @@ function normalizeMintInput(input: RelayConversationMintInput, nowMs: number): R
 			routeKey: requiredTrimmed(routingSession.routeKey, "routingSession.routeKey"),
 		},
 		authorizationState: AuthorizationStateSchema.parse(input.authorizationState ?? "authorized"),
+		humanPairingProvenance: input.humanPairingProvenance === true,
 		authorizationScopes: uniqueStrings(
 			input.authorizationScopes ?? ["message:read", "message:reply"],
 		),
@@ -803,6 +807,7 @@ function insertConversation(conversation: RelayConversation): void {
 				routing_session_id,
 				route_key,
 				authorization_state,
+				human_pairing_provenance,
 				authorization_scopes_json,
 				members_json,
 				thread_message_ids_json,
@@ -813,7 +818,7 @@ function insertConversation(conversation: RelayConversation): void {
 				revoked_at_ms,
 				revoke_reason,
 				updated_at_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		)
 		.run(
 			conversation.token,
@@ -827,6 +832,7 @@ function insertConversation(conversation: RelayConversation): void {
 			conversation.routingSession.sessionId,
 			conversation.routingSession.routeKey,
 			conversation.authorizationState,
+			conversation.humanPairingProvenance ? 1 : 0,
 			JSON.stringify(conversation.authorizationScopes),
 			JSON.stringify(conversation.members),
 			JSON.stringify(conversation.threadMessageIds),
@@ -918,6 +924,7 @@ function deserializeConversation(row: RelayConversationRow): RelayConversation |
 				routeKey: row.route_key,
 			},
 			authorizationState: AuthorizationStateSchema.parse(row.authorization_state),
+			humanPairingProvenance: row.human_pairing_provenance === 1,
 			authorizationScopes,
 			members,
 			threadMessageIds,

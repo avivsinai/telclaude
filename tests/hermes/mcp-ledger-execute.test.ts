@@ -375,6 +375,42 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		expect(harness.verifierCalls).toHaveLength(0);
 	});
 
+	it("rejects outbound conversations whose actor seat lost message:reply before approval verification", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+		const bridge = createBridge(harness, {
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					conversationId: outbound.resolvedDestination.conversationId,
+					members: [
+						{
+							actorId: "operator",
+							channel: "whatsapp",
+							principalId: "+15551234567",
+							principalHash:
+								"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+							role: "sender",
+							identityAssurance: "strong_link",
+							scopes: [],
+							revoked: false,
+						},
+					],
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_recipient_not_targetable",
+			reason: "outbound conversation has no reply-capable seat for the actor",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
 	it("accepts social MCP domain outbound records against public-social relay conversations", async () => {
 		const harness = createLedgerHarness();
 		const base = outboundPrepareInput();
@@ -938,6 +974,7 @@ function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayC
 			routeKey: "route-private",
 		},
 		authorizationState: "authorized",
+		humanPairingProvenance: false,
 		authorizationScopes: ["message:reply"],
 		members: [
 			{

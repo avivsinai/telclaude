@@ -250,6 +250,7 @@ export function createTelclaudeLiveMcpRelayClients(
 					endpointId: request.endpointId,
 					networkNamespace: request.networkNamespace,
 					edgeSideEffectLedgerRef: prepared.sideEffectLedgerRef,
+					...outboundAutoGrantProvenance(conversation, request.actorId),
 				},
 				turnConversationRef: turn.ref,
 				idempotencyKey: prepared.idempotencyKey,
@@ -368,6 +369,24 @@ function resolveOutboundTurnAuthority(
 		throw new Error("outbound turn authority mismatch");
 	}
 	return turn;
+}
+
+function outboundAutoGrantProvenance(
+	conversation: RelayConversation,
+	actorId: string,
+): {
+	readonly pairedProvenance: boolean;
+	readonly replyCapableActorSeat: boolean;
+	readonly actorIdentityAssurance: string | null;
+} {
+	const actorSeat = targetableRelayConversationMembers(conversation).find(
+		(member) => member.actorId === actorId,
+	);
+	return {
+		pairedProvenance: conversation.humanPairingProvenance === true,
+		replyCapableActorSeat: actorSeat?.scopes.includes("message:reply") === true,
+		actorIdentityAssurance: actorSeat?.identityAssurance ?? null,
+	};
 }
 
 function defaultReplyIntent(conversation: RelayConversation): RelayConversationReplyIntent {

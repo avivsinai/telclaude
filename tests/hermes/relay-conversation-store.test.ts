@@ -113,11 +113,33 @@ describe("Hermes relay conversation store", () => {
 		expect(
 			conversation?.members.some((member) => member.actorId === RELAY_PAIRING_AUTHORITY_ACTOR_ID),
 		).toBe(true);
+		expect(conversation?.humanPairingProvenance).toBe(false);
 		expect(conversation?.threadMessageIds).toEqual(["message-1"]);
 		expect(conversation?.inboundCursor).toBe("uidvalidity:uid");
 		expect(conversation?.auditIds).toEqual(["audit-1"]);
 		expect(fs.statSync(tempDir).mode & 0o777).toBe(0o700);
 		expect(fs.statSync(path.join(tempDir, "telclaude.db")).mode & 0o777).toBe(0o600);
+	});
+
+	it("persists explicit human pairing provenance and defaults it closed", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+		const defaultConversation = store.mint(baseInput("default-provenance")).conversation;
+		const paired = store.mint(baseInput("paired-provenance", { humanPairingProvenance: true }));
+
+		expect(defaultConversation.humanPairingProvenance).toBe(false);
+		expect(paired.conversation.humanPairingProvenance).toBe(true);
+
+		const { closeDb } = await import("../../src/storage/db.js");
+		closeDb();
+		vi.resetModules();
+
+		const reloaded = await loadStore();
+		const storeAfterRestart = reloaded.createRelayConversationStore({ nowMs: () => NOW });
+		expect(storeAfterRestart.resolve(defaultConversation.token)?.humanPairingProvenance).toBe(
+			false,
+		);
+		expect(storeAfterRestart.resolve(paired.token)?.humanPairingProvenance).toBe(true);
 	});
 
 	it("normalizes canonical domains and fails closed for non-edge-projectable specialist domains", async () => {

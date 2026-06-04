@@ -341,6 +341,7 @@ function initializeSchema(database: Database.Database): void {
 			routing_session_id TEXT NOT NULL,
 			route_key TEXT NOT NULL,
 			authorization_state TEXT NOT NULL CHECK(authorization_state IN ('authorized','approval_required','denied','revoked')),
+			human_pairing_provenance INTEGER NOT NULL DEFAULT 0 CHECK(human_pairing_provenance IN (0,1)),
 			authorization_scopes_json TEXT NOT NULL,
 			members_json TEXT NOT NULL,
 			thread_message_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -719,6 +720,12 @@ function initializeSchema(database: Database.Database): void {
 		"cron_jobs",
 		"delivery_thread_id",
 		"ALTER TABLE cron_jobs ADD COLUMN delivery_thread_id INTEGER",
+	);
+	ensureColumn(
+		database,
+		"hermes_relay_conversations",
+		"human_pairing_provenance",
+		"ALTER TABLE hermes_relay_conversations ADD COLUMN human_pairing_provenance INTEGER NOT NULL DEFAULT 0 CHECK(human_pairing_provenance IN (0,1))",
 	);
 	ensureApprovalsColumns(database);
 	ensureMemoryEntriesColumns(database);

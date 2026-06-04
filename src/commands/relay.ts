@@ -763,6 +763,7 @@ function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined)
 		path.join(CONFIG_DIR, "hermes", "mcp-side-effect-approval-jti"),
 	);
 	const controller = createSideEffectHumanApprovalController({
+		autoGrant: { enabled: true },
 		mintApprovalToken: ({ binding, jti, ttlMs, nowMs }) =>
 			generateTelclaudeMcpSideEffectApprovalToken(binding, vaultClient, {
 				jti,
