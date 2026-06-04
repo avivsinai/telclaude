@@ -7722,6 +7722,112 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("prepares sharded Pro review sends with root payload and shard bindings", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-sharded-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--shard-max-source-bytes",
+				"500",
+			]);
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			const refreshed = JSON.parse(refresh.stdout) as {
+				payloadSha256: string;
+				reviewMode: string;
+				shardCount: number;
+			};
+			expect(refreshed.reviewMode).toBe("sharded");
+			expect(refreshed.shardCount).toBeGreaterThan(1);
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"approval-1",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-05-31T17:10:00Z",
+				"--payload-sha256",
+				refreshed.payloadSha256,
+			]);
+			expect(approval.exitCode, approval.stdout).toBe(0);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--bundle-out",
+				bundlePath,
+				"--wait-timeout-ms",
+				"120000",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				send: {
+					status: string;
+					mode: string;
+					payloadSha256: string;
+					shardPlanSha256: string;
+					shardCount: number;
+					shards: Array<{
+						bundlePath: string;
+						shardId: string;
+						shardSha256: string;
+						yoetzCommand: string[];
+					}>;
+				};
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.send.status).toBe("ready_sharded");
+			expect(report.send.mode).toBe("sharded");
+			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
+			expect(report.send.shardCount).toBe(refreshed.shardCount);
+			const firstShard = report.send.shards[0];
+			expect(firstShard.yoetzCommand).toEqual(
+				expect.arrayContaining([
+					"--transport",
+					"chrome-extension-native",
+					"--var",
+					expect.stringContaining("prompt=Review only the attached Hermes Pro-review shard."),
+					"--var",
+					`payload_sha256=${report.send.payloadSha256}`,
+					"--var",
+					`shard_plan_sha256=${report.send.shardPlanSha256}`,
+					"--var",
+					`shard_id=${firstShard.shardId}`,
+					"--var",
+					`shard_sha256=${firstShard.shardSha256}`,
+				]),
+			);
+			expect(firstShard.yoetzCommand).toContainEqual(
+				expect.stringContaining(`shardId: ${firstShard.shardId}`),
+			);
+			expect(firstShard.bundlePath).toContain(firstShard.shardId);
+			expect(fs.statSync(firstShard.bundlePath).mode & 0o777).toBe(0o600);
+		});
+	});
+
 	it("fails Pro review evidence when a required selected file is missing", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-required-"));
 		await writeRequiredProReviewWorkspace(tempDir);
