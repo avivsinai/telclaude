@@ -1,4 +1,5 @@
 import net from "node:net";
+import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type {
 	TelclaudeMcpAuthorityConnection,
 	TelclaudeMcpAuthorityRegistry,
@@ -91,6 +92,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
@@ -156,6 +158,7 @@ export async function startTelclaudeLiveMcpRuntime(
 		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 		resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+		outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		nowMs: options.nowMs,
 	});

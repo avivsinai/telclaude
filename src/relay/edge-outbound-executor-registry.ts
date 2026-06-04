@@ -1,4 +1,9 @@
 import type { EdgeChannel, EdgeChannelConnector } from "./edge-channel-connector.js";
+import {
+	createWhatsAppEdgeChannelConnector,
+	type WhatsAppEdgeChannelConnectorOptions,
+	whatsappSidecarOptionsFromEnv,
+} from "./whatsapp-edge-channel-connector.js";
 
 /**
  * Registry of per-channel transports (CL-0). The outbound delivery dispatcher
@@ -35,4 +40,22 @@ export function createEdgeOutboundExecutorRegistry(
 		channels: () => [...byChannel.keys()],
 		connectors: () => [...byChannel.values()],
 	};
+}
+
+export interface CreateDefaultEdgeOutboundExecutorRegistryOptions {
+	readonly whatsapp?: WhatsAppEdgeChannelConnectorOptions | false;
+	readonly additionalConnectors?: readonly EdgeChannelConnector[];
+}
+
+export function createDefaultEdgeOutboundExecutorRegistry(
+	options: CreateDefaultEdgeOutboundExecutorRegistryOptions = {},
+): EdgeOutboundExecutorRegistry {
+	const connectors: EdgeChannelConnector[] = [];
+	if (options.whatsapp !== false) {
+		connectors.push(
+			createWhatsAppEdgeChannelConnector(options.whatsapp ?? whatsappSidecarOptionsFromEnv()),
+		);
+	}
+	connectors.push(...(options.additionalConnectors ?? []));
+	return createEdgeOutboundExecutorRegistry(connectors);
 }

@@ -30,6 +30,7 @@ import {
 } from "../hermes/mcp/live-side-effect-approvals.js";
 import { createGoogleProviderSidecarApprovalTokenIssuer } from "../hermes/mcp/provider-sidecar-token.js";
 import { createSideEffectHumanApprovalController } from "../hermes/mcp/side-effect-human-approval.js";
+import { createTelclaudeMcpSideEffectLedger } from "../hermes/mcp/side-effect-ledger.js";
 import { createRelayConversationStore } from "../hermes/relay-conversation-store.js";
 import { installUnhandledRejectionHandler } from "../infra/unhandled-rejections.js";
 import { getChildLogger } from "../logging.js";
@@ -41,9 +42,12 @@ import {
 } from "../providers/provider-health.js";
 import { refreshExternalProviderSkill } from "../providers/provider-skill.js";
 import { startAnthropicOauthRefreshScheduler } from "../relay/anthropic-proxy.js";
+import { createAttachmentQuarantineStore } from "../relay/attachment-quarantine-store.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
+import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { startGitProxyServer } from "../relay/git-proxy.js";
 import { startHttpCredentialProxy } from "../relay/http-credential-proxy.js";
+import { createOutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
 import { initTokenManager } from "../relay/token-manager.js";
 import {
 	buildAllowedDomainNames,
@@ -318,9 +322,63 @@ export function registerRelayCommand(program: Command): void {
 						? createLiveMcpSideEffectApprovalKit(vaultSocketPath)
 						: null;
 				const liveMcpConversationStore = createRelayConversationStore();
+				const liveMcpLedger = createTelclaudeMcpSideEffectLedger({
+					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval ?? denyRelayLiveMcpApproval,
+				});
+				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
+					registry: createDefaultEdgeOutboundExecutorRegistry(),
+					resolveConversation: async (prepared) => {
+						const record = liveMcpLedger.get(prepared.sideEffectLedgerRef);
+						if (
+							!record ||
+							record.kind !== "outbound" ||
+							record.edgePreparedRef !== prepared.outboundRef ||
+							record.channel !== prepared.channel
+						) {
+							return null;
+						}
+						const conversation = liveMcpConversationStore.resolveAuthorized(record.conversationRef);
+						return conversation
+							? {
+									conversationToken: conversation.token,
+									threadMessageIds: conversation.threadMessageIds,
+								}
+							: null;
+					},
+					quarantineStore: createAttachmentQuarantineStore(),
+					onDelivered: async (_prepared, context, outcome) => {
+						const threadMessageId = outcome.observedThreadMessageId ?? outcome.platformMessageId;
+						if (threadMessageId) {
+							liveMcpConversationStore.recordThreadMessageId(
+								context.conversationToken,
+								threadMessageId,
+							);
+						}
+					},
+					onDeliveredError: (_prepared, context, _outcome, error) => {
+						logger.warn(
+							{
+								conversationToken: context.conversationToken,
+								error: error instanceof Error ? error.message : String(error),
+							},
+							"failed to record Hermes outbound delivery thread id",
+						);
+					},
+					onSendFailure: (prepared, failure) => {
+						logger.warn(
+							{
+								channel: prepared.channel,
+								outboundRef: prepared.outboundRef,
+								code: failure.code,
+								retryable: failure.retryable,
+							},
+							"Hermes outbound delivery failed",
+						);
+					},
+				});
 				const liveMcpRuntime = await startTelclaudeLiveMcpRuntime({
 					config: liveMcpRuntimeConfig,
-					verifyApproval: liveMcpSideEffectApprovals?.verifyApproval,
+					ledger: liveMcpLedger,
 					sideEffectApprovalTokenResolver:
 						liveMcpSideEffectApprovals?.sideEffectApprovalTokenResolver,
 					resolveAuthorizedOutboundConversation: (conversationRef, nowMs) =>
@@ -353,6 +411,7 @@ export function registerRelayCommand(program: Command): void {
 						}
 						return turn;
 					},
+					outboundDeliveryDispatcher: liveMcpOutboundDeliveryDispatcher,
 					providerApprovalTokenIssuer: liveMcpSideEffectApprovals?.providerApprovalTokenIssuer,
 					createRelayClients: ({ ledger }) => {
 						if (liveMcpSideEffectApprovals) {
@@ -812,5 +871,13 @@ function createLiveMcpSideEffectApprovalKit(vaultSocketPath: string | undefined)
 			setTelclaudeLiveMcpSideEffectApprovalBinding(null);
 			jtiStore.close();
 		},
+	};
+}
+
+async function denyRelayLiveMcpApproval() {
+	return {
+		ok: false as const,
+		code: "approval_required",
+		reason: "live MCP side-effect approvals are disabled",
 	};
 }

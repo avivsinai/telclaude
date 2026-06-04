@@ -12,11 +12,18 @@ import type {
 	EdgeChannelConnector,
 	OutboundDeliveryContext,
 } from "../../src/relay/edge-channel-connector.js";
-import { createEdgeOutboundExecutorRegistry } from "../../src/relay/edge-outbound-executor-registry.js";
+import {
+	createDefaultEdgeOutboundExecutorRegistry,
+	createEdgeOutboundExecutorRegistry,
+} from "../../src/relay/edge-outbound-executor-registry.js";
 import {
 	createOutboundDeliveryDispatcher,
 	type OutboundConversationContext,
 } from "../../src/relay/outbound-delivery-dispatcher.js";
+import {
+	createWhatsAppEdgeChannelConnector,
+	type WhatsAppSidecarSendRequest,
+} from "../../src/relay/whatsapp-edge-channel-connector.js";
 
 const HEX64 = "a".repeat(64);
 
@@ -371,6 +378,78 @@ describe("outbound delivery dispatcher", () => {
 		expect(receipt.deliveryStatus).toBe("sent");
 		expect(receipt.platformMessageId).toBe("gmail-xyz");
 		expect(reportedError).toBeInstanceOf(Error);
+	});
+
+	it("sends WhatsApp through the connector with resolvedDestination verbatim", async () => {
+		const sent: WhatsAppSidecarSendRequest[] = [];
+		const resolvedDestination = {
+			kind: "address" as const,
+			addressRef: "whatsapp:+15551234567",
+			conversationId: "relay-conversation-token",
+		};
+		const connector = createWhatsAppEdgeChannelConnector({
+			sendToSidecar: async (request) => {
+				sent.push(request);
+				return { ok: true, platformMessageId: "wa-msg-1", observedThreadMessageId: "wa-msg-1" };
+			},
+		});
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry: createEdgeOutboundExecutorRegistry([connector]),
+			resolveConversation: async () => ctx("relay-conversation-token", ["wa-thread-previous"]),
+			quarantineStore,
+			now: () => 1717459200000,
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination,
+				finalRenderedBody: "On my way",
+			}),
+		);
+
+		expect(receipt.deliveryStatus).toBe("sent");
+		expect(sent).toEqual([
+			expect.objectContaining({
+				outboundRef: "edge-out:deadbeef",
+				idempotencyKey: "edge-idem:deadbeef",
+				destination: resolvedDestination,
+				body: "On my way",
+				threadMessageIds: ["wa-thread-previous"],
+			}),
+		]);
+	});
+
+	it("registers WhatsApp by default but fails closed without sidecar config", async () => {
+		const failures: unknown[] = [];
+		const registry = createDefaultEdgeOutboundExecutorRegistry({ whatsapp: {} });
+		const dispatch = createOutboundDeliveryDispatcher({
+			registry,
+			resolveConversation: async () => ctx("relay-conversation-token"),
+			quarantineStore,
+			now: () => 1717459200000,
+			onSendFailure: (_prepared, failure) => failures.push(failure),
+		});
+
+		const receipt = await dispatch(
+			preparedOutbound({
+				channel: "whatsapp",
+				resolvedDestination: {
+					kind: "address",
+					addressRef: "whatsapp:+15551234567",
+					conversationId: "relay-conversation-token",
+				},
+			}),
+		);
+
+		expect(registry.has("whatsapp")).toBe(true);
+		expect(receipt.deliveryStatus).toBe("failed");
+		expect(failures).toEqual([
+			expect.objectContaining({
+				code: "whatsapp_sidecar_unconfigured",
+				retryable: false,
+			}),
+		]);
 	});
 });
 

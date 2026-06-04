@@ -1,4 +1,5 @@
 import http from "node:http";
+import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "../../relay/provider-proxy.js";
 import {
 	createTelclaudeMcpBridgeForRegisteredConnection,
@@ -98,6 +99,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
+	readonly outboundDeliveryDispatcher?: OutboundDeliveryDispatcher;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly bindHost: string;
 	readonly networkName: string;
@@ -149,6 +151,7 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 			sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 			resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
 			resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
+			outboundDeliveryDispatcher: options.outboundDeliveryDispatcher,
 			providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 			nowMs: options.nowMs,
 		}),
