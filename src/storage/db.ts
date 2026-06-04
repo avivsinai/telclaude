@@ -361,6 +361,31 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_domain_state
 			ON hermes_relay_conversations(domain, authorization_state);
 
+		-- Relay-minted inbound turn refs. These bind Hermes outbound work to a
+		-- trusted inbound transport event without accepting model-supplied turn ids.
+		CREATE TABLE IF NOT EXISTS hermes_relay_conversation_turns (
+			ref TEXT PRIMARY KEY,
+			conversation_token TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			domain TEXT NOT NULL CHECK(domain IN ('private','household','public','public-social','specialist')),
+			mcp_domain TEXT NOT NULL CHECK(mcp_domain IN ('private','social','household','public','specialist')),
+			inbound_message_id TEXT NOT NULL,
+			sender_actor_id TEXT NOT NULL,
+			sender_principal_id TEXT NOT NULL,
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER,
+			revoked_at_ms INTEGER,
+			revoke_reason TEXT,
+			FOREIGN KEY(conversation_token) REFERENCES hermes_relay_conversations(token)
+		);
+		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_turn_conversation
+			ON hermes_relay_conversation_turns(conversation_token, created_at_ms DESC);
+		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_turn_expiry
+			ON hermes_relay_conversation_turns(expires_at_ms);
+
 		-- Cron jobs (local scheduler state)
 		CREATE TABLE IF NOT EXISTS cron_jobs (
 			id TEXT PRIMARY KEY,

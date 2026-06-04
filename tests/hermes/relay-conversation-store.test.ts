@@ -263,6 +263,106 @@ describe("Hermes relay conversation store", () => {
 			}),
 		).toThrow("address is not targetable");
 	});
+
+	it("mints relay-owned inbound turn refs and resolves only matching authorized turns", async () => {
+		const { createRelayConversationStore, isRelayConversationTurnRef } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+		const { token } = store.mint(baseInput("turn"));
+
+		const minted = store.mintInboundTurn({
+			conversationToken: token,
+			inboundMessageId: "telegram:message:1",
+			senderActorId: "actor:turn:sender",
+			nowMs: NOW,
+			expiresAtMs: NOW + 1_000,
+		});
+
+		expect(isRelayConversationTurnRef(minted.turnRef)).toBe(true);
+		expect(minted.turn).toMatchObject({
+			ref: minted.turnRef,
+			conversationToken: token,
+			conversationId: "conversation-turn",
+			threadId: "thread-turn",
+			profileId: "profile-turn",
+			mcpDomain: "public",
+			inboundMessageId: "telegram:message:1",
+			senderActorId: "actor:turn:sender",
+			senderPrincipalId: "sender-turn@example.com",
+			createdAtMs: NOW,
+			expiresAtMs: NOW + 1_000,
+		});
+		expect(store.resolveInboundTurn(minted.turnRef)?.conversationToken).toBe(token);
+		expect(store.resolveAuthorizedInboundTurn(minted.turnRef, token)?.ref).toBe(minted.turnRef);
+		expect(store.resolveAuthorizedInboundTurn(minted.turnRef, `conv_${"a".repeat(32)}`)).toBeNull();
+		expect(store.resolveInboundTurn(`turn_${"b".repeat(32)}`)).toBeNull();
+		expect(store.resolveInboundTurn(minted.turnRef, NOW + 1_000)).toBeNull();
+	});
+
+	it("fails closed when minting turns for unavailable conversations or non-member senders", async () => {
+		const { RELAY_PAIRING_AUTHORITY_ACTOR_ID, createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+		const { token } = store.mint(baseInput("turn-denied"));
+
+		expect(() =>
+			store.mintInboundTurn({
+				conversationToken: `conv_${"c".repeat(32)}`,
+				inboundMessageId: "message",
+				senderActorId: "actor:turn-denied:sender",
+				nowMs: NOW,
+			}),
+		).toThrow("conversation unavailable");
+		expect(() =>
+			store.mintInboundTurn({
+				conversationToken: token,
+				inboundMessageId: "message",
+				senderActorId: "actor:turn-denied:other",
+				nowMs: NOW,
+			}),
+		).toThrow("turn sender is not a conversation member");
+		expect(() =>
+			store.mintInboundTurn({
+				conversationToken: token,
+				inboundMessageId: "message",
+				senderActorId: RELAY_PAIRING_AUTHORITY_ACTOR_ID,
+				nowMs: NOW,
+			}),
+		).toThrow("turn sender is not a targetable conversation member");
+
+		store.revoke(token, "conversation revoked");
+		expect(() =>
+			store.mintInboundTurn({
+				conversationToken: token,
+				inboundMessageId: "message",
+				senderActorId: "actor:turn-denied:sender",
+				nowMs: NOW,
+			}),
+		).toThrow("conversation unavailable");
+	});
+
+	it("revokes and persists relay-owned inbound turn refs", async () => {
+		const { createRelayConversationStore } = await loadStore();
+		const store = createRelayConversationStore({ nowMs: () => NOW });
+		const { token } = store.mint(baseInput("turn-restart"));
+		const { turnRef } = store.mintInboundTurn({
+			conversationToken: token,
+			inboundMessageId: "telegram:message:restart",
+			senderActorId: "actor:turn-restart:sender",
+			nowMs: NOW,
+		});
+
+		const { closeDb } = await import("../../src/storage/db.js");
+		closeDb();
+		vi.resetModules();
+
+		const reloaded = await loadStore();
+		const storeAfterRestart = reloaded.createRelayConversationStore({ nowMs: () => NOW });
+		expect(storeAfterRestart.resolveAuthorizedInboundTurn(turnRef, token)?.inboundMessageId).toBe(
+			"telegram:message:restart",
+		);
+		expect(storeAfterRestart.revokeInboundTurn(turnRef, "consumed")?.revokedAtMs).toBe(NOW);
+		expect(storeAfterRestart.resolveInboundTurn(turnRef)).toBeNull();
+		expect(storeAfterRestart.inspectInboundTurn(turnRef)?.revokeReason).toBe("consumed");
+	});
 });
 
 async function loadStore(): Promise<typeof import("../../src/hermes/relay-conversation-store.js")> {

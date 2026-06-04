@@ -245,6 +245,57 @@ describe("Telclaude MCP bridge foundation", () => {
 		).rejects.toThrow();
 	});
 
+	it("stamps relay-owned turn refs and rejects model-supplied turn fields", async () => {
+		const calls: unknown[] = [];
+		const turnConversationRef = `turn_${"a".repeat(32)}`;
+		const bridge = createTelclaudeMcpBridge(
+			baseAuthority({
+				outboundChannels: ["whatsapp"],
+				turnConversationRef,
+			}),
+			{
+				...baseDependencies(),
+				outboundPrepare: async (request) => {
+					calls.push(request);
+					return { outboundRef: "out_turn" };
+				},
+				outboundExecute: async (request) => {
+					calls.push(request);
+					return { status: "sent" };
+				},
+			},
+		);
+
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				body: "hello from original turn",
+			}),
+		).resolves.toEqual({ outboundRef: "out_turn" });
+		await expect(bridge.tc_outbound_execute({ outboundRef: "out_turn" })).resolves.toEqual({
+			status: "sent",
+		});
+
+		expect(calls).toEqual([
+			expect.objectContaining({ turnConversationRef }),
+			expect.objectContaining({ turnConversationRef }),
+		]);
+
+		await expect(
+			bridge.tc_outbound_prepare({
+				conversationToken: `conv_${"a".repeat(32)}`,
+				body: "try to choose turn",
+				turnConversationRef: `turn_${"b".repeat(32)}`,
+			}),
+		).rejects.toThrow("MCP clients may not supply relay turn authority");
+		await expect(
+			bridge.tc_outbound_execute({
+				outboundRef: "out_turn",
+				turnId: "model-turn",
+			}),
+		).rejects.toThrow("MCP clients may not supply relay turn authority");
+	});
+
 	it("requires relay conversation tokens for outbound prepare and stamps attachment/audit calls", async () => {
 		const calls: unknown[] = [];
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ outboundChannels: ["whatsapp"] }), {

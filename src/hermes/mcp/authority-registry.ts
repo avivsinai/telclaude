@@ -6,6 +6,7 @@ import {
 	validateMemorySource,
 } from "../../memory/source.js";
 import type { MemorySource } from "../../memory/types.js";
+import { isRelayConversationTurnRef } from "../relay-conversation-store.js";
 import {
 	createTelclaudeMcpBridge,
 	type TelclaudeMcpAuthority,
@@ -214,6 +215,9 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		outboundChannels: uniqueTrimmed(authority.outboundChannels),
 		endpointId: requiredTrimmed(authority.endpointId, "endpointId"),
 		networkNamespace: requiredTrimmed(authority.networkNamespace, "networkNamespace"),
+		...(authority.turnConversationRef
+			? { turnConversationRef: normalizeTurnConversationRef(authority.turnConversationRef) }
+			: {}),
 	};
 }
 
@@ -299,6 +303,14 @@ function requiredTrimmed(value: string, field: string): string {
 		throw new Error(`MCP authority ${field} is required`);
 	}
 	return trimmed;
+}
+
+function normalizeTurnConversationRef(value: string): string {
+	const ref = value.trim();
+	if (!isRelayConversationTurnRef(ref)) {
+		throw new Error("MCP authority turnConversationRef must be a relay turn ref");
+	}
+	return ref;
 }
 
 function normalizeNowMs(value: number): number {
