@@ -80,6 +80,7 @@ import {
 import { startTelclaudeLiveMcpAdminServer } from "../../src/hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../../src/hermes/mcp/live-probe-tokens.js";
 import { runTelclaudeMcpSideEffectLedgerProbe } from "../../src/hermes/mcp/side-effect-ledger-probe.js";
+import { DEFAULT_MODEL_RELAY_PROFILE_DIR } from "../../src/hermes/model-relay.js";
 import { signNetworkProbeEvidenceAttestation } from "../../src/hermes/network-probe-attestation.js";
 import {
 	noForkProofChecksSha256,
@@ -1036,7 +1037,13 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 			{
 				name: "profile.relayCredentialReference",
 				status: "pass",
-				detail: "generated profile references the relay OpenAI Codex proxy credential store",
+				detail:
+					"runtime Hermes profile references peer-bound relay OpenAI Codex credential custody",
+			},
+			{
+				name: "profile.runtimeCustody",
+				status: "pass",
+				detail: "runtime credential custody files are root-owned and read-only",
 			},
 			{
 				name: "profile.noRawModelCredentials",
@@ -1080,10 +1087,11 @@ function passingModelRelayEvidence(overrides: Record<string, unknown> = {}) {
 		observation: {
 			relayUrl: "http://telclaude:8790/v1/models",
 			directModelUrl: "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-			profileDir: "/home/hermes/.hermes",
+			profileDir: DEFAULT_MODEL_RELAY_PROFILE_DIR,
 			scannedProfileFiles: [
-				"/home/hermes/.hermes/config.yaml",
-				"/home/hermes/.hermes/secret-manifest.json",
+				`${DEFAULT_MODEL_RELAY_PROFILE_DIR}/auth.json`,
+				`${DEFAULT_MODEL_RELAY_PROFILE_DIR}/config.yaml`,
+				`${DEFAULT_MODEL_RELAY_PROFILE_DIR}/secret-manifest.json`,
 			],
 		},
 		...overrides,
@@ -1389,7 +1397,7 @@ function cliHeadlessProbe(evidencePath: string, status: "pass" | "fail" | "skip"
 	return {
 		surface_id: "execution.cli_headless",
 		hermes_pin: hermesPin,
-		documented_seam: "Hermes top-level -z/--oneshot mode",
+		documented_seam: "Hermes chat -q headless mode",
 		probe_command: "pnpm dev hermes probe execution.cli_headless --allow-run",
 		expected_result: "Wrapper launches pinned Hermes and receives a final response",
 		negative_probe: "Credential-shaped launch material is denied before spawn",
@@ -2465,7 +2473,7 @@ type CliHeadlessEvidenceFixture = Record<string, unknown> & {
 function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadlessEvidenceFixture {
 	const invocation = {
 		command: "/usr/local/bin/hermes",
-		args: ["-z", "telclaude probe ok"],
+		args: ["chat", "-q", "telclaude probe ok"],
 		cwd: "/repo",
 		envKeys: [
 			"HERMES_HOME",
@@ -2589,7 +2597,7 @@ function cliHeadlessReadinessFailureEvidence(): Record<string, unknown> {
 		summary: "Hermes CLI probe launch failed readiness checks",
 		invocation: {
 			command: "scripts/hermes-contained-cli-probe.sh",
-			args: ["-z", "Reply with exactly HERMES_OK_GPT55_RELAY"],
+			args: ["chat", "-q", "Reply with exactly HERMES_OK_GPT55_RELAY"],
 			cwd: "/repo",
 			envKeys: [
 				"HERMES_CODEX_BASE_URL",
@@ -3385,6 +3393,9 @@ describe("Hermes wrapper foundation", () => {
 			);
 			expect(matrix.probes.every((probe) => probe.hermes_pin.version === "0.15.1")).toBe(true);
 			expect(matrix.probes.every((probe) => probe.status === "fail")).toBe(true);
+			expect(matrix.probes.find((probe) => probe.surface_id === "model.relay")).toMatchObject({
+				probe_command: expect.stringContaining(`--profile-dir ${DEFAULT_MODEL_RELAY_PROFILE_DIR}`),
+			});
 		});
 	});
 
@@ -5335,6 +5346,8 @@ describe("Hermes wrapper foundation", () => {
 	}, 20_000);
 
 	it("does not let model-relay pass from matrix and lockfile status alone", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-matrix-only-"));
+		const evidencePath = path.join(tempDir, "model-relay.json");
 		const modelRelayProbe = {
 			surface_id: "model.relay",
 			hermes_pin: hermesPin,
@@ -5342,7 +5355,7 @@ describe("Hermes wrapper foundation", () => {
 			probe_command: "pnpm dev hermes probe model.relay --allow-run",
 			expected_result: "Model traffic reaches only the Telclaude relay",
 			negative_probe: "Direct model provider egress and writable profile overrides fail",
-			evidence_path: "artifacts/hermes/probes/model-relay.json",
+			evidence_path: evidencePath,
 			lockfile_key: "featureProbes.model.relay",
 			security_scope: "model-relay" as const,
 			approval_equivalent: false,
@@ -5373,7 +5386,7 @@ describe("Hermes wrapper foundation", () => {
 						{
 							surface_id: "model.relay",
 							status: "pass",
-							evidence_path: "artifacts/hermes/probes/model-relay.json",
+							evidence_path: evidencePath,
 						},
 					],
 				},
@@ -6380,7 +6393,7 @@ describe("Hermes wrapper foundation", () => {
 			evidence: cliHeadlessEvidence({
 				invocation: {
 					command: "/usr/local/bin/hermes",
-					args: ["-z", "telclaude probe ok"],
+					args: ["chat", "-q", "telclaude probe ok"],
 					cwd: "/repo",
 					envKeys: ["HERMES_HOME", "OPENAI_API_KEY"],
 				},
@@ -6444,7 +6457,7 @@ describe("Hermes wrapper foundation", () => {
 			evidence: cliHeadlessEvidence({
 				invocation: {
 					command: "/usr/local/bin/hermes",
-					args: ["-z", "telclaude probe ok"],
+					args: ["chat", "-q", "telclaude probe ok"],
 					cwd: "/repo",
 					envKeys: ["HERMES_HOME", "NO_COLOR"],
 				},
@@ -6456,7 +6469,7 @@ describe("Hermes wrapper foundation", () => {
 			evidence: cliHeadlessEvidence({
 				invocation: {
 					command: "/usr/local/bin/hermes",
-					args: ["-z", "telclaude probe ok"],
+					args: ["chat", "-q", "telclaude probe ok"],
 					cwd: "/repo",
 					envKeys: [
 						"HERMES_CODEX_BASE_URL",
@@ -9706,10 +9719,19 @@ echo should-not-run
 			],
 			cliRelayEnv(),
 		);
-		const report = JSON.parse(result.stdout) as { status: string; ran: boolean };
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			ran: boolean;
+			invocation: { args: string[] };
+		};
 
 		expect(result.exitCode).toBe(2);
 		expect(report).toMatchObject({ status: "pending", ran: false });
+		expect(report.invocation.args).toEqual([
+			"chat",
+			"-q",
+			"Reply with exactly TELCLAUDE_HERMES_CLI_OK",
+		]);
 		expect(fs.existsSync(markerPath)).toBe(false);
 		expect(fs.existsSync(evidencePath)).toBe(false);
 	});
@@ -9868,7 +9890,15 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			}),
 		).toMatchObject({ ok: false, reason: "peer address mismatch" });
 		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
-		expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
+		const dockerCalls = fs.readFileSync(callsPath, "utf8");
+		expect(dockerCalls).not.toContain("relay-scoped-proxy-token");
+		expect(dockerCalls).toContain("config.yaml");
+		expect(dockerCalls).toContain("auth.json");
+		expect(dockerCalls).toContain("secret-manifest.json");
+		expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
+		expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
+		expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
+		expect(dockerCalls).toContain("os.chmod(path, 0o440)");
 		expect(readJson(evidencePath)).toMatchObject({
 			status: "fail",
 			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
@@ -10205,11 +10235,13 @@ echo should-not-run
 	it("writes a passing cli-headless artifact only with runtime and relay proof", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
+		const argvPath = path.join(tempDir, "argv.txt");
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
 		const hermesBin = writeExecutable(
 			tempDir,
 			`#!/bin/sh
+printf '%s\\n' "$@" > "${argvPath}"
 observed_at=$(node -e 'process.stdout.write(new Date().toISOString())')
 cat > "$HERMES_HOME/runtime-evidence.json" <<'JSON'
 {
@@ -10276,6 +10308,7 @@ const signature = crypto.sign(null, signaturePayload, {
 }).toString("base64");
 fs.writeFileSync(outputPath, JSON.stringify({ ...proof, signature: { ...unsigned, signature } }, null, 2) + "\\n");
 NODE
+node -e 'process.stdout.write("x".repeat(450) + "\\n")'
 echo "TELCLAUDE_HERMES_CLI_OK"
 exit 0
 `,
@@ -10301,11 +10334,28 @@ exit 0
 				cliRelayEnv(),
 			);
 			const report = JSON.parse(result.stdout) as { status: string; exitCode: number };
-			const artifact = readJson(evidencePath) as { status: string; exitCode: number };
+			const artifact = readJson(evidencePath) as {
+				status: string;
+				exitCode: number;
+				stdoutPreview: string;
+				provenance: { stdoutSha256: string };
+			};
 
 			expect(result.exitCode).toBe(0);
 			expect(report).toMatchObject({ status: "pass", exitCode: 0 });
 			expect(artifact).toMatchObject({ status: "pass", exitCode: 0 });
+			expect(artifact.stdoutPreview.length).toBeGreaterThan(400);
+			expect(artifact.stdoutPreview).toContain("TELCLAUDE_HERMES_CLI_OK");
+			expect(artifact.stdoutPreview.endsWith("...")).toBe(false);
+			expect(artifact.provenance.stdoutSha256).toBe(computeTextDigest(artifact.stdoutPreview));
+			expect(artifact).toMatchObject({
+				invocation: { args: ["chat", "-q", "Reply with exactly TELCLAUDE_HERMES_CLI_OK"] },
+			});
+			expect(fs.readFileSync(argvPath, "utf8").trim().split("\n")).toEqual([
+				"chat",
+				"-q",
+				"Reply with exactly TELCLAUDE_HERMES_CLI_OK",
+			]);
 		} finally {
 			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalRelayPublicKey);
 		}

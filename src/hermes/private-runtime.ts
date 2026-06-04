@@ -420,7 +420,7 @@ export function buildHermesCliProbeInvocation(input: {
 	const relayModel = hermesRelayModelConfig(sourceEnv);
 	return {
 		command: input.hermesBin,
-		args: ["-z", input.prompt ?? `Reply with exactly ${DEFAULT_HERMES_CLI_PROBE_TOKEN}`],
+		args: ["chat", "-q", input.prompt ?? `Reply with exactly ${DEFAULT_HERMES_CLI_PROBE_TOKEN}`],
 		cwd: input.cwd,
 		env: {
 			HERMES_HOME: input.hermesHome,
@@ -524,8 +524,8 @@ export async function runHermesCliHeadlessProbe(input: {
 		invocation,
 		modelProvider,
 		exitCode: result.exitCode,
-		stdoutPreview: preview(stdout),
-		stderrPreview: preview(stderr),
+		stdoutPreview: stdout,
+		stderrPreview: stderr,
 		...(result.runtime ? { runtime: result.runtime } : {}),
 		...(result.relayProof ? { relayProof: result.relayProof } : {}),
 		provenance: {
@@ -1405,6 +1405,10 @@ function prepareHermesLaunchAuthStore(
 	if (!isRelayOpenAiCodexProxyUrl(relayBaseUrl)) {
 		throw new Error("HERMES_CODEX_BASE_URL must point at the relay OpenAI Codex proxy");
 	}
+	const model = launchEnv[HERMES_INFERENCE_MODEL_ENV]?.trim();
+	if (!model) {
+		throw new Error("HERMES_INFERENCE_MODEL is required for relay OpenAI Codex auth setup");
+	}
 	const peerBoundRelayToken = mintOpenAiCodexPeerBoundProxyToken({
 		secret: relayToken,
 		peerAddress: expectedHermesContainedIp(),
@@ -1412,7 +1416,7 @@ function prepareHermesLaunchAuthStore(
 		tokenScope: "run",
 		ttlMs: OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
 	});
-	writeHermesOpenAiCodexRelayAuthStore(hermesHome, peerBoundRelayToken, relayBaseUrl);
+	writeHermesOpenAiCodexRelayAuthStore(hermesHome, peerBoundRelayToken, relayBaseUrl, model);
 	delete launchEnv[HERMES_RELAY_OPENAI_CODEX_AUTH_ENV];
 }
 
@@ -1453,18 +1457,48 @@ function writeHermesOpenAiCodexRelayAuthStore(
 	hermesHome: string,
 	relayToken: string,
 	relayBaseUrl: string,
+	model: string,
 ): void {
 	fs.mkdirSync(hermesHome, { recursive: true, mode: 0o700 });
+	const configPath = path.join(hermesHome, "config.yaml");
 	const authPath = path.join(hermesHome, "auth.json");
+	const manifestPath = path.join(hermesHome, "secret-manifest.json");
 	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(relayToken, relayBaseUrl);
+	fs.writeFileSync(
+		configPath,
+		[
+			"model:",
+			"  provider: openai-codex",
+			`  default: ${model}`,
+			"  api_mode: codex_responses",
+			"  openai_runtime: auto",
+			"",
+		].join("\n"),
+		{ encoding: "utf8", mode: 0o600 },
+	);
 	const tmpPath = `${authPath}.tmp.${process.pid}`;
 	fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, {
 		encoding: "utf8",
 		mode: 0o600,
 	});
 	fs.renameSync(tmpPath, authPath);
+	fs.writeFileSync(
+		manifestPath,
+		`${JSON.stringify(
+			{
+				schemaVersion: 1,
+				rawCredentialPolicy: "relay-owned-only",
+				relayTokenBinding: "run-peer-bound",
+			},
+			null,
+			2,
+		)}\n`,
+		{ encoding: "utf8", mode: 0o600 },
+	);
 	try {
+		fs.chmodSync(configPath, 0o600);
 		fs.chmodSync(authPath, 0o600);
+		fs.chmodSync(manifestPath, 0o600);
 	} catch {
 		// Best effort on platforms without POSIX modes.
 	}
@@ -1494,10 +1528,6 @@ function passReadiness(name: string, detail: string): HermesCliHeadlessReadiness
 
 function failReadiness(name: string, detail: string): HermesCliHeadlessReadinessGate {
 	return { name, status: "fail", detail };
-}
-
-function preview(value: string, maxLength = 400): string {
-	return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
 }
 
 function isTruncatedProbePreview(value: string): boolean {

@@ -128,6 +128,12 @@ const HERMES_CLI_HEADLESS_PROVENANCE_SOURCE = "live-allow-run";
 const HERMES_CLI_HEADLESS_RUNTIME_PROVENANCE_SOURCE = "docker-inspect-container-dns-and-relay-peer";
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SCHEMA_VERSION = OPENAI_CODEX_RELAY_PROOF_SCHEMA_VERSION;
 const HERMES_CLI_HEADLESS_RELAY_PROOF_SOURCE = OPENAI_CODEX_RELAY_PROOF_SOURCE;
+const REQUIRED_MODEL_RELAY_PROFILE_DIR = "/home/hermes/.hermes";
+const REQUIRED_MODEL_RELAY_SCANNED_PROFILE_FILES = [
+	`${REQUIRED_MODEL_RELAY_PROFILE_DIR}/auth.json`,
+	`${REQUIRED_MODEL_RELAY_PROFILE_DIR}/config.yaml`,
+	`${REQUIRED_MODEL_RELAY_PROFILE_DIR}/secret-manifest.json`,
+] as const;
 const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
 export const PROFILE_GENERATION_PROOF_SCHEMA_VERSION =
 	"telclaude.hermes.profile-generation-proof.v1";
@@ -355,6 +361,7 @@ const REQUIRED_MODEL_RELAY_CONTAINED_GATES = [
 	"relay.reachable",
 	"directModel.denied",
 	"profile.relayCredentialReference",
+	"profile.runtimeCustody",
 	"profile.noRawModelCredentials",
 	"profile.noDirectModelHosts",
 	"profile.scanComplete",
@@ -6973,9 +6980,23 @@ function modelRelayProbeEvidenceFailures(
 	);
 	if (!evidence.observation.profileDir) {
 		failures.push("observation.profileDir is missing");
+	} else if (
+		normalizeHermesProfilePath(evidence.observation.profileDir) !== REQUIRED_MODEL_RELAY_PROFILE_DIR
+	) {
+		failures.push(
+			`observation.profileDir is ${evidence.observation.profileDir}; expected ${REQUIRED_MODEL_RELAY_PROFILE_DIR}`,
+		);
 	}
-	if ((evidence.observation.scannedProfileFiles ?? []).length === 0) {
+	const scannedProfileFiles = (evidence.observation.scannedProfileFiles ?? []).map(
+		normalizeHermesProfilePath,
+	);
+	if (scannedProfileFiles.length === 0) {
 		failures.push("observation.scannedProfileFiles is empty");
+	}
+	for (const requiredPath of REQUIRED_MODEL_RELAY_SCANNED_PROFILE_FILES) {
+		if (!scannedProfileFiles.includes(requiredPath)) {
+			failures.push(`observation.scannedProfileFiles is missing ${requiredPath}`);
+		}
 	}
 
 	const gateByName = new Map(evidence.gates.map((gate) => [gate.name, gate]));
@@ -6988,6 +7009,11 @@ function modelRelayProbeEvidenceFailures(
 		}
 	}
 	return failures;
+}
+
+function normalizeHermesProfilePath(value: string): string {
+	const normalized = value.replace(/\\/g, "/").replace(/\/+$/, "");
+	return normalized.startsWith("./") ? normalized.slice(2) : normalized;
 }
 
 function modelRelayModelProviderFailures(

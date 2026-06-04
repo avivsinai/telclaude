@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { verifyOpenAiCodexPeerBoundProxyToken } from "../relay/openai-codex-proxy.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	type HermesArtifactWriteOptions,
@@ -12,12 +13,14 @@ import { DEFAULT_MODEL_PROVIDER_PROBE_URL } from "./network-probes.js";
 
 export const HERMES_MODEL_RELAY_SCHEMA_VERSION = "telclaude.hermes.model-relay.v1";
 export const DEFAULT_MODEL_RELAY_EVIDENCE_PATH = "artifacts/hermes/probes/model-relay.json";
+export const DEFAULT_MODEL_RELAY_PROFILE_DIR = "/home/hermes/.hermes";
 export const MODEL_RELAY_OBSERVED_PEER_HEADER = "x-telclaude-model-relay-observed-peer-address";
 export const DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME = "tc-hermes-contained";
 export const DEFAULT_MODEL_RELAY_POSTURE = "agent-iptables" as const;
 const TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL = "http://telclaude:8790/v1/openai-codex-proxy";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 const HERMES_CODEX_BASE_URL_ENV = "HERMES_CODEX_BASE_URL";
+const OPENAI_CODEX_PROXY_TOKEN_ENV = "TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN";
 
 type ModelRelayStatus = "pass" | "fail" | "pending";
 export type ModelRelayPosture = (typeof NETWORK_PROBE_POSTURES)[number];
@@ -99,20 +102,21 @@ const POSITIVE_DENIAL_ERROR_CODES = new Set([
 	"EPERM",
 ]);
 const MODEL_CREDENTIAL_PATTERNS = [
-	/\b(ANTHROPIC|OPENAI|GEMINI|GOOGLE|OPENROUTER|XAI)_API_KEY\s*[:=]/i,
-	/\b(?:CODEX_HOME|HERMES_CODEX_BASE_URL)\s*[:=]\s*["']?https:\/\/chatgpt\.com/i,
-	/\b(BEDROCK|AWS)_SECRET_ACCESS_KEY\s*[:=]/i,
-	/\b(model|llm)[_-]?(api[_-]?key|token|secret)\s*[:=]/i,
-	/\b(?:openai|anthropic|google|gemini|groq|mistral|model|llm)[_-]?api[_-]?key["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/i,
-	/\bapi[_-]?key["']?\s*[:=]\s*["']?sk-[A-Za-z0-9._-]{12,}/i,
+	/\b(ANTHROPIC|OPENAI|GEMINI|GOOGLE|OPENROUTER|XAI)_API_KEY[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{8,}/i,
+	/\b(?:CODEX_HOME|HERMES_CODEX_BASE_URL)[ \t]*[:=][ \t]*["']?https:\/\/chatgpt\.com/i,
+	/\b(BEDROCK|AWS)_SECRET_ACCESS_KEY[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\b(model|llm)[_-]?(api[_-]?key|token|secret)[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\b(?:openai|anthropic|google|gemini|groq|mistral|model|llm)[_-]?api[_-]?key["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\bapi[_-]?key["']?[ \t]*[:=][ \t]*["']?sk-[A-Za-z0-9._-]{12,}/i,
 	/\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b/i,
-	/\b(?:access|refresh|id)[_-]?token["']?\s*[:=]\s*["']?[A-Za-z0-9._~+/=-]{12,}/i,
-	/\b(?:auth|bearer|session|cookie|cookies)[_-]?(?:token|secret|state)?["']?\s*[:=]\s*["']?(?:Bearer\s+)?[A-Za-z0-9._~+/=-]{12,}/i,
-	/\bAuthorization\s*[:=]\s*["']?Bearer\s+[A-Za-z0-9._~+/=-]{12,}/i,
+	/\b(?:access|refresh|id)[_-]?token["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{20,}/i,
+	/\b(?:auth|bearer)[_-]?(?:token|secret|state)?["']?[ \t]*[:=][ \t]*["']?Bearer[ \t]+[A-Za-z0-9._~+/=-]{12,}/i,
+	/\b(?:session|cookie|cookies)[_-](?:token|secret|state)["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9._~+/=-]{12,}/i,
+	/\bCookie["']?[ \t]*[:=][ \t]*["']?[^"'\n=]+=[A-Za-z0-9._~+/=-]{16,}/i,
+	/\bAuthorization[ \t]*[:=][ \t]*["']?Bearer[ \t]+[A-Za-z0-9._~+/=-]{12,}/i,
 	/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
 ];
 const MODEL_CREDENTIAL_FILE_PATTERNS = [
-	/(?:^|\/)auth\.json$/i,
 	/(?:^|\/)\.codex(?:\/|$)/i,
 	/(?:^|\/)(?:codex|chatgpt|openai)[_-]?(?:auth|oauth|tokens?)(?:\.json)?$/i,
 	/(?:^|\/)(?:cookies?|session)(?:\.json|\.sqlite|\.db|\.txt)?$/i,
@@ -135,17 +139,26 @@ const DIRECT_MODEL_PROVIDER_HOSTS = new Set([
 	"openrouter.ai",
 	"api.x.ai",
 ]);
-const RELAY_PROVIDER_PATTERN = /\bprovider:\s*openai-codex-relay\b/i;
-const RELAY_CREDENTIAL_SOURCE_PATTERN = /\bcredentialSource:\s*telclaude-relay-auth-store\b/i;
 const RELAY_RAW_CREDENTIAL_POLICY_PATTERN =
 	/(?:\brawCredentialPolicy:\s*relay-owned-only\b|"rawCredentialPolicy"\s*:\s*"relay-owned-only")/i;
 const RELAY_TOKEN_BINDING_PATTERN =
 	/(?:\brelayTokenBinding:\s*run-peer-bound\b|"relayTokenBinding"\s*:\s*"run-peer-bound")/i;
 const MCP_RELAY_TOKEN_FILE_REFERENCE_PATTERN = /"auth"\s*:\s*"relay-token-file"/g;
+const PEER_BOUND_OPENAI_CODEX_RELAY_TOKEN_PREFIX = "tc-openai-codex-relay-v1";
+const NONREFRESHABLE_RELAY_TOKEN_PLACEHOLDER = "telclaude-relay-token-is-not-refreshable";
 const PROFILE_CONFIG_PATH = "config.yaml";
+const PROFILE_AUTH_STORE_PATH = "auth.json";
 const PROFILE_SECRET_MANIFEST_PATH = "secret-manifest.json";
+const RUNTIME_CUSTODY_PROFILE_FILES = [
+	PROFILE_CONFIG_PATH,
+	PROFILE_AUTH_STORE_PATH,
+	PROFILE_SECRET_MANIFEST_PATH,
+] as const;
 const MAX_PROFILE_FILES = 5_000;
 const MAX_PROFILE_FILE_BYTES = 1_000_000;
+const RUNTIME_CODEX_PROVIDER_PATTERN = /^\s*provider:\s*openai-codex\s*$/im;
+const RUNTIME_CODEX_API_MODE_PATTERN = /^\s*api_mode:\s*codex_responses\s*$/im;
+const RUNTIME_CODEX_RUNTIME_PATTERN = /^\s*openai_runtime:\s*auto\s*$/im;
 
 export async function runHermesModelRelayProbe(
 	options: HermesModelRelayProbeOptions,
@@ -187,7 +200,7 @@ export async function runHermesModelRelayProbe(
 	});
 	gates.push(originGate(origin));
 	gates.push(await directModelDeniedGate(directModelUrl, options.timeoutMs, options.fetchImpl));
-	const profileResult = scanProfileDir(profileDir);
+	const profileResult = scanProfileDir(profileDir, options.expectedPeerAddress);
 	gates.push(...profileResult.gates);
 
 	const status = gates.every((gate) => gate.status === "pass") ? "pass" : "fail";
@@ -361,7 +374,10 @@ async function directModelDeniedGate(
 	);
 }
 
-function scanProfileDir(profileDir: string | undefined): {
+function scanProfileDir(
+	profileDir: string | undefined,
+	expectedPeerAddress: string | undefined,
+): {
 	gates: ModelRelayGate[];
 	scannedFiles: string[];
 } {
@@ -376,6 +392,7 @@ function scanProfileDir(profileDir: string | undefined): {
 					"profile.noRawModelCredentials",
 					"profile directory is required to prove model credential absence",
 				),
+				fail("profile.runtimeCustody", "profile directory is required to prove runtime custody"),
 				fail("profile.noDirectModelHosts", "profile directory is required to prove relay routing"),
 				fail("profile.scanComplete", "profile directory is required for complete scan proof"),
 			],
@@ -394,6 +411,7 @@ function scanProfileDir(profileDir: string | undefined): {
 					"profile.noRawModelCredentials",
 					`profile directory missing: ${redactSecrets(resolved)}`,
 				),
+				fail("profile.runtimeCustody", `profile directory missing: ${redactSecrets(resolved)}`),
 				fail("profile.noDirectModelHosts", `profile directory missing: ${redactSecrets(resolved)}`),
 				fail("profile.scanComplete", `profile directory missing: ${redactSecrets(resolved)}`),
 			],
@@ -401,6 +419,7 @@ function scanProfileDir(profileDir: string | undefined): {
 		};
 	}
 
+	const custodyGate = runtimeProfileCustodyGate(resolved);
 	const findings: string[] = [];
 	const directHostFindings: string[] = [];
 	const scannedFiles: string[] = [];
@@ -417,12 +436,23 @@ function scanProfileDir(profileDir: string | undefined): {
 		}
 		const content = fs.readFileSync(filePath, "utf8");
 		profileContents.set(toPortablePath(relativePath), content);
-		const credentialScanContent = normalizeAllowedCredentialReferences(relativePath, content);
-		for (const pattern of MODEL_CREDENTIAL_PATTERNS) {
-			if (pattern.test(credentialScanContent)) {
-				findings.push(relativePath);
-				break;
+		const credentialScanContent = normalizeAllowedCredentialReferences(
+			relativePath,
+			content,
+			expectedPeerAddress,
+		);
+		if (credentialScanContent === undefined) {
+			findings.push(relativePath);
+			for (const pattern of DIRECT_MODEL_HOST_PATTERNS) {
+				if (pattern.test(content)) {
+					directHostFindings.push(relativePath);
+					break;
+				}
 			}
+			continue;
+		}
+		if (containsRawModelCredential(credentialScanContent)) {
+			findings.push(relativePath);
 		}
 		for (const pattern of DIRECT_MODEL_HOST_PATTERNS) {
 			if (pattern.test(content)) {
@@ -434,7 +464,8 @@ function scanProfileDir(profileDir: string | undefined): {
 
 	return {
 		gates: [
-			relayCredentialReferenceGate(profileContents),
+			relayCredentialReferenceGate(profileContents, expectedPeerAddress),
+			custodyGate,
 			findings.length === 0
 				? pass(
 						"profile.noRawModelCredentials",
@@ -465,29 +496,70 @@ function scanProfileDir(profileDir: string | undefined): {
 	};
 }
 
-function normalizeAllowedCredentialReferences(relativePath: string, content: string): string {
-	if (toPortablePath(relativePath) !== "mcp.json") return content;
+function normalizeAllowedCredentialReferences(
+	relativePath: string,
+	content: string,
+	expectedPeerAddress: string | undefined,
+): string | undefined {
+	const portablePath = toPortablePath(relativePath);
+	if (portablePath === PROFILE_AUTH_STORE_PATH) {
+		const authStore = validateRelayAuthStore(content, expectedPeerAddress);
+		return authStore.ok ? authStore.normalizedContent : undefined;
+	}
+	if (portablePath !== "mcp.json") return content;
 	return content.replace(
 		MCP_RELAY_TOKEN_FILE_REFERENCE_PATTERN,
 		'"auth":"<relay-token-file-reference>"',
 	);
 }
 
+function containsRawModelCredential(content: string): boolean {
+	for (const line of content.replace(/\r\n?/g, "\n").split("\n")) {
+		if (lineContainsRawModelCredential(line)) return true;
+	}
+	return false;
+}
+
+function lineContainsRawModelCredential(line: string): boolean {
+	for (const pattern of MODEL_CREDENTIAL_PATTERNS) {
+		const match = pattern.exec(line);
+		if (match && !isPlaceholderCredentialMatch(match[0])) return true;
+	}
+	return false;
+}
+
+function isPlaceholderCredentialMatch(value: string): boolean {
+	const normalized = value.toLowerCase();
+	return (
+		normalized.includes("...") ||
+		/\b(?:empty|null|placeholder|example|dummy|fake|redacted)\b/.test(normalized) ||
+		/(?:your|some)[_-]?(?:api[_-]?key|token|secret)/i.test(value) ||
+		/[x_=-]{12,}/i.test(value)
+	);
+}
+
 function relayCredentialReferenceGate(
 	profileContents: ReadonlyMap<string, string>,
+	expectedPeerAddress: string | undefined,
 ): ModelRelayGate {
 	const config = profileContents.get(PROFILE_CONFIG_PATH) ?? "";
+	const authStore = profileContents.get(PROFILE_AUTH_STORE_PATH) ?? "";
 	const secretManifest = profileContents.get(PROFILE_SECRET_MANIFEST_PATH) ?? "";
 	const missing: string[] = [];
 	if (!profileContents.has(PROFILE_CONFIG_PATH)) missing.push(PROFILE_CONFIG_PATH);
+	if (!profileContents.has(PROFILE_AUTH_STORE_PATH)) missing.push(PROFILE_AUTH_STORE_PATH);
 	if (!profileContents.has(PROFILE_SECRET_MANIFEST_PATH))
 		missing.push(PROFILE_SECRET_MANIFEST_PATH);
-	if (!RELAY_PROVIDER_PATTERN.test(config)) missing.push("config.yaml openai-codex-relay provider");
-	if (!config.includes(TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL)) {
-		missing.push("config.yaml Telclaude OpenAI Codex relay proxy baseUrl");
-	}
-	if (!RELAY_CREDENTIAL_SOURCE_PATTERN.test(config)) {
-		missing.push("config.yaml telclaude-relay-auth-store credentialSource");
+	if (!RUNTIME_CODEX_PROVIDER_PATTERN.test(config))
+		missing.push("config.yaml openai-codex provider");
+	if (!RUNTIME_CODEX_API_MODE_PATTERN.test(config))
+		missing.push("config.yaml codex_responses api_mode");
+	if (!RUNTIME_CODEX_RUNTIME_PATTERN.test(config)) missing.push("config.yaml auto OpenAI runtime");
+	const authValidation = authStore
+		? validateRelayAuthStore(authStore, expectedPeerAddress)
+		: undefined;
+	if (authValidation && !authValidation.ok) {
+		missing.push(...authValidation.missing.map((item) => `auth.json ${item}`));
 	}
 	if (!RELAY_RAW_CREDENTIAL_POLICY_PATTERN.test(secretManifest)) {
 		missing.push("secret-manifest.json relay-owned-only rawCredentialPolicy");
@@ -498,12 +570,278 @@ function relayCredentialReferenceGate(
 	return missing.length === 0
 		? pass(
 				"profile.relayCredentialReference",
-				"generated profile references peer-bound relay OpenAI Codex credential custody",
+				"runtime Hermes profile references peer-bound relay OpenAI Codex credential custody",
 			)
 		: fail(
 				"profile.relayCredentialReference",
-				`generated profile is missing ${missing.join(", ")}`,
+				`runtime Hermes profile is missing ${missing.join(", ")}`,
 			);
+}
+
+type RelayAuthStoreValidation =
+	| { ok: true; normalizedContent: string }
+	| { ok: false; missing: string[] };
+
+function validateRelayAuthStore(
+	content: string,
+	expectedPeerAddress: string | undefined,
+): RelayAuthStoreValidation {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(content);
+	} catch {
+		return { ok: false, missing: ["parseable JSON"] };
+	}
+	if (!isRecord(parsed)) return { ok: false, missing: ["object root"] };
+
+	const providers = getRecord(parsed, "providers");
+	const credentialPoolRoot = getRecord(parsed, "credential_pool");
+	const provider = getRecord(parsed, "providers", "openai-codex");
+	const tokens = getRecord(provider, "tokens");
+	const credentialPool = getArray(parsed, "credential_pool", "openai-codex");
+	const credentialEntry = credentialPool.find((entry) => isRecord(entry)) as
+		| Record<string, unknown>
+		| undefined;
+	const providerAccessToken = getString(tokens, "access_token");
+	const poolAccessToken = getString(credentialEntry, "access_token");
+	const missing: string[] = [];
+	if (parsed.version !== 1) {
+		missing.push("version 1");
+	}
+	if (getString(parsed, "active_provider") !== "openai-codex") {
+		missing.push("active_provider openai-codex");
+	}
+	if (!hasOnlyKeys(parsed, ["version", "active_provider", "providers", "credential_pool"])) {
+		missing.push("root fields exactly version/active_provider/providers/credential_pool");
+	}
+	if (!providers || !hasOnlyKeys(providers, ["openai-codex"])) {
+		missing.push("providers only openai-codex");
+	}
+	if (getString(provider, "auth_mode") !== "telclaude-relay") {
+		missing.push("providers.openai-codex auth_mode telclaude-relay");
+	}
+	if (provider && !hasOnlyKeys(provider, ["auth_mode", "last_refresh", "tokens"])) {
+		missing.push("providers.openai-codex exact fields");
+	}
+	if (tokens && !hasOnlyKeys(tokens, ["access_token", "refresh_token"])) {
+		missing.push("providers.openai-codex tokens exact fields");
+	}
+	const providerAccessTokenFailure = peerBoundOpenAiCodexRelayTokenFailure(
+		providerAccessToken,
+		expectedPeerAddress,
+	);
+	if (providerAccessTokenFailure) {
+		missing.push(`providers.openai-codex peer-bound access_token (${providerAccessTokenFailure})`);
+	}
+	if (getString(tokens, "refresh_token") !== NONREFRESHABLE_RELAY_TOKEN_PLACEHOLDER) {
+		missing.push("providers.openai-codex non-refreshable refresh_token placeholder");
+	}
+	if (!credentialPoolRoot || !hasOnlyKeys(credentialPoolRoot, ["openai-codex"])) {
+		missing.push("credential_pool only openai-codex");
+	}
+	if (credentialPool.length !== 1) {
+		missing.push("credential_pool.openai-codex exactly one entry");
+	}
+	if (!credentialEntry) {
+		missing.push("credential_pool.openai-codex entry");
+	} else {
+		if (
+			!hasOnlyKeys(credentialEntry, [
+				"id",
+				"label",
+				"auth_type",
+				"priority",
+				"source",
+				"access_token",
+				"base_url",
+			])
+		) {
+			missing.push("credential_pool.openai-codex entry exact fields");
+		}
+		if (getString(credentialEntry, "id") !== "telclaude-relay") {
+			missing.push("credential_pool.openai-codex id telclaude-relay");
+		}
+		if (getString(credentialEntry, "source") !== "manual:telclaude-relay") {
+			missing.push("credential_pool.openai-codex source manual:telclaude-relay");
+		}
+		if (getString(credentialEntry, "auth_type") !== "api_key") {
+			missing.push("credential_pool.openai-codex auth_type api_key");
+		}
+		if (getString(credentialEntry, "base_url") !== TELCLAUDE_OPENAI_CODEX_RELAY_PROXY_URL) {
+			missing.push("credential_pool.openai-codex Telclaude relay base_url");
+		}
+		const poolAccessTokenFailure = peerBoundOpenAiCodexRelayTokenFailure(
+			poolAccessToken,
+			expectedPeerAddress,
+		);
+		if (poolAccessTokenFailure) {
+			missing.push(
+				`credential_pool.openai-codex peer-bound access_token (${poolAccessTokenFailure})`,
+			);
+		}
+		if (providerAccessToken && poolAccessToken && providerAccessToken !== poolAccessToken) {
+			missing.push("matching provider and credential_pool access_token");
+		}
+	}
+	if (missing.length > 0) return { ok: false, missing };
+
+	const normalizedAccessToken = providerAccessToken as string;
+	return {
+		ok: true,
+		normalizedContent: content
+			.replaceAll(normalizedAccessToken, "<peer-bound-openai-codex-relay-token>")
+			.replaceAll(
+				NONREFRESHABLE_RELAY_TOKEN_PLACEHOLDER,
+				"<non-refreshable-relay-token-placeholder>",
+			),
+	};
+}
+
+function peerBoundOpenAiCodexRelayTokenFailure(
+	value: string | undefined,
+	expectedPeerAddress: string | undefined,
+): string | null {
+	if (!value) return "missing";
+	const normalizedExpectedPeerAddress = normalizePeerAddress(expectedPeerAddress);
+	if (!normalizedExpectedPeerAddress) return "expected peer address is missing";
+	const [prefix, encodedPayload, signature, extra] = value.split(".");
+	if (
+		prefix !== PEER_BOUND_OPENAI_CODEX_RELAY_TOKEN_PREFIX ||
+		!encodedPayload ||
+		!signature ||
+		extra !== undefined ||
+		!/^[A-Za-z0-9_-]+$/.test(encodedPayload) ||
+		!/^[A-Za-z0-9_-]{32,}$/.test(signature)
+	) {
+		return "token is not peer-bound";
+	}
+	const verifierSecret = process.env[OPENAI_CODEX_PROXY_TOKEN_ENV]?.trim();
+	if (!verifierSecret) return `verifier secret ${OPENAI_CODEX_PROXY_TOKEN_ENV} is missing`;
+	const verification = verifyOpenAiCodexPeerBoundProxyToken(value, {
+		secret: verifierSecret,
+		peerAddress: expectedPeerAddress,
+	});
+	if (!verification.ok) return verification.reason;
+	try {
+		const payload = JSON.parse(
+			Buffer.from(encodedPayload, "base64url").toString("utf8"),
+		) as unknown;
+		if (!isRecord(payload)) return "payload is invalid";
+		const tokenScope = getString(payload, "tokenScope");
+		const expiresAt = payload.expiresAt;
+		return payload.version === 1 &&
+			(tokenScope === "run" || tokenScope === "server") &&
+			getString(payload, "runId")?.trim() &&
+			normalizePeerAddress(getString(payload, "peerAddress")) === normalizedExpectedPeerAddress &&
+			typeof payload.issuedAt === "number" &&
+			Number.isFinite(payload.issuedAt) &&
+			((typeof expiresAt === "number" && Number.isFinite(expiresAt)) ||
+				(tokenScope === "server" && expiresAt === null)) &&
+			getString(payload, "nonce")?.trim()
+			? null
+			: "payload is invalid";
+	} catch {
+		return "payload is not parseable";
+	}
+}
+
+function runtimeProfileCustodyGate(profileDir: string): ModelRelayGate {
+	if (normalizeProfilePath(profileDir) !== DEFAULT_MODEL_RELAY_PROFILE_DIR) {
+		return pass(
+			"profile.runtimeCustody",
+			"non-default test profile does not claim runtime custody",
+		);
+	}
+	const failures: string[] = [];
+	try {
+		const profileStat = fs.statSync(profileDir);
+		if (!profileStat.isDirectory()) {
+			failures.push("profile directory is not a directory");
+		}
+		if (profileStat.uid !== 0) {
+			failures.push(`profile directory is uid ${profileStat.uid}, expected root`);
+		}
+		if ((profileStat.mode & 0o002) !== 0) {
+			failures.push(`profile directory is world-writable ${formatMode(profileStat.mode)}`);
+		}
+		if ((profileStat.mode & 0o020) !== 0 && (profileStat.mode & 0o1000) === 0) {
+			failures.push(
+				`profile directory is group-writable without sticky bit ${formatMode(profileStat.mode)}`,
+			);
+		}
+	} catch (error) {
+		failures.push(
+			`profile directory stat failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	for (const relativePath of RUNTIME_CUSTODY_PROFILE_FILES) {
+		const filePath = path.join(profileDir, relativePath);
+		try {
+			const stat = fs.statSync(filePath);
+			if (!stat.isFile()) {
+				failures.push(`${relativePath} is not a regular file`);
+			}
+			if (stat.uid !== 0) {
+				failures.push(`${relativePath} is uid ${stat.uid}, expected root`);
+			}
+			if ((stat.mode & 0o222) !== 0) {
+				failures.push(`${relativePath} has writable mode ${formatMode(stat.mode)}`);
+			}
+		} catch (error) {
+			failures.push(
+				`${relativePath} stat failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+	return failures.length === 0
+		? pass(
+				"profile.runtimeCustody",
+				"runtime credential custody files are root-owned and read-only",
+			)
+		: fail("profile.runtimeCustody", failures.join("; "));
+}
+
+function formatMode(mode: number): string {
+	return `0${(mode & 0o777).toString(8)}`;
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
+	const actual = Object.keys(record).sort();
+	const expected = [...expectedKeys].sort();
+	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function normalizeProfilePath(value: string): string {
+	return value.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getRecord(
+	value: unknown,
+	...keys: readonly string[]
+): Record<string, unknown> | undefined {
+	let current: unknown = value;
+	for (const key of keys) {
+		if (!isRecord(current)) return undefined;
+		current = current[key];
+	}
+	return isRecord(current) ? current : undefined;
+}
+
+function getArray(value: unknown, ...keys: readonly string[]): unknown[] {
+	let current: unknown = value;
+	for (const key of keys) {
+		if (!isRecord(current)) return [];
+		current = current[key];
+	}
+	return Array.isArray(current) ? current : [];
+}
+
+function getString(value: unknown, key: string): string | undefined {
+	return isRecord(value) && typeof value[key] === "string" ? value[key] : undefined;
 }
 
 function listProfileFiles(root: string): { scannedFiles: string[]; skippedFiles: string[] } {
