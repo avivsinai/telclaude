@@ -9,7 +9,7 @@ import {
 	type EmailAttachmentPart,
 	EmailHeaderInjectionError,
 } from "./mime-compose.js";
-import type { EmailTransport } from "./transport.js";
+import type { EmailTransport, OutboundAuthorizationContext } from "./transport.js";
 
 /**
  * Outbound email connector. Pure delivery sink invoked by the dispatcher AFTER
@@ -100,6 +100,26 @@ export function createEmailConnector(options: CreateEmailConnectorOptions): Edge
 			};
 		}
 
+		// Carry the edge authorization verbatim for sidecar-gated transports
+		// (Gmail). Fail closed if the prepared outbound has no authorizing actor:
+		// the operator identity binds the sidecar approval token, and a send with
+		// no bound actor must never reach the transport.
+		const actorUserId = prepared.authorizingActor.actorId.trim();
+		if (!actorUserId) {
+			return {
+				ok: false,
+				code: "missing_authorizing_actor",
+				reason: "prepared outbound has no authorizing actor id",
+				retryable: false,
+			};
+		}
+		const authorization: OutboundAuthorizationContext = {
+			actorUserId,
+			outboundRef: prepared.outboundRef,
+			sideEffectLedgerRef: prepared.sideEffectLedgerRef,
+			edgePreparedHash: prepared.edgePreparedHash,
+		};
+
 		const attachments: EmailAttachmentPart[] = [];
 		for (let index = 0; index < prepared.mediaRefs.length; index += 1) {
 			const ref = prepared.mediaRefs[index];
@@ -152,6 +172,7 @@ export function createEmailConnector(options: CreateEmailConnectorOptions): Edge
 			from: options.from,
 			to: [to],
 			idempotencyKey: prepared.idempotencyKey,
+			authorization,
 		});
 		if (!result.ok) {
 			return { ok: false, code: result.code, reason: result.reason, retryable: result.retryable };

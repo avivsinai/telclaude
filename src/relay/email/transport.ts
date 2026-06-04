@@ -7,6 +7,26 @@
  * an injection vector; they only open the socket / call the API.
  */
 
+/**
+ * The edge authorization that produced this send, carried verbatim from the
+ * PreparedOutbound by the connector. A transport that delivers through an
+ * approval-gated sidecar (the Gmail transport → google-services) uses it to
+ * mint a request-bound approval token AFTER the upstream side-effect ledger
+ * burn. The one-shot/replay primitive remains that ledger burn; this context is
+ * signed PROVENANCE binding the sidecar token 1:1 to the burned authorization,
+ * never a replay key. A credentials-based transport (SMTP) ignores it.
+ */
+export interface OutboundAuthorizationContext {
+	/** Operator actor id (record.actorId / prepared.authorizingActor.actorId) — the sidecar x-actor-user-id. */
+	readonly actorUserId: string;
+	/** Edge prepared ref (prepared.outboundRef). */
+	readonly outboundRef: string;
+	/** Side-effect ledger record ref (prepared.sideEffectLedgerRef); 1:1 with the burned authorization. */
+	readonly sideEffectLedgerRef: string;
+	/** Edge prepared hash binding the rendered destination + body + media. */
+	readonly edgePreparedHash: string;
+}
+
 export interface EmailSendRequest {
 	/** Fully composed, CRLF-safe RFC822 message (from the mime composer). */
 	readonly rawMime: string;
@@ -14,6 +34,8 @@ export interface EmailSendRequest {
 	readonly to: readonly string[];
 	/** Relay-minted idempotency key (prepared.idempotencyKey) for transport-side dedup/logging. */
 	readonly idempotencyKey: string;
+	/** Edge authorization provenance for sidecar-gated transports (Gmail). */
+	readonly authorization: OutboundAuthorizationContext;
 }
 
 export type EmailSendResult =

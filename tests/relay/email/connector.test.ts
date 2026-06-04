@@ -249,4 +249,44 @@ describe("email connector", () => {
 			});
 		}
 	});
+
+	it("carries the edge authorization provenance from prepared to the transport", async () => {
+		const transport = recordingTransport();
+		const connector = createEmailConnector({
+			transport,
+			from: "agent@relay.test",
+			defaultSubject: "x",
+		});
+		await connector.send(context(preparedOutbound()));
+		expect(transport.sent[0].authorization).toEqual({
+			actorUserId: "relay:pairing-authority",
+			outboundRef: "edge-out:deadbeef",
+			sideEffectLedgerRef: "edge-ledger:deadbeef",
+			edgePreparedHash: HEX64,
+		});
+	});
+
+	it("fails closed (no send) when the prepared outbound has no authorizing actor id", async () => {
+		const transport = recordingTransport();
+		const connector = createEmailConnector({
+			transport,
+			from: "agent@relay.test",
+			defaultSubject: "x",
+		});
+		// The schema rejects a blank actorId, so build a prepared that bypassed
+		// schema validation: the connector is a separate trust layer and must fail
+		// closed on a blank actor even if such a prepared reaches it.
+		const base = preparedOutbound();
+		const noActor = {
+			...base,
+			authorizingActor: { ...base.authorizingActor, actorId: "   " },
+		} as PreparedOutbound;
+		const outcome = await connector.send(context(noActor));
+		expect(outcome).toMatchObject({
+			ok: false,
+			code: "missing_authorizing_actor",
+			retryable: false,
+		});
+		expect(transport.sent).toHaveLength(0);
+	});
 });
