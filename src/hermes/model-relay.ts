@@ -82,6 +82,7 @@ export type HermesModelRelayProbeOptions = {
 	readonly relayUrl?: string;
 	readonly directModelUrl?: string;
 	readonly profileDir?: string;
+	readonly runtimeCustodyProfileDir?: string;
 	readonly firewallSentinelPath?: string;
 	readonly posture?: ModelRelayPosture;
 	readonly containerName?: string;
@@ -200,7 +201,11 @@ export async function runHermesModelRelayProbe(
 	});
 	gates.push(originGate(origin));
 	gates.push(await directModelDeniedGate(directModelUrl, options.timeoutMs, options.fetchImpl));
-	const profileResult = scanProfileDir(profileDir, options.expectedPeerAddress);
+	const profileResult = scanProfileDir(
+		profileDir,
+		options.expectedPeerAddress,
+		options.runtimeCustodyProfileDir,
+	);
 	gates.push(...profileResult.gates);
 
 	const status = gates.every((gate) => gate.status === "pass") ? "pass" : "fail";
@@ -377,6 +382,7 @@ async function directModelDeniedGate(
 function scanProfileDir(
 	profileDir: string | undefined,
 	expectedPeerAddress: string | undefined,
+	runtimeCustodyProfileDir = DEFAULT_MODEL_RELAY_PROFILE_DIR,
 ): {
 	gates: ModelRelayGate[];
 	scannedFiles: string[];
@@ -419,7 +425,7 @@ function scanProfileDir(
 		};
 	}
 
-	const custodyGate = runtimeProfileCustodyGate(resolved);
+	const custodyGate = runtimeProfileCustodyGate(resolved, runtimeCustodyProfileDir);
 	const findings: string[] = [];
 	const directHostFindings: string[] = [];
 	const scannedFiles: string[] = [];
@@ -745,8 +751,11 @@ function peerBoundOpenAiCodexRelayTokenFailure(
 	}
 }
 
-function runtimeProfileCustodyGate(profileDir: string): ModelRelayGate {
-	if (normalizeProfilePath(profileDir) !== DEFAULT_MODEL_RELAY_PROFILE_DIR) {
+function runtimeProfileCustodyGate(
+	profileDir: string,
+	runtimeCustodyProfileDir = DEFAULT_MODEL_RELAY_PROFILE_DIR,
+): ModelRelayGate {
+	if (normalizeProfilePath(profileDir) !== normalizeProfilePath(runtimeCustodyProfileDir)) {
 		return pass(
 			"profile.runtimeCustody",
 			"non-default test profile does not claim runtime custody",
@@ -754,7 +763,7 @@ function runtimeProfileCustodyGate(profileDir: string): ModelRelayGate {
 	}
 	const failures: string[] = [];
 	try {
-		const profileStat = fs.statSync(profileDir);
+		const profileStat = fs.lstatSync(profileDir);
 		if (!profileStat.isDirectory()) {
 			failures.push("profile directory is not a directory");
 		}
@@ -777,7 +786,7 @@ function runtimeProfileCustodyGate(profileDir: string): ModelRelayGate {
 	for (const relativePath of RUNTIME_CUSTODY_PROFILE_FILES) {
 		const filePath = path.join(profileDir, relativePath);
 		try {
-			const stat = fs.statSync(filePath);
+			const stat = fs.lstatSync(filePath);
 			if (!stat.isFile()) {
 				failures.push(`${relativePath} is not a regular file`);
 			}

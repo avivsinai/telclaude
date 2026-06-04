@@ -204,7 +204,14 @@ fi
 
 if [ "$(id -u)" = "0" ]; then
 	command -v setpriv >/dev/null 2>&1 || die "setpriv is required to drop privileges"
-	exec setpriv --reuid="$HERMES_RUNTIME_UID" --regid="$HERMES_RUNTIME_GID" --clear-groups /opt/hermes/hermes "$@"
+	exec setpriv \
+		--reuid="$HERMES_RUNTIME_UID" \
+		--regid="$HERMES_RUNTIME_GID" \
+		--clear-groups \
+		--bounding-set=-all \
+		--inh-caps=-all \
+		--ambient-caps=-all \
+		/opt/hermes/hermes "$@"
 fi
 
 exec /opt/hermes/hermes "$@"

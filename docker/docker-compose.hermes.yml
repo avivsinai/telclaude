@@ -79,6 +79,7 @@ services:
       - CHOWN
       - DAC_OVERRIDE
       - FOWNER
+      - SETPCAP
       - SETGID
       - SETUID
     security_opt:
