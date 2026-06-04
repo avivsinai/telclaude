@@ -5563,6 +5563,73 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
+	it("uses the trusted relay public-key lock for archived feature-probe matrix generation", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-probes-lock-"));
+		const evidencePath = "artifacts/hermes/probes/sideeffect-ledger.json";
+		const lockPath = path.join(tempDir, "docs/hermes/relay-public-key.lock.json");
+		const sourcePath = "docs/hermes/relay-public-key-source.json";
+		const sourceAbsolutePath = path.join(tempDir, sourcePath);
+		const relayKeys = generateKeyPair();
+		const relayPublicKeySha256 = computeTextDigest(relayKeys.publicKey);
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
+
+		try {
+			writeJson(sourceAbsolutePath, {
+				schemaVersion: "telclaude.hermes.rollback-relay-public-key-source.v1",
+				keys: [
+					{
+						scope: "operator",
+						envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+						value: relayKeys.publicKey,
+						sha256: relayPublicKeySha256,
+					},
+				],
+			});
+			writeJson(lockPath, {
+				schemaVersion: "telclaude.hermes.rollback-relay-public-key-lock.v1",
+				keys: [
+					{
+						scope: "operator",
+						envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+						value: relayKeys.publicKey,
+						sha256: relayPublicKeySha256,
+						source: sourcePath,
+						sourceSha256: computeFileDigest(sourceAbsolutePath),
+					},
+				],
+			});
+
+			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = lockPath;
+			const signedProbe = await runHermesCommand(
+				["hermes", "probe", "sideeffect.ledger", "--allow-run", "--json", "--out", evidencePath],
+				{ cwd: tempDir },
+			);
+			expect(signedProbe.exitCode, signedProbe.stdout).toBe(0);
+
+			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+			const result = await runHermesCommand(["hermes", "probes", "--json"], { cwd: tempDir });
+			const matrix = JSON.parse(result.stdout) as {
+				probes: Array<{ surface_id: string; status: string }>;
+			};
+
+			expect(result.exitCode).toBe(1);
+			expect(matrix.probes.find((probe) => probe.surface_id === "sideeffect.ledger")?.status).toBe(
+				"pass",
+			);
+			expect(matrix.probes.find((probe) => probe.surface_id === "edge.whatsapp")?.status).toBe(
+				"fail",
+			);
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalLockPath);
+		}
+	});
+
 	it("writes runtime edge probe evidence for runtime-required edge surfaces", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-runtime-cli-"));
 		for (const [surface, expectedControl] of [
