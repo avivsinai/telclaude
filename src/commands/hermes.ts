@@ -44,6 +44,7 @@ import {
 import {
 	allPrivateTelegramRequiredAssertions,
 	analyzeVitestFixtureReport,
+	archivedHermesEvidenceValidationOptions,
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
 	buildCutoverProofBundle,
@@ -1961,10 +1962,10 @@ function buildHermesFeatureProbeMatrixDraft(input: { pin?: HermesPin | null }): 
 		})),
 	};
 	const evidenceBySurface = new Map(
-		collectHermesFeatureProbeEvidence(initial).results.map((result) => [
-			result.surface_id,
-			result.status,
-		]),
+		collectHermesFeatureProbeEvidence(
+			initial,
+			archivedHermesEvidenceValidationOptions(),
+		).results.map((result) => [result.surface_id, result.status]),
 	);
 	return {
 		...initial,
