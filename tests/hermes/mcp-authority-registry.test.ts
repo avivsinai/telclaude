@@ -14,7 +14,7 @@ describe("Telclaude MCP authority registry", () => {
 	it("registers opaque authority handles and resolves only with the minted connection binding", async () => {
 		const registry = createTelclaudeMcpAuthorityRegistry();
 		const connection = baseConnection();
-		const authority = baseAuthority();
+		const authority = baseAuthority({ turnConversationRef: `turn_${"a".repeat(32)}` });
 
 		const grant = registry.register({ connection, authority, nowMs: 1_000, ttlMs: 10_000 });
 
@@ -22,6 +22,7 @@ describe("Telclaude MCP authority registry", () => {
 		expect(grant.handle).not.toContain(authority.actorId);
 		expect(grant.handle).not.toContain(authority.profileId);
 		expect(grant.handle).not.toContain(authority.domain);
+		expect(grant.handle).not.toContain(authority.turnConversationRef ?? "");
 
 		const resolved = registry.resolve({ handle: grant.handle, connection, nowMs: 2_000 });
 		expect(resolved).toMatchObject({
@@ -36,6 +37,17 @@ describe("Telclaude MCP authority registry", () => {
 			ok: true,
 			authority,
 		});
+	});
+
+	it("rejects non relay-minted turn authority refs", () => {
+		const registry = createTelclaudeMcpAuthorityRegistry();
+
+		expect(() =>
+			registry.register({
+				connection: baseConnection(),
+				authority: baseAuthority({ turnConversationRef: "model-supplied-turn" }),
+			}),
+		).toThrow("MCP authority turnConversationRef must be a relay turn ref");
 	});
 
 	it.each([
@@ -128,13 +140,13 @@ describe("Telclaude MCP authority registry", () => {
 			endpointId: "endpoint-social",
 			networkNamespace: "netns-social",
 			profileId: "social",
-			});
-			const grantA = registry.register({
-				connection: connectionA,
-				authority: baseAuthority({ providerScopes: ["google"] }),
-				nowMs: 1_000,
-				ttlMs: 10_000,
-			});
+		});
+		const grantA = registry.register({
+			connection: connectionA,
+			authority: baseAuthority({ providerScopes: ["google"] }),
+			nowMs: 1_000,
+			ttlMs: 10_000,
+		});
 		const grantB = registry.register({
 			connection: connectionB,
 			authority: baseAuthority({

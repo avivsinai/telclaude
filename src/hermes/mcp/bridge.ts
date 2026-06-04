@@ -4,6 +4,7 @@ import type { MemoryCategory, MemorySource, TrustLevel } from "../../memory/type
 import { validateMemoryEntryInput } from "../../memory/validation.js";
 import {
 	isRelayConversationToken,
+	isRelayConversationTurnRef,
 	type RelayConversationReplyIntent,
 } from "../relay-conversation-store.js";
 import { TELCLAUDE_MCP_SERVER_POLICY } from "./policy.js";
@@ -27,6 +28,7 @@ export type TelclaudeMcpAuthority = {
 	outboundChannels: readonly string[];
 	endpointId: string;
 	networkNamespace: string;
+	turnConversationRef?: string;
 };
 
 export type TelclaudeMcpAuthorityStamp = {
@@ -37,6 +39,7 @@ export type TelclaudeMcpAuthorityStamp = {
 	writableNamespace: string;
 	endpointId: string;
 	networkNamespace: string;
+	turnConversationRef?: string;
 };
 
 export type TelclaudeMcpProviderReadRequest = TelclaudeMcpAuthorityStamp & {
@@ -229,6 +232,17 @@ const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"providerAuthority",
 	"endpointId",
 	"networkNamespace",
+	"turnConversationRef",
+	"turnId",
+	"inboundTurnId",
+	"inboundTurnRef",
+]);
+
+const CLIENT_TURN_AUTHORITY_KEYS = new Set([
+	"turnConversationRef",
+	"turnId",
+	"inboundTurnId",
+	"inboundTurnRef",
 ]);
 
 export function createTelclaudeMcpBridge(
@@ -242,6 +256,7 @@ export function createTelclaudeMcpBridge(
 		policy: TELCLAUDE_MCP_SERVER_POLICY,
 
 		async tc_provider_read(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = ProviderReadInputSchema.parse(input);
 			const operation = resolveTelclaudeProviderOperation({
 				providerId: parsed.providerId,
@@ -257,6 +272,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_provider_prepare_write(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = ProviderPrepareWriteInputSchema.parse(input);
 			const operation = resolveTelclaudeProviderOperation({
 				providerId: parsed.providerId,
@@ -273,6 +289,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_provider_execute_write(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = ProviderExecuteWriteInputSchema.parse(input);
 			return dependencies.providerExecuteWrite({
 				...stamp,
@@ -282,6 +299,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_memory_search(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = MemorySearchInputSchema.parse(input);
 			return dependencies.memorySearch({
 				...stamp,
@@ -292,6 +310,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_memory_write(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = MemoryWriteInputSchema.parse(input);
 			assertMetadataOnlyProvenance(parsed.provenance);
 			const request: TelclaudeMcpMemoryWriteRequest = {
@@ -315,11 +334,13 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_attachment_get(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = AttachmentGetInputSchema.parse(input);
 			return dependencies.attachmentGet({ ...stamp, ref: parsed.ref });
 		},
 
 		async tc_outbound_prepare(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = OutboundPrepareInputSchema.parse(input);
 			return dependencies.outboundPrepare({
 				...stamp,
@@ -332,6 +353,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_outbound_execute(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = OutboundExecuteInputSchema.parse(input);
 			return dependencies.outboundExecute({
 				...stamp,
@@ -341,6 +363,7 @@ export function createTelclaudeMcpBridge(
 		},
 
 		async tc_audit_note(input) {
+			assertNoClientTurnAuthority(input);
 			const parsed = AuditNoteInputSchema.parse(input);
 			return dependencies.auditNote({
 				...stamp,
@@ -366,6 +389,9 @@ function normalizeAuthority(authority: TelclaudeMcpAuthority): TelclaudeMcpAutho
 		outboundChannels: uniqueTrimmed(authority.outboundChannels),
 		endpointId: requiredTrimmed(authority.endpointId, "endpointId"),
 		networkNamespace: requiredTrimmed(authority.networkNamespace, "networkNamespace"),
+		...(authority.turnConversationRef
+			? { turnConversationRef: normalizeTurnConversationRef(authority.turnConversationRef) }
+			: {}),
 	};
 }
 
@@ -378,7 +404,31 @@ function authorityStamp(authority: TelclaudeMcpAuthority): TelclaudeMcpAuthority
 		writableNamespace: authority.writableNamespace,
 		endpointId: authority.endpointId,
 		networkNamespace: authority.networkNamespace,
+		...(authority.turnConversationRef
+			? { turnConversationRef: authority.turnConversationRef }
+			: {}),
 	};
+}
+
+function normalizeTurnConversationRef(value: string): string {
+	const ref = value.trim();
+	if (!isRelayConversationTurnRef(ref)) {
+		throw new Error("MCP authority turnConversationRef must be a relay turn ref");
+	}
+	return ref;
+}
+
+function assertNoClientTurnAuthority(input: unknown): void {
+	if (!isRecord(input)) return;
+	for (const key of Object.keys(input)) {
+		if (CLIENT_TURN_AUTHORITY_KEYS.has(key)) {
+			throw new Error("MCP clients may not supply relay turn authority");
+		}
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requiredTrimmed(value: string, field: string): string {

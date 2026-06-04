@@ -14,6 +14,7 @@ export const RELAY_PAIRING_AUTHORITY_ACTOR_ID = "relay:pairing-authority";
 export const RELAY_PAIRING_AUTHORITY_PRINCIPAL_ID = "relay:pairing-authority";
 
 const RELAY_CONVERSATION_TOKEN_RE = /^conv_[0-9a-f]{32}$/;
+const RELAY_CONVERSATION_TURN_REF_RE = /^turn_[0-9a-f]{32}$/;
 const MAX_TOKEN_MINT_ATTEMPTS = 8;
 
 type EdgeChannel = ConversationRef["channel"];
@@ -121,11 +122,53 @@ export type RelayConversationMintInput = {
 	readonly nowMs?: number;
 };
 
+export type RelayConversationInboundTurnMintInput = {
+	readonly conversationToken: string;
+	readonly inboundMessageId: string;
+	readonly senderActorId: string;
+	readonly expiresAtMs?: number | null;
+	readonly nowMs?: number;
+};
+
+export type RelayConversationInboundTurn = {
+	readonly ref: string;
+	readonly conversationToken: string;
+	readonly channel: EdgeChannel;
+	readonly conversationId: string;
+	readonly threadId: string;
+	readonly profileId: string;
+	readonly domain: RelayConversationDomain;
+	readonly mcpDomain: TelclaudeMcpDomain;
+	readonly inboundMessageId: string;
+	readonly senderActorId: string;
+	readonly senderPrincipalId: string;
+	readonly createdAtMs: number;
+	readonly expiresAtMs: number | null;
+	readonly revokedAtMs: number | null;
+	readonly revokeReason: string | null;
+};
+
 export type RelayConversationStore = {
 	mint(input: RelayConversationMintInput): { token: string; conversation: RelayConversation };
 	resolve(token: string, nowMs?: number): RelayConversation | null;
 	resolveAuthorized(token: string, nowMs?: number): RelayConversation | null;
 	inspect(token: string): RelayConversation | null;
+	mintInboundTurn(input: RelayConversationInboundTurnMintInput): {
+		turnRef: string;
+		turn: RelayConversationInboundTurn;
+	};
+	resolveInboundTurn(ref: string, nowMs?: number): RelayConversationInboundTurn | null;
+	resolveAuthorizedInboundTurn(
+		ref: string,
+		conversationToken: string,
+		nowMs?: number,
+	): RelayConversationInboundTurn | null;
+	inspectInboundTurn(ref: string): RelayConversationInboundTurn | null;
+	revokeInboundTurn(
+		ref: string,
+		reason: string,
+		nowMs?: number,
+	): RelayConversationInboundTurn | null;
 	addMember(
 		token: string,
 		member: RelayConversationMemberInput,
@@ -197,6 +240,24 @@ type RelayConversationRow = {
 	updated_at_ms: number;
 };
 
+type RelayConversationInboundTurnRow = {
+	ref: string;
+	conversation_token: string;
+	channel: EdgeChannel;
+	conversation_id: string;
+	thread_id: string;
+	profile_id: string;
+	domain: RelayConversationDomain;
+	mcp_domain: TelclaudeMcpDomain;
+	inbound_message_id: string;
+	sender_actor_id: string;
+	sender_principal_id: string;
+	created_at_ms: number;
+	expires_at_ms: number | null;
+	revoked_at_ms: number | null;
+	revoke_reason: string | null;
+};
+
 export function createRelayConversationStore(
 	options: RelayConversationStoreOptions = {},
 ): RelayConversationStore {
@@ -244,6 +305,83 @@ export function createRelayConversationStore(
 		inspect(token) {
 			if (!isRelayConversationToken(token)) return null;
 			return selectConversation(token);
+		},
+
+		mintInboundTurn(input) {
+			const now = normalizeTimestamp(input.nowMs ?? nowMs(), "nowMs");
+			const conversation = this.resolveAuthorized(input.conversationToken, now);
+			if (!conversation) {
+				throw new Error("conversation unavailable");
+			}
+			const senderActorId = requiredTrimmed(input.senderActorId, "senderActorId");
+			const sender = conversation.members.find(
+				(member) => member.actorId === senderActorId && !member.revoked,
+			);
+			if (!sender) {
+				throw new Error("turn sender is not a conversation member");
+			}
+			if (sender.role !== "sender" && sender.role !== "recipient") {
+				throw new Error("turn sender is not a targetable conversation member");
+			}
+			const turn = normalizeInboundTurnInput({
+				ref: "",
+				conversation,
+				inboundMessageId: input.inboundMessageId,
+				sender,
+				nowMs: now,
+				expiresAtMs: input.expiresAtMs,
+			});
+			for (let attempt = 0; attempt < MAX_TOKEN_MINT_ATTEMPTS; attempt += 1) {
+				const ref = createRelayConversationTurnRef();
+				try {
+					insertInboundTurn({ ...turn, ref });
+					const persisted = selectInboundTurn(ref);
+					if (!persisted) throw new Error("minted inbound turn missing after insert");
+					return { turnRef: ref, turn: persisted };
+				} catch (error) {
+					if (isSqliteConstraint(error)) continue;
+					throw error;
+				}
+			}
+			throw new Error("could not mint unique relay conversation turn ref");
+		},
+
+		resolveInboundTurn(ref, atMs = nowMs()) {
+			if (!isRelayConversationTurnRef(ref)) return null;
+			const turn = selectInboundTurn(ref);
+			if (!turn || inboundTurnUnavailable(turn, atMs)) return null;
+			const conversation = this.resolve(turn.conversationToken, atMs);
+			if (!conversation) return null;
+			return turn;
+		},
+
+		resolveAuthorizedInboundTurn(ref, conversationToken, atMs = nowMs()) {
+			if (!isRelayConversationToken(conversationToken)) return null;
+			const turn = this.resolveInboundTurn(ref, atMs);
+			if (!turn || turn.conversationToken !== conversationToken) return null;
+			if (!this.resolveAuthorized(conversationToken, atMs)) return null;
+			return turn;
+		},
+
+		inspectInboundTurn(ref) {
+			if (!isRelayConversationTurnRef(ref)) return null;
+			return selectInboundTurn(ref);
+		},
+
+		revokeInboundTurn(ref, reason, atMs = nowMs()) {
+			if (!isRelayConversationTurnRef(ref)) return null;
+			const turn = this.inspectInboundTurn(ref);
+			if (!turn) return null;
+			const now = normalizeTimestamp(atMs, "nowMs");
+			getDb()
+				.prepare(
+					`UPDATE hermes_relay_conversation_turns
+					 SET revoked_at_ms = ?,
+					     revoke_reason = ?
+					 WHERE ref = ?`,
+				)
+				.run(now, requiredTrimmed(reason, "reason"), ref);
+			return this.inspectInboundTurn(ref);
 		},
 
 		addMember(token, member) {
@@ -359,6 +497,14 @@ export function createRelayConversationToken(): string {
 
 export function isRelayConversationToken(value: string): boolean {
 	return RELAY_CONVERSATION_TOKEN_RE.test(value);
+}
+
+export function createRelayConversationTurnRef(): string {
+	return `turn_${crypto.randomBytes(16).toString("hex")}`;
+}
+
+export function isRelayConversationTurnRef(value: string): boolean {
+	return RELAY_CONVERSATION_TURN_REF_RE.test(value);
 }
 
 export function normalizeRelayConversationDomain(
@@ -612,6 +758,36 @@ function replaceMember(
 	return [...members.filter((existing) => existing.actorId !== member.actorId), member];
 }
 
+function normalizeInboundTurnInput(input: {
+	readonly ref: string;
+	readonly conversation: RelayConversation;
+	readonly inboundMessageId: string;
+	readonly sender: RelayConversationMember;
+	readonly nowMs: number;
+	readonly expiresAtMs?: number | null;
+}): RelayConversationInboundTurn {
+	return {
+		ref: input.ref,
+		conversationToken: input.conversation.token,
+		channel: input.conversation.channel,
+		conversationId: input.conversation.conversationId,
+		threadId: input.conversation.threadId,
+		profileId: input.conversation.profileId,
+		domain: input.conversation.domain,
+		mcpDomain: input.conversation.mcpDomain,
+		inboundMessageId: requiredTrimmed(input.inboundMessageId, "inboundMessageId"),
+		senderActorId: input.sender.actorId,
+		senderPrincipalId: input.sender.principalId,
+		createdAtMs: input.nowMs,
+		expiresAtMs:
+			input.expiresAtMs === undefined || input.expiresAtMs === null
+				? null
+				: normalizeTimestamp(input.expiresAtMs, "expiresAtMs"),
+		revokedAtMs: null,
+		revokeReason: null,
+	};
+}
+
 function insertConversation(conversation: RelayConversation): void {
 	getDb()
 		.prepare(
@@ -664,12 +840,60 @@ function insertConversation(conversation: RelayConversation): void {
 		);
 }
 
+function insertInboundTurn(turn: RelayConversationInboundTurn): void {
+	getDb()
+		.prepare(
+			`INSERT INTO hermes_relay_conversation_turns (
+				ref,
+				conversation_token,
+				channel,
+				conversation_id,
+				thread_id,
+				profile_id,
+				domain,
+				mcp_domain,
+				inbound_message_id,
+				sender_actor_id,
+				sender_principal_id,
+				created_at_ms,
+				expires_at_ms,
+				revoked_at_ms,
+				revoke_reason
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		)
+		.run(
+			turn.ref,
+			turn.conversationToken,
+			turn.channel,
+			turn.conversationId,
+			turn.threadId,
+			turn.profileId,
+			turn.domain,
+			turn.mcpDomain,
+			turn.inboundMessageId,
+			turn.senderActorId,
+			turn.senderPrincipalId,
+			turn.createdAtMs,
+			turn.expiresAtMs,
+			turn.revokedAtMs,
+			turn.revokeReason,
+		);
+}
+
 function selectConversation(token: string): RelayConversation | null {
 	const row = getDb()
 		.prepare("SELECT * FROM hermes_relay_conversations WHERE token = ?")
 		.get(token) as RelayConversationRow | undefined;
 	if (!row) return null;
 	return deserializeConversation(row);
+}
+
+function selectInboundTurn(ref: string): RelayConversationInboundTurn | null {
+	const row = getDb()
+		.prepare("SELECT * FROM hermes_relay_conversation_turns WHERE ref = ?")
+		.get(ref) as RelayConversationInboundTurnRow | undefined;
+	if (!row) return null;
+	return deserializeInboundTurn(row);
 }
 
 function deserializeConversation(row: RelayConversationRow): RelayConversation | null {
@@ -710,6 +934,34 @@ function deserializeConversation(row: RelayConversationRow): RelayConversation |
 	}
 }
 
+function deserializeInboundTurn(
+	row: RelayConversationInboundTurnRow,
+): RelayConversationInboundTurn | null {
+	try {
+		return {
+			ref: row.ref,
+			conversationToken: row.conversation_token,
+			channel: EdgeChannelSchema.parse(row.channel),
+			conversationId: row.conversation_id,
+			threadId: row.thread_id,
+			profileId: row.profile_id,
+			domain: RelayDomainSchema.parse(row.domain),
+			mcpDomain: McpDomainSchema.parse(row.mcp_domain),
+			inboundMessageId: row.inbound_message_id,
+			senderActorId: row.sender_actor_id,
+			senderPrincipalId: row.sender_principal_id,
+			createdAtMs: normalizeTimestamp(row.created_at_ms, "createdAtMs"),
+			expiresAtMs:
+				row.expires_at_ms === null ? null : normalizeTimestamp(row.expires_at_ms, "expiresAtMs"),
+			revokedAtMs:
+				row.revoked_at_ms === null ? null : normalizeTimestamp(row.revoked_at_ms, "revokedAtMs"),
+			revokeReason: row.revoke_reason,
+		};
+	} catch {
+		return null;
+	}
+}
+
 function updateJsonFields(
 	token: string,
 	fields: {
@@ -742,6 +994,12 @@ function conversationUnavailable(conversation: RelayConversation, nowMs: number)
 	) {
 		return true;
 	}
+	return false;
+}
+
+function inboundTurnUnavailable(turn: RelayConversationInboundTurn, nowMs: number): boolean {
+	if (turn.expiresAtMs !== null && turn.expiresAtMs <= nowMs) return true;
+	if (turn.revokedAtMs !== null) return true;
 	return false;
 }
 
