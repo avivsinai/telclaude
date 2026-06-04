@@ -598,7 +598,7 @@ describe("Hermes Pro review gate", () => {
 			writeJson(canaryPath, proReviewCanary());
 			await withOperatorRelayKeys(async () => {
 				const { runnerAttestation: _edgeAttestation, ...unsignedEdgeEvidence } =
-					buildEdgeAdapterProbeEvidence({
+					await buildEdgeAdapterProbeEvidence({
 						surfaceId: "edge.whatsapp",
 						allowRun: true,
 						observedAt: "2026-06-01T09:00:00.000Z",

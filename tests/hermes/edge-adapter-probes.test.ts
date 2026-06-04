@@ -30,8 +30,10 @@ describe("Hermes edge adapter probe evidence", () => {
 		restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY");
 	});
 
-	it.each(EDGE_ADAPTER_FEATURE_SURFACE_IDS)("accepts generated evidence for %s", (surfaceId) => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it.each(
+		EDGE_ADAPTER_FEATURE_SURFACE_IDS,
+	)("accepts generated evidence for %s", async (surfaceId) => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId,
 			observedAt,
 			allowRun: true,
@@ -54,13 +56,13 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(edgeAdapterProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
 	});
 
-	it("rejects pass-looking evidence that did not run", () => {
+	it("rejects pass-looking evidence that did not run", async () => {
 		const evidence = {
-			...buildEdgeAdapterProbeEvidence({
+			...(await buildEdgeAdapterProbeEvidence({
 				surfaceId: "edge.whatsapp",
 				observedAt,
 				allowRun: true,
-			}),
+			})),
 			ran: false,
 		};
 
@@ -69,13 +71,13 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("rejects a wrong channel binding for a surface", () => {
+	it("rejects a wrong channel binding for a surface", async () => {
 		const evidence = {
-			...buildEdgeAdapterProbeEvidence({
+			...(await buildEdgeAdapterProbeEvidence({
 				surfaceId: "edge.whatsapp",
 				observedAt,
 				allowRun: true,
-			}),
+			})),
 			surface: {
 				id: "edge.whatsapp",
 				channels: ["email"],
@@ -88,8 +90,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("rejects evidence missing a required negative credential control", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("rejects evidence missing a required negative credential control", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt,
 			allowRun: true,
@@ -104,8 +106,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("requires runtime harness evidence for attachment quarantine", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("requires runtime harness evidence for attachment quarantine", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "attachment.quarantine",
 			observedAt,
 			allowRun: true,
@@ -128,8 +130,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(edgeAdapterProbeEvidenceFailure("attachment.quarantine", evidence)).toBeNull();
 	});
 
-	it("requires runtime harness evidence for outbound policy", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("requires runtime harness evidence for outbound policy", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "outbound.policy",
 			observedAt,
 			allowRun: true,
@@ -145,8 +147,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(edgeAdapterProbeEvidenceFailure("outbound.policy", evidence)).toBeNull();
 	});
 
-	it("rejects pass-looking edge evidence without a signed runner attestation", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("rejects pass-looking edge evidence without a signed runner attestation", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt,
 			allowRun: true,
@@ -158,8 +160,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("rejects mutated runtime observations after signing", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("rejects mutated runtime observations after signing", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt,
 			allowRun: true,
@@ -179,11 +181,11 @@ describe("Hermes edge adapter probe evidence", () => {
 		).toContain("runnerAttestation runtimeSha256 mismatch");
 	});
 
-	it("rejects runner attestations signed by an untrusted relay key", () => {
+	it("rejects runner attestations signed by an untrusted relay key", async () => {
 		const trustedPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const attackerKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = attackerKeys.privateKey;
-		const forgedEvidence = buildEdgeAdapterProbeEvidence({
+		const forgedEvidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt,
 			allowRun: true,
@@ -195,8 +197,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("requires runtime harness evidence for migrated identity", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("requires runtime harness evidence for migrated identity", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "identity.migration",
 			observedAt,
 			allowRun: true,
@@ -214,8 +216,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(edgeAdapterProbeEvidenceFailure("identity.migration", evidence)).toBeNull();
 	});
 
-	it("requires runtime harness evidence for household scopes", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("requires runtime harness evidence for household scopes", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "household.scopes",
 			observedAt,
 			allowRun: true,
@@ -242,8 +244,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		["edge.email", "email.direct-mailbox-denied"],
 		["edge.agentmail", "agentmail.direct-key-denied"],
 		["edge.social", "social.unapproved-posting-denied"],
-	] as const)("requires runtime harness evidence for %s", (surfaceId, expectedControl) => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	] as const)("requires runtime harness evidence for %s", async (surfaceId, expectedControl) => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId,
 			observedAt,
 			allowRun: true,
@@ -256,8 +258,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(edgeAdapterProbeEvidenceFailure(surfaceId, evidence)).toBeNull();
 	});
 
-	it("requires runtime harness evidence for public-social isolation", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("requires runtime harness evidence for public-social isolation", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "public.social.isolation",
 			observedAt,
 			allowRun: true,
@@ -287,8 +289,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		"attachment.quarantine",
 		"outbound.policy",
 		"public.social.isolation",
-	] as const)("rejects contract-only evidence for runtime-required edge surface %s", (surfaceId) => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	] as const)("rejects contract-only evidence for runtime-required edge surface %s", async (surfaceId) => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId,
 			observedAt,
 			allowRun: true,
@@ -304,13 +306,13 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("rejects unpinned operation sets", () => {
+	it("rejects unpinned operation sets", async () => {
 		const evidence = {
-			...buildEdgeAdapterProbeEvidence({
+			...(await buildEdgeAdapterProbeEvidence({
 				surfaceId: "edge.email",
 				observedAt,
 				allowRun: true,
-			}),
+			})),
 			contract: {
 				version: "telclaude.hermes.edge-adapter-contract.v1",
 				operations: ["ingest", "prepareOutbound", "executeOutbound", "status"],
@@ -323,8 +325,8 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("does not let one edge surface satisfy another", () => {
-		const evidence = buildEdgeAdapterProbeEvidence({
+	it("does not let one edge surface satisfy another", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.email",
 			observedAt,
 			allowRun: true,
@@ -335,9 +337,9 @@ describe("Hermes edge adapter probe evidence", () => {
 		);
 	});
 
-	it("builds public and household fixture evidence from current edge probe artifacts", () => {
+	it("builds public and household fixture evidence from current edge probe artifacts", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixtures-"));
-		const probePaths = writeEdgeFixtureProbeArtifacts(tempDir);
+		const probePaths = await writeEdgeFixtureProbeArtifacts(tempDir);
 		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			observedAt,
@@ -362,9 +364,9 @@ describe("Hermes edge adapter probe evidence", () => {
 		}
 	});
 
-	it("rejects edge fixture evidence when a bound probe artifact changes", () => {
+	it("rejects edge fixture evidence when a bound probe artifact changes", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-fixture-tamper-"));
-		const probePaths = writeEdgeFixtureProbeArtifacts(tempDir);
+		const probePaths = await writeEdgeFixtureProbeArtifacts(tempDir);
 		const bundle = buildEdgeAdapterFixtureEvidenceBundle({
 			evidenceDir: path.join(tempDir, "fixtures"),
 			observedAt,
@@ -383,20 +385,23 @@ describe("Hermes edge adapter probe evidence", () => {
 	});
 });
 
-function writeEdgeFixtureProbeArtifacts(tempDir: string) {
-	const probePaths = Object.fromEntries(
-		EDGE_ADAPTER_FEATURE_SURFACE_IDS.map((surfaceId) => {
-			const evidence = buildEdgeAdapterProbeEvidence({
-				surfaceId,
-				observedAt,
-				allowRun: true,
-			});
-			const file = path.join(tempDir, "probes", `${surfaceId.replaceAll(".", "-")}.json`);
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			fs.writeFileSync(file, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
-			return [surfaceId, file];
-		}),
-	) as Record<(typeof EDGE_ADAPTER_FEATURE_SURFACE_IDS)[number], string> & {
+async function writeEdgeFixtureProbeArtifacts(tempDir: string) {
+	const entries: Array<[(typeof EDGE_ADAPTER_FEATURE_SURFACE_IDS)[number], string]> = [];
+	for (const surfaceId of EDGE_ADAPTER_FEATURE_SURFACE_IDS) {
+		const evidence = await buildEdgeAdapterProbeEvidence({
+			surfaceId,
+			observedAt,
+			allowRun: true,
+		});
+		const file = path.join(tempDir, "probes", `${surfaceId.replaceAll(".", "-")}.json`);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
+		entries.push([surfaceId, file]);
+	}
+	const probePaths = Object.fromEntries(entries) as Record<
+		(typeof EDGE_ADAPTER_FEATURE_SURFACE_IDS)[number],
+		string
+	> & {
 		"providers.release-policy": string;
 	};
 	const releasePolicyFile = path.join(tempDir, "probes", "providers-release-policy.json");

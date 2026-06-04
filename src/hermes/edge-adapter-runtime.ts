@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { OutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
 import {
 	type ActorRef,
 	ActorRefSchema,
@@ -133,14 +134,16 @@ export function isTelclaudeEdgeRuntimeDeniedError(
 
 export class TelclaudeEdgeRuntime {
 	private readonly now: () => string;
+	private readonly deliver?: OutboundDeliveryDispatcher;
 	private readonly attachments = new Map<string, QuarantinedAttachment>();
 	private readonly prepared = new Map<string, PreparedBinding>();
 	private readonly ledger = new Set<string>();
 	private readonly operations: EdgeAdapterOperationName[] = [];
 	private deniedAttemptCount = 0;
 
-	constructor(input: { now?: () => string } = {}) {
+	constructor(input: { now?: () => string; deliver?: OutboundDeliveryDispatcher } = {}) {
 		this.now = input.now ?? (() => new Date().toISOString());
+		this.deliver = input.deliver;
 	}
 
 	operationTrace(): readonly EdgeAdapterOperationName[] {
@@ -305,7 +308,7 @@ export class TelclaudeEdgeRuntime {
 		return prepared;
 	}
 
-	executeOutbound(input: TelclaudeEdgeExecuteOutboundInput): DeliveryReceipt {
+	async executeOutbound(input: TelclaudeEdgeExecuteOutboundInput): Promise<DeliveryReceipt> {
 		this.operations.push("executeOutbound");
 		if (input.approvalToken) {
 			this.deny(
@@ -344,6 +347,9 @@ export class TelclaudeEdgeRuntime {
 			this.deny("outbound.replay-denied", "Prepared outbound idempotency key was already used");
 		}
 		this.ledger.add(prepared.idempotencyKey);
+		if (this.deliver) {
+			return DeliveryReceiptSchema.parse(await this.deliver(prepared));
+		}
 		return DeliveryReceiptSchema.parse({
 			schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
 			outboundRef: prepared.outboundRef,

@@ -697,11 +697,11 @@ export function isEdgeAdapterFeatureSurfaceId(
 	return EDGE_ADAPTER_FEATURE_SURFACE_IDS.includes(surfaceId as EdgeAdapterFeatureSurfaceId);
 }
 
-export function buildEdgeAdapterProbeEvidence(input: {
+export async function buildEdgeAdapterProbeEvidence(input: {
 	surfaceId: EdgeAdapterFeatureSurfaceId;
 	observedAt?: string;
 	allowRun?: boolean;
-}): EdgeAdapterProbeEvidence {
+}): Promise<EdgeAdapterProbeEvidence> {
 	const requirement = EDGE_SURFACE_REQUIREMENTS[input.surfaceId];
 	const observedAt = input.observedAt ?? new Date().toISOString();
 	if (input.allowRun !== true) {
@@ -729,7 +729,7 @@ export function buildEdgeAdapterProbeEvidence(input: {
 			],
 		};
 	}
-	const runtime = runRuntimeHarness(input.surfaceId, requirement);
+	const runtime = await runRuntimeHarness(input.surfaceId, requirement);
 	const controls = runControlChecks(requirement, runtime?.controlPasses);
 	const status = controls.every((control) => control.status === "pass") ? "pass" : "fail";
 	const evidence: Omit<EdgeAdapterProbeEvidence, "runnerAttestation"> = {
@@ -1166,10 +1166,10 @@ type EdgeRuntimeHarnessResult = {
 	readonly evidence: NonNullable<EdgeAdapterProbeEvidence["runtime"]>;
 };
 
-function runRuntimeHarness(
+async function runRuntimeHarness(
 	surfaceId: EdgeAdapterFeatureSurfaceId,
 	requirement: EdgeSurfaceRequirement,
-): EdgeRuntimeHarnessResult | undefined {
+): Promise<EdgeRuntimeHarnessResult | undefined> {
 	if (!edgeAdapterRuntimeEvidenceRequired(surfaceId)) return undefined;
 	const channel = requirement.channels[0];
 	const domain = requirement.trustDomains[0];
@@ -1685,14 +1685,14 @@ function runRuntimeHarness(
 		request: outboundRequest,
 		authorizingActor: actorRef,
 	});
-	const mutatedPreparedDenied = denies(
+	const mutatedPreparedDenied = await deniesAsync(
 		() =>
 			runtime.executeOutbound({
 				preparedOutbound: { ...prepared, finalRenderedBody: "Mutated body" },
 			}),
 		"outbound.recipient-body-bound",
 	);
-	const executeApprovalTokenDenied = denies(
+	const executeApprovalTokenDenied = await deniesAsync(
 		() =>
 			runtime.executeOutbound({
 				preparedOutbound: prepared,
@@ -1700,7 +1700,7 @@ function runRuntimeHarness(
 			}),
 		"outbound.approval-token-denied",
 	);
-	const executeTransportCredentialsDenied = denies(
+	const executeTransportCredentialsDenied = await deniesAsync(
 		() =>
 			runtime.executeOutbound({
 				preparedOutbound: prepared,
@@ -1708,7 +1708,7 @@ function runRuntimeHarness(
 			}),
 		"outbound.transport-credentials-denied",
 	);
-	const executePolicyDenied = denies(
+	const executePolicyDenied = await deniesAsync(
 		() =>
 			runtime.executeOutbound({
 				preparedOutbound: {
@@ -1718,8 +1718,8 @@ function runRuntimeHarness(
 			}),
 		"outbound.policy-result-denied",
 	);
-	const receipt = runtime.executeOutbound({ preparedOutbound: prepared });
-	const replayDenied = denies(
+	const receipt = await runtime.executeOutbound({ preparedOutbound: prepared });
+	const replayDenied = await deniesAsync(
 		() => runtime.executeOutbound({ preparedOutbound: prepared }),
 		"outbound.replay-denied",
 	);
@@ -1866,6 +1866,18 @@ function edgeAdapterRuntimeEvidenceRequired(surfaceId: string): boolean {
 function denies(fn: () => unknown, control: string): boolean {
 	try {
 		fn();
+		return false;
+	} catch (error) {
+		return isTelclaudeEdgeRuntimeDeniedError(error, control);
+	}
+}
+
+async function deniesAsync(
+	fn: () => unknown | Promise<unknown>,
+	control: string,
+): Promise<boolean> {
+	try {
+		await fn();
 		return false;
 	} catch (error) {
 		return isTelclaudeEdgeRuntimeDeniedError(error, control);
