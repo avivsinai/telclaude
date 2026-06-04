@@ -14,6 +14,7 @@ import {
 	PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS,
 	type ProReviewNativeCanary,
 	REQUIRED_PRO_REVIEW_FILES,
+	validateProReviewYoetzInspectCompletedResponseOutput,
 	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
 } from "../../src/hermes/pro-review.js";
@@ -770,6 +771,140 @@ describe("Hermes Pro review gate", () => {
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("response.tabs is missing or empty"),
+		});
+	});
+
+	it("recovers a completed shard review from native inspect output", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-inspect-recover-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			writeJson(canaryPath, proReviewCanary());
+			const request = buildProReviewRequestDraft({
+				canaryPath,
+				prompt: "Review the attached Hermes wrapper files.",
+				shardMaxSourceBytes: 500,
+			});
+			const shard = request.shardPlan?.shards[0];
+			const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+			if (!shard || !shardPlanSha256) throw new Error("expected sharded test request");
+			const responseText = [
+				`payloadSha256: ${request.payloadBinding.payloadSha256}`,
+				`shardPlanSha256: ${shardPlanSha256}`,
+				`shardId: ${shard.shardId}`,
+				`shardSha256: ${shard.shardSha256}`,
+				"Findings:",
+				"- No P0/P1 findings in this recovered inspect fixture.",
+				"Residual risk:",
+				"- Fixture response only proves native inspect recovery shape and binding echoes.",
+			].join("\n");
+
+			expect(
+				validateProReviewYoetzInspectCompletedResponseOutput({
+					stdout: JSON.stringify({
+						status: "ok",
+						transport: "chrome-extension-native",
+						response: {
+							run_id: "hermes_run_shard_001",
+							tabs: [
+								{
+									inspection: {
+										extraction: {
+											text: responseText,
+											is_generating: false,
+										},
+										model_selection: {
+											current_model_label: "Extended Pro",
+										},
+										ownership: {
+											run_id: "hermes_run_shard_001",
+										},
+										window_name: "yoetz-chatgpt-native:hermes_run_shard_001:job_1",
+									},
+								},
+							],
+						},
+					}),
+					expectedRunId: "hermes_run_shard_001",
+					expectedPayloadSha256: request.payloadBinding.payloadSha256,
+					expectedShard: shard,
+					expectedShardPlanSha256: shardPlanSha256,
+				}),
+			).toMatchObject({ status: "pass" });
+
+			expect(
+				validateProReviewYoetzInspectCompletedResponseOutput({
+					stdout: JSON.stringify({
+						status: "ok",
+						transport: "chrome-extension-native",
+						response: {
+							run_id: "hermes_run_shard_001",
+							tabs: [
+								{
+									inspection: {
+										extraction: {
+											text: responseText.replace(`shardId: ${shard.shardId}`, ""),
+											is_generating: false,
+										},
+										model_selection: {
+											current_model_label: "Extended Pro",
+										},
+										ownership: {
+											run_id: "hermes_run_shard_001",
+										},
+										window_name: "yoetz-chatgpt-native:hermes_run_shard_001:job_1",
+									},
+								},
+							],
+						},
+					}),
+					expectedRunId: "hermes_run_shard_001",
+					expectedPayloadSha256: request.payloadBinding.payloadSha256,
+					expectedShard: shard,
+					expectedShardPlanSha256: shardPlanSha256,
+				}),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(`response does not echo shardId: ${shard.shardId}`),
+			});
+
+			expect(
+				validateProReviewYoetzInspectCompletedResponseOutput({
+					stdout: JSON.stringify({
+						status: "ok",
+						transport: "chrome-extension-native",
+						response: {
+							run_id: "hermes_run_shard_001",
+							tabs: [
+								{
+									inspection: {
+										extraction: {
+											text: responseText,
+											is_generating: false,
+										},
+										model_selection: {
+											current_model_label: "Extended Pro",
+										},
+										ownership: {
+											run_id: "older_hermes_run",
+										},
+										window_name: "yoetz-chatgpt-native:older_hermes_run:job_1",
+									},
+								},
+							],
+						},
+					}),
+					expectedRunId: "hermes_run_shard_001",
+					expectedPayloadSha256: request.payloadBinding.payloadSha256,
+					expectedShard: shard,
+					expectedShardPlanSha256: shardPlanSha256,
+				}),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(
+					"no inspected tab has ownership.run_id matching expected run",
+				),
+			});
 		});
 	});
 

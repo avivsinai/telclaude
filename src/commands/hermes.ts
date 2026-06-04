@@ -154,6 +154,7 @@ import {
 	readProReviewNativeCanary,
 	readProReviewRequest,
 	readProReviewShardItemContent,
+	validateProReviewYoetzInspectCompletedResponseOutput,
 	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
 } from "../hermes/pro-review.js";
@@ -1245,6 +1246,13 @@ function runProReviewYoetzCommand(
 			finish({ status: code, stdout, stderr });
 		});
 	});
+}
+
+function isRecoverableNativeYoetzReadFailure(result: ProReviewYoetzProcessResult): boolean {
+	if (result.status === 0) return false;
+	return /chrome-extension-native: failed to fill whole buffer|failed to fill whole buffer/i.test(
+		`${result.stderr}\n${result.error ?? ""}`,
+	);
 }
 
 type FixtureVitestInvocation = {
@@ -4307,7 +4315,7 @@ export function registerHermesCommand(program: Command): void {
 						shardSend.yoetzCommand,
 						buildProReviewNativeYoetzEnv(),
 					);
-					const validation =
+					let validation =
 						result.status === 0
 							? validateProReviewYoetzSendOutput({
 									stdout: result.stdout,
@@ -4320,7 +4328,8 @@ export function registerHermesCommand(program: Command): void {
 								})
 							: null;
 					const bundleAfterSendSha256 =
-						result.status === 0 && validation?.status === "pass"
+						(result.status === 0 || isRecoverableNativeYoetzReadFailure(result)) &&
+						validation?.status !== "fail"
 							? fileSha256(shardSend.bundlePath)
 							: null;
 					const bundleValidation =
@@ -4336,8 +4345,8 @@ export function registerHermesCommand(program: Command): void {
 										detail: `shard bundle artifact hash changed after send: ${bundleAfterSendSha256}, expected ${shardSend.bundleSha256}`,
 									};
 					const inspectResult =
-						result.status === 0 &&
-						validation?.status === "pass" &&
+						((result.status === 0 && validation?.status === "pass") ||
+							isRecoverableNativeYoetzReadFailure(result)) &&
 						bundleValidation?.status === "pass"
 							? await runProReviewYoetzCommand(
 									shardSend.inspectCommand,
@@ -4351,8 +4360,20 @@ export function registerHermesCommand(program: Command): void {
 									expectedRunId: shardSend.runId,
 								})
 							: null;
+					if (
+						isRecoverableNativeYoetzReadFailure(result) &&
+						inspectResult?.status === 0 &&
+						inspectValidation?.status === "pass"
+					) {
+						validation = validateProReviewYoetzInspectCompletedResponseOutput({
+							stdout: inspectResult.stdout,
+							expectedRunId: shardSend.runId,
+							expectedPayloadSha256: report.payloadSha256,
+							expectedShard: shardSend.shard,
+							expectedShardPlanSha256: shardPlanSha256,
+						});
+					}
 					const shardStatus =
-						result.status === 0 &&
 						validation?.status === "pass" &&
 						bundleValidation?.status === "pass" &&
 						inspectResult?.status === 0 &&
