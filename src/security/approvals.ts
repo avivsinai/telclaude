@@ -430,6 +430,40 @@ export function consumeApprovalMatching(
 	);
 }
 
+export function peekPendingApprovalByNonce(nonce: string): Result<PendingApproval> {
+	const db = getDb();
+	const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
+		| ApprovalRow
+		| undefined;
+	if (!row) {
+		return { success: false, error: "No pending approval found for that code." };
+	}
+	return { success: true, data: rowToApproval(row) };
+}
+
+export function getPendingApprovalByNonce(nonce: string, chatId: number): Result<PendingApproval> {
+	const db = getDb();
+	const row = db.prepare("SELECT * FROM approvals WHERE nonce = ?").get(nonce) as
+		| ApprovalRow
+		| undefined;
+	if (!row) {
+		return { success: false, error: "No pending approval found for that code." };
+	}
+	if (row.chat_id !== chatId) {
+		logger.warn(
+			{ nonce, expectedChatId: row.chat_id, actualChatId: chatId },
+			"approval chat mismatch",
+		);
+		return { success: false, error: "This approval code belongs to a different chat." };
+	}
+	if (Date.now() > row.expires_at) {
+		db.prepare("DELETE FROM approvals WHERE nonce = ?").run(nonce);
+		logger.warn({ nonce, chatId }, "approval expired");
+		return { success: false, error: "This approval has expired. Please retry your request." };
+	}
+	return { success: true, data: rowToApproval(row) };
+}
+
 /**
  * Deny/cancel an approval.
  */

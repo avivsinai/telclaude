@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { sortKeysDeep } from "../../src/crypto/canonical-hash.js";
 import { JtiStore, verifyApprovalToken } from "../../src/google-services/approval.js";
 import type { FetchRequest } from "../../src/google-services/types.js";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpBridge,
 	type TelclaudeMcpAuthority,
@@ -16,21 +17,24 @@ import { createGoogleProviderSidecarApprovalTokenIssuer } from "../../src/hermes
 import {
 	createTelclaudeMcpSideEffectLedger,
 	getTelclaudeMcpSideEffectApprovalBinding,
+	type TelclaudeMcpOutboundSideEffectPrepareInput,
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectApprovalBinding,
 	type TelclaudeMcpSideEffectApprovalVerification,
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
+import type { RelayConversation } from "../../src/hermes/relay-conversation-store.js";
 import { GOOGLE_APPROVAL_SIGNING_PREFIX } from "../../src/security/approval-domains.js";
 
 describe("Telclaude MCP ledger execute dependencies", () => {
-	it("authorizes provider executes and leaves outbound execute fail-closed until server resolution lands", async () => {
+	it("authorizes provider and outbound executes through server-side approval resolution", async () => {
 		const harness = createLedgerHarness();
 		const bridge = createBridge(harness);
 		const provider = harness.ledger.prepare(providerPrepareInput());
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
 		harness.accept("provider-token", provider);
+		harness.accept("outbound-token", outbound);
 
 		await expect(
 			bridge.tc_provider_execute_write({
@@ -55,10 +59,12 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				outboundRef: outbound.ref,
 			}),
 		).resolves.toEqual({
-			ok: false,
-			code: "approval_required",
-			reason: "outbound side effects require server-side approval resolution by outboundRef",
-			retryable: false,
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "outbound-token",
+			}),
 		});
 
 		expect(harness.verifierCalls).toEqual([
@@ -66,10 +72,11 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 				approvalToken: "provider-token",
 				record: expect.objectContaining({ ref: provider.ref, status: "prepared" }),
 			}),
+			expect.objectContaining({
+				approvalToken: "outbound-token",
+				record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+			}),
 		]);
-		expect(harness.ledger.get(outbound.ref)).toEqual(
-			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
-		);
 	});
 
 	it("surfaces missing server-side approvals as retryable without executing the prepared ref", async () => {
@@ -111,6 +118,155 @@ describe("Telclaude MCP ledger execute dependencies", () => {
 		expect(harness.ledger.get(provider.ref)).toEqual(
 			expect.objectContaining({ ref: provider.ref, status: "prepared" }),
 		);
+	});
+
+	it("rejects outbound body provenance drift before resolving the approval token", async () => {
+		const harness = createLedgerHarness();
+		const bridge = createBridge(harness);
+		const outbound = harness.ledger.prepare(
+			outboundPrepareInput({ renderedBody: "I'll pick up dinner at 20:00." }),
+		);
+		harness.accept("outbound-token", outbound);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_body_provenance_mismatch",
+			reason: "outbound rendered body does not match the approved requested body",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("fails closed when outbound execution has no live conversation resolver", async () => {
+		const harness = createLedgerHarness();
+		const bridge = createBridge(harness, { resolveAuthorizedOutboundConversation: undefined });
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_conversation_resolver_missing",
+			reason: "outbound conversation authorization resolver is not configured",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("rechecks live outbound conversation authorization before resolving approvals", async () => {
+		const harness = createLedgerHarness();
+		const bridge = createBridge(harness, { resolveAuthorizedOutboundConversation: () => null });
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_conversation_not_authorized",
+			reason: "outbound conversation is not authorized for execution",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("rejects self-consistent forged outbound recipients that do not match the live conversation", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+		const bridge = createBridge(harness, {
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					conversationId: "whatsapp:other-conversation",
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_conversation_mismatch",
+			reason: "outbound conversation does not match persisted recipient binding",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("rejects outbound conversations with no reply-capable actor seat before approval verification", async () => {
+		const harness = createLedgerHarness();
+		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		harness.accept("outbound-token", outbound);
+		const bridge = createBridge(harness, {
+			resolveAuthorizedOutboundConversation: () =>
+				fixtureConversation({
+					token: outbound.conversationRef,
+					conversationId: outbound.resolvedDestination.conversationId,
+					members: [],
+				}),
+		});
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: false,
+			code: "outbound_recipient_not_targetable",
+			reason: "outbound conversation has no reply-capable seat for the actor",
+			retryable: false,
+			record: expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+		});
+		expect(harness.resolverCalls).toHaveLength(0);
+		expect(harness.verifierCalls).toHaveLength(0);
+	});
+
+	it("accepts social MCP domain outbound records against public-social relay conversations", async () => {
+		const harness = createLedgerHarness();
+		const base = outboundPrepareInput();
+		const resolvedDestination = {
+			kind: "address" as const,
+			addressRef: "@public-social-user",
+			conversationId: "public-social-conversation",
+		};
+		const outbound = harness.ledger.prepare({
+			...base,
+			profileId: "social",
+			domain: "social",
+			destination: "@public-social-user",
+			resolvedDestination,
+			conversationRef: "conv_social",
+			edgePreparedHash: edgePreparedPayloadHash({
+				channel: base.channel,
+				resolvedDestination,
+				body: base.requestedBody,
+				mediaRefs: base.preparedMediaRefs,
+			}),
+		});
+		harness.accept("outbound-social-token", outbound);
+		const bridge = createBridge(
+			harness,
+			{
+				resolveAuthorizedOutboundConversation: () =>
+					fixtureConversation({
+						token: "conv_social",
+						conversationId: "public-social-conversation",
+						profileId: "social",
+						domain: "public-social",
+						mcpDomain: "social",
+						edgeDomain: "public-social",
+					}),
+			},
+			{ profileId: "social", domain: "social" },
+		);
+
+		await expect(bridge.tc_outbound_execute({ outboundRef: outbound.ref })).resolves.toEqual({
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "outbound-social-token",
+			}),
+		});
 	});
 
 	it("rejects provider self-approval before verifier or sidecar execution", async () => {
@@ -413,9 +569,9 @@ function createLedgerHarness(): {
 	readonly accept: (token: string, record: TelclaudeMcpSideEffectRecord) => void;
 	readonly setNowMs: (nowMs: number) => void;
 	readonly nowMs: () => number;
-	readonly resolveProviderApprovalToken: Parameters<
+	readonly resolveSideEffectApprovalToken: Parameters<
 		typeof createTelclaudeMcpLedgerExecuteDependencies
-	>[0]["providerApprovalTokenResolver"];
+	>[0]["sideEffectApprovalTokenResolver"];
 } {
 	let nowMs = 100_000;
 	let refCounter = 0;
@@ -457,7 +613,7 @@ function createLedgerHarness(): {
 		nowMs() {
 			return nowMs;
 		},
-		resolveProviderApprovalToken({ actionRef, record }) {
+		resolveSideEffectApprovalToken({ actionRef, record }) {
 			resolverCalls.push({ actionRef, recordRef: record.ref });
 			const stored = serverApprovals.get(actionRef);
 			if (!stored) {
@@ -476,8 +632,13 @@ function createLedgerHarness(): {
 					retryable: false,
 				};
 			}
-			serverApprovals.delete(actionRef);
-			return { ok: true, approvalToken: stored.approvalToken };
+			return {
+				ok: true,
+				approvalToken: stored.approvalToken,
+				finalize: () => {
+					serverApprovals.delete(actionRef);
+				},
+			};
 		},
 	};
 }
@@ -487,15 +648,26 @@ function createBridge(
 	options: Omit<Parameters<typeof createTelclaudeMcpLedgerExecuteDependencies>[0], "ledger"> = {},
 	authorityOverrides: Partial<TelclaudeMcpAuthority> = {},
 ) {
+	const hasOutboundResolver = Object.hasOwn(options, "resolveAuthorizedOutboundConversation");
 	return createTelclaudeMcpBridge(baseAuthority(authorityOverrides), {
 		...baseDependencies(),
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger: harness.ledger,
-			providerApprovalTokenResolver:
-				options.providerApprovalTokenResolver ?? harness.resolveProviderApprovalToken,
+			sideEffectApprovalTokenResolver:
+				options.sideEffectApprovalTokenResolver ?? harness.resolveSideEffectApprovalToken,
+			resolveAuthorizedOutboundConversation: hasOutboundResolver
+				? options.resolveAuthorizedOutboundConversation
+				: resolveFixtureConversation,
 			nowMs: options.nowMs ?? harness.nowMs,
 			...options,
 		}),
+	});
+}
+
+function resolveFixtureConversation(conversationRef: string): RelayConversation {
+	return fixtureConversation({
+		token: conversationRef,
+		conversationId: conversationRef,
 	});
 }
 
@@ -550,24 +722,89 @@ function providerPrepareInput(
 	};
 }
 
-function outboundPrepareInput() {
+function outboundPrepareInput(
+	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
+): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const requestedBody = "I'll pick up dinner at 19:00.";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+15551234567",
+		conversationId: "whatsapp:+15551234567",
+	};
+	const preparedMediaRefs = [
+		{
+			quarantineId: "attachment:menu",
+			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	];
 	return {
 		kind: "outbound" as const,
 		actorId: "operator",
 		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private" as const,
-		channel: "whatsapp",
+		channel,
 		destination: "+15551234567",
-		renderedBody: "I'll pick up dinner at 19:00.",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
 		mediaRefs: ["attachment:menu"],
+		preparedMediaRefs,
 		conversationRef: "whatsapp:+15551234567",
+		authorizationState: "authorized" as const,
 		edgePreparedRef: "edge-outbound-1",
-		edgePreparedHash: "a".repeat(64),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },
 		idempotencyKey: "idem-outbound-1",
+		...overrides,
+	};
+}
+
+function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayConversation {
+	return {
+		token: "whatsapp:+15551234567",
+		channel: "whatsapp",
+		conversationId: "whatsapp:+15551234567",
+		threadId: "thread-private",
+		profileId: "ops",
+		domain: "private",
+		mcpDomain: "private",
+		edgeDomain: "private",
+		routingSession: {
+			sessionId: "session-private",
+			routeKey: "route-private",
+		},
+		authorizationState: "authorized",
+		authorizationScopes: ["message:reply"],
+		members: [
+			{
+				actorId: "operator",
+				channel: "whatsapp",
+				principalId: "+15551234567",
+				principalHash: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+				role: "sender",
+				identityAssurance: "strong_link",
+				scopes: ["message:reply"],
+				revoked: false,
+			},
+		],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: 100_000,
+		...overrides,
 	};
 }
 

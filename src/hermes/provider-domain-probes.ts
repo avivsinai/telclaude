@@ -444,7 +444,7 @@ export async function runTelclaudeProviderDomainProbe(input: {
 	const executeDeps = createTelclaudeMcpLedgerExecuteDependencies({
 		ledger,
 		providerProxy,
-		providerApprovalTokenResolver: ({ actionRef }) => {
+		sideEffectApprovalTokenResolver: ({ actionRef }) => {
 			const approvalToken = serverSideApprovals.get(actionRef);
 			if (!approvalToken) {
 				return {
@@ -454,8 +454,13 @@ export async function runTelclaudeProviderDomainProbe(input: {
 					retryable: true,
 				};
 			}
-			serverSideApprovals.delete(actionRef);
-			return { ok: true, approvalToken };
+			return {
+				ok: true,
+				approvalToken,
+				finalize: () => {
+					serverSideApprovals.delete(actionRef);
+				},
+			};
 		},
 		providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce, params }) => {
 			observations.sidecarTokenIssuerCallCount += 1;

@@ -101,6 +101,8 @@ type PreparedBinding = {
 	readonly preparedHash: string;
 };
 
+export type EdgePreparedPayloadMediaRef = Pick<AttachmentRef, "quarantineId" | "contentHash">;
+
 type QuarantinedAttachment = {
 	readonly ref: AttachmentRef;
 	readonly raw?: string;
@@ -265,7 +267,7 @@ export class TelclaudeEdgeRuntime {
 		for (const mediaRef of request.mediaRefs) {
 			this.assertAttachmentUsable(mediaRef, conversationRef);
 		}
-		const preparedHash = preparedPayloadHash({
+		const preparedHash = edgePreparedPayloadHash({
 			channel: request.channel,
 			resolvedDestination,
 			body: request.requestedBody,
@@ -325,7 +327,7 @@ export class TelclaudeEdgeRuntime {
 		if (!binding) {
 			this.deny("outbound.recipient-body-bound", "Prepared outbound was not edge-issued");
 		}
-		const preparedHash = preparedPayloadHash({
+		const preparedHash = edgePreparedPayloadHash({
 			channel: prepared.channel,
 			resolvedDestination: prepared.resolvedDestination,
 			body: prepared.finalRenderedBody,
@@ -903,11 +905,11 @@ function isTargetableRecipientRole(role: ConversationRef["recipients"][number]["
 	return role === "sender" || role === "recipient";
 }
 
-function preparedPayloadHash(input: {
+export function edgePreparedPayloadHash(input: {
 	readonly channel: EdgeChannel;
 	readonly resolvedDestination: PreparedOutbound["resolvedDestination"];
 	readonly body: string;
-	readonly mediaRefs: readonly AttachmentRef[];
+	readonly mediaRefs: readonly EdgePreparedPayloadMediaRef[];
 }): string {
 	return sha256Hex({
 		channel: input.channel,

@@ -790,7 +790,7 @@ function createProbeBridge(
 		...createTelclaudeMcpLedgerExecuteDependencies({
 			ledger,
 			providerProxy,
-			providerApprovalTokenResolver: ({ actionRef }) => {
+			sideEffectApprovalTokenResolver: ({ actionRef }) => {
 				const approvalToken = providerApprovals.get(actionRef);
 				if (!approvalToken) {
 					return {
@@ -800,8 +800,13 @@ function createProbeBridge(
 						retryable: true,
 					};
 				}
-				providerApprovals.delete(actionRef);
-				return { ok: true, approvalToken };
+				return {
+					ok: true,
+					approvalToken,
+					finalize: () => {
+						providerApprovals.delete(actionRef);
+					},
+				};
 			},
 			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
 				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,

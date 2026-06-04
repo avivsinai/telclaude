@@ -3,6 +3,7 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectApprovalVerifier,
 	generateTelclaudeMcpSideEffectApprovalToken,
@@ -33,6 +34,7 @@ import {
 	type TelclaudeMcpProviderSideEffectPrepareInput,
 	type TelclaudeMcpSideEffectLedger,
 } from "../../src/hermes/mcp/side-effect-ledger.js";
+import type { RelayConversation } from "../../src/hermes/relay-conversation-store.js";
 
 describe("Telclaude live MCP relay-side server", () => {
 	const cleanup: Array<() => void | Promise<void>> = [];
@@ -548,9 +550,11 @@ describe("Telclaude live MCP relay-side server", () => {
 		]);
 	});
 
-	it("leaves outbound execute fail-closed until server-side approval resolution lands", async () => {
+	it("executes outbound side effects through server-side approval resolution only", async () => {
 		const harness = createHarness(cleanup);
 		const outbound = harness.ledger.prepare(outboundPrepareInput());
+		const token = await tokenFor(harness, outbound, "jti-live-outbound");
+		harness.storeProviderApproval(outbound.ref, token);
 
 		await expect(
 			harness.server
@@ -563,6 +567,7 @@ describe("Telclaude live MCP relay-side server", () => {
 				)
 				.then(resultOf),
 		).rejects.toThrow("Unrecognized key");
+
 		expect(
 			resultOf(
 				await harness.server.handleJsonRpc(
@@ -573,13 +578,15 @@ describe("Telclaude live MCP relay-side server", () => {
 				),
 			),
 		).toEqual({
-			ok: false,
-			code: "approval_required",
-			reason: "outbound side effects require server-side approval resolution by outboundRef",
-			retryable: false,
+			ok: true,
+			record: expect.objectContaining({
+				ref: outbound.ref,
+				status: "executed",
+				approvalId: "jti-live-outbound",
+			}),
 		});
 		expect(harness.ledger.get(outbound.ref)).toEqual(
-			expect.objectContaining({ ref: outbound.ref, status: "prepared" }),
+			expect.objectContaining({ ref: outbound.ref, status: "executed" }),
 		);
 	});
 });
@@ -673,7 +680,7 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 			},
 			providerApprovalTokenIssuer: ({ providerId, service, action, approvalNonce }) =>
 				`sidecar:${providerId}:${service}:${action}:${approvalNonce}`,
-			providerApprovalTokenResolver: ({ actionRef }) => {
+			sideEffectApprovalTokenResolver: ({ actionRef }) => {
 				const approvalToken = providerApprovals.get(actionRef);
 				if (!approvalToken) {
 					return {
@@ -683,9 +690,19 @@ function createHarness(cleanup: Array<() => void | Promise<void>>) {
 						retryable: true,
 					};
 				}
-				providerApprovals.delete(actionRef);
-				return { ok: true, approvalToken };
+				return {
+					ok: true,
+					approvalToken,
+					finalize: () => {
+						providerApprovals.delete(actionRef);
+					},
+				};
 			},
+			resolveAuthorizedOutboundConversation: (conversationRef) =>
+				fixtureConversation({
+					token: conversationRef,
+					conversationId: conversationRef,
+				}),
 			bindHost: "telclaude",
 			networkName: "telclaude-hermes-relay",
 			nowMs: () => 120_000,
@@ -779,23 +796,85 @@ function providerPrepareInput(
 function outboundPrepareInput(
 	overrides: Partial<Omit<TelclaudeMcpOutboundSideEffectPrepareInput, "kind">> = {},
 ): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const requestedBody = "I'll pick up dinner at 19:00.";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+15551234567",
+		conversationId: "whatsapp:+15551234567",
+	};
+	const preparedMediaRefs = [
+		{
+			quarantineId: "attachment:menu",
+			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	];
 	return {
 		kind: "outbound",
 		actorId: "operator",
 		approverActorId: "operator:outbound-approver",
 		profileId: "ops",
 		domain: "private",
-		channel: "whatsapp",
+		channel,
 		destination: "+15551234567",
-		renderedBody: "I'll pick up dinner at 19:00.",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
 		mediaRefs: ["attachment:menu"],
+		preparedMediaRefs,
 		conversationRef: "whatsapp:+15551234567",
+		authorizationState: "authorized",
 		edgePreparedRef: "edge-outbound-live-1",
-		edgePreparedHash: "a".repeat(64),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: "approval-live-outbound",
 		approvalRevision: 1,
 		approvalMetadata: { category: "family-logistics" },
 		idempotencyKey: "idem-live-outbound",
+		...overrides,
+	};
+}
+
+function fixtureConversation(overrides: Partial<RelayConversation> = {}): RelayConversation {
+	return {
+		token: "whatsapp:+15551234567",
+		channel: "whatsapp",
+		conversationId: "whatsapp:+15551234567",
+		threadId: "thread-private",
+		profileId: "ops",
+		domain: "private",
+		mcpDomain: "private",
+		edgeDomain: "private",
+		routingSession: {
+			sessionId: "session-private",
+			routeKey: "route-private",
+		},
+		authorizationState: "authorized",
+		authorizationScopes: ["message:reply"],
+		members: [
+			{
+				actorId: "operator",
+				channel: "whatsapp",
+				principalId: "+15551234567",
+				principalHash: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+				role: "sender",
+				identityAssurance: "strong_link",
+				scopes: ["message:reply"],
+				revoked: false,
+			},
+		],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: 100_000,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: 100_000,
 		...overrides,
 	};
 }

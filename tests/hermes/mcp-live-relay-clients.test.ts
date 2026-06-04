@@ -139,6 +139,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 	it("prepares provider and outbound side effects in the shared ledger without executing them", async () => {
 		const ledger = testLedger();
 		let providerProxyCalled = false;
+		const requestedApprovals: string[] = [];
 		const clients = createTelclaudeLiveMcpRelayClients({
 			ledger,
 			makeApprovalRequestId: makeApprovalIds(),
@@ -148,6 +149,9 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			},
 			providerWriteApproverActorId: "operator:provider-approver",
 			outboundApproverActorId: "operator:outbound-approver",
+			requestSideEffectApproval: (record) => {
+				requestedApprovals.push(record.ref);
+			},
 		});
 
 		const providerPrepared = (await clients.providerPrepareWrite(
@@ -201,6 +205,30 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			edgePreparedRef: outboundPrepared.edgePreparedRef,
 			edgePreparedHash: outboundPrepared.edgePreparedHash,
 		});
+		expect(requestedApprovals).toEqual([providerPrepared.actionRef, outboundPrepared.outboundRef]);
+	});
+
+	it("revokes prepared side effects when the human approval request cannot be created", async () => {
+		const ledger = testLedger();
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			providerWriteApproverActorId: "operator:provider-approver",
+			requestSideEffectApproval: () => {
+				throw new Error("approval request unavailable");
+			},
+		});
+
+		await expect(clients.providerPrepareWrite(providerPrepare())).rejects.toThrow(
+			"approval request unavailable",
+		);
+		expect(ledger.list()).toEqual([
+			expect.objectContaining({
+				kind: "provider",
+				status: "revoked",
+				revokeReason: "side-effect approval request failed",
+			}),
+		]);
 	});
 
 	it("fails outbound preparation closed when the conversation is not relay-authorized", async () => {
@@ -603,7 +631,7 @@ function mintWhatsappConversation(
 		},
 		members: [
 			{
-				actorId: `actor:${suffix}:sender`,
+				actorId: "operator",
 				principalId: "+15557654321",
 				role: "sender",
 			},

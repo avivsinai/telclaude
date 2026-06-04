@@ -33,6 +33,7 @@ import {
 	setSession,
 } from "../config/sessions.js";
 import { readEnv } from "../env.js";
+import { consumeTelclaudeLiveMcpSideEffectApproval } from "../hermes/mcp/live-side-effect-approvals.js";
 import {
 	executeHermesPrivateQuery,
 	shouldUseHermesPrivateRuntime,
@@ -2651,6 +2652,19 @@ async function handleApproveCommand(
 			return;
 		}
 		await msg.reply("Provider action completed successfully.");
+		return;
+	}
+
+	const sideEffectApproval = await consumeTelclaudeLiveMcpSideEffectApproval({
+		nonce,
+		chatId: msg.chatId,
+	});
+	if (sideEffectApproval.handled) {
+		if (sideEffectApproval.ok) {
+			await msg.reply("Hermes side-effect approved. The prepared action can execute now.");
+		} else {
+			await msg.reply(sideEffectApproval.reason);
+		}
 		return;
 	}
 

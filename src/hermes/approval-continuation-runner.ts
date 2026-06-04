@@ -10,6 +10,7 @@ import {
 	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 	type REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS,
 } from "./approval-continuation.js";
+import { edgePreparedPayloadHash } from "./edge-adapter-runtime.js";
 import {
 	assertHermesArtifactWritesAllowed,
 	type HermesArtifactWriteOptions,
@@ -47,6 +48,7 @@ import {
 	type TelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpSideEffectRecord,
 } from "./mcp/side-effect-ledger.js";
+import type { RelayConversation } from "./relay-conversation-store.js";
 
 export const DEFAULT_APPROVAL_CONTINUATION_FIXTURE_EVIDENCE_DIR = "artifacts/hermes/approval";
 export const APPROVAL_CONTINUATION_FIXTURE_EVIDENCE_SCHEMA_VERSION =
@@ -272,7 +274,7 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		}),
 	});
 	const registry = createTelclaudeMcpAuthorityRegistry();
-	const resolveProviderApprovalToken = ({ actionRef }: { readonly actionRef: string }) => {
+	const resolveSideEffectApprovalToken = ({ actionRef }: { readonly actionRef: string }) => {
 		const approvalToken = serverSideApprovals.get(actionRef);
 		if (!approvalToken) {
 			return {
@@ -282,8 +284,13 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 				retryable: true,
 			};
 		}
-		serverSideApprovals.delete(actionRef);
-		return { ok: true as const, approvalToken };
+		return {
+			ok: true as const,
+			approvalToken,
+			finalize: () => {
+				serverSideApprovals.delete(actionRef);
+			},
+		};
 	};
 	const connection: TelclaudeMcpAuthorityConnection = {
 		sessionKey: "session-private-1",
@@ -297,7 +304,7 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		connection,
 		authority,
 		ledger,
-		resolveProviderApprovalToken,
+		resolveSideEffectApprovalToken,
 		nowMs: () => nowMs,
 	});
 	const wrongActorBridge = registeredBridge({
@@ -305,7 +312,7 @@ async function createProbeHarness(dataDir: string): Promise<ProbeHarness> {
 		connection: { ...connection, sessionKey: "session-private-attacker" },
 		authority: { ...authority, actorId: "telegram:attacker" },
 		ledger,
-		resolveProviderApprovalToken,
+		resolveSideEffectApprovalToken,
 		nowMs: () => nowMs,
 	});
 	return {
@@ -338,9 +345,9 @@ function registeredBridge(input: {
 	connection: TelclaudeMcpAuthorityConnection;
 	authority: TelclaudeMcpAuthority;
 	ledger: TelclaudeMcpSideEffectLedger;
-	resolveProviderApprovalToken: Parameters<
+	resolveSideEffectApprovalToken: Parameters<
 		typeof createTelclaudeMcpLedgerExecuteDependencies
-	>[0]["providerApprovalTokenResolver"];
+	>[0]["sideEffectApprovalTokenResolver"];
 	nowMs: () => number;
 }): TelclaudeMcpBridge {
 	const grant = input.registry.register({
@@ -355,7 +362,7 @@ function registeredBridge(input: {
 		connection: input.connection,
 		dependencies: createProbeDependencies(
 			input.ledger,
-			input.resolveProviderApprovalToken,
+			input.resolveSideEffectApprovalToken,
 			input.nowMs,
 		),
 		nowMs: BASE_NOW_MS,
@@ -368,14 +375,16 @@ function registeredBridge(input: {
 
 function createProbeDependencies(
 	ledger: TelclaudeMcpSideEffectLedger,
-	resolveProviderApprovalToken: Parameters<
+	resolveSideEffectApprovalToken: Parameters<
 		typeof createTelclaudeMcpLedgerExecuteDependencies
-	>[0]["providerApprovalTokenResolver"],
+	>[0]["sideEffectApprovalTokenResolver"],
 	nowMs: () => number,
 ): TelclaudeMcpBridgeDependencies {
 	const executeDependencies = createTelclaudeMcpLedgerExecuteDependencies({
 		ledger,
-		providerApprovalTokenResolver: resolveProviderApprovalToken,
+		sideEffectApprovalTokenResolver: resolveSideEffectApprovalToken,
+		resolveAuthorizedOutboundConversation: (conversationRef) =>
+			fixtureRelayConversation(conversationRef, baseAuthority()),
 		nowMs,
 	});
 	return {
@@ -422,6 +431,8 @@ function prepareOutboundSideEffect(
 	const channel = request.outboundChannels[0]?.trim();
 	if (!channel) throw new Error("outbound channel scope is required");
 	const destination = outboundDestinationForFixture(request);
+	const resolvedDestination = resolvedDestinationForFixture(request);
+	const preparedMediaRefs = preparedMediaRefsForFixture(request.mediaRefs);
 	const record = ledger.prepare({
 		kind: "outbound",
 		actorId: request.actorId,
@@ -430,11 +441,20 @@ function prepareOutboundSideEffect(
 		domain: request.domain,
 		channel,
 		destination,
+		resolvedDestination,
+		requestedBody: request.body,
 		renderedBody: request.body,
 		mediaRefs: request.mediaRefs,
+		preparedMediaRefs,
 		conversationRef: request.conversationToken,
+		authorizationState: "authorized",
 		edgePreparedRef: `edge-outbound-${request.conversationToken}`,
-		edgePreparedHash: fixtureEdgePreparedHash(request),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel: channel as Parameters<typeof edgePreparedPayloadHash>[0]["channel"],
+			resolvedDestination,
+			body: request.body,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: `approval-${request.conversationToken}`,
 		approvalRevision: 1,
 		approvalMetadata: { source: "approval-continuation-probe" },
@@ -442,23 +462,80 @@ function prepareOutboundSideEffect(
 	return { outboundRef: record.ref, approvalRequestId: record.approvalRequestId };
 }
 
-function fixtureEdgePreparedHash(request: TelclaudeMcpOutboundPrepareRequest): string {
-	return crypto
-		.createHash("sha256")
-		.update(
-			JSON.stringify({
-				channel: request.outboundChannels[0],
-				conversationToken: request.conversationToken,
-				replyIntent: request.replyIntent ?? null,
-				body: request.body,
-				mediaRefs: request.mediaRefs,
-			}),
-		)
-		.digest("hex");
-}
-
 function fixtureConversationToken(label: string): string {
 	return `conv_${crypto.createHash("sha256").update(label, "utf8").digest("hex").slice(0, 32)}`;
+}
+
+function fixtureRelayConversation(
+	conversationRef: string,
+	authority: TelclaudeMcpAuthority,
+): RelayConversation {
+	const relayDomain = authority.domain === "social" ? "public-social" : authority.domain;
+	return {
+		token: conversationRef,
+		channel: "whatsapp",
+		conversationId: conversationRef,
+		threadId: conversationRef,
+		profileId: authority.profileId,
+		domain: relayDomain,
+		mcpDomain: authority.domain,
+		edgeDomain: relayDomain === "specialist" ? null : relayDomain,
+		routingSession: {
+			sessionId: `fixture-session:${conversationRef}`,
+			routeKey: `fixture-route:${conversationRef}`,
+		},
+		authorizationState: "authorized",
+		authorizationScopes: ["message:reply"],
+		members: [
+			{
+				actorId: authority.actorId,
+				channel: "whatsapp",
+				principalId: authority.actorId,
+				principalHash: `sha256:${crypto
+					.createHash("sha256")
+					.update(authority.actorId, "utf8")
+					.digest("hex")}`,
+				role: "sender",
+				identityAssurance: "strong_link",
+				scopes: ["message:reply"],
+				revoked: false,
+			},
+		],
+		threadMessageIds: [],
+		inboundCursor: null,
+		auditIds: [],
+		createdAtMs: BASE_NOW_MS,
+		expiresAtMs: null,
+		revokedAtMs: null,
+		revokeReason: null,
+		updatedAtMs: BASE_NOW_MS,
+	};
+}
+
+function resolvedDestinationForFixture(
+	request: TelclaudeMcpOutboundPrepareRequest,
+): Parameters<typeof edgePreparedPayloadHash>[0]["resolvedDestination"] {
+	const conversationId = request.conversationToken;
+	if (!request.replyIntent) {
+		return { kind: "thread", threadId: conversationId, conversationId };
+	}
+	switch (request.replyIntent.kind) {
+		case "thread":
+			return { kind: "thread", threadId: request.replyIntent.threadId, conversationId };
+		case "actor":
+			return { kind: "actor", actorId: request.replyIntent.actorId, conversationId };
+		case "address":
+			return { kind: "address", addressRef: request.replyIntent.addressRef, conversationId };
+	}
+}
+
+function preparedMediaRefsForFixture(
+	refs: readonly string[],
+): Parameters<typeof edgePreparedPayloadHash>[0]["mediaRefs"] {
+	return refs.map((ref) => ({
+		quarantineId: ref,
+		contentHash: `sha256:${crypto.createHash("sha256").update(ref, "utf8").digest("hex")}`,
+	}));
 }
 
 function outboundDestinationForFixture(request: TelclaudeMcpOutboundPrepareRequest): string {
@@ -514,9 +591,9 @@ async function runOutboundFixture(
 		const record = requireRecord(harness.ledger, prepared.outboundRef);
 		observations.push(pass("prepare", "outbound side effect prepared through registered bridge"));
 		const token = await approvalTokenFor(harness, record, "jti-outbound-fixture");
+		harness.storeProviderApproval(prepared.outboundRef, token);
 		const result = await harness.bridge.tc_outbound_execute({
 			outboundRef: prepared.outboundRef,
-			approvalToken: token,
 		});
 		observations.push(assertExecuted(result, "execute", "outbound side effect executed"));
 	} catch (error) {
@@ -540,9 +617,9 @@ async function runCronFixture(
 		const record = requireRecord(harness.ledger, prepared.outboundRef);
 		observations.push(pass("prepare", "cron outbound ref prepared through registered bridge"));
 		const token = await approvalTokenFor(harness, record, "jti-cron-fixture");
+		harness.storeProviderApproval(prepared.outboundRef, token);
 		const result = await harness.bridge.tc_outbound_execute({
 			outboundRef: prepared.outboundRef,
-			approvalToken: token,
 		});
 		observations.push(assertExecuted(result, "execute", "cron approval wait resumed via execute"));
 	} catch (error) {
@@ -707,9 +784,9 @@ async function runMutatedDecisionDenied(
 		nowSeconds: () => Math.floor(harness.nowMs() / 1_000),
 		jti: "jti-mutated-decision",
 	});
+	harness.storeProviderApproval(prepared.outboundRef, token);
 	const result = await harness.bridge.tc_outbound_execute({
 		outboundRef: prepared.outboundRef,
-		approvalToken: token,
 	});
 	const denial = assertFailureCode(
 		result,
@@ -722,9 +799,9 @@ async function runMutatedDecisionDenied(
 		nowSeconds: () => Math.floor(harness.nowMs() / 1_000),
 		jti: "jti-mutated-decision",
 	});
+	harness.storeProviderApproval(prepared.outboundRef, validToken);
 	const recovery = await harness.bridge.tc_outbound_execute({
 		outboundRef: prepared.outboundRef,
-		approvalToken: validToken,
 	});
 	const recoveryObservation = assertExecuted(
 		recovery,

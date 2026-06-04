@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { edgePreparedPayloadHash } from "../../src/hermes/edge-adapter-runtime.js";
 import {
 	createTelclaudeMcpSideEffectLedger,
 	type TelclaudeMcpOutboundSideEffectPrepareInput,
@@ -484,19 +485,41 @@ function providerInput(
 function outboundInput(
 	overrides: Partial<TelclaudeMcpOutboundSideEffectPrepareInput> = {},
 ): TelclaudeMcpOutboundSideEffectPrepareInput {
+	const channel = "whatsapp";
+	const requestedBody = "Send WhatsApp to Dan: on my way";
+	const resolvedDestination = {
+		kind: "address" as const,
+		addressRef: "+15551234567",
+		conversationId: "whatsapp:+15551234567",
+	};
+	const preparedMediaRefs = [
+		{
+			quarantineId: "att-1",
+			contentHash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	];
 	return {
 		kind: "outbound" as const,
 		actorId: "telegram:123",
 		approverActorId: "telegram:operator",
 		profileId: "private",
 		domain: "private" as const,
-		channel: "whatsapp",
+		channel,
 		destination: "+15551234567",
-		renderedBody: "Send WhatsApp to Dan: on my way",
+		resolvedDestination,
+		requestedBody,
+		renderedBody: requestedBody,
 		mediaRefs: ["att-1"],
+		preparedMediaRefs,
 		conversationRef: "whatsapp:+15551234567",
+		authorizationState: "authorized",
 		edgePreparedRef: "edge-outbound-1",
-		edgePreparedHash: "a".repeat(64),
+		edgePreparedHash: edgePreparedPayloadHash({
+			channel,
+			resolvedDestination,
+			body: requestedBody,
+			mediaRefs: preparedMediaRefs,
+		}),
 		approvalRequestId: "approval-outbound-1",
 		approvalRevision: 1,
 		approvalMetadata: { reviewer: "operator" },

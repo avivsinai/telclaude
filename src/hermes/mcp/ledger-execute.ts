@@ -1,5 +1,8 @@
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
+import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
+import type { RelayConversation } from "../relay-conversation-store.js";
+import { targetableRelayConversationMembers } from "../relay-conversation-store.js";
 import type {
 	TelclaudeMcpAuthorityStamp,
 	TelclaudeMcpBridgeDependencies,
@@ -7,6 +10,7 @@ import type {
 	TelclaudeMcpProviderExecuteWriteRequest,
 } from "./bridge.js";
 import type {
+	TelclaudeMcpOutboundSideEffectRecord,
 	TelclaudeMcpProviderSideEffectRecord,
 	TelclaudeMcpSideEffectAuthorizeResult,
 	TelclaudeMcpSideEffectLedger,
@@ -33,11 +37,12 @@ export type TelclaudeMcpProviderSidecarApprovalTokenIssuer = (
 	request: TelclaudeMcpProviderSidecarApprovalTokenRequest,
 ) => string | Promise<string>;
 
-export type TelclaudeMcpProviderApprovalTokenResolution =
+export type TelclaudeMcpSideEffectApprovalTokenResolution =
 	| {
 			readonly ok: true;
 			readonly approvalToken: string;
 			readonly approvalId?: string;
+			readonly finalize?: () => void;
 	  }
 	| {
 			readonly ok: false;
@@ -46,18 +51,24 @@ export type TelclaudeMcpProviderApprovalTokenResolution =
 			readonly retryable: boolean;
 	  };
 
-export type TelclaudeMcpProviderApprovalTokenResolver = (request: {
+export type TelclaudeMcpSideEffectApprovalTokenResolver = (request: {
 	readonly actionRef: string;
-	readonly record: TelclaudeMcpProviderSideEffectRecord;
+	readonly record: TelclaudeMcpSideEffectRecord;
 }) =>
-	| TelclaudeMcpProviderApprovalTokenResolution
-	| Promise<TelclaudeMcpProviderApprovalTokenResolution>;
+	| TelclaudeMcpSideEffectApprovalTokenResolution
+	| Promise<TelclaudeMcpSideEffectApprovalTokenResolution>;
+
+export type TelclaudeMcpOutboundConversationResolver = (
+	conversationRef: string,
+	nowMs: number,
+) => RelayConversation | null | Promise<RelayConversation | null>;
 
 export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly providerProxy?: ProviderProxy;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
-	readonly providerApprovalTokenResolver?: TelclaudeMcpProviderApprovalTokenResolver;
+	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
+	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
 	readonly nowMs?: () => number;
 };
 
@@ -77,8 +88,8 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				options.nowMs?.() ?? Date.now(),
 			);
 			if (!prepared.ok) return prepared;
-			const resolved = await resolveProviderApprovalToken(
-				options.providerApprovalTokenResolver,
+			const resolved = await resolveSideEffectApprovalToken(
+				options.sideEffectApprovalTokenResolver,
 				request.actionRef,
 				prepared.record,
 			);
@@ -86,11 +97,14 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 			const authorized = await options.ledger.verify(request.actionRef, resolved.approvalToken);
 			if (!authorized.ok) return authorized;
 			if (!options.providerProxy) {
-				return options.ledger.markExecuted(
+				const executed = await options.ledger.markExecuted(
 					request.actionRef,
 					authorized.approvalId ?? resolved.approvalId,
 				);
+				if (executed.ok) resolved.finalize?.();
+				return executed;
 			}
+			resolved.finalize?.();
 			const executed = await executeProviderSidecar(
 				options.providerProxy,
 				authorized.record as TelclaudeMcpProviderSideEffectRecord,
@@ -102,38 +116,32 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				authorized.approvalId ?? resolved.approvalId,
 			);
 		},
-		outboundExecute(request) {
-			return authorizeLedgerEffect(options.ledger, "outbound", request.outboundRef, request);
+		async outboundExecute(request) {
+			const nowMs = options.nowMs?.() ?? Date.now();
+			const checked = await outboundLedgerEffectRecord(
+				options.ledger,
+				request.outboundRef,
+				request,
+				nowMs,
+				options.resolveAuthorizedOutboundConversation,
+			);
+			if (!checked.ok) return checked;
+			const resolved = await resolveSideEffectApprovalToken(
+				options.sideEffectApprovalTokenResolver,
+				request.outboundRef,
+				checked.record,
+			);
+			if (!resolved.ok) return resolved;
+			const authorized = await options.ledger.verify(request.outboundRef, resolved.approvalToken);
+			if (!authorized.ok) return authorized;
+			const executed = await options.ledger.markExecuted(
+				request.outboundRef,
+				authorized.approvalId ?? resolved.approvalId,
+			);
+			if (executed.ok) resolved.finalize?.();
+			return executed;
 		},
 	};
-}
-
-async function authorizeLedgerEffect(
-	ledger: TelclaudeMcpSideEffectLedger,
-	expectedKind: TelclaudeMcpSideEffectRecord["kind"],
-	ref: string,
-	request: TelclaudeMcpOutboundExecuteRequest,
-): Promise<TelclaudeMcpSideEffectAuthorizeResult> {
-	const record = ledger.get(ref);
-	if (!record) {
-		return terminalFailure("effect_not_found", "side effect was not prepared");
-	}
-	if (record.kind !== expectedKind) {
-		return terminalFailure(
-			"effect_kind_mismatch",
-			`side effect kind mismatch: expected ${expectedKind}`,
-		);
-	}
-	if (!sameAuthority(record, request)) {
-		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
-	}
-	if (!sameProviderScope(record, request)) {
-		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
-	}
-	return terminalFailure(
-		"approval_required",
-		"outbound side effects require server-side approval resolution by outboundRef",
-	);
 }
 
 function providerLedgerEffectRecord(
@@ -157,36 +165,72 @@ function providerLedgerEffectRecord(
 	if (!sameProviderScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
-	const terminal = providerTerminalFailureBeforeApproval(record, nowMs);
+	const terminal = terminalFailureBeforeApproval(record, nowMs);
 	if (terminal) return terminal;
 	return { ok: true, record };
 }
 
-async function resolveProviderApprovalToken(
-	resolver: TelclaudeMcpProviderApprovalTokenResolver | undefined,
-	actionRef: string,
-	record: TelclaudeMcpProviderSideEffectRecord,
+async function outboundLedgerEffectRecord(
+	ledger: TelclaudeMcpSideEffectLedger,
+	ref: string,
+	request: TelclaudeMcpOutboundExecuteRequest,
+	nowMs: number,
+	resolveAuthorizedOutboundConversation: TelclaudeMcpOutboundConversationResolver | undefined,
 ): Promise<
-	TelclaudeMcpProviderApprovalTokenResolution & {
-		readonly record?: TelclaudeMcpProviderSideEffectRecord;
+	| { readonly ok: true; readonly record: TelclaudeMcpOutboundSideEffectRecord }
+	| TelclaudeMcpSideEffectTerminalFailure
+> {
+	const record = ledger.get(ref);
+	if (!record) {
+		return terminalFailure("effect_not_found", "side effect was not prepared");
+	}
+	if (record.kind !== "outbound") {
+		return terminalFailure("effect_kind_mismatch", "side effect kind mismatch: expected outbound");
+	}
+	if (!sameAuthority(record, request)) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
+	}
+	if (!sameOutboundScope(record, request)) {
+		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
+	}
+	const terminal = terminalFailureBeforeApproval(record, nowMs);
+	if (terminal) return terminal;
+	const edgeFailure = edgePreparedHashFailure(record);
+	if (edgeFailure) return edgeFailure;
+	const conversationFailure = await liveOutboundConversationFailure(
+		record,
+		resolveAuthorizedOutboundConversation,
+		nowMs,
+	);
+	if (conversationFailure) return conversationFailure;
+	return { ok: true, record };
+}
+
+async function resolveSideEffectApprovalToken(
+	resolver: TelclaudeMcpSideEffectApprovalTokenResolver | undefined,
+	actionRef: string,
+	record: TelclaudeMcpSideEffectRecord,
+): Promise<
+	TelclaudeMcpSideEffectApprovalTokenResolution & {
+		readonly record?: TelclaudeMcpSideEffectRecord;
 	}
 > {
 	if (!resolver) {
 		return {
 			ok: false,
-			code: "provider_approval_token_resolver_missing",
-			reason: "provider approval token resolver is not configured",
+			code: "side_effect_approval_token_resolver_missing",
+			reason: "side-effect approval token resolver is not configured",
 			retryable: false,
 			record,
 		};
 	}
-	let resolved: TelclaudeMcpProviderApprovalTokenResolution;
+	let resolved: TelclaudeMcpSideEffectApprovalTokenResolution;
 	try {
 		resolved = await resolver({ actionRef, record });
 	} catch (error) {
 		return {
 			ok: false,
-			code: "provider_approval_token_unavailable",
+			code: "side_effect_approval_token_unavailable",
 			reason: redactSecrets(error instanceof Error ? error.message : String(error)),
 			retryable: true,
 			record,
@@ -199,8 +243,8 @@ async function resolveProviderApprovalToken(
 	if (!approvalToken) {
 		return {
 			ok: false,
-			code: "provider_approval_token_unavailable",
-			reason: "provider approval token resolver returned an empty token",
+			code: "side_effect_approval_token_unavailable",
+			reason: "side-effect approval token resolver returned an empty token",
 			retryable: true,
 			record,
 		};
@@ -209,11 +253,12 @@ async function resolveProviderApprovalToken(
 		ok: true,
 		approvalToken,
 		...(resolved.approvalId ? { approvalId: resolved.approvalId } : {}),
+		...(resolved.finalize ? { finalize: resolved.finalize } : {}),
 	};
 }
 
-function providerTerminalFailureBeforeApproval(
-	record: TelclaudeMcpProviderSideEffectRecord,
+function terminalFailureBeforeApproval(
+	record: TelclaudeMcpSideEffectRecord,
 	nowMs: number,
 ): TelclaudeMcpSideEffectTerminalFailure | null {
 	if (record.status === "executed") {
@@ -226,9 +271,98 @@ function providerTerminalFailureBeforeApproval(
 		return terminalFailure("effect_expired", "side effect approval window expired", record);
 	}
 	if (record.actorId === record.approverActorId) {
+		if (record.kind === "provider") {
+			return terminalFailure(
+				"provider_distinct_human_approver_required",
+				"provider side effects require approval by a distinct human approver",
+				record,
+			);
+		}
 		return terminalFailure(
-			"provider_distinct_human_approver_required",
-			"provider side effects require approval by a distinct human approver",
+			"side_effect_distinct_human_approver_required",
+			"side effects require approval by a distinct human approver",
+			record,
+		);
+	}
+	return null;
+}
+
+function edgePreparedHashFailure(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+): TelclaudeMcpSideEffectTerminalFailure | null {
+	if (record.renderedBody !== record.requestedBody) {
+		return terminalFailure(
+			"outbound_body_provenance_mismatch",
+			"outbound rendered body does not match the approved requested body",
+			record,
+		);
+	}
+	const preparedHash = edgePreparedPayloadHash({
+		channel: record.channel as Parameters<typeof edgePreparedPayloadHash>[0]["channel"],
+		resolvedDestination: record.resolvedDestination,
+		body: record.requestedBody,
+		mediaRefs: record.preparedMediaRefs,
+	});
+	if (preparedHash !== record.edgePreparedHash) {
+		return terminalFailure(
+			"edge_prepared_hash_mismatch",
+			"edge prepared hash does not match persisted outbound evidence",
+			record,
+		);
+	}
+	return null;
+}
+
+async function liveOutboundConversationFailure(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+	resolveAuthorizedOutboundConversation: TelclaudeMcpOutboundConversationResolver | undefined,
+	nowMs: number,
+): Promise<TelclaudeMcpSideEffectTerminalFailure | null> {
+	if (!resolveAuthorizedOutboundConversation) {
+		return terminalFailure(
+			"outbound_conversation_resolver_missing",
+			"outbound conversation authorization resolver is not configured",
+			record,
+		);
+	}
+	let conversation: RelayConversation | null;
+	try {
+		conversation = await resolveAuthorizedOutboundConversation(record.conversationRef, nowMs);
+	} catch (error) {
+		return terminalFailure(
+			"outbound_conversation_not_authorized",
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+			record,
+		);
+	}
+	if (!conversation) {
+		return terminalFailure(
+			"outbound_conversation_not_authorized",
+			"outbound conversation is not authorized for execution",
+			record,
+		);
+	}
+	if (
+		conversation.token !== record.conversationRef ||
+		conversation.profileId !== record.profileId ||
+		conversation.channel !== record.channel ||
+		conversation.mcpDomain !== record.domain ||
+		conversation.conversationId !== record.resolvedDestination.conversationId
+	) {
+		return terminalFailure(
+			"outbound_conversation_mismatch",
+			"outbound conversation does not match persisted recipient binding",
+			record,
+		);
+	}
+	const targetableMembers = targetableRelayConversationMembers(conversation);
+	if (
+		targetableMembers.length === 0 ||
+		!targetableMembers.some((member) => member.actorId === record.actorId)
+	) {
+		return terminalFailure(
+			"outbound_recipient_not_targetable",
+			"outbound conversation has no reply-capable seat for the actor",
 			record,
 		);
 	}
@@ -329,6 +463,13 @@ function sameProviderScope(
 		"providerScopes" in request &&
 		request.providerScopes.some((providerId) => providerId === record.providerId)
 	);
+}
+
+function sameOutboundScope(
+	record: TelclaudeMcpOutboundSideEffectRecord,
+	request: TelclaudeMcpOutboundExecuteRequest,
+): boolean {
+	return request.outboundChannels.some((channel) => channel === record.channel);
 }
 
 function terminalFailure(
