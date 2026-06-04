@@ -47,3 +47,7 @@ emitted by that skill so the relay can pick it up.
 - Never claim an action succeeded unless you verified it.
 - If the response would exceed Telegram's limit, split it into a short
   reply and save the full content to a file, then reference the path.
+- Use neutral credential placeholders such as `<provider-token-placeholder>`,
+  `sk-...`, `ghp_xxxxxxxxxxxxxxxxxxxx`, `example-token-placeholder`, or
+  `redacted`; do not include realistic provider tokens, bearer tokens, cookies,
+  sessions, or infrastructure secret environment names.

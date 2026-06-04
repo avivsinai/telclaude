@@ -194,6 +194,32 @@ describe("skill-manage create", () => {
 		expect(fs.existsSync(path.join(skillRoot, "agent", "telegram", "curl-install"))).toBe(false);
 	});
 
+	it("accepts neutral credential placeholders in managed skill examples", () => {
+		const result = createManagedSkill({
+			name: "placeholder-examples",
+			markdown: skillMarkdown("placeholder-examples", {
+				body: [
+					'Use Authorization: "Bearer <provider-token-placeholder>" in examples.',
+					"Use sk-... for API-key-shaped examples.",
+					"Use ghp_xxxxxxxxxxxxxxxxxxxx for GitHub-token-shaped examples.",
+					"Use example-token-placeholder or redacted for opaque values.",
+				].join("\n"),
+			}),
+			persona: { kind: "telegram" },
+			actorTier: "WRITE_LOCAL",
+			userId: "tg:1",
+			cwd: projectRoot,
+			skillRoot,
+			snapshotRoot,
+			auditPath,
+			now,
+		});
+
+		expect(result.success).toBe(true);
+		if (!result.success) return;
+		expect(fs.existsSync(path.join(result.targetDir, "SKILL.md"))).toBe(true);
+	});
+
 	it("rejects private URLs, infra secrets, shell metachar chains, and outside file targets", () => {
 		const cases = [
 			{

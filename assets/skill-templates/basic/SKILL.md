@@ -40,3 +40,7 @@ attachments, mention the path convention (for example `/media/outbox/...`).
 - Keep allowed-tools minimal. Add tools only after you have a concrete need.
 - Avoid network calls unless the skill explicitly requires them.
 - Never request secrets or environment variables from the user.
+- Use neutral credential placeholders such as `<provider-token-placeholder>`,
+  `sk-...`, `ghp_xxxxxxxxxxxxxxxxxxxx`, `example-token-placeholder`, or
+  `redacted`; do not include realistic provider tokens, bearer tokens, cookies,
+  sessions, or infrastructure secret environment names.

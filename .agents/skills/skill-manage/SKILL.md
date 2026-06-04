@@ -159,3 +159,4 @@ pnpm dev maintenance skill-manage rename \
 - Every attempt is written to the skill-manage audit log.
 - Bash examples must avoid shell chaining, pipes, redirection, command substitution, and process substitution.
 - Secret names, secret-looking values, private URLs, metadata URLs, and sensitive host filesystem paths are rejected.
+- Use neutral credential placeholders such as `<provider-token-placeholder>`, `sk-...`, `ghp_xxxxxxxxxxxxxxxxxxxx`, `example-token-placeholder`, or `redacted`; do not include realistic provider tokens, bearer tokens, cookies, sessions, or infrastructure secret environment names.

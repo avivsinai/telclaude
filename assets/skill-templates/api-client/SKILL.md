@@ -75,3 +75,7 @@ in your reply so the relay can forward the file to the user.
   blocks them and the hook layer returns a descriptive error.
 - Never ask the user for API keys or OAuth tokens. The relay handles auth.
 - Do not log or echo response bodies that may contain secrets.
+- Use neutral credential placeholders such as `<provider-token-placeholder>`,
+  `sk-...`, `ghp_xxxxxxxxxxxxxxxxxxxx`, `example-token-placeholder`, or
+  `redacted`; do not include realistic provider tokens, bearer tokens, cookies,
+  sessions, or infrastructure secret environment names.

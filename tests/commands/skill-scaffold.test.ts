@@ -7,6 +7,11 @@ import { scanSkill } from "../../src/security/skill-scanner.js";
 
 const TEMPLATES_ROOT = path.resolve(__dirname, "..", "..", "assets", "skill-templates");
 
+function requiredPath(value: string | undefined, label: string): string {
+	if (!value) throw new Error(`Expected ${label} to be set`);
+	return value;
+}
+
 describe("skill-scaffold", () => {
 	let tempRoot = "";
 	let draftRoot = "";
@@ -33,10 +38,11 @@ describe("skill-scaffold", () => {
 		});
 
 		expect(result.success).toBe(true);
-		expect(result.skillMdPath).toBe(path.join(draftRoot, "my-skill", "SKILL.md"));
-		expect(fs.existsSync(result.skillMdPath!)).toBe(true);
+		const skillMdPath = requiredPath(result.skillMdPath, "skillMdPath");
+		expect(skillMdPath).toBe(path.join(draftRoot, "my-skill", "SKILL.md"));
+		expect(fs.existsSync(skillMdPath)).toBe(true);
 
-		const content = fs.readFileSync(result.skillMdPath!, "utf8");
+		const content = fs.readFileSync(skillMdPath, "utf8");
 		expect(content).toMatch(/^---/);
 		expect(content).toContain("name: my-skill");
 		expect(content).toContain("description: Does the thing. Use when users ask for thing.");
@@ -65,8 +71,10 @@ describe("skill-scaffold", () => {
 			templatesRoot: TEMPLATES_ROOT,
 		});
 		expect(result.success).toBe(true);
-		const preview = fs.readFileSync(result.previewPath!, "utf8");
+		const preview = fs.readFileSync(requiredPath(result.previewPath, "previewPath"), "utf8");
 		expect(preview).toContain("Promotion checklist");
+		expect(preview).toContain("neutral credential placeholders");
+		expect(preview).toContain("<provider-token-placeholder>");
 		expect(preview).toContain("telclaude skills scan");
 		expect(preview).toContain("telclaude skills doctor");
 		expect(preview).toContain("telclaude skills promote preview-skill");
@@ -81,8 +89,10 @@ describe("skill-scaffold", () => {
 			templatesRoot: TEMPLATES_ROOT,
 		});
 		expect(result.success).toBe(true);
-		const content = fs.readFileSync(result.skillMdPath!, "utf8");
+		const content = fs.readFileSync(requiredPath(result.skillMdPath, "skillMdPath"), "utf8");
 		expect(content).toContain("---");
+		expect(content).toContain("neutral credential placeholders");
+		expect(content).toContain("sk-...");
 		expect(content).not.toContain("{{");
 	});
 
@@ -138,7 +148,7 @@ describe("skill-scaffold", () => {
 			templatesRoot: TEMPLATES_ROOT,
 		});
 		expect(result.success).toBe(true);
-		const scan = scanSkill(result.draftDir!);
+		const scan = scanSkill(requiredPath(result.draftDir, "draftDir"));
 		expect(scan.blocked).toBe(false);
 		expect(scan.counts.critical).toBe(0);
 		expect(scan.counts.high).toBe(0);
