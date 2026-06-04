@@ -1737,14 +1737,14 @@ describe("Hermes cutover rollback relay key anchoring", () => {
 });
 
 describe("Hermes archived relay public-key validation options", () => {
-	it("accepts signed probe evidence through a trusted relay public-key lockfile", () => {
+	it("accepts signed probe evidence through a trusted relay public-key lockfile", async () => {
 		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,
@@ -1768,7 +1768,7 @@ describe("Hermes archived relay public-key validation options", () => {
 		}
 	});
 
-	it("rejects signed probe evidence when the archived lockfile pins a different relay key", () => {
+	it("rejects signed probe evidence when the archived lockfile pins a different relay key", async () => {
 		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
@@ -1776,7 +1776,7 @@ describe("Hermes archived relay public-key validation options", () => {
 		const attackerKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,
@@ -1804,7 +1804,7 @@ describe("Hermes archived relay public-key validation options", () => {
 		}
 	});
 
-	it("uses the relay public-key env instead of falling back to a valid lockfile", () => {
+	it("uses the relay public-key env instead of falling back to a valid lockfile", async () => {
 		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
@@ -1812,7 +1812,7 @@ describe("Hermes archived relay public-key validation options", () => {
 		const attackerKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = trustedKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = trustedKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,
@@ -1838,14 +1838,14 @@ describe("Hermes archived relay public-key validation options", () => {
 		}
 	});
 
-	it("fails signed probe verification when archived validation has no env or valid lockfile", () => {
+	it("fails signed probe verification when archived validation has no env or valid lockfile", async () => {
 		const originalRelayPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const originalLockPath = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,
@@ -1875,13 +1875,13 @@ describe("Hermes archived relay public-key validation options", () => {
 });
 
 describe("Hermes cutover edge-adapter evidence validation", () => {
-	it("refuses schema-only edge contract-unit evidence as cutover enforcement", () => {
+	it("refuses schema-only edge contract-unit evidence as cutover enforcement", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
 		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,
@@ -1900,13 +1900,13 @@ describe("Hermes cutover edge-adapter evidence validation", () => {
 		);
 	});
 
-	it("fails edge feature evidence when a required denial is missing", () => {
+	it("fails edge feature evidence when a required denial is missing", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-edge-cutover-"));
 		const evidencePath = path.join(tempDir, "edge-whatsapp.json");
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
-		const evidence = buildEdgeAdapterProbeEvidence({
+		const evidence = await buildEdgeAdapterProbeEvidence({
 			surfaceId: "edge.whatsapp",
 			observedAt: "2026-05-31T09:00:00.000Z",
 			allowRun: true,

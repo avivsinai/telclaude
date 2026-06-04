@@ -42,7 +42,7 @@ describe("Telclaude edge adapter runtime", () => {
 		);
 	});
 
-	it("prepares outbound sends as edge-owned refs and denies mutation, credentials, and replay", () => {
+	it("prepares outbound sends as edge-owned refs and denies mutation, credentials, and replay", async () => {
 		const runtime = createTelclaudeEdgeRuntime({ now: () => observedAt });
 		const inbound = runtime.ingest({
 			channel: "whatsapp",
@@ -180,21 +180,21 @@ describe("Telclaude edge adapter runtime", () => {
 			authorizingActor: inbound.actorRef,
 		});
 		expect(prepared.edgePreparedHash).toMatch(/^[a-f0-9]{64}$/);
-		expectDenied(
+		await expectDeniedAsync(
 			() =>
 				runtime.executeOutbound({
 					preparedOutbound: { ...prepared, finalRenderedBody: "mutated" },
 				}),
 			"outbound.recipient-body-bound",
 		);
-		expectDenied(
+		await expectDeniedAsync(
 			() =>
 				runtime.executeOutbound({
 					preparedOutbound: { ...prepared, edgePreparedHash: "b".repeat(64) },
 				}),
 			"outbound.recipient-body-bound",
 		);
-		expectDenied(
+		await expectDeniedAsync(
 			() =>
 				runtime.executeOutbound({
 					preparedOutbound: prepared,
@@ -203,14 +203,83 @@ describe("Telclaude edge adapter runtime", () => {
 			"outbound.approval-token-denied",
 		);
 
-		const receipt = runtime.executeOutbound({ preparedOutbound: prepared });
+		const receipt = await runtime.executeOutbound({ preparedOutbound: prepared });
 		expect(receipt).toMatchObject({
 			schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
 			outboundRef: prepared.outboundRef,
 			deliveryStatus: "sent",
 		});
 		expect(JSON.stringify(receipt)).not.toContain("raw-token");
-		expectDenied(
+		await expectDeniedAsync(
+			() => runtime.executeOutbound({ preparedOutbound: prepared }),
+			"outbound.replay-denied",
+		);
+	});
+
+	it("delegates authorized execution to an injected outbound dispatcher", async () => {
+		const delivered: unknown[] = [];
+		const runtime = createTelclaudeEdgeRuntime({
+			now: () => observedAt,
+			deliver: async (prepared) => {
+				delivered.push(prepared);
+				return {
+					schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+					outboundRef: prepared.outboundRef,
+					platformMessageId: "edge-connector-message-1",
+					deliveryStatus: "sent",
+					timestamps: {
+						observedAt,
+						sentAt: observedAt,
+					},
+					retry: {
+						attempt: 1,
+						maxAttempts: prepared.retryPolicy.maxAttempts,
+						idempotencyKey: prepared.idempotencyKey,
+					},
+				};
+			},
+		});
+		const inbound = runtime.ingest({
+			channel: "email",
+			domain: "public",
+			text: "reply please",
+		});
+		const prepared = runtime.prepareOutbound({
+			request: {
+				schemaVersion: EdgeAdapterSchemaVersions.outboundRequest,
+				channel: "email",
+				recipient: {
+					kind: "thread",
+					threadId: inbound.conversationRef.threadId,
+				},
+				requestedBody: "Reply through email edge",
+				mediaRefs: [],
+				conversationRef: inbound.conversationRef,
+				correlationId: "runtime-dispatch-test-1",
+			},
+			authorizingActor: inbound.actorRef,
+		});
+
+		await expectDeniedAsync(
+			() =>
+				runtime.executeOutbound({
+					preparedOutbound: prepared,
+					transportCredentials: { token: "raw-token" },
+				}),
+			"outbound.transport-credentials-denied",
+		);
+		expect(delivered).toHaveLength(0);
+
+		const receipt = await runtime.executeOutbound({ preparedOutbound: prepared });
+
+		expect(delivered).toEqual([prepared]);
+		expect(receipt).toMatchObject({
+			schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+			outboundRef: prepared.outboundRef,
+			platformMessageId: "edge-connector-message-1",
+			deliveryStatus: "sent",
+		});
+		await expectDeniedAsync(
 			() => runtime.executeOutbound({ preparedOutbound: prepared }),
 			"outbound.replay-denied",
 		);
@@ -536,6 +605,18 @@ describe("Telclaude edge adapter runtime", () => {
 function expectDenied(fn: () => unknown, control: string): void {
 	try {
 		fn();
+		throw new Error(`expected ${control} denial`);
+	} catch (error) {
+		expect(isTelclaudeEdgeRuntimeDeniedError(error, control)).toBe(true);
+	}
+}
+
+async function expectDeniedAsync(
+	fn: () => unknown | Promise<unknown>,
+	control: string,
+): Promise<void> {
+	try {
+		await fn();
 		throw new Error(`expected ${control} denial`);
 	} catch (error) {
 		expect(isTelclaudeEdgeRuntimeDeniedError(error, control)).toBe(true);

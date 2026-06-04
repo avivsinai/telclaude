@@ -3184,7 +3184,7 @@ export function registerHermesCommand(program: Command): void {
 						return;
 					}
 				}
-				const report = buildEdgeAdapterProbeEvidence({
+				const report = await buildEdgeAdapterProbeEvidence({
 					surfaceId: surface,
 					allowRun: options.allowRun === true,
 				});

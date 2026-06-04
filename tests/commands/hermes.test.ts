@@ -2815,7 +2815,7 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 	for (const [relativePath, surfaceId] of Object.entries(PRO_REVIEW_EDGE_PROBE_ARTIFACTS)) {
 		writeJson(
 			rootArtifact(root, relativePath),
-			buildEdgeAdapterProbeEvidence({ surfaceId, allowRun: true, observedAt }),
+			await buildEdgeAdapterProbeEvidence({ surfaceId, allowRun: true, observedAt }),
 		);
 	}
 	for (const [relativePath, surfaceId] of Object.entries(
@@ -3062,7 +3062,7 @@ async function signedProReviewProbeEvidence(file: string): Promise<Record<string
 	const observedAt = "2026-06-01T09:00:00.000Z";
 	const edgeSurfaceId = PRO_REVIEW_EDGE_PROBE_ARTIFACTS[file];
 	if (edgeSurfaceId) {
-		return buildEdgeAdapterProbeEvidence({
+		return await buildEdgeAdapterProbeEvidence({
 			surfaceId: edgeSurfaceId,
 			allowRun: true,
 			observedAt,
