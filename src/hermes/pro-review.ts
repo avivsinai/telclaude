@@ -1203,22 +1203,48 @@ function signedProbeEvidenceGate(
 		if (read.value.status !== "fail") {
 			return fail(name, `${surfaceId} evidence status is ${String(read.value.status)}`);
 		}
+		if (!isExplicitSignedProbeRedReadinessEvidence(read.value, reportPath)) {
+			const failure = signedProbeSemanticFailure(surfaceId, read.value, validationOptions);
+			return fail(
+				name,
+				`${surfaceId} non-pass evidence is not accepted by the current validator: ${failure}`,
+			);
+		}
 		if (requireGreenEvidence) {
 			return fail(name, `${surfaceId} evidence is explicitly red and cannot be sent`);
 		}
 		return pass(name, `${surfaceId} evidence is explicitly red`);
 	}
-	const failure =
-		surfaceId === "sideeffect.ledger"
-			? sideEffectLedgerProbeEvidenceFailure(surfaceId, read.value, validationOptions)
-			: surfaceId === "providers.approval-binding"
-				? providerApprovalBindingProbeEvidenceFailure(read.value, validationOptions)
-				: surfaceId === "workflow.cron" || surfaceId === "workflow.longrun"
-					? workflowProbeEvidenceFailure(surfaceId, read.value, validationOptions)
-					: edgeAdapterProbeEvidenceFailure(surfaceId, read.value, validationOptions);
+	const failure = signedProbeSemanticFailure(surfaceId, read.value, validationOptions);
 	return failure
 		? fail(name, `${surfaceId} pass evidence is not accepted by the current validator: ${failure}`)
 		: pass(name, `${surfaceId} pass evidence passes current semantic validator`);
+}
+
+function isExplicitSignedProbeRedReadinessEvidence(
+	evidence: Record<string, unknown>,
+	reportPath: string,
+): boolean {
+	return (
+		evidence.schemaVersion === "telclaude.hermes.pro-review-red-probe-fixture.v1" &&
+		evidence.status === "fail" &&
+		evidence.ran === false &&
+		evidence.probeId === path.basename(reportPath, ".json")
+	);
+}
+
+function signedProbeSemanticFailure(
+	surfaceId: string,
+	evidence: unknown,
+	validationOptions: HermesSignedEvidenceValidationOptions,
+): string | null {
+	return surfaceId === "sideeffect.ledger"
+		? sideEffectLedgerProbeEvidenceFailure(surfaceId, evidence, validationOptions)
+		: surfaceId === "providers.approval-binding"
+			? providerApprovalBindingProbeEvidenceFailure(evidence, validationOptions)
+			: surfaceId === "workflow.cron" || surfaceId === "workflow.longrun"
+				? workflowProbeEvidenceFailure(surfaceId, evidence, validationOptions)
+				: edgeAdapterProbeEvidenceFailure(surfaceId, evidence, validationOptions);
 }
 
 function explicitCliHeadlessRedFailure(raw: Record<string, unknown>): string | null {
