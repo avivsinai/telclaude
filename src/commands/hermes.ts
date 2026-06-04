@@ -4474,7 +4474,7 @@ export function registerHermesCommand(program: Command): void {
 				`Hermes pro-review-send: native run ${runId}; inspect with: YOETZ_AGENT=1 ${inspectCommand.join(" ")}`,
 			);
 			const result = await runProReviewYoetzCommand(yoetzCommand, buildProReviewNativeYoetzEnv());
-			const validation =
+			let validation =
 				result.status === 0
 					? validateProReviewYoetzSendOutput({
 							stdout: result.stdout,
@@ -4485,7 +4485,10 @@ export function registerHermesCommand(program: Command): void {
 						})
 					: null;
 			const bundleAfterSendSha256 =
-				result.status === 0 && validation?.status === "pass" ? fileSha256(bundlePath) : null;
+				(result.status === 0 || isRecoverableNativeYoetzReadFailure(result)) &&
+				validation?.status !== "fail"
+					? fileSha256(bundlePath)
+					: null;
 			const bundleValidation =
 				bundleAfterSendSha256 === null
 					? null
@@ -4499,7 +4502,9 @@ export function registerHermesCommand(program: Command): void {
 								detail: `bundle artifact hash changed after send: ${bundleAfterSendSha256}, expected ${bundleSha256}`,
 							};
 			const inspectResult =
-				result.status === 0 && validation?.status === "pass" && bundleValidation?.status === "pass"
+				((result.status === 0 && validation?.status === "pass") ||
+					isRecoverableNativeYoetzReadFailure(result)) &&
+				bundleValidation?.status === "pass"
 					? await runProReviewYoetzCommand(inspectCommand, buildProReviewNativeYoetzEnv())
 					: null;
 			const inspectValidation =
@@ -4509,9 +4514,19 @@ export function registerHermesCommand(program: Command): void {
 							expectedRunId: runId,
 						})
 					: null;
+			if (
+				isRecoverableNativeYoetzReadFailure(result) &&
+				inspectResult?.status === 0 &&
+				inspectValidation?.status === "pass"
+			) {
+				validation = validateProReviewYoetzInspectCompletedResponseOutput({
+					stdout: inspectResult.stdout,
+					expectedRunId: runId,
+					expectedPayloadSha256: payloadSha256,
+				});
+			}
 			const send = {
 				status:
-					result.status === 0 &&
 					validation?.status === "pass" &&
 					bundleValidation?.status === "pass" &&
 					inspectResult?.status === 0 &&
