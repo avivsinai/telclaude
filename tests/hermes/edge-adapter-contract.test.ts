@@ -92,6 +92,7 @@ describe("Hermes edge adapter contract", () => {
 				finalRenderedBody: "On my way",
 				mediaRefs: [attachmentRef],
 				authorizingActor: actorRef,
+				edgePreparedHash: "edge-prepared-hash-1",
 				policyResult: {
 					decision: "allowed",
 					reason: "existing allowlisted thread",

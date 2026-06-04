@@ -154,26 +154,7 @@ export function createTelclaudeLiveMcpRelayClients(
 
 		async outboundPrepare(request) {
 			assertAuthorityMemoryBoundary(request);
-			const record = options.ledger.prepare({
-				kind: "outbound",
-				actorId: request.actorId,
-				approverActorId: request.actorId,
-				profileId: request.profileId,
-				domain: request.domain,
-				channel: request.channel,
-				destination: request.recipient,
-				renderedBody: request.content,
-				mediaRefs: request.mediaRefs,
-				conversationRef: `${request.channel}:${request.recipient}`,
-				approvalRequestId: makeApprovalRequestId(),
-				approvalRevision: 1,
-				approvalMetadata: {
-					source: "hermes-live-mcp",
-					endpointId: request.endpointId,
-					networkNamespace: request.networkNamespace,
-				},
-			});
-			return { outboundRef: record.ref, approvalRequestId: record.approvalRequestId };
+			throw new Error("outbound conversation-token routing requires the S1 edge live path");
 		},
 
 		async auditNote(request: TelclaudeMcpAuditNoteRequest) {

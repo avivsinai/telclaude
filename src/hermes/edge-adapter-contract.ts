@@ -202,6 +202,7 @@ export const PreparedOutboundSchema = z
 		finalRenderedBody: z.string(),
 		mediaRefs: z.array(AttachmentRefSchema),
 		authorizingActor: ActorRefSchema,
+		edgePreparedHash: NonEmptyString,
 		policyResult: z
 			.object({
 				decision: z.enum(["allowed", "approval_required", "denied"]),

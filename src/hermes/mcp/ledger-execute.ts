@@ -130,7 +130,10 @@ async function authorizeLedgerEffect(
 	if (!sameProviderScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
-	return ledger.authorize(ref, request.approvalToken);
+	return terminalFailure(
+		"approval_required",
+		"outbound side effects require server-side approval resolution by outboundRef",
+	);
 }
 
 function providerLedgerEffectRecord(

@@ -418,22 +418,37 @@ function prepareOutboundSideEffect(
 	ledger: TelclaudeMcpSideEffectLedger,
 	request: TelclaudeMcpOutboundPrepareRequest,
 ): PreparedOutbound {
+	const channel = request.outboundChannels[0]?.trim();
+	if (!channel) throw new Error("outbound channel scope is required");
+	const destination = outboundDestinationForFixture(request);
 	const record = ledger.prepare({
 		kind: "outbound",
 		actorId: request.actorId,
 		approverActorId: request.actorId,
 		profileId: request.profileId,
 		domain: request.domain,
-		channel: request.channel,
-		destination: request.recipient,
-		renderedBody: request.content,
+		channel,
+		destination,
+		renderedBody: request.body,
 		mediaRefs: request.mediaRefs,
-		conversationRef: `${request.channel}:${request.recipient}`,
-		approvalRequestId: `approval-${request.channel}-${request.recipient}`,
+		conversationRef: request.conversationToken,
+		approvalRequestId: `approval-${request.conversationToken}`,
 		approvalRevision: 1,
 		approvalMetadata: { source: "approval-continuation-probe" },
 	});
 	return { outboundRef: record.ref, approvalRequestId: record.approvalRequestId };
+}
+
+function outboundDestinationForFixture(request: TelclaudeMcpOutboundPrepareRequest): string {
+	if (!request.replyIntent) return request.conversationToken;
+	switch (request.replyIntent.kind) {
+		case "thread":
+			return request.replyIntent.threadId;
+		case "actor":
+			return request.replyIntent.actorId;
+		case "address":
+			return request.replyIntent.addressRef;
+	}
 }
 
 async function runProviderFixture(
