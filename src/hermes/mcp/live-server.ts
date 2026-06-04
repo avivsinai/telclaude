@@ -12,6 +12,7 @@ import {
 	type TelclaudeMcpToolName,
 } from "./bridge.js";
 import type {
+	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
 	TelclaudeMcpSideEffectApprovalTokenResolver,
@@ -96,6 +97,7 @@ export type CreateTelclaudeLiveMcpRelayHttpServerOptions = {
 	) => ReturnType<typeof proxyProviderRequest>;
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
+	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly bindHost: string;
 	readonly networkName: string;
@@ -146,6 +148,7 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 			providerProxy: options.providerProxy ?? proxyProviderRequest,
 			sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 			resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
+			resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
 			providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 			nowMs: options.nowMs,
 		}),

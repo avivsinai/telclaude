@@ -6,6 +6,7 @@ import type {
 import { createTelclaudeMcpAuthorityRegistry } from "./authority-registry.js";
 import type { TelclaudeMcpAuthority } from "./bridge.js";
 import type {
+	TelclaudeMcpInboundTurnAuthorityResolver,
 	TelclaudeMcpOutboundConversationResolver,
 	TelclaudeMcpProviderSidecarApprovalTokenIssuer,
 	TelclaudeMcpSideEffectApprovalTokenResolver,
@@ -89,6 +90,7 @@ export type StartTelclaudeLiveMcpRuntimeOptions = {
 	readonly verifyApproval?: TelclaudeMcpSideEffectApprovalVerifier;
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
+	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly nowMs?: () => number;
 	readonly admin?: TelclaudeLiveMcpRuntimeAdminStarter;
@@ -153,6 +155,7 @@ export async function startTelclaudeLiveMcpRuntime(
 		networkName: options.config.networkName,
 		sideEffectApprovalTokenResolver: options.sideEffectApprovalTokenResolver,
 		resolveAuthorizedOutboundConversation: options.resolveAuthorizedOutboundConversation,
+		resolveAuthorizedInboundTurn: options.resolveAuthorizedInboundTurn,
 		providerApprovalTokenIssuer: options.providerApprovalTokenIssuer,
 		nowMs: options.nowMs,
 	});

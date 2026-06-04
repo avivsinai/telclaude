@@ -1,7 +1,10 @@
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../relay/provider-proxy.js";
 import { redactSecrets } from "../../security/output-filter.js";
 import { edgePreparedPayloadHash } from "../edge-adapter-runtime.js";
-import type { RelayConversation } from "../relay-conversation-store.js";
+import type {
+	RelayConversation,
+	RelayConversationInboundTurn,
+} from "../relay-conversation-store.js";
 import { targetableRelayConversationMembers } from "../relay-conversation-store.js";
 import type {
 	TelclaudeMcpAuthorityStamp,
@@ -63,12 +66,24 @@ export type TelclaudeMcpOutboundConversationResolver = (
 	nowMs: number,
 ) => RelayConversation | null | Promise<RelayConversation | null>;
 
+export type TelclaudeMcpInboundTurnAuthorityResolver = (request: {
+	readonly turnConversationRef: string;
+	readonly expectedConversationRef?: string;
+	readonly actorId: string;
+	readonly profileId: string;
+	readonly domain: string;
+	readonly channel?: string;
+	readonly conversationId?: string;
+	readonly nowMs: number;
+}) => RelayConversationInboundTurn | null | Promise<RelayConversationInboundTurn | null>;
+
 export type CreateTelclaudeMcpLedgerExecuteDependenciesOptions = {
 	readonly ledger: TelclaudeMcpSideEffectLedger;
 	readonly providerProxy?: ProviderProxy;
 	readonly providerApprovalTokenIssuer?: TelclaudeMcpProviderSidecarApprovalTokenIssuer;
 	readonly sideEffectApprovalTokenResolver?: TelclaudeMcpSideEffectApprovalTokenResolver;
 	readonly resolveAuthorizedOutboundConversation?: TelclaudeMcpOutboundConversationResolver;
+	readonly resolveAuthorizedInboundTurn?: TelclaudeMcpInboundTurnAuthorityResolver;
 	readonly nowMs?: () => number;
 };
 
@@ -81,11 +96,12 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 ): TelclaudeMcpLedgerExecuteDependencies {
 	return {
 		async providerExecuteWrite(request) {
-			const prepared = providerLedgerEffectRecord(
+			const prepared = await providerLedgerEffectRecord(
 				options.ledger,
 				request.actionRef,
 				request,
 				options.nowMs?.() ?? Date.now(),
+				options.resolveAuthorizedInboundTurn,
 			);
 			if (!prepared.ok) return prepared;
 			const resolved = await resolveSideEffectApprovalToken(
@@ -124,6 +140,7 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 				request,
 				nowMs,
 				options.resolveAuthorizedOutboundConversation,
+				options.resolveAuthorizedInboundTurn,
 			);
 			if (!checked.ok) return checked;
 			const resolved = await resolveSideEffectApprovalToken(
@@ -144,14 +161,16 @@ export function createTelclaudeMcpLedgerExecuteDependencies(
 	};
 }
 
-function providerLedgerEffectRecord(
+async function providerLedgerEffectRecord(
 	ledger: TelclaudeMcpSideEffectLedger,
 	ref: string,
 	request: TelclaudeMcpProviderExecuteWriteRequest,
 	nowMs: number,
-):
+	resolveAuthorizedInboundTurn: TelclaudeMcpInboundTurnAuthorityResolver | undefined,
+): Promise<
 	| { readonly ok: true; readonly record: TelclaudeMcpProviderSideEffectRecord }
-	| TelclaudeMcpSideEffectTerminalFailure {
+	| TelclaudeMcpSideEffectTerminalFailure
+> {
 	const record = ledger.get(ref);
 	if (!record) {
 		return terminalFailure("effect_not_found", "side effect was not prepared");
@@ -162,6 +181,13 @@ function providerLedgerEffectRecord(
 	if (!sameAuthority(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
+	const turnFailure = await liveTurnAuthorityFailure(
+		record,
+		request,
+		nowMs,
+		resolveAuthorizedInboundTurn,
+	);
+	if (turnFailure) return turnFailure;
 	if (!sameProviderScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
@@ -176,6 +202,7 @@ async function outboundLedgerEffectRecord(
 	request: TelclaudeMcpOutboundExecuteRequest,
 	nowMs: number,
 	resolveAuthorizedOutboundConversation: TelclaudeMcpOutboundConversationResolver | undefined,
+	resolveAuthorizedInboundTurn: TelclaudeMcpInboundTurnAuthorityResolver | undefined,
 ): Promise<
 	| { readonly ok: true; readonly record: TelclaudeMcpOutboundSideEffectRecord }
 	| TelclaudeMcpSideEffectTerminalFailure
@@ -190,6 +217,13 @@ async function outboundLedgerEffectRecord(
 	if (!sameAuthority(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
+	const turnFailure = await liveTurnAuthorityFailure(
+		record,
+		request,
+		nowMs,
+		resolveAuthorizedInboundTurn,
+	);
+	if (turnFailure) return turnFailure;
 	if (!sameOutboundScope(record, request)) {
 		return terminalFailure("effect_authority_mismatch", "side effect authority mismatch");
 	}
@@ -204,6 +238,100 @@ async function outboundLedgerEffectRecord(
 	);
 	if (conversationFailure) return conversationFailure;
 	return { ok: true, record };
+}
+
+async function liveTurnAuthorityFailure(
+	record: TelclaudeMcpSideEffectRecord,
+	request: TelclaudeMcpAuthorityStamp,
+	nowMs: number,
+	resolveAuthorizedInboundTurn: TelclaudeMcpInboundTurnAuthorityResolver | undefined,
+): Promise<TelclaudeMcpSideEffectTerminalFailure | null> {
+	if (!record.turnConversationRef) return null;
+	if (request.turnConversationRef !== record.turnConversationRef) {
+		return terminalFailure(
+			"effect_turn_authority_mismatch",
+			"side effect turn authority mismatch",
+			record,
+		);
+	}
+	if (!resolveAuthorizedInboundTurn) {
+		return terminalFailure(
+			"effect_turn_authority_unavailable",
+			"side effect turn authority resolver is not configured",
+			record,
+		);
+	}
+	let turn: RelayConversationInboundTurn | null;
+	try {
+		turn = await resolveAuthorizedInboundTurn(turnAuthorityRequest(record, nowMs));
+	} catch (error) {
+		return terminalFailure(
+			"effect_turn_authority_unavailable",
+			redactSecrets(error instanceof Error ? error.message : String(error)),
+			record,
+		);
+	}
+	if (!turn) {
+		return terminalFailure(
+			"effect_turn_authority_unavailable",
+			"side effect turn authority is unavailable",
+			record,
+		);
+	}
+	if (!sameTurnAuthority(record, turn)) {
+		return terminalFailure(
+			"effect_turn_authority_mismatch",
+			"side effect turn authority mismatch",
+			record,
+		);
+	}
+	return null;
+}
+
+function turnAuthorityRequest(
+	record: TelclaudeMcpSideEffectRecord,
+	nowMs: number,
+): Parameters<TelclaudeMcpInboundTurnAuthorityResolver>[0] {
+	return {
+		turnConversationRef: record.turnConversationRef ?? "",
+		...(record.kind === "outbound"
+			? {
+					expectedConversationRef: record.conversationRef,
+					channel: record.channel,
+					...(record.resolvedDestination.conversationId
+						? { conversationId: record.resolvedDestination.conversationId }
+						: {}),
+				}
+			: {}),
+		actorId: record.actorId,
+		profileId: record.profileId,
+		domain: record.domain,
+		nowMs,
+	};
+}
+
+function sameTurnAuthority(
+	record: TelclaudeMcpSideEffectRecord,
+	turn: RelayConversationInboundTurn,
+): boolean {
+	if (
+		turn.ref !== record.turnConversationRef ||
+		turn.profileId !== record.profileId ||
+		turn.mcpDomain !== record.domain ||
+		turn.senderActorId !== record.actorId
+	) {
+		return false;
+	}
+	if (record.kind !== "outbound") return true;
+	if (
+		turn.conversationToken !== record.conversationRef ||
+		turn.channel !== record.channel ||
+		(record.resolvedDestination.conversationId &&
+			turn.conversationId !== record.resolvedDestination.conversationId)
+	) {
+		return false;
+	}
+	return true;
 }
 
 async function resolveSideEffectApprovalToken(

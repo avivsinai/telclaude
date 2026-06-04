@@ -177,9 +177,11 @@ describe("Telclaude live MCP relay-client adapters", () => {
 		});
 
 		const { token } = mintWhatsappConversation("dinner");
+		const turnConversationRef = mintWhatsappTurn(token, "dinner");
 		const outboundPrepared = (await clients.outboundPrepare(
 			outboundPrepare({
 				conversationToken: token,
+				turnConversationRef,
 				replyIntent: { kind: "address", addressRef: "+15551234567" },
 				body: "I'll pick up dinner at 19:00.",
 			}),
@@ -202,6 +204,7 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			renderedBody: "I'll pick up dinner at 19:00.",
 			mediaRefs: [],
 			conversationRef: token,
+			turnConversationRef,
 			edgePreparedRef: outboundPrepared.edgePreparedRef,
 			edgePreparedHash: outboundPrepared.edgePreparedHash,
 		});
@@ -249,6 +252,79 @@ describe("Telclaude live MCP relay-client adapters", () => {
 			),
 		).rejects.toThrow("outbound conversation unavailable or unauthorized");
 		expect(ledger.list()).toEqual([]);
+	});
+
+	it("requires a live relay turn authority for outbound preparation", async () => {
+		const ledger = testLedger();
+		const edgeRuntime = new CountingEdgeRuntime();
+		let mediaResolutions = 0;
+		const clients = createTelclaudeLiveMcpRelayClients({
+			ledger,
+			makeApprovalRequestId: makeApprovalIds(),
+			outboundApproverActorId: "operator:outbound-approver",
+			edgeRuntime,
+			resolveOutboundMediaRefs: () => {
+				mediaResolutions += 1;
+				return [];
+			},
+		});
+		const { token } = mintWhatsappConversation("turn-required");
+
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+				}),
+			),
+		).rejects.toThrow("outbound turn authority required");
+
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					turnConversationRef: `turn_${"b".repeat(32)}`,
+				}),
+			),
+		).rejects.toThrow("outbound turn authority unavailable or unauthorized");
+
+		const recipientTurn = mintWhatsappTurn(token, "turn-required-recipient", {
+			senderActorId: "actor:turn-required:recipient",
+		});
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					turnConversationRef: recipientTurn,
+				}),
+			),
+		).rejects.toThrow("outbound turn authority mismatch");
+
+		const revokedTurn = mintWhatsappTurn(token, "turn-required-revoked");
+		createRelayConversationStore().revokeInboundTurn(revokedTurn, "test revoked");
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					turnConversationRef: revokedTurn,
+				}),
+			),
+		).rejects.toThrow("outbound turn authority unavailable or unauthorized");
+
+		const expiredTurn = mintWhatsappTurn(token, "turn-required-expired", {
+			expiresAtMs: Date.now() - 1,
+		});
+		await expect(
+			clients.outboundPrepare(
+				outboundPrepare({
+					conversationToken: token,
+					turnConversationRef: expiredTurn,
+				}),
+			),
+		).rejects.toThrow("outbound turn authority unavailable or unauthorized");
+
+		expect(ledger.list()).toEqual([]);
+		expect(mediaResolutions).toBe(0);
+		expect(edgeRuntime.prepareOutboundCalls).toBe(0);
 	});
 
 	it("fails outbound preparation closed for unauthorized channels and non-targetable intents", async () => {
@@ -643,6 +719,22 @@ function mintWhatsappConversation(
 		],
 		...overrides,
 	});
+}
+
+function mintWhatsappTurn(
+	conversationToken: string,
+	suffix: string,
+	overrides: Partial<
+		Parameters<ReturnType<typeof createRelayConversationStore>["mintInboundTurn"]>[0]
+	> = {},
+): string {
+	const { turnRef } = createRelayConversationStore().mintInboundTurn({
+		conversationToken,
+		inboundMessageId: `message-${suffix}`,
+		senderActorId: "operator",
+		...overrides,
+	});
+	return turnRef;
 }
 
 function attachmentGet(
