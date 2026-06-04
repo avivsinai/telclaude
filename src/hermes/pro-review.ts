@@ -2068,6 +2068,135 @@ export function validateProReviewYoetzInspectOutput(input: {
 		: { status: "fail", detail: failures.join("; ") };
 }
 
+export function validateProReviewYoetzInspectCompletedResponseOutput(input: {
+	readonly stdout: string;
+	readonly expectedRunId: string;
+	readonly expectedPayloadSha256?: string;
+	readonly expectedShard?: ProReviewShard;
+	readonly expectedShardPlanSha256?: string;
+}): ProReviewYoetzSendValidation {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(input.stdout);
+	} catch (error) {
+		return {
+			status: "fail",
+			detail: `Yoetz native inspect stdout is not JSON: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	if (!isRecord(parsed)) {
+		return { status: "fail", detail: "Yoetz native inspect stdout is not a JSON object" };
+	}
+	const failures: string[] = [];
+	if (parsed.status !== "ok") failures.push(`status is ${String(parsed.status)}`);
+	if (parsed.transport !== "chrome-extension-native") {
+		failures.push(`transport is ${String(parsed.transport)}`);
+	}
+	const response = parsed.response;
+	if (!isRecord(response)) {
+		failures.push("response is missing or not an object");
+	} else {
+		failures.push(
+			...stringEchoFailures("runId", response.run_id ?? response.runId, input.expectedRunId),
+		);
+		const tabs = response.tabs;
+		if (!Array.isArray(tabs) || tabs.length < 1) {
+			failures.push("response.tabs is missing or empty");
+		} else {
+			const matchingTab = tabs.find(
+				(tab): tab is Record<string, unknown> =>
+					isRecord(tab) && inspectTabOwnershipRunId(tab) === input.expectedRunId,
+			);
+			if (!matchingTab) {
+				failures.push("no inspected tab has ownership.run_id matching expected run");
+			} else {
+				failures.push(
+					...inspectTabCompletedResponseFailures(matchingTab, {
+						expectedRunId: input.expectedRunId,
+						expectedPayloadSha256: input.expectedPayloadSha256,
+						expectedShard: input.expectedShard,
+						expectedShardPlanSha256: input.expectedShardPlanSha256,
+					}),
+				);
+			}
+		}
+	}
+	return failures.length === 0
+		? {
+				status: "pass",
+				detail:
+					"Yoetz native inspect recovered a completed Extended Pro response bound to the expected run",
+			}
+		: { status: "fail", detail: failures.join("; ") };
+}
+
+function inspectTabCompletedResponseFailures(
+	tab: Record<string, unknown>,
+	binding: {
+		readonly expectedRunId: string;
+		readonly expectedPayloadSha256?: string;
+		readonly expectedShard?: ProReviewShard;
+		readonly expectedShardPlanSha256?: string;
+	},
+): string[] {
+	const failures: string[] = [];
+	const inspection = tab.inspection;
+	if (!isRecord(inspection)) return ["response.tabs[0].inspection is missing or not an object"];
+	failures.push(...inspectTabOwnershipFailures(inspection, binding.expectedRunId));
+	const extraction = inspection.extraction;
+	if (!isRecord(extraction)) {
+		failures.push("response.tabs[0].inspection.extraction is missing or not an object");
+	} else {
+		if (extraction.is_generating !== false) {
+			failures.push(`inspection extraction is_generating is ${String(extraction.is_generating)}`);
+		}
+		failures.push(
+			...proReviewResponseFailures(extraction.text, {
+				expectedPayloadSha256: binding.expectedPayloadSha256,
+				expectedShard: binding.expectedShard,
+				expectedShardPlanSha256: binding.expectedShardPlanSha256,
+			}),
+		);
+	}
+	const modelSelection = inspection.model_selection;
+	if (!isRecord(modelSelection)) {
+		failures.push("response.tabs[0].inspection.model_selection is missing or not an object");
+	} else if (!isExtendedProModel(modelSelection.current_model_label)) {
+		failures.push(
+			`inspection model current_model_label is ${String(modelSelection.current_model_label)}`,
+		);
+	}
+	return failures;
+}
+
+function inspectTabOwnershipRunId(tab: Record<string, unknown>): string | null {
+	const inspection = tab.inspection;
+	if (!isRecord(inspection)) return null;
+	const ownership = inspection.ownership;
+	if (!isRecord(ownership)) return null;
+	return typeof ownership.run_id === "string" ? ownership.run_id : null;
+}
+
+function inspectTabOwnershipFailures(
+	inspection: Record<string, unknown>,
+	expectedRunId: string,
+): string[] {
+	const ownership = inspection.ownership;
+	if (!isRecord(ownership)) return ["inspection ownership is missing or not an object"];
+	const failures: string[] = [];
+	const runId = ownership.run_id ?? ownership.runId;
+	if (runId !== expectedRunId) {
+		failures.push(`inspection ownership run_id is ${String(runId)}, expected ${expectedRunId}`);
+	}
+	const windowName = inspection.window_name ?? inspection.windowName;
+	if (typeof windowName !== "string" || !windowName.includes(expectedRunId)) {
+		failures.push("inspection window_name does not contain expected run id");
+	}
+	return failures;
+}
+
 function isExtendedProModel(value: unknown): boolean {
 	return value === "Extended Pro" || value === "extended-pro";
 }
