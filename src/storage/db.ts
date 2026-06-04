@@ -328,6 +328,39 @@ function initializeSchema(database: Database.Database): void {
 		CREATE INDEX IF NOT EXISTS idx_memory_episodes_chat_created
 			ON memory_episodes(chat_id, created_at DESC);
 
+		-- Hermes relay-owned conversation authority for no-fork wrapper routing.
+		CREATE TABLE IF NOT EXISTS hermes_relay_conversations (
+			token TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			conversation_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			profile_id TEXT NOT NULL,
+			domain TEXT NOT NULL CHECK(domain IN ('private','household','public','public-social','specialist')),
+			mcp_domain TEXT NOT NULL CHECK(mcp_domain IN ('private','social','household','public','specialist')),
+			edge_domain TEXT CHECK(edge_domain IN ('private','household','public','public-social')),
+			routing_session_id TEXT NOT NULL,
+			route_key TEXT NOT NULL,
+			authorization_state TEXT NOT NULL CHECK(authorization_state IN ('authorized','approval_required','denied','revoked')),
+			authorization_scopes_json TEXT NOT NULL,
+			members_json TEXT NOT NULL,
+			thread_message_ids_json TEXT NOT NULL DEFAULT '[]',
+			inbound_cursor TEXT,
+			audit_ids_json TEXT NOT NULL DEFAULT '[]',
+			created_at_ms INTEGER NOT NULL,
+			expires_at_ms INTEGER,
+			revoked_at_ms INTEGER,
+			revoke_reason TEXT,
+			updated_at_ms INTEGER NOT NULL
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_hermes_relay_conversation_identity
+			ON hermes_relay_conversations(channel, conversation_id);
+		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_route
+			ON hermes_relay_conversations(route_key);
+		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_expiry
+			ON hermes_relay_conversations(expires_at_ms);
+		CREATE INDEX IF NOT EXISTS idx_hermes_relay_conversation_domain_state
+			ON hermes_relay_conversations(domain, authorization_state);
+
 		-- Cron jobs (local scheduler state)
 		CREATE TABLE IF NOT EXISTS cron_jobs (
 			id TEXT PRIMARY KEY,
