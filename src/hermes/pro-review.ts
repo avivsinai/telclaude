@@ -1874,7 +1874,9 @@ function buildProReviewYoetzPrompt(input: BuildProReviewYoetzCommandInput): stri
 	if (!input.shard) {
 		return [
 			"Review the attached Hermes Pro-review bundle.",
-			"Return a Findings section and a Residual risk section.",
+			"At the top of your response, echo this exact binding line:",
+			`payloadSha256: ${input.payloadSha256 ?? ""}`,
+			"Then return a Findings section and a Residual risk section.",
 		].join("\n");
 	}
 	return [
@@ -2277,9 +2279,13 @@ function proReviewResponseFailures(
 	if (!/\bResidual risk\s*:/i.test(trimmed)) {
 		failures.push("response does not contain a Residual risk section");
 	}
-	if (binding.expectedShard) {
+	if (binding.expectedPayloadSha256) {
 		failures.push(
 			...responseBindingLineFailures(trimmed, "payloadSha256", binding.expectedPayloadSha256),
+		);
+	}
+	if (binding.expectedShard) {
+		failures.push(
 			...responseBindingLineFailures(trimmed, "shardPlanSha256", binding.expectedShardPlanSha256),
 			...responseBindingLineFailures(trimmed, "shardId", binding.expectedShard.shardId),
 			...responseBindingLineFailures(trimmed, "shardSha256", binding.expectedShard.shardSha256),

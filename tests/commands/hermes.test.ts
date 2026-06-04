@@ -2701,6 +2701,104 @@ function proReviewCanary(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function writeRecoverableYoetzNativeReadFailureBin(tempDir: string): string {
+	const binDir = path.join(tempDir, "bin");
+	fs.mkdirSync(binDir, { recursive: true });
+	const yoetzPath = path.join(binDir, "yoetz");
+	fs.writeFileSync(
+		yoetzPath,
+		`#!/usr/bin/env node
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+const args = process.argv.slice(2);
+
+function flagValue(flag) {
+  const index = args.indexOf(flag);
+  return index >= 0 ? args[index + 1] : undefined;
+}
+
+function varValue(name) {
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (args[index] !== "--var") continue;
+    const value = args[index + 1];
+    const prefix = name + "=";
+    if (typeof value === "string" && value.startsWith(prefix)) return value.slice(prefix.length);
+  }
+  return undefined;
+}
+
+function metaPath(runId) {
+  return path.join(os.tmpdir(), "hermes-pro-review-fake-yoetz-" + runId + ".json");
+}
+
+if (args[0] === "browser" && args[1] === "recipe") {
+  const runId = varValue("run_id");
+  if (!runId) {
+    console.error("missing run_id");
+    process.exit(2);
+  }
+  fs.writeFileSync(
+    metaPath(runId),
+    JSON.stringify({
+      runId,
+      payloadSha256: varValue("payload_sha256"),
+      bundleSha256: varValue("bundle_sha256"),
+      bundlePath: flagValue("--bundle")
+    })
+  );
+  console.error("chrome-extension-native: failed to fill whole buffer");
+  process.exit(1);
+}
+
+if (args[0] === "browser" && args[1] === "extension" && args[2] === "inspect") {
+  const runId = flagValue("--run-id");
+  if (!runId) {
+    console.error("missing --run-id");
+    process.exit(2);
+  }
+  const meta = JSON.parse(fs.readFileSync(metaPath(runId), "utf8"));
+  process.stdout.write(JSON.stringify({
+    status: "ok",
+    transport: "chrome-extension-native",
+    response: {
+      run_id: runId,
+      tabs: [
+        {
+          url: "https://chatgpt.com/c/fake",
+          title: "ChatGPT",
+          inspection: {
+            ownership: { run_id: runId },
+            window_name: "yoetz-chatgpt-native:" + runId + ":job_fake",
+            extraction: {
+              is_generating: false,
+              text: [
+                "payloadSha256: " + meta.payloadSha256,
+                "Findings:",
+                "- No P0/P1 findings in this recovered full-context fixture.",
+                "Residual risk:",
+                "- Fixture validates single-run native inspect recovery only."
+              ].join("\\n")
+            },
+            model_selection: { current_model_label: "Extended Pro" }
+          }
+        }
+      ]
+    }
+  }));
+  process.exit(0);
+}
+
+console.error("unexpected yoetz args: " + args.join(" "));
+process.exit(2);
+`,
+		"utf8",
+	);
+	fs.chmodSync(yoetzPath, 0o755);
+	return binDir;
+}
+
 function proReviewRequest(
 	canaryPath: string,
 	overrides: Record<string, unknown> = {},
@@ -7719,6 +7817,86 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
 			expect(report.send.yoetzCommand).not.toContain("--cdp");
 			expect(fs.statSync(path.join(tempDir, bundlePath)).mode & 0o777).toBe(0o600);
+		});
+	});
+
+	it("recovers single Pro review sends from completed native inspect output", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-recover-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			const refreshed = JSON.parse(refresh.stdout) as { payloadSha256: string };
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"approval-1",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-05-31T17:10:00Z",
+				"--payload-sha256",
+				refreshed.payloadSha256,
+			]);
+			expect(approval.exitCode, approval.stdout).toBe(0);
+			const fakeYoetzBin = writeRecoverableYoetzNativeReadFailureBin(tempDir);
+
+			const result = await runHermesCommandWithEnv(
+				[
+					"hermes",
+					"pro-review-send",
+					"--json",
+					"--execute",
+					"--request",
+					requestPath,
+					"--canary",
+					canaryPath,
+					"--bundle-out",
+					bundlePath,
+				],
+				{ PATH: `${fakeYoetzBin}${path.delimiter}${process.env.PATH ?? ""}` },
+			);
+			const report = JSON.parse(result.stdout) as {
+				send: {
+					status: string;
+					exitCode: number;
+					payloadSha256: string;
+					validation: { status: string; detail: string };
+					inspect: { exitCode: number; validation: { status: string } };
+				};
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.send.status).toBe("sent");
+			expect(report.send.exitCode).toBe(1);
+			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
+			expect(report.send.validation).toMatchObject({
+				status: "pass",
+				detail: expect.stringContaining("recovered a completed Extended Pro response"),
+			});
+			expect(report.send.inspect).toMatchObject({
+				exitCode: 0,
+				validation: { status: "pass" },
+			});
 		});
 	});
 

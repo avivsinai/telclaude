@@ -313,6 +313,7 @@ describe("Hermes Pro review gate", () => {
 				"wait_timeout_ms=120000",
 			]),
 		);
+		expect(command).toContainEqual(expect.stringContaining(`payloadSha256: ${payloadSha256}`));
 		expect(command).not.toContain("--allow-cdp-fallback");
 		expect(command).not.toContain("--cdp");
 	});
@@ -392,8 +393,13 @@ describe("Hermes Pro review gate", () => {
 					warnings: [],
 					fallback_used: false,
 					auto_paste_fallback: false,
-					response:
-						"Findings:\n- No P0/P1 findings in this validated fixture.\nResidual risk:\n- Fixture response only proves validator shape.",
+					response: [
+						`payloadSha256: ${approvedPayloadSha256}`,
+						"Findings:",
+						"- No P0/P1 findings in this validated fixture.",
+						"Residual risk:",
+						"- Fixture response only proves validator shape.",
+					].join("\n"),
 				}),
 				expectedExtensionInstanceId: "ext_test",
 				expectedBundlePath: bundlePath,
@@ -401,6 +407,31 @@ describe("Hermes Pro review gate", () => {
 				expectedBundleSha256: bundleSha256,
 			}),
 		).toMatchObject({ status: "pass" });
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+					response:
+						"Findings:\n- No P0/P1 findings in this validated fixture.\nResidual risk:\n- Fixture response omits payload binding.",
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(
+				`response does not echo payloadSha256: ${approvedPayloadSha256}`,
+			),
+		});
 
 		expect(
 			validateProReviewYoetzSendOutput({
@@ -771,6 +802,61 @@ describe("Hermes Pro review gate", () => {
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("response.tabs is missing or empty"),
+		});
+	});
+
+	it("requires completed single-run inspect recovery to echo the payload digest", () => {
+		const payloadSha256 = computeTextDigest("approved payload");
+		const responseText = [
+			`payloadSha256: ${payloadSha256}`,
+			"Findings:",
+			"- No P0/P1 findings in this recovered full-context fixture.",
+			"Residual risk:",
+			"- Fixture response only proves native inspect recovery shape and payload binding.",
+		].join("\n");
+		const inspectOutput = (text: string) =>
+			JSON.stringify({
+				status: "ok",
+				transport: "chrome-extension-native",
+				response: {
+					run_id: "hermes_run_full_context",
+					tabs: [
+						{
+							inspection: {
+								extraction: {
+									text,
+									is_generating: false,
+								},
+								model_selection: {
+									current_model_label: "Extended Pro",
+								},
+								ownership: {
+									run_id: "hermes_run_full_context",
+								},
+								window_name: "yoetz-chatgpt-native:hermes_run_full_context:job_1",
+							},
+						},
+					],
+				},
+			});
+
+		expect(
+			validateProReviewYoetzInspectCompletedResponseOutput({
+				stdout: inspectOutput(responseText),
+				expectedRunId: "hermes_run_full_context",
+				expectedPayloadSha256: payloadSha256,
+			}),
+		).toMatchObject({ status: "pass" });
+
+		expect(
+			validateProReviewYoetzInspectCompletedResponseOutput({
+				stdout: inspectOutput(responseText.replace(`payloadSha256: ${payloadSha256}`, "")),
+				expectedRunId: "hermes_run_full_context",
+				expectedPayloadSha256: payloadSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining(`response does not echo payloadSha256: ${payloadSha256}`),
 		});
 	});
 
