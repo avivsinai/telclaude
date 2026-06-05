@@ -6,7 +6,29 @@ const Sha256Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/i);
 const HexDigest = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const EDGE_ADAPTER_CONTRACT_VERSION = "telclaude.hermes.edge-adapter-contract.v1";
-export const EdgeChannelSchema = z.enum(["whatsapp", "email", "agentmail", "social"]);
+export const EdgeChannelSchema = z.enum([
+	// live: telegram is handled outside the edge channel enum (native transport)
+	"whatsapp",
+	"email",
+	"agentmail",
+	"social",
+	// Claude batch (HTTP/API outbound)
+	"custom-webhook",
+	"slack",
+	"discord",
+	"dashboard",
+	"api-server",
+	// Codex batch (protocol/bridge + social trio)
+	"signal",
+	"matrix",
+	"irc",
+	"sms",
+	"wechat",
+	"feishu",
+	"dingtalk",
+	"bluesky",
+	"mastodon",
+]);
 export const TrustDomainSchema = z.enum(["private", "household", "public", "public-social"]);
 
 export const EDGE_ADAPTER_OPERATION_NAMES = [
