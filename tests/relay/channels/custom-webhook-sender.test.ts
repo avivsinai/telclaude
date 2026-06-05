@@ -4,6 +4,7 @@ import type {
 	CustomWebhookSendResult,
 } from "../../../src/relay/channels/custom-webhook-connector.js";
 import {
+	buildCustomWebhookTargetResolver,
 	type CredentialProxyPost,
 	createCustomWebhookSender,
 } from "../../../src/relay/channels/custom-webhook-sender.js";
@@ -149,5 +150,49 @@ describe("custom-webhook sender (relay transport)", () => {
 		const result = await sender(sendRequest());
 
 		expect(result).toEqual({ ok: true, status: 202 });
+	});
+});
+
+describe("buildCustomWebhookTargetResolver", () => {
+	it("binds the configured addressRef to host + path, PRESERVING the query string", () => {
+		const resolve = buildCustomWebhookTargetResolver({
+			addressRef: "hook:orders",
+			endpoint: "https://hooks.example.test/inbound?team=ops&v=2",
+		});
+		expect(resolve).not.toBeNull();
+		expect(resolve?.({ addressRef: "hook:orders", conversationId: "c1" })).toEqual({
+			host: "hooks.example.test",
+			path: "/inbound?team=ops&v=2",
+		});
+	});
+
+	it("returns undefined for an unknown addressRef (no implicit fan-out to the one endpoint)", () => {
+		const resolve = buildCustomWebhookTargetResolver({
+			addressRef: "hook:orders",
+			endpoint: "https://hooks.example.test/inbound",
+		});
+		expect(resolve?.({ addressRef: "hook:attacker", conversationId: "c1" })).toBeUndefined();
+	});
+
+	it("returns null for an unusable endpoint (userinfo, fragment, non-http(s), or unparseable)", () => {
+		expect(
+			buildCustomWebhookTargetResolver({
+				addressRef: "h",
+				endpoint: "https://user:pass@hooks.example.test/inbound",
+			}),
+		).toBeNull();
+		expect(
+			buildCustomWebhookTargetResolver({
+				addressRef: "h",
+				endpoint: "https://hooks.example.test/inbound#frag",
+			}),
+		).toBeNull();
+		expect(
+			buildCustomWebhookTargetResolver({ addressRef: "h", endpoint: "ftp://hooks.example.test/x" }),
+		).toBeNull();
+		expect(buildCustomWebhookTargetResolver({ addressRef: "h", endpoint: "not a url" })).toBeNull();
+		expect(
+			buildCustomWebhookTargetResolver({ addressRef: "   ", endpoint: "https://x.test/y" }),
+		).toBeNull();
 	});
 });

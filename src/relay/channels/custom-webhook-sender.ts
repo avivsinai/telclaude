@@ -54,6 +54,43 @@ export type CustomWebhookTargetResolver = (
 	destination: CustomWebhookDestination,
 ) => { readonly host: string; readonly path: string } | undefined;
 
+/** One operator-configured webhook: the logical addressRef it serves + its URL. */
+export interface CustomWebhookEndpointBinding {
+	readonly addressRef: string;
+	/** Full http(s) URL; its query is preserved, its fragment/userinfo rejected. */
+	readonly endpoint: string;
+}
+
+/**
+ * Build a {@link CustomWebhookTargetResolver} from one operator-configured
+ * binding. The resolver binds EXACTLY the configured addressRef to its endpoint
+ * (host + path + query) and returns undefined for any other addressRef, so an
+ * outbound to an unconfigured webhook key fails closed without posting. The
+ * endpoint's QUERY is preserved (the proxy forwards it on the path); a URL with
+ * userinfo (credentials in the URL) or a fragment, or a non-http(s) scheme, is
+ * rejected by returning null — the caller must then NOT register the channel
+ * (fail closed) rather than post to a malformed target.
+ */
+export function buildCustomWebhookTargetResolver(
+	binding: CustomWebhookEndpointBinding,
+): CustomWebhookTargetResolver | null {
+	const addressRef = binding.addressRef.trim();
+	if (!addressRef) return null;
+	let url: URL;
+	try {
+		url = new URL(binding.endpoint);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+	// No credentials-in-URL and no fragment may reach the credential proxy.
+	if (url.username || url.password || url.hash) return null;
+	const host = url.host;
+	// Preserve the query: the proxy forwards {host}/{path} verbatim.
+	const path = `${url.pathname}${url.search}`;
+	return (destination) => (destination.addressRef === addressRef ? { host, path } : undefined);
+}
+
 export interface CreateCustomWebhookSenderDeps {
 	/** Posts through the relay credential proxy (which injects the signing header). */
 	readonly post: CredentialProxyPost;

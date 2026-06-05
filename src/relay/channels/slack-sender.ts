@@ -117,6 +117,13 @@ export function createSlackSender(options: CreateSlackSenderOptions): SlackPostM
 			// 2xx with an unrecognizable body — ambiguous, fail closed.
 			return { ok: false, error: "slack_unparseable_response" };
 		}
+		// A Slack ok:true MUST carry a non-empty ts (the message + thread key).
+		// Under burn-before-dispatch, returning success without ts permanently
+		// loses thread continuity (no observedThreadMessageId for the next reply),
+		// so a missing ts is a fail-closed transport error, not a success.
+		if (parsed.ok && !parsed.ts) {
+			return { ok: false, error: "slack_missing_ts" };
+		}
 
 		return parsed;
 	}

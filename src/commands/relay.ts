@@ -105,7 +105,10 @@ import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities
 import { createAgentMailConnector } from "../relay/channels/agentmail-connector.js";
 import { createAgentMailSender } from "../relay/channels/agentmail-sender.js";
 import { createCustomWebhookConnector } from "../relay/channels/custom-webhook-connector.js";
-import { createCustomWebhookSender } from "../relay/channels/custom-webhook-sender.js";
+import {
+	buildCustomWebhookTargetResolver,
+	createCustomWebhookSender,
+} from "../relay/channels/custom-webhook-sender.js";
 import { createDiscordConnector } from "../relay/channels/discord-connector.js";
 import { createDiscordSender } from "../relay/channels/discord-sender.js";
 import { createSlackConnector } from "../relay/channels/slack-connector.js";
@@ -624,17 +627,30 @@ export function registerRelayCommand(program: Command): void {
 						console.log("  Channel agentmail: enabled (vault credential proxy)");
 					}
 					const webhookCfg = ch["custom-webhook"];
-					if (webhookCfg?.enabled && webhookCfg.endpoint) {
-						const endpoint = new URL(webhookCfg.endpoint);
-						channelConnectors.push(
-							createCustomWebhookConnector({
-								send: createCustomWebhookSender({
-									post: channelProxyPost,
-									resolveTarget: () => ({ host: endpoint.host, path: endpoint.pathname }),
+					if (webhookCfg?.enabled) {
+						// Bind the configured addressRef to its endpoint (host + path +
+						// QUERY preserved); any other addressRef fails closed. A missing
+						// addressRef/endpoint or a URL with userinfo/fragment yields a null
+						// resolver -> the channel is not registered (fail closed).
+						const resolveTarget =
+							webhookCfg.addressRef && webhookCfg.endpoint
+								? buildCustomWebhookTargetResolver({
+										addressRef: webhookCfg.addressRef,
+										endpoint: webhookCfg.endpoint,
+									})
+								: null;
+						if (resolveTarget) {
+							channelConnectors.push(
+								createCustomWebhookConnector({
+									send: createCustomWebhookSender({ post: channelProxyPost, resolveTarget }),
 								}),
-							}),
-						);
-						console.log("  Channel custom-webhook: enabled (vault credential proxy)");
+							);
+							console.log("  Channel custom-webhook: enabled (vault credential proxy)");
+						} else {
+							console.log(
+								"  Channel custom-webhook: DISABLED — enabled but missing/invalid addressRef+endpoint (fail closed)",
+							);
+						}
 					}
 				}
 

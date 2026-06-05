@@ -88,3 +88,51 @@ describe("email config", () => {
 		expect(cfg.email.from).toBeUndefined();
 	});
 });
+
+describe("outbound channels config", () => {
+	it("defaults to no channels (all off)", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(configPath(), JSON.stringify({}));
+		const cfg = loadConfig();
+		expect(cfg.channels).toEqual({});
+	});
+
+	it("accepts a host-only credentialHost (bare host or host:port) + a custom-webhook binding", () => {
+		setConfigPath(configPath());
+		fs.writeFileSync(
+			configPath(),
+			JSON.stringify({
+				channels: {
+					discord: { enabled: true, credentialHost: "discord.example.test:443" },
+					"custom-webhook": {
+						enabled: true,
+						addressRef: "hook:orders",
+						endpoint: "https://hooks.example.test/inbound?team=ops",
+					},
+				},
+			}),
+		);
+		const cfg = loadConfig();
+		expect(cfg.channels.discord?.credentialHost).toBe("discord.example.test:443");
+		expect(cfg.channels["custom-webhook"]?.addressRef).toBe("hook:orders");
+	});
+
+	it("rejects a credentialHost carrying a scheme/path/query/userinfo/whitespace/percent", () => {
+		for (const bad of [
+			"https://discord.com",
+			"discord.com/api",
+			"discord.com?x=1",
+			"user@discord.com",
+			"discord com",
+			"discord%2ecom",
+		]) {
+			setConfigPath(configPath());
+			fs.writeFileSync(
+				configPath(),
+				JSON.stringify({ channels: { slack: { enabled: true, credentialHost: bad } } }),
+			);
+			resetConfigCache();
+			expect(() => loadConfig(), `should reject credentialHost ${bad}`).toThrow();
+		}
+	});
+});

@@ -852,13 +852,26 @@ const EmailConfigSchema = z.object({
 // at the executor registry. Like email, transports send through the vault
 // credential proxy (creds never reach the connector). All fields optional so an
 // absent channel is simply OFF.
+// Strict host-only (optional :port) — the shape the credential proxy keys on.
+// Rejects scheme, path, query, fragment, userinfo (@), whitespace, and percent
+// encoding by construction (the charset excludes / : ? # @ % and space except a
+// single :port group).
+const HOST_ONLY_RE = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
+
 const OutboundChannelConfigSchema = z.object({
 	enabled: z.boolean().default(false),
 	// Override host for the relay credential proxy (defaults to the platform host
-	// in the transport). Self-host / staging only.
-	credentialHost: z.string().min(1).optional(),
-	// custom-webhook / social-gateway endpoint override.
+	// in the transport). Must be host-only ([:port]) — the proxy key. Self-host /
+	// staging only.
+	credentialHost: z
+		.string()
+		.regex(HOST_ONLY_RE, "credentialHost must be a bare host or host:port")
+		.optional(),
+	// custom-webhook / social-gateway endpoint override (full http(s) URL).
 	endpoint: z.string().url().optional(),
+	// custom-webhook: the logical addressRef this configured webhook serves. An
+	// outbound to any other addressRef fails closed (no implicit fan-out).
+	addressRef: z.string().min(1).optional(),
 	// agentmail From address.
 	from: z.string().email().optional(),
 	defaultSubject: z.string().min(1).optional(),

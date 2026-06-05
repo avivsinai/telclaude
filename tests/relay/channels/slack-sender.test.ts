@@ -215,4 +215,13 @@ describe("slack sender (relay transport)", () => {
 		// No POST: the message (and its media) is never partially sent.
 		expect(poster.calls).toHaveLength(0);
 	});
+
+	it("fails closed when Slack returns ok:true WITHOUT ts (missing thread id)", async () => {
+		// A success with no ts would record "sent" but carry no platform/thread id;
+		// under burn-before-dispatch that loses thread continuity permanently.
+		const poster = recordingPost({ status: 200, json: { ok: true }, text: "" });
+		const sender = createSlackSender({ post: poster.post });
+		const result: SlackPostMessageResult = await sender(request());
+		expect(result).toEqual({ ok: false, error: "slack_missing_ts" });
+	});
 });
