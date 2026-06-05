@@ -39,6 +39,13 @@ export type ServedMcpMemoryReport = {
 	readonly gates: ServedMcpMemoryGate[];
 };
 
+// Negative-control properties that must be backed by real denial evidence.
+const MEMORY_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
+	"cross_source_read_denied",
+	"secret_write_rejected",
+	"instruction_like_write_rejected",
+]);
+
 function inputError(detail: string): ServedMcpMemoryReport {
 	return {
 		schemaVersion: SERVED_MCP_MEMORY_REPORT_SCHEMA_VERSION,
@@ -152,11 +159,21 @@ export function evaluateServedMcpMemoryEvidence(
 
 	// Index checks by name; a property is only proven if it has at least one check
 	// and every check of that name is "pass" (a single failing duplicate poisons it).
+	// Negative-control properties additionally require denial EVIDENCE on a passing
+	// check (an rpcErrorCode + rpcErrorMessage), not just a self-reported "rejected".
 	const checkPass = new Map<string, boolean>();
+	const denialEvidence = new Map<string, boolean>();
 	for (const check of parsed.data.checks) {
 		const prior = checkPass.get(check.name);
 		const thisPass = check.status === "pass";
 		checkPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+		if (
+			thisPass &&
+			typeof check.rpcErrorCode === "number" &&
+			typeof check.rpcErrorMessage === "string"
+		) {
+			denialEvidence.set(check.name, true);
+		}
 	}
 
 	// artifact_redacted is not trusted as a self-reported bit: independently scan the
@@ -169,17 +186,21 @@ export function evaluateServedMcpMemoryEvidence(
 		const bit = parsed.data.properties[property] === true;
 		const backed = checkPass.get(property) === true;
 		const leaked = property === "artifact_redacted" && redactionLeak;
-		const proven = bit && backed && !leaked;
+		const isDenial = MEMORY_DENIAL_PROPERTY_NAMES.has(property);
+		const denialOk = !isDenial || denialEvidence.get(property) === true;
+		const proven = bit && backed && !leaked && denialOk;
 		gates.push({
 			name: `memory.${property}`,
 			status: proven ? "pass" : "fail",
 			detail: leaked
 				? "memory evidence bytes contain credential-shaped text; artifact_redacted forced to fail"
-				: proven
-					? `memory property ${property} is proven and check-backed`
-					: !bit
-						? `memory property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
-						: `memory property ${property} bit is set but lacks a passing backing check`,
+				: !bit
+					? `memory property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
+					: !backed
+						? `memory property ${property} bit is set but lacks a passing backing check`
+						: !denialOk
+							? `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
+							: `memory property ${property} is proven and check-backed`,
 		});
 	}
 

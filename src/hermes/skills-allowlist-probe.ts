@@ -37,6 +37,14 @@ export type SkillsAllowlistReport = {
 	readonly gates: SkillsAllowlistGate[];
 };
 
+// Properties that assert a DENIAL — these must be observed by the primary
+// PreToolUse hook layer, not only the bypassable canUseTool fallback.
+const SKILLS_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
+	"nonallowlisted_skill_denied",
+	"social_omitted_allowlist_denies_all",
+	"social_empty_allowlist_denies_all",
+]);
+
 function inputError(detail: string): SkillsAllowlistReport {
 	return {
 		schemaVersion: SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION,
@@ -123,10 +131,20 @@ export function evaluateSkillsAllowlistEvidence(
 	}
 
 	const checkPass = new Map<string, boolean>();
+	// Denial properties must be observed by the PRIMARY layer (PreToolUse hook, which
+	// runs unconditionally) — a denial recorded only by the canUseTool fallback (which
+	// is bypassed in acceptEdits mode) does not prove fail-closed enforcement.
+	const primaryLayerProven = new Map<string, boolean>();
 	for (const check of parsed.data.checks) {
 		const prior = checkPass.get(check.name);
 		const thisPass = check.status === "pass";
 		checkPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+		if (
+			thisPass &&
+			(check.enforcementLayer === "pretooluse_hook" || check.enforcementLayer === "both")
+		) {
+			primaryLayerProven.set(check.name, true);
+		}
 	}
 
 	// artifact_redacted is not trusted as a self-reported bit: independently scan the
@@ -138,17 +156,21 @@ export function evaluateSkillsAllowlistEvidence(
 		const bit = parsed.data.properties[property] === true;
 		const backed = checkPass.get(property) === true;
 		const leaked = property === "artifact_redacted" && redactionLeak;
-		const proven = bit && backed && !leaked;
+		const isDenial = SKILLS_DENIAL_PROPERTY_NAMES.has(property);
+		const primaryOk = !isDenial || primaryLayerProven.get(property) === true;
+		const proven = bit && backed && !leaked && primaryOk;
 		gates.push({
 			name: `skills.${property}`,
 			status: proven ? "pass" : "fail",
 			detail: leaked
 				? "skills-allowlist evidence bytes contain credential-shaped text; artifact_redacted forced to fail"
-				: proven
-					? `skills-allowlist property ${property} is proven and check-backed`
-					: !bit
-						? `skills-allowlist property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
-						: `skills-allowlist property ${property} bit is set but lacks a passing backing check`,
+				: !bit
+					? `skills-allowlist property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
+					: !backed
+						? `skills-allowlist property ${property} bit is set but lacks a passing backing check`
+						: !primaryOk
+							? `skills-allowlist denial property ${property} must be observed by the PreToolUse hook (primary layer), not only the canUseTool fallback`
+							: `skills-allowlist property ${property} is proven and check-backed`,
 		});
 	}
 
