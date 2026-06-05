@@ -28,13 +28,12 @@ function validEvidence(): SkillsAllowlistEvidence {
 		generatedAt: "2026-06-05T20:00:00.000Z",
 		summary: "skills allowlist enforced fail-closed in contained runtime",
 		origin: {
-			kind: "contained-peer",
+			kind: "contained-runtime",
 			containerName: "tc-hermes-contained",
-			observedPeerAddress: "172.30.92.11",
-			observedPeerSource: "server-peer-echo",
-			expectedPeerAddress: "172.30.92.11",
-			expectedPeerSource: "configured-contained-ip",
-			detail: "server-echoed contained peer",
+			topologyInternal: true,
+			relayContainerPresent: true,
+			authoritativeBoundary: "docker_internal_network",
+			detail: "docker internal-network topology proof",
 		},
 		properties,
 		checks,
@@ -56,35 +55,32 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		expect(evaluateSkillsAllowlistEvidence({ schemaVersion: "nope" }).status).toBe("input_error");
 	});
 
-	it("fails origin for relay-self-smoke evidence", () => {
+	it("fails origin for an unknown or incomplete docker-topology proof", () => {
 		const ev = validEvidence();
-		const report = evaluateSkillsAllowlistEvidence({
-			...ev,
-			origin: { ...ev.origin, kind: "relay-self-smoke" },
-		});
-		expect(report.status).toBe("fail");
-		expect(report.gates.find((g) => g.name === "skills.origin")?.status).toBe("fail");
-	});
-
-	it("fails origin when the peer address is unknown or mismatched", () => {
-		const ev = validEvidence();
-		// unknown kind (no peer echo)
+		// unknown kind
 		expect(
 			evaluateSkillsAllowlistEvidence({
 				...ev,
-				origin: { kind: "unknown", detail: "no peer echo" },
+				origin: { kind: "unknown", detail: "no topology proof" },
 			}).gates.find((g) => g.name === "skills.origin")?.status,
 		).toBe("fail");
-		// contained-peer but observed != expected
+		// relay container not present on the internal network
 		expect(
 			evaluateSkillsAllowlistEvidence({
 				...ev,
-				origin: { ...ev.origin, observedPeerAddress: "172.30.92.99" },
+				origin: { ...ev.origin, relayContainerPresent: false },
+			}).gates.find((g) => g.name === "skills.origin")?.status,
+		).toBe("fail");
+		// wrong container identity
+		expect(
+			evaluateSkillsAllowlistEvidence({
+				...ev,
+				origin: { ...ev.origin, containerName: "not-contained" },
 			}).gates.find((g) => g.name === "skills.origin")?.status,
 		).toBe("fail");
 	});
 
-	it("passes origin for a server-echoed contained peer", () => {
+	it("passes origin for a contained-runtime docker-topology proof", () => {
 		const report = evaluateSkillsAllowlistEvidence(validEvidence());
 		expect(report.gates.find((g) => g.name === "skills.origin")?.status).toBe("pass");
 	});

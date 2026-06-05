@@ -48,18 +48,18 @@ const SkillsAllowlistCheckSchema = z
 	})
 	.strict();
 
-// Server-grounded origin: the skill-invocation probe must run from the contained
-// peer, proven by the relay's server-echoed peer address (client cannot spoof) —
-// the same grounding served-MCP/memory use. A self-reported source string is not
-// enough to prove the evidence came from the live contained runtime.
+// Runtime-grounded origin: skill-allowlist enforcement is the SDK PreToolUse
+// hook in the contained runtime, NOT a network endpoint, so origin is proven by
+// the docker internal-network topology + container identity (mirroring the
+// api-server-containment runtime probe), not a server-peer-echo header. (Network
+// surfaces like served-MCP/memory keep server-peer-echo.)
 const SkillsAllowlistOriginSchema = z
 	.object({
-		kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
+		kind: z.enum(["contained-runtime", "unknown"]),
 		containerName: NonEmptyString.optional(),
-		observedPeerAddress: NonEmptyString.optional(),
-		observedPeerSource: z.literal("server-peer-echo").optional(),
-		expectedPeerAddress: NonEmptyString.optional(),
-		expectedPeerSource: z.literal("configured-contained-ip").optional(),
+		topologyInternal: z.boolean().optional(),
+		relayContainerPresent: z.boolean().optional(),
+		authoritativeBoundary: z.literal("docker_internal_network").optional(),
 		detail: NonEmptyString,
 	})
 	.strict();
