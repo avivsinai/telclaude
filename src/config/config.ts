@@ -847,6 +847,33 @@ const EmailConfigSchema = z.object({
 	messageIdDomain: z.string().min(1).optional(),
 });
 
+// Per-channel outbound delivery config (Claude channel batch). DEFAULT OFF: a
+// channel's connector is registered only when enabled; otherwise it fails closed
+// at the executor registry. Like email, transports send through the vault
+// credential proxy (creds never reach the connector). All fields optional so an
+// absent channel is simply OFF.
+const OutboundChannelConfigSchema = z.object({
+	enabled: z.boolean().default(false),
+	// Override host for the relay credential proxy (defaults to the platform host
+	// in the transport). Self-host / staging only.
+	credentialHost: z.string().min(1).optional(),
+	// custom-webhook / social-gateway endpoint override.
+	endpoint: z.string().url().optional(),
+	// agentmail From address.
+	from: z.string().email().optional(),
+	defaultSubject: z.string().min(1).optional(),
+});
+
+const OutboundChannelsConfigSchema = z.object({
+	slack: OutboundChannelConfigSchema.optional(),
+	discord: OutboundChannelConfigSchema.optional(),
+	"custom-webhook": OutboundChannelConfigSchema.optional(),
+	agentmail: OutboundChannelConfigSchema.optional(),
+	"social-gateway": OutboundChannelConfigSchema.optional(),
+	dashboard: OutboundChannelConfigSchema.optional(),
+	"api-server": OutboundChannelConfigSchema.optional(),
+});
+
 // Main config schema
 const TelclaudeConfigSchema = z.object({
 	security: SecurityConfigSchema.default(SECURITY_DEFAULTS),
@@ -931,11 +958,15 @@ const TelclaudeConfigSchema = z.object({
 	webhooks: WebhooksConfigSchema.default(WEBHOOKS_DEFAULTS),
 	// Outbound email delivery (default OFF — see EmailConfigSchema).
 	email: EmailConfigSchema.default(EMAIL_DEFAULTS),
+	// Per-channel outbound delivery (Claude batch), all default OFF.
+	channels: OutboundChannelsConfigSchema.default({}),
 });
 
 export type TelclaudeConfig = z.infer<typeof TelclaudeConfigSchema>;
 export type HouseholdRolloutRung = (typeof HOUSEHOLD_ROLLOUT_RUNGS)[number];
 export type EmailConfig = z.infer<typeof EmailConfigSchema>;
+export type OutboundChannelConfig = z.infer<typeof OutboundChannelConfigSchema>;
+export type OutboundChannelsConfig = z.infer<typeof OutboundChannelsConfigSchema>;
 export type ReplyConfig = z.infer<typeof ReplyConfigSchema>;
 export type SessionConfig = z.infer<typeof SessionConfigSchema>;
 export type SecurityConfig = z.infer<typeof SecurityConfigSchema>;

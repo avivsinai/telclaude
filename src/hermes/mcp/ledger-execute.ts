@@ -214,7 +214,19 @@ const PROVIDER_PATH = "/v1/fetch";
  * registered for the channel, so a channel listed here but not actually
  * configured/enabled cannot silently skip delivery — it fails the execute.
  */
-const DISPATCHER_DELIVERED_CHANNELS: ReadonlySet<string> = new Set(["whatsapp", "email"]);
+const DISPATCHER_DELIVERED_CHANNELS: ReadonlySet<string> = new Set([
+	"whatsapp",
+	"email",
+	// Claude outbound batch — each gets burn-before-dispatch (at-most-once) and
+	// fails closed at the registry until its connector+transport is registered.
+	"slack",
+	"discord",
+	"custom-webhook",
+	"agentmail",
+	"social",
+	"dashboard",
+	"api-server",
+]);
 
 export function createTelclaudeMcpLedgerExecuteDependencies(
 	options: CreateTelclaudeMcpLedgerExecuteDependenciesOptions,
