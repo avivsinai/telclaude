@@ -194,4 +194,25 @@ describe("slack sender (relay transport)", () => {
 		// The token-like content lives only in the mapped text, verbatim.
 		expect(body.text).toBe(text);
 	});
+
+	it("fails closed WITHOUT posting when the outbound has attachments (no silent drop)", async () => {
+		const poster = recordingPost({ status: 200, json: { ok: true, ts: "1.1" }, text: "" });
+		const sender = createSlackSender({ post: poster.post });
+		const result: SlackPostMessageResult = await sender(
+			request({
+				attachments: [
+					{
+						quarantineId: "q1",
+						mediaType: "image/png",
+						contentHash: `sha256:${"a".repeat(64)}`,
+						sizeBytes: 3,
+						bytes: new Uint8Array([1, 2, 3]),
+					},
+				],
+			}),
+		);
+		expect(result).toEqual({ ok: false, error: "slack_attachments_unsupported" });
+		// No POST: the message (and its media) is never partially sent.
+		expect(poster.calls).toHaveLength(0);
+	});
 });

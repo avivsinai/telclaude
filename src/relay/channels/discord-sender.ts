@@ -100,6 +100,13 @@ export function createDiscordSender(options: CreateDiscordSenderOptions): Discor
 	const host = options.host ?? DISCORD_HOST;
 
 	return async function send(request: DiscordCreateMessageRequest): Promise<DiscordSendResult> {
+		// This create-message path posts JSON only (no multipart file upload yet).
+		// Fail closed on declared attachments rather than silently dropping them:
+		// with at-most-once burn-before-dispatch, a text-only "success" would lose
+		// the media irrecoverably.
+		if (request.attachments.length > 0) {
+			return { error: "discord_attachments_unsupported" };
+		}
 		const path = buildPath(request.channelId);
 		const body = JSON.stringify(buildBody(request));
 

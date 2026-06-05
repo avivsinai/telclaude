@@ -163,4 +163,23 @@ describe("discord sender (relay transport)", () => {
 		expect(calls[0].host).toBe("discord.proxy.internal");
 		expect(JSON.stringify(calls[0]).includes(BOT_PREFIX)).toBe(false);
 	});
+
+	it("fails closed WITHOUT posting when the outbound has attachments (no silent drop)", async () => {
+		const { calls, post } = recordingPost({ status: 200, json: { id: "m1" }, text: "" });
+		const sender = createDiscordSender({ post });
+		const result = await sender(
+			request({
+				attachments: [
+					{
+						quarantineId: "q1",
+						mediaType: "image/png",
+						contentHash: `sha256:${"a".repeat(64)}`,
+						bytes: new Uint8Array([1, 2, 3]),
+					},
+				],
+			}),
+		);
+		expect(result).toEqual({ error: "discord_attachments_unsupported" });
+		expect(calls).toHaveLength(0);
+	});
 });

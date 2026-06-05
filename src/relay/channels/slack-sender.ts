@@ -73,6 +73,14 @@ function parseSlackResponse(json: unknown): SlackPostMessageResult | null {
 
 export function createSlackSender(options: CreateSlackSenderOptions): SlackPostMessageSender {
 	async function send(request: SlackPostMessageRequest): Promise<SlackPostMessageResult> {
+		// chat.postMessage carries no inline binary attachments (Slack file upload is
+		// a separate, not-yet-implemented step). Declared attachments MUST NOT be
+		// silently dropped: fail closed BEFORE posting so the connector fails the
+		// send. With at-most-once burn-before-dispatch, a text-only "success" would
+		// lose the media irrecoverably — so failing is correct, dropping is not.
+		if (request.attachments.length > 0) {
+			return { ok: false, error: "slack_attachments_unsupported" };
+		}
 		const body: SlackChatPostMessageBody = {
 			channel: request.channelId,
 			text: request.text,
