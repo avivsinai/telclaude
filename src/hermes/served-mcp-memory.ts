@@ -1,0 +1,169 @@
+import net from "node:net";
+import type { ZodError } from "zod";
+import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
+import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
+
+export {
+	SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES,
+	SERVED_MCP_MEMORY_SCHEMA_VERSION,
+	type ServedMcpMemoryCheck,
+	type ServedMcpMemoryEvidence,
+	ServedMcpMemoryEvidenceSchema,
+	type ServedMcpMemoryPropertyName,
+} from "./served-mcp-memory-schema.js";
+
+import {
+	SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES,
+	type ServedMcpMemoryEvidence,
+	ServedMcpMemoryEvidenceSchema,
+} from "./served-mcp-memory-schema.js";
+
+export const DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH =
+	"artifacts/hermes/probes/served-mcp-memory.json";
+
+export const SERVED_MCP_MEMORY_REPORT_SCHEMA_VERSION =
+	"telclaude.hermes.served-mcp-memory-report.v1";
+
+export type ServedMcpMemoryGate = {
+	readonly name: string;
+	readonly status: "pass" | "fail";
+	readonly detail: string;
+};
+
+export type ServedMcpMemoryReport = {
+	readonly schemaVersion: typeof SERVED_MCP_MEMORY_REPORT_SCHEMA_VERSION;
+	readonly status: "pass" | "fail" | "input_error";
+	readonly productionEnable: boolean;
+	readonly gates: ServedMcpMemoryGate[];
+};
+
+function inputError(detail: string): ServedMcpMemoryReport {
+	return {
+		schemaVersion: SERVED_MCP_MEMORY_REPORT_SCHEMA_VERSION,
+		status: "input_error",
+		productionEnable: false,
+		gates: [{ name: "memory.evidence", status: "fail", detail }],
+	};
+}
+
+function originGate(origin: ServedMcpMemoryEvidence["origin"]): ServedMcpMemoryGate {
+	if (origin.kind === "relay-self-smoke") {
+		return {
+			name: "memory.origin",
+			status: "fail",
+			detail: "memory evidence originated from relay-self smoke and is not production evidence",
+		};
+	}
+	const matchesPeer =
+		origin.observedPeerAddress !== undefined &&
+		origin.expectedPeerAddress !== undefined &&
+		origin.observedPeerSource === "server-peer-echo" &&
+		origin.expectedPeerSource === "configured-contained-ip" &&
+		net.isIP(origin.observedPeerAddress) !== 0 &&
+		net.isIP(origin.expectedPeerAddress) !== 0 &&
+		origin.observedPeerAddress === origin.expectedPeerAddress;
+	if (
+		origin.kind === "contained-peer" &&
+		origin.containerName === DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME &&
+		matchesPeer
+	) {
+		return {
+			name: "memory.origin",
+			status: "pass",
+			detail: "memory evidence originated from tc-hermes-contained at the expected peer address",
+		};
+	}
+	return {
+		name: "memory.origin",
+		status: "fail",
+		detail:
+			"memory evidence must include a server-observed contained peer IP from tc-hermes-contained matching the configured contained IP",
+	};
+}
+
+/**
+ * Deterministic evaluator the cutover-check consumes. A property is proven only
+ * when its boolean bit is true AND backed by at least one check of the same name
+ * whose every occurrence is "pass" — a self-reported property bit without a
+ * passing backing check does not count. The producer (which drives tc_memory_*
+ * through the served-MCP bridge from the contained peer) runs in the live
+ * runtime; this evaluator validates the artifact it emits.
+ */
+export function evaluateServedMcpMemoryEvidence(
+	evidence: unknown,
+	options: { missingPath?: string } = {},
+): ServedMcpMemoryReport {
+	if (evidence === undefined) {
+		return inputError(
+			`required served-MCP memory evidence is missing: ${options.missingPath ?? DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH}`,
+		);
+	}
+	const parsed = ServedMcpMemoryEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return inputError(flattenZodError(parsed.error));
+	}
+
+	const gates: ServedMcpMemoryGate[] = [];
+	gates.push(originGate(parsed.data.origin));
+
+	if (parsed.data.status !== "pass") {
+		gates.push({
+			name: "memory.status",
+			status: "fail",
+			detail: `memory evidence status is ${parsed.data.status}`,
+		});
+	}
+	if (parsed.data.ran !== true) {
+		gates.push({
+			name: "memory.ran",
+			status: "fail",
+			detail: `memory evidence ran is ${String(parsed.data.ran)}`,
+		});
+	}
+
+	// Index checks by name; a property is only proven if it has at least one check
+	// and every check of that name is "pass" (a single failing duplicate poisons it).
+	const checkPass = new Map<string, boolean>();
+	for (const check of parsed.data.checks) {
+		const prior = checkPass.get(check.name);
+		const thisPass = check.status === "pass";
+		checkPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+	}
+
+	for (const property of SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES) {
+		const bit = parsed.data.properties[property] === true;
+		const backed = checkPass.get(property) === true;
+		const proven = bit && backed;
+		gates.push({
+			name: `memory.${property}`,
+			status: proven ? "pass" : "fail",
+			detail: proven
+				? `memory property ${property} is proven and check-backed`
+				: !bit
+					? `memory property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
+					: `memory property ${property} bit is set but lacks a passing backing check`,
+		});
+	}
+
+	const productionEnable = gates.every((gate) => gate.status === "pass");
+	return {
+		schemaVersion: SERVED_MCP_MEMORY_REPORT_SCHEMA_VERSION,
+		status: productionEnable ? "pass" : "fail",
+		productionEnable,
+		gates,
+	};
+}
+
+export function writeServedMcpMemoryEvidence(
+	evidence: ServedMcpMemoryEvidence,
+	filePath: string,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	writeHermesJsonArtifact(filePath, evidence, options);
+}
+
+function flattenZodError(error: ZodError): string {
+	return error.issues
+		.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+		.join("; ");
+}
