@@ -132,6 +132,25 @@ describe("parityRosterCoverageGate", () => {
 		expect(gate.detail).toContain("unknown row");
 		expect(gate.detail).toContain("bogus-row");
 	});
+
+	it("reports backed / descoped / missing categories actionably", () => {
+		const gate = parityRosterCoverageGate({
+			...EMPTY,
+			roster: {
+				"row-backed": { surfaces: ["s.present"] },
+				"row-descoped": { surfaces: ["s.absent"] },
+				"row-missing": { surfaces: ["s.absent2"] },
+			},
+			requiredSurfaceIds: ["s.present"],
+			decisions: [{ id: "parity-descope:row-descoped", status: "accepted" }],
+		});
+		expect(gate.status).toBe("fail");
+		expect(gate.detail).toContain("backed: 1");
+		expect(gate.detail).toContain("row-descoped"); // listed under descoped
+		expect(gate.detail).toContain("MISSING");
+		expect(gate.detail).toContain("row-missing");
+		expect(gate.detail).not.toContain("row-backed"); // backed shown as a count, not by name
+	});
 });
 
 describe("descopedParityRows", () => {
