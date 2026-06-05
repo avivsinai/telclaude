@@ -2701,7 +2701,10 @@ function proReviewCanary(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function writeRecoverableYoetzNativeReadFailureBin(tempDir: string): string {
+function writeRecoverableYoetzNativeReadFailureBin(
+	tempDir: string,
+	stderrLine = "chrome-extension-native: failed to fill whole buffer",
+): string {
 	const binDir = path.join(tempDir, "bin");
 	fs.mkdirSync(binDir, { recursive: true });
 	const yoetzPath = path.join(binDir, "yoetz");
@@ -2748,7 +2751,7 @@ if (args[0] === "browser" && args[1] === "recipe") {
       bundlePath: flagValue("--bundle")
     })
   );
-  console.error("chrome-extension-native: failed to fill whole buffer");
+  console.error(${JSON.stringify(stderrLine)});
   process.exit(1);
 }
 
@@ -4218,12 +4221,14 @@ describe("Hermes wrapper foundation", () => {
 
 		const result = await runCutoverCheckWithBundle(bundle);
 		const report = JSON.parse(result.stdout) as {
+			generatedAt?: string;
 			status: string;
 			gates: Array<{ name: string; status: string }>;
 		};
 
 		expect(result.exitCode, result.stdout).toBe(1);
 		expect(report.status).toBe("fail");
+		expect(Number.isNaN(Date.parse(report.generatedAt ?? ""))).toBe(false);
 		expect(report.gates.find((gate) => gate.name === "proofBundle.queueSnapshot")).toMatchObject({
 			status: "pass",
 		});
@@ -7858,7 +7863,10 @@ describe("Hermes wrapper foundation", () => {
 				refreshed.payloadSha256,
 			]);
 			expect(approval.exitCode, approval.stdout).toBe(0);
-			const fakeYoetzBin = writeRecoverableYoetzNativeReadFailureBin(tempDir);
+			const fakeYoetzBin = writeRecoverableYoetzNativeReadFailureBin(
+				tempDir,
+				"chrome-extension-native: ChatGPT wait_response phase failed after browser side effects; automatic transport fallback is disabled: ChatGPT response did not reach stable completion before timeout",
+			);
 
 			const result = await runHermesCommandWithEnv(
 				[
@@ -7986,7 +7994,10 @@ describe("Hermes wrapper foundation", () => {
 			expect(promptVar).toContain(
 				"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
 			);
-			expect(promptVar).toContain("Review only the attached Hermes Pro-review shard.");
+			expect(promptVar).toContain(
+				"Read the attached Hermes Pro-review shard and return a concise bounded review.",
+			);
+			expect(promptVar).toContain("Do not use extended thinking.");
 			expect(firstShard.yoetzCommand).toEqual(
 				expect.arrayContaining([
 					"--transport",
@@ -8006,6 +8017,28 @@ describe("Hermes wrapper foundation", () => {
 			);
 			expect(firstShard.bundlePath).toContain(firstShard.shardId);
 			expect(fs.statSync(firstShard.bundlePath).mode & 0o777).toBe(0o600);
+
+			const executeResult = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--execute",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--bundle-out",
+				bundlePath,
+			]);
+			const executeReport = JSON.parse(executeResult.stdout) as {
+				send: { status: string; reason: string; mode: string };
+			};
+			expect(executeResult.exitCode, executeResult.stdout).toBe(1);
+			expect(executeReport.send).toMatchObject({
+				status: "refused",
+				mode: "sharded",
+				reason: expect.stringContaining("single full bundle"),
+			});
 		});
 	});
 

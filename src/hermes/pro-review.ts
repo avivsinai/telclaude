@@ -35,11 +35,14 @@ import { workflowProbeEvidenceFailure } from "./workflow-probes.js";
 export const DEFAULT_PRO_REVIEW_REQUEST_PATH = "docs/hermes/pro-review-request.json";
 export const DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH =
 	"artifacts/hermes/pro-review-native-canary.json";
+const PRO_REVIEW_CURRENT_CUTOVER_CHECK_PATH =
+	"artifacts/hermes/pro-review-current-cutover-check.json";
 export const PRO_REVIEW_REQUEST_SCHEMA_VERSION = "telclaude.hermes.pro-review-request.v1";
 export const PRO_REVIEW_NATIVE_CANARY_SCHEMA_VERSION =
 	"telclaude.hermes.pro-review-native-canary.v1";
 export const PRO_REVIEW_SHARD_PLAN_SCHEMA_VERSION = "telclaude.hermes.pro-review-shard-plan.v1";
 export const PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS = 15 * 60 * 1000;
+const PRO_REVIEW_CURRENT_CUTOVER_CHECK_MAX_AGE_MS = 15 * 60 * 1000;
 const PRO_REVIEW_PAYLOAD_BINDING_FIELDS = [
 	"reviewer",
 	"transport",
@@ -555,7 +558,12 @@ export function evaluateProReviewCheck(
 	const canary = readCanary(canaryPath, gates);
 
 	if (request) {
-		gates.push(...requestPolicyGates(request, requestPath, canaryPath, input.requireApproval));
+		gates.push(
+			...requestPolicyGates(request, requestPath, canaryPath, {
+				now: input.now,
+				requireApproval: input.requireApproval,
+			}),
+		);
 	}
 	if (request && canary) {
 		gates.push(...canaryPolicyGates(canary, request, input));
@@ -886,10 +894,10 @@ function requestPolicyGates(
 	request: ProReviewRequest,
 	requestPath: string,
 	canaryPath: string,
-	requireApproval: boolean | undefined,
+	options: { readonly requireApproval?: boolean; readonly now?: Date },
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
-	const requireGreenEvidence = requiresSendReadyProReviewEvidence(request, requireApproval);
+	const requireGreenEvidence = requiresSendReadyProReviewEvidence(request, options.requireApproval);
 	gates.push(
 		request.reviewer === "ChatGPT Pro Extended via Yoetz native extension"
 			? pass("request.reviewer", "reviewer is ChatGPT Pro Extended via Yoetz native extension")
@@ -955,7 +963,7 @@ function requestPolicyGates(
 			: fail("request.selectedFiles", `selected file(s) missing: ${missingFiles.join(", ")}`),
 	);
 	gates.push(...shardPlanGates(request));
-	gates.push(...semanticEvidenceGates(request, { requireGreenEvidence }));
+	gates.push(...semanticEvidenceGates(request, { requireGreenEvidence, now: options.now }));
 
 	const approval = request.privateWorkspaceDisclosure;
 	if (approval.approved) {
@@ -986,7 +994,7 @@ function requestPolicyGates(
 			);
 		}
 		gates.push(
-			requireApproval
+			options.requireApproval
 				? fail("disclosure.approved", "private workspace disclosure is not approved")
 				: pending("disclosure.approved", "private workspace disclosure is pending exact approval"),
 		);
@@ -1285,7 +1293,7 @@ function digestFile(file: string): string {
 
 function semanticEvidenceGates(
 	request: ProReviewRequest,
-	options: { readonly requireGreenEvidence: boolean },
+	options: { readonly requireGreenEvidence: boolean; readonly now?: Date },
 ): ProReviewGate[] {
 	const gates: ProReviewGate[] = [];
 	const validationOptions = archivedHermesEvidenceValidationOptions();
@@ -1390,6 +1398,13 @@ function semanticEvidenceGates(
 			),
 		);
 	}
+	if (request.selectedFiles.includes(PRO_REVIEW_CURRENT_CUTOVER_CHECK_PATH)) {
+		gates.push(
+			currentCutoverCheckContextGate(PRO_REVIEW_CURRENT_CUTOVER_CHECK_PATH, {
+				now: options.now ?? new Date(),
+			}),
+		);
+	}
 	return gates;
 }
 
@@ -1408,6 +1423,7 @@ function semanticEvidenceCoverageGate(selectedFiles: readonly string[]): ProRevi
 
 function isUncoveredProReviewSemanticArtifactPath(file: string): boolean {
 	if (file === DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH) return false;
+	if (file === PRO_REVIEW_CURRENT_CUTOVER_CHECK_PATH) return false;
 	if (isProReviewFixtureArtifactPath(file)) return false;
 	if (file.startsWith("artifacts/hermes/network/") && file.endsWith(".json")) {
 		return !Object.hasOwn(PRO_REVIEW_NETWORK_PROBE_PATHS, file);
@@ -1423,6 +1439,64 @@ function isUncoveredProReviewSemanticArtifactPath(file: string): boolean {
 
 function isProReviewFixtureArtifactPath(file: string): boolean {
 	return file.startsWith("artifacts/hermes/fixtures/") && file.endsWith(".json");
+}
+
+function currentCutoverCheckContextGate(
+	reportPath: string,
+	options: { readonly now: Date },
+): ProReviewGate {
+	const read = readJsonObject(reportPath);
+	const name = "request.semanticEvidence.currentCutoverCheck";
+	if (!read.ok) return fail(name, `current cutover-check report cannot be read: ${read.error}`);
+	const failure = currentCutoverCheckContextFailure(read.value, options.now);
+	return failure
+		? fail(name, `current cutover-check report is not accepted: ${failure}`)
+		: pass(name, "current cutover-check report is fresh schema-valid diagnostic context");
+}
+
+function currentCutoverCheckContextFailure(
+	value: Record<string, unknown>,
+	now: Date,
+): string | null {
+	if (value.status !== "pass" && value.status !== "fail") {
+		return "status must be pass or fail";
+	}
+	if (!isRecord(value.mode)) return "mode object is missing";
+	if (value.mode.strict !== true) return "mode.strict must be true";
+	if (value.mode.dryRun !== true) return "mode.dryRun must be true";
+	if (!Array.isArray(value.gates) || value.gates.length === 0) {
+		return "gates must be a non-empty array";
+	}
+	for (const [index, gate] of value.gates.entries()) {
+		if (!isRecord(gate)) return `gate ${index} must be an object`;
+		if (typeof gate.name !== "string" || gate.name.length === 0) {
+			return `gate ${index} is missing name`;
+		}
+		if (gate.status !== "pass" && gate.status !== "fail" && gate.status !== "pending") {
+			return `gate ${index} has invalid status`;
+		}
+		if (typeof gate.detail !== "string" || gate.detail.length === 0) {
+			return `gate ${index} is missing detail`;
+		}
+	}
+	const generatedAtFailure = currentCutoverCheckGeneratedAtFailure(value.generatedAt, now);
+	if (generatedAtFailure) return generatedAtFailure;
+	return null;
+}
+
+function currentCutoverCheckGeneratedAtFailure(value: unknown, now: Date): string | null {
+	if (typeof value !== "string" || value.trim().length === 0) return "generatedAt is missing";
+	const generatedAtMs = Date.parse(value);
+	if (Number.isNaN(generatedAtMs)) return "generatedAt is invalid";
+	const nowMs = now.getTime();
+	if (!Number.isFinite(nowMs)) return "current time is invalid";
+	const ageMs = nowMs - generatedAtMs;
+	if (ageMs < 0) return "generatedAt is in the future";
+	if (ageMs > PRO_REVIEW_CURRENT_CUTOVER_CHECK_MAX_AGE_MS) {
+		const ageMinutes = Math.floor(ageMs / 60_000);
+		return `generatedAt is stale at ${ageMinutes} minute(s) old`;
+	}
+	return null;
 }
 
 function jsonSemanticEvidenceGate(
@@ -1873,21 +1947,27 @@ export function buildProReviewYoetzCommand(input: BuildProReviewYoetzCommandInpu
 function buildProReviewYoetzPrompt(input: BuildProReviewYoetzCommandInput): string {
 	if (!input.shard) {
 		return [
-			"Review the attached Hermes Pro-review bundle.",
-			"At the top of your response, echo this exact binding line:",
+			"Read the attached Hermes Pro-review bundle and return a concise bounded review. Do not use extended thinking. Do not draft prose before the template. Keep the whole answer under 300 words.",
+			"Start with this exact binding line:",
 			`payloadSha256: ${input.payloadSha256 ?? ""}`,
-			"Then return a Findings section and a Residual risk section.",
+			"Then use exactly these section labels:",
+			"Findings:",
+			"Residual risk:",
+			'If no grounded P0/P1/P2 issue is visible in this bundle, write "Findings: none" and give a brief residual-risk note.',
 		].join("\n");
 	}
 	return [
 		"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
-		"Review only the attached Hermes Pro-review shard.",
-		"At the top of your response, echo these exact binding lines:",
+		"Read the attached Hermes Pro-review shard and return a concise bounded review. Do not use extended thinking. Do not draft prose before the template. Keep the whole answer under 300 words.",
+		"Start with these exact binding lines:",
 		`payloadSha256: ${input.payloadSha256 ?? ""}`,
 		`shardPlanSha256: ${input.shardPlanSha256 ?? ""}`,
 		`shardId: ${input.shard.shardId}`,
 		`shardSha256: ${input.shard.shardSha256}`,
-		"Then return a Findings section and a Residual risk section.",
+		"Then use exactly these section labels:",
+		"Findings:",
+		"Residual risk:",
+		'If no grounded P0/P1/P2 issue is visible in this shard, write "Findings: none" and give a brief residual-risk note.',
 		"Do not review outside this shard or claim full-context coverage.",
 	].join("\n");
 }
@@ -2149,6 +2229,7 @@ function inspectTabCompletedResponseFailures(
 	if (!isRecord(inspection)) return ["response.tabs[0].inspection is missing or not an object"];
 	failures.push(...inspectTabOwnershipFailures(inspection, binding.expectedRunId));
 	const extraction = inspection.extraction;
+	const extractionText = isRecord(extraction) ? extraction.text : undefined;
 	if (!isRecord(extraction)) {
 		failures.push("response.tabs[0].inspection.extraction is missing or not an object");
 	} else {
@@ -2166,12 +2247,24 @@ function inspectTabCompletedResponseFailures(
 	const modelSelection = inspection.model_selection;
 	if (!isRecord(modelSelection)) {
 		failures.push("response.tabs[0].inspection.model_selection is missing or not an object");
-	} else if (!isExtendedProModel(modelSelection.current_model_label)) {
+	} else if (!inspectModelSelectionLooksExtendedPro(modelSelection, extractionText)) {
 		failures.push(
 			`inspection model current_model_label is ${String(modelSelection.current_model_label)}`,
 		);
 	}
 	return failures;
+}
+
+function inspectModelSelectionLooksExtendedPro(
+	modelSelection: Record<string, unknown>,
+	extractionText: unknown,
+): boolean {
+	if (isExtendedProModel(modelSelection.current_model_label)) return true;
+	return (
+		modelSelection.requested_model === "extended-pro" &&
+		typeof extractionText === "string" &&
+		/(^|\n)Extended Pro(\n|$)/.test(extractionText)
+	);
 }
 
 function inspectTabOwnershipRunId(tab: Record<string, unknown>): string | null {
