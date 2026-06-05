@@ -201,6 +201,8 @@ import {
 import {
 	DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH,
 	evaluateServedMcpMemoryEvidence,
+	runServedMcpMemoryProbe,
+	writeServedMcpMemoryEvidence,
 } from "../hermes/served-mcp-memory.js";
 import {
 	buildServedMcpProviderToolsProbeEvidence,
@@ -3939,6 +3941,47 @@ export function registerHermesCommand(program: Command): void {
 						options.out ?? DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH,
 					);
 					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
+			if (surface === "served_mcp.memory") {
+				const timeoutMs = parseTimeoutMs(options.timeoutMs);
+				const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth);
+				const origin =
+					options.allowRun === true
+						? resolveServedMcpOriginConfig(options.containerName)
+						: undefined;
+				const report = await runServedMcpMemoryProbe({
+					allowRun: options.allowRun === true,
+					...(endpoint ? { endpoint } : {}),
+					fetchImpl:
+						options.allowRun === true && origin?.containerName
+							? buildDockerExecFetch({
+									dockerBin: options.dockerBin,
+									containerName: origin.containerName,
+									timeoutMs,
+								})
+							: undefined,
+					timeoutMs,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true && report.status !== "pending") {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH,
+					);
+					writeServedMcpMemoryEvidence(report, outPath, trackedSeedWriteOptions(options));
 				}
 				if (options.json) {
 					printJson(report);
