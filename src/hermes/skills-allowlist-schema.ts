@@ -48,12 +48,18 @@ const SkillsAllowlistCheckSchema = z
 	})
 	.strict();
 
-// The probe must have run against the real contained runtime, not an imported or
-// mocked report — otherwise it proves nothing about live enforcement.
-const SkillsAllowlistProvenanceSchema = z
+// Server-grounded origin: the skill-invocation probe must run from the contained
+// peer, proven by the relay's server-echoed peer address (client cannot spoof) —
+// the same grounding served-MCP/memory use. A self-reported source string is not
+// enough to prove the evidence came from the live contained runtime.
+const SkillsAllowlistOriginSchema = z
 	.object({
-		source: z.enum(["machine-observed-runtime", "imported", "mock"]),
-		runtime: NonEmptyString.optional(),
+		kind: z.enum(["contained-peer", "relay-self-smoke", "unknown"]),
+		containerName: NonEmptyString.optional(),
+		observedPeerAddress: NonEmptyString.optional(),
+		observedPeerSource: z.literal("server-peer-echo").optional(),
+		expectedPeerAddress: NonEmptyString.optional(),
+		expectedPeerSource: z.literal("configured-contained-ip").optional(),
 		detail: NonEmptyString,
 	})
 	.strict();
@@ -66,7 +72,7 @@ export const SkillsAllowlistEvidenceSchema = z
 		ran: z.boolean(),
 		generatedAt: NonEmptyString,
 		summary: NonEmptyString,
-		provenance: SkillsAllowlistProvenanceSchema,
+		origin: SkillsAllowlistOriginSchema,
 		properties: SkillsAllowlistPropertiesSchema,
 		checks: z.array(SkillsAllowlistCheckSchema),
 	})
