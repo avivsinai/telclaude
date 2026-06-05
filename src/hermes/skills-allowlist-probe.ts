@@ -1,4 +1,3 @@
-import net from "node:net";
 import type { ZodError } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
@@ -17,6 +16,7 @@ import {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
 	type SkillsAllowlistEvidence,
 	SkillsAllowlistEvidenceSchema,
+	type SkillsAllowlistPropertyName,
 } from "./skills-allowlist-schema.js";
 
 export const DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH =
@@ -54,40 +54,29 @@ function inputError(detail: string): SkillsAllowlistReport {
 	};
 }
 
+// Skill enforcement is the SDK PreToolUse hook inside the contained runtime, so
+// origin is proven by docker internal-network topology + container identity
+// (mirroring api-server-containment), NOT a network server-peer-echo header.
 function originGate(origin: SkillsAllowlistEvidence["origin"]): SkillsAllowlistGate {
-	if (origin.kind === "relay-self-smoke") {
-		return {
-			name: "skills.origin",
-			status: "fail",
-			detail:
-				"skills-allowlist evidence originated from relay-self smoke and is not production evidence",
-		};
-	}
-	const matchesPeer =
-		origin.observedPeerAddress !== undefined &&
-		origin.expectedPeerAddress !== undefined &&
-		origin.observedPeerSource === "server-peer-echo" &&
-		origin.expectedPeerSource === "configured-contained-ip" &&
-		net.isIP(origin.observedPeerAddress) !== 0 &&
-		net.isIP(origin.expectedPeerAddress) !== 0 &&
-		origin.observedPeerAddress === origin.expectedPeerAddress;
 	if (
-		origin.kind === "contained-peer" &&
+		origin.kind === "contained-runtime" &&
 		origin.containerName === DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME &&
-		matchesPeer
+		origin.topologyInternal === true &&
+		origin.relayContainerPresent === true &&
+		origin.authoritativeBoundary === "docker_internal_network"
 	) {
 		return {
 			name: "skills.origin",
 			status: "pass",
 			detail:
-				"skills-allowlist evidence originated from tc-hermes-contained at the expected peer address",
+				"skills-allowlist evidence proven from tc-hermes-contained on the docker internal network",
 		};
 	}
 	return {
 		name: "skills.origin",
 		status: "fail",
 		detail:
-			"skills-allowlist evidence must include a server-observed contained peer IP from tc-hermes-contained matching the configured contained IP",
+			"skills-allowlist evidence must prove contained-runtime origin (docker internal-network topology + tc-hermes-contained container identity)",
 	};
 }
 
@@ -195,4 +184,192 @@ function flattenZodError(error: ZodError): string {
 	return error.issues
 		.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
 		.join("; ");
+}
+
+// ---------------------------------------------------------------------------
+// Live producer (runtime/exec)
+// ---------------------------------------------------------------------------
+// Skill-allowlist enforcement is the SDK PreToolUse hook in the contained
+// runtime, so this is a RUNTIME probe (docker-exec / contained invocation),
+// modeled on api-server-containment — NOT a network fetch probe. It launches the
+// contained Hermes/private runtime profile with explicit allowedSkills, proves an
+// allowlisted skill reaches the runtime, and proves non-allowlisted / SOCIAL
+// fail-closed Skill calls are denied by the PreToolUse hook. Origin is proven by
+// docker internal-network topology, not a server-peer-echo header. The CLI wires
+// the real runner + topology observer; tests inject mocks.
+
+export type SkillInvocationOutcome = {
+	readonly allowed: boolean;
+	/** Which enforcement layer observed the denial (PreToolUse hook is primary). */
+	readonly enforcementLayer?: "pretooluse_hook" | "can_use_tool" | "both";
+	readonly detail?: string;
+};
+
+export type SkillsAllowlistScenario = {
+	readonly label: string;
+	readonly tier: string;
+	readonly enableSkills: boolean;
+	readonly allowedSkills?: readonly string[];
+	readonly skill: string;
+};
+
+export type SkillsAllowlistRunner = (
+	scenario: SkillsAllowlistScenario,
+) => Promise<SkillInvocationOutcome>;
+
+export type SkillsTopologyObservation = {
+	readonly containerName: string;
+	readonly topologyInternal: boolean;
+	readonly relayContainerPresent: boolean;
+};
+
+export type RunSkillsAllowlistProbeOptions = {
+	readonly allowRun: boolean;
+	readonly runner?: SkillsAllowlistRunner;
+	readonly observeTopology?: () => Promise<SkillsTopologyObservation>;
+	readonly now?: Date;
+};
+
+function falseSkillProperties(): SkillsAllowlistEvidence["properties"] {
+	return {
+		positive_allowlisted_skill_allowed: false,
+		nonallowlisted_skill_denied: false,
+		social_omitted_allowlist_denies_all: false,
+		social_empty_allowlist_denies_all: false,
+		artifact_redacted: false,
+	};
+}
+
+/**
+ * Live producer: returns evidence shaped to satisfy evaluateSkillsAllowlistEvidence.
+ * Without --allow-run (or a runner/topology observer) it returns a fail-closed
+ * pending artifact.
+ */
+export async function runSkillsAllowlistProbe(
+	options: RunSkillsAllowlistProbeOptions,
+): Promise<SkillsAllowlistEvidence> {
+	const generatedAt = (options.now ?? new Date()).toISOString();
+
+	if (!options.allowRun || !options.runner || !options.observeTopology) {
+		return {
+			schemaVersion: "telclaude.hermes.skills-allowlist.v1",
+			probeId: "skills.allowlist",
+			status: "pending",
+			ran: false,
+			generatedAt,
+			summary: options.allowRun
+				? "skills-allowlist probe requires a runner + topology observer"
+				: "skills-allowlist probe requires --allow-run",
+			origin: { kind: "unknown", detail: "probe did not run" },
+			properties: falseSkillProperties(),
+			checks: [],
+		};
+	}
+
+	const topo = await options.observeTopology();
+	const origin: SkillsAllowlistEvidence["origin"] =
+		topo.topologyInternal && topo.relayContainerPresent
+			? {
+					kind: "contained-runtime",
+					containerName: topo.containerName,
+					topologyInternal: true,
+					relayContainerPresent: true,
+					authoritativeBoundary: "docker_internal_network",
+					detail: "docker internal-network topology proof",
+				}
+			: { kind: "unknown", detail: "contained-runtime topology not proven" };
+
+	const checks: SkillsAllowlistEvidence["checks"] = [];
+
+	// Positive: an allowlisted skill is invocable.
+	const allowlisted = await options.runner({
+		label: "allowlisted",
+		tier: "WRITE_LOCAL",
+		enableSkills: true,
+		allowedSkills: ["telegram-reply"],
+		skill: "telegram-reply",
+	});
+	checks.push({
+		name: "positive_allowlisted_skill_allowed",
+		status: allowlisted.allowed ? "pass" : "fail",
+		detail: allowlisted.allowed
+			? "allowlisted skill reached the runtime"
+			: "allowlisted skill was not allowed",
+	});
+
+	// Denial controls — each must be denied by the PRIMARY PreToolUse hook layer.
+	const denialScenarios: ReadonlyArray<
+		readonly [SkillsAllowlistPropertyName, SkillsAllowlistScenario]
+	> = [
+		[
+			"nonallowlisted_skill_denied",
+			{
+				label: "non-allowlisted",
+				tier: "WRITE_LOCAL",
+				enableSkills: true,
+				allowedSkills: ["telegram-reply"],
+				skill: "external-provider",
+			},
+		],
+		[
+			"social_omitted_allowlist_denies_all",
+			{
+				label: "SOCIAL omitted-allowlist",
+				tier: "SOCIAL",
+				enableSkills: true,
+				allowedSkills: undefined,
+				skill: "telegram-reply",
+			},
+		],
+		[
+			"social_empty_allowlist_denies_all",
+			{
+				label: "SOCIAL empty-allowlist",
+				tier: "SOCIAL",
+				enableSkills: true,
+				allowedSkills: [],
+				skill: "telegram-reply",
+			},
+		],
+	];
+	for (const [name, scenario] of denialScenarios) {
+		const outcome = await options.runner(scenario);
+		const deniedByHook =
+			!outcome.allowed &&
+			(outcome.enforcementLayer === "pretooluse_hook" || outcome.enforcementLayer === "both");
+		checks.push({
+			name,
+			status: deniedByHook ? "pass" : "fail",
+			detail: deniedByHook
+				? `${scenario.label} Skill call denied by the PreToolUse hook`
+				: `${scenario.label} Skill call was not denied by the primary hook`,
+			...(outcome.enforcementLayer ? { enforcementLayer: outcome.enforcementLayer } : {}),
+		});
+	}
+
+	const properties = falseSkillProperties();
+	for (const check of checks) {
+		properties[check.name] = check.status === "pass";
+	}
+	properties.artifact_redacted = true;
+	checks.push({
+		name: "artifact_redacted",
+		status: "pass",
+		detail: "producer redacted observed detail; evaluator re-scans the artifact bytes",
+	});
+
+	const allPass = checks.every((check) => check.status === "pass");
+	return {
+		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
+		probeId: "skills.allowlist",
+		status: allPass ? "pass" : "fail",
+		ran: true,
+		generatedAt,
+		summary: allPass
+			? "skills allowlist enforced fail-closed in the contained runtime"
+			: "skills-allowlist probe recorded failing checks",
+		origin,
+		properties,
+		checks,
+	};
 }
