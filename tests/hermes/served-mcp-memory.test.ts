@@ -111,6 +111,24 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		);
 	});
 
+	it("fails the source gate for social, bare/legacy, or malformed memorySource", () => {
+		const ev = validEvidence();
+		for (const bad of ["social", "telegram", "telegram:Bad_Profile"]) {
+			const report = evaluateServedMcpMemoryEvidence({ ...ev, memorySource: bad });
+			expect(report.status).toBe("fail");
+			expect(report.gates.find((g) => g.name === "memory.source")?.status).toBe("fail");
+		}
+	});
+
+	it("passes the source gate for a valid telegram:<profile> source", () => {
+		const report = evaluateServedMcpMemoryEvidence({
+			...validEvidence(),
+			memorySource: "telegram:ops",
+		});
+		expect(report.gates.find((g) => g.name === "memory.source")?.status).toBe("pass");
+		expect(report.status).toBe("pass");
+	});
+
 	it("fails when status is pending or ran is false", () => {
 		expect(evaluateServedMcpMemoryEvidence({ ...validEvidence(), status: "pending" }).status).toBe(
 			"fail",

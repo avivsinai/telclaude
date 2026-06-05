@@ -1,5 +1,6 @@
 import net from "node:net";
 import type { ZodError } from "zod";
+import { memorySourceFamily, validateMemorySource } from "../memory/source.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
 
@@ -81,6 +82,32 @@ function originGate(origin: ServedMcpMemoryEvidence["origin"]): ServedMcpMemoryG
 	};
 }
 
+// This surface proves PRIVATE Telegram memory parity (and the private/public
+// air-gap). Fail closed unless memorySource is a valid, non-legacy telegram
+// source — a social or bare/legacy "telegram" source must not satisfy the row.
+function sourceGate(memorySource: string): ServedMcpMemoryGate {
+	const validationError = validateMemorySource(memorySource);
+	if (validationError !== null) {
+		return {
+			name: "memory.source",
+			status: "fail",
+			detail: `memory evidence memorySource is invalid: ${validationError}`,
+		};
+	}
+	if (memorySourceFamily(memorySource) !== "telegram") {
+		return {
+			name: "memory.source",
+			status: "fail",
+			detail: `memory evidence memorySource ${memorySource} is not in the private telegram family`,
+		};
+	}
+	return {
+		name: "memory.source",
+		status: "pass",
+		detail: `memory evidence memorySource ${memorySource} is a valid private telegram source`,
+	};
+}
+
 /**
  * Deterministic evaluator the cutover-check consumes. A property is proven only
  * when its boolean bit is true AND backed by at least one check of the same name
@@ -105,6 +132,7 @@ export function evaluateServedMcpMemoryEvidence(
 
 	const gates: ServedMcpMemoryGate[] = [];
 	gates.push(originGate(parsed.data.origin));
+	gates.push(sourceGate(parsed.data.memorySource));
 
 	if (parsed.data.status !== "pass") {
 		gates.push({
