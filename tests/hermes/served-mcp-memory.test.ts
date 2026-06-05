@@ -9,18 +9,15 @@ function validEvidence(): ServedMcpMemoryEvidence {
 	const properties = Object.fromEntries(
 		SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
 	) as ServedMcpMemoryEvidence["properties"];
-	const denial = new Set([
-		"cross_source_read_denied",
-		"secret_write_rejected",
-		"instruction_like_write_rejected",
-	]);
+	const rpcDenial = new Set(["secret_write_rejected", "instruction_like_write_rejected"]);
 	const checks = SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => ({
 		name,
 		status: "pass" as const,
 		detail: `${name} proven`,
-		...(denial.has(name)
-			? { rpcErrorCode: -32001, rpcErrorMessage: "memory authority fields" }
+		...(rpcDenial.has(name)
+			? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
 			: {}),
+		...(name === "cross_source_read_denied" ? { observedResultCount: 0 } : {}),
 	}));
 	return {
 		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
@@ -137,9 +134,9 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.status).toBe("pass");
 	});
 
-	it("fails a denial property whose backing check carries no denial evidence", () => {
+	it("requires an empty-result proof for cross-source denial (server-scoped, not an RPC error)", () => {
 		const ev = validEvidence();
-		// drop the rpcErrorCode/rpcErrorMessage from cross_source_read_denied's check
+		// drop observedResultCount from cross_source_read_denied's check
 		const report = evaluateServedMcpMemoryEvidence({
 			...ev,
 			checks: ev.checks.map((c) =>
@@ -151,7 +148,35 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.status).toBe("fail");
 		const gate = report.gates.find((g) => g.name === "memory.cross_source_read_denied");
 		expect(gate?.status).toBe("fail");
-		expect(gate?.detail).toContain("denial evidence");
+		expect(gate?.detail).toContain("empty result");
+	});
+
+	it("fails cross-source denial when the search returned rows (not actually denied)", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied" ? { ...c, observedResultCount: 3 } : c,
+			),
+		});
+		expect(report.gates.find((g) => g.name === "memory.cross_source_read_denied")?.status).toBe(
+			"fail",
+		);
+	});
+
+	it("requires rpcErrorCode evidence for write-rejection denials", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "secret_write_rejected"
+					? { name: c.name, status: c.status, detail: c.detail }
+					: c,
+			),
+		});
+		expect(report.gates.find((g) => g.name === "memory.secret_write_rejected")?.status).toBe(
+			"fail",
+		);
 	});
 
 	it("forces artifact_redacted to fail when evidence bytes contain a secret (not self-attested)", () => {

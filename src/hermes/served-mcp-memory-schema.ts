@@ -52,8 +52,14 @@ const ServedMcpMemoryCheckSchema = z
 		name: ServedMcpMemoryPropertyNameSchema,
 		status: z.enum(["pass", "fail"]),
 		detail: NonEmptyString,
+		// RPC-error denials (secret/instruction write rejection throw from
+		// validateMemoryEntryInput) carry an error code + message.
 		rpcErrorCode: z.number().int().optional(),
 		rpcErrorMessage: NonEmptyString.optional(),
+		// Server-scoped denials (cross-source read) are proven by an empty result:
+		// a contained telegram-domain search returns zero rows even though a
+		// social/sibling sentinel entry exists, with no raw cross-source payload.
+		observedResultCount: z.number().int().nonnegative().optional(),
 	})
 	.strict();
 
