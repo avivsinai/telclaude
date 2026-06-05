@@ -1,5 +1,7 @@
+import net from "node:net";
 import type { ZodError } from "zod";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
+import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
 
 export {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
@@ -43,18 +45,40 @@ function inputError(detail: string): SkillsAllowlistReport {
 	};
 }
 
-function provenanceGate(provenance: SkillsAllowlistEvidence["provenance"]): SkillsAllowlistGate {
-	if (provenance.source !== "machine-observed-runtime") {
+function originGate(origin: SkillsAllowlistEvidence["origin"]): SkillsAllowlistGate {
+	if (origin.kind === "relay-self-smoke") {
 		return {
-			name: "skills.provenance",
+			name: "skills.origin",
 			status: "fail",
-			detail: `skills-allowlist evidence provenance is ${provenance.source}, not machine-observed-runtime`,
+			detail:
+				"skills-allowlist evidence originated from relay-self smoke and is not production evidence",
+		};
+	}
+	const matchesPeer =
+		origin.observedPeerAddress !== undefined &&
+		origin.expectedPeerAddress !== undefined &&
+		origin.observedPeerSource === "server-peer-echo" &&
+		origin.expectedPeerSource === "configured-contained-ip" &&
+		net.isIP(origin.observedPeerAddress) !== 0 &&
+		net.isIP(origin.expectedPeerAddress) !== 0 &&
+		origin.observedPeerAddress === origin.expectedPeerAddress;
+	if (
+		origin.kind === "contained-peer" &&
+		origin.containerName === DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME &&
+		matchesPeer
+	) {
+		return {
+			name: "skills.origin",
+			status: "pass",
+			detail:
+				"skills-allowlist evidence originated from tc-hermes-contained at the expected peer address",
 		};
 	}
 	return {
-		name: "skills.provenance",
-		status: "pass",
-		detail: "skills-allowlist evidence was machine-observed in the contained runtime",
+		name: "skills.origin",
+		status: "fail",
+		detail:
+			"skills-allowlist evidence must include a server-observed contained peer IP from tc-hermes-contained matching the configured contained IP",
 	};
 }
 
@@ -80,7 +104,7 @@ export function evaluateSkillsAllowlistEvidence(
 	}
 
 	const gates: SkillsAllowlistGate[] = [];
-	gates.push(provenanceGate(parsed.data.provenance));
+	gates.push(originGate(parsed.data.origin));
 
 	if (parsed.data.status !== "pass") {
 		gates.push({

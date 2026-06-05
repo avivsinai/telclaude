@@ -21,10 +21,14 @@ function validEvidence(): SkillsAllowlistEvidence {
 		ran: true,
 		generatedAt: "2026-06-05T20:00:00.000Z",
 		summary: "skills allowlist enforced fail-closed in contained runtime",
-		provenance: {
-			source: "machine-observed-runtime",
-			runtime: "tc-hermes-contained",
-			detail: "ran the real skill-invocation path",
+		origin: {
+			kind: "contained-peer",
+			containerName: "tc-hermes-contained",
+			observedPeerAddress: "172.30.92.11",
+			observedPeerSource: "server-peer-echo",
+			expectedPeerAddress: "172.30.92.11",
+			expectedPeerSource: "configured-contained-ip",
+			detail: "server-echoed contained peer",
 		},
 		properties,
 		checks,
@@ -46,16 +50,37 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		expect(evaluateSkillsAllowlistEvidence({ schemaVersion: "nope" }).status).toBe("input_error");
 	});
 
-	it("fails provenance for mock or imported evidence", () => {
+	it("fails origin for relay-self-smoke evidence", () => {
 		const ev = validEvidence();
-		for (const source of ["mock", "imported"] as const) {
-			const report = evaluateSkillsAllowlistEvidence({
+		const report = evaluateSkillsAllowlistEvidence({
+			...ev,
+			origin: { ...ev.origin, kind: "relay-self-smoke" },
+		});
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((g) => g.name === "skills.origin")?.status).toBe("fail");
+	});
+
+	it("fails origin when the peer address is unknown or mismatched", () => {
+		const ev = validEvidence();
+		// unknown kind (no peer echo)
+		expect(
+			evaluateSkillsAllowlistEvidence({
 				...ev,
-				provenance: { ...ev.provenance, source },
-			});
-			expect(report.status).toBe("fail");
-			expect(report.gates.find((g) => g.name === "skills.provenance")?.status).toBe("fail");
-		}
+				origin: { kind: "unknown", detail: "no peer echo" },
+			}).gates.find((g) => g.name === "skills.origin")?.status,
+		).toBe("fail");
+		// contained-peer but observed != expected
+		expect(
+			evaluateSkillsAllowlistEvidence({
+				...ev,
+				origin: { ...ev.origin, observedPeerAddress: "172.30.92.99" },
+			}).gates.find((g) => g.name === "skills.origin")?.status,
+		).toBe("fail");
+	});
+
+	it("passes origin for a server-echoed contained peer", () => {
+		const report = evaluateSkillsAllowlistEvidence(validEvidence());
+		expect(report.gates.find((g) => g.name === "skills.origin")?.status).toBe("pass");
 	});
 
 	it("fails when SOCIAL fail-closed (omitted allowlist denies all) is not proven", () => {
