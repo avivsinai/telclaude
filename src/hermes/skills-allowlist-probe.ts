@@ -1,5 +1,6 @@
 import net from "node:net";
 import type { ZodError } from "zod";
+import { redactSecrets } from "../security/output-filter.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
 
@@ -128,18 +129,26 @@ export function evaluateSkillsAllowlistEvidence(
 		checkPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
 	}
 
+	// artifact_redacted is not trusted as a self-reported bit: independently scan the
+	// evidence bytes and force the gate to fail on any credential-shaped match.
+	const serialized = JSON.stringify(parsed.data);
+	const redactionLeak = redactSecrets(serialized) !== serialized;
+
 	for (const property of SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES) {
 		const bit = parsed.data.properties[property] === true;
 		const backed = checkPass.get(property) === true;
-		const proven = bit && backed;
+		const leaked = property === "artifact_redacted" && redactionLeak;
+		const proven = bit && backed && !leaked;
 		gates.push({
 			name: `skills.${property}`,
 			status: proven ? "pass" : "fail",
-			detail: proven
-				? `skills-allowlist property ${property} is proven and check-backed`
-				: !bit
-					? `skills-allowlist property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
-					: `skills-allowlist property ${property} bit is set but lacks a passing backing check`,
+			detail: leaked
+				? "skills-allowlist evidence bytes contain credential-shaped text; artifact_redacted forced to fail"
+				: proven
+					? `skills-allowlist property ${property} is proven and check-backed`
+					: !bit
+						? `skills-allowlist property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
+						: `skills-allowlist property ${property} bit is set but lacks a passing backing check`,
 		});
 	}
 

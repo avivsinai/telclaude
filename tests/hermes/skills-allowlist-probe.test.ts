@@ -117,6 +117,27 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		expect(gate?.detail).toContain("lacks a passing backing check");
 	});
 
+	it("fails when SOCIAL fail-closed (empty allowlist denies all) is not proven", () => {
+		const ev = validEvidence();
+		const report = evaluateSkillsAllowlistEvidence({
+			...ev,
+			properties: { ...ev.properties, social_empty_allowlist_denies_all: false },
+		});
+		expect(report.status).toBe("fail");
+		expect(
+			report.gates.find((g) => g.name === "skills.social_empty_allowlist_denies_all")?.status,
+		).toBe("fail");
+	});
+
+	it("forces artifact_redacted to fail when evidence bytes contain a secret (not self-attested)", () => {
+		const report = evaluateSkillsAllowlistEvidence({
+			...validEvidence(),
+			summary: "leak AKIAIOSFODNN7EXAMPLE embedded in summary",
+		});
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((g) => g.name === "skills.artifact_redacted")?.status).toBe("fail");
+	});
+
 	it("fails when status is pending or ran is false", () => {
 		expect(evaluateSkillsAllowlistEvidence({ ...validEvidence(), status: "pending" }).status).toBe(
 			"fail",
