@@ -1,0 +1,143 @@
+import type { ZodError } from "zod";
+import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
+
+export {
+	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
+	SKILLS_ALLOWLIST_SCHEMA_VERSION,
+	type SkillsAllowlistCheck,
+	type SkillsAllowlistEvidence,
+	SkillsAllowlistEvidenceSchema,
+	type SkillsAllowlistPropertyName,
+} from "./skills-allowlist-schema.js";
+
+import {
+	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
+	type SkillsAllowlistEvidence,
+	SkillsAllowlistEvidenceSchema,
+} from "./skills-allowlist-schema.js";
+
+export const DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH =
+	"artifacts/hermes/probes/skills-allowlist.json";
+
+export const SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION = "telclaude.hermes.skills-allowlist-report.v1";
+
+export type SkillsAllowlistGate = {
+	readonly name: string;
+	readonly status: "pass" | "fail";
+	readonly detail: string;
+};
+
+export type SkillsAllowlistReport = {
+	readonly schemaVersion: typeof SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION;
+	readonly status: "pass" | "fail" | "input_error";
+	readonly productionEnable: boolean;
+	readonly gates: SkillsAllowlistGate[];
+};
+
+function inputError(detail: string): SkillsAllowlistReport {
+	return {
+		schemaVersion: SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION,
+		status: "input_error",
+		productionEnable: false,
+		gates: [{ name: "skills.evidence", status: "fail", detail }],
+	};
+}
+
+function provenanceGate(provenance: SkillsAllowlistEvidence["provenance"]): SkillsAllowlistGate {
+	if (provenance.source !== "machine-observed-runtime") {
+		return {
+			name: "skills.provenance",
+			status: "fail",
+			detail: `skills-allowlist evidence provenance is ${provenance.source}, not machine-observed-runtime`,
+		};
+	}
+	return {
+		name: "skills.provenance",
+		status: "pass",
+		detail: "skills-allowlist evidence was machine-observed in the contained runtime",
+	};
+}
+
+/**
+ * Deterministic evaluator the cutover-check consumes. As with the memory probe, a
+ * property is proven only when its boolean bit is true AND backed by at least one
+ * check of the same name whose every occurrence is "pass". The live producer drives
+ * the real skill-invocation path in the contained runtime; this validates its
+ * artifact.
+ */
+export function evaluateSkillsAllowlistEvidence(
+	evidence: unknown,
+	options: { missingPath?: string } = {},
+): SkillsAllowlistReport {
+	if (evidence === undefined) {
+		return inputError(
+			`required skills-allowlist evidence is missing: ${options.missingPath ?? DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH}`,
+		);
+	}
+	const parsed = SkillsAllowlistEvidenceSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return inputError(flattenZodError(parsed.error));
+	}
+
+	const gates: SkillsAllowlistGate[] = [];
+	gates.push(provenanceGate(parsed.data.provenance));
+
+	if (parsed.data.status !== "pass") {
+		gates.push({
+			name: "skills.status",
+			status: "fail",
+			detail: `skills-allowlist evidence status is ${parsed.data.status}`,
+		});
+	}
+	if (parsed.data.ran !== true) {
+		gates.push({
+			name: "skills.ran",
+			status: "fail",
+			detail: `skills-allowlist evidence ran is ${String(parsed.data.ran)}`,
+		});
+	}
+
+	const checkPass = new Map<string, boolean>();
+	for (const check of parsed.data.checks) {
+		const prior = checkPass.get(check.name);
+		const thisPass = check.status === "pass";
+		checkPass.set(check.name, prior === undefined ? thisPass : prior && thisPass);
+	}
+
+	for (const property of SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES) {
+		const bit = parsed.data.properties[property] === true;
+		const backed = checkPass.get(property) === true;
+		const proven = bit && backed;
+		gates.push({
+			name: `skills.${property}`,
+			status: proven ? "pass" : "fail",
+			detail: proven
+				? `skills-allowlist property ${property} is proven and check-backed`
+				: !bit
+					? `skills-allowlist property ${property} is ${parsed.data.properties[property] === undefined ? "missing" : "false"}`
+					: `skills-allowlist property ${property} bit is set but lacks a passing backing check`,
+		});
+	}
+
+	const productionEnable = gates.every((gate) => gate.status === "pass");
+	return {
+		schemaVersion: SKILLS_ALLOWLIST_REPORT_SCHEMA_VERSION,
+		status: productionEnable ? "pass" : "fail",
+		productionEnable,
+		gates,
+	};
+}
+
+export function writeSkillsAllowlistEvidence(
+	evidence: SkillsAllowlistEvidence,
+	filePath: string,
+	options: HermesArtifactWriteOptions = {},
+): void {
+	writeHermesJsonArtifact(filePath, evidence, options);
+}
+
+function flattenZodError(error: ZodError): string {
+	return error.issues
+		.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+		.join("; ");
+}
