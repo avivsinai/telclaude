@@ -13,14 +13,26 @@
 // coverage requirement; it never loosens any existing validator.
 
 export type ParityRowBacking = {
-	/** Feature-probe surface ids; row is covered if any is in requiredSurfaceIds. */
+	// "anyOf" backing — when any anyOf kind is declared, the row needs at least one
+	// of those backing ids present. A surface here is supplemental evidence, not the
+	// acceptance proof.
+	/** Feature-probe surface ids; satisfied if any is in requiredSurfaceIds. */
 	readonly surfaces?: readonly string[];
-	/** Fixture ids; row is covered if any is in requiredFixtureIds. */
+	/** Fixture ids; satisfied if any is in requiredFixtureIds. */
 	readonly fixtures?: readonly string[];
-	/** Required-check names; row is covered if any is in the present required-check set. */
+	/** Required-check names; satisfied if any is in the present required-check set. */
 	readonly checks?: readonly string[];
-	/** Cutover meta-gate names; row is covered if any is an evaluated gate. */
+	/** Cutover meta-gate names; satisfied if any is an evaluated gate. */
 	readonly metaGates?: readonly string[];
+	// "allOf" mandatory backing — EVERY id here must be present for the row to be
+	// covered, regardless of anyOf. Use for rows whose acceptance proof is a specific
+	// fixture (and/or surface) that must exist, not merely a supplemental one. This is
+	// what stops a row from being falsely covered by an adjacent surface while its
+	// real proof fixture is still missing (e.g. identity-migration's positive relink
+	// fixture: the read-only identity.migration surface already exists and must NOT
+	// cover the row on its own).
+	readonly requiredSurfaces?: readonly string[];
+	readonly requiredFixtures?: readonly string[];
 };
 
 /**
@@ -32,8 +44,8 @@ export type ParityRowBacking = {
  */
 export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>> = {
 	"private-chat": {
-		fixtures: ["fixture.private.telegram.basic"],
-		surfaces: ["execution.cli_headless"],
+		requiredSurfaces: ["execution.cli_headless"],
+		requiredFixtures: ["fixture.private.telegram.basic"],
 	},
 	"approvals-cards": { fixtures: ["fixture.private.telegram.basic"] },
 	providers: {
@@ -54,8 +66,8 @@ export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>
 	"household-email": { surfaces: ["edge.email", "household.scopes"] },
 	agentmail: { surfaces: ["edge.agentmail"] },
 	"identity-migration": {
-		surfaces: ["identity.migration"],
-		fixtures: ["fixture.identity.migration.relink"],
+		requiredSurfaces: ["identity.migration"],
+		requiredFixtures: ["fixture.identity.migration.relink"],
 	},
 	"edge-adapters": {
 		surfaces: [
@@ -67,10 +79,13 @@ export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>
 		],
 	},
 	"model-provider-relay": { surfaces: ["model.relay"] },
-	cron: { surfaces: ["workflow.cron"], fixtures: ["fixture.cron.background.delivery"] },
+	cron: {
+		requiredSurfaces: ["workflow.cron"],
+		requiredFixtures: ["fixture.cron.background.delivery"],
+	},
 	"long-lived-workflows": {
-		surfaces: ["workflow.longrun"],
-		fixtures: ["fixture.longrun.approval-resume"],
+		requiredSurfaces: ["workflow.longrun"],
+		requiredFixtures: ["fixture.longrun.approval-resume"],
 	},
 	"chief-of-staff": { fixtures: ["fixture.profile.chief-of-staff"] },
 	"browser-web-computer": {
@@ -137,6 +152,20 @@ function isRowCovered(
 		gates: Set<string>;
 	},
 ): boolean {
+	// allOf: every mandatory backing id must be present (acceptance proofs).
+	const allRequiredPresent =
+		(backing.requiredSurfaces ?? []).every((s) => required.surfaces.has(s)) &&
+		(backing.requiredFixtures ?? []).every((f) => required.fixtures.has(f));
+	if (!allRequiredPresent) return false;
+
+	// anyOf: when any supplemental backing kind is declared, at least one must be present.
+	const hasAnyOf =
+		(backing.surfaces?.length ?? 0) +
+			(backing.fixtures?.length ?? 0) +
+			(backing.checks?.length ?? 0) +
+			(backing.metaGates?.length ?? 0) >
+		0;
+	if (!hasAnyOf) return true;
 	return (
 		(backing.surfaces ?? []).some((s) => required.surfaces.has(s)) ||
 		(backing.fixtures ?? []).some((f) => required.fixtures.has(f)) ||

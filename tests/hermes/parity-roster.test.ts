@@ -76,6 +76,33 @@ describe("parityRosterCoverageGate", () => {
 		});
 		expect(gate.status).toBe("fail");
 	});
+
+	it("requires ALL mandatory (allOf) backing, not just one", () => {
+		const roster = { row: { requiredSurfaces: ["s.a"], requiredFixtures: ["f.b"] } };
+		// only the mandatory surface present -> still uncovered (mandatory fixture missing)
+		expect(parityRosterCoverageGate({ ...EMPTY, roster, requiredSurfaceIds: ["s.a"] }).status).toBe(
+			"fail",
+		);
+		// both mandatory ids present -> covered
+		expect(
+			parityRosterCoverageGate({
+				...EMPTY,
+				roster,
+				requiredSurfaceIds: ["s.a"],
+				requiredFixtureIds: ["f.b"],
+			}).status,
+		).toBe("pass");
+	});
+
+	it("does not let an anyOf surface cover a row whose mandatory fixture is absent", () => {
+		// A supplemental surface present must NOT satisfy a row that also mandates a fixture.
+		const roster = {
+			row: { surfaces: ["supp.surface"], requiredFixtures: ["proof.fixture"] },
+		};
+		expect(
+			parityRosterCoverageGate({ ...EMPTY, roster, requiredSurfaceIds: ["supp.surface"] }).status,
+		).toBe("fail");
+	});
 });
 
 describe("descopedParityRows", () => {
@@ -101,6 +128,18 @@ describe("HERMES_PARITY_ROW_ROSTER contract enforcement", () => {
 		}
 	});
 
+	it("keeps identity-migration uncovered when only the read-only surface exists", () => {
+		// The identity.migration surface already exists and is required in-tree; without
+		// the positive relink fixture the row must still be reported as a proof gap.
+		const gate = parityRosterCoverageGate({
+			...EMPTY,
+			requiredSurfaceIds: ["identity.migration"],
+			// fixture.identity.migration.relink intentionally omitted
+		});
+		expect(gate.status).toBe("fail");
+		expect(gate.detail).toContain("identity-migration");
+	});
+
 	it("covers every roster row once its backing ids are all declared", () => {
 		const surfaces = new Set<string>();
 		const fixtures = new Set<string>();
@@ -108,7 +147,9 @@ describe("HERMES_PARITY_ROW_ROSTER contract enforcement", () => {
 		const gates = new Set<string>();
 		for (const backing of Object.values(HERMES_PARITY_ROW_ROSTER)) {
 			for (const s of backing.surfaces ?? []) surfaces.add(s);
+			for (const s of backing.requiredSurfaces ?? []) surfaces.add(s);
 			for (const f of backing.fixtures ?? []) fixtures.add(f);
+			for (const f of backing.requiredFixtures ?? []) fixtures.add(f);
 			for (const c of backing.checks ?? []) checks.add(c);
 			for (const g of backing.metaGates ?? []) gates.add(g);
 		}
