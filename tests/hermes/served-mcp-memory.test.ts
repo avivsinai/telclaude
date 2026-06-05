@@ -9,10 +9,18 @@ function validEvidence(): ServedMcpMemoryEvidence {
 	const properties = Object.fromEntries(
 		SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
 	) as ServedMcpMemoryEvidence["properties"];
+	const denial = new Set([
+		"cross_source_read_denied",
+		"secret_write_rejected",
+		"instruction_like_write_rejected",
+	]);
 	const checks = SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => ({
 		name,
 		status: "pass" as const,
 		detail: `${name} proven`,
+		...(denial.has(name)
+			? { rpcErrorCode: -32001, rpcErrorMessage: "memory authority fields" }
+			: {}),
 	}));
 	return {
 		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
@@ -127,6 +135,23 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		});
 		expect(report.gates.find((g) => g.name === "memory.source")?.status).toBe("pass");
 		expect(report.status).toBe("pass");
+	});
+
+	it("fails a denial property whose backing check carries no denial evidence", () => {
+		const ev = validEvidence();
+		// drop the rpcErrorCode/rpcErrorMessage from cross_source_read_denied's check
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied"
+					? { name: c.name, status: c.status, detail: c.detail }
+					: c,
+			),
+		});
+		expect(report.status).toBe("fail");
+		const gate = report.gates.find((g) => g.name === "memory.cross_source_read_denied");
+		expect(gate?.status).toBe("fail");
+		expect(gate?.detail).toContain("denial evidence");
 	});
 
 	it("forces artifact_redacted to fail when evidence bytes contain a secret (not self-attested)", () => {

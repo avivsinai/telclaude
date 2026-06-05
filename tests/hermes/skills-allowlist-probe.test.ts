@@ -9,10 +9,16 @@ function validEvidence(): SkillsAllowlistEvidence {
 	const properties = Object.fromEntries(
 		SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
 	) as SkillsAllowlistEvidence["properties"];
+	const denial = new Set([
+		"nonallowlisted_skill_denied",
+		"social_omitted_allowlist_denies_all",
+		"social_empty_allowlist_denies_all",
+	]);
 	const checks = SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES.map((name) => ({
 		name,
 		status: "pass" as const,
 		detail: `${name} proven`,
+		...(denial.has(name) ? { enforcementLayer: "pretooluse_hook" as const } : {}),
 	}));
 	return {
 		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
@@ -127,6 +133,35 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		expect(
 			report.gates.find((g) => g.name === "skills.social_empty_allowlist_denies_all")?.status,
 		).toBe("fail");
+	});
+
+	it("fails a denial property observed only by the canUseTool fallback (not the primary hook)", () => {
+		const ev = validEvidence();
+		// nonallowlisted_skill_denied recorded only via the bypassable fallback
+		const fallbackOnly = evaluateSkillsAllowlistEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "nonallowlisted_skill_denied"
+					? { ...c, enforcementLayer: "can_use_tool" as const }
+					: c,
+			),
+		});
+		expect(fallbackOnly.status).toBe("fail");
+		expect(
+			fallbackOnly.gates.find((g) => g.name === "skills.nonallowlisted_skill_denied")?.detail,
+		).toContain("PreToolUse hook");
+		// and when enforcementLayer is absent entirely
+		const absent = evaluateSkillsAllowlistEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "nonallowlisted_skill_denied"
+					? { name: c.name, status: c.status, detail: c.detail }
+					: c,
+			),
+		});
+		expect(absent.gates.find((g) => g.name === "skills.nonallowlisted_skill_denied")?.status).toBe(
+			"fail",
+		);
 	});
 
 	it("forces artifact_redacted to fail when evidence bytes contain a secret (not self-attested)", () => {
