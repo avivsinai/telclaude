@@ -122,6 +122,9 @@ export const HERMES_TRACKED_SEED_PATHS = [
 	DEFAULT_ROLLBACK_REHEARSAL_PATH,
 ] as const;
 export const HERMES_PROBE_RESULT_SCHEMA_VERSION = "telclaude.hermes.probe-result.v1";
+export const HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID = "execution.headless_entrypoint";
+export const HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION =
+	"telclaude.hermes.headless-entrypoint-proof.v1";
 export const CUTOVER_PROOF_BUNDLE_SCHEMA_VERSION = "telclaude.hermes.cutover-proof-bundle.v1";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
 const HERMES_CLI_HEADLESS_PROVENANCE_SOURCE = "live-allow-run";
@@ -135,6 +138,19 @@ const REQUIRED_MODEL_RELAY_SCANNED_PROFILE_FILES = [
 	`${REQUIRED_MODEL_RELAY_PROFILE_DIR}/secret-manifest.json`,
 ] as const;
 const HERMES_CODEX_RESPONSES_PATH = OPENAI_CODEX_RESPONSES_PATH;
+const HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS = [
+	"stream.delta_before_done",
+	"stream.terminal_event",
+	"session.initial",
+	"session.resume",
+	"session.new_clears_resume",
+	"session.concurrent_isolation",
+	"tool.result_returned",
+	"approval.fallback_or_wait_resume",
+	"cancellation.stop",
+	"errors.deterministic",
+	"redaction.secret_outputs",
+] as const;
 export const PROFILE_GENERATION_PROOF_SCHEMA_VERSION =
 	"telclaude.hermes.profile-generation-proof.v1";
 export const GUARDRAIL_MANIFEST_SCHEMA_VERSION = "telclaude.hermes.guardrail-manifest.v1";
@@ -151,6 +167,7 @@ export const REQUIRED_CUTOVER_NETWORK_PROBE_POSTURE = "contained-internal" as co
 
 const NonEmptyString = z.string().trim().min(1);
 const SHA256_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/i;
+const Sha256DigestSchema = z.string().regex(SHA256_DIGEST_PATTERN);
 const GIT_COMMIT_PATTERN = /^[0-9a-f]{7,40}$/i;
 const PLACEHOLDER_VALUES = new Set([
 	"pending",
@@ -191,6 +208,7 @@ export const FeatureProbeSchema = z
 				"headless-availability-only",
 				"approval-continuation",
 				"api-server-containment",
+				"headless-entrypoint-semantics",
 				"edge-adapter",
 				"model-relay",
 				"nofork-proof",
@@ -344,6 +362,38 @@ const CliHeadlessProbeEvidenceSchema = z
 	})
 	.passthrough();
 
+const HeadlessEntrypointProofSchema = z
+	.object({
+		schemaVersion: z.literal(HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION),
+		probeId: z.literal(HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID),
+		status: z.enum(["pass", "fail"]),
+		ran: z.boolean(),
+		generatedAt: NonEmptyString,
+		summary: NonEmptyString,
+		testReport: z
+			.object({
+				runner: z.literal("vitest-json"),
+				command: z.array(NonEmptyString).min(1),
+				cwd: NonEmptyString,
+				exitCode: z.literal(0),
+				reportPath: NonEmptyString,
+				reportSha256: Sha256DigestSchema,
+				sourceDigests: z.record(NonEmptyString, Sha256DigestSchema),
+			})
+			.strict()
+			.optional(),
+		checks: z.array(
+			z
+				.object({
+					name: NonEmptyString,
+					status: z.enum(["pass", "fail"]),
+					detail: NonEmptyString,
+				})
+				.strict(),
+		),
+	})
+	.strict();
+
 const API_SERVER_CONTAINMENT_SCHEMA_VERSION = "telclaude.hermes.api-server-containment.v1";
 const MODEL_RELAY_SCHEMA_VERSION = "telclaude.hermes.model-relay.v1";
 const REQUIRED_API_SERVER_CONTAINMENT_GATES = [
@@ -389,6 +439,13 @@ const ADAPTER_SIGNATURE_FILES: Record<string, string[]> = {
 		"src/relay/openai-codex-relay-proof.ts",
 		"docker/hermes-contained-entrypoint.sh",
 		"scripts/hermes-contained-cli-probe.sh",
+	],
+	[HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID]: [
+		"src/hermes/api-adapter.ts",
+		"src/hermes/private-runtime.ts",
+		"src/hermes/session-map.ts",
+		"tests/hermes/api-adapter.test.ts",
+		"tests/hermes/private-runtime.test.ts",
 	],
 	"execution.approval_continuation": [
 		"src/hermes/approval-continuation.ts",
@@ -1148,25 +1205,59 @@ const InventorySnapshotSchema = z
 	})
 	.catchall(z.unknown());
 
+const QueueCount = z.number().int().min(0);
+const PendingQueueSummarySchema = z
+	.object({
+		approvals: QueueCount,
+		planApprovals: QueueCount,
+		cards: QueueCount,
+		backgroundJobs: QueueCount,
+		socialItems: QueueCount,
+		curatorItems: QueueCount,
+		pairingPendingRequests: QueueCount,
+		pairingActiveLockouts: QueueCount,
+	})
+	.strict();
+
+const QueueSnapshotDetailsSchema = z
+	.object({
+		approvals: z.object({ pending: QueueCount, expired: QueueCount }).strict(),
+		planApprovals: z.object({ pending: QueueCount, expired: QueueCount }).strict(),
+		cards: z
+			.object({
+				active: QueueCount,
+				expired: QueueCount,
+				byStatus: z.record(z.string(), QueueCount),
+			})
+			.strict(),
+		backgroundJobs: z
+			.object({ active: QueueCount, byStatus: z.record(z.string(), QueueCount) })
+			.strict(),
+		pairing: z
+			.object({
+				pendingRequests: QueueCount,
+				activePairs: QueueCount,
+				activeLockouts: QueueCount,
+			})
+			.strict(),
+		allowlist: z.object({ active: QueueCount, total: QueueCount }).strict(),
+		curator: z.object({ open: QueueCount, byStatus: z.record(z.string(), QueueCount) }).strict(),
+		social: z.object({ activeItems: QueueCount }).strict(),
+		webhooks: z.object({ enabled: QueueCount, total: QueueCount }).strict(),
+		memory: z.object({ entries: QueueCount, episodes: QueueCount }).strict(),
+	})
+	.strict();
+
 const InventoryQueueEvidenceSchema = z
 	.object({
+		generatedAt: NonEmptyString,
 		status: z.literal("complete"),
 		summary: z
 			.object({
-				pendingQueues: z
-					.object({
-						approvals: z.number().int().min(0),
-						planApprovals: z.number().int().min(0),
-						cards: z.number().int().min(0),
-						backgroundJobs: z.number().int().min(0),
-						socialItems: z.number().int().min(0),
-						curatorItems: z.number().int().min(0),
-						pairingPendingRequests: z.number().int().min(0),
-						pairingActiveLockouts: z.number().int().min(0),
-					})
-					.strict(),
+				pendingQueues: PendingQueueSummarySchema,
 			})
 			.passthrough(),
+		queues: QueueSnapshotDetailsSchema,
 	})
 	.passthrough();
 
@@ -1541,7 +1632,18 @@ export type NoForkProof = z.infer<typeof NoForkProofSchema>;
 
 export const QueueOwnershipSnapshotSchema = z
 	.object({
+		schemaVersion: z.literal("telclaude.hermes.queue-ownership-snapshot.v1"),
+		status: z.enum(["pass", "fail"]),
+		generatedAt: NonEmptyString,
 		unownedActiveCount: z.number().int().min(0),
+		pendingQueues: PendingQueueSummarySchema,
+		queues: QueueSnapshotDetailsSchema,
+		source: z
+			.object({
+				inventoryGeneratedAt: NonEmptyString,
+				inventoryStatus: z.literal("complete"),
+			})
+			.strict(),
 	})
 	.strict();
 
@@ -2287,7 +2389,6 @@ function cutoverProofArtifactSemanticFailures(
 				if (probe.status !== "pass") {
 					return [`feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`];
 				}
-				if (probe.surface_id !== "execution.cli_headless") return [];
 				return collectedFeatureProbeFailures(probe, options);
 			}),
 		];
@@ -2371,6 +2472,9 @@ export function collectFeatureProbeEvidence(
 	const results = parsed.data.probes.flatMap((probe) => {
 		if (probe.surface_id === "execution.cli_headless") {
 			return [collectCliHeadlessProbeEvidence(probe, options)];
+		}
+		if (probe.surface_id === HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID) {
+			return [collectHeadlessEntrypointProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "execution.served_mcp_containment") {
 			return [collectServedMcpContainmentProbeEvidence(probe)];
@@ -3998,7 +4102,10 @@ export function evaluateCutoverCheck(
 		includedWorkflowIds,
 		decisionById.get(PROFILE_GENERATION_DECISION_ID),
 	);
-	const requiredSurfaceIds = unique(included.flatMap((workflow) => workflow.required_surface_ids));
+	const declaredRequiredSurfaceIds = unique(
+		included.flatMap((workflow) => workflow.required_surface_ids),
+	);
+	const requiredSurfaceIds = requiredCutoverSurfaceIds(declaredRequiredSurfaceIds);
 	const probeBySurfaceId = new Map(
 		bundle.featureProbeMatrix.probes.map((probe) => [probe.surface_id, probe]),
 	);
@@ -6349,6 +6456,107 @@ function collectCliHeadlessProbeEvidence(
 	};
 }
 
+function collectHeadlessEntrypointProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	if (!fs.existsSync(resolvedPath)) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`missing feature probe evidence ${probe.surface_id}: ${resolvedPath}`,
+		);
+	}
+	let evidence: unknown;
+	try {
+		evidence = readJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${String(
+				error instanceof Error ? error.message : error,
+			)}`,
+		);
+	}
+
+	const parsed = HeadlessEntrypointProofSchema.safeParse(evidence);
+	if (!parsed.success) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`invalid feature probe evidence ${probe.surface_id}: ${flattenZodError(parsed.error)}`,
+		);
+	}
+
+	const failures: string[] = [];
+	if (parsed.data.status !== "pass") failures.push(`status is ${parsed.data.status}`);
+	if (parsed.data.ran !== true) failures.push(`ran is ${String(parsed.data.ran)}`);
+	if (!parsed.data.testReport) {
+		failures.push("testReport is missing");
+	} else {
+		const reportPath = resolveHermesArtifactPath(parsed.data.testReport.reportPath);
+		if (!fs.existsSync(reportPath)) {
+			failures.push(`testReport.reportPath is missing: ${parsed.data.testReport.reportPath}`);
+		} else {
+			const actualDigest = sha256Digest(fs.readFileSync(reportPath));
+			if (actualDigest !== parsed.data.testReport.reportSha256) {
+				failures.push(
+					`testReport.reportSha256 is ${parsed.data.testReport.reportSha256}, expected ${actualDigest}`,
+				);
+			}
+		}
+		for (const [sourcePath, expectedDigest] of Object.entries(
+			parsed.data.testReport.sourceDigests,
+		)) {
+			const resolvedSource = resolveHermesArtifactPath(sourcePath);
+			if (!fs.existsSync(resolvedSource)) {
+				failures.push(`testReport source digest path is missing: ${sourcePath}`);
+				continue;
+			}
+			const actualDigest = sha256Digest(fs.readFileSync(resolvedSource));
+			if (actualDigest !== expectedDigest) {
+				failures.push(
+					`testReport source digest ${sourcePath} is ${expectedDigest}, expected ${actualDigest}`,
+				);
+			}
+		}
+	}
+	const checkByName = new Map(parsed.data.checks.map((check) => [check.name, check]));
+	for (const checkName of HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS) {
+		const check = checkByName.get(checkName);
+		if (!check) {
+			failures.push(`missing headless entrypoint check ${checkName}`);
+		} else if (check.status !== "pass") {
+			failures.push(`headless entrypoint check ${checkName} is ${check.status}`);
+		}
+	}
+	const duplicateChecks = findDuplicates(parsed.data.checks.map((check) => check.name));
+	if (duplicateChecks.length > 0) {
+		failures.push(`duplicate headless entrypoint checks: ${duplicateChecks.join(", ")}`);
+	}
+	if (parsed.data.checks.length === 0) failures.push("headless entrypoint checks are empty");
+	const generatedAtFailure = hermesAttestationFreshnessFailure(
+		"headless entrypoint generatedAt",
+		parsed.data.generatedAt,
+		options,
+	);
+	if (generatedAtFailure) failures.push(generatedAtFailure);
+
+	if (failures.length > 0) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${failures.join("; ")}`,
+		);
+	}
+
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail:
+			"feature probe evidence execution.headless_entrypoint observed pass across streaming, terminal, session, tool, approval, cancellation, deterministic error, and redaction semantics",
+	};
+}
+
 function runtimeContainerAddressFailure(label: string, value: string): string | null {
 	const address = normalizeRuntimeAddress(value);
 	if (net.isIP(address) === 0) {
@@ -7185,7 +7393,11 @@ function featureProbeFailure(
 }
 
 function isObservedFeatureProbeSurface(surfaceId: string): boolean {
-	return surfaceId === "execution.cli_headless" || surfaceId === "model.relay";
+	return (
+		surfaceId === "execution.cli_headless" ||
+		surfaceId === HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID ||
+		surfaceId === "model.relay"
+	);
 }
 
 function collectedFeatureProbeFailures(
@@ -7195,12 +7407,25 @@ function collectedFeatureProbeFailures(
 	const observed =
 		probe.surface_id === "execution.cli_headless"
 			? collectCliHeadlessProbeEvidence(probe, options)
-			: probe.surface_id === "model.relay"
-				? collectModelRelayProbeEvidence(probe, options)
-				: null;
+			: probe.surface_id === HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID
+				? collectHeadlessEntrypointProbeEvidence(probe, options)
+				: probe.surface_id === "model.relay"
+					? collectModelRelayProbeEvidence(probe, options)
+					: null;
 	return observed && observed.status !== "pass"
 		? [`feature probe ${probe.surface_id} evidence failed: ${observed.detail}`]
 		: [];
+}
+
+function requiredCutoverSurfaceIds(declaredSurfaceIds: readonly string[]): string[] {
+	const required = [...declaredSurfaceIds];
+	if (
+		declaredSurfaceIds.includes("execution.cli_headless") &&
+		!declaredSurfaceIds.includes(HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID)
+	) {
+		required.push(HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID);
+	}
+	return unique(required);
 }
 
 function formatValidationResult(
@@ -7244,11 +7469,23 @@ function deriveQueueOwnershipSnapshot(inventory: unknown): QueueOwnershipSnapsho
 			`inventory queue evidence is missing or incomplete: ${flattenZodError(parsed.error)}`,
 		);
 	}
-	const unownedActiveCount = Object.values(parsed.data.summary.pendingQueues).reduce<number>(
+	const pendingQueues = parsed.data.summary.pendingQueues;
+	const unownedActiveCount = Object.values(pendingQueues).reduce<number>(
 		(total, value) => total + value,
 		0,
 	);
-	return { unownedActiveCount };
+	return {
+		schemaVersion: "telclaude.hermes.queue-ownership-snapshot.v1",
+		status: unownedActiveCount === 0 ? "pass" : "fail",
+		generatedAt: parsed.data.generatedAt,
+		unownedActiveCount,
+		pendingQueues,
+		queues: parsed.data.queues,
+		source: {
+			inventoryGeneratedAt: parsed.data.generatedAt,
+			inventoryStatus: parsed.data.status,
+		},
+	};
 }
 
 function queueSnapshotEvidenceFailures(
@@ -7262,11 +7499,28 @@ function queueSnapshotEvidenceFailures(
 		return [String(error instanceof Error ? error.message : error)];
 	}
 	if (sameJson(derived, queueSnapshot)) return [];
-	return [
-		`queue snapshot does not match inventory pendingQueues: expected ${String(
-			derived.unownedActiveCount,
-		)}, got ${String(queueSnapshot.unownedActiveCount)}`,
-	];
+	const failures = [];
+	if (derived.unownedActiveCount !== queueSnapshot.unownedActiveCount) {
+		failures.push(
+			`queue snapshot unownedActiveCount does not match inventory pendingQueues: expected ${String(
+				derived.unownedActiveCount,
+			)}, got ${String(queueSnapshot.unownedActiveCount)}`,
+		);
+	}
+	if (!sameJson(derived.pendingQueues, queueSnapshot.pendingQueues)) {
+		failures.push("queue snapshot pendingQueues do not match inventory summary.pendingQueues");
+	}
+	if (!sameJson(derived.queues, queueSnapshot.queues)) {
+		failures.push("queue snapshot queues detail does not match inventory queues");
+	}
+	if (!sameJson(derived.source, queueSnapshot.source)) {
+		failures.push("queue snapshot source does not match inventory identity");
+	}
+	if (derived.status !== queueSnapshot.status) {
+		failures.push(`queue snapshot status is ${queueSnapshot.status}, expected ${derived.status}`);
+	}
+	if (failures.length > 0) return failures;
+	return ["queue snapshot does not exactly match inventory queue evidence"];
 }
 
 function collectLockfileConsistencyFailures(input: {

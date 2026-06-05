@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "probes": [
+    {
+      "id": "network.relay-control-allowed",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/relay-control-allowed.json"
+    },
+    {
+      "id": "network.direct-provider-denied",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-provider-denied.json"
+    },
+    {
+      "id": "network.direct-vault-denied",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-vault-denied.json"
+    },
+    {
+      "id": "network.direct-model-provider-denied",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-model-provider-denied.json"
+    },
+    {
+      "id": "network.dns-exfil-denied",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/dns-exfil-denied.json"
+    }
+  ]
+}

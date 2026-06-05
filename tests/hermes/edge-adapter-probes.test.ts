@@ -121,6 +121,7 @@ describe("Hermes edge adapter probe evidence", () => {
 					status: "pass",
 				}),
 				expect.objectContaining({ name: "attachment.raw-bytes-denied", status: "pass" }),
+				expect.objectContaining({ name: "attachment.unscanned-denied", status: "pass" }),
 				expect.objectContaining({ name: "attachment.cross-domain-reuse-denied", status: "pass" }),
 			]),
 		);
@@ -208,12 +209,41 @@ describe("Hermes edge adapter probe evidence", () => {
 		expect(evidence.runtime?.checks).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "identity.forged-actor-denied", status: "pass" }),
+				expect.objectContaining({ name: "identity.private-authorized-allowed", status: "pass" }),
+				expect.objectContaining({ name: "identity.authorization-denied-enforced", status: "pass" }),
+				expect.objectContaining({ name: "identity.unpaired-sender-denied", status: "pass" }),
 				expect.objectContaining({ name: "identity.revocation-enforced", status: "pass" }),
 				expect.objectContaining({ name: "identity.session-id-not-authority", status: "pass" }),
 				expect.objectContaining({ name: "identity.cross-channel-denied", status: "pass" }),
+				expect.objectContaining({ name: "identity.wrong-thread-denied", status: "pass" }),
 			]),
 		);
 		expect(edgeAdapterProbeEvidenceFailure("identity.migration", evidence)).toBeNull();
+	});
+
+	it("rejects identity migration evidence missing runtime-only private auth denial proof", async () => {
+		const evidence = await buildEdgeAdapterProbeEvidence({
+			surfaceId: "identity.migration",
+			observedAt,
+			allowRun: true,
+		});
+		const missingDeniedAuthorization = {
+			...evidence,
+			controls: evidence.controls.filter(
+				(control) => control.name !== "identity.authorization-denied-enforced",
+			),
+			runtime: {
+				...evidence.runtime,
+				checks:
+					evidence.runtime?.checks.filter(
+						(control) => control.name !== "identity.authorization-denied-enforced",
+					) ?? [],
+			},
+		};
+
+		expect(
+			edgeAdapterProbeEvidenceFailure("identity.migration", missingDeniedAuthorization),
+		).toContain("control identity.authorization-denied-enforced is missing");
 	});
 
 	it("requires runtime harness evidence for household scopes", async () => {

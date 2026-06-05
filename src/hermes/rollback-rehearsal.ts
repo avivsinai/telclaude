@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
@@ -11,8 +12,11 @@ import {
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_PATH,
 	type HermesArtifactWriteOptions,
 	type RollbackRehearsal,
+	resolveHermesArtifactPath,
 	writeHermesJsonArtifact,
 } from "./foundation.js";
 import {
@@ -52,6 +56,7 @@ export type HermesRollbackRelayClient = {
 };
 
 type RollbackCheck = NonNullable<RollbackRehearsal["checks"]>[number];
+type RelayPublicKeyProvenance = NonNullable<RollbackRehearsal["relayPublicKey"]>;
 
 export async function runHermesRollbackRehearsal(input: {
 	readonly allowRun: boolean;
@@ -61,7 +66,8 @@ export async function runHermesRollbackRehearsal(input: {
 }): Promise<RollbackRehearsal> {
 	const now = input.now ?? (() => new Date().toISOString());
 	const checks: RollbackCheck[] = [];
-	const relayPublicKey = rollbackRelayPublicKeyFromEnv();
+	const relayPublicKeyLookup = rollbackRelayPublicKeyFromEnv();
+	const relayPublicKey = relayPublicKeyLookup.relayPublicKey;
 	if (!input.allowRun) {
 		checks.push(fail("rollback.allowed", "rollback rehearsal requires --allow-run"));
 		return {
@@ -78,6 +84,16 @@ export async function runHermesRollbackRehearsal(input: {
 	}
 
 	checks.push(pass("rollback.allowed", "operator allowed a relay-observed rollback rehearsal"));
+	if (relayPublicKeyLookup.failure) {
+		checks.push(fail("rollback.relayPublicKey", relayPublicKeyLookup.failure));
+	} else if (relayPublicKey) {
+		checks.push(
+			pass(
+				"rollback.relayPublicKey",
+				"relay public key provenance matched the trusted rollback lockfile",
+			),
+		);
+	}
 	const relay = input.relay ?? createHermesRollbackRelayClient();
 	let before: HermesRollbackRelayState | undefined;
 	let afterControl: HermesRollbackRelayState | undefined;
@@ -240,16 +256,142 @@ function buildEvidence(
 	};
 }
 
-function rollbackRelayPublicKeyFromEnv(): RollbackRehearsal["relayPublicKey"] | undefined {
+function rollbackRelayPublicKeyFromEnv():
+	| { readonly relayPublicKey?: RelayPublicKeyProvenance; readonly failure?: undefined }
+	| { readonly relayPublicKey?: undefined; readonly failure: string } {
 	const value = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV];
-	if (!value) return undefined;
+	if (!value) return {};
+	const sha256 = `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
+	const locked = rollbackRelayPublicKeyLockEntry(value, sha256);
+	if (!locked.valid) {
+		return { failure: locked.failure };
+	}
 	return {
-		scope: "operator",
-		envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
-		value,
-		sha256: `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`,
-		source: "process-env",
+		relayPublicKey: {
+			scope: "operator",
+			envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+			value,
+			sha256,
+			source: locked.value.source,
+		},
 	};
+}
+
+function rollbackRelayPublicKeyLockEntry(
+	value: string,
+	sha256: string,
+):
+	| { readonly valid: true; readonly value: { readonly source: string } }
+	| { readonly valid: false; readonly failure: string } {
+	const lockPath =
+		process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV]?.trim() ||
+		HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_PATH;
+	const resolved = resolveHermesArtifactPath(lockPath);
+	if (!fs.existsSync(resolved)) {
+		return { valid: false, failure: `rollback relay public key lockfile is missing: ${lockPath}` };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+	} catch (error) {
+		return {
+			valid: false,
+			failure: `rollback relay public key lockfile is invalid: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		};
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		(parsed as { schemaVersion?: unknown }).schemaVersion !==
+			"telclaude.hermes.rollback-relay-public-key-lock.v1" ||
+		!Array.isArray((parsed as { keys?: unknown }).keys)
+	) {
+		return { valid: false, failure: "rollback relay public key lockfile is invalid" };
+	}
+	const locked = (parsed as { keys: Array<Record<string, unknown>> }).keys.find(
+		(key) =>
+			key.scope === "operator" &&
+			key.envKey === HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV &&
+			key.value === value &&
+			key.sha256 === sha256 &&
+			typeof key.source === "string" &&
+			key.source.trim() &&
+			typeof key.sourceSha256 === "string" &&
+			/^sha256:[a-f0-9]{64}$/i.test(key.sourceSha256),
+	);
+	if (!locked) {
+		return {
+			valid: false,
+			failure:
+				"rollback relay public key is not pinned by value, sha256, source, and sourceSha256 in the trusted lockfile",
+		};
+	}
+	const source = locked.source as string;
+	const sourcePath = resolveHermesArtifactPath(source);
+	if (!fs.existsSync(sourcePath)) {
+		return {
+			valid: false,
+			failure: `rollback relay public key source artifact is missing: ${source}`,
+		};
+	}
+	const sourceBytes = fs.readFileSync(sourcePath);
+	const sourceSha256 = `sha256:${crypto.createHash("sha256").update(sourceBytes).digest("hex")}`;
+	if (sourceSha256 !== locked.sourceSha256) {
+		return {
+			valid: false,
+			failure: "rollback relay public key source artifact sha256 does not match lockfile",
+		};
+	}
+	const sourceFailure = rollbackRelayPublicKeySourceArtifactFailure(sourceBytes.toString("utf8"), {
+		source,
+		value,
+		sha256,
+	});
+	if (sourceFailure) {
+		return { valid: false, failure: sourceFailure };
+	}
+	return { valid: true, value: { source } };
+}
+
+function rollbackRelayPublicKeySourceArtifactFailure(
+	sourceText: string,
+	locked: { readonly source: string; readonly value: string; readonly sha256: string },
+): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(sourceText) as unknown;
+	} catch (error) {
+		return `rollback relay public key source artifact is invalid: ${
+			error instanceof Error ? error.message : String(error)
+		}`;
+	}
+	if (
+		typeof parsed !== "object" ||
+		parsed === null ||
+		(parsed as { schemaVersion?: unknown }).schemaVersion !==
+			"telclaude.hermes.rollback-relay-public-key-source.v1" ||
+		!Array.isArray((parsed as { keys?: unknown }).keys)
+	) {
+		return "rollback relay public key source artifact is invalid";
+	}
+	const sourceKey = (parsed as { keys: Array<Record<string, unknown>> }).keys.find(
+		(key) =>
+			key.scope === "operator" &&
+			key.envKey === HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV &&
+			key.value === locked.value &&
+			key.sha256 === locked.sha256,
+	);
+	if (!sourceKey) {
+		return "rollback relay public key source artifact does not contain the pinned key";
+	}
+	if (
+		sourceKey.sha256 !== `sha256:${crypto.createHash("sha256").update(locked.value).digest("hex")}`
+	) {
+		return "rollback relay public key source artifact sha256 does not match value";
+	}
+	return undefined;
 }
 
 function relayProofEvidenceFailures(

@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
+import { redactSecrets } from "../security/output-filter.js";
 import {
 	buildHermesApiServerLaunchPlan,
 	DEFAULT_HERMES_API_SERVER_CONTAINER_NAME,
@@ -73,6 +74,8 @@ import {
 	type DecisionLog,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
+	HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+	HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
 	type HermesArtifactWriteOptions,
 	type HermesPin,
 	PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS,
@@ -134,6 +137,9 @@ import {
 	buildHermesCliProbeInvocation,
 	buildHermesOpenAiCodexRelayAuthStorePayload,
 	DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
+	evaluateHermesCliHeadlessReadiness,
+	findHermesLaunchSecretFindings,
+	type HermesCliHeadlessReadiness,
 	type HermesCliProbeReport,
 	type HermesLaunchInvocation,
 	parseHermesRelayProofEvidence,
@@ -147,13 +153,17 @@ import {
 	buildProReviewNativeYoetzEnv,
 	buildProReviewRequestDraft,
 	buildProReviewYoetzCommand,
+	computeProReviewPayloadBinding,
 	DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 	DEFAULT_PRO_REVIEW_REQUEST_PATH,
+	digestProReviewFileEntry,
+	digestProReviewSelectedFileEntries,
 	evaluateProReviewCheck,
-	type ProReviewShard,
-	readProReviewNativeCanary,
+	type ProReviewNativeCanary,
+	type ProReviewRequest,
+	type ProReviewSelectedFileDigestEntry,
+	parseProReviewNativeCanary,
 	readProReviewRequest,
-	readProReviewShardItemContent,
 	validateProReviewYoetzInspectCompletedResponseOutput,
 	validateProReviewYoetzInspectOutput,
 	validateProReviewYoetzSendOutput,
@@ -235,6 +245,33 @@ type FeatureProbeDefinition = Omit<FeatureProbeMatrix["probes"][number], "hermes
 const DEFAULT_HERMES_FEATURE_PROBE_PIN: HermesPin = {
 	version: DEFAULT_HERMES_UPSTREAM_VERSION,
 };
+const DEFAULT_HERMES_HEADLESS_ENTRYPOINT_EVIDENCE_PATH =
+	"artifacts/hermes/probes/execution-headless-entrypoint.json";
+const DEFAULT_HERMES_HEADLESS_ENTRYPOINT_TEST_REPORT_PATH =
+	"artifacts/hermes/probes/execution-headless-entrypoint.vitest.json";
+const HERMES_HEADLESS_ENTRYPOINT_TEST_FILES = [
+	"tests/hermes/api-adapter.test.ts",
+	"tests/hermes/private-runtime.test.ts",
+] as const;
+const HERMES_HEADLESS_ENTRYPOINT_SOURCE_DIGEST_FILES = [
+	"src/hermes/api-adapter.ts",
+	"src/hermes/private-runtime.ts",
+	"src/hermes/session-map.ts",
+	...HERMES_HEADLESS_ENTRYPOINT_TEST_FILES,
+] as const;
+const HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS = [
+	"stream.delta_before_done",
+	"stream.terminal_event",
+	"session.initial",
+	"session.resume",
+	"session.new_clears_resume",
+	"session.concurrent_isolation",
+	"tool.result_returned",
+	"approval.fallback_or_wait_resume",
+	"cancellation.stop",
+	"errors.deterministic",
+	"redaction.secret_outputs",
+] as const;
 
 const HERMES_FEATURE_PROBE_DEFINITIONS = [
 	{
@@ -249,6 +286,21 @@ const HERMES_FEATURE_PROBE_DEFINITIONS = [
 		evidence_path: DEFAULT_HERMES_CLI_HEADLESS_EVIDENCE_PATH,
 		lockfile_key: "featureProbes.execution.cliHeadless",
 		security_scope: "headless-availability-only",
+		approval_equivalent: false,
+		failure_outcome: "disable",
+	},
+	{
+		surface_id: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+		documented_seam:
+			"Telclaude Hermes private API runtime adapter and session map semantic headless entrypoint",
+		probe_command: `pnpm dev hermes probe ${HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID} --allow-run --out ${DEFAULT_HERMES_HEADLESS_ENTRYPOINT_EVIDENCE_PATH}`,
+		expected_result:
+			"Focused adapter/runtime tests prove streaming, terminal, session, tool, approval, cancellation, deterministic error, and redaction semantics",
+		negative_probe:
+			"CLI availability proof alone, missing terminal events, missing stop-on-abort, stale sessions, and unredacted output fail closed",
+		evidence_path: DEFAULT_HERMES_HEADLESS_ENTRYPOINT_EVIDENCE_PATH,
+		lockfile_key: "featureProbes.execution.headlessEntrypoint",
+		security_scope: "headless-entrypoint-semantics",
 		approval_equivalent: false,
 		failure_outcome: "disable",
 	},
@@ -587,6 +639,7 @@ type FixtureResultOption = JsonOption & {
 	evidenceDir: string;
 	testReport?: string;
 	reportOut: string;
+	providerNetworkProbe?: string;
 	observedAt?: string;
 } & TrackedSeedWriteOption;
 
@@ -619,6 +672,7 @@ type ProReviewSendOption = JsonOption & {
 	request: string;
 	canary: string;
 	bundleOut?: string;
+	conversation?: string;
 	execute?: boolean;
 	waitTimeoutMs?: string;
 };
@@ -868,6 +922,124 @@ function fileSha256(filePath: string): string {
 	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
 }
 
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function stableFileSha256(filePath: string): string {
+	let previous: {
+		mtimeMs: number;
+		size: number;
+		sha256: string;
+	} | null = null;
+	for (let attempt = 0; attempt < 20; attempt++) {
+		const stat = fs.statSync(filePath);
+		const current = {
+			mtimeMs: stat.mtimeMs,
+			size: stat.size,
+			sha256: fileSha256(filePath),
+		};
+		if (
+			previous &&
+			previous.mtimeMs === current.mtimeMs &&
+			previous.size === current.size &&
+			previous.sha256 === current.sha256
+		) {
+			return current.sha256;
+		}
+		previous = current;
+		sleepSync(25);
+	}
+	return previous?.sha256 ?? fileSha256(filePath);
+}
+
+function headlessEntrypointSourceDigests(): Record<string, `sha256:${string}`> {
+	return Object.fromEntries(
+		HERMES_HEADLESS_ENTRYPOINT_SOURCE_DIGEST_FILES.map((sourcePath) => [
+			sourcePath,
+			fileSha256(resolveHermesArtifactPath(sourcePath)) as `sha256:${string}`,
+		]),
+	);
+}
+
+function runHeadlessEntrypointProof(options: {
+	allowRun: boolean;
+	reportPath: string;
+	timeoutMs?: number;
+}): Record<string, unknown> {
+	const generatedAt = new Date().toISOString();
+	if (!options.allowRun) {
+		return {
+			schemaVersion: HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+			probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+			status: "fail",
+			ran: false,
+			generatedAt,
+			summary:
+				"execution.headless_entrypoint requires --allow-run to execute focused adapter/runtime tests",
+			checks: HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS.map((name) => ({
+				name,
+				status: "fail",
+				detail: "not run",
+			})),
+		};
+	}
+	const resolvedReportPath = resolveHermesArtifactPath(options.reportPath);
+	fs.mkdirSync(path.dirname(resolvedReportPath), { recursive: true });
+	const command = [
+		"pnpm",
+		"exec",
+		"vitest",
+		"run",
+		...HERMES_HEADLESS_ENTRYPOINT_TEST_FILES,
+		"--reporter=json",
+		`--outputFile=${resolvedReportPath}`,
+	];
+	const result = spawnSync(command[0], command.slice(1), {
+		cwd: process.cwd(),
+		encoding: "utf8",
+		timeout: options.timeoutMs,
+	});
+	if (result.error) throw result.error;
+	if (result.status !== 0) {
+		return {
+			schemaVersion: HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+			probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+			status: "fail",
+			ran: true,
+			generatedAt,
+			summary: `focused adapter/runtime tests exited ${String(result.status)}`,
+			checks: HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS.map((name) => ({
+				name,
+				status: "fail",
+				detail: result.stderr || result.stdout || "focused test command failed",
+			})),
+		};
+	}
+	return {
+		schemaVersion: HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+		probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+		status: "pass",
+		ran: true,
+		generatedAt,
+		summary: "Focused Hermes adapter/runtime semantic headless entrypoint checks passed",
+		testReport: {
+			runner: "vitest-json",
+			command,
+			cwd: process.cwd(),
+			exitCode: 0,
+			reportPath: options.reportPath,
+			reportSha256: stableFileSha256(resolvedReportPath),
+			sourceDigests: headlessEntrypointSourceDigests(),
+		},
+		checks: HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS.map((name) => ({
+			name,
+			status: "pass",
+			detail: "passed in machine-observed focused adapter/runtime Vitest report",
+		})),
+	};
+}
+
 function noForkFileSha256(filePath: string): `sha256:${string}` {
 	return fileSha256(filePath) as `sha256:${string}`;
 }
@@ -1071,8 +1243,88 @@ function resolveProReviewBundlePath(bundleOut: string | undefined): string {
 		: path.join(os.tmpdir(), `telclaude-hermes-pro-review-${process.pid}.md`);
 }
 
-function writeProReviewBundle(requestPath: string, bundlePath: string): void {
+function createProReviewExecuteBundlePath(): string {
+	const bundleDir = fs.mkdtempSync(
+		path.join(os.tmpdir(), `telclaude-hermes-pro-review-send-${process.pid}-`),
+	);
+	fs.chmodSync(bundleDir, 0o700);
+	return path.join(bundleDir, "bundle.md");
+}
+
+type ProReviewFileSnapshot = ProReviewSelectedFileDigestEntry & {
+	readonly content?: string;
+};
+
+type ProReviewBundleSnapshot = {
+	readonly request: ProReviewRequest;
+	readonly nativeCanary: ProReviewNativeCanary;
+	readonly payloadSha256: string;
+	readonly selectedFileContentsSha256: string;
+	readonly transportEvidenceSha256: string;
+	readonly bundleText: string;
+};
+
+function readProReviewFileSnapshot(file: string): ProReviewFileSnapshot {
+	const resolved = resolveHermesArtifactPath(file);
+	if (!fs.existsSync(resolved)) return { file, missing: true };
+	const bytes = fs.readFileSync(resolved);
+	return {
+		file,
+		sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+		content: bytes.toString("utf8"),
+	};
+}
+
+function createProReviewBundleSnapshot(
+	requestPath: string,
+	expectedPayloadSha256: string,
+): ProReviewBundleSnapshot {
 	const request = readProReviewRequest(requestPath);
+	const selectedFileSnapshots = request.selectedFiles.map((file) =>
+		readProReviewFileSnapshot(file),
+	);
+	const selectedFileContentsSha256 = digestProReviewSelectedFileEntries(
+		selectedFileSnapshots.map((snapshot) =>
+			"missing" in snapshot
+				? { file: snapshot.file, missing: true }
+				: { file: snapshot.file, sha256: snapshot.sha256 },
+		),
+	);
+	const transportEvidenceSnapshot = readProReviewFileSnapshot(request.transportEvidence);
+	const transportEvidenceSha256 = digestProReviewFileEntry(
+		"missing" in transportEvidenceSnapshot
+			? { file: transportEvidenceSnapshot.file, missing: true }
+			: { file: transportEvidenceSnapshot.file, sha256: transportEvidenceSnapshot.sha256 },
+	);
+	const payloadBinding = computeProReviewPayloadBinding(request, {
+		selectedFileContentsSha256,
+		transportEvidenceSha256,
+	});
+	if (payloadBinding.payloadSha256 !== expectedPayloadSha256) {
+		throw new Error(
+			`approved payloadSha256 ${expectedPayloadSha256} no longer matches bundle snapshot payload ${payloadBinding.payloadSha256}`,
+		);
+	}
+	if (request.payloadBinding.payloadSha256 !== payloadBinding.payloadSha256) {
+		throw new Error(
+			`request payloadSha256 ${request.payloadBinding.payloadSha256} no longer matches bundle snapshot payload ${payloadBinding.payloadSha256}`,
+		);
+	}
+	if (request.privateWorkspaceDisclosure.payloadSha256 !== payloadBinding.payloadSha256) {
+		throw new Error(
+			`approval payloadSha256 ${String(
+				request.privateWorkspaceDisclosure.payloadSha256,
+			)} no longer matches bundle snapshot payload ${payloadBinding.payloadSha256}`,
+		);
+	}
+	if ("missing" in transportEvidenceSnapshot || transportEvidenceSnapshot.content === undefined) {
+		throw new Error(
+			`transport evidence file disappeared before Pro review bundle construction: ${request.transportEvidence}`,
+		);
+	}
+	const nativeCanary = parseProReviewNativeCanary(
+		JSON.parse(transportEvidenceSnapshot.content) as unknown,
+	);
 	const lines = [
 		"# Telclaude Hermes Wrapper Pro Review",
 		"",
@@ -1090,76 +1342,32 @@ function writeProReviewBundle(requestPath: string, bundlePath: string): void {
 		"## Files",
 		"",
 	];
-	for (const file of request.selectedFiles) {
-		if (typeof file !== "string") continue;
-		const resolved = resolveHermesArtifactPath(file);
-		lines.push(`### ${file}`, "", "```text", fs.readFileSync(resolved, "utf8"), "```", "");
+	for (const snapshot of selectedFileSnapshots) {
+		if ("missing" in snapshot || snapshot.content === undefined) {
+			throw new Error(
+				`selected Pro review file disappeared before bundle construction: ${snapshot.file}`,
+			);
+		}
+		lines.push(`### ${snapshot.file}`, "", "```text", snapshot.content, "```", "");
 	}
-	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
-	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
-	fs.chmodSync(bundlePath, 0o600);
+	return {
+		request,
+		nativeCanary,
+		payloadSha256: payloadBinding.payloadSha256,
+		selectedFileContentsSha256,
+		transportEvidenceSha256,
+		bundleText: `${lines.join("\n")}\n`,
+	};
 }
 
-function writeProReviewShardBundle(
-	requestPath: string,
+function writeProReviewBundleSnapshot(
+	snapshot: ProReviewBundleSnapshot,
 	bundlePath: string,
-	shard: ProReviewShard,
+	options: { readonly readOnly?: boolean } = {},
 ): void {
-	const request = readProReviewRequest(requestPath);
-	const lines = [
-		"# Telclaude Hermes Wrapper Pro Review Shard",
-		"",
-		"## Request",
-		"",
-		request.prompt,
-		"",
-		"## Root Native Review Binding",
-		"",
-		`- transport: ${String(request.transport)}`,
-		`- model: ${String(request.model)}`,
-		`- fallbackAllowed: ${String(request.fallbackAllowed)}`,
-		`- payloadSha256: ${String(request.payloadBinding.payloadSha256)}`,
-		`- shardPlanSha256: ${String(request.payloadBinding.shardPlanSha256 ?? "")}`,
-		"",
-		"## Shard Binding",
-		"",
-		`- shardId: ${shard.shardId}`,
-		`- shardIndex: ${shard.index + 1}/${shard.count}`,
-		`- shardSha256: ${shard.shardSha256}`,
-		`- sourceBytes: ${shard.sourceBytes}`,
-		`- focus: ${shard.focus}`,
-		"",
-		"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
-		"Review this shard only. At the top of your response, echo these exact binding lines:",
-		`payloadSha256: ${String(request.payloadBinding.payloadSha256)}`,
-		`shardPlanSha256: ${String(request.payloadBinding.shardPlanSha256 ?? "")}`,
-		`shardId: ${shard.shardId}`,
-		`shardSha256: ${shard.shardSha256}`,
-		"Then return a Findings section and a Residual risk section.",
-		"Do not review outside this shard or claim full-context coverage.",
-		"",
-		"## Files",
-		"",
-	];
-	for (const item of shard.items) {
-		lines.push(
-			`### ${item.path}:${item.startLine}-${item.endLine}`,
-			"",
-			"```text",
-			readProReviewShardItemContent(item),
-			"```",
-			"",
-		);
-	}
 	fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
-	fs.writeFileSync(bundlePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
-	fs.chmodSync(bundlePath, 0o600);
-}
-
-function proReviewShardBundlePath(bundlePath: string, shard: ProReviewShard): string {
-	const extension = path.extname(bundlePath) || ".md";
-	const basename = path.basename(bundlePath, extension);
-	return path.join(path.dirname(bundlePath), `${basename}.${shard.shardId}${extension}`);
+	fs.writeFileSync(bundlePath, snapshot.bundleText, { encoding: "utf8", mode: 0o600 });
+	fs.chmodSync(bundlePath, options.readOnly === true ? 0o400 : 0o600);
 }
 
 function buildProReviewRunId(): string {
@@ -1188,15 +1396,6 @@ function parseProReviewWaitTimeoutMs(value: string | undefined): number | undefi
 	const parsed = Number(value);
 	if (!Number.isInteger(parsed) || parsed <= 0) {
 		throw new Error("--wait-timeout-ms must be a positive integer");
-	}
-	return parsed;
-}
-
-function parseProReviewShardMaxSourceBytes(value: string | undefined): number | undefined {
-	if (value === undefined) return undefined;
-	const parsed = Number(value);
-	if (!Number.isInteger(parsed) || parsed <= 0) {
-		throw new Error("--shard-max-source-bytes must be a positive integer");
 	}
 	return parsed;
 }
@@ -1292,6 +1491,8 @@ function runPrivateTelegramFixtureVitest(reportPath: string): FixtureVitestInvoc
 		...PRIVATE_TELEGRAM_FIXTURE_TEST_FILES,
 		"--reporter=json",
 		`--outputFile=${reportPath}`,
+		"--maxWorkers=1",
+		"--minWorkers=1",
 	];
 	fs.mkdirSync(path.dirname(resolveHermesArtifactPath(reportPath)), { recursive: true });
 	const result = spawnSync(command[0], command.slice(1), {
@@ -1516,8 +1717,45 @@ function resolveHermesHome(value: string | undefined): string {
 
 const HERMES_CODEX_BASE_URL_ENV = "HERMES_CODEX_BASE_URL";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
+const HERMES_BUNDLED_SKILLS_ENV = "HERMES_BUNDLED_SKILLS";
+const HERMES_CONTAINED_CURATED_BUNDLED_SKILLS = "/home/hermes/.telclaude-curated-bundled-skills";
+const HERMES_DOCKER_EXEC_TRANSIENT_HOME_ROOT = "/home/hermes/.telclaude-docker-exec";
 const OPENAI_CODEX_PROXY_PROOF_LATEST_URL =
 	"http://telclaude:8790/v1/openai-codex-proxy/_telclaude/relay-proof/latest";
+
+function dockerExecHermesCliReadiness(
+	invocation: HermesLaunchInvocation,
+	options: { dockerBin?: string; containerName: string; timeoutMs?: number },
+): HermesCliHeadlessReadiness {
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const findings = findHermesLaunchSecretFindings(invocation);
+	const base = evaluateHermesCliHeadlessReadiness(invocation, findings);
+	const cwd = invocation.cwd.trim();
+	const result = spawnSync(dockerBin, ["exec", options.containerName, "test", "-d", cwd], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: options.timeoutMs,
+	});
+	const cwdGate =
+		cwd && result.status === 0
+			? {
+					name: "cwd.exists",
+					status: "pass" as const,
+					detail: "Hermes probe cwd exists inside docker-exec container",
+				}
+			: {
+					name: "cwd.exists",
+					status: "fail" as const,
+					detail: `Hermes probe cwd is missing inside docker-exec container: ${redactSecrets(
+						result.stderr || result.error?.message || cwd || "missing cwd",
+					)}`,
+				};
+	const gates = base.gates.map((gate) => (gate.name === "cwd.exists" ? cwdGate : gate));
+	return {
+		status: gates.every((gate) => gate.status === "pass") ? "pass" : "fail",
+		gates,
+	};
+}
 
 function runHermesLaunchInvocationInDockerExec(
 	invocation: HermesLaunchInvocation,
@@ -1532,6 +1770,15 @@ function runHermesLaunchInvocationInDockerExec(
 	relayProof?: HermesCliProbeReport["relayProof"];
 }> {
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const dockerInvocation = withDockerExecHermesProfileEnv(invocation);
+	const cleanupTransientHome = () =>
+		cleanupDockerExecHermesTransientHome(
+			dockerBin,
+			options.containerName,
+			invocation,
+			dockerInvocation,
+			options.timeoutMs,
+		);
 	const runtime = collectDockerExecRuntimeEvidence(
 		dockerBin,
 		options.containerName,
@@ -1540,28 +1787,49 @@ function runHermesLaunchInvocationInDockerExec(
 	const authSetup = prepareDockerExecHermesAuthStore(
 		dockerBin,
 		options.containerName,
-		invocation,
+		dockerInvocation,
 		runtime.evidence,
 		options.timeoutMs,
 	);
 	if (authSetup.stderr) {
+		const cleanup = cleanupTransientHome();
 		return Promise.resolve({
 			exitCode: 1,
 			stdout: "",
-			stderr: [runtime.stderr, authSetup.stderr].filter(Boolean).join("\n"),
+			stderr: [runtime.stderr, authSetup.stderr, cleanup.stderr].filter(Boolean).join("\n"),
 			...(authSetup.observedAt
 				? { startedAt: authSetup.observedAt, endedAt: authSetup.observedAt }
 				: {}),
 			...(runtime.evidence ? { runtime: runtime.evidence } : {}),
 		});
 	}
-	const args = ["exec", "-i", "-w", invocation.cwd];
-	for (const [key, value] of Object.entries(invocation.env).sort(([left], [right]) =>
+	const prelaunchRepair = repairDockerExecHermesRuntimePermissions(
+		dockerBin,
+		options.containerName,
+		dockerInvocation,
+		options.timeoutMs,
+	);
+	if (prelaunchRepair.stderr) {
+		const cleanup = cleanupTransientHome();
+		return Promise.resolve({
+			exitCode: 1,
+			stdout: "",
+			stderr: [runtime.stderr, authSetup.stderr, prelaunchRepair.stderr, cleanup.stderr]
+				.filter(Boolean)
+				.join("\n"),
+			...(prelaunchRepair.observedAt
+				? { startedAt: prelaunchRepair.observedAt, endedAt: prelaunchRepair.observedAt }
+				: {}),
+			...(runtime.evidence ? { runtime: runtime.evidence } : {}),
+		});
+	}
+	const args = ["exec", "-i", "-w", dockerInvocation.cwd];
+	for (const [key, value] of Object.entries(dockerInvocation.env).sort(([left], [right]) =>
 		left.localeCompare(right),
 	)) {
 		args.push("-e", `${key}=${value}`);
 	}
-	args.push(options.containerName, invocation.command, ...invocation.args);
+	args.push(options.containerName, dockerInvocation.command, ...dockerInvocation.args);
 	const childStartedAt = new Date().toISOString();
 	const result = spawnSync(dockerBin, args, {
 		encoding: "utf8",
@@ -1572,18 +1840,21 @@ function runHermesLaunchInvocationInDockerExec(
 	const relayProof = collectDockerExecRelayProof(
 		dockerBin,
 		options.containerName,
-		invocation,
+		dockerInvocation,
 		options.timeoutMs,
 	);
+	const cleanup = cleanupTransientHome();
 	return Promise.resolve({
 		exitCode: result.status ?? (result.signal ? 124 : 1),
 		stdout: result.stdout ?? "",
 		stderr: [
 			runtime.stderr,
 			authSetup.stderr,
+			prelaunchRepair.stderr,
 			result.stderr ?? "",
 			result.error ? `failed to launch docker exec Hermes probe: ${result.error.message}` : "",
 			relayProof.stderr,
+			cleanup.stderr,
 		]
 			.filter(Boolean)
 			.join("\n"),
@@ -1592,6 +1863,69 @@ function runHermesLaunchInvocationInDockerExec(
 		...(runtime.evidence ? { runtime: runtime.evidence } : {}),
 		...(relayProof.evidence ? { relayProof: relayProof.evidence } : {}),
 	});
+}
+
+function withDockerExecHermesProfileEnv(invocation: HermesLaunchInvocation): HermesLaunchInvocation {
+	const hermesHome = invocation.env.HERMES_HOME?.trim();
+	if (!hermesHome?.startsWith("/home/hermes/")) {
+		return invocation;
+	}
+	const env = { ...invocation.env };
+	if (!env[HERMES_BUNDLED_SKILLS_ENV]?.trim()) {
+		env[HERMES_BUNDLED_SKILLS_ENV] = HERMES_CONTAINED_CURATED_BUNDLED_SKILLS;
+	}
+	if (normalizeContainerPath(hermesHome) === DEFAULT_MODEL_RELAY_PROFILE_DIR) {
+		env.HERMES_HOME = `${HERMES_DOCKER_EXEC_TRANSIENT_HOME_ROOT}/${crypto.randomUUID()}`;
+	}
+	return {
+		...invocation,
+		env,
+	};
+}
+
+function cleanupDockerExecHermesTransientHome(
+	dockerBin: string,
+	containerName: string,
+	originalInvocation: HermesLaunchInvocation,
+	dockerInvocation: HermesLaunchInvocation,
+	timeoutMs: number | undefined,
+): { stderr: string } {
+	const originalHome = originalInvocation.env.HERMES_HOME?.trim();
+	const dockerHome = dockerInvocation.env.HERMES_HOME?.trim();
+	if (
+		!dockerHome ||
+		normalizeContainerPath(originalHome ?? "") !== DEFAULT_MODEL_RELAY_PROFILE_DIR ||
+		!normalizeContainerPath(dockerHome).startsWith(`${HERMES_DOCKER_EXEC_TRANSIENT_HOME_ROOT}/`)
+	) {
+		return { stderr: "" };
+	}
+	const script = [
+		"import os, shutil, sys",
+		"home = os.path.normpath(sys.argv[1])",
+		`root = ${JSON.stringify(HERMES_DOCKER_EXEC_TRANSIENT_HOME_ROOT)}`,
+		"if not home.startswith(root + os.sep):",
+		"    raise RuntimeError(f'refusing to remove non-transient Hermes home: {home}')",
+		"shutil.rmtree(home, ignore_errors=True)",
+		"try:",
+		"    os.rmdir(root)",
+		"except OSError:",
+		"    pass",
+	].join("\n");
+	const result = spawnSync(dockerBin, ["exec", containerName, "python", "-c", script, dockerHome], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: timeoutMs,
+	});
+	if (result.status === 0) return { stderr: "" };
+	return {
+		stderr: `failed to clean up docker exec Hermes transient home: ${
+			result.stderr || result.error?.message || "unknown error"
+		}`,
+	};
+}
+
+function normalizeContainerPath(value: string): string {
+	return value.replace(/\/+$/, "") || "/";
 }
 
 function prepareDockerExecHermesAuthStore(
@@ -1623,16 +1957,43 @@ function prepareDockerExecHermesAuthStore(
 	});
 	const payload = buildHermesOpenAiCodexRelayAuthStorePayload(peerBoundRelayToken, relayBaseUrl);
 	const script = [
-		"import json, os, sys",
+		"import json, os, shutil, sys",
 		"home = sys.argv[1]",
 		"model = sys.argv[2]",
-		"payload = json.load(sys.stdin)",
-		"runtime_uid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_UID', '10000'))",
-		"runtime_gid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_GID', '10000'))",
-		"os.makedirs(home, mode=0o700, exist_ok=True)",
-		"os.chown(home, 0, runtime_gid)",
-		"os.chmod(home, 0o1770)",
-		"config_path = os.path.join(home, 'config.yaml')",
+		"curated_skills = sys.argv[3]",
+			"payload = json.load(sys.stdin)",
+			"runtime_uid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_UID', '10000'))",
+			"runtime_gid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_GID', '10000'))",
+			"runtime_dirs = ('sessions', 'logs', 'cron', 'audio_cache', 'image_cache', 'memories', 'pairing', 'hooks', 'bin')",
+			"def harden_home_access():",
+			"    os.chown(home, 0, runtime_gid)",
+			"    os.chmod(home, 0o1770)",
+			"def harden_runtime_dirs():",
+			"    for name in runtime_dirs:",
+			"        runtime_path = os.path.join(home, name)",
+			"        if os.path.isdir(runtime_path):",
+			"            os.chown(runtime_path, runtime_uid, runtime_gid)",
+			"            os.chmod(runtime_path, 0o700)",
+			"if not os.path.isdir(curated_skills):",
+			"    raise RuntimeError(f'curated Hermes skills directory is missing: {curated_skills}')",
+			"os.makedirs(home, mode=0o700, exist_ok=True)",
+			"harden_home_access()",
+			"lock_path = os.path.join(home, 'auth.lock')",
+		"try:",
+		"    os.unlink(lock_path)",
+		"except FileNotFoundError:",
+		"    pass",
+		"skills_path = os.path.join(home, 'skills')",
+		"if os.path.exists(skills_path):",
+		"    shutil.rmtree(skills_path)",
+		"shutil.copytree(curated_skills, skills_path)",
+		"for current_root, dirs, files in os.walk(skills_path):",
+			"    os.chown(current_root, runtime_uid, runtime_gid)",
+			"    for name in dirs + files:",
+			"        os.chown(os.path.join(current_root, name), runtime_uid, runtime_gid)",
+			"harden_home_access()",
+			"harden_runtime_dirs()",
+			"config_path = os.path.join(home, 'config.yaml')",
 		"config_tmp_path = f'{config_path}.tmp'",
 		"with open(config_tmp_path, 'w', encoding='utf-8') as handle:",
 		"    handle.write('model:\\n')",
@@ -1662,13 +2023,25 @@ function prepareDockerExecHermesAuthStore(
 		"    handle.write('\\n')",
 		"os.chown(manifest_tmp_path, 0, runtime_gid)",
 		"os.chmod(manifest_tmp_path, 0o440)",
-		"os.replace(manifest_tmp_path, manifest_path)",
-		"os.chown(manifest_path, 0, runtime_gid)",
-		"os.chmod(manifest_path, 0o440)",
-	].join("\n");
+			"os.replace(manifest_tmp_path, manifest_path)",
+			"os.chown(manifest_path, 0, runtime_gid)",
+			"os.chmod(manifest_path, 0o440)",
+			"harden_runtime_dirs()",
+			"harden_home_access()",
+		].join("\n");
 	const result = spawnSync(
 		dockerBin,
-		["exec", "-i", containerName, "python", "-c", script, hermesHome, model],
+		[
+			"exec",
+			"-i",
+			containerName,
+			"python",
+			"-c",
+			script,
+			hermesHome,
+			model,
+			HERMES_CONTAINED_CURATED_BUNDLED_SKILLS,
+		],
 		{
 			encoding: "utf8",
 			env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
@@ -1684,6 +2057,44 @@ function prepareDockerExecHermesAuthStore(
 			relayToken,
 			payload,
 		)}`,
+		observedAt: new Date().toISOString(),
+	};
+}
+
+function repairDockerExecHermesRuntimePermissions(
+	dockerBin: string,
+	containerName: string,
+	invocation: HermesLaunchInvocation,
+	timeoutMs: number | undefined,
+): { stderr: string; observedAt?: string } {
+	const hermesHome = invocation.env.HERMES_HOME?.trim();
+	if (!hermesHome) return { stderr: "" };
+	const script = [
+		"import os, sys",
+		"home = sys.argv[1]",
+		"runtime_uid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_UID', '10000'))",
+		"runtime_gid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_GID', '10000'))",
+		"runtime_dirs = ('sessions', 'logs', 'cron', 'audio_cache', 'image_cache', 'memories', 'pairing', 'hooks', 'bin')",
+		"if not os.path.isdir(home):",
+		"    raise RuntimeError(f'Hermes home is missing before docker exec launch: {home}')",
+		"os.chown(home, 0, runtime_gid)",
+		"os.chmod(home, 0o1770)",
+		"for name in runtime_dirs:",
+		"    runtime_path = os.path.join(home, name)",
+		"    if os.path.isdir(runtime_path):",
+		"        os.chown(runtime_path, runtime_uid, runtime_gid)",
+		"        os.chmod(runtime_path, 0o700)",
+	].join("\n");
+	const result = spawnSync(dockerBin, ["exec", containerName, "python", "-c", script, hermesHome], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+		timeout: timeoutMs,
+	});
+	if (result.status === 0) return { stderr: "" };
+	return {
+		stderr: `failed to repair docker exec Hermes runtime permissions before launch: ${
+			result.stderr || result.error?.message || "unknown error"
+		}`,
 		observedAt: new Date().toISOString(),
 	};
 }
@@ -1729,7 +2140,11 @@ function collectDockerExecRelayProof(
 		"auth_path = os.path.join(home, 'auth.json')",
 		"with open(auth_path, encoding='utf-8') as handle:",
 		"    auth = json.load(handle)",
-		"token = auth.get('providers', {}).get('openai-codex', {}).get('tokens', {}).get('access_token', '')",
+		"token = ''",
+		"for entry in auth.get('credential_pool', {}).get('openai-codex', []):",
+		"    if entry.get('id') == 'telclaude-relay' and entry.get('source') == 'manual:telclaude-relay':",
+		"        token = entry.get('access_token', '')",
+		"        break",
 		"if not token:",
 		"    raise RuntimeError('relay token missing from Hermes auth store')",
 		`request = urllib.request.Request(${JSON.stringify(
@@ -1918,18 +2333,20 @@ function parseCsvOption(value: string | undefined): string[] {
 		.filter((entry) => entry.length > 0);
 }
 
-function resolveServedMcpOriginConfig(): {
+function resolveServedMcpOriginConfig(containerNameInput?: string): {
 	containerName: string;
 	expectedPeerAddress?: string;
 	relayPeerAddress?: string;
 } {
+	const containerName =
+		containerNameInput?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
 	const expectedPeerAddress = resolveServedMcpExpectedPeerAddress();
 	const relayPeerAddress = optionalConfiguredIp(
 		process.env.TELCLAUDE_HERMES_RELAY_IP,
 		"TELCLAUDE_HERMES_RELAY_IP",
 	);
 	return {
-		containerName: DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME,
+		containerName,
 		...(expectedPeerAddress ? { expectedPeerAddress } : {}),
 		...(relayPeerAddress ? { relayPeerAddress } : {}),
 	};
@@ -1949,6 +2366,92 @@ function resolveServedMcpExpectedPeerAddress(): string | undefined {
 		);
 	}
 	return requiredConfiguredIp(allowedPeers[0], "TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS");
+}
+
+function buildDockerExecFetch(
+	options: { dockerBin?: string; containerName: string; timeoutMs?: number },
+): typeof fetch {
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const containerName = options.containerName.trim();
+	if (!containerName) throw new Error("Docker fetch requires a container name");
+	return async (input, init) => {
+		const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
+		const headers = Object.fromEntries(new Headers(init?.headers).entries());
+		const body = typeof init?.body === "string" ? init.body : String(init?.body ?? "");
+		const timeoutSeconds = Math.max(1, Math.ceil((options.timeoutMs ?? 10_000) / 1000));
+		const script = `
+import json
+import sys
+import urllib.error
+import urllib.request
+
+request = json.loads(sys.stdin.read())
+timeout = float(sys.argv[1])
+headers = {str(k): str(v) for k, v in request.get("headers", {}).items()}
+body = str(request.get("body", ""))
+req = urllib.request.Request(
+    str(request["url"]),
+    data=body.encode("utf-8"),
+    headers=headers,
+    method=str(request.get("method") or "POST"),
+)
+try:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        status = resp.getcode()
+        text = resp.read().decode("utf-8", "replace")
+        response_headers = dict(resp.headers.items())
+except urllib.error.HTTPError as exc:
+    status = exc.code
+    text = exc.read().decode("utf-8", "replace")
+    response_headers = dict(exc.headers.items())
+except Exception as exc:
+    print(json.dumps({"transportError": str(exc)}))
+    sys.exit(42)
+print(json.dumps({"status": status, "body": text, "headers": response_headers}))
+`;
+		const result = spawnSync(dockerBin, ["exec", "-i", containerName, "python", "-c", script, String(timeoutSeconds)], {
+			input: JSON.stringify({
+				url,
+				method: init?.method ?? "POST",
+				headers,
+				body,
+			}),
+			encoding: "utf8",
+			env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+			timeout: options.timeoutMs ? options.timeoutMs + 1000 : undefined,
+		});
+		const stdout = result.stdout?.trim() ?? "";
+		let parsed: unknown;
+		try {
+			parsed = stdout ? (JSON.parse(stdout) as unknown) : undefined;
+		} catch {
+			parsed = undefined;
+		}
+		if (
+			result.status !== 0 ||
+			result.error ||
+			!isRecord(parsed) ||
+			typeof parsed.status !== "number" ||
+			typeof parsed.body !== "string"
+		) {
+			const transportError =
+				isRecord(parsed) && typeof parsed.transportError === "string"
+					? parsed.transportError
+					: (result.stderr?.trim() || result.error?.message || stdout || "unknown docker exec fetch failure");
+			throw new Error(`Docker-contained served-MCP request failed: ${transportError}`);
+		}
+		const responseHeaders = new Headers();
+		if (isRecord(parsed.headers)) {
+			for (const [key, value] of Object.entries(parsed.headers)) {
+				if (typeof value === "string") responseHeaders.set(key, value);
+			}
+		}
+		return new Response(parsed.body, { status: parsed.status, headers: responseHeaders });
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function optionalConfiguredIp(value: string | undefined, name: string): string | undefined {
@@ -2414,6 +2917,10 @@ export function registerHermesCommand(program: Command): void {
 			"Generate provider-domain fixture evidence from provider-domain probe artifacts",
 		)
 		.option(
+			"--provider-network-probe <path>",
+			"Direct-provider network probe evidence path for provider-domain fixture bindings",
+		)
+		.option(
 			"--only-provider-domain",
 			"Refresh only provider-domain fixture evidence and preserve existing fixture results",
 		)
@@ -2474,6 +2981,7 @@ export function registerHermesCommand(program: Command): void {
 						? buildProviderDomainFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,
+								networkProbePath: options.providerNetworkProbe,
 							})
 						: undefined;
 				const googleProviderBundle =
@@ -2481,6 +2989,7 @@ export function registerHermesCommand(program: Command): void {
 						? buildGoogleProviderFixtureEvidenceBundle({
 								evidenceDir: options.evidenceDir,
 								observedAt,
+								networkProbePath: options.providerNetworkProbe,
 							})
 						: undefined;
 				const workflowBundle =
@@ -3027,6 +3536,55 @@ export function registerHermesCommand(program: Command): void {
 		)
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action(async (surface: string, options: ProbeOption) => {
+			if (surface === HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID) {
+				let report: Record<string, unknown>;
+				let outPath: string | undefined;
+				try {
+					report = runHeadlessEntrypointProof({
+						allowRun: options.allowRun === true,
+						reportPath: DEFAULT_HERMES_HEADLESS_ENTRYPOINT_TEST_REPORT_PATH,
+						timeoutMs: parseTimeoutMs(options.timeoutMs),
+					});
+				} catch (error) {
+					report = {
+						schemaVersion: HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+						probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+						status: "fail",
+						ran: false,
+						generatedAt: new Date().toISOString(),
+						summary: error instanceof Error ? error.message : String(error),
+						checks: HERMES_HEADLESS_ENTRYPOINT_REQUIRED_CHECKS.map((name) => ({
+							name,
+							status: "fail",
+							detail: "probe command failed before focused tests completed",
+						})),
+					};
+				}
+				outPath =
+					options.allowRun === true
+						? resolveHermesArtifactPath(
+								options.out ?? DEFAULT_HERMES_HEADLESS_ENTRYPOINT_EVIDENCE_PATH,
+							)
+						: options.out
+							? resolveHermesArtifactPath(options.out)
+							: undefined;
+				if (outPath) {
+					writeJsonArtifact(outPath, report, trackedSeedWriteOptions(options));
+				}
+
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${String(report.status)}`);
+					console.log(
+						`- ${String(report.status).toUpperCase()} ${surface}: ${String(report.summary)}`,
+					);
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+				return;
+			}
+
 			if (surface === "execution.cli_headless") {
 				let report: Awaited<ReturnType<typeof runHermesCliHeadlessProbe>>;
 				let outPath: string | undefined;
@@ -3052,20 +3610,28 @@ export function registerHermesCommand(program: Command): void {
 							cwd: path.resolve(options.cwd ?? process.cwd()),
 							prompt: options.prompt,
 							env: process.env,
-						});
-						const timeoutMs = parseTimeoutMs(options.timeoutMs);
-						report = await runHermesCliHeadlessProbe({
-							allowRun: options.allowRun === true,
-							invocation,
-							runProcess: options.dockerExecContainer?.trim()
-								? (launch) =>
-										runHermesLaunchInvocationInDockerExec(launch, {
+							});
+							const timeoutMs = parseTimeoutMs(options.timeoutMs);
+							const dockerExecContainer = options.dockerExecContainer?.trim();
+							report = await runHermesCliHeadlessProbe({
+								allowRun: options.allowRun === true,
+								invocation,
+								readiness: dockerExecContainer
+									? dockerExecHermesCliReadiness(invocation, {
 											dockerBin: options.dockerBin,
-											containerName: options.dockerExecContainer?.trim() ?? "",
+											containerName: dockerExecContainer,
 											timeoutMs,
 										})
-								: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
-						});
+									: undefined,
+								runProcess: dockerExecContainer
+									? (launch) =>
+											runHermesLaunchInvocationInDockerExec(launch, {
+												dockerBin: options.dockerBin,
+												containerName: dockerExecContainer,
+												timeoutMs,
+											})
+									: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
+							});
 					}
 				} catch (error) {
 					report = {
@@ -3194,6 +3760,10 @@ export function registerHermesCommand(program: Command): void {
 				try {
 					const timeoutMs = parseTimeoutMs(options.timeoutMs);
 					const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth);
+					const origin =
+						options.allowRun === true
+							? resolveServedMcpOriginConfig(options.containerName)
+							: undefined;
 					report = await runServedMcpContainmentProbe({
 						allowRun: options.allowRun === true,
 						endpoint,
@@ -3204,7 +3774,15 @@ export function registerHermesCommand(program: Command): void {
 							options.mcpWrongConnectionAuth,
 						),
 						unauthenticatedEndpoint: endpoint ? { url: endpoint.url } : undefined,
-						origin: options.allowRun === true ? resolveServedMcpOriginConfig() : undefined,
+						origin,
+						fetchImpl:
+							options.allowRun === true && origin?.containerName
+								? buildDockerExecFetch({
+										dockerBin: options.dockerBin,
+										containerName: origin.containerName,
+										timeoutMs,
+									})
+								: undefined,
 						timeoutMs,
 					});
 					if (options.allowRun === true && report.status !== "pending") {
@@ -3324,6 +3902,7 @@ export function registerHermesCommand(program: Command): void {
 								options.firewallSentinel?.trim() ||
 								process.env.TELCLAUDE_HERMES_FIREWALL_SENTINEL?.trim() ||
 								DEFAULT_FIREWALL_SENTINEL_PATH,
+							dockerBin: options.dockerBin,
 							containerName:
 								options.containerName?.trim() ||
 								process.env.TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME?.trim() ||
@@ -4009,20 +4588,23 @@ export function registerHermesCommand(program: Command): void {
 		.option("--replace-selected-files", "Use only required files plus --selected-file entries")
 		.option(
 			"--shard-max-source-bytes <bytes>",
-			"Build a root-bound sharded native Pro review plan with this max source-byte budget",
+			"Disabled: Pro review requests must use one complete full-context native bundle",
 		)
 		.option("--write", "Write the refreshed request JSON")
 		.option("--write-tracked-seed", WRITE_TRACKED_SEED_OPTION_DESCRIPTION)
 		.action((options: ProReviewRefreshOption) => {
 			try {
-				const shardMaxSourceBytes = parseProReviewShardMaxSourceBytes(options.shardMaxSourceBytes);
+				if (options.shardMaxSourceBytes !== undefined) {
+					throw new Error(
+						"--shard-max-source-bytes is disabled; Pro review requests must use one complete full-context native bundle",
+					);
+				}
 				const request = buildProReviewRequestDraft({
 					existingRequestPath: options.request,
 					canaryPath: options.canary,
 					prompt: options.prompt,
 					selectedFiles: options.selectedFile ?? [],
 					includeExistingSelectedFiles: options.replaceSelectedFiles !== true,
-					shardMaxSourceBytes,
 				});
 				assertProReviewTrackedSeedSelectedFilesClean(request.selectedFiles, options);
 				const result = {
@@ -4033,7 +4615,6 @@ export function registerHermesCommand(program: Command): void {
 					selectedFileContentsSha256: request.payloadBinding.selectedFileContentsSha256,
 					transportEvidenceSha256: request.payloadBinding.transportEvidenceSha256,
 					reviewMode: request.reviewMode ?? "single",
-					shardCount: request.shardPlan?.shards.length ?? 0,
 					approval: request.privateWorkspaceDisclosure,
 					selectedFiles: request.selectedFiles,
 					request,
@@ -4173,15 +4754,40 @@ export function registerHermesCommand(program: Command): void {
 			DEFAULT_PRO_REVIEW_NATIVE_CANARY_PATH,
 		)
 		.option("--bundle-out <path>", "Write the generated Yoetz bundle to this path")
+		.option(
+			"--conversation <id-or-url>",
+			"Resume an owned ChatGPT conversation through Yoetz native extension",
+		)
 		.option("--execute", "Actually invoke Yoetz native extension after all approval gates pass")
 		.option("--wait-timeout-ms <ms>", "Yoetz ChatGPT response wait timeout in milliseconds")
 		.action(async (options: ProReviewSendOption) => {
+			if (options.execute === true && options.bundleOut) {
+				const result = {
+					send: {
+						status: "refused",
+						reason:
+							"--bundle-out is disabled with --execute; Pro review sends use a command-owned private bundle path",
+						note: "run without --execute to prepare an inspectable bundle artifact, then approve and execute without --bundle-out",
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: refused");
+					console.log(`- FAIL: ${result.send.reason}`);
+				}
+				process.exitCode = 1;
+				return;
+			}
 			const report = evaluateProReviewCheck({
 				requestPath: options.request,
 				canaryPath: options.canary,
 				requireApproval: true,
 			});
-			const bundlePath = resolveProReviewBundlePath(options.bundleOut);
+			const bundlePath =
+				options.execute === true
+					? createProReviewExecuteBundlePath()
+					: resolveProReviewBundlePath(options.bundleOut);
 			if (report.status !== "pass") {
 				const result = {
 					report,
@@ -4203,34 +4809,6 @@ export function registerHermesCommand(program: Command): void {
 				return;
 			}
 
-			const canary = (() => {
-				try {
-					return readProReviewNativeCanary(options.canary);
-				} catch (error) {
-					if (error instanceof Error) return error;
-					return new Error(String(error));
-				}
-			})();
-			const canaryError = canary instanceof Error ? canary.message : undefined;
-			const nativeCanary = canary instanceof Error ? null : canary;
-			if (!nativeCanary) {
-				const result = {
-					report,
-					send: {
-						status: "refused",
-						reason: "validated native canary is unavailable",
-						...(canaryError ? { canaryError } : {}),
-					},
-				};
-				if (options.json) {
-					printJson(result);
-				} else {
-					console.log("Hermes pro-review-send: refused");
-					if (canaryError) console.log(`- FAIL nativeCanary.read: ${canaryError}`);
-				}
-				process.exitCode = 1;
-				return;
-			}
 			let waitTimeoutMs: number | undefined;
 			try {
 				waitTimeoutMs = parseProReviewWaitTimeoutMs(options.waitTimeoutMs);
@@ -4251,227 +4829,66 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 				return;
 			}
-			const request = readProReviewRequest(options.request);
-			if ((request.reviewMode ?? "single") === "sharded" && request.shardPlan) {
-				const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
-				if (options.execute) {
-					const result = {
-						report,
-						send: {
-							status: "refused",
-							mode: "sharded",
-							reason:
-								"sharded Pro review execution is disabled; use a single full bundle so ChatGPT Pro receives all approved context in one native run",
-							payloadSha256: report.payloadSha256,
-							shardPlanSha256,
-							shardCount: request.shardPlan.shards.length,
-						},
-					};
-					if (options.json) {
-						printJson(result);
-					} else {
-						console.log("Hermes pro-review-send: refused");
-						console.log(`- FAIL: ${result.send.reason}`);
-					}
-					process.exitCode = 1;
-					return;
-				}
-				const shards = request.shardPlan.shards.map((shard) => {
-					const shardBundlePath = proReviewShardBundlePath(bundlePath, shard);
-					writeProReviewShardBundle(options.request, shardBundlePath, shard);
-					const bundleSha256 = fileSha256(shardBundlePath);
-					const runId = `${buildProReviewRunId()}_${shard.shardId}`;
-					const inspectCommand = buildProReviewInspectCommand(
-						nativeCanary.extensionInstanceId,
-						runId,
-					);
-					const yoetzCommand = buildProReviewYoetzCommand({
-						canary: nativeCanary,
-						bundlePath: shardBundlePath,
+			let bundleSnapshot: ProReviewBundleSnapshot;
+			try {
+				bundleSnapshot = createProReviewBundleSnapshot(options.request, report.payloadSha256 ?? "");
+			} catch (error) {
+				const result = {
+					report,
+					send: {
+						status: "refused",
+						reason: "approved Pro review payload changed before bundle construction",
+						detail: error instanceof Error ? error.message : String(error),
 						payloadSha256: report.payloadSha256,
-						bundleSha256,
-						runId,
-						waitTimeoutMs,
-						shard,
-						shardPlanSha256,
-					});
-					return {
-						shardId: shard.shardId,
-						index: shard.index,
-						count: shard.count,
-						focus: shard.focus,
-						bundlePath: shardBundlePath,
-						payloadSha256: report.payloadSha256,
-						shardPlanSha256,
-						shardSha256: shard.shardSha256,
-						bundleSha256,
-						runId,
-						inspectCommand,
-						yoetzCommand,
-						shard,
-					};
-				});
-				if (!options.execute) {
-					const readyShards = shards.map(({ shard, ...metadata }) => metadata);
-					const result = {
-						report,
-						send: {
-							status: "ready_sharded",
-							mode: "sharded",
-							payloadSha256: report.payloadSha256,
-							shardPlanSha256,
-							shardCount: shards.length,
-							shards: readyShards,
-							note: "not sent; pass --execute to invoke Yoetz native extension for every shard",
-						},
-					};
-					if (options.json) {
-						printJson(result);
-					} else {
-						console.log("Hermes pro-review-send: ready_sharded");
-						console.log(`- shards: ${shards.length}`);
-					}
-					process.exitCode = 0;
-					return;
-				}
-
-				const executedShards = [];
-				for (const shardSend of shards) {
-					console.error(
-						`Hermes pro-review-send: native shard ${shardSend.shardId} run ${shardSend.runId}; inspect with: YOETZ_AGENT=1 ${shardSend.inspectCommand.join(" ")}`,
-					);
-					const result = await runProReviewYoetzCommand(
-						shardSend.yoetzCommand,
-						buildProReviewNativeYoetzEnv(),
-					);
-					let validation =
-						result.status === 0
-							? validateProReviewYoetzSendOutput({
-									stdout: result.stdout,
-									expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
-									expectedBundlePath: shardSend.bundlePath,
-									expectedPayloadSha256: report.payloadSha256,
-									expectedBundleSha256: shardSend.bundleSha256,
-									expectedShard: shardSend.shard,
-									expectedShardPlanSha256: shardPlanSha256,
-								})
-							: null;
-					const bundleAfterSendSha256 =
-						(result.status === 0 || isRecoverableNativeYoetzReadFailure(result)) &&
-						validation?.status !== "fail"
-							? fileSha256(shardSend.bundlePath)
-							: null;
-					const bundleValidation =
-						bundleAfterSendSha256 === null
-							? null
-							: bundleAfterSendSha256 === shardSend.bundleSha256
-								? {
-										status: "pass",
-										detail: "shard bundle artifact hash still matches the approved pre-send bundle",
-									}
-								: {
-										status: "fail",
-										detail: `shard bundle artifact hash changed after send: ${bundleAfterSendSha256}, expected ${shardSend.bundleSha256}`,
-									};
-					const inspectResult =
-						((result.status === 0 && validation?.status === "pass") ||
-							isRecoverableNativeYoetzReadFailure(result)) &&
-						bundleValidation?.status === "pass"
-							? await runProReviewYoetzCommand(
-									shardSend.inspectCommand,
-									buildProReviewNativeYoetzEnv(),
-								)
-							: null;
-					const inspectValidation =
-						inspectResult?.status === 0
-							? validateProReviewYoetzInspectOutput({
-									stdout: inspectResult.stdout,
-									expectedRunId: shardSend.runId,
-								})
-							: null;
-					if (
-						isRecoverableNativeYoetzReadFailure(result) &&
-						inspectResult?.status === 0 &&
-						inspectValidation?.status === "pass"
-					) {
-						validation = validateProReviewYoetzInspectCompletedResponseOutput({
-							stdout: inspectResult.stdout,
-							expectedRunId: shardSend.runId,
-							expectedPayloadSha256: report.payloadSha256,
-							expectedShard: shardSend.shard,
-							expectedShardPlanSha256: shardPlanSha256,
-						});
-					}
-					const shardStatus =
-						validation?.status === "pass" &&
-						bundleValidation?.status === "pass" &&
-						inspectResult?.status === 0 &&
-						inspectValidation?.status === "pass"
-							? "sent"
-							: "failed";
-					executedShards.push({
-						status: shardStatus,
-						shardId: shardSend.shardId,
-						index: shardSend.index,
-						count: shardSend.count,
-						focus: shardSend.focus,
-						bundlePath: shardSend.bundlePath,
-						payloadSha256: shardSend.payloadSha256,
-						shardPlanSha256: shardSend.shardPlanSha256,
-						shardSha256: shardSend.shardSha256,
-						bundleSha256: shardSend.bundleSha256,
-						bundleAfterSendSha256,
-						runId: shardSend.runId,
-						inspectCommand: shardSend.inspectCommand,
-						yoetzCommand: shardSend.yoetzCommand,
-						exitCode: result.status,
-						validation,
-						bundleValidation,
-						stdout: result.stdout,
-						stderr: result.stderr,
-						error: result.error,
-						inspect: inspectResult
-							? {
-									exitCode: inspectResult.status,
-									validation: inspectValidation,
-									stdout: inspectResult.stdout,
-									stderr: inspectResult.stderr,
-									error: inspectResult.error,
-								}
-							: null,
-					});
-					if (shardStatus !== "sent") break;
-				}
-				const allSent =
-					executedShards.length === shards.length &&
-					executedShards.every((shard) => shard.status === "sent");
-				const send = {
-					status: allSent ? "sent_sharded" : "failed",
-					mode: "sharded",
-					payloadSha256: report.payloadSha256,
-					shardPlanSha256,
-					shardCount: shards.length,
-					shards: executedShards,
+					},
 				};
 				if (options.json) {
-					printJson({ report, send });
+					printJson(result);
 				} else {
-					console.log(`Hermes pro-review-send: ${send.status}`);
+					console.log("Hermes pro-review-send: refused");
+					console.log(`- FAIL: ${result.send.reason}: ${result.send.detail}`);
 				}
-				process.exitCode = send.status === "sent_sharded" ? 0 : 1;
+				process.exitCode = 1;
 				return;
 			}
-			writeProReviewBundle(options.request, bundlePath);
-			const payloadSha256 = report.payloadSha256;
+			const request = bundleSnapshot.request;
+			if ((request.reviewMode ?? "single") === "sharded" && request.shardPlan) {
+				const result = {
+					report,
+					send: {
+						status: "refused",
+						mode: "sharded",
+						reason:
+							"sharded Pro review requests are disabled; refresh the request so ChatGPT Pro receives one complete full bundle",
+						payloadSha256: report.payloadSha256,
+					},
+				};
+				if (options.json) {
+					printJson(result);
+				} else {
+					console.log("Hermes pro-review-send: refused");
+					console.log(`- FAIL: ${result.send.reason}`);
+				}
+				process.exitCode = 1;
+				return;
+			}
+			writeProReviewBundleSnapshot(bundleSnapshot, bundlePath, {
+				readOnly: options.execute === true,
+			});
+			const payloadSha256 = bundleSnapshot.payloadSha256;
 			const bundleSha256 = fileSha256(bundlePath);
 			const runId = buildProReviewRunId();
-			const inspectCommand = buildProReviewInspectCommand(nativeCanary.extensionInstanceId, runId);
+			const inspectCommand = buildProReviewInspectCommand(
+				bundleSnapshot.nativeCanary.extensionInstanceId,
+				runId,
+			);
 			const yoetzCommand = buildProReviewYoetzCommand({
-				canary: nativeCanary,
+				canary: bundleSnapshot.nativeCanary,
 				bundlePath,
 				payloadSha256,
 				bundleSha256,
 				runId,
+				conversation: options.conversation,
 				waitTimeoutMs,
 			});
 			if (!options.execute) {
@@ -4483,6 +4900,7 @@ export function registerHermesCommand(program: Command): void {
 						payloadSha256,
 						bundleSha256,
 						runId,
+						...(options.conversation ? { conversation: options.conversation } : {}),
 						inspectCommand,
 						yoetzCommand,
 						note: "not sent; pass --execute to invoke Yoetz native extension",
@@ -4507,7 +4925,7 @@ export function registerHermesCommand(program: Command): void {
 				result.status === 0
 					? validateProReviewYoetzSendOutput({
 							stdout: result.stdout,
-							expectedExtensionInstanceId: nativeCanary.extensionInstanceId,
+							expectedExtensionInstanceId: bundleSnapshot.nativeCanary.extensionInstanceId,
 							expectedBundlePath: bundlePath,
 							expectedPayloadSha256: payloadSha256,
 							expectedBundleSha256: bundleSha256,

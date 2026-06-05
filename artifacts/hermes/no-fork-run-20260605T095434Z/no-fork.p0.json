@@ -89,17 +89,17 @@
     "schemaVersion": "telclaude.hermes.no-fork-runner-attestation.v1",
     "source": "telclaude-no-fork-proof-runner",
     "runner": "telclaude-hermes-no-fork-runner",
-    "startedAt": "2026-06-05T18:47:29.844Z",
-    "endedAt": "2026-06-05T18:47:32.027Z",
+    "startedAt": "2026-06-05T22:11:57.271Z",
+    "endedAt": "2026-06-05T22:11:57.740Z",
     "checkoutPath": "/home/avivsinai/telclaude-hermes-wrapper-phase0/artifacts/hermes/no-fork-run-20260605T095434Z/hermes-agent-v2026.5.29-git",
     "expectedRef": "v2026.5.29",
     "expectedVersion": "0.15.1",
     "head": "e71a2bd11b733f3be7cf99deafde0066c343d462",
     "expectedRefCommit": "e71a2bd11b733f3be7cf99deafde0066c343d462",
-    "wrapperPackageSha256": "sha256:f7a51a674ae31725b5fb979ee165a0a4c1f95e952411f5f57924e4c225265c26",
-    "profileGenerationSha256": "sha256:be09e19cd8fa47e7c7c2bff569d75f01fe5c6622a2feec16171baa6f10489d5c",
+    "wrapperPackageSha256": "sha256:0d6d2fd94a3b37a805ea6aed0007ee86b84c08613fed5d8bd129fa00b64dc551",
+    "profileGenerationSha256": "sha256:272dd6cb3bce0655d75824463334d48b4af454b94e5ea9dc916af785aab83f42",
     "fixtureResultsSha256": "sha256:8526a6f4a32d8c61d796e034771160b9c0a622a4580e613848064402fab6e754",
-    "transcriptSha256": "sha256:1d04d3a11c091086551b4235003b655b81f3ba24c8dd2cf3a6467a9f604c0eb1",
+    "transcriptSha256": "sha256:7e97734d58c2bf15f85d1621b5cd77e5bf0ae80089b7c8add594bb441d1ed823",
     "checksSha256": "sha256:41dcc3ec78b6297a88de153dbb11ee807a631f2edfd193616d2713995cf04c2d",
     "evidenceSha256": "sha256:8b2e9e0bd606eee69450455f6f59872edcad0d65c62dee0d03681311476c737a",
     "p0Command": [
@@ -123,7 +123,7 @@
       "--decisions",
       "artifacts/hermes/no-fork-run-20260605T095434Z/decisions.json",
       "--proof-bundle",
-      "artifacts/hermes/no-fork-run-20260605T095434Z/cutover-proof-bundle.initial-p0.json",
+      "artifacts/hermes/no-fork-run-20260605T095434Z/cutover-proof-bundle.initial-full-context.json",
       "--feature-probes",
       "artifacts/hermes/no-fork-run-20260605T095434Z/feature-probes.json",
       "--lockfile",
@@ -147,13 +147,13 @@
     "signature": {
       "version": "v1",
       "scope": "operator",
-      "timestamp": "1780685252227",
-      "nonce": "07611a9035bbe150a71a34face3e1ff4",
+      "timestamp": "1780697517834",
+      "nonce": "0d04e438953d9b78496348a5e13f333b",
       "method": "POST",
       "path": "/v1/hermes.no-fork.runner-attestation",
-      "requestBodySha256": "cb8851294340f71ca45865a4c0c67973c6d91ef0fec46585e37c575a155f7017",
-      "responseBodySha256": "cb8851294340f71ca45865a4c0c67973c6d91ef0fec46585e37c575a155f7017",
-      "signature": "ne01kfx5Ngpz1W1BYrorblvfaggkkNtgYS1lmncNR+/jtXhczJ65RLyWU9rLdeFrHCklSYlLForZamCdK/66Aw=="
+      "requestBodySha256": "f37390f2a45573503d98040c74e64c1568ed8426ef99c58bb75c37d1df615138",
+      "responseBodySha256": "f37390f2a45573503d98040c74e64c1568ed8426ef99c58bb75c37d1df615138",
+      "signature": "+rGLBkR9n0Y2R0dRE/CxEBidRFdCFDV+KNHIsMqPcJwZarYsGTOA/6z+tMoUqayObvcqSqjE0b5pumQIP528DQ=="
     }
   }
 }

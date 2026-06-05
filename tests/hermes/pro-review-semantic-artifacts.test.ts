@@ -137,6 +137,72 @@ describe("Hermes Pro review semantic artifact gate", () => {
 			});
 		});
 	});
+
+	it("covers run-local cutover proof bundles through the current cutover-check gate", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-semantic-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const runProofBundle =
+				"artifacts/hermes/no-fork-run-20260605T095434Z/cutover-proof-bundle.final.json";
+			const unrelatedArtifact =
+				"artifacts/hermes/no-fork-run-20260605T095434Z/unvalidated-artifact.json";
+			writeJson(runProofBundle, {
+				schemaVersion: "telclaude.hermes.cutover-proof-bundle.v1",
+				artifacts: {},
+			});
+			writeJson(unrelatedArtifact, readinessFailureEvidence());
+			writeProReviewRequest([runProofBundle, unrelatedArtifact]);
+
+			const report = evaluateProReviewCheck();
+
+			const coverageGate = report.gates.find(
+				(gate) => gate.name === "request.semanticEvidence.coverage",
+			);
+			expect(coverageGate).toMatchObject({
+				status: "fail",
+				detail: expect.not.stringContaining(runProofBundle),
+			});
+			expect(coverageGate).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(unrelatedArtifact),
+			});
+		});
+	});
+
+	it("allows selected validator dependency artifacts while keeping unknown artifacts fail-closed", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-semantic-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const servedMcpContainment =
+				"artifacts/hermes/probes/execution-served-mcp-containment.json";
+			const signedNetworkDependency =
+				"artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-provider-denied.json";
+			const unrelatedArtifact =
+				"artifacts/hermes/no-fork-run-20260605T095434Z/unvalidated-artifact.json";
+			writeJson(servedMcpContainment, readinessFailureEvidence());
+			writeJson(signedNetworkDependency, readinessFailureEvidence());
+			writeJson(unrelatedArtifact, readinessFailureEvidence());
+			writeProReviewRequest([servedMcpContainment, signedNetworkDependency, unrelatedArtifact]);
+
+			const report = evaluateProReviewCheck();
+
+			const coverageGate = report.gates.find(
+				(gate) => gate.name === "request.semanticEvidence.coverage",
+			);
+			expect(coverageGate).toMatchObject({
+				status: "fail",
+				detail: expect.not.stringContaining(servedMcpContainment),
+			});
+			expect(coverageGate).toMatchObject({
+				status: "fail",
+				detail: expect.not.stringContaining(signedNetworkDependency),
+			});
+			expect(coverageGate).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining(unrelatedArtifact),
+			});
+		});
+	});
 });
 
 async function withCwd<T>(cwd: string, callback: () => Promise<T>): Promise<T> {
@@ -157,12 +223,46 @@ function writeRequiredProReviewWorkspace(root: string): void {
 			writeJson(resolved, proReviewCanary());
 		} else if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
 			writeJson(resolved, cliHeadlessReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.json") {
+			writeJson(resolved, headlessEntrypointReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.vitest.json") {
+			writeJson(resolved, { numTotalTests: 0, numPassedTests: 0, testResults: [] });
 		} else if (file.endsWith(".json")) {
 			writeJson(resolved, readinessFailureEvidence());
 		} else {
 			fs.writeFileSync(resolved, `test fixture for ${file}\n`, "utf8");
 		}
 	}
+}
+
+const HEADLESS_ENTRYPOINT_CHECKS = [
+	"stream.delta_before_done",
+	"stream.terminal_event",
+	"session.initial",
+	"session.resume",
+	"session.new_clears_resume",
+	"session.concurrent_isolation",
+	"tool.result_returned",
+	"approval.fallback_or_wait_resume",
+	"cancellation.stop",
+	"errors.deterministic",
+	"redaction.secret_outputs",
+] as const;
+
+function headlessEntrypointReadinessFailureEvidence(): Record<string, unknown> {
+	return {
+		schemaVersion: "telclaude.hermes.headless-entrypoint-proof.v1",
+		probeId: "execution.headless_entrypoint",
+		status: "fail",
+		ran: false,
+		generatedAt: "2026-06-01T09:00:00.000Z",
+		summary: "headless entrypoint proof was not run in this fixture",
+		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
+			name,
+			status: "fail",
+			detail: "not run",
+		})),
+	};
 }
 
 function proReviewCanary(): Record<string, unknown> {

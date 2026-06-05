@@ -29,6 +29,7 @@ export const DEFAULT_HERMES_RELAY_CONTAINER_NAME = "telclaude";
 export const DEFAULT_HERMES_API_SERVER_RUNTIME_USER = "10000:10000";
 
 type ApiServerContainmentStatus = "pass" | "fail" | "pending";
+type ContainerHttpProbeExpectation = "allow" | "deny";
 
 export type HermesApiServerLaunchPlan = {
 	readonly invocation: HermesLaunchInvocation;
@@ -129,6 +130,11 @@ export type HermesApiServerContainmentReport = {
 export type HermesApiServerContainmentRunner = (
 	plan: HermesApiServerLaunchPlan,
 ) => Promise<HermesApiServerContainmentObservation>;
+export type HermesApiServerContainerHttpProbeRunner = (
+	plan: HermesApiServerLaunchPlan,
+	args: readonly string[],
+	timeoutMs: number | undefined,
+) => Promise<{ readonly exitCode: number }>;
 
 export function buildHermesApiServerLaunchPlan(input: {
 	readonly dockerBin?: string;
@@ -954,28 +960,65 @@ async function runTamperResistanceProbe(
 async function containerHttpProbe(
 	plan: HermesApiServerLaunchPlan,
 	url: string,
-	expectation: "allow" | "deny",
+	expectation: ContainerHttpProbeExpectation,
 	timeoutMs: number | undefined,
 	user?: string,
 ): Promise<{ ok: boolean }> {
-	const script = [
-		"import sys, urllib.request",
+	return runHermesApiServerContainerHttpProbe({
+		plan,
+		url,
+		expectation,
+		timeoutMs,
+		user,
+	});
+}
+
+export function buildHermesApiServerContainerHttpProbeScript(url: string): string {
+	return [
+		"import sys, urllib.error, urllib.request",
 		`url = ${JSON.stringify(url)}`,
 		"try:",
 		"    with urllib.request.urlopen(url, timeout=5) as response:",
 		"        status = response.getcode()",
 		"        print(status)",
 		"        sys.exit(0)",
+		"except urllib.error.HTTPError as exc:",
+		"    print(exc.code)",
+		"    sys.exit(0)",
 		"except Exception as exc:",
 		"    print(str(exc), file=sys.stderr)",
 		"    sys.exit(42)",
 	].join("\n");
-	const result = await runDockerCommand(
-		plan,
-		["exec", ...(user ? ["--user", user] : []), plan.containerName, "python", "-c", script],
-		timeoutMs,
+}
+
+export async function runHermesApiServerContainerHttpProbe(input: {
+	readonly plan: HermesApiServerLaunchPlan;
+	readonly url: string;
+	readonly expectation: ContainerHttpProbeExpectation;
+	readonly timeoutMs?: number;
+	readonly user?: string;
+	readonly runner?: HermesApiServerContainerHttpProbeRunner;
+}): Promise<{ ok: boolean }> {
+	const script = buildHermesApiServerContainerHttpProbeScript(input.url);
+	const runner = input.runner ?? runDockerCommand;
+	const result = await runner(
+		input.plan,
+		[
+			"exec",
+			...(input.user ? ["--user", input.user] : []),
+			input.plan.containerName,
+			"python",
+			"-c",
+			script,
+		],
+		input.timeoutMs,
 	);
-	return { ok: expectation === "allow" ? result.exitCode === 0 : result.exitCode !== 0 };
+	return {
+		ok:
+			input.expectation === "allow"
+				? result.exitCode === 0
+				: result.exitCode !== 0,
+	};
 }
 
 async function runDockerCommand(

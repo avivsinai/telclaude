@@ -46,7 +46,6 @@ const HERMES_RELAY_OPENAI_CODEX_PROXY_PATH = "/v1/openai-codex-proxy";
 const HERMES_RELAY_OPENAI_CODEX_PROXY_URL = "http://telclaude:8790/v1/openai-codex-proxy";
 const HERMES_RELAY_OPENAI_CODEX_PROVIDER = "openai-codex";
 const HERMES_RELAY_OPENAI_CODEX_POOL_SOURCE = "manual:telclaude-relay";
-const HERMES_RELAY_OPENAI_CODEX_NONREFRESHABLE_TOKEN = "telclaude-relay-token-is-not-refreshable";
 const HERMES_INFERENCE_PROVIDER_ENV = "HERMES_INFERENCE_PROVIDER";
 const HERMES_INFERENCE_MODEL_ENV = "HERMES_INFERENCE_MODEL";
 const HERMES_CLI_HEADLESS_PROVENANCE_RUNNER = "telclaude-hermes-cli-probe";
@@ -436,10 +435,11 @@ export function buildHermesCliProbeInvocation(input: {
 export async function runHermesCliHeadlessProbe(input: {
 	allowRun: boolean;
 	invocation: HermesLaunchInvocation;
+	readiness?: HermesCliHeadlessReadiness;
 	runProcess?: (invocation: HermesLaunchInvocation) => Promise<HermesLaunchResult>;
 }): Promise<HermesCliProbeReport> {
 	const findings = findHermesLaunchSecretFindings(input.invocation);
-	const readiness = evaluateHermesCliHeadlessReadiness(input.invocation, findings);
+	const readiness = input.readiness ?? evaluateHermesCliHeadlessReadiness(input.invocation, findings);
 	if (findings.length > 0) {
 		return probeReport({
 			status: "fail",
@@ -1427,14 +1427,13 @@ export function buildHermesOpenAiCodexRelayAuthStorePayload(
 	return {
 		version: 1,
 		active_provider: HERMES_RELAY_OPENAI_CODEX_PROVIDER,
+		suppressed_sources: {
+			[HERMES_RELAY_OPENAI_CODEX_PROVIDER]: ["device_code"],
+		},
 		providers: {
 			[HERMES_RELAY_OPENAI_CODEX_PROVIDER]: {
 				auth_mode: "telclaude-relay",
 				last_refresh: new Date(0).toISOString(),
-				tokens: {
-					access_token: relayToken,
-					refresh_token: HERMES_RELAY_OPENAI_CODEX_NONREFRESHABLE_TOKEN,
-				},
 			},
 		},
 		credential_pool: {

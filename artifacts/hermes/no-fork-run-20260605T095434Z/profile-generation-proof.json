@@ -2,20 +2,20 @@
   "schemaVersion": "telclaude.hermes.profile-generation-proof.v1",
   "status": "pass",
   "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/profile-generation-proof.json",
-  "generatedAt": "2026-06-05T18:38:19.136Z",
+  "generatedAt": "2026-06-05T22:11:48.989Z",
   "outDir": "/home/avivsinai/telclaude-hermes-wrapper-phase0/artifacts/hermes/no-fork-run-20260605T095434Z/profile",
   "pin": {
     "version": "0.15.1"
   },
   "profileSchemaVersion": "1",
-  "lockfileDigest": "sha256:7d6990f6b65b4ae76a905d46070c20f05a7fc7ee6cb342623d231cd26dc67e64",
-  "manifestDigest": "sha256:d12f2fade52b8c82cce119d4c4e7cdf98dfab8eca765cca4620538c88e3e2dfa",
-  "treeDigest": "sha256:7ccbca2651b3fc2f5c9d415de55b9c4086156b7873aca3b1324435a771d97a9c",
+  "lockfileDigest": "sha256:83eb84205f10a62e0f2d5b2ee3a69922a6f3ab29e9354b6afc8e59f35b1e3bfe",
+  "manifestDigest": "sha256:aa3e83572f4b89a0dceb275fc96ccac950f1779572c4ece9cf5e35895b26564f",
+  "treeDigest": "sha256:e70615866fa60dd0df851e8512ed211c4e1ed5c4ed3dfaaad0b04f674460798e",
   "outputs": [
     {
       "path": "profile-roster.json",
       "classification": "derived",
-      "sha256": "sha256:4c489f38bcf45e691ea4b768ed83dff0f87b87cec945594a2147242cecdee434"
+      "sha256": "sha256:314bd9cedb429979012fb739b3f8697904d7e20f58964829caa85d9e6bb8b156"
     },
     {
       "path": "profiles/tc-private-default/config.yaml",
@@ -40,12 +40,12 @@
     {
       "path": "profiles/tc-private-default/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:40776b3a6ca0189271020a874a662d2d1596fccf1da4650d4691d3665f02e56a"
+      "sha256": "sha256:a2c8c3eaab5074de67ea33392d3de58cfb2f74ad339e040b490e763531098d43"
     },
     {
       "path": "profiles/tc-private-default/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:37d73a02ef0fc84acaee42d7339cf08d834cca1fa4184de9009d02bcad487e51"
+      "sha256": "sha256:129ed61701684eed363fcd29b80763862424b4dffb2f59739842bf89f02002d3"
     },
     {
       "path": "profiles/tc-private-default/plugins.json",
@@ -105,7 +105,7 @@
     {
       "path": "profiles/tc-private-default/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:0ebe36fd3b1e04c9b932df7c751e3eb73696a8782d0f787cc841210c09082617"
+      "sha256": "sha256:509cba06839912cc02d6ac1c6f0382e8fb5aa1ec52e4f2e0bbcde4f87f06a7e6"
     },
     {
       "path": "profiles/tc-private-default/audit-cutover-manifest.json",
@@ -140,12 +140,12 @@
     {
       "path": "profiles/tc-shadow-private-default/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:7f8b49c34d034fc59b336a2494c599a2a718af72f1a1045d86bdab70724d1750"
+      "sha256": "sha256:a5611bffbded94f10998e40e1fe445330cf69dc73cfde0fd996f13c2d427c8d3"
     },
     {
       "path": "profiles/tc-shadow-private-default/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:be482052b3ce469ea74e0781c671ab88e38481cf4e58236a030879f0c4f6f6dd"
+      "sha256": "sha256:cc41a3d2b35a8920edcbcc767fea2deb3d971cfcf3f190821e1b76005101ec78"
     },
     {
       "path": "profiles/tc-shadow-private-default/plugins.json",
@@ -205,7 +205,7 @@
     {
       "path": "profiles/tc-shadow-private-default/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:7e3193ebe74048f9c6f4fe17bb6c0093ac856cdfb8698b74f08ecbf120039c33"
+      "sha256": "sha256:62627d5a32254fba60bebd997eb0224c9a9ada634413f9ddfe4bb7ec967b5f54"
     },
     {
       "path": "profiles/tc-shadow-private-default/audit-cutover-manifest.json",
@@ -240,12 +240,12 @@
     {
       "path": "profiles/tc-public/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:75ca25d2c09499f6df6971190502205cd8729ea2b063df353b4319d25af72bc5"
+      "sha256": "sha256:76c44651c40decc464f600ed381f53ac01f58ac0c911d97ca11b0f3f0dff95fc"
     },
     {
       "path": "profiles/tc-public/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:fb8ee11cb3a4f62706311e65e4fa3994d2fb83973091828fca8a8084ae5150f9"
+      "sha256": "sha256:25af190a06ed5490b524b70df4066cbcb88b9d0a895477aa80cc757408ea4dd4"
     },
     {
       "path": "profiles/tc-public/plugins.json",
@@ -305,7 +305,7 @@
     {
       "path": "profiles/tc-public/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:f959d03859abff92a4bd800d8f5bc9ce9a663fb8d56e885497f3c553cd3a3636"
+      "sha256": "sha256:2576a94badfe7310ec7f1979224c6ef5640fd4d868a7f32042e52d53fc824798"
     },
     {
       "path": "profiles/tc-public/audit-cutover-manifest.json",
@@ -340,12 +340,12 @@
     {
       "path": "profiles/tc-public-whatsapp/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:2e597143c6deba9c0713fc57cab14e44da54ea19b9d09eac713d8fd74336024d"
+      "sha256": "sha256:0e13fe83e338445dc40bcbb25d0e8ec9b64a409cb5a1a8888237a0125c98e7eb"
     },
     {
       "path": "profiles/tc-public-whatsapp/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:0baa3edec63dbe45a467517505e70fb25a623acc424ddaa3d5caae7d7c76bf9a"
+      "sha256": "sha256:789278c786eb333e8e32539c376f2c7b8df652d4c3293bfd17e3b3a6d292286f"
     },
     {
       "path": "profiles/tc-public-whatsapp/plugins.json",
@@ -405,7 +405,7 @@
     {
       "path": "profiles/tc-public-whatsapp/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:72d80a170182feb8152a1e00cf125652aab55e37c46d72022306daa8e879f5e0"
+      "sha256": "sha256:241af89470dd708b21467681d1fe8f607ff533bbdc693e749413440b6aead72b"
     },
     {
       "path": "profiles/tc-public-whatsapp/audit-cutover-manifest.json",
@@ -440,12 +440,12 @@
     {
       "path": "profiles/tc-public-email/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:d960071694acf79075494db770f2db67c9c7b565bd37bea808f7540967cd1b39"
+      "sha256": "sha256:7a04a145a5ad0d96a54dff30fcb98774eaa5e6710f9f825505f554017437dab9"
     },
     {
       "path": "profiles/tc-public-email/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:9ad18c00bbf66d598581e300ffe8ef7c0686010d27417b2af006b93cb5da2a3e"
+      "sha256": "sha256:6215a265164fea638a35d77f54b71a6c65eac5b67518dbd6f9a44057cf7d34fb"
     },
     {
       "path": "profiles/tc-public-email/plugins.json",
@@ -505,7 +505,7 @@
     {
       "path": "profiles/tc-public-email/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:16580a54a183a3d7a2a88768d854303b90e6eea90032eb1158e04d739faf4815"
+      "sha256": "sha256:e3d9b4c04ebec29973de1c8dd03bf592fab4c6cdc1b95615b3bd5c96044dd051"
     },
     {
       "path": "profiles/tc-public-email/audit-cutover-manifest.json",
@@ -540,12 +540,12 @@
     {
       "path": "profiles/tc-household/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:d8a535bd118b89bebd3756f201867b47781d543f40751c07e5e7f143b1a058de"
+      "sha256": "sha256:ef0f29ebe5b2812815f4438fcabea354ac9a53fe8f3742bb0671d7bb9e507a28"
     },
     {
       "path": "profiles/tc-household/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:5caaf20ea3a1c0856e2c4e6a84f00499ac023b53b3fa9a3131df7d2ddbce35cd"
+      "sha256": "sha256:c3c6b463f108c851e392469884fc7b95c624502135885df83c6d2b4b0875354b"
     },
     {
       "path": "profiles/tc-household/plugins.json",
@@ -605,7 +605,7 @@
     {
       "path": "profiles/tc-household/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:37137e239fe416667d4ef594641b24965d8176c02e31759723f8a625e05a10ee"
+      "sha256": "sha256:3075d5da8fe885d02e7845fb084fdbe857d222e3de0db2802ee17b468656873f"
     },
     {
       "path": "profiles/tc-household/audit-cutover-manifest.json",
@@ -640,12 +640,12 @@
     {
       "path": "profiles/tc-public-social/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:b9621ab69fb9c9f3e9bafe3e33bdf76be2871c2f60b77b4cdd08b245f4a7035f"
+      "sha256": "sha256:737c5cc8e789f71dd0a246e92fd22404e6e6b6a8b961855db00a0d26f1955f45"
     },
     {
       "path": "profiles/tc-public-social/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:ebf3436f52e3980daf609a908f12d63e1be218b18224b3a50c0e52c733fc5415"
+      "sha256": "sha256:b70bce9788e2f930037fa2fd77b7be4d1c7baef00cb60d468bb52ff06ad59c63"
     },
     {
       "path": "profiles/tc-public-social/plugins.json",
@@ -705,7 +705,7 @@
     {
       "path": "profiles/tc-public-social/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:9859bef44a5294d92700d62d4dd21ceeefbd848973f604f8d43f2f59906446c2"
+      "sha256": "sha256:979e3479e47aad387abef71063d9d1899b81bad778909ce439b07413018f4216"
     },
     {
       "path": "profiles/tc-public-social/audit-cutover-manifest.json",
@@ -740,12 +740,12 @@
     {
       "path": "profiles/tc-worker-research/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:2420a2be86bccef5bdd72735260e31e655fd6ccae3518540f15c4ede35730576"
+      "sha256": "sha256:9e2a551026ff58e43b19c15da67801c32d1412151b0bb7a7e195e5f994bd263f"
     },
     {
       "path": "profiles/tc-worker-research/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:246c270d726a4b962b9d70ab179fb27e8964851eca70f037a64f6ed2223e0f98"
+      "sha256": "sha256:2e9f29a2bc05f8fc8cf8bbbed4693492ec88b20bc0a798ae0550dfe37e7f410c"
     },
     {
       "path": "profiles/tc-worker-research/plugins.json",
@@ -805,7 +805,7 @@
     {
       "path": "profiles/tc-worker-research/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:5dbcdaec56f6584b252d8da9f10f4aad1a73032794ca8faee4afb9f196863397"
+      "sha256": "sha256:5e2905f2a16f1bb32070bb3af063a08e6bf80c957f846a708eb5cfe27b3b3b77"
     },
     {
       "path": "profiles/tc-worker-research/audit-cutover-manifest.json",
@@ -840,12 +840,12 @@
     {
       "path": "profiles/tc-control/guardrails/ownership.json",
       "classification": "sensitive",
-      "sha256": "sha256:e683d79a6ece5f0d50b91a0093adac7d155fdd6d24546a2af78ce6e7a3b2a498"
+      "sha256": "sha256:720351ff61333dba1cbf0dc04f9b58069d1fd2a96b340748bac078cc7c71be27"
     },
     {
       "path": "profiles/tc-control/guardrails/mount-plan.json",
       "classification": "sensitive",
-      "sha256": "sha256:bc11edf40198ad03e0a50ede29931b009eb8ed4086856f63fcf21ed733d6816d"
+      "sha256": "sha256:0415e42433cd5c29b667caf96b87f99b2f384ac7efc61d1f2a9e0646bd36c7ae"
     },
     {
       "path": "profiles/tc-control/plugins.json",
@@ -905,7 +905,7 @@
     {
       "path": "profiles/tc-control/provenance-manifest.json",
       "classification": "derived",
-      "sha256": "sha256:09cc5faff7e54f5e47b9075e9c651a28ee40d56b8c62836a9c802a91e2f67aad"
+      "sha256": "sha256:44572f3e3320918ca38d20aa35ea0dc6372321cfc33d82c9964f9b206d49e884"
     },
     {
       "path": "profiles/tc-control/audit-cutover-manifest.json",
@@ -920,7 +920,7 @@
     {
       "path": "docs/hermes/hermes-compat.lock.json",
       "classification": "derived",
-      "sha256": "sha256:b08d8c7d1f46b8264faafedcfb44723054645538d639b54dfa943ede20f52a39"
+      "sha256": "sha256:0c3514fcb698f66900785e4b3eae1b21d5363b0bd316bae87b0e9cef2b560a0e"
     }
   ],
   "directoryInventory": [
@@ -935,12 +935,12 @@
     {
       "path": "docs/hermes/hermes-compat.lock.json",
       "kind": "file",
-      "sha256": "sha256:b08d8c7d1f46b8264faafedcfb44723054645538d639b54dfa943ede20f52a39"
+      "sha256": "sha256:0c3514fcb698f66900785e4b3eae1b21d5363b0bd316bae87b0e9cef2b560a0e"
     },
     {
       "path": "profile-roster.json",
       "kind": "file",
-      "sha256": "sha256:4c489f38bcf45e691ea4b768ed83dff0f87b87cec945594a2147242cecdee434"
+      "sha256": "sha256:314bd9cedb429979012fb739b3f8697904d7e20f58964829caa85d9e6bb8b156"
     },
     {
       "path": "profiles",
@@ -986,12 +986,12 @@
     {
       "path": "profiles/tc-control/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:bc11edf40198ad03e0a50ede29931b009eb8ed4086856f63fcf21ed733d6816d"
+      "sha256": "sha256:0415e42433cd5c29b667caf96b87f99b2f384ac7efc61d1f2a9e0646bd36c7ae"
     },
     {
       "path": "profiles/tc-control/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:e683d79a6ece5f0d50b91a0093adac7d155fdd6d24546a2af78ce6e7a3b2a498"
+      "sha256": "sha256:720351ff61333dba1cbf0dc04f9b58069d1fd2a96b340748bac078cc7c71be27"
     },
     {
       "path": "profiles/tc-control/mcp.json",
@@ -1038,7 +1038,7 @@
     {
       "path": "profiles/tc-control/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:09cc5faff7e54f5e47b9075e9c651a28ee40d56b8c62836a9c802a91e2f67aad"
+      "sha256": "sha256:44572f3e3320918ca38d20aa35ea0dc6372321cfc33d82c9964f9b206d49e884"
     },
     {
       "path": "profiles/tc-control/quarantine",
@@ -1118,12 +1118,12 @@
     {
       "path": "profiles/tc-household/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:5caaf20ea3a1c0856e2c4e6a84f00499ac023b53b3fa9a3131df7d2ddbce35cd"
+      "sha256": "sha256:c3c6b463f108c851e392469884fc7b95c624502135885df83c6d2b4b0875354b"
     },
     {
       "path": "profiles/tc-household/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:d8a535bd118b89bebd3756f201867b47781d543f40751c07e5e7f143b1a058de"
+      "sha256": "sha256:ef0f29ebe5b2812815f4438fcabea354ac9a53fe8f3742bb0671d7bb9e507a28"
     },
     {
       "path": "profiles/tc-household/mcp.json",
@@ -1170,7 +1170,7 @@
     {
       "path": "profiles/tc-household/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:37137e239fe416667d4ef594641b24965d8176c02e31759723f8a625e05a10ee"
+      "sha256": "sha256:3075d5da8fe885d02e7845fb084fdbe857d222e3de0db2802ee17b468656873f"
     },
     {
       "path": "profiles/tc-household/quarantine",
@@ -1250,12 +1250,12 @@
     {
       "path": "profiles/tc-private-default/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:37d73a02ef0fc84acaee42d7339cf08d834cca1fa4184de9009d02bcad487e51"
+      "sha256": "sha256:129ed61701684eed363fcd29b80763862424b4dffb2f59739842bf89f02002d3"
     },
     {
       "path": "profiles/tc-private-default/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:40776b3a6ca0189271020a874a662d2d1596fccf1da4650d4691d3665f02e56a"
+      "sha256": "sha256:a2c8c3eaab5074de67ea33392d3de58cfb2f74ad339e040b490e763531098d43"
     },
     {
       "path": "profiles/tc-private-default/mcp.json",
@@ -1302,7 +1302,7 @@
     {
       "path": "profiles/tc-private-default/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:0ebe36fd3b1e04c9b932df7c751e3eb73696a8782d0f787cc841210c09082617"
+      "sha256": "sha256:509cba06839912cc02d6ac1c6f0382e8fb5aa1ec52e4f2e0bbcde4f87f06a7e6"
     },
     {
       "path": "profiles/tc-private-default/quarantine",
@@ -1386,12 +1386,12 @@
     {
       "path": "profiles/tc-public-email/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:9ad18c00bbf66d598581e300ffe8ef7c0686010d27417b2af006b93cb5da2a3e"
+      "sha256": "sha256:6215a265164fea638a35d77f54b71a6c65eac5b67518dbd6f9a44057cf7d34fb"
     },
     {
       "path": "profiles/tc-public-email/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:d960071694acf79075494db770f2db67c9c7b565bd37bea808f7540967cd1b39"
+      "sha256": "sha256:7a04a145a5ad0d96a54dff30fcb98774eaa5e6710f9f825505f554017437dab9"
     },
     {
       "path": "profiles/tc-public-email/mcp.json",
@@ -1438,7 +1438,7 @@
     {
       "path": "profiles/tc-public-email/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:16580a54a183a3d7a2a88768d854303b90e6eea90032eb1158e04d739faf4815"
+      "sha256": "sha256:e3d9b4c04ebec29973de1c8dd03bf592fab4c6cdc1b95615b3bd5c96044dd051"
     },
     {
       "path": "profiles/tc-public-email/quarantine",
@@ -1518,12 +1518,12 @@
     {
       "path": "profiles/tc-public-social/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:ebf3436f52e3980daf609a908f12d63e1be218b18224b3a50c0e52c733fc5415"
+      "sha256": "sha256:b70bce9788e2f930037fa2fd77b7be4d1c7baef00cb60d468bb52ff06ad59c63"
     },
     {
       "path": "profiles/tc-public-social/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:b9621ab69fb9c9f3e9bafe3e33bdf76be2871c2f60b77b4cdd08b245f4a7035f"
+      "sha256": "sha256:737c5cc8e789f71dd0a246e92fd22404e6e6b6a8b961855db00a0d26f1955f45"
     },
     {
       "path": "profiles/tc-public-social/mcp.json",
@@ -1570,7 +1570,7 @@
     {
       "path": "profiles/tc-public-social/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:9859bef44a5294d92700d62d4dd21ceeefbd848973f604f8d43f2f59906446c2"
+      "sha256": "sha256:979e3479e47aad387abef71063d9d1899b81bad778909ce439b07413018f4216"
     },
     {
       "path": "profiles/tc-public-social/quarantine",
@@ -1650,12 +1650,12 @@
     {
       "path": "profiles/tc-public-whatsapp/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:0baa3edec63dbe45a467517505e70fb25a623acc424ddaa3d5caae7d7c76bf9a"
+      "sha256": "sha256:789278c786eb333e8e32539c376f2c7b8df652d4c3293bfd17e3b3a6d292286f"
     },
     {
       "path": "profiles/tc-public-whatsapp/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:2e597143c6deba9c0713fc57cab14e44da54ea19b9d09eac713d8fd74336024d"
+      "sha256": "sha256:0e13fe83e338445dc40bcbb25d0e8ec9b64a409cb5a1a8888237a0125c98e7eb"
     },
     {
       "path": "profiles/tc-public-whatsapp/mcp.json",
@@ -1702,7 +1702,7 @@
     {
       "path": "profiles/tc-public-whatsapp/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:72d80a170182feb8152a1e00cf125652aab55e37c46d72022306daa8e879f5e0"
+      "sha256": "sha256:241af89470dd708b21467681d1fe8f607ff533bbdc693e749413440b6aead72b"
     },
     {
       "path": "profiles/tc-public-whatsapp/quarantine",
@@ -1778,12 +1778,12 @@
     {
       "path": "profiles/tc-public/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:fb8ee11cb3a4f62706311e65e4fa3994d2fb83973091828fca8a8084ae5150f9"
+      "sha256": "sha256:25af190a06ed5490b524b70df4066cbcb88b9d0a895477aa80cc757408ea4dd4"
     },
     {
       "path": "profiles/tc-public/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:75ca25d2c09499f6df6971190502205cd8729ea2b063df353b4319d25af72bc5"
+      "sha256": "sha256:76c44651c40decc464f600ed381f53ac01f58ac0c911d97ca11b0f3f0dff95fc"
     },
     {
       "path": "profiles/tc-public/mcp.json",
@@ -1830,7 +1830,7 @@
     {
       "path": "profiles/tc-public/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:f959d03859abff92a4bd800d8f5bc9ce9a663fb8d56e885497f3c553cd3a3636"
+      "sha256": "sha256:2576a94badfe7310ec7f1979224c6ef5640fd4d868a7f32042e52d53fc824798"
     },
     {
       "path": "profiles/tc-public/quarantine",
@@ -1910,12 +1910,12 @@
     {
       "path": "profiles/tc-shadow-private-default/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:be482052b3ce469ea74e0781c671ab88e38481cf4e58236a030879f0c4f6f6dd"
+      "sha256": "sha256:cc41a3d2b35a8920edcbcc767fea2deb3d971cfcf3f190821e1b76005101ec78"
     },
     {
       "path": "profiles/tc-shadow-private-default/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:7f8b49c34d034fc59b336a2494c599a2a718af72f1a1045d86bdab70724d1750"
+      "sha256": "sha256:a5611bffbded94f10998e40e1fe445330cf69dc73cfde0fd996f13c2d427c8d3"
     },
     {
       "path": "profiles/tc-shadow-private-default/mcp.json",
@@ -1962,7 +1962,7 @@
     {
       "path": "profiles/tc-shadow-private-default/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:7e3193ebe74048f9c6f4fe17bb6c0093ac856cdfb8698b74f08ecbf120039c33"
+      "sha256": "sha256:62627d5a32254fba60bebd997eb0224c9a9ada634413f9ddfe4bb7ec967b5f54"
     },
     {
       "path": "profiles/tc-shadow-private-default/quarantine",
@@ -2042,12 +2042,12 @@
     {
       "path": "profiles/tc-worker-research/guardrails/mount-plan.json",
       "kind": "file",
-      "sha256": "sha256:246c270d726a4b962b9d70ab179fb27e8964851eca70f037a64f6ed2223e0f98"
+      "sha256": "sha256:2e9f29a2bc05f8fc8cf8bbbed4693492ec88b20bc0a798ae0550dfe37e7f410c"
     },
     {
       "path": "profiles/tc-worker-research/guardrails/ownership.json",
       "kind": "file",
-      "sha256": "sha256:2420a2be86bccef5bdd72735260e31e655fd6ccae3518540f15c4ede35730576"
+      "sha256": "sha256:9e2a551026ff58e43b19c15da67801c32d1412151b0bb7a7e195e5f994bd263f"
     },
     {
       "path": "profiles/tc-worker-research/mcp.json",
@@ -2094,7 +2094,7 @@
     {
       "path": "profiles/tc-worker-research/provenance-manifest.json",
       "kind": "file",
-      "sha256": "sha256:5dbcdaec56f6584b252d8da9f10f4aad1a73032794ca8faee4afb9f196863397"
+      "sha256": "sha256:5e2905f2a16f1bb32070bb3af063a08e6bf80c957f846a708eb5cfe27b3b3b77"
     },
     {
       "path": "profiles/tc-worker-research/quarantine",
@@ -2183,7 +2183,7 @@
     {
       "name": "profile.lockfileDigest",
       "status": "pass",
-      "detail": "lockfile digest is sha256:7d6990f6b65b4ae76a905d46070c20f05a7fc7ee6cb342623d231cd26dc67e64"
+      "detail": "lockfile digest is sha256:83eb84205f10a62e0f2d5b2ee3a69922a6f3ab29e9354b6afc8e59f35b1e3bfe"
     },
     {
       "name": "profile.secretOwners",

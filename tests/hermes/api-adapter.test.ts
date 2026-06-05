@@ -253,6 +253,132 @@ describe("HermesApiRuntimeAdapter", () => {
 			},
 		]);
 	});
+
+	it("returns a deterministic failed done event when run start omits run_id", async () => {
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: async () => jsonResponse({ status: "started" }, 202),
+		});
+
+		const events = await collect(adapter.run(baseRequest()));
+
+		expect(events).toEqual([
+			{
+				type: "done",
+				response: "",
+				success: false,
+				error: "Hermes API POST /v1/runs did not return a run_id",
+			},
+		]);
+	});
+
+	it("maps run.cancelled to a terminal failed done event", async () => {
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: async (url) => {
+				if (url === "http://hermes.local/v1/runs") {
+					return jsonResponse({ run_id: "run-1" }, 202);
+				}
+				return sseResponse([sse({ event: "run.cancelled" })]);
+			},
+		});
+
+		const events = await collect(adapter.run(baseRequest()));
+
+		expect(events).toEqual([
+			{ type: "session", hermesSessionId: "tc-session-1" },
+			{
+				type: "done",
+				response: "",
+				success: false,
+				error: "Hermes API run cancelled",
+			},
+		]);
+	});
+
+	it("stops the Hermes run when the caller aborts during streaming", async () => {
+		const abortController = new AbortController();
+		const calls: Array<{ url: string; init: Record<string, unknown> }> = [];
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: async (url, init) => {
+				calls.push({ url, init });
+				if (url === "http://hermes.local/v1/runs") {
+					return jsonResponse({ run_id: "run-1" }, 202);
+				}
+				if (url === "http://hermes.local/v1/runs/run-1/events") {
+					return streamingResponse([
+						() => sse({ event: "message.delta", delta: "partial" }),
+						() => {
+							abortController.abort();
+							throw new Error("stream aborted by caller");
+						},
+					]);
+				}
+				if (url === "http://hermes.local/v1/runs/run-1/stop") {
+					return jsonResponse({ stopped: true }, 200);
+				}
+				throw new Error(`unexpected fetch: ${url}`);
+			},
+		});
+
+		const events = await collect(adapter.run(baseRequest({ signal: abortController.signal })));
+
+		expect(events).toEqual([
+			{ type: "session", hermesSessionId: "tc-session-1" },
+			{ type: "text_delta", text: "partial" },
+			{
+				type: "done",
+				response: "partial",
+				success: false,
+				error: "stream aborted by caller",
+			},
+		]);
+		expect(calls.map((call) => call.url)).toContain("http://hermes.local/v1/runs/run-1/stop");
+	});
+
+	it("keeps concurrent runs isolated by run_id and session_id", async () => {
+		const startBodies: unknown[] = [];
+		const adapter = new HermesApiRuntimeAdapter({
+			baseUrl: "http://hermes.local",
+			apiKey: "api-key",
+			fetch: async (url, init) => {
+				if (url === "http://hermes.local/v1/runs") {
+					const body = JSON.parse(String(init.body));
+					startBodies.push(body);
+					return jsonResponse({ run_id: `run-${startBodies.length}` }, 202);
+				}
+				if (url === "http://hermes.local/v1/runs/run-1/events") {
+					return sseResponse([sse({ event: "run.completed", output: "one" })]);
+				}
+				if (url === "http://hermes.local/v1/runs/run-2/events") {
+					return sseResponse([sse({ event: "run.completed", output: "two" })]);
+				}
+				throw new Error(`unexpected fetch: ${url}`);
+			},
+		});
+
+		const [first, second] = await Promise.all([
+			collect(adapter.run(baseRequest({ telclaudeSessionId: "tc-session-a" }))),
+			collect(adapter.run(baseRequest({ telclaudeSessionId: "tc-session-b" }))),
+		]);
+
+		expect(startBodies).toEqual([
+			expect.objectContaining({ session_id: "tc-session-a" }),
+			expect.objectContaining({ session_id: "tc-session-b" }),
+		]);
+		expect(first).toEqual([
+			{ type: "session", hermesSessionId: "tc-session-a" },
+			{ type: "done", response: "one", success: true, numTurns: 1 },
+		]);
+		expect(second).toEqual([
+			{ type: "session", hermesSessionId: "tc-session-b" },
+			{ type: "done", response: "two", success: true, numTurns: 1 },
+		]);
+	});
 });
 
 function baseRequest(overrides: Partial<HermesRuntimeRequest> = {}): HermesRuntimeRequest {
@@ -325,6 +451,28 @@ function streamFromChunks(chunks: string[]): HermesApiResponse["body"] {
 			},
 			releaseLock: () => undefined,
 		}),
+	};
+}
+
+function streamingResponse(reads: Array<() => string>): HermesApiResponse {
+	let index = 0;
+	return {
+		status: 200,
+		ok: true,
+		json: async () => {
+			throw new Error("SSE response has no JSON body");
+		},
+		text: async () => reads.map((read) => read()).join(""),
+		body: {
+			getReader: () => ({
+				read: async () => {
+					const read = reads[index++];
+					if (!read) return { done: true };
+					return { done: false, value: new TextEncoder().encode(read()) };
+				},
+				releaseLock: () => undefined,
+			}),
+		},
 	};
 }
 

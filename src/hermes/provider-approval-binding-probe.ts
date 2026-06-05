@@ -142,8 +142,14 @@ const REQUIRED_PROVIDER_APPROVAL_BINDING_CHECKS = [
 	"provider.approval-binding.params-mutation-denied",
 	"provider.approval-binding.wrong-actor-denied",
 	"provider.approval-binding.service-action-mismatch-denied",
+	"provider.approval-binding.wrong-account-denied",
+	"provider.approval-binding.wrong-approval-request-denied",
+	"provider.approval-binding.wrong-card-revision-denied",
+	"provider.approval-binding.wrong-approver-denied",
+	"provider.approval-binding.wysiwys-render-mismatch-denied",
 	"provider.approval-binding.expired-ref-denied",
 	"provider.approval-binding.revoked-ref-denied",
+	"provider.approval-binding.approved-then-revoked-ref-denied",
 	"provider.approval-binding.executed-ref-replay-denied",
 	"provider.approval-binding.duplicate-jti-denied",
 	"provider.approval-binding.google-sidecar-token-roundtrip",
@@ -392,6 +398,120 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 			"approval token bound to one service/action cannot authorize another provider action",
 		);
 
+		const originalForAccount = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "account-original" }),
+		);
+		const accountMismatch = ledger.prepare(
+			providerPrepareInput({
+				providerAccountRef: "bank:secondary",
+				approvalRequestId: "account-mismatch",
+			}),
+		);
+		const accountResult = await executeWithTokenForDifferentRecord({
+			bridge,
+			providerApprovals,
+			tokenRecord: originalForAccount,
+			targetRecord: accountMismatch,
+			vault,
+			jti: "provider-approval-account",
+		});
+		pushCheck(
+			checks,
+			"provider.approval-binding.wrong-account-denied",
+			providerApprovalMismatchDenied(accountResult),
+			"approval token bound to one provider account cannot authorize a different provider account",
+		);
+
+		const originalForApprovalRequest = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "request-original" }),
+		);
+		const approvalRequestMismatch = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "request-mismatch" }),
+		);
+		const approvalRequestResult = await executeWithTokenForDifferentRecord({
+			bridge,
+			providerApprovals,
+			tokenRecord: originalForApprovalRequest,
+			targetRecord: approvalRequestMismatch,
+			vault,
+			jti: "provider-approval-request",
+		});
+		pushCheck(
+			checks,
+			"provider.approval-binding.wrong-approval-request-denied",
+			providerApprovalMismatchDenied(approvalRequestResult),
+			"approval token bound to one approval card/request ID cannot authorize another card",
+		);
+
+		const originalForRevision = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "revision-card", approvalRevision: 1 }),
+		);
+		const revisionMismatch = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "revision-card", approvalRevision: 2 }),
+		);
+		const revisionResult = await executeWithTokenForDifferentRecord({
+			bridge,
+			providerApprovals,
+			tokenRecord: originalForRevision,
+			targetRecord: revisionMismatch,
+			vault,
+			jti: "provider-approval-revision",
+		});
+		pushCheck(
+			checks,
+			"provider.approval-binding.wrong-card-revision-denied",
+			providerApprovalMismatchDenied(revisionResult),
+			"approval token bound to one approval card revision cannot authorize another revision",
+		);
+
+		const originalForApprover = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "approver-original" }),
+		);
+		const approverMismatch = ledger.prepare(
+			providerPrepareInput({
+				approverActorId: "operator:wrong-provider-approver",
+				approvalRequestId: "approver-mismatch",
+			}),
+		);
+		const approverResult = await executeWithTokenForDifferentRecord({
+			bridge,
+			providerApprovals,
+			tokenRecord: originalForApprover,
+			targetRecord: approverMismatch,
+			vault,
+			jti: "provider-approval-approver",
+		});
+		pushCheck(
+			checks,
+			"provider.approval-binding.wrong-approver-denied",
+			providerApprovalMismatchDenied(approverResult),
+			"approval token bound to one human approver cannot authorize another approver identity",
+		);
+
+		const originalForRender = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "render-original" }),
+		);
+		const renderMismatch = ledger.prepare(
+			providerPrepareInput({
+				approvalRequestId: "render-mismatch",
+				wysiwysRender: "Prepare ILS 100 transfer to a different rendered recipient",
+			}),
+		);
+		const renderResult = await executeWithTokenForDifferentRecord({
+			bridge,
+			providerApprovals,
+			tokenRecord: originalForRender,
+			targetRecord: renderMismatch,
+			vault,
+			jti: "provider-approval-render",
+		});
+		pushCheck(
+			checks,
+			"provider.approval-binding.wysiwys-render-mismatch-denied",
+			providerApprovalMismatchDenied(renderResult),
+			"approval token bound to one WYSIWYS render cannot authorize a different rendered card",
+		);
+
 		const expired = ledger.prepare(
 			providerPrepareInput({ ttlMs: 1, approvalRequestId: "expired-ref" }),
 		);
@@ -426,6 +546,38 @@ export async function runTelclaudeProviderApprovalBindingProbe(input: {
 				revokedResult.retryable === false &&
 				revokedResult.record?.status === "revoked",
 			"revoked provider prepared refs fail closed before approval verification",
+		);
+
+		const revokedAfterApproval = ledger.prepare(
+			providerPrepareInput({ approvalRequestId: "approved-then-revoked-ref" }),
+		);
+		providerApprovals.set(
+			revokedAfterApproval.ref,
+			await generateProbeToken(
+				revokedAfterApproval,
+				vault,
+				"provider-approval-approved-then-revoked",
+			),
+		);
+		const verifierCallsBeforeRevokedApproval = observations.verifierCallCount;
+		const providerProxyCallsBeforeRevokedApproval = providerProxyCalls.length;
+		ledger.revoke(revokedAfterApproval.ref, "operator revoked after approval");
+		const revokedAfterApprovalResult = resultShape(
+			await bridge.tc_provider_execute_write({
+				actionRef: revokedAfterApproval.ref,
+			}),
+		);
+		pushCheck(
+			checks,
+			"provider.approval-binding.approved-then-revoked-ref-denied",
+			revokedAfterApprovalResult.ok === false &&
+				revokedAfterApprovalResult.code === "effect_revoked" &&
+				revokedAfterApprovalResult.retryable === false &&
+				revokedAfterApprovalResult.record?.status === "revoked" &&
+				observations.verifierCallCount === verifierCallsBeforeRevokedApproval &&
+				providerProxyCalls.length === providerProxyCallsBeforeRevokedApproval &&
+				providerApprovals.has(revokedAfterApproval.ref),
+			"approved provider refs fail closed after revocation without verifier, proxy, or token consumption",
 		);
 
 		const replayResult = resultShape(
@@ -539,7 +691,7 @@ export function providerApprovalBindingProbeEvidenceFailure(
 			failures.push(`check ${name} is ${check.status}`);
 		}
 	}
-	if (data.observations.verifierCallCount < 5) {
+	if (data.observations.verifierCallCount < 10) {
 		failures.push("verifierCallCount is too low to prove approval mismatch paths");
 	}
 	if (data.observations.providerProxyCallCount !== 1) {
@@ -779,6 +931,23 @@ async function generateProbeToken(
 	);
 }
 
+async function executeWithTokenForDifferentRecord(input: {
+	readonly bridge: ReturnType<typeof createProbeBridge>;
+	readonly providerApprovals: Map<string, string>;
+	readonly tokenRecord: TelclaudeMcpSideEffectRecord;
+	readonly targetRecord: TelclaudeMcpSideEffectRecord;
+	readonly vault: TelclaudeMcpSideEffectApprovalSigner;
+	readonly jti: string;
+}): Promise<ReturnType<typeof resultShape>> {
+	const token = await generateProbeToken(input.tokenRecord, input.vault, input.jti);
+	input.providerApprovals.set(input.targetRecord.ref, token);
+	return resultShape(
+		await input.bridge.tc_provider_execute_write({
+			actionRef: input.targetRecord.ref,
+		}),
+	);
+}
+
 function createProbeBridge(
 	ledger: TelclaudeMcpSideEffectLedger,
 	providerApprovals: Map<string, string>,
@@ -905,6 +1074,15 @@ function resultShape(value: unknown): {
 		retryable: (value as { retryable?: unknown }).retryable,
 		record,
 	};
+}
+
+function providerApprovalMismatchDenied(result: ReturnType<typeof resultShape>): boolean {
+	return (
+		result.ok === false &&
+		result.code === "approval_mismatch" &&
+		result.retryable === true &&
+		result.record?.status === "prepared"
+	);
 }
 
 function providerProxyCallPassed(

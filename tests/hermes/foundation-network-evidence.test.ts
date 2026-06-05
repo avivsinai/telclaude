@@ -17,6 +17,8 @@ import {
 	computeHermesArtifactDigest,
 	evaluateCutoverCheck,
 	type FeatureProbeMatrix,
+	HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+	HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
 	HERMES_ROLLBACK_CONTROL_SURFACE,
 	HERMES_ROLLBACK_OBSERVATION_SURFACE,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
@@ -988,6 +990,45 @@ function proofArtifact(artifactPath: string, sourceCommand: string, gateIds: str
 	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
 }
 
+const emptyPendingQueues = {
+	approvals: 0,
+	planApprovals: 0,
+	cards: 0,
+	backgroundJobs: 0,
+	socialItems: 0,
+	curatorItems: 0,
+	pairingPendingRequests: 0,
+	pairingActiveLockouts: 0,
+};
+
+const emptyQueueDetails = {
+	approvals: { pending: 0, expired: 0 },
+	planApprovals: { pending: 0, expired: 0 },
+	cards: { active: 0, expired: 0, byStatus: {} },
+	backgroundJobs: { active: 0, byStatus: {} },
+	pairing: { pendingRequests: 0, activePairs: 0, activeLockouts: 0 },
+	allowlist: { active: 0, total: 0 },
+	curator: { open: 0, byStatus: {} },
+	social: { activeItems: 0 },
+	webhooks: { enabled: 0, total: 0 },
+	memory: { entries: 0, episodes: 0 },
+};
+
+function emptyQueueSnapshot(generatedAt = "2026-05-30T00:00:00Z") {
+	return {
+		schemaVersion: "telclaude.hermes.queue-ownership-snapshot.v1",
+		status: "pass",
+		generatedAt,
+		unownedActiveCount: 0,
+		pendingQueues: emptyPendingQueues,
+		queues: emptyQueueDetails,
+		source: {
+			inventoryGeneratedAt: generatedAt,
+			inventoryStatus: "complete",
+		},
+	};
+}
+
 function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 	const noForkProof = writeNoForkProof();
 	const lockfile = { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path };
@@ -998,17 +1039,9 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 			generatedAt: "2026-05-30T00:00:00Z",
 			status: "complete",
 			summary: {
-				pendingQueues: {
-					approvals: 0,
-					planApprovals: 0,
-					cards: 0,
-					backgroundJobs: 0,
-					socialItems: 0,
-					curatorItems: 0,
-					pairingPendingRequests: 0,
-					pairingActiveLockouts: 0,
-				},
+				pendingQueues: emptyPendingQueues,
 			},
+			queues: emptyQueueDetails,
 			workflows: [
 				{
 					workflow_id: "private.telegram.basic",
@@ -1057,7 +1090,7 @@ function cutoverBundle(networkProbes: ProbeBundle): CutoverInputBundle {
 		noForkProof,
 		profileGenerationProof,
 		networkProbes,
-		queueSnapshot: { unownedActiveCount: 0 },
+		queueSnapshot: emptyQueueSnapshot(),
 		rollbackRehearsal: writeRollbackRehearsal(),
 	};
 	return {
@@ -1370,6 +1403,131 @@ function cliHeadlessCutoverBundle(
 		...withoutProof,
 		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
 	};
+}
+
+function withHeadlessEntrypointProof(
+	bundle: CutoverInputBundle,
+	evidencePath: string,
+): CutoverInputBundle {
+	const headlessEntrypointProbe = {
+		surface_id: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+		hermes_pin: hermesPin,
+		documented_seam: "Telclaude Hermes private API runtime adapter semantic headless entrypoint",
+		probe_command:
+			"pnpm test tests/hermes/api-adapter.test.ts tests/hermes/private-runtime.test.ts",
+		expected_result:
+			"Streaming, terminal, session, tool, approval, cancellation, deterministic error, and redaction semantics pass",
+		negative_probe: "execution.cli_headless availability proof alone cannot satisfy this surface",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.execution.headlessEntrypoint",
+		security_scope: "headless-entrypoint-semantics" as const,
+		approval_equivalent: false,
+		failure_outcome: "disable" as const,
+		status: "pass" as const,
+	};
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [...bundle.featureProbeMatrix.probes, headlessEntrypointProbe],
+	};
+	const lockfile = {
+		...bundle.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+		featureProbes: [
+			...bundle.lockfile.featureProbes,
+			{
+				surface_id: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+				status: "pass" as const,
+				evidence_path: evidencePath,
+			},
+		],
+		adapterApiSignatures: {
+			...bundle.lockfile.adapterApiSignatures,
+			[HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID]: `sha256:${"d".repeat(64)}`,
+		},
+	};
+	const profileGenerationProof = writeProfileProof(lockfile);
+	const { cutoverProofBundle: _cutoverProofBundle, ...bundleWithoutProof } = bundle;
+	const withoutProof: CutoverBundleWithoutProof = {
+		...bundleWithoutProof,
+		featureProbeMatrix,
+		featureProbeEvidence: collectFeatureProbeEvidence(featureProbeMatrix),
+		lockfile,
+		profileGenerationProof,
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [profileDecision(profileGenerationProof.evidence_path)],
+		},
+	};
+	return {
+		...withoutProof,
+		cutoverProofBundle: makeCutoverProofBundle(withoutProof),
+	};
+}
+
+function writeHeadlessEntrypointEvidence(evidencePath: string): void {
+	const reportPath = path.join(
+		path.dirname(evidencePath),
+		"execution-headless-entrypoint.vitest.json",
+	);
+	writeJson(reportPath, {
+		numTotalTests: 2,
+		numPassedTests: 2,
+		testResults: [],
+	});
+	writeJson(evidencePath, {
+		schemaVersion: HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
+		probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+		status: "pass",
+		ran: true,
+		generatedAt: new Date().toISOString(),
+		summary: "Hermes API adapter and private runtime semantic headless entrypoint checks passed",
+		testReport: {
+			runner: "vitest-json",
+			command: [
+				"pnpm",
+				"exec",
+				"vitest",
+				"run",
+				"tests/hermes/api-adapter.test.ts",
+				"tests/hermes/private-runtime.test.ts",
+				"--reporter=json",
+			],
+			cwd: process.cwd(),
+			exitCode: 0,
+			reportPath,
+			reportSha256: testFileSha256(reportPath),
+			sourceDigests: {
+				"src/hermes/api-adapter.ts": testFileSha256("src/hermes/api-adapter.ts"),
+				"src/hermes/private-runtime.ts": testFileSha256("src/hermes/private-runtime.ts"),
+				"src/hermes/session-map.ts": testFileSha256("src/hermes/session-map.ts"),
+				"tests/hermes/api-adapter.test.ts": testFileSha256("tests/hermes/api-adapter.test.ts"),
+				"tests/hermes/private-runtime.test.ts": testFileSha256(
+					"tests/hermes/private-runtime.test.ts",
+				),
+			},
+		},
+		checks: [
+			"stream.delta_before_done",
+			"stream.terminal_event",
+			"session.initial",
+			"session.resume",
+			"session.new_clears_resume",
+			"session.concurrent_isolation",
+			"tool.result_returned",
+			"approval.fallback_or_wait_resume",
+			"cancellation.stop",
+			"errors.deterministic",
+			"redaction.secret_outputs",
+		].map((name) => ({
+			name,
+			status: "pass" as const,
+			detail: `${name} passed in focused adapter/runtime tests`,
+		})),
+	});
+}
+
+function testFileSha256(filePath: string): `sha256:${string}` {
+	return `sha256:${crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")}`;
 }
 
 function writeCliHeadlessEvidence(evidencePath: string, relayProof: OpenAiCodexRelayProof): void {
@@ -2024,7 +2182,7 @@ describe("Hermes cutover fixture evidence catalog validation", () => {
 });
 
 describe("Hermes cutover cli-headless relay proof validation", () => {
-	it("accepts cli-headless evidence only with a trusted signed relay proof", () => {
+	it("does not accept cli-headless availability evidence as semantic headless entrypoint proof", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
 		const relayKeys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
@@ -2033,6 +2191,30 @@ describe("Hermes cutover cli-headless relay proof validation", () => {
 			const evidencePath = path.join(tempDir, "execution-cli-headless.json");
 			writeCliHeadlessEvidence(evidencePath, cliHeadlessRelayProof());
 			const bundle = cliHeadlessCutoverBundle(evidencePath);
+			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+			return evaluateCutoverCheck(bundle);
+		});
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
+			`missing feature probe ${HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID}`,
+		);
+	});
+
+	it("accepts cli-headless availability only when adjacent semantic headless entrypoint proof also passes", () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-headless-cutover-"));
+		const relayKeys = generateKeyPair();
+		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		const report = withCliHeadlessRuntimeIpEnv(() => {
+			const cliEvidencePath = path.join(tempDir, "execution-cli-headless.json");
+			const entrypointEvidencePath = path.join(tempDir, "execution-headless-entrypoint.json");
+			writeCliHeadlessEvidence(cliEvidencePath, cliHeadlessRelayProof());
+			writeHeadlessEntrypointEvidence(entrypointEvidencePath);
+			const bundle = withHeadlessEntrypointProof(
+				cliHeadlessCutoverBundle(cliEvidencePath),
+				entrypointEvidencePath,
+			);
 			process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
 			return evaluateCutoverCheck(bundle);
 		});
@@ -2620,7 +2802,7 @@ describe("Hermes cutover model-relay evidence validation", () => {
 			now: new Date("2026-06-02T00:00:00.000Z"),
 		});
 
-		expect(report.status).toBe("fail");
+		expect(report.status).toBe("input_error");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"model-relay evidence generatedAt is stale or future-dated",
 		);

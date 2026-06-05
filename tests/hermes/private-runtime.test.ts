@@ -917,12 +917,18 @@ describe("Hermes private runtime seam", () => {
 
 			expect(result.exitCode).toBe(0);
 			const auth = JSON.parse(result.stdout) as {
-				providers: { "openai-codex": { tokens: Record<string, string> } };
+				suppressed_sources: { "openai-codex": string[] };
+				providers: { "openai-codex": Record<string, unknown> };
 				credential_pool: {
 					"openai-codex": Array<Record<string, unknown>>;
 				};
 			};
-			const accessToken = auth.providers["openai-codex"].tokens.access_token;
+			expect(auth.suppressed_sources["openai-codex"]).toContain("device_code");
+			expect(auth.providers["openai-codex"]).toEqual({
+				auth_mode: "telclaude-relay",
+				last_refresh: "1970-01-01T00:00:00.000Z",
+			});
+			const accessToken = auth.credential_pool["openai-codex"][0]?.access_token as string;
 			expect(accessToken).not.toBe("relay-scoped-proxy-token");
 			expect(
 				verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
@@ -936,9 +942,6 @@ describe("Hermes private runtime seam", () => {
 					peerAddress: "10.88.92.99",
 				}),
 			).toMatchObject({ ok: false, reason: "peer address mismatch" });
-			expect(auth.providers["openai-codex"].tokens.refresh_token).toBe(
-				"telclaude-relay-token-is-not-refreshable",
-			);
 			expect(auth.credential_pool["openai-codex"][0]).toMatchObject({
 				id: "telclaude-relay",
 				label: "Telclaude OpenAI Codex relay",

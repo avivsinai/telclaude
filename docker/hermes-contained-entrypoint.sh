@@ -161,14 +161,15 @@ EOF
 {
   "version": 1,
   "active_provider": "openai-codex",
+  "suppressed_sources": {
+    "openai-codex": [
+      "device_code"
+    ]
+  },
   "providers": {
     "openai-codex": {
       "auth_mode": "telclaude-relay",
-      "last_refresh": "1970-01-01T00:00:00.000Z",
-      "tokens": {
-        "access_token": "${CODEX_PEER_BOUND_TOKEN}",
-        "refresh_token": "telclaude-relay-token-is-not-refreshable"
-      }
+      "last_refresh": "1970-01-01T00:00:00.000Z"
     }
   },
   "credential_pool": {
