@@ -129,6 +129,17 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.status).toBe("pass");
 	});
 
+	it("forces artifact_redacted to fail when evidence bytes contain a secret (not self-attested)", () => {
+		// bit true + passing backing check, but a credential-shaped token is embedded
+		// in a free-text field — the evaluator must scan bytes and fail closed.
+		const report = evaluateServedMcpMemoryEvidence({
+			...validEvidence(),
+			summary: "leak AKIAIOSFODNN7EXAMPLE embedded in summary",
+		});
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((g) => g.name === "memory.artifact_redacted")?.status).toBe("fail");
+	});
+
 	it("fails when status is pending or ran is false", () => {
 		expect(evaluateServedMcpMemoryEvidence({ ...validEvidence(), status: "pending" }).status).toBe(
 			"fail",
