@@ -7982,12 +7982,15 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
 			expect(report.send.shardCount).toBe(refreshed.shardCount);
 			const firstShard = report.send.shards[0];
+			const promptVar = firstShard.yoetzCommand.find((arg) => arg.startsWith("prompt="));
+			expect(promptVar).toContain(
+				"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
+			);
+			expect(promptVar).toContain("Review only the attached Hermes Pro-review shard.");
 			expect(firstShard.yoetzCommand).toEqual(
 				expect.arrayContaining([
 					"--transport",
 					"chrome-extension-native",
-					"--var",
-					expect.stringContaining("prompt=Review only the attached Hermes Pro-review shard."),
 					"--var",
 					`payload_sha256=${report.send.payloadSha256}`,
 					"--var",

@@ -1880,6 +1880,7 @@ function buildProReviewYoetzPrompt(input: BuildProReviewYoetzCommandInput): stri
 		].join("\n");
 	}
 	return [
+		"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
 		"Review only the attached Hermes Pro-review shard.",
 		"At the top of your response, echo these exact binding lines:",
 		`payloadSha256: ${input.payloadSha256 ?? ""}`,
