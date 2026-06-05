@@ -1251,8 +1251,14 @@ function runProReviewYoetzCommand(
 
 function isRecoverableNativeYoetzReadFailure(result: ProReviewYoetzProcessResult): boolean {
 	if (result.status === 0) return false;
-	return /chrome-extension-native: failed to fill whole buffer|failed to fill whole buffer/i.test(
-		`${result.stderr}\n${result.error ?? ""}`,
+	const output = `${result.stderr}\n${result.error ?? ""}`;
+	return (
+		/chrome-extension-native: failed to fill whole buffer|failed to fill whole buffer/i.test(
+			output,
+		) ||
+		/wait_response phase failed after browser side effects|did not reach stable completion before timeout/i.test(
+			output,
+		)
 	);
 }
 
@@ -4248,6 +4254,28 @@ export function registerHermesCommand(program: Command): void {
 			const request = readProReviewRequest(options.request);
 			if ((request.reviewMode ?? "single") === "sharded" && request.shardPlan) {
 				const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+				if (options.execute) {
+					const result = {
+						report,
+						send: {
+							status: "refused",
+							mode: "sharded",
+							reason:
+								"sharded Pro review execution is disabled; use a single full bundle so ChatGPT Pro receives all approved context in one native run",
+							payloadSha256: report.payloadSha256,
+							shardPlanSha256,
+							shardCount: request.shardPlan.shards.length,
+						},
+					};
+					if (options.json) {
+						printJson(result);
+					} else {
+						console.log("Hermes pro-review-send: refused");
+						console.log(`- FAIL: ${result.send.reason}`);
+					}
+					process.exitCode = 1;
+					return;
+				}
 				const shards = request.shardPlan.shards.map((shard) => {
 					const shardBundlePath = proReviewShardBundlePath(bundlePath, shard);
 					writeProReviewShardBundle(options.request, shardBundlePath, shard);
@@ -4835,6 +4863,7 @@ export function registerHermesCommand(program: Command): void {
 					});
 				} catch (error) {
 					const report = {
+						generatedAt: now.toISOString(),
 						status: "input_error",
 						exitCode: 2,
 						mode: { strict, dryRun },
@@ -4856,12 +4885,15 @@ export function registerHermesCommand(program: Command): void {
 					return;
 				}
 
-				const report = evaluateCutoverCheck(input, {
-					strict,
-					dryRun,
-					liveCutover,
-					now,
-				});
+				const report = {
+					generatedAt: now.toISOString(),
+					...evaluateCutoverCheck(input, {
+						strict,
+						dryRun,
+						liveCutover,
+						now,
+					}),
+				};
 				if (options.json) {
 					printJson(report);
 				} else {

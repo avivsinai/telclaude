@@ -850,6 +850,17 @@ describe("Hermes Pro review gate", () => {
 
 		expect(
 			validateProReviewYoetzInspectCompletedResponseOutput({
+				stdout: inspectOutput(`${responseText}\nExtended Pro\n`).replace(
+					'"current_model_label":"Extended Pro"',
+					'"current_model_label":"","requested_model":"extended-pro"',
+				),
+				expectedRunId: "hermes_run_full_context",
+				expectedPayloadSha256: payloadSha256,
+			}),
+		).toMatchObject({ status: "pass" });
+
+		expect(
+			validateProReviewYoetzInspectCompletedResponseOutput({
 				stdout: inspectOutput(responseText.replace(`payloadSha256: ${payloadSha256}`, "")),
 				expectedRunId: "hermes_run_full_context",
 				expectedPayloadSha256: payloadSha256,
@@ -1043,6 +1054,89 @@ describe("Hermes Pro review gate", () => {
 			).toMatchObject({
 				status: "fail",
 				detail: "edge.whatsapp evidence status is undefined",
+			});
+		});
+	});
+
+	it("accepts current cutover-check reports as honest diagnostic context", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(cutoverReportPath, currentCutoverCheckReport("fail"));
+			writeJson(
+				"docs/hermes/pro-review-request.json",
+				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
+			);
+
+			const report = evaluateProReviewCheck();
+
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.coverage"),
+			).toMatchObject({
+				status: "pass",
+			});
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.currentCutoverCheck"),
+			).toMatchObject({
+				status: "pass",
+				detail: "current cutover-check report is fresh schema-valid diagnostic context",
+			});
+		});
+	});
+
+	it("rejects malformed current cutover-check context reports", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(cutoverReportPath, {
+				status: "fail",
+				mode: { strict: false, dryRun: true },
+				gates: [],
+			});
+			writeJson(
+				"docs/hermes/pro-review-request.json",
+				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
+			);
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.status).toBe("fail");
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.currentCutoverCheck"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("mode.strict must be true"),
+			});
+		});
+	});
+
+	it("rejects stale current cutover-check context reports", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(cutoverReportPath, currentCutoverCheckReport("fail", "2026-06-01T09:00:00.000Z"));
+			writeJson(
+				"docs/hermes/pro-review-request.json",
+				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
+			);
+
+			const report = evaluateProReviewCheck({ now: new Date("2026-06-01T09:16:00.000Z") });
+
+			expect(report.status).toBe("fail");
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.currentCutoverCheck"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("generatedAt is stale"),
 			});
 		});
 	});
@@ -1435,6 +1529,33 @@ function writeRequiredProReviewWorkspace(root: string): void {
 			fs.writeFileSync(resolved, `test fixture for ${file}\n`, "utf8");
 		}
 	}
+}
+
+function currentCutoverCheckReport(
+	status: "pass" | "fail",
+	generatedAt = new Date().toISOString(),
+): Record<string, unknown> {
+	return {
+		generatedAt,
+		status,
+		exitCode: status === "pass" ? 0 : 1,
+		mode: {
+			strict: true,
+			dryRun: true,
+		},
+		gates: [
+			{
+				name: "workflow.scope",
+				status,
+				detail: status === "pass" ? "included workflows are scoped" : "no included workflows",
+			},
+		],
+		workflowIds: status === "pass" ? ["workflow.private.telegram"] : [],
+		evidencePaths: [],
+		decisionIds: [],
+		downgradeNotes: [],
+		remediationOwners: [],
+	};
 }
 
 function isSignedProbeArtifact(file: string): boolean {
