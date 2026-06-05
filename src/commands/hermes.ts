@@ -1129,6 +1129,7 @@ function writeProReviewShardBundle(
 		`- sourceBytes: ${shard.sourceBytes}`,
 		`- focus: ${shard.focus}`,
 		"",
+		"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
 		"Review this shard only. At the top of your response, echo these exact binding lines:",
 		`payloadSha256: ${String(request.payloadBinding.payloadSha256)}`,
 		`shardPlanSha256: ${String(request.payloadBinding.shardPlanSha256 ?? "")}`,
