@@ -225,32 +225,36 @@ export function parityRosterCoverageGate(input: ParityRosterGateInput): ParityRo
 	}
 	illegalDescopes.sort();
 
-	const uncovered: string[] = [];
+	// Categorize every row: backed (proof present), descoped (accepted decision),
+	// or missing (neither) — so a failure is actionable.
+	const backedRows: string[] = [];
+	const descopedRows: string[] = [];
+	const missingRows: string[] = [];
 	for (const [row, backing] of Object.entries(roster)) {
 		// Honor a descope only for a known, descopable row.
-		if (descoped.has(row) && !NON_DESCOPABLE_PARITY_ROWS.has(row)) continue;
-		if (!isRowCovered(backing, required)) uncovered.push(row);
+		if (descoped.has(row) && !NON_DESCOPABLE_PARITY_ROWS.has(row)) {
+			descopedRows.push(row);
+			continue;
+		}
+		if (isRowCovered(backing, required)) backedRows.push(row);
+		else missingRows.push(row);
 	}
-	uncovered.sort();
+	backedRows.sort();
+	descopedRows.sort();
+	missingRows.sort();
 
-	if (illegalDescopes.length === 0 && uncovered.length === 0) {
-		return {
-			name: "parity.rosterCovered",
-			status: "pass",
-			detail:
-				"every spec parity row is backed by a required surface, fixture, check, or meta-gate, or an accepted parity-descope decision",
-		};
-	}
-	const parts: string[] = [];
-	if (illegalDescopes.length > 0) {
-		parts.push(`illegal descope attempts: ${illegalDescopes.join(", ")}`);
-	}
-	if (uncovered.length > 0) {
-		parts.push(`parity rows lack acceptance proof and are not descoped: ${uncovered.join(", ")}`);
-	}
-	return {
-		name: "parity.rosterCovered",
-		status: "fail",
-		detail: parts.join("; "),
-	};
+	const ok = illegalDescopes.length === 0 && missingRows.length === 0;
+	const detail = ok
+		? `every spec parity row is backed (${backedRows.length}) or descoped (${descopedRows.length}): proof OR accepted parity-descope decision`
+		: [
+				`backed: ${backedRows.length}`,
+				`descoped: ${descopedRows.length === 0 ? "none" : descopedRows.join(", ")}`,
+				...(missingRows.length > 0
+					? [`MISSING (no proof, not descoped): ${missingRows.join(", ")}`]
+					: []),
+				...(illegalDescopes.length > 0
+					? [`ILLEGAL descope attempts: ${illegalDescopes.join(", ")}`]
+					: []),
+			].join("; ");
+	return { name: "parity.rosterCovered", status: ok ? "pass" : "fail", detail };
 }
