@@ -39,11 +39,18 @@ export type ServedMcpMemoryReport = {
 	readonly gates: ServedMcpMemoryGate[];
 };
 
-// Negative-control properties that must be backed by real denial evidence.
-const MEMORY_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
-	"cross_source_read_denied",
+// Negative controls denied by an RPC error (validateMemoryEntryInput throws):
+// the backing check must carry rpcErrorCode + rpcErrorMessage.
+const MEMORY_RPC_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
 	"secret_write_rejected",
 	"instruction_like_write_rejected",
+]);
+// Negative controls denied by server-side domain scoping (cross-source read): the
+// backing check must prove an empty result (observedResultCount === 0), not an
+// RPC error — tc_memory_search is stamped from the connection domain, so a
+// telegram-domain search simply returns zero social rows.
+const MEMORY_EMPTY_RESULT_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
+	"cross_source_read_denied",
 ]);
 
 function inputError(detail: string): ServedMcpMemoryReport {
@@ -162,7 +169,8 @@ export function evaluateServedMcpMemoryEvidence(
 	// Negative-control properties additionally require denial EVIDENCE on a passing
 	// check (an rpcErrorCode + rpcErrorMessage), not just a self-reported "rejected".
 	const checkPass = new Map<string, boolean>();
-	const denialEvidence = new Map<string, boolean>();
+	const rpcDenialEvidence = new Map<string, boolean>();
+	const emptyResultEvidence = new Map<string, boolean>();
 	for (const check of parsed.data.checks) {
 		const prior = checkPass.get(check.name);
 		const thisPass = check.status === "pass";
@@ -172,7 +180,10 @@ export function evaluateServedMcpMemoryEvidence(
 			typeof check.rpcErrorCode === "number" &&
 			typeof check.rpcErrorMessage === "string"
 		) {
-			denialEvidence.set(check.name, true);
+			rpcDenialEvidence.set(check.name, true);
+		}
+		if (thisPass && check.observedResultCount === 0) {
+			emptyResultEvidence.set(check.name, true);
 		}
 	}
 
@@ -186,8 +197,11 @@ export function evaluateServedMcpMemoryEvidence(
 		const bit = parsed.data.properties[property] === true;
 		const backed = checkPass.get(property) === true;
 		const leaked = property === "artifact_redacted" && redactionLeak;
-		const isDenial = MEMORY_DENIAL_PROPERTY_NAMES.has(property);
-		const denialOk = !isDenial || denialEvidence.get(property) === true;
+		const isRpcDenial = MEMORY_RPC_DENIAL_PROPERTY_NAMES.has(property);
+		const isEmptyResultDenial = MEMORY_EMPTY_RESULT_DENIAL_PROPERTY_NAMES.has(property);
+		const denialOk =
+			(!isRpcDenial || rpcDenialEvidence.get(property) === true) &&
+			(!isEmptyResultDenial || emptyResultEvidence.get(property) === true);
 		const proven = bit && backed && !leaked && denialOk;
 		gates.push({
 			name: `memory.${property}`,
@@ -199,7 +213,9 @@ export function evaluateServedMcpMemoryEvidence(
 					: !backed
 						? `memory property ${property} bit is set but lacks a passing backing check`
 						: !denialOk
-							? `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
+							? isEmptyResultDenial
+								? `memory denial property ${property} requires a passing check proving an empty result (observedResultCount === 0)`
+								: `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
 							: `memory property ${property} is proven and check-backed`,
 		});
 	}
