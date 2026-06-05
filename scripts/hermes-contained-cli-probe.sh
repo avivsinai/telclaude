@@ -152,12 +152,11 @@ auth_path = os.path.join(os.environ["HERMES_HOME"], "auth.json")
 try:
     with open(auth_path, encoding="utf-8") as handle:
         auth = json.load(handle)
-    token = (
-        auth.get("providers", {})
-        .get("openai-codex", {})
-        .get("tokens", {})
-        .get("access_token", "")
-    )
+token = ""
+for entry in auth.get("credential_pool", {}).get("openai-codex", []):
+    if entry.get("id") == "telclaude-relay" and entry.get("source") == "manual:telclaude-relay":
+        token = entry.get("access_token", "")
+        break
     if not token:
         raise RuntimeError("relay token missing from Hermes auth store")
     request = urllib.request.Request(

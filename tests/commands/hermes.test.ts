@@ -89,7 +89,7 @@ import {
 } from "../../src/hermes/no-fork-attestation.js";
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
-import { REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
+import { buildProReviewShardPlan, REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
@@ -215,6 +215,47 @@ function pendingQueues(
 	overrides: Partial<HermesPendingQueueSummary> = {},
 ): HermesPendingQueueSummary {
 	return { ...emptyPendingQueues, ...overrides };
+}
+
+function queueDetailsFromPending(pending: HermesPendingQueueSummary = pendingQueues()) {
+	return {
+		approvals: { pending: pending.approvals, expired: 0 },
+		planApprovals: { pending: pending.planApprovals, expired: 0 },
+		cards: { active: pending.cards, expired: 0, byStatus: {} },
+		backgroundJobs: { active: pending.backgroundJobs, byStatus: {} },
+		pairing: {
+			pendingRequests: pending.pairingPendingRequests,
+			activePairs: 0,
+			activeLockouts: pending.pairingActiveLockouts,
+		},
+		allowlist: { active: 0, total: 0 },
+		curator: { open: pending.curatorItems, byStatus: {} },
+		social: { activeItems: pending.socialItems },
+		webhooks: { enabled: 0, total: 0 },
+		memory: { entries: 0, episodes: 0 },
+	};
+}
+
+function queueSnapshotFromPending(
+	pending: HermesPendingQueueSummary = pendingQueues(),
+	generatedAt = "2026-05-29T00:00:00Z",
+) {
+	const unownedActiveCount = Object.values(pending).reduce<number>(
+		(total, value) => total + value,
+		0,
+	);
+	return {
+		schemaVersion: "telclaude.hermes.queue-ownership-snapshot.v1",
+		status: unownedActiveCount === 0 ? "pass" : "fail",
+		generatedAt,
+		unownedActiveCount,
+		pendingQueues: pending,
+		queues: queueDetailsFromPending(pending),
+		source: {
+			inventoryGeneratedAt: generatedAt,
+			inventoryStatus: "complete",
+		},
+	};
 }
 
 type HermesCommandTestOptions = {
@@ -1291,14 +1332,17 @@ function proofArtifact(artifactPath: string, sourceCommand: string, gateIds: str
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
 	const noForkProof = writeNoForkProof();
 	const lockfile = { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path };
+	const basePendingQueues = pendingQueues();
+	const baseGeneratedAt = "2026-05-29T00:00:00Z";
 	const base: CutoverBundleWithoutProof = {
 		schemaVersion: 1,
 		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
+			generatedAt: baseGeneratedAt,
 			status: "complete",
 			summary: {
-				pendingQueues: pendingQueues(),
+				pendingQueues: basePendingQueues,
 			},
+			queues: queueDetailsFromPending(basePendingQueues),
 			workflows: [
 				{
 					workflow_id: "private.telegram.basic",
@@ -1343,7 +1387,7 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 		fixtureResults: writeFixtureResults(),
 		noForkProof,
 		networkProbes: writePassingNetworkProbeBundle(),
-		queueSnapshot: { unownedActiveCount: 0 },
+		queueSnapshot: queueSnapshotFromPending(basePendingQueues, baseGeneratedAt),
 		rollbackRehearsal: writeRollbackRehearsal(),
 	};
 	const { cutoverProofBundle, ...bundleOverrides } = overrides;
@@ -2882,6 +2926,71 @@ function proReviewRequest(
 	return request;
 }
 
+function legacyShardedProReviewRequest(
+	canaryPath: string,
+	selectedFiles: readonly string[] = [...REQUIRED_PRO_REVIEW_FILES],
+	maxShardSourceBytes = 500,
+): Record<string, unknown> {
+	const prompt = "Review the attached Hermes wrapper files.";
+	const blockedFallbacks = [
+		"cdp",
+		"api-key",
+		"manual-browser",
+		"claude-substitution",
+		"amq-substitution",
+	];
+	const selectedFileContentsSha256 = computeSelectedFileContentsDigest(selectedFiles);
+	const transportEvidenceSha256 = computeFileDigest(canaryPath);
+	const shardPlan = buildProReviewShardPlan(selectedFiles, maxShardSourceBytes);
+	const shardPlanSha256 = computeTextDigest(JSON.stringify(shardPlan));
+	const payload = {
+		reviewer: "ChatGPT Pro Extended via Yoetz native extension",
+		transport: "chrome-extension-native",
+		model: "Extended Pro",
+		fallbackAllowed: false,
+		transportEvidence: canaryPath,
+		blockedFallbacks,
+		prompt,
+		selectedFiles,
+		selectedFileContentsSha256,
+		transportEvidenceSha256,
+		reviewMode: "sharded",
+		shardPlanSha256,
+	};
+	return proReviewRequest(
+		canaryPath,
+		{
+			reviewMode: "sharded",
+			payloadBinding: {
+				digestAlgorithm: "sha256",
+				canonicalJsonFields: [
+					"reviewer",
+					"transport",
+					"model",
+					"fallbackAllowed",
+					"transportEvidence",
+					"blockedFallbacks",
+					"prompt",
+					"selectedFiles",
+					"selectedFileContentsSha256",
+					"transportEvidenceSha256",
+					"reviewMode",
+					"shardPlanSha256",
+				],
+				payloadSha256: computeTextDigest(JSON.stringify(payload)),
+				promptSha256: computeTextDigest(prompt),
+				selectedFilesSha256: computeTextDigest(JSON.stringify(selectedFiles)),
+				selectedFileContentsSha256,
+				transportEvidenceSha256,
+				shardPlanSha256,
+				notes: "Legacy sharded fixture; production refresh must not generate this shape.",
+			},
+			shardPlan,
+		},
+		selectedFiles,
+	);
+}
+
 async function writeRequiredProReviewWorkspace(
 	root: string,
 	options: { readonly semanticEvidence?: "red" | "green" } = {},
@@ -2895,8 +3004,14 @@ async function writeRequiredProReviewWorkspace(
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
 			writeJson(resolved, cliHeadlessEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.json") {
+			writeJson(resolved, headlessEntrypointReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.vitest.json") {
+			writeJson(resolved, { numTotalTests: 0, numPassedTests: 0, testResults: [] });
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
+		} else if (file === "artifacts/hermes/pro-review-current-cutover-check.json") {
+			writeJson(resolved, currentCutoverCheckReport("safe"));
 		} else if (isSignedProReviewProbeArtifact(file)) {
 			writeJson(resolved, await signedProReviewProbeEvidence(file));
 		} else if (file.startsWith("artifacts/hermes/") && file.endsWith(".json")) {
@@ -2913,6 +3028,7 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 		rootArtifact(root, "artifacts/hermes/probes/execution-cli-headless.json"),
 		cliHeadlessEvidence(),
 	);
+	writeHeadlessEntrypointGreenEvidence(root);
 	writeJson(
 		rootArtifact(root, "artifacts/hermes/probes/model-relay.json"),
 		passingModelRelayEvidence(),
@@ -3045,8 +3161,124 @@ async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void>
 	);
 }
 
+const HEADLESS_ENTRYPOINT_CHECKS = [
+	"stream.delta_before_done",
+	"stream.terminal_event",
+	"session.initial",
+	"session.resume",
+	"session.new_clears_resume",
+	"session.concurrent_isolation",
+	"tool.result_returned",
+	"approval.fallback_or_wait_resume",
+	"cancellation.stop",
+	"errors.deterministic",
+	"redaction.secret_outputs",
+] as const;
+const HEADLESS_ENTRYPOINT_SOURCE_FILES = [
+	"src/hermes/api-adapter.ts",
+	"src/hermes/private-runtime.ts",
+	"src/hermes/session-map.ts",
+	"tests/hermes/api-adapter.test.ts",
+	"tests/hermes/private-runtime.test.ts",
+] as const;
+
+function headlessEntrypointReadinessFailureEvidence(): Record<string, unknown> {
+	return {
+		schemaVersion: "telclaude.hermes.headless-entrypoint-proof.v1",
+		probeId: "execution.headless_entrypoint",
+		status: "fail",
+		ran: false,
+		generatedAt: "2026-06-01T09:00:00.000Z",
+		summary: "headless entrypoint proof was not run in this fixture",
+		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
+			name,
+			status: "fail",
+			detail: "not run",
+		})),
+	};
+}
+
+function writeHeadlessEntrypointGreenEvidence(root: string): void {
+	for (const sourcePath of HEADLESS_ENTRYPOINT_SOURCE_FILES) {
+		const resolved = rootArtifact(root, sourcePath);
+		if (!fs.existsSync(resolved)) {
+			fs.mkdirSync(path.dirname(resolved), { recursive: true });
+			fs.writeFileSync(resolved, `test fixture for ${sourcePath}\n`, "utf8");
+		}
+	}
+	const reportPath = rootArtifact(
+		root,
+		"artifacts/hermes/probes/execution-headless-entrypoint.vitest.json",
+	);
+	writeJson(reportPath, { numTotalTests: 2, numPassedTests: 2, testResults: [] });
+	writeJson(rootArtifact(root, "artifacts/hermes/probes/execution-headless-entrypoint.json"), {
+		schemaVersion: "telclaude.hermes.headless-entrypoint-proof.v1",
+		probeId: "execution.headless_entrypoint",
+		status: "pass",
+		ran: true,
+		generatedAt: "2026-06-01T09:00:00.000Z",
+		summary: "Hermes API adapter and private runtime semantic headless entrypoint checks passed",
+		testReport: {
+			runner: "vitest-json",
+			command: [
+				"pnpm",
+				"exec",
+				"vitest",
+				"run",
+				"tests/hermes/api-adapter.test.ts",
+				"tests/hermes/private-runtime.test.ts",
+				"--reporter=json",
+			],
+			cwd: root,
+			exitCode: 0,
+			reportPath,
+			reportSha256: computeFileDigest(reportPath),
+			sourceDigests: Object.fromEntries(
+				HEADLESS_ENTRYPOINT_SOURCE_FILES.map((sourcePath) => [
+					sourcePath,
+					computeFileDigest(rootArtifact(root, sourcePath)),
+				]),
+			),
+		},
+		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
+			name,
+			status: "pass",
+			detail: `${name} passed in focused adapter/runtime tests`,
+		})),
+	});
+}
+
 function rootArtifact(root: string, relativePath: string): string {
 	return path.join(root, relativePath);
+}
+
+function currentCutoverCheckReport(
+	status: "safe" | "pass" | "fail" | "input_error",
+	generatedAt = new Date().toISOString(),
+	dryRun = status === "pass" || status === "fail",
+): Record<string, unknown> {
+	const ok = status === "safe" || status === "pass";
+	return {
+		generatedAt,
+		status,
+		exitCode: ok ? 0 : 1,
+		mode: {
+			strict: true,
+			dryRun,
+		},
+		gates: [
+			{
+				name: "workflow.scope",
+				status: ok ? "pass" : "fail",
+				detail: ok ? "included workflows are scoped" : "no included workflows",
+			},
+		],
+		workflowIds: ok ? ["workflow.private.telegram"] : [],
+		evidencePaths: [],
+		decisionIds: [],
+		downgradeNotes: [],
+		remediationOwners: [],
+	};
 }
 
 function greenBrowserComputerBrokerProbeEvidence(
@@ -4034,14 +4266,17 @@ describe("Hermes wrapper foundation", () => {
 
 	it("assembles cutover input from separate canonical artifacts", () => {
 		const source = safeCutoverBundle();
+		const queueSummary = pendingQueues();
 		const inventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues(),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		};
-		const proofSource = safeCutoverBundle({ inventory, queueSnapshot: { unownedActiveCount: 0 } });
+		const queueSnapshot = queueSnapshotFromPending(queueSummary);
+		const proofSource = safeCutoverBundle({ inventory, queueSnapshot });
 		const assembled = buildCutoverInputBundleFromArtifacts({
 			inventory: proofSource.inventory,
 			scopeManifest: proofSource.scopeManifest,
@@ -4058,23 +4293,25 @@ describe("Hermes wrapper foundation", () => {
 		});
 
 		expect(evaluateCutoverCheck(assembled).exitCode).toBe(0);
-		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 0 });
+		expect(assembled.queueSnapshot).toEqual(queueSnapshot);
 	});
 
 	it("builds queue ownership snapshots from complete inventory evidence", () => {
 		const source = safeCutoverBundle();
+		const queueSummary = pendingQueues({
+			approvals: 2,
+			backgroundJobs: 1,
+		});
 		const inventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues({
-					approvals: 2,
-					backgroundJobs: 1,
-				}),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		};
 
-		expect(buildHermesQueueSnapshot({ inventory })).toEqual({ unownedActiveCount: 3 });
+		expect(buildHermesQueueSnapshot({ inventory })).toEqual(queueSnapshotFromPending(queueSummary));
 	});
 
 	it("writes queue-snapshot artifacts from an inventory snapshot", async () => {
@@ -4082,15 +4319,17 @@ describe("Hermes wrapper foundation", () => {
 		const source = safeCutoverBundle();
 		const inventoryPath = path.join(tempDir, "inventory.json");
 		const outPath = path.join(tempDir, "queue-snapshot.json");
+		const queueSummary = pendingQueues({
+			approvals: 1,
+			backgroundJobs: 2,
+		});
 		writeJson(inventoryPath, {
 			...source.inventory,
 			status: "complete",
 			summary: {
-				pendingQueues: pendingQueues({
-					approvals: 1,
-					backgroundJobs: 2,
-				}),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		});
 
 		const result = await runHermesCommand([
@@ -4105,7 +4344,7 @@ describe("Hermes wrapper foundation", () => {
 		const snapshot = JSON.parse(result.stdout) as { unownedActiveCount: number };
 
 		expect(result.exitCode, result.stdout).toBe(1);
-		expect(snapshot).toEqual({ unownedActiveCount: 3 });
+		expect(snapshot).toEqual(queueSnapshotFromPending(queueSummary));
 		expect(readJson(outPath)).toEqual(snapshot);
 	});
 
@@ -4207,16 +4446,18 @@ describe("Hermes wrapper foundation", () => {
 
 	it("cutover-check consumes explicit queue snapshot artifacts", async () => {
 		const source = safeCutoverBundle();
+		const queueSummary = pendingQueues();
 		const inventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues(),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		};
 		const bundle = safeCutoverBundle({
 			inventory,
-			queueSnapshot: { unownedActiveCount: 2 },
+			queueSnapshot: queueSnapshotFromPending(pendingQueues({ approvals: 2 })),
 		});
 
 		const result = await runCutoverCheckWithBundle(bundle);
@@ -4355,21 +4596,23 @@ describe("Hermes wrapper foundation", () => {
 
 	it("fails cutover when explicit queue snapshots underreport inventory queues", () => {
 		const source = safeCutoverBundle();
+		const queueSummary = pendingQueues({
+			approvals: 1,
+			backgroundJobs: 2,
+		});
 		const inventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues({
-					approvals: 1,
-					backgroundJobs: 2,
-				}),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		};
 
 		const report = evaluateCutoverCheck(
 			safeCutoverBundle({
 				inventory,
-				queueSnapshot: { unownedActiveCount: 0 },
+				queueSnapshot: queueSnapshotFromPending(pendingQueues()),
 			}),
 		);
 
@@ -4378,7 +4621,7 @@ describe("Hermes wrapper foundation", () => {
 			expect.objectContaining({
 				status: "fail",
 				detail: expect.stringContaining(
-					"queue snapshot does not match inventory pendingQueues: expected 3, got 0",
+					"queue snapshot unownedActiveCount does not match inventory pendingQueues: expected 3, got 0",
 				),
 			}),
 		);
@@ -4814,17 +5057,20 @@ describe("Hermes wrapper foundation", () => {
 
 	it("derives nonzero queue ownership failures from complete inventory evidence", () => {
 		const source = safeCutoverBundle();
+		const queueSummary = pendingQueues({
+			approvals: 1,
+			backgroundJobs: 2,
+		});
 		const inventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues({
-					approvals: 1,
-					backgroundJobs: 2,
-				}),
+				pendingQueues: queueSummary,
 			},
+			queues: queueDetailsFromPending(queueSummary),
 		};
-		const proofSource = safeCutoverBundle({ inventory, queueSnapshot: { unownedActiveCount: 3 } });
+		const queueSnapshot = queueSnapshotFromPending(queueSummary);
+		const proofSource = safeCutoverBundle({ inventory, queueSnapshot });
 		const assembled = buildCutoverInputBundleFromArtifacts({
 			inventory: proofSource.inventory,
 			scopeManifest: proofSource.scopeManifest,
@@ -4841,26 +5087,29 @@ describe("Hermes wrapper foundation", () => {
 		});
 
 		const report = evaluateCutoverCheck(assembled);
-		expect(assembled.queueSnapshot).toEqual({ unownedActiveCount: 3 });
+		expect(assembled.queueSnapshot).toEqual(queueSnapshot);
 		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "queues.owned")?.status).toBe("fail");
 	});
 
 	it("blocks cutover on active pairing queues but not enabled webhooks", () => {
 		const source = safeCutoverBundle();
+		const pairingQueueSummary = pendingQueues({
+			pairingPendingRequests: 1,
+			pairingActiveLockouts: 2,
+		});
 		const pairingInventory = {
 			...source.inventory,
 			status: "complete" as const,
 			summary: {
-				pendingQueues: pendingQueues({
-					pairingPendingRequests: 1,
-					pairingActiveLockouts: 2,
-				}),
+				pendingQueues: pairingQueueSummary,
 			},
+			queues: queueDetailsFromPending(pairingQueueSummary),
 		};
+		const pairingQueueSnapshot = queueSnapshotFromPending(pairingQueueSummary);
 		const pairingProofSource = safeCutoverBundle({
 			inventory: pairingInventory,
-			queueSnapshot: { unownedActiveCount: 3 },
+			queueSnapshot: pairingQueueSnapshot,
 		});
 		const withPairingQueues = buildCutoverInputBundleFromArtifacts({
 			inventory: pairingProofSource.inventory,
@@ -4877,7 +5126,7 @@ describe("Hermes wrapper foundation", () => {
 			rollbackRehearsal: pairingProofSource.rollbackRehearsal,
 		});
 
-		expect(withPairingQueues.queueSnapshot).toEqual({ unownedActiveCount: 3 });
+		expect(withPairingQueues.queueSnapshot).toEqual(pairingQueueSnapshot);
 		expect(
 			evaluateCutoverCheck(withPairingQueues).gates.find((gate) => gate.name === "queues.owned"),
 		).toMatchObject({ status: "fail" });
@@ -4927,7 +5176,7 @@ describe("Hermes wrapper foundation", () => {
 		const webhookProofSource = safeCutoverBundle({
 			inventory: webhookInventory,
 			scopeManifest: webhookScopeManifest,
-			queueSnapshot: { unownedActiveCount: 0 },
+			queueSnapshot: buildHermesQueueSnapshot({ inventory: webhookInventory }),
 		});
 		const webhookOnlyBundle = buildCutoverInputBundleFromArtifacts({
 			inventory: webhookProofSource.inventory,
@@ -4946,7 +5195,9 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(inventoryWithEnabledWebhook.summary.pendingQueues).toMatchObject(pendingQueues());
 		expect(inventoryWithEnabledWebhook.risks).toContain("enabled webhooks require cutover review");
-		expect(webhookOnlyBundle.queueSnapshot).toEqual({ unownedActiveCount: 0 });
+		expect(webhookOnlyBundle.queueSnapshot).toEqual(
+			buildHermesQueueSnapshot({ inventory: webhookInventory }),
+		);
 		expect(evaluateCutoverCheck(webhookOnlyBundle).status).toBe("safe");
 	}, 20_000);
 
@@ -5218,7 +5469,9 @@ describe("Hermes wrapper foundation", () => {
 			const rehearsal = writeRollbackRehearsal();
 			vi.useRealTimers();
 
-			const report = evaluateCutoverCheck(safeCutoverBundle({ rollbackRehearsal: rehearsal }));
+			const report = evaluateCutoverCheck(safeCutoverBundle({ rollbackRehearsal: rehearsal }), {
+				liveCutover: false,
+			});
 
 			expect(report.status).toBe("safe");
 			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
@@ -5247,7 +5500,7 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.gates.find((gate) => gate.name === "rollback.rehearsed")).toMatchObject({
 				status: "fail",
 				detail: expect.stringContaining(
-					`trusted relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing`,
+					`trusted operator relay public key env ${HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV} is missing for live validation`,
 				),
 			});
 		} finally {
@@ -5382,7 +5635,7 @@ describe("Hermes wrapper foundation", () => {
 		);
 	});
 
-	it("passes the feature-probe gate from complete cli-headless evidence read by cutover-check", async () => {
+	it("does not pass the feature-probe gate from cli-headless availability evidence alone", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
 		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
 		writeJson(evidencePath, cliHeadlessEvidence());
@@ -5394,11 +5647,47 @@ describe("Hermes wrapper foundation", () => {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
 
-		expect(result.exitCode, result.stdout).toBe(0);
-		expect(report.status).toBe("safe");
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.status).toBe("fail");
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
-			status: "pass",
+			status: "fail",
+			detail: expect.stringContaining("missing feature probe execution.headless_entrypoint"),
 		});
+	});
+
+	it("writes machine-observed headless entrypoint proof from focused adapter runtime tests", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-headless-entrypoint-"));
+		const evidencePath = path.join(tempDir, "execution-headless-entrypoint.json");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"execution.headless_entrypoint",
+			"--allow-run",
+			"--json",
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			probeId: string;
+			testReport?: { reportPath: string; reportSha256: string };
+			checks: Array<{ name: string; status: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.probeId).toBe("execution.headless_entrypoint");
+		expect(report.testReport?.reportSha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+		expect(fs.existsSync(evidencePath)).toBe(true);
+		expect(fs.existsSync(report.testReport?.reportPath ?? "")).toBe(true);
+		expect(report.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "stream.delta_before_done", status: "pass" }),
+				expect.objectContaining({ name: "session.concurrent_isolation", status: "pass" }),
+				expect.objectContaining({ name: "cancellation.stop", status: "pass" }),
+			]),
+		);
 	});
 
 	it("does not let cli-headless evidence satisfy unrelated feature probes", async () => {
@@ -7232,6 +7521,7 @@ describe("Hermes wrapper foundation", () => {
 				payloadSha256: string;
 				request: {
 					status: string;
+					reviewMode?: string;
 					privateWorkspaceDisclosure: { approved: boolean; approvalId: string | null };
 					selectedFiles: string[];
 					payloadBinding: {
@@ -7253,6 +7543,8 @@ describe("Hermes wrapper foundation", () => {
 			expect(refreshed.request.selectedFiles).toEqual(
 				expect.arrayContaining([...REQUIRED_PRO_REVIEW_FILES]),
 			);
+			expect(refreshed.request.reviewMode).toBe("single");
+			expect(refreshed.request).not.toHaveProperty("shardPlan");
 			expect(refreshed.payloadSha256).not.toBe(`sha256:${"0".repeat(64)}`);
 			expect(refreshed.request.payloadBinding.selectedFileContentsSha256).not.toBe(
 				`sha256:${"2".repeat(64)}`,
@@ -7283,6 +7575,70 @@ describe("Hermes wrapper foundation", () => {
 			expect(report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject({
 				status: "pending",
 			});
+		});
+	});
+
+	it("refuses Pro review refresh sharding options", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-refresh-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--shard-max-source-bytes",
+				"500",
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				detail: string;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(report).toMatchObject({
+				status: "input_error",
+				detail: expect.stringContaining("one complete full-context native bundle"),
+			});
+			expect(readJson(requestPath)).not.toMatchObject({ reviewMode: "sharded" });
+		});
+	});
+
+	it("includes custom native canary evidence in refreshed Pro review selected files", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-canary-"));
+		await writeRequiredProReviewWorkspace(tempDir);
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/custom-native-canary.json");
+			writeJson(canaryPath, proReviewCanary({ runId: "canary_custom" }));
+			writeJson(requestPath, proReviewRequest(canaryPath));
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			const refreshed = JSON.parse(result.stdout) as {
+				request: { selectedFiles: string[]; transportEvidence: string };
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(refreshed.request.transportEvidence).toBe(canaryPath);
+			expect(refreshed.request.selectedFiles).toContain(canaryPath);
 		});
 	});
 
@@ -7716,6 +8072,163 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("refuses Pro review send when selected files change after approval gate validation", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-race-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
+			const racedFilePath = path.join(tempDir, "CLAUDE.md");
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			const refreshed = JSON.parse(refresh.stdout) as { payloadSha256: string };
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"approval-1",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-05-31T17:10:00Z",
+				"--payload-sha256",
+				refreshed.payloadSha256,
+			]);
+			expect(approval.exitCode, approval.stdout).toBe(0);
+
+			const originalReadFileSync = fs.readFileSync.bind(fs);
+			let requestReadCount = 0;
+			const readSpy = vi.spyOn(fs, "readFileSync").mockImplementation(((
+				file: fs.PathOrFileDescriptor,
+				options?: Parameters<typeof fs.readFileSync>[1],
+			) => {
+				const result = originalReadFileSync(file, options);
+				if (
+					typeof file !== "number" &&
+					path.resolve(String(file)) === requestPath &&
+					++requestReadCount === 2
+				) {
+					fs.writeFileSync(racedFilePath, "tampered after approval gate\n", "utf8");
+				}
+				return result;
+			}) as typeof fs.readFileSync);
+			try {
+				const result = await runHermesCommand([
+					"hermes",
+					"pro-review-send",
+					"--json",
+					"--request",
+					requestPath,
+					"--canary",
+					canaryPath,
+					"--bundle-out",
+					bundlePath,
+				]);
+				const report = JSON.parse(result.stdout) as {
+					send: {
+						status: string;
+						reason: string;
+						detail: string;
+						yoetzCommand?: string[];
+					};
+					report: { status: string; payloadSha256: string };
+				};
+
+				expect(result.exitCode, result.stdout).toBe(1);
+				expect(report.report.status).toBe("pass");
+				expect(report.report.payloadSha256).toBe(refreshed.payloadSha256);
+				expect(report.send.status).toBe("refused");
+				expect(report.send.reason).toBe(
+					"approved Pro review payload changed before bundle construction",
+				);
+				expect(report.send.detail).toContain("no longer matches bundle snapshot payload");
+				expect(report.send.yoetzCommand).toBeUndefined();
+				expect(fs.existsSync(path.join(tempDir, bundlePath))).toBe(false);
+			} finally {
+				readSpy.mockRestore();
+			}
+		});
+	});
+
+	it("refuses executed Pro review sends with caller-controlled bundle output paths", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-path-"));
+		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
+		await withCwd(tempDir, async () => {
+			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
+			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
+			const bundlePath = "artifacts/hermes/caller-controlled-pro-review.md";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, proReviewRequest(canaryPath));
+			const refresh = await runHermesCommand([
+				"hermes",
+				"pro-review-refresh",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+			]);
+			expect(refresh.exitCode, refresh.stdout).toBe(0);
+			const refreshed = JSON.parse(refresh.stdout) as { payloadSha256: string };
+			const approval = await runHermesCommand([
+				"hermes",
+				"pro-review-approve",
+				"--write",
+				"--json",
+				"--request",
+				requestPath,
+				"--approval-id",
+				"approval-1",
+				"--operator",
+				"aviv",
+				"--approved-at",
+				"2026-05-31T17:10:00Z",
+				"--payload-sha256",
+				refreshed.payloadSha256,
+			]);
+			expect(approval.exitCode, approval.stdout).toBe(0);
+
+			const result = await runHermesCommand([
+				"hermes",
+				"pro-review-send",
+				"--json",
+				"--execute",
+				"--request",
+				requestPath,
+				"--canary",
+				canaryPath,
+				"--bundle-out",
+				bundlePath,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				send: { status: string; reason: string; yoetzCommand?: string[] };
+			};
+
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(report.send.status).toBe("refused");
+			expect(report.send.reason).toContain("--bundle-out is disabled with --execute");
+			expect(report.send.yoetzCommand).toBeUndefined();
+			expect(fs.existsSync(path.join(tempDir, bundlePath))).toBe(false);
+		});
+	});
+
 	it("prepares Pro review send only through the canary-bound native extension instance", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-send-"));
 		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
@@ -7765,6 +8278,8 @@ describe("Hermes wrapper foundation", () => {
 				canaryPath,
 				"--bundle-out",
 				bundlePath,
+				"--conversation",
+				"https://chatgpt.com/c/retry-conversation",
 				"--wait-timeout-ms",
 				"120000",
 			]);
@@ -7775,6 +8290,7 @@ describe("Hermes wrapper foundation", () => {
 					payloadSha256: string;
 					bundleSha256: string;
 					runId: string;
+					conversation?: string;
 					inspectCommand: string[];
 					yoetzCommand: string[];
 				};
@@ -7806,6 +8322,7 @@ describe("Hermes wrapper foundation", () => {
 				]),
 			);
 			expect(report.send.runId).toMatch(/^hermes_\d{14}_[a-f0-9]{8}$/);
+			expect(report.send.conversation).toBe("https://chatgpt.com/c/retry-conversation");
 			expect(report.send.inspectCommand).toEqual([
 				"yoetz",
 				"browser",
@@ -7821,6 +8338,9 @@ describe("Hermes wrapper foundation", () => {
 			]);
 			expect(report.send.yoetzCommand).not.toContain("--allow-cdp-fallback");
 			expect(report.send.yoetzCommand).not.toContain("--cdp");
+			expect(report.send.yoetzCommand).toEqual(
+				expect.arrayContaining(["--var", "conversation=https://chatgpt.com/c/retry-conversation"]),
+			);
 			expect(fs.statSync(path.join(tempDir, bundlePath)).mode & 0o777).toBe(0o600);
 		});
 	});
@@ -7831,7 +8351,6 @@ describe("Hermes wrapper foundation", () => {
 		await withCwd(tempDir, async () => {
 			const requestPath = path.join(tempDir, "docs/hermes/pro-review-request.json");
 			const canaryPath = path.join(tempDir, "artifacts/hermes/pro-review-native-canary.json");
-			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
 			writeJson(canaryPath, proReviewCanary());
 			writeJson(requestPath, proReviewRequest(canaryPath));
 			const refresh = await runHermesCommand([
@@ -7878,14 +8397,13 @@ describe("Hermes wrapper foundation", () => {
 					requestPath,
 					"--canary",
 					canaryPath,
-					"--bundle-out",
-					bundlePath,
 				],
 				{ PATH: `${fakeYoetzBin}${path.delimiter}${process.env.PATH ?? ""}` },
 			);
 			const report = JSON.parse(result.stdout) as {
 				send: {
 					status: string;
+					bundlePath: string;
 					exitCode: number;
 					payloadSha256: string;
 					validation: { status: string; detail: string };
@@ -7895,6 +8413,8 @@ describe("Hermes wrapper foundation", () => {
 
 			expect(result.exitCode, result.stdout).toBe(0);
 			expect(report.send.status).toBe("sent");
+			expect(report.send.bundlePath).toContain("telclaude-hermes-pro-review-send-");
+			expect(fs.statSync(report.send.bundlePath).mode & 0o777).toBe(0o400);
 			expect(report.send.exitCode).toBe(1);
 			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
 			expect(report.send.validation).toMatchObject({
@@ -7908,7 +8428,7 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
-	it("prepares sharded Pro review sends with root payload and shard bindings", async () => {
+	it("refuses stale sharded Pro review requests without preparing shard artifacts", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-sharded-"));
 		await writeRequiredProReviewWorkspace(tempDir, { semanticEvidence: "green" });
 		await withCwd(tempDir, async () => {
@@ -7917,26 +8437,8 @@ describe("Hermes wrapper foundation", () => {
 			const bundlePath = "artifacts/hermes/prepared-pro-review.md";
 			writeJson(canaryPath, proReviewCanary());
 			writeJson(requestPath, proReviewRequest(canaryPath));
-			const refresh = await runHermesCommand([
-				"hermes",
-				"pro-review-refresh",
-				"--write",
-				"--json",
-				"--request",
-				requestPath,
-				"--canary",
-				canaryPath,
-				"--shard-max-source-bytes",
-				"500",
-			]);
-			expect(refresh.exitCode, refresh.stdout).toBe(0);
-			const refreshed = JSON.parse(refresh.stdout) as {
-				payloadSha256: string;
-				reviewMode: string;
-				shardCount: number;
-			};
-			expect(refreshed.reviewMode).toBe("sharded");
-			expect(refreshed.shardCount).toBeGreaterThan(1);
+			const shardedRequest = legacyShardedProReviewRequest(canaryPath);
+			writeJson(requestPath, shardedRequest);
 			const approval = await runHermesCommand([
 				"hermes",
 				"pro-review-approve",
@@ -7951,7 +8453,7 @@ describe("Hermes wrapper foundation", () => {
 				"--approved-at",
 				"2026-05-31T17:10:00Z",
 				"--payload-sha256",
-				refreshed.payloadSha256,
+				shardedRequest.payloadBinding.payloadSha256,
 			]);
 			expect(approval.exitCode, approval.stdout).toBe(0);
 
@@ -7969,76 +8471,27 @@ describe("Hermes wrapper foundation", () => {
 				"120000",
 			]);
 			const report = JSON.parse(result.stdout) as {
+				report: {
+					payloadSha256: string;
+					gates: Array<{ name: string; status: string; detail: string }>;
+				};
 				send: {
 					status: string;
-					mode: string;
-					payloadSha256: string;
-					shardPlanSha256: string;
-					shardCount: number;
-					shards: Array<{
-						bundlePath: string;
-						shardId: string;
-						shardSha256: string;
-						yoetzCommand: string[];
-					}>;
+					reason: string;
 				};
 			};
 
-			expect(result.exitCode, result.stdout).toBe(0);
-			expect(report.send.status).toBe("ready_sharded");
-			expect(report.send.mode).toBe("sharded");
-			expect(report.send.payloadSha256).toBe(refreshed.payloadSha256);
-			expect(report.send.shardCount).toBe(refreshed.shardCount);
-			const firstShard = report.send.shards[0];
-			const promptVar = firstShard.yoetzCommand.find((arg) => arg.startsWith("prompt="));
-			expect(promptVar).toContain(
-				"Sharding is only a byte-budget/native-transport split of the approved full selected-file corpus; it is not privacy trimming or context hiding.",
-			);
-			expect(promptVar).toContain(
-				"Read the attached Hermes Pro-review shard and return a concise bounded review.",
-			);
-			expect(promptVar).toContain("Do not use extended thinking.");
-			expect(firstShard.yoetzCommand).toEqual(
-				expect.arrayContaining([
-					"--transport",
-					"chrome-extension-native",
-					"--var",
-					`payload_sha256=${report.send.payloadSha256}`,
-					"--var",
-					`shard_plan_sha256=${report.send.shardPlanSha256}`,
-					"--var",
-					`shard_id=${firstShard.shardId}`,
-					"--var",
-					`shard_sha256=${firstShard.shardSha256}`,
-				]),
-			);
-			expect(firstShard.yoetzCommand).toContainEqual(
-				expect.stringContaining(`shardId: ${firstShard.shardId}`),
-			);
-			expect(firstShard.bundlePath).toContain(firstShard.shardId);
-			expect(fs.statSync(firstShard.bundlePath).mode & 0o777).toBe(0o600);
-
-			const executeResult = await runHermesCommand([
-				"hermes",
-				"pro-review-send",
-				"--json",
-				"--execute",
-				"--request",
-				requestPath,
-				"--canary",
-				canaryPath,
-				"--bundle-out",
-				bundlePath,
-			]);
-			const executeReport = JSON.parse(executeResult.stdout) as {
-				send: { status: string; reason: string; mode: string };
-			};
-			expect(executeResult.exitCode, executeResult.stdout).toBe(1);
-			expect(executeReport.send).toMatchObject({
-				status: "refused",
-				mode: "sharded",
-				reason: expect.stringContaining("single full bundle"),
+			expect(result.exitCode, result.stdout).toBe(1);
+			expect(report.send.status).toBe("refused");
+			expect(report.send.reason).toContain("pro-review-check did not pass");
+			expect(report.report.payloadSha256).toBe(shardedRequest.payloadBinding.payloadSha256);
+			expect(report.report.gates.find((gate) => gate.name === "request.shardPlan")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("one complete full-context native bundle"),
 			});
+			expect(fs.existsSync(path.join(tempDir, bundlePath))).toBe(false);
+			const artifactNames = fs.readdirSync(path.join(tempDir, "artifacts/hermes"));
+			expect(artifactNames.filter((name) => name.includes(".shard-"))).toEqual([]);
 		});
 	});
 
@@ -8628,6 +9081,87 @@ describe("Hermes wrapper foundation", () => {
 					]),
 				);
 				expect(result.stdout).not.toContain("Missing relay response signing key");
+				expect(fs.existsSync(reportOut)).toBe(false);
+			});
+		} finally {
+			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalPrivateKey);
+			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalPublicKey);
+		}
+	});
+
+	it("binds provider direct-deny fixtures to an explicit network probe artifact", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-fixtures-provider-network-"));
+		const outPath = path.join(tempDir, "fixture-results.json");
+		const reportOut = path.join(tempDir, "private-telegram-vitest.json");
+		const evidenceDir = path.join(tempDir, "evidence");
+		const networkProbePath = path.join(tempDir, "network", "direct-provider-denied.json");
+		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		ensureOperatorRelayKeys();
+		writeJson(outPath, {
+			schemaVersion: 1,
+			results: [
+				{
+					id: "fixture.private.telegram.basic",
+					status: "pass",
+					evidence_path: "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+				},
+			],
+		});
+		await writeProviderFixtureProbeInputs(tempDir);
+		writeJson(
+			networkProbePath,
+			passingNetworkProbeEvidence("network.direct-provider-denied", networkProbePath),
+		);
+
+		try {
+			await withActualCwd(tempDir, async () => {
+				const result = await runHermesCommand([
+					"hermes",
+					"fixtures",
+					"--write",
+					"--json",
+					"--merge-existing",
+					"--only-provider-domain",
+					"--provider-network-probe",
+					networkProbePath,
+					"--report-out",
+					reportOut,
+					"--out",
+					outPath,
+					"--evidence-dir",
+					evidenceDir,
+				]);
+				const report = JSON.parse(result.stdout) as {
+					status: string;
+					results: Array<{ id: string; status: string; evidence_path: string }>;
+				};
+
+				expect(result.exitCode, result.stdout).toBe(0);
+				expect(report.status).toBe("pass");
+				expect(report.results).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							id: "fixture.providers.bank.direct-provider-deny",
+							status: "pass",
+						}),
+						expect.objectContaining({
+							id: "fixture.providers.google.direct-provider-deny",
+							status: "pass",
+						}),
+					]),
+				);
+				for (const fixtureId of [
+					"fixture.providers.bank.direct-provider-deny",
+					"fixture.providers.google.direct-provider-deny",
+				]) {
+					const fixture = report.results.find((candidate) => candidate.id === fixtureId);
+					if (!fixture) throw new Error(`missing ${fixtureId}`);
+					const evidence = readJson(fixture.evidence_path) as {
+						networkDeny?: { probePath?: string };
+					};
+					expect(evidence.networkDeny?.probePath).toBe(networkProbePath);
+				}
 				expect(fs.existsSync(reportOut)).toBe(false);
 			});
 		} finally {
@@ -9592,8 +10126,13 @@ describe("Hermes wrapper foundation", () => {
 		const originalOperatorPublic = process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY;
 		const originalOperatorRelayPrivate = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalOperatorRelayPublic = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+		const originalOperatorRelayPublicKeyLock =
+			process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
 		const keys = generateKeyPair();
 		const relayKeys = generateKeyPair();
+		const relayPublicKeySha256 = computeTextDigest(relayKeys.publicKey);
+		const relayPublicKeySourcePath = path.join(tempDir, "rollback-relay-public-key-source.json");
+		const relayPublicKeyLockPath = path.join(tempDir, "rollback-relay-public-key.lock.json");
 		let statusCalls = 0;
 		shutdownTokenClient();
 		const relay = await startProbeServer((req, res) => {
@@ -9627,6 +10166,31 @@ describe("Hermes wrapper foundation", () => {
 		process.env.OPERATOR_RPC_AGENT_PUBLIC_KEY = keys.publicKey;
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+		writeJson(relayPublicKeySourcePath, {
+			schemaVersion: "telclaude.hermes.rollback-relay-public-key-source.v1",
+			keys: [
+				{
+					scope: "operator",
+					envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+					value: relayKeys.publicKey,
+					sha256: relayPublicKeySha256,
+				},
+			],
+		});
+		writeJson(relayPublicKeyLockPath, {
+			schemaVersion: "telclaude.hermes.rollback-relay-public-key-lock.v1",
+			keys: [
+				{
+					scope: "operator",
+					envKey: HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+					value: relayKeys.publicKey,
+					sha256: relayPublicKeySha256,
+					source: relayPublicKeySourcePath,
+					sourceSha256: computeFileDigest(relayPublicKeySourcePath),
+				},
+			],
+		});
+		process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV] = relayPublicKeyLockPath;
 		process.env.TELCLAUDE_CAPABILITIES_URL = new URL(relay.url).origin;
 		try {
 			const result = await runHermesCommand([
@@ -9651,6 +10215,7 @@ describe("Hermes wrapper foundation", () => {
 				passed: boolean;
 				evidence_path: string;
 				observedAfterControlSource: string;
+				relayPublicKey: { source: string };
 			};
 
 			expect(result.exitCode, result.stdout).toBe(0);
@@ -9665,6 +10230,9 @@ describe("Hermes wrapper foundation", () => {
 				passed: true,
 				evidence_path: "artifacts/hermes/rollback-rehearsal.json",
 				observedAfterControlSource: "runtime-config",
+				relayPublicKey: {
+					source: relayPublicKeySourcePath,
+				},
 			});
 			expect(statusCalls).toBe(2);
 		} finally {
@@ -9675,6 +10243,7 @@ describe("Hermes wrapper foundation", () => {
 			restoreEnv("OPERATOR_RPC_AGENT_PUBLIC_KEY", originalOperatorPublic);
 			restoreEnv("OPERATOR_RPC_RELAY_PRIVATE_KEY", originalOperatorRelayPrivate);
 			restoreEnv("OPERATOR_RPC_RELAY_PUBLIC_KEY", originalOperatorRelayPublic);
+			restoreEnv(HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV, originalOperatorRelayPublicKeyLock);
 		}
 	});
 
@@ -10150,13 +10719,18 @@ echo should-not-run
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
 		const callsPath = path.join(tempDir, "docker-calls.txt");
-		const authPayloadPath = path.join(tempDir, "auth-payload.json");
-		const dockerBin = writeExecutable(
-			tempDir,
-			`#!/bin/sh
+			const authPayloadPath = path.join(tempDir, "auth-payload.json");
+			const dockerOnlyCwd = `/container-only/telclaude-runner-${process.pid}`;
+			expect(fs.existsSync(dockerOnlyCwd)).toBe(false);
+			const dockerBin = writeExecutable(
+				tempDir,
+				`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
   printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
+  exit 0
+fi
+if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
   exit 0
 fi
 case "$*" in
@@ -10193,7 +10767,7 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 				"--hermes-home",
 				"/home/hermes/.hermes",
 				"--cwd",
-				"/tmp",
+				dockerOnlyCwd,
 				"--prompt",
 				"Reply with exactly HERMES_OK_DOCKEREXEC",
 				"--out",
@@ -10202,36 +10776,45 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.5" }),
 		);
 		const report = JSON.parse(result.stdout) as {
-			status: string;
-			summary: string;
-			stdoutPreview: string;
-			relayProof?: unknown;
-		};
+				status: string;
+				summary: string;
+				stdoutPreview: string;
+				readiness: { gates: Array<{ name: string; status: string; detail: string }> };
+				relayProof?: unknown;
+			};
 
 		expect(result.exitCode).toBe(1);
-		expect(report.status).toBe("fail");
-		expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
-		expect(report.summary).toBe(
-			"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
-		);
+			expect(report.status).toBe("fail");
+			expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
+			expect(report.readiness.gates).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: "cwd.exists",
+						status: "pass",
+						detail: "Hermes probe cwd exists inside docker-exec container",
+					}),
+				]),
+			);
+			expect(report.summary).toBe(
+				"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
+			);
 		expect(report.relayProof).toBeUndefined();
 		const authPayload = readJson(authPayloadPath) as {
-			providers: {
-				"openai-codex": {
-					tokens: {
-						access_token: string;
-					};
-				};
-			};
+			suppressed_sources: { "openai-codex": string[] };
+			providers: { "openai-codex": Record<string, unknown> };
 			credential_pool: {
 				"openai-codex": Array<{
 					access_token: string;
 				}>;
 			};
 		};
-		const accessToken = authPayload.providers["openai-codex"].tokens.access_token;
+		expect(authPayload.suppressed_sources["openai-codex"]).toContain("device_code");
+		expect(authPayload.providers["openai-codex"]).toEqual({
+			auth_mode: "telclaude-relay",
+			last_refresh: "1970-01-01T00:00:00.000Z",
+		});
+		const accessToken = authPayload.credential_pool["openai-codex"][0]?.access_token as string;
 		expect(accessToken).not.toBe("relay-scoped-proxy-token");
-		expect(authPayload.credential_pool["openai-codex"][0]?.access_token).toBe(accessToken);
 		expect(
 			verifyOpenAiCodexPeerBoundProxyToken(accessToken, {
 				secret: "relay-scoped-proxy-token",
@@ -10247,13 +10830,29 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 		expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
 		const dockerCalls = fs.readFileSync(callsPath, "utf8");
 		expect(dockerCalls).not.toContain("relay-scoped-proxy-token");
+		expect(dockerCalls).toContain(
+			"HERMES_BUNDLED_SKILLS=/home/hermes/.telclaude-curated-bundled-skills",
+		);
+		expect(dockerCalls).toContain("HERMES_HOME=/home/hermes/.telclaude-docker-exec/");
+		expect(dockerCalls).not.toContain("HERMES_HOME=/home/hermes/.hermes");
 		expect(dockerCalls).toContain("config.yaml");
 		expect(dockerCalls).toContain("auth.json");
 		expect(dockerCalls).toContain("secret-manifest.json");
-		expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
-		expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
-		expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
-		expect(dockerCalls).toContain("os.chmod(path, 0o440)");
+		expect(dockerCalls).toContain("shutil.rmtree(skills_path)");
+			expect(dockerCalls).toContain("shutil.copytree(curated_skills, skills_path)");
+			expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
+				expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
+				expect(dockerCalls).toContain("runtime_dirs = ('sessions', 'logs', 'cron'");
+				expect(dockerCalls).toContain("harden_runtime_dirs()");
+				expect(dockerCalls).toContain("os.chown(runtime_path, runtime_uid, runtime_gid)");
+				expect(dockerCalls).toContain("os.chmod(runtime_path, 0o700)");
+				expect(dockerCalls).toContain(
+					"Hermes home is missing before docker exec launch",
+				);
+				expect(dockerCalls).toContain("auth.lock");
+			expect(dockerCalls).toContain("os.unlink(lock_path)");
+			expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
+			expect(dockerCalls).toContain("os.chmod(path, 0o440)");
 		expect(readJson(evidencePath)).toMatchObject({
 			status: "fail",
 			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
@@ -10273,19 +10872,29 @@ if [ "$1" = "inspect" ]; then
   printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
+if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
+  exit 0
+fi
 case "$*" in
 *"socket.gethostbyname"*)
   printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
-*"json.load(sys.stdin)"*)
+esac
+if [ "$1" = "exec" ] && [ "$2" = "-i" ] && [ "$4" = "python" ]; then
   cat >&2
   printf '%s\\n' 'auth store write denied' >&2
   exit 7
+fi
+case "$*" in
+*"/opt/hermes/hermes"*)
+  touch "${markerPath}"
+  printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+  exit 0
   ;;
 esac
-touch "${markerPath}"
-printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
 `,
 		);
 
@@ -10443,7 +11052,7 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 		const originalRelayPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = cliHeadlessRelaySigningKeys.privateKey;
 		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = cliHeadlessRelaySigningKeys.publicKey;
-		const proofObservedAt = new Date(Date.now() + 1500).toISOString();
+		const proofObservedAt = new Date(Date.now() + 12_000).toISOString();
 		fs.writeFileSync(
 			proofPath,
 			`${JSON.stringify(
@@ -10463,13 +11072,24 @@ if [ "$1" = "inspect" ]; then
   printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
   exit 0
 fi
+if [ "$1" = "exec" ] && [ "$3" = "test" ]; then
+  exit 0
+fi
 case "$*" in
 *"socket.gethostbyname"*)
   printf '%s\\n' '{"observedPeerAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}","relayResolvedAddress":"${CLI_HEADLESS_TEST_RELAY_IP}"}'
   exit 0
   ;;
-*"json.load(sys.stdin)"*)
+esac
+if [ "$1" = "exec" ] && [ "$2" = "-i" ] && [ "$4" = "python" ]; then
   cat >/dev/null
+  exit 0
+fi
+case "$*" in
+*"Hermes home is missing before docker exec launch"*)
+  exit 0
+  ;;
+*"shutil.rmtree(home, ignore_errors=True)"*)
   exit 0
   ;;
 *"relay-proof/latest"*)
@@ -10477,9 +11097,14 @@ case "$*" in
   cat "${proofPath}"
   exit 0
   ;;
+*"/opt/hermes/hermes"*)
+  sleep 16
+  printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+  exit 0
+  ;;
 esac
-sleep 3
-printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
 `,
 		);
 
@@ -10537,7 +11162,13 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 				model: "gpt-5.5",
 			});
 			expect(JSON.stringify(report)).not.toContain("relay-scoped-proxy-token");
-			expect(fs.readFileSync(callsPath, "utf8")).not.toContain("relay-scoped-proxy-token");
+			const dockerCalls = fs.readFileSync(callsPath, "utf8");
+			expect(dockerCalls).not.toContain("relay-scoped-proxy-token");
+			expect(dockerCalls).toContain(
+				"HERMES_BUNDLED_SKILLS=/home/hermes/.telclaude-curated-bundled-skills",
+			);
+			expect(dockerCalls).toContain("HERMES_HOME=/home/hermes/.telclaude-docker-exec/");
+			expect(dockerCalls).not.toContain("HERMES_HOME=/home/hermes/.hermes");
 			expect(readJson(evidencePath)).toMatchObject({
 				status: "pass",
 				runtime: report.runtime,

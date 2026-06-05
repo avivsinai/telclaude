@@ -9,6 +9,7 @@ import { runTelclaudeMcpSideEffectLedgerProbe } from "../../src/hermes/mcp/side-
 import {
 	buildProReviewNativeYoetzEnv,
 	buildProReviewRequestDraft,
+	buildProReviewShardPlan,
 	buildProReviewYoetzCommand,
 	evaluateProReviewCheck,
 	PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS,
@@ -43,8 +44,36 @@ describe("Hermes Pro review gate", () => {
 				"tests/hermes/network-probes.test.ts",
 				"src/hermes/private-telegram-fixture-attestation.ts",
 				"src/hermes/provider-approval-binding-attestation.ts",
+				"src/hermes/mcp/authority-registry.ts",
+				"src/hermes/mcp/bridge.ts",
+				"src/hermes/mcp/policy.ts",
 				"src/hermes/mcp/side-effect-ledger-attestation.ts",
+				"src/hermes/mcp/live-admin.ts",
+				"src/hermes/mcp/live-connection-resolver.ts",
+				"src/hermes/mcp/live-listen.ts",
+				"src/hermes/mcp/live-probe-tokens.ts",
+				"src/providers/catalog.json",
+				"src/providers/catalog.ts",
+				"src/providers/external-provider.ts",
+				"src/google-services/server.ts",
+				"src/google-services/approval.ts",
+				"src/google-services/types.ts",
+				"src/cron/scheduler.ts",
+				"src/cron/store.ts",
+				"src/background/runner.ts",
+				"src/background/jobs.ts",
+				"src/relay/provider-approval.ts",
 				"tests/hermes/foundation-network-evidence.test.ts",
+				"tests/hermes/mcp-authority-registry.test.ts",
+				"tests/hermes/mcp-bridge.test.ts",
+				"tests/hermes/mcp-live-runtime.test.ts",
+				"tests/providers/provider-runtime-sync.integration.test.ts",
+				"tests/google-services/server.test.ts",
+				"tests/google-services/approval.test.ts",
+				"tests/cron/store.test.ts",
+				"tests/background/runner.test.ts",
+				"tests/background/jobs.test.ts",
+				"tests/relay/provider-approval.test.ts",
 				"tests/integration/telegram-control-plane.replay.test.ts",
 				"tests/telegram/command-gating.test.ts",
 				"artifacts/hermes/fixtures/fixture.public.whatsapp.basic.json",
@@ -180,7 +209,7 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
-	it("fails native canary evidence when status or dry canary commands are not extension-bound", async () => {
+	it("fails native canary evidence when dry canary commands are not extension-bound", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
@@ -207,8 +236,35 @@ describe("Hermes Pro review gate", () => {
 			)?.detail;
 
 			expect(report.status).toBe("fail");
-			expect(detail).toContain("native status command does not bind an extension instance");
+			expect(detail).not.toContain("native status command does not bind an extension instance");
 			expect(detail).toContain("dry canary command does not bind an extension instance");
+		});
+	});
+
+	it("accepts current Yoetz native status commands without extension-instance flag", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const baseCanary = proReviewCanary();
+			writeJson(
+				canaryPath,
+				proReviewCanary({
+					nativeStatus: {
+						...(baseCanary.nativeStatus as Record<string, unknown>),
+						command: "YOETZ_AGENT=1 yoetz browser extension status --chatgpt --format json",
+					},
+				}),
+			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(
+				report.gates.find((gate) => gate.name === "nativeCanary.requiredChecks"),
+			).toMatchObject({
+				status: "pass",
+			});
 		});
 	});
 
@@ -294,6 +350,7 @@ describe("Hermes Pro review gate", () => {
 			payloadSha256,
 			bundleSha256,
 			runId: "hermes_20260604174011_abcdef12",
+			conversation: "https://chatgpt.com/c/6a22c722-7270-83ed-bbc4-3c9f067a376c",
 			waitTimeoutMs: 120_000,
 		});
 
@@ -310,10 +367,18 @@ describe("Hermes Pro review gate", () => {
 				"--var",
 				"run_id=hermes_20260604174011_abcdef12",
 				"--var",
+				"conversation=https://chatgpt.com/c/6a22c722-7270-83ed-bbc4-3c9f067a376c",
+				"--var",
 				"wait_timeout_ms=120000",
 			]),
 		);
 		expect(command).toContainEqual(expect.stringContaining(`payloadSha256: ${payloadSha256}`));
+		expect(command).toContainEqual(
+			expect.stringContaining("one complete full-context, non-sharded source and evidence review"),
+		);
+		expect(command).toContainEqual(
+			expect.stringContaining("retry in the same owned ChatGPT conversation"),
+		);
 		expect(command).not.toContain("--allow-cdp-fallback");
 		expect(command).not.toContain("--cdp");
 	});
@@ -533,20 +598,18 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
-	it("fails sharded Pro review checks when shard plan contents are tampered", async () => {
+	it("fails sharded Pro review checks before validating shard plan contents", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-shard-tamper-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			writeJson(canaryPath, proReviewCanary());
-			const request = buildProReviewRequestDraft({
-				canaryPath,
-				prompt: "Review the attached Hermes wrapper files.",
-				shardMaxSourceBytes: 500,
-			});
+			const request = legacyShardedProReviewRequest(canaryPath) as {
+				shardPlan: { shards: unknown[] };
+			};
 			const tamperedShardPlan = {
 				...request.shardPlan,
-				shards: request.shardPlan?.shards.slice(1),
+				shards: request.shardPlan.shards.slice(1),
 			};
 			writeJson("docs/hermes/pro-review-request.json", {
 				...request,
@@ -559,7 +622,7 @@ describe("Hermes Pro review gate", () => {
 			expect(report.status).toBe("fail");
 			expect(gate).toMatchObject({
 				status: "fail",
-				detail: expect.stringContaining("shardPlan does not match current selected file contents"),
+				detail: expect.stringContaining("use one complete full-context native bundle"),
 			});
 		});
 	});
@@ -570,11 +633,9 @@ describe("Hermes Pro review gate", () => {
 			writeRequiredProReviewWorkspace(tempDir);
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			writeJson(canaryPath, proReviewCanary());
-			const request = buildProReviewRequestDraft({
-				canaryPath,
-				prompt: "Review the attached Hermes wrapper files.",
-				shardMaxSourceBytes: 500,
-			});
+			const request = legacyShardedProReviewRequest(canaryPath) as {
+				selectedFiles: string[];
+			};
 			writeJson("docs/hermes/pro-review-request.json", request);
 			fs.rmSync(path.resolve(request.selectedFiles[0]));
 
@@ -587,14 +648,12 @@ describe("Hermes Pro review gate", () => {
 			});
 			expect(report.gates.find((item) => item.name === "request.shardPlan")).toMatchObject({
 				status: "fail",
-				detail: expect.stringContaining(
-					"shardPlan could not be rebuilt from current selected files",
-				),
+				detail: expect.stringContaining("use one complete full-context native bundle"),
 			});
 		});
 	});
 
-	it("rejects sharding source files with a single line larger than the shard budget", async () => {
+	it("rejects new sharded Pro review request generation", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-long-line-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
@@ -611,77 +670,38 @@ describe("Hermes Pro review gate", () => {
 					selectedFiles: [longLinePath],
 					shardMaxSourceBytes: 500,
 				}),
+			).toThrow("sharded Pro review request generation is disabled");
+			expect(() =>
+				buildProReviewShardPlan([...REQUIRED_PRO_REVIEW_FILES, longLinePath], 500),
 			).toThrow("exceeding --shard-max-source-bytes 500");
 		});
 	});
 
-	it("requires sharded Yoetz responses to echo the exact shard binding", async () => {
+	it("rejects sharded Yoetz command construction", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-shard-echo-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			writeJson(canaryPath, proReviewCanary());
-			const request = buildProReviewRequestDraft({
-				canaryPath,
-				prompt: "Review the attached Hermes wrapper files.",
-				shardMaxSourceBytes: 500,
-			});
-			const shard = request.shardPlan?.shards[0];
-			const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+			const request = legacyShardedProReviewRequest(canaryPath) as {
+				payloadBinding: { payloadSha256: string; shardPlanSha256?: string };
+				shardPlan: { shards: ReturnType<typeof buildProReviewShardPlan>["shards"] };
+			};
+			const shard = request.shardPlan.shards[0];
+			const shardPlanSha256 = request.payloadBinding.shardPlanSha256;
 			if (!shard || !shardPlanSha256) throw new Error("expected sharded test request");
 			const bundleSha256 = computeTextDigest("exact shard bundle");
-			const baseOutput = {
-				status: "ok",
-				transport: "chrome-extension-native",
-				model_used: "extended-pro",
-				model_selection_status: "selected",
-				warnings: [],
-				fallback_used: false,
-				auto_paste_fallback: false,
-			};
 
-			expect(
-				validateProReviewYoetzSendOutput({
-					stdout: JSON.stringify({
-						...baseOutput,
-						response:
-							"Findings:\n- This looks like a review but omits the shard binding.\nResidual risk:\n- Missing binding should fail.",
-					}),
-					expectedExtensionInstanceId: "ext_test",
-					expectedBundlePath: "/tmp/pro-review.shard-001.md",
-					expectedPayloadSha256: request.payloadBinding.payloadSha256,
-					expectedBundleSha256: bundleSha256,
-					expectedShard: shard,
-					expectedShardPlanSha256: shardPlanSha256,
+			expect(() =>
+				buildProReviewYoetzCommand({
+					canary: proReviewCanary() as ProReviewNativeCanary,
+					bundlePath: "/tmp/pro-review.shard-001.md",
+					payloadSha256: request.payloadBinding.payloadSha256,
+					bundleSha256,
+					shard,
+					shardPlanSha256,
 				}),
-			).toMatchObject({
-				status: "fail",
-				detail: expect.stringContaining(`response does not echo shardId: ${shard.shardId}`),
-			});
-
-			expect(
-				validateProReviewYoetzSendOutput({
-					stdout: JSON.stringify({
-						...baseOutput,
-						response: [
-							`payloadSha256: ${request.payloadBinding.payloadSha256}`,
-							`shardPlanSha256: ${shardPlanSha256}`,
-							`shardId: ${shard.shardId}`,
-							`shardSha256: ${shard.shardSha256}`,
-							"Findings:",
-							"- No P0/P1 findings in this bound shard fixture.",
-							"Residual risk:",
-							"- Fixture response only proves validator shape and binding echoes.",
-						].join("\n"),
-					}),
-					expectedExtensionInstanceId: "ext_test",
-					expectedBundlePath: "/tmp/pro-review.shard-001.md",
-					expectedPayloadSha256: request.payloadBinding.payloadSha256,
-					expectedBundleSha256: bundleSha256,
-					expectedShard: shard,
-					expectedShardPlanSha256: shardPlanSha256,
-				}),
-			).toMatchObject({ status: "pass" });
+			).toThrow("sharded Yoetz Pro review sends are disabled");
 		});
 	});
 
@@ -871,19 +891,18 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
-	it("recovers a completed shard review from native inspect output", async () => {
+	it("rejects completed shard review recovery from native inspect output", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-inspect-recover-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			writeJson(canaryPath, proReviewCanary());
-			const request = buildProReviewRequestDraft({
-				canaryPath,
-				prompt: "Review the attached Hermes wrapper files.",
-				shardMaxSourceBytes: 500,
-			});
-			const shard = request.shardPlan?.shards[0];
-			const shardPlanSha256 = request.payloadBinding.shardPlanSha256 ?? undefined;
+			const request = legacyShardedProReviewRequest(canaryPath) as {
+				payloadBinding: { payloadSha256: string; shardPlanSha256?: string };
+				shardPlan: { shards: ReturnType<typeof buildProReviewShardPlan>["shards"] };
+			};
+			const shard = request.shardPlan.shards[0];
+			const shardPlanSha256 = request.payloadBinding.shardPlanSha256;
 			if (!shard || !shardPlanSha256) throw new Error("expected sharded test request");
 			const responseText = [
 				`payloadSha256: ${request.payloadBinding.payloadSha256}`,
@@ -927,80 +946,9 @@ describe("Hermes Pro review gate", () => {
 					expectedShard: shard,
 					expectedShardPlanSha256: shardPlanSha256,
 				}),
-			).toMatchObject({ status: "pass" });
-
-			expect(
-				validateProReviewYoetzInspectCompletedResponseOutput({
-					stdout: JSON.stringify({
-						status: "ok",
-						transport: "chrome-extension-native",
-						response: {
-							run_id: "hermes_run_shard_001",
-							tabs: [
-								{
-									inspection: {
-										extraction: {
-											text: responseText.replace(`shardId: ${shard.shardId}`, ""),
-											is_generating: false,
-										},
-										model_selection: {
-											current_model_label: "Extended Pro",
-										},
-										ownership: {
-											run_id: "hermes_run_shard_001",
-										},
-										window_name: "yoetz-chatgpt-native:hermes_run_shard_001:job_1",
-									},
-								},
-							],
-						},
-					}),
-					expectedRunId: "hermes_run_shard_001",
-					expectedPayloadSha256: request.payloadBinding.payloadSha256,
-					expectedShard: shard,
-					expectedShardPlanSha256: shardPlanSha256,
-				}),
 			).toMatchObject({
 				status: "fail",
-				detail: expect.stringContaining(`response does not echo shardId: ${shard.shardId}`),
-			});
-
-			expect(
-				validateProReviewYoetzInspectCompletedResponseOutput({
-					stdout: JSON.stringify({
-						status: "ok",
-						transport: "chrome-extension-native",
-						response: {
-							run_id: "hermes_run_shard_001",
-							tabs: [
-								{
-									inspection: {
-										extraction: {
-											text: responseText,
-											is_generating: false,
-										},
-										model_selection: {
-											current_model_label: "Extended Pro",
-										},
-										ownership: {
-											run_id: "older_hermes_run",
-										},
-										window_name: "yoetz-chatgpt-native:older_hermes_run:job_1",
-									},
-								},
-							],
-						},
-					}),
-					expectedRunId: "hermes_run_shard_001",
-					expectedPayloadSha256: request.payloadBinding.payloadSha256,
-					expectedShard: shard,
-					expectedShardPlanSha256: shardPlanSha256,
-				}),
-			).toMatchObject({
-				status: "fail",
-				detail: expect.stringContaining(
-					"no inspected tab has ownership.run_id matching expected run",
-				),
+				detail: expect.stringContaining("sharded Yoetz Pro review inspect recovery is disabled"),
 			});
 		});
 	});
@@ -1058,18 +1006,15 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
-	it("accepts current cutover-check reports as honest diagnostic context", async () => {
+	it("accepts current strict cutover-check reports as honest context", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
 			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
 			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
 			writeJson(canaryPath, proReviewCanary());
-			writeJson(cutoverReportPath, currentCutoverCheckReport("fail"));
-			writeJson(
-				"docs/hermes/pro-review-request.json",
-				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
-			);
+			writeJson(cutoverReportPath, currentCutoverCheckReport("safe", undefined, true));
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
 
 			const report = evaluateProReviewCheck();
 
@@ -1099,10 +1044,7 @@ describe("Hermes Pro review gate", () => {
 				mode: { strict: false, dryRun: true },
 				gates: [],
 			});
-			writeJson(
-				"docs/hermes/pro-review-request.json",
-				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
-			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
 
 			const report = evaluateProReviewCheck();
 
@@ -1124,10 +1066,7 @@ describe("Hermes Pro review gate", () => {
 			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
 			writeJson(canaryPath, proReviewCanary());
 			writeJson(cutoverReportPath, currentCutoverCheckReport("fail", "2026-06-01T09:00:00.000Z"));
-			writeJson(
-				"docs/hermes/pro-review-request.json",
-				proReviewRequest(canaryPath, {}, [...REQUIRED_PRO_REVIEW_FILES, cutoverReportPath]),
-			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
 
 			const report = evaluateProReviewCheck({ now: new Date("2026-06-01T09:16:00.000Z") });
 
@@ -1263,6 +1202,24 @@ describe("Hermes Pro review gate", () => {
 			expect(report.gates.find((gate) => gate.name === "disclosure.approved")).toMatchObject({
 				status: "fail",
 				detail: expect.stringContaining("request status is still pending disclosure approval"),
+			});
+		});
+	});
+
+	it("does not leave explicit artifact request paths pending", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const requestPath = "artifacts/hermes/no-fork-run/live-pro-review-request.json";
+			writeJson(canaryPath, proReviewCanary());
+			writeJson(requestPath, approvedProReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck({ requestPath, requireApproval: true });
+
+			expect(report.gates.find((gate) => gate.name === "request.path")).toMatchObject({
+				status: "pass",
+				detail: "request path is explicit",
 			});
 		});
 	});
@@ -1498,6 +1455,71 @@ function proReviewRequest(
 	};
 }
 
+function legacyShardedProReviewRequest(
+	canaryPath: string,
+	selectedFiles: readonly string[] = [...REQUIRED_PRO_REVIEW_FILES],
+	maxShardSourceBytes = 500,
+): Record<string, unknown> {
+	const prompt = "Review the attached Hermes wrapper files.";
+	const blockedFallbacks = [
+		"cdp",
+		"api-key",
+		"manual-browser",
+		"claude-substitution",
+		"amq-substitution",
+	];
+	const selectedFileContentsSha256 = computeSelectedFileContentsDigest(selectedFiles);
+	const transportEvidenceSha256 = computeFileDigest(canaryPath);
+	const shardPlan = buildProReviewShardPlan(selectedFiles, maxShardSourceBytes);
+	const shardPlanSha256 = computeTextDigest(JSON.stringify(shardPlan));
+	const payload = {
+		reviewer: "ChatGPT Pro Extended via Yoetz native extension",
+		transport: "chrome-extension-native",
+		model: "Extended Pro",
+		fallbackAllowed: false,
+		transportEvidence: canaryPath,
+		blockedFallbacks,
+		prompt,
+		selectedFiles,
+		selectedFileContentsSha256,
+		transportEvidenceSha256,
+		reviewMode: "sharded",
+		shardPlanSha256,
+	};
+	return proReviewRequest(
+		canaryPath,
+		{
+			reviewMode: "sharded",
+			payloadBinding: {
+				digestAlgorithm: "sha256",
+				canonicalJsonFields: [
+					"reviewer",
+					"transport",
+					"model",
+					"fallbackAllowed",
+					"transportEvidence",
+					"blockedFallbacks",
+					"prompt",
+					"selectedFiles",
+					"selectedFileContentsSha256",
+					"transportEvidenceSha256",
+					"reviewMode",
+					"shardPlanSha256",
+				],
+				payloadSha256: computeTextDigest(JSON.stringify(payload)),
+				promptSha256: computeTextDigest(prompt),
+				selectedFilesSha256: computeTextDigest(JSON.stringify(selectedFiles)),
+				selectedFileContentsSha256,
+				transportEvidenceSha256,
+				shardPlanSha256,
+				notes: "Legacy sharded fixture; production refresh must not generate this shape.",
+			},
+			shardPlan,
+		},
+		selectedFiles,
+	);
+}
+
 function approvedProReviewRequest(canaryPath: string): Record<string, unknown> {
 	const baseRequest = proReviewRequest(canaryPath);
 	return proReviewRequest(canaryPath, {
@@ -1519,10 +1541,16 @@ function writeRequiredProReviewWorkspace(root: string): void {
 		fs.mkdirSync(path.dirname(resolved), { recursive: true });
 		if (file === "artifacts/hermes/probes/execution-cli-headless.json") {
 			writeJson(resolved, cliHeadlessReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.json") {
+			writeJson(resolved, headlessEntrypointReadinessFailureEvidence());
+		} else if (file === "artifacts/hermes/probes/execution-headless-entrypoint.vitest.json") {
+			writeJson(resolved, { numTotalTests: 0, numPassedTests: 0, testResults: [] });
 		} else if (file === "artifacts/hermes/probes/model-relay.json") {
 			writeJson(resolved, modelRelayReadinessFailureEvidence());
 		} else if (file === "artifacts/hermes/pro-review-native-canary.json") {
 			writeJson(resolved, proReviewCanary());
+		} else if (file === "artifacts/hermes/pro-review-current-cutover-check.json") {
+			writeJson(resolved, currentCutoverCheckReport("safe"));
 		} else if (isSignedProbeArtifact(file)) {
 			writeJson(resolved, signedProbeReadinessFailureEvidence(file));
 		} else {
@@ -1532,25 +1560,27 @@ function writeRequiredProReviewWorkspace(root: string): void {
 }
 
 function currentCutoverCheckReport(
-	status: "pass" | "fail",
+	status: "safe" | "pass" | "fail" | "input_error",
 	generatedAt = new Date().toISOString(),
+	dryRun = status === "pass" || status === "fail",
 ): Record<string, unknown> {
+	const ok = status === "safe" || status === "pass";
 	return {
 		generatedAt,
 		status,
-		exitCode: status === "pass" ? 0 : 1,
+		exitCode: ok ? 0 : 1,
 		mode: {
 			strict: true,
-			dryRun: true,
+			dryRun,
 		},
 		gates: [
 			{
 				name: "workflow.scope",
-				status,
-				detail: status === "pass" ? "included workflows are scoped" : "no included workflows",
+				status: ok ? "pass" : "fail",
+				detail: ok ? "included workflows are scoped" : "no included workflows",
 			},
 		],
-		workflowIds: status === "pass" ? ["workflow.private.telegram"] : [],
+		workflowIds: ok ? ["workflow.private.telegram"] : [],
 		evidencePaths: [],
 		decisionIds: [],
 		downgradeNotes: [],
@@ -1582,6 +1612,36 @@ function signedProbeReadinessFailureEvidence(file: string): Record<string, unkno
 		status: "fail",
 		ran: false,
 		summary: "probe evidence is intentionally red in this Pro review fixture",
+	};
+}
+
+const HEADLESS_ENTRYPOINT_CHECKS = [
+	"stream.delta_before_done",
+	"stream.terminal_event",
+	"session.initial",
+	"session.resume",
+	"session.new_clears_resume",
+	"session.concurrent_isolation",
+	"tool.result_returned",
+	"approval.fallback_or_wait_resume",
+	"cancellation.stop",
+	"errors.deterministic",
+	"redaction.secret_outputs",
+] as const;
+
+function headlessEntrypointReadinessFailureEvidence(): Record<string, unknown> {
+	return {
+		schemaVersion: "telclaude.hermes.headless-entrypoint-proof.v1",
+		probeId: "execution.headless_entrypoint",
+		status: "fail",
+		ran: false,
+		generatedAt: "2026-06-01T09:00:00.000Z",
+		summary: "headless entrypoint proof was not run in this fixture",
+		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
+			name,
+			status: "fail",
+			detail: "not run",
+		})),
 	};
 }
 

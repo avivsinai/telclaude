@@ -141,6 +141,45 @@ describe("Hermes model-relay probe", () => {
 		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
 	});
 
+	it("passes when Hermes normalizes auth.json into a peer-bound provider token mirror", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir } = makeCleanProfile();
+		const authPath = path.join(profileDir, "auth.json");
+		const authStore = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
+			suppressed_sources?: unknown;
+			providers: { "openai-codex": Record<string, unknown> };
+			credential_pool: { "openai-codex": Array<{ access_token: string }> };
+		};
+		const accessToken = authStore.credential_pool["openai-codex"][0]?.access_token;
+		delete authStore.suppressed_sources;
+		authStore.providers["openai-codex"] = {
+			auth_mode: "telclaude-relay",
+			last_refresh: "1970-01-01T00:00:00.000Z",
+			tokens: {
+				access_token: accessToken,
+				refresh_token: "telclaude-relay-token-is-not-refreshable",
+			},
+		};
+		fs.writeFileSync(authPath, `${JSON.stringify(authStore, null, 2)}\n`);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({ status: "pass" });
+		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+	});
+
 	it("fails runtime custody when the claimed runtime profile is writable by the runtime group", async () => {
 		const relayUrl = relayProbeUrl;
 		const { profileDir } = makeCleanProfile();
@@ -500,6 +539,35 @@ describe("Hermes model-relay probe", () => {
 		expect(report.status).toBe("pass");
 		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
 		expect(report.observation?.scannedProfileFiles).toContain(path.join(skillDir, "SKILL.md"));
+	});
+
+	it("does not fail bundled skill references to direct model-provider docs as routing config", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const skillDir = path.join(profileDir, "skills", "example", "references");
+		fs.mkdirSync(skillDir, { recursive: true });
+		const referencePath = path.join(skillDir, "api-evaluation.md");
+		fs.writeFileSync(
+			referencePath,
+			"Reference-only upstream docs mention https://chatgpt.com/backend-api/codex/models.\n",
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.noDirectModelHosts")).toMatchObject({ status: "pass" });
+		expect(report.observation?.scannedProfileFiles).toContain(referencePath);
 	});
 
 	it("fails closed when bundled skill files contain credential-like material", async () => {
@@ -887,6 +955,86 @@ describe("Hermes model-relay probe", () => {
 		});
 	});
 
+	it("scans bounded runtime state files instead of treating WAL and log files as skipped", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir, sentinel } = makeCleanProfile();
+		const walPath = path.join(profileDir, "state.db-wal");
+		const logDir = path.join(profileDir, "logs");
+		const logPath = path.join(logDir, "agent.log");
+		fs.mkdirSync(logDir);
+		fs.writeFileSync(
+			walPath,
+			Buffer.concat([Buffer.from("sqlite wal runtime state\n"), Buffer.alloc(1_000_001)]),
+		);
+		fs.writeFileSync(
+			logPath,
+			Buffer.concat([Buffer.from("runtime log without model credentials\n"), Buffer.alloc(1_000_001)]),
+		);
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			firewallSentinelPath: sentinel,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.scanComplete")).toMatchObject({ status: "pass" });
+		expect(report.observation?.scannedProfileFiles).toContain(walPath);
+		expect(report.observation?.scannedProfileFiles).toContain(logPath);
+	});
+
+	it("streams contained profile bytes with tar and removes temp copy when a later probe fails", async () => {
+		const sourceProfileDir = path.join(makeTempDir(), "source-profile");
+		fs.mkdirSync(sourceProfileDir);
+		writeRelayCredentialProfile(sourceProfileDir);
+		const dockerBin = path.join(makeTempDir(), "docker");
+		const dockerLog = path.join(makeTempDir(), "docker.log");
+		fs.writeFileSync(
+			dockerBin,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(dockerLog)}
+if [ "$1" = "exec" ] && [ "$3" = "tar" ]; then
+  exec tar -C ${JSON.stringify(sourceProfileDir)} -cf - .
+fi
+if [ "$1" = "exec" ]; then
+  printf '%s\\n' '{"ok":false,"error":"PermissionError","detail":"connection refused","code":"ECONNREFUSED"}'
+  exit 0
+fi
+exit 99
+`,
+		);
+		fs.chmodSync(dockerBin, 0o700);
+
+		const before = hermesModelRelayTempDirs();
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl: relayProbeUrl,
+			directModelUrl,
+			profileDir: "/home/hermes/.hermes",
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			dockerBin,
+			timeoutMs: 5_000,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "relay.reachable")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("connection refused"),
+		});
+		const dockerCalls = fs.readFileSync(dockerLog, "utf8");
+		expect(dockerCalls).toContain("tar -C /home/hermes/.hermes -cf - .");
+		expect(hermesModelRelayTempDirs()).toEqual(before);
+	});
+
 	it("fails closed when generated profile contains raw model credentials or direct model hosts", async () => {
 		const relayUrl = relayProbeUrl;
 		const tempDir = makeTempDir();
@@ -961,14 +1109,13 @@ describe("Hermes model-relay probe", () => {
 				{
 					version: 1,
 					active_provider: "openai-codex",
+					suppressed_sources: {
+						"openai-codex": ["device_code"],
+					},
 					providers: {
 						"openai-codex": {
 							auth_mode: "telclaude-relay",
 							last_refresh: "1970-01-01T00:00:00.000Z",
-							tokens: {
-								access_token: peerBoundToken,
-								refresh_token: "telclaude-relay-token-is-not-refreshable",
-							},
 						},
 					},
 					credential_pool: {
@@ -1015,10 +1162,8 @@ describe("Hermes model-relay probe", () => {
 	function replaceRelayAuthToken(profileDir: string, token: string): void {
 		const authPath = path.join(profileDir, "auth.json");
 		const authStore = JSON.parse(fs.readFileSync(authPath, "utf8")) as {
-			providers: { "openai-codex": { tokens: { access_token: string } } };
 			credential_pool: { "openai-codex": Array<{ access_token: string }> };
 		};
-		authStore.providers["openai-codex"].tokens.access_token = token;
 		authStore.credential_pool["openai-codex"][0].access_token = token;
 		fs.writeFileSync(authPath, `${JSON.stringify(authStore, null, 2)}\n`);
 	}
@@ -1062,6 +1207,13 @@ describe("Hermes model-relay probe", () => {
 		const error = new TypeError("fetch failed") as Error & { cause?: { code: string } };
 		error.cause = { code: "ECONNREFUSED" };
 		return error;
+	}
+
+	function hermesModelRelayTempDirs(): string[] {
+		return fs
+			.readdirSync(os.tmpdir())
+			.filter((entry) => entry.startsWith("hermes-model-relay-profile-"))
+			.sort();
 	}
 
 	function gate(report: HermesModelRelayReport, name: string) {

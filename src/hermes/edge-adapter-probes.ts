@@ -123,10 +123,14 @@ type EdgeControlName =
 	| "social.unapproved-posting-denied"
 	| "social.budget-denied"
 	| "social.private-memory-denied"
+	| "identity.private-authorized-allowed"
+	| "identity.authorization-denied-enforced"
+	| "identity.unpaired-sender-denied"
 	| "identity.forged-actor-denied"
 	| "identity.revocation-enforced"
 	| "identity.session-id-not-authority"
 	| "identity.cross-channel-denied"
+	| "identity.wrong-thread-denied"
 	| "household.scoped-benign-allowed"
 	| "household.strong-link-required"
 	| "household.number-only-provider-denied"
@@ -225,10 +229,14 @@ const EDGE_SURFACE_REQUIREMENTS: Record<EdgeAdapterFeatureSurfaceId, EdgeSurface
 		requiredControls: [
 			"contract.actor-ref.validates",
 			"contract.conversation-ref.validates",
+			"identity.private-authorized-allowed",
+			"identity.authorization-denied-enforced",
+			"identity.unpaired-sender-denied",
 			"identity.forged-actor-denied",
 			"identity.revocation-enforced",
 			"identity.session-id-not-authority",
 			"identity.cross-channel-denied",
+			"identity.wrong-thread-denied",
 		],
 	},
 	"household.scopes": {
@@ -1280,6 +1288,24 @@ async function runRuntimeHarness(
 			}),
 		"identity.revocation-enforced",
 	);
+	const deniedConversationDenied = denies(
+		() =>
+			runtime.prepareOutbound({
+				request: {
+					...outboundRequest,
+					conversationRef: {
+						...conversationRef,
+						authorization: {
+							...conversationRef.authorization,
+							state: "denied",
+							revoked: false,
+						},
+					},
+				},
+				authorizingActor: actorRef,
+			}),
+		"outbound.policy-result-denied",
+	);
 	const sessionIdNotAuthorityDenied = denies(
 		() =>
 			runtime.prepareOutbound({
@@ -1310,6 +1336,20 @@ async function runRuntimeHarness(
 				authorizingActor: actorRef,
 			}),
 		"identity.cross-channel-denied",
+	);
+	const wrongThreadDenied = denies(
+		() =>
+			runtime.prepareOutbound({
+				request: {
+					...outboundRequest,
+					recipient: {
+						kind: "thread",
+						threadId: `${conversationRef.threadId}:wrong`,
+					},
+				},
+				authorizingActor: actorRef,
+			}),
+		"outbound.recipient-body-bound",
 	);
 	const householdInbound = runtime.ingest({
 		channel: "whatsapp",
@@ -1817,10 +1857,21 @@ async function runRuntimeHarness(
 		],
 		["social.budget-denied", socialBudgetDenied],
 		["social.private-memory-denied", socialPrivateMemoryDenied],
+		[
+			"identity.private-authorized-allowed",
+			conversationRef.domain === "private" &&
+				conversationRef.authorization.state === "authorized" &&
+				!conversationRef.authorization.revoked &&
+				!actorRef.revocation.revoked &&
+				receipt.deliveryStatus === "sent",
+		],
+		["identity.authorization-denied-enforced", deniedConversationDenied],
+		["identity.unpaired-sender-denied", whatsappUnknownSenderDenied],
 		["identity.forged-actor-denied", forgedActorDenied],
 		["identity.revocation-enforced", revokedActorDenied && revokedConversationDenied],
 		["identity.session-id-not-authority", sessionIdNotAuthorityDenied],
 		["identity.cross-channel-denied", crossChannelDenied],
+		["identity.wrong-thread-denied", wrongThreadDenied],
 		["household.scoped-benign-allowed", householdScopedBenignAllowed],
 		["household.strong-link-required", householdStrongLinkRequired],
 		["household.number-only-provider-denied", householdNumberOnlyProviderDenied],
@@ -2049,16 +2100,12 @@ function runControlChecks(
 			...validConversationRef("social", "public-social"),
 			privateMemorySource: "telegram:default",
 		}).success,
+		"identity.private-authorized-allowed": false,
+		"identity.authorization-denied-enforced": false,
+		"identity.unpaired-sender-denied": false,
 		"identity.forged-actor-denied": !ActorRefSchema.safeParse(actorRefWithoutScopes(channel))
 			.success,
-		"identity.revocation-enforced": ConversationRefSchema.safeParse({
-			...conversationRef,
-			authorization: {
-				state: "revoked",
-				scopes: conversationRef.authorization.scopes,
-				revoked: true,
-			},
-		}).success,
+		"identity.revocation-enforced": false,
 		"identity.session-id-not-authority": !ConversationRefSchema.safeParse({
 			...conversationRef,
 			authorization: undefined,
@@ -2077,6 +2124,7 @@ function runControlChecks(
 			],
 			crossChannelAuthority: "hermes-supplied",
 		}).success,
+		"identity.wrong-thread-denied": false,
 		"household.scoped-benign-allowed": ActorRefSchema.safeParse({
 			...validActorRef(channel),
 			scopes: [
@@ -2117,12 +2165,7 @@ function runControlChecks(
 			...attachmentRef,
 			downloadUrl: "https://example.invalid/upload",
 		}).success,
-		"attachment.unscanned-denied": AttachmentRefSchema.safeParse({
-			...attachmentRef,
-			scanState: "pending",
-			trustLabel: "untrusted",
-			lifecycle: { state: "quarantined", authorizedFor: [] },
-		}).success,
+		"attachment.unscanned-denied": false,
 		"attachment.cross-domain-reuse-denied": !AttachmentRefSchema.safeParse({
 			...attachmentRef,
 			authorizedDomains: ["private", "public-social"],

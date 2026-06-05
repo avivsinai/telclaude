@@ -1,0 +1,225 @@
+{
+  "generatedAt": "2026-06-05T22:12:07.760Z",
+  "status": "safe",
+  "exitCode": 0,
+  "mode": {
+    "strict": true,
+    "dryRun": false
+  },
+  "gates": [
+    {
+      "name": "proofBundle.inventory",
+      "status": "pass",
+      "detail": "proof bundle binds inventory to artifacts/hermes/no-fork-run-20260605T095434Z/inventory.json"
+    },
+    {
+      "name": "proofBundle.scopeManifest",
+      "status": "pass",
+      "detail": "proof bundle binds scopeManifest to artifacts/hermes/no-fork-run-20260605T095434Z/scope.json"
+    },
+    {
+      "name": "proofBundle.decisionLog",
+      "status": "pass",
+      "detail": "proof bundle binds decisionLog to artifacts/hermes/no-fork-run-20260605T095434Z/decisions.json"
+    },
+    {
+      "name": "proofBundle.compatibilityLockfile",
+      "status": "pass",
+      "detail": "proof bundle binds compatibilityLockfile to artifacts/hermes/no-fork-run-20260605T095434Z/hermes-compat.lock.json"
+    },
+    {
+      "name": "proofBundle.featureProbeMatrix",
+      "status": "pass",
+      "detail": "proof bundle binds featureProbeMatrix to artifacts/hermes/no-fork-run-20260605T095434Z/feature-probes.json"
+    },
+    {
+      "name": "proofBundle.fixtureResults",
+      "status": "pass",
+      "detail": "proof bundle binds fixtureResults to artifacts/hermes/no-fork-run-20260605T095434Z/fixture-results.json"
+    },
+    {
+      "name": "proofBundle.noForkProof",
+      "status": "pass",
+      "detail": "proof bundle binds noForkProof to artifacts/hermes/no-fork-run-20260605T095434Z/no-fork.p0.json"
+    },
+    {
+      "name": "proofBundle.networkProbeBundle",
+      "status": "pass",
+      "detail": "proof bundle binds networkProbeBundle to artifacts/hermes/no-fork-run-20260605T095434Z/network-probes.signed.json"
+    },
+    {
+      "name": "proofBundle.queueSnapshot",
+      "status": "pass",
+      "detail": "proof bundle binds queueSnapshot to artifacts/hermes/no-fork-run-20260605T095434Z/queue-snapshot.json"
+    },
+    {
+      "name": "proofBundle.rollbackEvidence",
+      "status": "pass",
+      "detail": "proof bundle binds rollbackEvidence to artifacts/hermes/no-fork-run-20260605T095434Z/rollback-rehearsal.json"
+    },
+    {
+      "name": "proofBundle.complete",
+      "status": "pass",
+      "detail": "proof bundle binds all strict cutover artifacts"
+    },
+    {
+      "name": "workflow.scope",
+      "status": "pass",
+      "detail": "included workflows are inventoried and have owner, trust domain, fixtures, surfaces, and rollback owners"
+    },
+    {
+      "name": "decisions.resolved",
+      "status": "pass",
+      "detail": "included workflows do not depend on unresolved decisions"
+    },
+    {
+      "name": "profileGeneration.proven",
+      "status": "pass",
+      "detail": "profile generation proof is schema-valid, covers included workflows, and is tied to the lockfile"
+    },
+    {
+      "name": "featureProbes.pass",
+      "status": "pass",
+      "detail": "feature probes for included surfaces passed"
+    },
+    {
+      "name": "lockfile.consistent",
+      "status": "pass",
+      "detail": "compatibility lockfile is tied to the pinned probes and included surfaces"
+    },
+    {
+      "name": "fixtures.pass",
+      "status": "pass",
+      "detail": "required parity and negative fixtures passed"
+    },
+    {
+      "name": "nofork.clean",
+      "status": "pass",
+      "detail": "pinned Hermes checkout proof passed from schema-valid evidence"
+    },
+    {
+      "name": "networkProbes.pass",
+      "status": "pass",
+      "detail": "required network-denial probes passed"
+    },
+    {
+      "name": "queues.owned",
+      "status": "pass",
+      "detail": "active queues, approvals, cards, cron, social, and provider work must be owned"
+    },
+    {
+      "name": "rollback.rehearsed",
+      "status": "pass",
+      "detail": "rollback rehearsal passed from schema-valid evidence"
+    }
+  ],
+  "workflowIds": [
+    "telegram-chat.telegram-chat-eafeee3bce50006d5d19"
+  ],
+  "evidencePaths": [
+    "artifacts/hermes/fixtures/fixture.browser.allowed-research.json",
+    "artifacts/hermes/fixtures/fixture.browser.cookie-leak-deny.json",
+    "artifacts/hermes/fixtures/fixture.browser.cross-domain-deny.json",
+    "artifacts/hermes/fixtures/fixture.computer.allowed-target.json",
+    "artifacts/hermes/fixtures/fixture.computer.unauthorized-target-deny.json",
+    "artifacts/hermes/fixtures/fixture.cron.background.delivery.json",
+    "artifacts/hermes/fixtures/fixture.cron.duplicate-deny.json",
+    "artifacts/hermes/fixtures/fixture.household.cross-recipient-deny.json",
+    "artifacts/hermes/fixtures/fixture.household.email.private-memory-deny.json",
+    "artifacts/hermes/fixtures/fixture.household.email.scoped.json",
+    "artifacts/hermes/fixtures/fixture.household.private-memory-deny.json",
+    "artifacts/hermes/fixtures/fixture.household.provider-number-only-deny.json",
+    "artifacts/hermes/fixtures/fixture.household.provider.strong-link-read.json",
+    "artifacts/hermes/fixtures/fixture.household.whatsapp.benign.json",
+    "artifacts/hermes/fixtures/fixture.household.whatsapp.provider-unscoped-deny.json",
+    "artifacts/hermes/fixtures/fixture.longrun.approval-resume.json",
+    "artifacts/hermes/fixtures/fixture.longrun.stale-resume-deny.json",
+    "artifacts/hermes/fixtures/fixture.private.telegram.basic.deny.json",
+    "artifacts/hermes/fixtures/fixture.private.telegram.basic.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.approved-transfer.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.direct-provider-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.prepare-transfer.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.read.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.replay-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.bank.wrong-actor-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.approved-booking.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.direct-provider-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.emergency-escalate.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.prepare-message.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.read.json",
+    "artifacts/hermes/fixtures/fixture.providers.clalit.wrong-actor-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.approved-write.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.direct-provider-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.prepare-write.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.read.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.replay-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.google.wrong-actor-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.approved-submit.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.direct-provider-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.prepare-form.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.read.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.replay-deny.json",
+    "artifacts/hermes/fixtures/fixture.providers.government.wrong-actor-deny.json",
+    "artifacts/hermes/fixtures/fixture.public.agentmail.basic.json",
+    "artifacts/hermes/fixtures/fixture.public.agentmail.direct-key-deny.json",
+    "artifacts/hermes/fixtures/fixture.public.email.basic.json",
+    "artifacts/hermes/fixtures/fixture.public.email.wrong-thread-deny.json",
+    "artifacts/hermes/fixtures/fixture.public.social.budget-deny.json",
+    "artifacts/hermes/fixtures/fixture.public.social.private-leak-deny.json",
+    "artifacts/hermes/fixtures/fixture.public.social.reply.json",
+    "artifacts/hermes/fixtures/fixture.public.social.timeline.json",
+    "artifacts/hermes/fixtures/fixture.public.whatsapp.basic.json",
+    "artifacts/hermes/fixtures/fixture.public.whatsapp.unknown-deny.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-model-provider-denied.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-provider-denied.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-vault-denied.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/dns-exfil-denied.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/relay-control-allowed.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/no-fork.p0.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/profile-generation-proof.json",
+    "artifacts/hermes/no-fork-run-20260605T095434Z/rollback-rehearsal.json",
+    "artifacts/hermes/probes/attachment-quarantine.json",
+    "artifacts/hermes/probes/browser-profiles.json",
+    "artifacts/hermes/probes/computer-broker.json",
+    "artifacts/hermes/probes/edge-agentmail.json",
+    "artifacts/hermes/probes/edge-email.json",
+    "artifacts/hermes/probes/edge-social.json",
+    "artifacts/hermes/probes/edge-whatsapp.json",
+    "artifacts/hermes/probes/execution-api-server-containment.json",
+    "artifacts/hermes/probes/execution-approval-continuation.json",
+    "artifacts/hermes/probes/execution-cli-headless.json",
+    "artifacts/hermes/probes/execution-headless-entrypoint.json",
+    "artifacts/hermes/probes/execution-served-mcp-containment.json",
+    "artifacts/hermes/probes/household-scopes.json",
+    "artifacts/hermes/probes/identity-migration.json",
+    "artifacts/hermes/probes/model-relay.json",
+    "artifacts/hermes/probes/network-egress-broker.json",
+    "artifacts/hermes/probes/outbound-policy.json",
+    "artifacts/hermes/probes/providers-approval-binding.json",
+    "artifacts/hermes/probes/providers-bank.json",
+    "artifacts/hermes/probes/providers-clalit.json",
+    "artifacts/hermes/probes/providers-google.json",
+    "artifacts/hermes/probes/providers-government.json",
+    "artifacts/hermes/probes/providers-release-policy.json",
+    "artifacts/hermes/probes/public-social-isolation.json",
+    "artifacts/hermes/probes/served-mcp-provider-tools.json",
+    "artifacts/hermes/probes/sideeffect-ledger.json",
+    "artifacts/hermes/probes/workflow-cron.json",
+    "artifacts/hermes/probes/workflow-longrun.json"
+  ],
+  "decisionIds": [
+    "D-first-cutover-workflow-set",
+    "D-private-execution-contract",
+    "D-profile-generation"
+  ],
+  "downgradeNotes": [
+    "No downgrade accepted for generated-profile provenance.",
+    "No downgrade accepted for private Telegram production cutover.",
+    "No downgrade: direct native Hermes channel credentials remain excluded; Telclaude edge/private-runtime custody remains required."
+  ],
+  "remediationOwners": [
+    "operator",
+    "operator-delegated-codex",
+    "telegram-chat:eafeee3bce50006d5d19"
+  ]
+}

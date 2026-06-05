@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "passed": true,
+  "evidence_path": "artifacts/hermes/no-fork-run-20260605T095434Z/rollback-rehearsal.json",
+  "allowedToRun": true,
+  "observedBeforeValue": "1",
+  "observedAfterValue": "0",
+  "observedFallbackPath": "telclaude.private-runtime.legacy",
+  "observedAt": "2026-06-05T22:11:40.576Z",
+  "controlSurface": "relay.capabilities:/v1/hermes.private-runtime.mode",
+  "observationSurface": "relay.capabilities:/v1/hermes.private-runtime.status",
+  "observedBeforeSource": "relay-effective-mode",
+  "observedAfterSource": "relay-effective-mode",
+  "observedAfterControlSource": "runtime-config",
+  "relayPublicKey": {
+    "scope": "operator",
+    "envKey": "OPERATOR_RPC_RELAY_PUBLIC_KEY",
+    "value": "MCowBQYDK2VwAyEALL4mSH2VjpmSEcy1ctJ9N82nazF06q5xeNF7fkKBffo=",
+    "sha256": "sha256:86b23df0e60a9b6f3bdc94ba7c66585d759a1aa9a3d343302f2afa833f499fba",
+    "source": "docs/hermes/rollback-relay-public-key-source.82ac7ed-egress.json"
+  },
+  "signedRelayTranscripts": {
+    "before": {
+      "request": {
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.status",
+        "body": "{}"
+      },
+      "responseBody": "{\"ok\":true,\"effectiveMode\":\"hermes\",\"effectiveValue\":\"1\",\"rolloutAllowed\":true,\"rolloutEnvValue\":\"1\",\"controlMode\":\"hermes\",\"controlSource\":\"runtime-config\",\"fallbackPath\":\"telclaude.private-runtime.legacy\"}",
+      "proof": {
+        "version": "v1",
+        "scope": "operator",
+        "timestamp": "1780697500556",
+        "nonce": "93d67282ad3455de115d2e6676237825",
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.status",
+        "requestBodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "responseBodySha256": "864efbd8aefa44e21d5791954a29b07a97d19874989fc884136d87e1a91f2acf",
+        "signature": "8kKF29dGws/8e84K7OjXQFnzxDnrWdlrnCLJyQ4kAZ6gwNRkblWcGWl1zOnUXhaitOn/okB6nl87ZsGm7dteDA=="
+      }
+    },
+    "afterControl": {
+      "request": {
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.mode",
+        "body": "{\"mode\":\"legacy\"}"
+      },
+      "responseBody": "{\"ok\":true,\"effectiveMode\":\"legacy\",\"effectiveValue\":\"0\",\"rolloutAllowed\":true,\"rolloutEnvValue\":\"1\",\"controlMode\":\"legacy\",\"controlSource\":\"runtime-config\",\"fallbackPath\":\"telclaude.private-runtime.legacy\"}",
+      "proof": {
+        "version": "v1",
+        "scope": "operator",
+        "timestamp": "1780697500569",
+        "nonce": "29ef1283a0259c25da0c15ca2e251552",
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.mode",
+        "requestBodySha256": "34d9138f8730c19cf513642f86a3e12b63076447a1fd377ffb7a8d7de2395757",
+        "responseBodySha256": "d20bf685e8c6701eeb6484b775744a6980bfa412982c69f5762a803344e3d70a",
+        "signature": "riQA3B9tvCHRwqWpUQxbi1wSJEvXSGKucJMEsTCAHuqkdeKxG7RLnAspMZwzRfwvNW2iUa7+k0inZbOLW8UdBQ=="
+      }
+    },
+    "after": {
+      "request": {
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.status",
+        "body": "{}"
+      },
+      "responseBody": "{\"ok\":true,\"effectiveMode\":\"legacy\",\"effectiveValue\":\"0\",\"rolloutAllowed\":true,\"rolloutEnvValue\":\"1\",\"controlMode\":\"legacy\",\"controlSource\":\"runtime-config\",\"fallbackPath\":\"telclaude.private-runtime.legacy\"}",
+      "proof": {
+        "version": "v1",
+        "scope": "operator",
+        "timestamp": "1780697500573",
+        "nonce": "70badafd83b606ad57cc77d7ea93d09e",
+        "method": "POST",
+        "path": "/v1/hermes.private-runtime.status",
+        "requestBodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "responseBodySha256": "d20bf685e8c6701eeb6484b775744a6980bfa412982c69f5762a803344e3d70a",
+        "signature": "zSw4hmzaoNFk6CTfMxX2ujKiOnBNRsRu9Jv/MjPfeUOl5/BV41DSLvzRu+HssRAbZJ1AMPDhD6YEZxzGRSPEDQ=="
+      }
+    }
+  },
+  "checks": [
+    {
+      "name": "rollback.allowed",
+      "status": "pass",
+      "detail": "operator allowed a relay-observed rollback rehearsal"
+    },
+    {
+      "name": "rollback.relayPublicKey",
+      "status": "pass",
+      "detail": "relay public key provenance matched the trusted rollback lockfile"
+    },
+    {
+      "name": "rollback.relayProofs",
+      "status": "pass",
+      "detail": "relay signed every rollback observation"
+    },
+    {
+      "name": "rollback.flagBefore",
+      "status": "pass",
+      "detail": "relay observed Hermes private runtime enabled before rollback"
+    },
+    {
+      "name": "rollback.flagAfter",
+      "status": "pass",
+      "detail": "relay observed Hermes private runtime disabled after rollback"
+    },
+    {
+      "name": "rollback.fallbackPath",
+      "status": "pass",
+      "detail": "pre-Hermes fallback path observed"
+    },
+    {
+      "name": "rollback.controlSurface",
+      "status": "pass",
+      "detail": "relay durable runtime config accepted legacy mode"
+    },
+    {
+      "name": "rollback.observedSources",
+      "status": "pass",
+      "detail": "rollback observations came from relay effective-mode status"
+    }
+  ]
+}

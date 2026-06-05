@@ -10,6 +10,15 @@ const ORIGINAL_ENV = {
 	OPERATOR_RPC_RELAY_PUBLIC_KEY: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
 };
 
+const EXPLICIT_PROVIDER_DENIAL_CHECKS = [
+	"provider.approval-binding.wrong-account-denied",
+	"provider.approval-binding.wrong-approval-request-denied",
+	"provider.approval-binding.wrong-card-revision-denied",
+	"provider.approval-binding.wrong-approver-denied",
+	"provider.approval-binding.wysiwys-render-mismatch-denied",
+	"provider.approval-binding.approved-then-revoked-ref-denied",
+] as const;
+
 describe("Hermes provider approval-binding probe", () => {
 	beforeEach(() => {
 		const relayKeys = generateKeyPair();
@@ -41,9 +50,32 @@ describe("Hermes provider approval-binding probe", () => {
 				path: "/v1/hermes.providers.approval-binding.attestation",
 			}),
 		});
-		expect(evidence.observations.verifierCallCount).toBeGreaterThanOrEqual(5);
+		for (const checkName of EXPLICIT_PROVIDER_DENIAL_CHECKS) {
+			expect(evidence.checks).toContainEqual(
+				expect.objectContaining({
+					name: checkName,
+					status: "pass",
+				}),
+			);
+		}
+		expect(evidence.observations.verifierCallCount).toBeGreaterThanOrEqual(10);
 		expect(evidence.observations.providerProxyCallCount).toBe(1);
 		expect(providerApprovalBindingProbeEvidenceFailure(evidence)).toBeNull();
+	});
+
+	it.each(EXPLICIT_PROVIDER_DENIAL_CHECKS)("rejects evidence missing %s", async (missingCheck) => {
+		const evidence = await runTelclaudeProviderApprovalBindingProbe({
+			allowRun: true,
+			observedAt: "2026-05-31T09:00:00.000Z",
+		});
+		const { runnerAttestation: _attestation, ...unsignedEvidence } = evidence;
+
+		expect(
+			providerApprovalBindingProbeEvidenceFailure({
+				...unsignedEvidence,
+				checks: evidence.checks.filter((check) => check.name !== missingCheck),
+			}),
+		).toContain(`check ${missingCheck} is missing`);
 	});
 
 	it("rejects evidence missing the duplicate-JTI denial", async () => {

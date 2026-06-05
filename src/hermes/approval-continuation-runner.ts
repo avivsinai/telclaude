@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { OutboundDeliveryDispatcher } from "../relay/outbound-delivery-dispatcher.js";
 import { redactSecrets } from "../security/output-filter.js";
 import { VaultClient } from "../vault-daemon/client.js";
 import { type ServerHandle, startServer } from "../vault-daemon/server.js";
@@ -10,6 +11,7 @@ import {
 	DEFAULT_APPROVAL_CONTINUATION_EVIDENCE_PATH,
 	type REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS,
 } from "./approval-continuation.js";
+import { EdgeAdapterSchemaVersions } from "./edge-adapter-contract.js";
 import { edgePreparedPayloadHash } from "./edge-adapter-runtime.js";
 import {
 	assertHermesArtifactWritesAllowed,
@@ -385,6 +387,7 @@ function createProbeDependencies(
 		sideEffectApprovalTokenResolver: resolveSideEffectApprovalToken,
 		resolveAuthorizedOutboundConversation: (conversationRef) =>
 			fixtureRelayConversation(conversationRef, baseAuthority()),
+		outboundDeliveryDispatcher: createProbeOutboundDeliveryDispatcher(nowMs),
 		nowMs,
 	});
 	return {
@@ -397,6 +400,31 @@ function createProbeDependencies(
 		outboundPrepare: async (request) => prepareOutboundSideEffect(ledger, request),
 		outboundExecute: executeDependencies.outboundExecute,
 		auditNote: async () => ({ stored: true }),
+	};
+}
+
+function createProbeOutboundDeliveryDispatcher(nowMs: () => number): OutboundDeliveryDispatcher {
+	return async (prepared) => {
+		const observedAt = new Date(nowMs()).toISOString();
+		return {
+			schemaVersion: EdgeAdapterSchemaVersions.deliveryReceipt,
+			outboundRef: prepared.outboundRef,
+			platformMessageId: `approval-continuation-${crypto
+				.createHash("sha256")
+				.update(prepared.outboundRef)
+				.digest("hex")
+				.slice(0, 16)}`,
+			deliveryStatus: "sent",
+			timestamps: {
+				observedAt,
+				sentAt: observedAt,
+			},
+			retry: {
+				attempt: 1,
+				maxAttempts: prepared.retryPolicy.maxAttempts,
+				idempotencyKey: prepared.idempotencyKey,
+			},
+		};
 	};
 }
 

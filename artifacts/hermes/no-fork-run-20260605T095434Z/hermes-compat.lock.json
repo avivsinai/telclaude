@@ -152,12 +152,12 @@
     }
   ],
   "adapterApiSignatures": {
-    "execution.cli_headless": "sha256:778ecd101dd750e7dbde981b50a099d8a1dd031a64d1484991ea016c23e92be3",
-    "execution.headless_entrypoint": "sha256:83b51113921159930095b84d13852313e395b8ec17a50cf74b60732f195d0d6a",
-    "execution.approval_continuation": "sha256:80aa0b2e596bf08fb8585cf4ce3f80c212de398154ed3f533858954eaca206e3",
-    "execution.api_server_containment": "sha256:b6fa6e393684393e94c8202a5b4259773ce860e614b71592e52b002e0a52a9f4",
+    "execution.cli_headless": "sha256:ad2e42a29dc776f6d8f1c91e4b661d3457f3dcceb0b70dd1831c817d8d0a14c3",
+    "execution.headless_entrypoint": "sha256:a41cabec493d9f50cb425da9e45dca0f250c8aef247849257bd5a0bfca286751",
+    "execution.approval_continuation": "sha256:a50338354492dfaf1554b6724e0892e2807a90927a09dfde87206458512afb27",
+    "execution.api_server_containment": "sha256:6dc046219578e409e022012ce9f7efc216c8af61d5b8fe8d1833475f71d96a6b",
     "execution.served_mcp_containment": "sha256:d1648e502acba4fb22eb6deb56f1afbda3355931bba3bec53c601d42e05b330d",
-    "model.relay": "sha256:5c2fd8532984650354395ac573208670237ccf8e10bad4a36f09a5a32ce2349d",
+    "model.relay": "sha256:8bc519a914e0d02fd082a76bace9f51f6055aa7f3aff7b8b6d3f660b3ef25050",
     "edge.whatsapp": "sha256:122e7c6b51e3fc5b397b78b607a68670e332832b1d0047a564a6462991cff5a5",
     "edge.email": "sha256:1b24467c95360bd5ef66c41061dab0dbbfd42369df294973dfadd5db179c616d",
     "edge.agentmail": "sha256:efadc605a7c62fc52d8587a894f4c81561530bae7f24b23d6b91a81b9f55c2ba",
@@ -176,11 +176,11 @@
     "providers.google": "sha256:93e1f3d861371ec29672d1e89839d6530c0f71586983f6a8cfaf3517d719eee8",
     "workflow.cron": "sha256:203c3a470796ed0dd42faa949f8989c0fc66dc2c6c044cc7cc6d0bfeb0fa6302",
     "workflow.longrun": "sha256:ac288f7c6d207a4906f668e8923713645e482c70ccc1aae4391cd66326007e9f",
-    "approval.continuation": "sha256:cdc3218dcf466898711189805019bbbd654f8f0d181623f58b583a14927b9041",
+    "approval.continuation": "sha256:4bfa3b6f6db98ce41662011b8508e93479ffe4a8e881ff7b982137b26935f7ab",
     "sideeffect.ledger": "sha256:42ce05d83f47efe66b575e99d556e9342f4c9e8e7991e128977f60b4d598bddf",
     "browser.profiles": "sha256:7e7b7f7471f4be356da564d0346870c7abbb0881fb8c4522a43b35846d76ecc0",
     "computer.broker": "sha256:2495e49975e67a5cb486926b2a3c282992b8276bf598375351574fe28311b4dc",
-    "network.egress-broker": "sha256:92e7b7e4ecf7cf884d3067fbda7c06749bec294a6397d4742d36a09087f5cd6a"
+    "network.egress-broker": "sha256:319f3ad032ed9820d7b02174ee10528f01338d1e4f1d7cb44e4ba384f125d6f8"
   },
   "capabilities": {
     "plugins": [
@@ -211,7 +211,7 @@
   "generatedProfileSchemaVersion": "1",
   "wrapperPackageVersion": "0.7.1",
   "paritySuiteDigests": {
-    "p0": "sha256:c82bd45032523a87af38bfc18ae784f0a2732184afd28ed76df2f4597edece07"
+    "p0": "sha256:0043314b2af1c765d9763c5759a08e6ddcc598dee1340c801403ea4caea5faef"
   },
   "noForkProofEvidencePath": "artifacts/hermes/no-fork-run-20260605T095434Z/no-fork.p0.json",
   "sourceDriftSignals": {

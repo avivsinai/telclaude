@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildHermesApiServerLaunchPlan,
+	buildHermesApiServerContainerHttpProbeScript,
 	createEphemeralHermesApiServerKey,
 	DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
 	findHermesApiServerLaunchSecretFindings,
 	type HermesApiServerContainmentObservation,
+	runHermesApiServerContainerHttpProbe,
 	runHermesApiServerContainmentProbe,
 } from "../../src/hermes/api-server-containment.js";
 
@@ -336,6 +338,46 @@ describe("Hermes API-server containment", () => {
 			status: "fail",
 			detail: "forbidden host reachable after tamper",
 		});
+	});
+
+	it("treats reachable HTTP error responses as reachable, not network denial", async () => {
+		const plan = buildHermesApiServerLaunchPlan({
+			apiKey: "ephemeral-api-key-for-test",
+			cwd: "/tmp/telclaude",
+		});
+		const script = buildHermesApiServerContainerHttpProbeScript(
+			"https://provider.example/forbidden",
+		);
+
+		expect(script).toContain("import sys, urllib.error, urllib.request");
+		expect(script).toContain("except urllib.error.HTTPError as exc:");
+		expect(script).toContain("print(exc.code)");
+		expect(script).toContain("sys.exit(0)");
+		expect(script).toContain("except Exception as exc:");
+		expect(script).toContain("sys.exit(42)");
+
+		const reachableDenyProbe = await runHermesApiServerContainerHttpProbe({
+			plan,
+			url: "https://provider.example/forbidden",
+			expectation: "deny",
+			runner: async () => ({ exitCode: 0 }),
+		});
+		const unreachableDenyProbe = await runHermesApiServerContainerHttpProbe({
+			plan,
+			url: "https://provider.example/forbidden",
+			expectation: "deny",
+			runner: async () => ({ exitCode: 42 }),
+		});
+		const reachableAllowProbe = await runHermesApiServerContainerHttpProbe({
+			plan,
+			url: "http://telclaude:8790/health",
+			expectation: "allow",
+			runner: async () => ({ exitCode: 0 }),
+		});
+
+		expect(reachableDenyProbe.ok).toBe(false);
+		expect(unreachableDenyProbe.ok).toBe(true);
+		expect(reachableAllowProbe.ok).toBe(true);
 	});
 });
 
