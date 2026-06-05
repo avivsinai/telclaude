@@ -102,6 +102,14 @@ import {
 	parseBrowserCatastrophicDomains,
 } from "../relay/browser-session-resolver.js";
 import { bufferStartupReady, startCapabilityServer } from "../relay/capabilities.js";
+import { createAgentMailConnector } from "../relay/channels/agentmail-connector.js";
+import { createAgentMailSender } from "../relay/channels/agentmail-sender.js";
+import { createCustomWebhookConnector } from "../relay/channels/custom-webhook-connector.js";
+import { createCustomWebhookSender } from "../relay/channels/custom-webhook-sender.js";
+import { createDiscordConnector } from "../relay/channels/discord-connector.js";
+import { createDiscordSender } from "../relay/channels/discord-sender.js";
+import { createSlackConnector } from "../relay/channels/slack-connector.js";
+import { createSlackSender } from "../relay/channels/slack-sender.js";
 import type { EdgeChannelConnector } from "../relay/edge-channel-connector.js";
 import { createDefaultEdgeOutboundExecutorRegistry } from "../relay/edge-outbound-executor-registry.js";
 import { createEmailConnector } from "../relay/email/connector.js";
@@ -553,9 +561,86 @@ export function registerRelayCommand(program: Command): void {
 					);
 				}
 
+				// Outbound channel connectors (Claude batch), each registered ONLY when
+				// explicitly enabled AND the vault is available — every transport posts
+				// through the relay credential proxy (port 8792), which injects the
+				// vault credential for the platform host; connectors hold no credential.
+				// Off/misconfigured channels are not registered and fail closed at the
+				// registry. Delivery is at-most-once. social-gateway is intentionally NOT
+				// registered for the private persona (private/public air-gap); dashboard
+				// and api-server await their relay-internal sinks.
+				const channelConnectors: EdgeChannelConnector[] = [];
+				if (vaultAvailable) {
+					const channelProxyPost = async (req: {
+						host: string;
+						path: string;
+						method?: string;
+						body?: string;
+						headers?: Record<string, string>;
+					}): Promise<{ status: number; json: unknown; text: string }> => {
+						const res = await fetch(`http://127.0.0.1:8792/${req.host}${req.path}`, {
+							method: req.method ?? "POST",
+							...(req.body !== undefined ? { body: req.body } : {}),
+							headers: req.headers ?? {},
+						});
+						const text = await res.text();
+						let json: unknown = null;
+						try {
+							json = text ? JSON.parse(text) : null;
+						} catch {
+							json = null;
+						}
+						return { status: res.status, json, text };
+					};
+					const ch = cfg.channels;
+					if (ch.slack?.enabled) {
+						channelConnectors.push(
+							createSlackConnector({ send: createSlackSender({ post: channelProxyPost }) }),
+						);
+						console.log("  Channel slack: enabled (vault credential proxy)");
+					}
+					if (ch.discord?.enabled) {
+						channelConnectors.push(
+							createDiscordConnector({
+								send: createDiscordSender({
+									post: channelProxyPost,
+									...(ch.discord.credentialHost ? { host: ch.discord.credentialHost } : {}),
+								}),
+							}),
+						);
+						console.log("  Channel discord: enabled (vault credential proxy)");
+					}
+					if (ch.agentmail?.enabled && ch.agentmail.from) {
+						channelConnectors.push(
+							createAgentMailConnector({
+								send: createAgentMailSender({
+									post: channelProxyPost,
+									host: ch.agentmail.credentialHost ?? "api.agentmail.to",
+								}),
+								from: ch.agentmail.from,
+								defaultSubject: ch.agentmail.defaultSubject ?? "Message from your assistant",
+							}),
+						);
+						console.log("  Channel agentmail: enabled (vault credential proxy)");
+					}
+					const webhookCfg = ch["custom-webhook"];
+					if (webhookCfg?.enabled && webhookCfg.endpoint) {
+						const endpoint = new URL(webhookCfg.endpoint);
+						channelConnectors.push(
+							createCustomWebhookConnector({
+								send: createCustomWebhookSender({
+									post: channelProxyPost,
+									resolveTarget: () => ({ host: endpoint.host, path: endpoint.pathname }),
+								}),
+							}),
+						);
+						console.log("  Channel custom-webhook: enabled (vault credential proxy)");
+					}
+				}
+
 				const liveMcpOutboundDeliveryDispatcher = createOutboundDeliveryDispatcher({
 					registry: createDefaultEdgeOutboundExecutorRegistry({
-						additionalConnectors: emailConnectors,
+						additionalConnectors: [...emailConnectors, ...channelConnectors],
 					}),
 					resolveConversation: async (prepared) => {
 						const emergencyControl =
