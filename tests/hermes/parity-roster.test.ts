@@ -103,6 +103,35 @@ describe("parityRosterCoverageGate", () => {
 			parityRosterCoverageGate({ ...EMPTY, roster, requiredSurfaceIds: ["supp.surface"] }).status,
 		).toBe("fail");
 	});
+
+	it("fails an empty-backing row instead of passing it unconditionally", () => {
+		const gate = parityRosterCoverageGate({ ...EMPTY, roster: { "ghost-row": {} } });
+		expect(gate.status).toBe("fail");
+		expect(gate.detail).toContain("ghost-row");
+	});
+
+	it("refuses to descope a non-descopable row and fails loudly", () => {
+		const gate = parityRosterCoverageGate({
+			...EMPTY,
+			roster: { cutover: { metaGates: ["never.present"] } },
+			decisions: [{ id: "parity-descope:cutover", status: "accepted" }],
+		});
+		expect(gate.status).toBe("fail");
+		expect(gate.detail).toContain("non-descopable");
+		expect(gate.detail).toContain("cutover");
+	});
+
+	it("fails loudly on a descope decision for an unknown row", () => {
+		const gate = parityRosterCoverageGate({
+			...EMPTY,
+			roster: { "real-row": { surfaces: ["s.x"] } },
+			requiredSurfaceIds: ["s.x"],
+			decisions: [{ id: "parity-descope:bogus-row", status: "accepted" }],
+		});
+		expect(gate.status).toBe("fail");
+		expect(gate.detail).toContain("unknown row");
+		expect(gate.detail).toContain("bogus-row");
+	});
 });
 
 describe("descopedParityRows", () => {

@@ -54,8 +54,15 @@ export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>
 	banking: { surfaces: ["providers.bank"] },
 	"clalit-health": { surfaces: ["providers.clalit"] },
 	"government-identity": { surfaces: ["providers.government"] },
+	"google-provider": {
+		requiredSurfaces: ["providers.google"],
+		requiredFixtures: ["fixture.providers.google.approved-write"],
+	},
 	"approval-tokens": {
-		surfaces: ["providers.approval-binding", "execution.approval_continuation"],
+		// The write-token binding (actor/content-hash/idempotency) is the acceptance
+		// proof and is mandatory; the MCP approval round-trip is supplemental.
+		requiredSurfaces: ["providers.approval-binding"],
+		surfaces: ["execution.approval_continuation"],
 	},
 	memory: { surfaces: ["served_mcp.memory"] },
 	skills: { surfaces: ["skills.allowlist"] },
@@ -87,12 +94,12 @@ export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>
 		requiredSurfaces: ["workflow.longrun"],
 		requiredFixtures: ["fixture.longrun.approval-resume"],
 	},
-	"chief-of-staff": { fixtures: ["fixture.profile.chief-of-staff"] },
+	"chief-of-staff": { requiredFixtures: ["fixture.profile.chief-of-staff"] },
 	"browser-web-computer": {
-		surfaces: ["browser.profiles", "computer.broker", "network.egress-broker"],
+		requiredSurfaces: ["browser.profiles", "computer.broker"],
 	},
 	"web-browser-broker": {
-		surfaces: ["browser.profiles", "computer.broker", "network.egress-broker"],
+		requiredSurfaces: ["network.egress-broker"],
 	},
 	redaction: { checks: ["redaction.secret_outputs"] },
 	cutover: {
@@ -109,6 +116,19 @@ export const HERMES_PARITY_ROW_ROSTER: Readonly<Record<string, ParityRowBacking>
 
 /** Prefix that marks an accepted decision-log entry as descoping a parity row. */
 export const PARITY_ROW_DESCOPE_ID_PREFIX = "parity-descope:";
+
+/**
+ * Security-critical rows that may NEVER be descoped, regardless of any accepted
+ * decision-log entry. An attempt to descope one of these (or a row that is not in
+ * the active roster at all) fails the gate loudly rather than silently dropping it.
+ */
+export const NON_DESCOPABLE_PARITY_ROWS: ReadonlySet<string> = new Set([
+	"cutover",
+	"redaction",
+	"private-chat",
+	"approval-tokens",
+	"identity-migration",
+]);
 
 export type ParityRosterGateInput = {
 	readonly requiredSurfaceIds: Iterable<string>;
@@ -165,6 +185,12 @@ function isRowCovered(
 			(backing.checks?.length ?? 0) +
 			(backing.metaGates?.length ?? 0) >
 		0;
+	const hasAllOf =
+		(backing.requiredSurfaces?.length ?? 0) + (backing.requiredFixtures?.length ?? 0) > 0;
+	// A row with no backing of ANY kind must never be reported covered — otherwise an
+	// empty `{}` backing would pass with zero evidence (fail-open).
+	if (!hasAnyOf && !hasAllOf) return false;
+	// allOf-only row: allRequiredPresent already held above.
 	if (!hasAnyOf) return true;
 	return (
 		(backing.surfaces ?? []).some((s) => required.surfaces.has(s)) ||
@@ -189,14 +215,25 @@ export function parityRosterCoverageGate(input: ParityRosterGateInput): ParityRo
 	};
 	const descoped = descopedParityRows(input.decisions);
 
+	// A descope is only honored for a known, descopable row. Descoping a
+	// security-critical row, or a row that is not in the active roster, is an
+	// illegal descope and fails the gate loudly (never a silent drop).
+	const illegalDescopes: string[] = [];
+	for (const row of descoped) {
+		if (NON_DESCOPABLE_PARITY_ROWS.has(row)) illegalDescopes.push(`${row} (non-descopable)`);
+		else if (!(row in roster)) illegalDescopes.push(`${row} (unknown row)`);
+	}
+	illegalDescopes.sort();
+
 	const uncovered: string[] = [];
 	for (const [row, backing] of Object.entries(roster)) {
-		if (descoped.has(row)) continue;
+		// Honor a descope only for a known, descopable row.
+		if (descoped.has(row) && !NON_DESCOPABLE_PARITY_ROWS.has(row)) continue;
 		if (!isRowCovered(backing, required)) uncovered.push(row);
 	}
 	uncovered.sort();
 
-	if (uncovered.length === 0) {
+	if (illegalDescopes.length === 0 && uncovered.length === 0) {
 		return {
 			name: "parity.rosterCovered",
 			status: "pass",
@@ -204,9 +241,16 @@ export function parityRosterCoverageGate(input: ParityRosterGateInput): ParityRo
 				"every spec parity row is backed by a required surface, fixture, check, or meta-gate, or an accepted parity-descope decision",
 		};
 	}
+	const parts: string[] = [];
+	if (illegalDescopes.length > 0) {
+		parts.push(`illegal descope attempts: ${illegalDescopes.join(", ")}`);
+	}
+	if (uncovered.length > 0) {
+		parts.push(`parity rows lack acceptance proof and are not descoped: ${uncovered.join(", ")}`);
+	}
 	return {
 		name: "parity.rosterCovered",
 		status: "fail",
-		detail: `parity rows lack acceptance proof and are not descoped: ${uncovered.join(", ")}`,
+		detail: parts.join("; "),
 	};
 }
