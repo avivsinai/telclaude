@@ -5,7 +5,6 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
-import { redactSecrets } from "../security/output-filter.js";
 import {
 	buildHermesApiServerLaunchPlan,
 	DEFAULT_HERMES_API_SERVER_CONTAINER_NAME,
@@ -200,11 +199,19 @@ import {
 	writeServedMcpContainmentEvidence,
 } from "../hermes/served-mcp-containment.js";
 import {
+	DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH,
+	evaluateServedMcpMemoryEvidence,
+} from "../hermes/served-mcp-memory.js";
+import {
 	buildServedMcpProviderToolsProbeEvidence,
 	DEFAULT_SERVED_MCP_PROVIDER_TOOLS_EVIDENCE_PATH,
 	DEFAULT_SERVED_MCP_PROVIDER_TOOLS_SOURCE_EVIDENCE_PATH,
 	readServedMcpProviderToolsSourceEvidence,
 } from "../hermes/served-mcp-provider-tools-probe.js";
+import {
+	DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH,
+	evaluateSkillsAllowlistEvidence,
+} from "../hermes/skills-allowlist-probe.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	DEFAULT_HERMES_WORKFLOW_EVIDENCE_PATHS,
@@ -223,6 +230,7 @@ import {
 	mintOpenAiCodexPeerBoundProxyToken,
 	OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS,
 } from "../relay/openai-codex-proxy.js";
+import { redactSecrets } from "../security/output-filter.js";
 
 type JsonOption = {
 	json?: boolean;
@@ -443,6 +451,34 @@ function allHermesFeatureProbeDefinitions(): readonly FeatureProbeDefinition[] {
 			lockfile_key: "featureProbes.served_mcp.providerTools",
 			security_scope: "served-mcp-provider-tools",
 			approval_equivalent: true,
+			failure_outcome: "disable",
+		},
+		{
+			surface_id: "served_mcp.memory",
+			documented_seam:
+				"Served-MCP memory tools (tc_memory_search/write) are server-source-stamped from the connection domain and enforce the private/public air-gap.",
+			probe_command: `pnpm dev hermes probe served_mcp.memory --allow-run --out ${DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH}`,
+			expected_result:
+				"Memory write/recall work for the server-resolved private source; cross-source read is denied by scoping (empty result); secret/instruction writes are rejected; recall is sanitized.",
+			negative_probe:
+				"Cross-source read, secret/instruction write, a client-chosen source, and non-contained origin fail closed.",
+			evidence_path: DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH,
+			lockfile_key: "featureProbes.served_mcp.memory",
+			approval_equivalent: false,
+			failure_outcome: "disable",
+		},
+		{
+			surface_id: "skills.allowlist",
+			documented_seam:
+				"Skill allowlist is enforced by the SDK PreToolUse hook in the contained runtime; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
+			probe_command: `pnpm dev hermes probe skills.allowlist --allow-run --out ${DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH}`,
+			expected_result:
+				"An allowlisted skill reaches the runtime; non-allowlisted and SOCIAL omitted/empty-allowlist Skill calls are denied by the PreToolUse hook.",
+			negative_probe:
+				"A non-allowlisted skill, a SOCIAL service without an allowlist, or a denial recorded only by the canUseTool fallback fail closed.",
+			evidence_path: DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH,
+			lockfile_key: "featureProbes.skills.allowlist",
+			approval_equivalent: false,
 			failure_outcome: "disable",
 		},
 		{
@@ -1865,7 +1901,9 @@ function runHermesLaunchInvocationInDockerExec(
 	});
 }
 
-function withDockerExecHermesProfileEnv(invocation: HermesLaunchInvocation): HermesLaunchInvocation {
+function withDockerExecHermesProfileEnv(
+	invocation: HermesLaunchInvocation,
+): HermesLaunchInvocation {
 	const hermesHome = invocation.env.HERMES_HOME?.trim();
 	if (!hermesHome?.startsWith("/home/hermes/")) {
 		return invocation;
@@ -1961,24 +1999,24 @@ function prepareDockerExecHermesAuthStore(
 		"home = sys.argv[1]",
 		"model = sys.argv[2]",
 		"curated_skills = sys.argv[3]",
-			"payload = json.load(sys.stdin)",
-			"runtime_uid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_UID', '10000'))",
-			"runtime_gid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_GID', '10000'))",
-			"runtime_dirs = ('sessions', 'logs', 'cron', 'audio_cache', 'image_cache', 'memories', 'pairing', 'hooks', 'bin')",
-			"def harden_home_access():",
-			"    os.chown(home, 0, runtime_gid)",
-			"    os.chmod(home, 0o1770)",
-			"def harden_runtime_dirs():",
-			"    for name in runtime_dirs:",
-			"        runtime_path = os.path.join(home, name)",
-			"        if os.path.isdir(runtime_path):",
-			"            os.chown(runtime_path, runtime_uid, runtime_gid)",
-			"            os.chmod(runtime_path, 0o700)",
-			"if not os.path.isdir(curated_skills):",
-			"    raise RuntimeError(f'curated Hermes skills directory is missing: {curated_skills}')",
-			"os.makedirs(home, mode=0o700, exist_ok=True)",
-			"harden_home_access()",
-			"lock_path = os.path.join(home, 'auth.lock')",
+		"payload = json.load(sys.stdin)",
+		"runtime_uid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_UID', '10000'))",
+		"runtime_gid = int(os.environ.get('TELCLAUDE_HERMES_RUNTIME_GID', '10000'))",
+		"runtime_dirs = ('sessions', 'logs', 'cron', 'audio_cache', 'image_cache', 'memories', 'pairing', 'hooks', 'bin')",
+		"def harden_home_access():",
+		"    os.chown(home, 0, runtime_gid)",
+		"    os.chmod(home, 0o1770)",
+		"def harden_runtime_dirs():",
+		"    for name in runtime_dirs:",
+		"        runtime_path = os.path.join(home, name)",
+		"        if os.path.isdir(runtime_path):",
+		"            os.chown(runtime_path, runtime_uid, runtime_gid)",
+		"            os.chmod(runtime_path, 0o700)",
+		"if not os.path.isdir(curated_skills):",
+		"    raise RuntimeError(f'curated Hermes skills directory is missing: {curated_skills}')",
+		"os.makedirs(home, mode=0o700, exist_ok=True)",
+		"harden_home_access()",
+		"lock_path = os.path.join(home, 'auth.lock')",
 		"try:",
 		"    os.unlink(lock_path)",
 		"except FileNotFoundError:",
@@ -1988,12 +2026,12 @@ function prepareDockerExecHermesAuthStore(
 		"    shutil.rmtree(skills_path)",
 		"shutil.copytree(curated_skills, skills_path)",
 		"for current_root, dirs, files in os.walk(skills_path):",
-			"    os.chown(current_root, runtime_uid, runtime_gid)",
-			"    for name in dirs + files:",
-			"        os.chown(os.path.join(current_root, name), runtime_uid, runtime_gid)",
-			"harden_home_access()",
-			"harden_runtime_dirs()",
-			"config_path = os.path.join(home, 'config.yaml')",
+		"    os.chown(current_root, runtime_uid, runtime_gid)",
+		"    for name in dirs + files:",
+		"        os.chown(os.path.join(current_root, name), runtime_uid, runtime_gid)",
+		"harden_home_access()",
+		"harden_runtime_dirs()",
+		"config_path = os.path.join(home, 'config.yaml')",
 		"config_tmp_path = f'{config_path}.tmp'",
 		"with open(config_tmp_path, 'w', encoding='utf-8') as handle:",
 		"    handle.write('model:\\n')",
@@ -2023,12 +2061,12 @@ function prepareDockerExecHermesAuthStore(
 		"    handle.write('\\n')",
 		"os.chown(manifest_tmp_path, 0, runtime_gid)",
 		"os.chmod(manifest_tmp_path, 0o440)",
-			"os.replace(manifest_tmp_path, manifest_path)",
-			"os.chown(manifest_path, 0, runtime_gid)",
-			"os.chmod(manifest_path, 0o440)",
-			"harden_runtime_dirs()",
-			"harden_home_access()",
-		].join("\n");
+		"os.replace(manifest_tmp_path, manifest_path)",
+		"os.chown(manifest_path, 0, runtime_gid)",
+		"os.chmod(manifest_path, 0o440)",
+		"harden_runtime_dirs()",
+		"harden_home_access()",
+	].join("\n");
 	const result = spawnSync(
 		dockerBin,
 		[
@@ -2338,8 +2376,7 @@ function resolveServedMcpOriginConfig(containerNameInput?: string): {
 	expectedPeerAddress?: string;
 	relayPeerAddress?: string;
 } {
-	const containerName =
-		containerNameInput?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+	const containerName = containerNameInput?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
 	const expectedPeerAddress = resolveServedMcpExpectedPeerAddress();
 	const relayPeerAddress = optionalConfiguredIp(
 		process.env.TELCLAUDE_HERMES_RELAY_IP,
@@ -2368,9 +2405,11 @@ function resolveServedMcpExpectedPeerAddress(): string | undefined {
 	return requiredConfiguredIp(allowedPeers[0], "TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS");
 }
 
-function buildDockerExecFetch(
-	options: { dockerBin?: string; containerName: string; timeoutMs?: number },
-): typeof fetch {
+function buildDockerExecFetch(options: {
+	dockerBin?: string;
+	containerName: string;
+	timeoutMs?: number;
+}): typeof fetch {
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
 	const containerName = options.containerName.trim();
 	if (!containerName) throw new Error("Docker fetch requires a container name");
@@ -2409,17 +2448,21 @@ except Exception as exc:
     sys.exit(42)
 print(json.dumps({"status": status, "body": text, "headers": response_headers}))
 `;
-		const result = spawnSync(dockerBin, ["exec", "-i", containerName, "python", "-c", script, String(timeoutSeconds)], {
-			input: JSON.stringify({
-				url,
-				method: init?.method ?? "POST",
-				headers,
-				body,
-			}),
-			encoding: "utf8",
-			env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
-			timeout: options.timeoutMs ? options.timeoutMs + 1000 : undefined,
-		});
+		const result = spawnSync(
+			dockerBin,
+			["exec", "-i", containerName, "python", "-c", script, String(timeoutSeconds)],
+			{
+				input: JSON.stringify({
+					url,
+					method: init?.method ?? "POST",
+					headers,
+					body,
+				}),
+				encoding: "utf8",
+				env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+				timeout: options.timeoutMs ? options.timeoutMs + 1000 : undefined,
+			},
+		);
 		const stdout = result.stdout?.trim() ?? "";
 		let parsed: unknown;
 		try {
@@ -2437,7 +2480,10 @@ print(json.dumps({"status": status, "body": text, "headers": response_headers}))
 			const transportError =
 				isRecord(parsed) && typeof parsed.transportError === "string"
 					? parsed.transportError
-					: (result.stderr?.trim() || result.error?.message || stdout || "unknown docker exec fetch failure");
+					: result.stderr?.trim() ||
+						result.error?.message ||
+						stdout ||
+						"unknown docker exec fetch failure";
 			throw new Error(`Docker-contained served-MCP request failed: ${transportError}`);
 		}
 		const responseHeaders = new Headers();
@@ -2618,7 +2664,8 @@ function collectHermesFeatureProbeEvidence(
 	) {
 		return collected;
 	}
-	const approvalProbes = featureProbeMatrix.probes.filter(
+	const probes = featureProbeMatrix.probes;
+	const approvalProbes = probes.filter(
 		(probe) =>
 			typeof probe === "object" &&
 			probe !== null &&
@@ -2628,30 +2675,71 @@ function collectHermesFeatureProbeEvidence(
 			"evidence_path" in probe &&
 			typeof probe.evidence_path === "string",
 	);
-	if (approvalProbes.length === 0) return collected;
+	const approvalResults = approvalProbes.map((approvalProbe) => {
+		const evidencePath = resolveHermesArtifactPath(approvalProbe.evidence_path);
+		const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
+			missingPath: evidencePath,
+		});
+		const ok = report.status === "pass" && report.productionEnable;
+		return {
+			surface_id: approvalProbe.surface_id,
+			status: ok ? ("pass" as const) : ("fail" as const),
+			evidence_path: approvalProbe.evidence_path,
+			detail: ok
+				? `approval-continuation evidence passed in ${report.mode} mode`
+				: report.gates.map((gate) => gate.detail).join("; "),
+		};
+	});
+
+	// served_mcp.memory + skills.allowlist are re-derived from their own evidence by
+	// the gap-closure evaluators (the base collector has no branch for them).
+	const collectSurface = (
+		surfaceId: string,
+		evaluate: (
+			evidence: unknown,
+			opts: { missingPath: string },
+		) => { status: string; productionEnable: boolean; gates: ReadonlyArray<{ detail: string }> },
+		passDetail: string,
+	) =>
+		probes
+			.filter(
+				(probe): probe is { surface_id: string; evidence_path: string } =>
+					typeof probe === "object" &&
+					probe !== null &&
+					"surface_id" in probe &&
+					(probe as { surface_id: unknown }).surface_id === surfaceId &&
+					"evidence_path" in probe &&
+					typeof (probe as { evidence_path: unknown }).evidence_path === "string",
+			)
+			.map((probe) => {
+				const evidencePath = resolveHermesArtifactPath(probe.evidence_path);
+				const report = evaluate(readOptionalJsonFile(evidencePath), { missingPath: evidencePath });
+				const ok = report.status === "pass" && report.productionEnable;
+				return {
+					surface_id: probe.surface_id,
+					status: ok ? ("pass" as const) : ("fail" as const),
+					evidence_path: probe.evidence_path,
+					detail: ok ? passDetail : report.gates.map((gate) => gate.detail).join("; "),
+				};
+			});
+
+	const extra = [
+		...approvalResults,
+		...collectSurface(
+			"served_mcp.memory",
+			evaluateServedMcpMemoryEvidence,
+			"served-mcp memory evidence passed",
+		),
+		...collectSurface(
+			"skills.allowlist",
+			evaluateSkillsAllowlistEvidence,
+			"skills-allowlist evidence passed",
+		),
+	];
+	if (extra.length === 0) return collected;
 	return {
 		schemaVersion: 1 as const,
-		results: [
-			...collected.results,
-			...approvalProbes.map((approvalProbe) => {
-				const evidencePath = resolveHermesArtifactPath(approvalProbe.evidence_path);
-				const report = evaluateApprovalContinuationEvidence(readOptionalJsonFile(evidencePath), {
-					missingPath: evidencePath,
-				});
-				return {
-					surface_id: approvalProbe.surface_id,
-					status:
-						report.status === "pass" && report.productionEnable
-							? ("pass" as const)
-							: ("fail" as const),
-					evidence_path: approvalProbe.evidence_path,
-					detail:
-						report.status === "pass" && report.productionEnable
-							? `approval-continuation evidence passed in ${report.mode} mode`
-							: report.gates.map((gate) => gate.detail).join("; "),
-				};
-			}),
-		],
+		results: [...collected.results, ...extra],
 	};
 }
 
@@ -3610,28 +3698,28 @@ export function registerHermesCommand(program: Command): void {
 							cwd: path.resolve(options.cwd ?? process.cwd()),
 							prompt: options.prompt,
 							env: process.env,
-							});
-							const timeoutMs = parseTimeoutMs(options.timeoutMs);
-							const dockerExecContainer = options.dockerExecContainer?.trim();
-							report = await runHermesCliHeadlessProbe({
-								allowRun: options.allowRun === true,
-								invocation,
-								readiness: dockerExecContainer
-									? dockerExecHermesCliReadiness(invocation, {
+						});
+						const timeoutMs = parseTimeoutMs(options.timeoutMs);
+						const dockerExecContainer = options.dockerExecContainer?.trim();
+						report = await runHermesCliHeadlessProbe({
+							allowRun: options.allowRun === true,
+							invocation,
+							readiness: dockerExecContainer
+								? dockerExecHermesCliReadiness(invocation, {
+										dockerBin: options.dockerBin,
+										containerName: dockerExecContainer,
+										timeoutMs,
+									})
+								: undefined,
+							runProcess: dockerExecContainer
+								? (launch) =>
+										runHermesLaunchInvocationInDockerExec(launch, {
 											dockerBin: options.dockerBin,
 											containerName: dockerExecContainer,
 											timeoutMs,
 										})
-									: undefined,
-								runProcess: dockerExecContainer
-									? (launch) =>
-											runHermesLaunchInvocationInDockerExec(launch, {
-												dockerBin: options.dockerBin,
-												containerName: dockerExecContainer,
-												timeoutMs,
-											})
-									: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
-							});
+								: (launch) => runHermesLaunchInvocation(launch, { timeoutMs }),
+						});
 					}
 				} catch (error) {
 					report = {
