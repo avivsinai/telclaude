@@ -11679,6 +11679,78 @@ exit 99
 		expect(fs.readFileSync(callsPath, "utf8")).toContain(
 			"exec -e HERMES_HOME=/home/hermes/.hermes -e CLAUDE_CONFIG_DIR=/home/hermes/.hermes -e TELCLAUDE_CLAUDE_HOME=/home/hermes/.hermes tc-hermes-contained node",
 		);
+		// Bind the proof to the REAL registered-hook invocation, not merely that "node"
+		// ran: assert the docker-exec command carries the module invocation, loads
+		// probeSkillAllowlistPreToolUse, and passes each scenario's exact
+		// property/allowlistedSkill/nonAllowlistedSkill/decision/omit args. These fail
+		// if production stops importing the registered helper or sends the wrong
+		// skill/allowlist/decision, instead of passing on self-consistent JSON.
+		const dockerCalls = fs.readFileSync(callsPath, "utf8");
+		expect(dockerCalls).toContain("node --input-type=module -e");
+		expect(dockerCalls).toContain("probeSkillAllowlistPreToolUse");
+		// argv order after the inline script: property allowlistedSkill nonAllowlistedSkill
+		// expectedDecision omit(true|false) allowedSkillsJson
+		expect(dockerCalls).toContain(
+			"nonallowlisted_skill_invocation_denied plan test-driven-development deny false",
+		);
+		expect(dockerCalls).toContain("allowlisted_skill_invocation_allowed plan godmode allow false");
+		expect(dockerCalls).toContain("social_missing_allowlist_denied plan godmode deny true");
+		expect(dockerCalls).toContain("social_empty_allowlist_denied plan godmode deny false []");
+	});
+
+	it("fails skills.allowlist when the contained module lacks probeSkillAllowlistPreToolUse", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-skills-allowlist-neg-"));
+		const evidencePath = path.join(tempDir, "skills-allowlist.json");
+		// A contained runtime whose docker-exec node step cannot load the registered hook
+		// helper (module missing the export) must fail closed, not pass on a self-consistent
+		// JSON shape. The node step reports the load failure as passed:false.
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+  printf '%s\\n' '{"Internal":true,"Containers":{"contained":{"Name":"tc-hermes-contained"},"relay":{"Name":"tc-hermes-relay"}}}'
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  shift
+  while [ "$1" = "-e" ]; do shift 2; done
+  container="$1"
+  shift
+  if [ "$container" = "tc-hermes-contained" ] && [ "$1" = "node" ]; then
+    # Profile checks pass; only the registered-hook (node) step cannot load the
+    # helper export, so the probe must fail closed specifically on enforcement.
+    printf '%s\\n' '{"passed":false,"detail":"probeSkillAllowlistPreToolUse not found in module","enforcementLayer":"pretooluse"}'
+    exit 0
+  fi
+  if [ "$container" = "tc-hermes-contained" ] && [ "$1" = "python" ]; then
+    printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
+    exit 0
+  fi
+fi
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
+`,
+		);
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"skills.allowlist",
+			"--allow-run",
+			"--json",
+			"--docker-bin",
+			dockerBin,
+			"--container-name",
+			"tc-hermes-contained",
+			"--network",
+			"telclaude-hermes-relay",
+			"--relay-container",
+			"tc-hermes-relay",
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as { status: string };
+		expect(result.exitCode).not.toBe(0);
+		expect(report.status).toBe("fail");
 	});
 
 	it("writes a passing cli-headless artifact only with runtime and relay proof", async () => {
