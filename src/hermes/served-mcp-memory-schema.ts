@@ -57,6 +57,12 @@ const ServedMcpMemoryCheckSchema = z
 		// validateMemoryEntryInput) carry an error code + message.
 		rpcErrorCode: z.number().int().optional(),
 		rpcErrorMessage: NonEmptyString.optional(),
+		// The memory_source_resolved_server_side proof must include two negative
+		// controls: source-like caller authority rejected for write and search.
+		clientSourceWriteRpcErrorCode: z.number().int().optional(),
+		clientSourceWriteRpcErrorMessage: NonEmptyString.optional(),
+		clientSourceSearchRpcErrorCode: z.number().int().optional(),
+		clientSourceSearchRpcErrorMessage: NonEmptyString.optional(),
 		// Server-scoped denials (cross-source read) are proven by an empty result:
 		// a contained telegram-domain search returns zero rows even though a
 		// social/sibling sentinel entry exists, with no raw cross-source payload.
@@ -64,6 +70,10 @@ const ServedMcpMemoryCheckSchema = z
 		// The empty result is only meaningful when the harness also proves the
 		// off-domain sentinel existed before the search.
 		sentinelSeeded: z.boolean().optional(),
+		sentinelSeedObservedPeerAddress: NonEmptyString.optional(),
+		sentinelSeedObservedPeerSource: z.literal("server-peer-echo").optional(),
+		sentinelSeedExpectedPeerAddress: NonEmptyString.optional(),
+		sentinelSeedExpectedPeerSource: z.literal("configured-off-domain-ip").optional(),
 	})
 	.strict();
 

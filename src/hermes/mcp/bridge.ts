@@ -227,15 +227,27 @@ const AUTHORITY_PROVENANCE_KEYS = new Set([
 	"domain",
 	"memorySource",
 	"source",
+	"sources",
+	"sourceFamilies",
 	"trust",
+	"namespace",
 	"writableNamespace",
 	"providerAuthority",
 	"endpointId",
 	"networkNamespace",
+	"peerAddress",
 	"turnConversationRef",
 	"turnId",
 	"inboundTurnId",
 	"inboundTurnRef",
+]);
+
+const CLIENT_MEMORY_AUTHORITY_KEYS = new Set([
+	...AUTHORITY_PROVENANCE_KEYS,
+	"authority",
+	"authorityHandle",
+	"connection",
+	"sessionKey",
 ]);
 
 const CLIENT_TURN_AUTHORITY_KEYS = new Set([
@@ -300,6 +312,7 @@ export function createTelclaudeMcpBridge(
 
 		async tc_memory_search(input) {
 			assertNoClientTurnAuthority(input);
+			assertNoClientMemoryAuthority(input);
 			const parsed = MemorySearchInputSchema.parse(input);
 			return dependencies.memorySearch({
 				...stamp,
@@ -311,6 +324,7 @@ export function createTelclaudeMcpBridge(
 
 		async tc_memory_write(input) {
 			assertNoClientTurnAuthority(input);
+			assertNoClientMemoryAuthority(input);
 			const parsed = MemoryWriteInputSchema.parse(input);
 			assertMetadataOnlyProvenance(parsed.provenance);
 			const request: TelclaudeMcpMemoryWriteRequest = {
@@ -424,7 +438,25 @@ function assertNoClientTurnAuthority(input: unknown): void {
 		if (CLIENT_TURN_AUTHORITY_KEYS.has(key)) {
 			throw new Error("MCP clients may not supply relay turn authority");
 		}
+		if (AUTHORITY_PROVENANCE_KEYS.has(key)) {
+			throw new Error(`MCP clients may not supply MCP authority field: ${key}`);
+		}
 	}
+}
+
+function assertNoClientMemoryAuthority(input: unknown): void {
+	if (!containsClientMemoryAuthority(input)) return;
+	throw new Error("MCP client cannot supply memory authority fields");
+}
+
+function containsClientMemoryAuthority(value: unknown): boolean {
+	if (Array.isArray(value)) {
+		return value.some(containsClientMemoryAuthority);
+	}
+	if (!isRecord(value)) return false;
+	return Object.entries(value).some(
+		([key, child]) => CLIENT_MEMORY_AUTHORITY_KEYS.has(key) || containsClientMemoryAuthority(child),
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

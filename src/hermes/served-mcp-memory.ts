@@ -62,6 +62,7 @@ const MEMORY_RPC_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
 const MEMORY_EMPTY_RESULT_DENIAL_PROPERTY_NAMES: ReadonlySet<string> = new Set([
 	"cross_source_read_denied",
 ]);
+const MEMORY_CLIENT_SOURCE_DENIAL_PROPERTY_NAME = "memory_source_resolved_server_side";
 
 function inputError(detail: string): ServedMcpMemoryReport {
 	return {
@@ -131,6 +132,29 @@ function sourceGate(memorySource: string): ServedMcpMemoryGate {
 		status: "pass",
 		detail: `memory evidence memorySource ${memorySource} is a valid private telegram source`,
 	};
+}
+
+function offDomainSentinelEvidence(
+	check: ServedMcpMemoryEvidence["checks"][number],
+	origin: ServedMcpMemoryEvidence["origin"],
+): boolean {
+	const observed = check.sentinelSeedObservedPeerAddress;
+	const expected = check.sentinelSeedExpectedPeerAddress;
+	if (
+		check.sentinelSeeded !== true ||
+		!observed ||
+		!expected ||
+		check.sentinelSeedObservedPeerSource !== "server-peer-echo" ||
+		check.sentinelSeedExpectedPeerSource !== "configured-off-domain-ip" ||
+		net.isIP(observed) === 0 ||
+		net.isIP(expected) === 0 ||
+		observed !== expected
+	) {
+		return false;
+	}
+	if (origin.observedPeerAddress && observed === origin.observedPeerAddress) return false;
+	if (origin.expectedPeerAddress && expected === origin.expectedPeerAddress) return false;
+	return true;
 }
 
 /**
@@ -241,6 +265,8 @@ export function evaluateServedMcpMemoryEvidence(
 	const rpcDenialEvidence = new Map<string, boolean>();
 	const emptyResultEvidence = new Map<string, boolean>();
 	const seededSentinelEvidence = new Map<string, boolean>();
+	const offDomainSentinelPeerEvidence = new Map<string, boolean>();
+	const clientSourceDenialEvidence = new Map<string, boolean>();
 	for (const check of parsed.data.checks) {
 		const prior = checkPass.get(check.name);
 		const thisPass = check.status === "pass";
@@ -258,6 +284,18 @@ export function evaluateServedMcpMemoryEvidence(
 		if (thisPass && check.sentinelSeeded === true) {
 			seededSentinelEvidence.set(check.name, true);
 		}
+		if (thisPass && offDomainSentinelEvidence(check, parsed.data.origin)) {
+			offDomainSentinelPeerEvidence.set(check.name, true);
+		}
+		if (
+			thisPass &&
+			typeof check.clientSourceWriteRpcErrorCode === "number" &&
+			typeof check.clientSourceWriteRpcErrorMessage === "string" &&
+			typeof check.clientSourceSearchRpcErrorCode === "number" &&
+			typeof check.clientSourceSearchRpcErrorMessage === "string"
+		) {
+			clientSourceDenialEvidence.set(check.name, true);
+		}
 	}
 
 	// artifact_redacted is not trusted as a self-reported bit: independently scan the
@@ -272,11 +310,14 @@ export function evaluateServedMcpMemoryEvidence(
 		const leaked = property === "artifact_redacted" && redactionLeak;
 		const isRpcDenial = MEMORY_RPC_DENIAL_PROPERTY_NAMES.has(property);
 		const isEmptyResultDenial = MEMORY_EMPTY_RESULT_DENIAL_PROPERTY_NAMES.has(property);
+		const isClientSourceDenial = property === MEMORY_CLIENT_SOURCE_DENIAL_PROPERTY_NAME;
 		const denialOk =
 			(!isRpcDenial || rpcDenialEvidence.get(property) === true) &&
 			(!isEmptyResultDenial ||
 				(emptyResultEvidence.get(property) === true &&
-					seededSentinelEvidence.get(property) === true));
+					seededSentinelEvidence.get(property) === true &&
+					offDomainSentinelPeerEvidence.get(property) === true)) &&
+			(!isClientSourceDenial || clientSourceDenialEvidence.get(property) === true);
 		const proven = bit && backed && !leaked && denialOk;
 		gates.push({
 			name: `memory.${property}`,
@@ -289,8 +330,10 @@ export function evaluateServedMcpMemoryEvidence(
 						? `memory property ${property} bit is set but lacks a passing backing check`
 						: !denialOk
 							? isEmptyResultDenial
-								? `memory denial property ${property} requires a passing check proving a seeded off-domain sentinel and an empty result (sentinelSeeded === true, observedResultCount === 0)`
-								: `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
+								? `memory denial property ${property} requires a passing check proving a distinct server-observed off-domain sentinel peer and an empty result`
+								: isClientSourceDenial
+									? `memory denial property ${property} requires passing write and search RPC-denial evidence for client-supplied source authority`
+									: `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
 							: `memory property ${property} is proven and check-backed`,
 		});
 	}
@@ -349,7 +392,10 @@ export type RunServedMcpMemoryProbeOptions = {
 	};
 	/** Configured contained peer address; must not be derived from the relay echo. */
 	readonly expectedPeerAddress?: string;
+	/** Configured off-domain peer address; must differ from the contained peer. */
+	readonly expectedSocialSentinelPeerAddress?: string;
 	readonly fetchImpl?: typeof fetch;
+	readonly socialSentinelFetchImpl?: typeof fetch;
 	readonly now?: Date;
 	readonly timeoutMs?: number;
 };
@@ -486,6 +532,7 @@ export async function runServedMcpMemoryProbe(
 	}
 
 	const fetcher = options.fetchImpl ?? fetch;
+	const socialSentinelFetcher = options.socialSentinelFetchImpl ?? fetcher;
 	const endpoint = options.endpoint;
 	const timeoutMs = options.timeoutMs;
 	const checks: ServedMcpMemoryEvidence["checks"] = [];
@@ -527,7 +574,7 @@ export async function runServedMcpMemoryProbe(
 			category: "meta",
 			content: "served-mcp memory probe positive write",
 			metadata: {},
-			provenance: { source: "machine-observed" },
+			provenance: { note: "machine-observed" },
 		}),
 		timeoutMs,
 	);
@@ -537,12 +584,61 @@ export async function runServedMcpMemoryProbe(
 		status: writeSucceeded ? "pass" : "fail",
 		detail: writeSucceeded ? "valid memory write accepted" : "valid memory write was not accepted",
 	});
+	const clientSourceWrite = await postMemory(
+		fetcher,
+		endpoint,
+		memToolCall("tc_memory_write", {
+			id: "probe.memory.client-source-write",
+			category: "meta",
+			content: "served-mcp memory probe client-source write",
+			metadata: {},
+			source: "social",
+			memorySource: "social",
+			namespace: "social:probe",
+			domain: "social",
+			peerAddress: "172.30.99.99",
+			provenance: { note: "machine-observed" },
+		}),
+		timeoutMs,
+	);
+	const clientSourceWriteError = memError(clientSourceWrite);
+	const clientSourceSearch = await postMemory(
+		fetcher,
+		endpoint,
+		memToolCall("tc_memory_search", {
+			query: "served-mcp memory probe positive",
+			source: "social",
+			memorySource: "social",
+			namespace: "social:probe",
+			domain: "social",
+			peerAddress: "172.30.99.99",
+			filters: { source: "social" },
+		}),
+		timeoutMs,
+	);
+	const clientSourceSearchError = memError(clientSourceSearch);
+	const clientSourceDenied = Boolean(clientSourceWriteError && clientSourceSearchError);
 	checks.push({
 		name: "memory_source_resolved_server_side",
-		status: writeSucceeded ? "pass" : "fail",
-		detail: writeSucceeded
-			? "write accepted with no client-supplied source (server-stamped from connection domain)"
-			: "could not confirm server-side source resolution",
+		status: writeSucceeded && clientSourceDenied ? "pass" : "fail",
+		detail:
+			writeSucceeded && clientSourceDenied
+				? "source-less write succeeded, and client-supplied memory source was denied for write and search"
+				: !writeSucceeded
+					? "could not confirm server-side source resolution"
+					: "client-supplied memory source was not denied for both write and search",
+		...(clientSourceWriteError
+			? {
+					clientSourceWriteRpcErrorCode: clientSourceWriteError.code,
+					clientSourceWriteRpcErrorMessage: redactSecrets(clientSourceWriteError.message),
+				}
+			: {}),
+		...(clientSourceSearchError
+			? {
+					clientSourceSearchRpcErrorCode: clientSourceSearchError.code,
+					clientSourceSearchRpcErrorMessage: redactSecrets(clientSourceSearchError.message),
+				}
+			: {}),
 	});
 
 	// Positive recall.
@@ -579,21 +675,35 @@ export async function runServedMcpMemoryProbe(
 	// search for that exact sentinel returns a successful empty result.
 	const sentinelQuery =
 		options.socialSentinelQuery ?? `social-sentinel-probe-${Date.now().toString(36)}`;
+	const sentinelInit = options.socialSentinelEndpoint
+		? await postMemory(
+				socialSentinelFetcher,
+				options.socialSentinelEndpoint,
+				{
+					jsonrpc: "2.0",
+					id: "memory-probe-social-sentinel-initialize",
+					method: "initialize",
+				},
+				timeoutMs,
+			)
+		: undefined;
 	const sentinelSeed = options.socialSentinelEndpoint
 		? await postMemory(
-				fetcher,
+				socialSentinelFetcher,
 				options.socialSentinelEndpoint,
 				memToolCall("tc_memory_write", {
 					id: `probe.memory.social-sentinel.${Date.now().toString(36)}`,
 					category: "meta",
 					content: `${sentinelQuery} off-domain sentinel`,
 					metadata: {},
-					provenance: { source: "machine-observed" },
+					provenance: { note: "machine-observed" },
 				}),
 				timeoutMs,
 			)
 		: undefined;
 	const sentinelSeeded = sentinelSeed !== undefined && memResultOk(sentinelSeed);
+	const sentinelSeedObservedPeerAddress =
+		sentinelInit?.observedPeerAddress ?? sentinelSeed?.observedPeerAddress;
 	const crossSource = await postMemory(
 		fetcher,
 		endpoint,
@@ -617,6 +727,18 @@ export async function runServedMcpMemoryProbe(
 						: `telegram-domain search returned ${crossCount} cross-source row(s)`,
 		...(crossCount !== undefined ? { observedResultCount: crossCount } : {}),
 		sentinelSeeded,
+		...(sentinelSeedObservedPeerAddress
+			? {
+					sentinelSeedObservedPeerAddress,
+					sentinelSeedObservedPeerSource: "server-peer-echo" as const,
+				}
+			: {}),
+		...(options.expectedSocialSentinelPeerAddress
+			? {
+					sentinelSeedExpectedPeerAddress: options.expectedSocialSentinelPeerAddress,
+					sentinelSeedExpectedPeerSource: "configured-off-domain-ip" as const,
+				}
+			: {}),
 	});
 
 	// Write-rejection negative controls (expect an RPC error).
@@ -632,7 +754,7 @@ export async function runServedMcpMemoryProbe(
 				category: "meta",
 				content,
 				metadata: {},
-				provenance: { source: "machine-observed" },
+				provenance: { note: "machine-observed" },
 			}),
 			timeoutMs,
 		);

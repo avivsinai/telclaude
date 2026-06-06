@@ -1789,11 +1789,28 @@ function writeServedMcpMemoryFeatureEvidence(evidencePath: string): void {
 			name,
 			status: "pass",
 			detail: `${name} proven`,
+			...(name === "memory_source_resolved_server_side"
+				? {
+						clientSourceWriteRpcErrorCode: -32001,
+						clientSourceWriteRpcErrorMessage:
+							"MCP client cannot supply memory authority fields",
+						clientSourceSearchRpcErrorCode: -32001,
+						clientSourceSearchRpcErrorMessage:
+							"MCP client cannot supply memory authority fields",
+					}
+				: {}),
 			...(rpcDenials.has(name)
 				? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
 				: {}),
 			...(name === "cross_source_read_denied"
-				? { observedResultCount: 0, sentinelSeeded: true }
+				? {
+						observedResultCount: 0,
+						sentinelSeeded: true,
+						sentinelSeedObservedPeerAddress: "172.30.92.12",
+						sentinelSeedObservedPeerSource: "server-peer-echo",
+						sentinelSeedExpectedPeerAddress: "172.30.92.12",
+						sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+					}
 				: {}),
 		})),
 	};
@@ -12575,6 +12592,134 @@ sleep 5
 		} finally {
 			await server.close();
 		}
+	});
+
+	it("runs served_mcp.memory private and off-domain sentinel calls from distinct docker origins", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-served-mcp-memory-"));
+		const evidencePath = path.join(tempDir, "served-mcp-memory.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" != "exec" ]; then
+  printf '%s\\n' "unexpected docker command: $*" >&2
+  exit 99
+fi
+if [ "$2" = "-i" ]; then
+  container="$3"
+else
+  container="$2"
+fi
+request="$(cat)"
+CONTAINER_NAME="$container" REQUEST_JSON="$request" node <<'NODE'
+const container = process.env.CONTAINER_NAME;
+const request = JSON.parse(process.env.REQUEST_JSON || "{}");
+const payload = JSON.parse(String(request.body || "{}"));
+const headers = request.headers || {};
+const auth = headers.authorization || headers.Authorization || "";
+const tool = payload.params?.name;
+const args = payload.params?.arguments || {};
+
+function emit(body, peer) {
+  console.log(JSON.stringify({
+    status: 200,
+    body: JSON.stringify(body),
+    headers: peer ? {"x-telclaude-live-mcp-observed-peer-address": peer} : {}
+  }));
+}
+
+function rpcError(message) {
+  emit({error: {code: -32602, message}});
+}
+
+function hasClientSourceAuthority(value) {
+  return ["source", "memorySource", "namespace", "domain", "peerAddress"].some((key) =>
+    Object.prototype.hasOwnProperty.call(value, key)
+  ) || Boolean(value.filters?.source);
+}
+
+if (container === "tc-hermes-contained") {
+  if (auth !== "Bearer private") rpcError("private auth header missing");
+  else if (payload.method === "initialize") emit({result: {ok: true}}, "${CLI_HEADLESS_TEST_CONTAINED_IP}");
+  else if (tool === "tc_memory_write") {
+    const content = String(args.content || "");
+    if (content.includes("off-domain sentinel")) rpcError("private container must not seed social sentinel");
+    else if (hasClientSourceAuthority(args)) rpcError("client source authority rejected");
+    else if (content.includes("AKIA") || /ignore all previous/i.test(content)) rpcError("memory entry rejected");
+    else emit({result: {id: args.id}});
+  } else if (tool === "tc_memory_search") {
+    const query = String(args.query || "");
+    if (hasClientSourceAuthority(args)) rpcError("client source authority rejected");
+    else if (query.includes("social-sentinel")) emit({result: {entries: []}});
+    else emit({result: {entries: [{id: "probe.memory.positive", content: "clean"}]}});
+  } else {
+    emit({result: {}});
+  }
+} else if (container === "telclaude-agent-social") {
+  if (auth !== "Bearer social") rpcError("social auth header missing");
+  else if (payload.method === "initialize") emit({result: {ok: true}}, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
+  else if (tool === "tc_memory_write" && String(args.content || "").includes("off-domain sentinel")) {
+    emit({result: {id: args.id}}, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
+  } else {
+    rpcError("social container only seeds the off-domain sentinel");
+  }
+} else {
+  console.error("unexpected container: " + container);
+  process.exit(99);
+}
+NODE
+`,
+		);
+
+		const result = await runHermesCommandWithEnv(
+			[
+				"hermes",
+				"probe",
+				"served_mcp.memory",
+				"--allow-run",
+				"--json",
+				"--docker-bin",
+				dockerBin,
+				"--mcp-url",
+				"http://telclaude:8793/mcp",
+				"--container-name",
+				"tc-hermes-contained",
+				"--expected-peer-address",
+				CLI_HEADLESS_TEST_CONTAINED_IP,
+				"--mcp-off-domain-container",
+				"telclaude-agent-social",
+				"--mcp-off-domain-peer-address",
+				CLI_HEADLESS_WRONG_CONTAINED_IP,
+				"--out",
+				evidencePath,
+			],
+			{
+				TELCLAUDE_HERMES_SERVED_MCP_AUTH: "Authorization: Bearer private",
+				TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH: "Authorization: Bearer social",
+			},
+		);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			checks: Array<{
+				name: string;
+				status: string;
+				sentinelSeedObservedPeerAddress?: string;
+				sentinelSeedExpectedPeerAddress?: string;
+			}>;
+		};
+		const calls = fs.readFileSync(callsPath, "utf8");
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.checks.find((check) => check.name === "cross_source_read_denied")).toMatchObject({
+			status: "pass",
+			sentinelSeedObservedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
+			sentinelSeedExpectedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
+		});
+		expect(calls).toContain("exec -i tc-hermes-contained python -c");
+		expect(calls).toContain("exec -i telclaude-agent-social python -c");
+		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
 	});
 
 	it("passes the served-MCP cutover gate from complete observed evidence", async () => {

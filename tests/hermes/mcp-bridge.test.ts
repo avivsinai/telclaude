@@ -44,10 +44,6 @@ describe("Telclaude MCP bridge foundation", () => {
 			bridge.tc_memory_search({
 				query: "family",
 				limit: 20,
-				source: "social",
-				actorId: "attacker",
-				profileId: "other",
-				domain: "public",
 			}),
 		).resolves.toEqual({ entries: [] });
 
@@ -65,6 +61,40 @@ describe("Telclaude MCP bridge foundation", () => {
 				limit: 20,
 			},
 		]);
+	});
+
+	it("rejects client-supplied memory authority before search or write dependencies run", async () => {
+		const calls: unknown[] = [];
+		const bridge = createTelclaudeMcpBridge(baseAuthority(), {
+			...baseDependencies(),
+			memorySearch: async (request) => {
+				calls.push(request);
+				return { entries: [] };
+			},
+			memoryWrite: async (request) => {
+				calls.push(request);
+				return { accepted: 1 };
+			},
+		});
+
+		await expect(
+			bridge.tc_memory_search({
+				query: "family",
+				filters: { source: "social", namespace: "social", peerAddress: "172.30.0.9" },
+			}),
+		).rejects.toThrow("MCP client cannot supply memory authority fields");
+		await expect(
+			bridge.tc_memory_write({
+				id: "spoof",
+				category: "profile",
+				content: "try to choose source",
+				source: "social",
+				memorySource: "social",
+				domain: "social",
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field");
+
+		expect(calls).toEqual([]);
 	});
 
 	it("overwrites memory write authority and rejects authoritative provenance", async () => {
@@ -111,7 +141,7 @@ describe("Telclaude MCP bridge foundation", () => {
 				content: "try to choose source",
 				provenance: { source: "social" },
 			}),
-		).rejects.toThrow("memory provenance cannot set authoritative field: source");
+		).rejects.toThrow("MCP client cannot supply memory authority fields");
 	});
 
 	it("reuses memory validation for secret-like writes", async () => {
@@ -152,7 +182,7 @@ describe("Telclaude MCP bridge foundation", () => {
 		]);
 	});
 
-	it("enforces provider scopes and ignores model-supplied identity", async () => {
+	it("enforces provider scopes and rejects model-supplied identity", async () => {
 		const calls: unknown[] = [];
 		const bridge = createTelclaudeMcpBridge(baseAuthority({ providerScopes: ["clalit"] }), {
 			...baseDependencies(),
@@ -167,9 +197,6 @@ describe("Telclaude MCP bridge foundation", () => {
 				service: "clalit",
 				action: "appointments.list",
 				params: { subjectUserId: "spoofed-family-member" },
-				actorId: "other",
-				profileId: "other",
-				domain: "public",
 			}),
 		).resolves.toEqual({ appointments: [] });
 
@@ -188,6 +215,17 @@ describe("Telclaude MCP bridge foundation", () => {
 				params: { subjectUserId: "spoofed-family-member" },
 			},
 		]);
+
+		await expect(
+			bridge.tc_provider_read({
+				service: "clalit",
+				action: "appointments.list",
+				params: { subjectUserId: "spoofed-family-member" },
+				actorId: "other",
+				profileId: "other",
+				domain: "public",
+			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field");
 
 		await expect(
 			bridge.tc_provider_read({ service: "bank", action: "balances.list", params: {} }),
