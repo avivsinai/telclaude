@@ -19,17 +19,17 @@ import {
 	NETWORK_EGRESS_BROKER_RUN_REPORT_SOURCE,
 	runTelclaudeBrowserComputerBrokerProbe,
 } from "../../src/hermes/browser-computer-broker-probes.js";
-import {
-	buildEdgeAdapterFixtureEvidenceBundle,
-	buildEdgeAdapterProbeEvidence,
-	type EdgeAdapterFeatureSurfaceId,
-} from "../../src/hermes/edge-adapter-probes.js";
 import { signEdgeAdapterAttestation } from "../../src/hermes/edge-adapter-attestation.js";
 import {
 	EDGE_ADAPTER_CONTRACT_VERSION,
 	EDGE_ADAPTER_OPERATION_NAMES,
 	EdgeAdapterSchemaVersions,
 } from "../../src/hermes/edge-adapter-contract.js";
+import {
+	buildEdgeAdapterFixtureEvidenceBundle,
+	buildEdgeAdapterProbeEvidence,
+	type EdgeAdapterFeatureSurfaceId,
+} from "../../src/hermes/edge-adapter-probes.js";
 import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
@@ -96,8 +96,8 @@ import {
 import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { buildProReviewShardPlan, REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
-import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
 import { signProviderApprovalBindingAttestation } from "../../src/hermes/provider-approval-binding-attestation.js";
+import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
 	DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS,
@@ -115,7 +115,9 @@ import {
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
 import { SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES } from "../../src/hermes/served-mcp-memory.js";
+import { signServedMcpMemoryAttestation } from "../../src/hermes/served-mcp-memory-attestation.js";
 import { buildServedMcpProviderToolsProbeEvidence } from "../../src/hermes/served-mcp-provider-tools-probe.js";
+import { signSkillsAllowlistAttestation } from "../../src/hermes/skills-allowlist-attestation.js";
 import {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
 	type SkillsAllowlistPropertyName,
@@ -1661,8 +1663,7 @@ function profileDecisionLogFor(workflowIds: readonly string[], impact = "test mo
 				status: "accepted" as const,
 				owner: "operator",
 				deadline_phase: "Phase 1",
-				accepted_answer:
-					"Generated Hermes profiles are produced by the checked profile generator.",
+				accepted_answer: "Generated Hermes profiles are produced by the checked profile generator.",
 				affected_workflows: [...workflowIds],
 				cutover_impact: impact,
 			},
@@ -1703,7 +1704,10 @@ function cutoverBundleWithAdditionalWorkflow(options: {
 	readonly adapterApiSignatures?: Record<string, string>;
 	readonly decisionImpact?: string;
 }): Partial<CutoverInputBundle> {
-	const featureProbeMatrix = mergeFeatureProbeMatrix(options.base.featureProbeMatrix, options.probes);
+	const featureProbeMatrix = mergeFeatureProbeMatrix(
+		options.base.featureProbeMatrix,
+		options.probes,
+	);
 	return {
 		inventory: completeTestInventory([privateChatWorkflow(), options.inventoryWorkflow]),
 		scopeManifest: {
@@ -1758,11 +1762,12 @@ const SKILLS_ALLOWLIST_PRETOOLUSE_TEST_PROPERTIES = new Set<SkillsAllowlistPrope
 ]);
 
 function writeServedMcpMemoryFeatureEvidence(evidencePath: string): void {
+	ensureOperatorRelayKeys();
 	const properties = Object.fromEntries(
 		SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
 	);
 	const rpcDenials = new Set(["secret_write_rejected", "instruction_like_write_rejected"]);
-	writeJson(evidencePath, {
+	const evidence = {
 		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
 		probeId: "served_mcp.memory",
 		status: "pass",
@@ -1791,14 +1796,19 @@ function writeServedMcpMemoryFeatureEvidence(evidencePath: string): void {
 				? { observedResultCount: 0, sentinelSeeded: true }
 				: {}),
 		})),
+	};
+	writeJson(evidencePath, {
+		...evidence,
+		runnerAttestation: signServedMcpMemoryAttestation(evidence),
 	});
 }
 
 function writeSkillsAllowlistFeatureEvidence(evidencePath: string): void {
+	ensureOperatorRelayKeys();
 	const properties = Object.fromEntries(
 		SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
 	);
-	writeJson(evidencePath, {
+	const evidence = {
 		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
 		probeId: "skills.allowlist",
 		status: "pass",
@@ -1823,6 +1833,10 @@ function writeSkillsAllowlistFeatureEvidence(evidencePath: string): void {
 				? { enforcementLayer: "pretooluse" }
 				: {}),
 		})),
+	};
+	writeJson(evidencePath, {
+		...evidence,
+		runnerAttestation: signSkillsAllowlistAttestation(evidence),
 	});
 }
 
@@ -1956,10 +1970,7 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 					cutover_requirement: "Pinned Hermes wrapper parity fixture must pass.",
 					status: "included",
 					rollback_owner: "operator",
-					fixture_ids: [
-						"fixture.private.telegram.basic",
-						"fixture.identity.migration.relink",
-					],
+					fixture_ids: ["fixture.private.telegram.basic", "fixture.identity.migration.relink"],
 					negative_fixture_ids: ["fixture.private.telegram.basic.deny"],
 					required_surface_ids: [
 						"execution.cli_headless",
@@ -2180,8 +2191,7 @@ function edgeAdapterCutoverBundleFromEvidence(
 				evidence.map(({ surfaceId }) => [surfaceId, `sha256:${"e".repeat(64)}`]),
 			),
 			decisionImpact: "Edge runtime module cutover proof extends the private P0 bundle.",
-		},
-		),
+		}),
 	);
 }
 
@@ -2240,8 +2250,7 @@ function approvalContinuationCutoverBundle(
 				[surfaceId]: `sha256:${"d".repeat(64)}`,
 			},
 			decisionImpact: "Approval-continuation module cutover proof extends the private P0 bundle.",
-		},
-		),
+		}),
 	);
 }
 
@@ -2286,8 +2295,7 @@ function sideEffectLedgerCutoverBundle(
 				"sideeffect.ledger": `sha256:${"9".repeat(64)}`,
 			},
 			decisionImpact: "Side-effect ledger module cutover proof extends the private P0 bundle.",
-		},
-		),
+		}),
 	);
 }
 
@@ -2584,8 +2592,7 @@ function apiServerContainmentCutoverBundle(
 				"execution.api_server_containment": `sha256:${"e".repeat(64)}`,
 			},
 			decisionImpact: "API-server containment module cutover proof extends the private P0 bundle.",
-		},
-		),
+		}),
 	);
 }
 
@@ -2610,8 +2617,7 @@ function servedMcpContainmentCutoverBundle(
 				"execution.served_mcp_containment": `sha256:${"f".repeat(64)}`,
 			},
 			decisionImpact: "Served-MCP containment module cutover proof extends the private P0 bundle.",
-		},
-		),
+		}),
 	);
 }
 
@@ -10995,12 +11001,12 @@ echo should-not-run
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-docker-exec-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
 		const callsPath = path.join(tempDir, "docker-calls.txt");
-			const authPayloadPath = path.join(tempDir, "auth-payload.json");
-			const dockerOnlyCwd = `/container-only/telclaude-runner-${process.pid}`;
-			expect(fs.existsSync(dockerOnlyCwd)).toBe(false);
-			const dockerBin = writeExecutable(
-				tempDir,
-				`#!/bin/sh
+		const authPayloadPath = path.join(tempDir, "auth-payload.json");
+		const dockerOnlyCwd = `/container-only/telclaude-runner-${process.pid}`;
+		expect(fs.existsSync(dockerOnlyCwd)).toBe(false);
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
 printf '%s\\n' "$*" >> "${callsPath}"
 if [ "$1" = "inspect" ]; then
   printf '%s\\n' '{"Id":"container-id","Image":"sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Config":{"Image":"nousresearch/hermes-agent@sha256:192a40783e9227b5f162b76af4d133050557adebd46e1c9cb40cb79a1317a9f7","Hostname":"tc-hermes-contained"},"NetworkSettings":{"Networks":{"telclaude-hermes-relay":{"IPAddress":"${CLI_HEADLESS_TEST_CONTAINED_IP}"}}}}'
@@ -11052,28 +11058,28 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 			cliRelayEnv({ HERMES_INFERENCE_MODEL: "gpt-5.5" }),
 		);
 		const report = JSON.parse(result.stdout) as {
-				status: string;
-				summary: string;
-				stdoutPreview: string;
-				readiness: { gates: Array<{ name: string; status: string; detail: string }> };
-				relayProof?: unknown;
-			};
+			status: string;
+			summary: string;
+			stdoutPreview: string;
+			readiness: { gates: Array<{ name: string; status: string; detail: string }> };
+			relayProof?: unknown;
+		};
 
 		expect(result.exitCode).toBe(1);
-			expect(report.status).toBe("fail");
-			expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
-			expect(report.readiness.gates).toEqual(
-				expect.arrayContaining([
-					expect.objectContaining({
-						name: "cwd.exists",
-						status: "pass",
-						detail: "Hermes probe cwd exists inside docker-exec container",
-					}),
-				]),
-			);
-			expect(report.summary).toBe(
-				"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
-			);
+		expect(report.status).toBe("fail");
+		expect(report.stdoutPreview).toContain("HERMES_OK_DOCKEREXEC");
+		expect(report.readiness.gates).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "cwd.exists",
+					status: "pass",
+					detail: "Hermes probe cwd exists inside docker-exec container",
+				}),
+			]),
+		);
+		expect(report.summary).toBe(
+			"Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
+		);
 		expect(report.relayProof).toBeUndefined();
 		const authPayload = readJson(authPayloadPath) as {
 			suppressed_sources: { "openai-codex": string[] };
@@ -11115,20 +11121,18 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 		expect(dockerCalls).toContain("auth.json");
 		expect(dockerCalls).toContain("secret-manifest.json");
 		expect(dockerCalls).toContain("shutil.rmtree(skills_path)");
-			expect(dockerCalls).toContain("shutil.copytree(curated_skills, skills_path)");
-			expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
-				expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
-				expect(dockerCalls).toContain("runtime_dirs = ('sessions', 'logs', 'cron'");
-				expect(dockerCalls).toContain("harden_runtime_dirs()");
-				expect(dockerCalls).toContain("os.chown(runtime_path, runtime_uid, runtime_gid)");
-				expect(dockerCalls).toContain("os.chmod(runtime_path, 0o700)");
-				expect(dockerCalls).toContain(
-					"Hermes home is missing before docker exec launch",
-				);
-				expect(dockerCalls).toContain("auth.lock");
-			expect(dockerCalls).toContain("os.unlink(lock_path)");
-			expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
-			expect(dockerCalls).toContain("os.chmod(path, 0o440)");
+		expect(dockerCalls).toContain("shutil.copytree(curated_skills, skills_path)");
+		expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
+		expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
+		expect(dockerCalls).toContain("runtime_dirs = ('sessions', 'logs', 'cron'");
+		expect(dockerCalls).toContain("harden_runtime_dirs()");
+		expect(dockerCalls).toContain("os.chown(runtime_path, runtime_uid, runtime_gid)");
+		expect(dockerCalls).toContain("os.chmod(runtime_path, 0o700)");
+		expect(dockerCalls).toContain("Hermes home is missing before docker exec launch");
+		expect(dockerCalls).toContain("auth.lock");
+		expect(dockerCalls).toContain("os.unlink(lock_path)");
+		expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
+		expect(dockerCalls).toContain("os.chmod(path, 0o440)");
 		expect(readJson(evidencePath)).toMatchObject({
 			status: "fail",
 			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",
@@ -12262,9 +12266,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
-			googleProviderCutoverBundle(evidencePath),
-		);
+		const result = await runScopedCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12294,9 +12296,7 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "google.wrong-actor-denied"),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
-			googleProviderCutoverBundle(evidencePath),
-		);
+		const result = await runScopedCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};

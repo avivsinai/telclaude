@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SkillsAllowlistAttestationSchema } from "./skills-allowlist-attestation.js";
 
 // Evidence schema for the skills-allowlist parity probe. The probe exercises the
 // contained Hermes profile, not a host-side SDK simulation: the runtime allowlist
@@ -89,6 +90,10 @@ export const SkillsAllowlistEvidenceSchema = z
 		origin: SkillsAllowlistOriginSchema,
 		properties: SkillsAllowlistPropertiesSchema,
 		checks: z.array(SkillsAllowlistCheckSchema),
+		// Signed runner attestation binding this evidence body to the operator relay
+		// key. Optional in the schema (pending/non-live evidence has none); the
+		// evaluator REQUIRES a valid one before productionEnable under a live cutover.
+		runnerAttestation: SkillsAllowlistAttestationSchema.optional(),
 	})
 	.strict();
 
