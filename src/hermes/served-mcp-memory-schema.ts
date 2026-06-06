@@ -66,9 +66,12 @@ const ServedMcpMemoryCheckSchema = z
 		// Server-scoped denials (cross-source read) are proven by an empty result:
 		// a contained telegram-domain search returns zero rows even though a
 		// social/sibling sentinel entry exists, with no raw cross-source payload.
+		privateObservedResultCount: z.number().int().nonnegative().optional(),
 		observedResultCount: z.number().int().nonnegative().optional(),
 		// The empty result is only meaningful when the harness also proves the
-		// off-domain sentinel existed before the search.
+		// off-domain sentinel existed and was searchable before the private search.
+		offDomainObservedResultCount: z.number().int().nonnegative().optional(),
+		offDomainObservedEntryHashes: z.array(NonEmptyString).optional(),
 		sentinelSeeded: z.boolean().optional(),
 		sentinelSeedObservedPeerAddress: NonEmptyString.optional(),
 		sentinelSeedObservedPeerSource: z.literal("server-peer-echo").optional(),

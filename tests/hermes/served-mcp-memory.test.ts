@@ -17,11 +17,9 @@ function validEvidence(): ServedMcpMemoryEvidence {
 		...(name === "memory_source_resolved_server_side"
 			? {
 					clientSourceWriteRpcErrorCode: -32001,
-					clientSourceWriteRpcErrorMessage:
-						"MCP client cannot supply memory authority fields",
+					clientSourceWriteRpcErrorMessage: "MCP client cannot supply memory authority fields",
 					clientSourceSearchRpcErrorCode: -32001,
-					clientSourceSearchRpcErrorMessage:
-						"MCP client cannot supply memory authority fields",
+					clientSourceSearchRpcErrorMessage: "MCP client cannot supply memory authority fields",
 				}
 			: {}),
 		...(rpcDenial.has(name)
@@ -29,7 +27,12 @@ function validEvidence(): ServedMcpMemoryEvidence {
 			: {}),
 		...(name === "cross_source_read_denied"
 			? {
+					privateObservedResultCount: 0,
 					observedResultCount: 0,
+					offDomainObservedResultCount: 1,
+					offDomainObservedEntryHashes: [
+						"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+					],
 					sentinelSeeded: true,
 					sentinelSeedObservedPeerAddress: "172.30.92.12",
 					sentinelSeedObservedPeerSource: "server-peer-echo",
@@ -157,12 +160,16 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 
 	it("requires an empty-result proof for cross-source denial (server-scoped, not an RPC error)", () => {
 		const ev = validEvidence();
-		// drop observedResultCount from cross_source_read_denied's check
+		// drop the private observed-result counts from cross_source_read_denied's check
 		const report = evaluateServedMcpMemoryEvidence({
 			...ev,
 			checks: ev.checks.map((c) =>
 				c.name === "cross_source_read_denied"
-					? { name: c.name, status: c.status, detail: c.detail }
+					? {
+							...c,
+							observedResultCount: undefined,
+							privateObservedResultCount: undefined,
+						}
 					: c,
 			),
 		});
@@ -183,9 +190,7 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 			),
 		});
 		expect(report.status).toBe("fail");
-		const gate = report.gates.find(
-			(g) => g.name === "memory.memory_source_resolved_server_side",
-		);
+		const gate = report.gates.find((g) => g.name === "memory.memory_source_resolved_server_side");
 		expect(gate?.status).toBe("fail");
 		expect(gate?.detail).toContain("client-supplied source authority");
 	});
@@ -196,7 +201,14 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 			...ev,
 			checks: ev.checks.map((c) =>
 				c.name === "cross_source_read_denied"
-					? { name: c.name, status: c.status, detail: c.detail, observedResultCount: 0 }
+					? {
+							...c,
+							sentinelSeeded: undefined,
+							sentinelSeedObservedPeerAddress: undefined,
+							sentinelSeedObservedPeerSource: undefined,
+							sentinelSeedExpectedPeerAddress: undefined,
+							sentinelSeedExpectedPeerSource: undefined,
+						}
 					: c,
 			),
 		});
@@ -222,6 +234,25 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.gates.find((g) => g.name === "memory.cross_source_read_denied")?.status).toBe(
 			"fail",
 		);
+	});
+
+	it("requires proof that the off-domain sentinel is searchable before private denial", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied"
+					? {
+							...c,
+							offDomainObservedResultCount: 0,
+							offDomainObservedEntryHashes: [],
+						}
+					: c,
+			),
+		});
+		const gate = report.gates.find((g) => g.name === "memory.cross_source_read_denied");
+		expect(gate?.status).toBe("fail");
+		expect(gate?.detail).toContain("searchable off-domain sentinel");
 	});
 
 	it("requires the sentinel seed peer to differ from the private contained peer", () => {
