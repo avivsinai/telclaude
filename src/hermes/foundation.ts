@@ -4128,6 +4128,9 @@ export function evaluateCutoverCheck(
 	const featureProbeEvidenceBySurfaceId = new Map(
 		(bundle.featureProbeEvidence?.results ?? []).map((result) => [result.surface_id, result]),
 	);
+	const featureProbeEvidenceDuplicates = findDuplicates(
+		(bundle.featureProbeEvidence?.results ?? []).map((result) => result.surface_id),
+	);
 	const requiredSurfaceFailures = requiredSurfaceIds.flatMap((surfaceId) => {
 		const probe = probeBySurfaceId.get(surfaceId);
 		if (!probe) return [`missing feature probe ${surfaceId}`];
@@ -4142,6 +4145,9 @@ export function evaluateCutoverCheck(
 	const featureProbeFailures = [
 		...(bundle.featureProbeMatrix.probes.length === 0 ? ["feature probe matrix is empty"] : []),
 		...(requiredSurfaceIds.length === 0 ? ["no required surfaces declared"] : []),
+		...featureProbeEvidenceDuplicates.map(
+			(surfaceId) => `duplicate feature probe evidence ${surfaceId}`,
+		),
 		...requiredSurfaceFailures,
 		...bundle.featureProbeMatrix.probes.flatMap((probe) => {
 			const failure = featureProbeFailure(

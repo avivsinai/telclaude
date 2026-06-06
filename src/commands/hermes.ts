@@ -2978,54 +2978,7 @@ function collectHermesFeatureProbeEvidence(
 		};
 	});
 
-	// served_mcp.memory + skills.allowlist are re-derived from their own evidence by
-	// the gap-closure evaluators (the base collector has no branch for them).
-	const collectSurface = (
-		surfaceId: string,
-		evaluate: (
-			evidence: unknown,
-			opts: { missingPath: string } & HermesSignedEvidenceValidationOptions,
-		) => { status: string; productionEnable: boolean; gates: ReadonlyArray<{ detail: string }> },
-		passDetail: string,
-	) =>
-		probes
-			.filter(
-				(probe): probe is { surface_id: string; evidence_path: string } =>
-					typeof probe === "object" &&
-					probe !== null &&
-					"surface_id" in probe &&
-					(probe as { surface_id: unknown }).surface_id === surfaceId &&
-					"evidence_path" in probe &&
-					typeof (probe as { evidence_path: unknown }).evidence_path === "string",
-			)
-			.map((probe) => {
-				const evidencePath = resolveHermesArtifactPath(probe.evidence_path);
-				const report = evaluate(readOptionalJsonFile(evidencePath), {
-					...options,
-					missingPath: evidencePath,
-				});
-				const ok = report.status === "pass" && report.productionEnable;
-				return {
-					surface_id: probe.surface_id,
-					status: ok ? ("pass" as const) : ("fail" as const),
-					evidence_path: probe.evidence_path,
-					detail: ok ? passDetail : report.gates.map((gate) => gate.detail).join("; "),
-				};
-			});
-
-	const extra = [
-		...approvalResults,
-		...collectSurface(
-			"served_mcp.memory",
-			evaluateServedMcpMemoryEvidence,
-			"served-mcp memory evidence passed",
-		),
-		...collectSurface(
-			"skills.allowlist",
-			evaluateSkillsAllowlistEvidence,
-			"skills-allowlist evidence passed",
-		),
-	];
+	const extra = approvalResults;
 	if (extra.length === 0) return collected;
 	return {
 		schemaVersion: 1 as const,
