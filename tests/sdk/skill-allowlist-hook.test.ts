@@ -269,15 +269,36 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 		expect(emptyAllowlist.decision).toBe("deny");
 	});
 
-	it("probes nested user-authored Skill names through the registered matcher", async () => {
+	it("probes nested user-authored Skill runtime names through the registered matcher", async () => {
 		writeCatalogSkill("software-development/plan");
+		writeCatalogSkill("software-development/test-driven-development");
 		const allowed = await probeSkillAllowlistPreToolUse({
 			cwd: tempDir ?? "/tmp",
 			tier: "SOCIAL",
-			skillName: "software-development/plan",
-			allowedSkills: ["software-development/plan"],
+			skillName: "plan",
+			allowedSkills: ["plan"],
 		});
 		expect(allowed).toMatchObject({ hookRegistered: true, decision: "allow" });
+
+		const relativePathAllowlist = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "plan",
+			allowedSkills: ["software-development/plan"],
+		});
+		expect(relativePathAllowlist).toMatchObject({ hookRegistered: true, decision: "deny" });
+
+		const loadableButNotAllowlisted = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "test-driven-development",
+			allowedSkills: ["plan"],
+		});
+		expect(loadableButNotAllowlisted).toMatchObject({
+			hookRegistered: true,
+			decision: "deny",
+		});
+		expect(loadableButNotAllowlisted.reason).toContain("not in the allowedSkills");
 	});
 
 	it("reports no registered PreToolUse Skill matcher when skills are disabled", async () => {

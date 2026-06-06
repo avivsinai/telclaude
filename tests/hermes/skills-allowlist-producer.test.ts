@@ -52,6 +52,47 @@ describe("runSkillsAllowlistProbe", () => {
 		expect(report.productionEnable).toBe(true);
 	});
 
+	it("uses filesystem paths for profile proof and SDK runtime names for hook proof", async () => {
+		const scenarios: Parameters<SkillsAllowlistRunner>[0][] = [];
+		const evidence = await runSkillsAllowlistProbe({
+			allowRun: true,
+			runner: async (scenario) => {
+				scenarios.push(scenario);
+				return {
+					passed: true,
+					observationLayer: "docker_exec",
+					...(scenario.kind === "pretooluse"
+						? { enforcementLayer: "pretooluse" as const }
+						: {}),
+				};
+			},
+			observeTopology: containedTopology,
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+		expect(evidence.status).toBe("pass");
+		expect(
+			scenarios.find((scenario) => scenario.property === "allowlisted_skill_present"),
+		).toMatchObject({
+			kind: "profile",
+			allowlistedSkill: "software-development/plan",
+		});
+		expect(
+			scenarios.find((scenario) => scenario.property === "allowlisted_skill_invocation_allowed"),
+		).toMatchObject({
+			kind: "pretooluse",
+			allowlistedSkill: "plan",
+			allowedSkills: ["plan"],
+		});
+		expect(
+			scenarios.find((scenario) => scenario.property === "nonallowlisted_skill_invocation_denied"),
+		).toMatchObject({
+			kind: "pretooluse",
+			allowlistedSkill: "plan",
+			nonAllowlistedSkill: "test-driven-development",
+			allowedSkills: ["plan"],
+		});
+	});
+
 	it("yields evaluator-REJECTED evidence when checks are not docker-exec observed", async () => {
 		const localRunner: SkillsAllowlistRunner = async () => ({ passed: true });
 		const evidence = await runSkillsAllowlistProbe({
