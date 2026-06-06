@@ -78,10 +78,31 @@ function bridgeFetcher(): typeof fetch {
 			params?: { name?: string; arguments?: Record<string, unknown> };
 		};
 		if (payload.method === "initialize") {
-			const peerAddress = String(url).includes("agent-social")
-				? "172.30.92.12"
-				: "172.30.92.11";
-			return fakeResponse({ result: { ok: true } }, peerAddress);
+			const social = String(url).includes("agent-social");
+			const peerAddress = social ? "172.30.92.12" : "172.30.92.11";
+			return fakeResponse(
+				{
+					result: {
+						ok: true,
+						telclaudeProbeAuthority: social
+							? {
+									domain: "social",
+									memorySource: "social",
+									profileId: "social",
+									endpointId: "tc-hermes-social",
+									networkNamespace: "telclaude_internal",
+								}
+							: {
+									domain: "private",
+									memorySource: "telegram:default",
+									profileId: "default",
+									endpointId: "tc-hermes-private",
+									networkNamespace: "telclaude_internal",
+								},
+					},
+				},
+				peerAddress,
+			);
 		}
 		const tool = payload.params?.name;
 		const args = payload.params?.arguments ?? {};
@@ -149,6 +170,8 @@ describe("runServedMcpMemoryProbe", () => {
 			sentinelSeedObservedPeerSource: "server-peer-echo",
 			sentinelSeedExpectedPeerAddress: "172.30.92.12",
 			sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+			sentinelSeedAuthorityDomain: "social",
+			sentinelSeedMemorySource: "social",
 		});
 		const secret = evidence.checks.find((c) => c.name === "secret_write_rejected");
 		expect(typeof secret?.rpcErrorCode).toBe("number");

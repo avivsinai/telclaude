@@ -59,8 +59,10 @@ export type TelclaudeLiveMcpRuntime = {
 
 export type TelclaudeLiveMcpRuntimeProbeTokenInput = {
 	readonly privateConnection: TelclaudeMcpAuthorityConnection;
+	readonly offDomainConnection?: TelclaudeMcpAuthorityConnection;
 	readonly wrongConnection: TelclaudeMcpAuthorityConnection;
 	readonly privateAuthority: TelclaudeMcpAuthority;
+	readonly offDomainAuthority?: TelclaudeMcpAuthority;
 	readonly nowMs?: number;
 	readonly ttlMs?: number;
 	readonly peerAddress?: string;

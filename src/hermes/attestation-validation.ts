@@ -2,6 +2,7 @@ const MAX_CUTOVER_PROOF_ARTIFACT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type HermesSignedEvidenceValidationOptions = {
 	readonly allowStaleAttestations?: boolean;
+	readonly requireRunnerAttestation?: boolean;
 	readonly now?: Date;
 	readonly relayPublicKey?: string;
 };
@@ -10,6 +11,12 @@ export function hermesAllowsStaleAttestations(
 	options: HermesSignedEvidenceValidationOptions = {},
 ): boolean {
 	return options.allowStaleAttestations ?? true;
+}
+
+export function hermesRequiresRunnerAttestation(
+	options: HermesSignedEvidenceValidationOptions = {},
+): boolean {
+	return options.requireRunnerAttestation === true || !hermesAllowsStaleAttestations(options);
 }
 
 export function hermesAttestationFreshnessFailure(

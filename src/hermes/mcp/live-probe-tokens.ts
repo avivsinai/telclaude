@@ -31,6 +31,8 @@ export type TelclaudeLiveMcpProbeTokenMetadata = {
 	readonly peerBound: boolean;
 	readonly offDomainPeerBound: boolean;
 	readonly privateConnection: TelclaudeLiveMcpProbeConnectionMetadata;
+	readonly offDomainConnection: TelclaudeLiveMcpProbeConnectionMetadata;
+	readonly offDomainAuthority: TelclaudeLiveMcpProbeAuthorityMetadata;
 	readonly wrongConnection: TelclaudeLiveMcpProbeConnectionMetadata;
 };
 
@@ -38,6 +40,11 @@ export type TelclaudeLiveMcpProbeConnectionMetadata = {
 	readonly profileId: string;
 	readonly endpointId: string;
 	readonly networkNamespace: string;
+};
+
+export type TelclaudeLiveMcpProbeAuthorityMetadata = {
+	readonly domain: "social";
+	readonly memorySource: "social";
 };
 
 export type TelclaudeLiveMcpProbeTokenBundle = {
@@ -52,8 +59,10 @@ export type CreateTelclaudeLiveMcpProbeTokenBundleOptions = {
 	readonly registry: TelclaudeMcpAuthorityRegistry;
 	readonly resolver: TelclaudeLiveMcpConnectionResolver;
 	readonly privateConnection: TelclaudeMcpAuthorityConnection;
+	readonly offDomainConnection?: TelclaudeMcpAuthorityConnection;
 	readonly wrongConnection: TelclaudeMcpAuthorityConnection;
 	readonly privateAuthority: TelclaudeMcpAuthority;
+	readonly offDomainAuthority?: TelclaudeMcpAuthority;
 	readonly nowMs?: number;
 	readonly ttlMs?: number;
 	readonly peerAddress?: string;
@@ -67,15 +76,30 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 	const nowMs = normalizeNowMs(options.nowMs ?? Date.now());
 	const ttlMs = normalizeTtlMs(options.ttlMs ?? DEFAULT_LIVE_MCP_CONNECTION_TTL_MS);
 	const privateConnection = normalizeConnection(options.privateConnection);
+	const offDomainConnection = normalizeConnection(
+		options.offDomainConnection ?? defaultOffDomainConnection(privateConnection),
+	);
 	const wrongConnection = normalizeConnection(options.wrongConnection);
+	if (sameConnection(privateConnection, offDomainConnection)) {
+		throw new Error("live MCP probe offDomainConnection must differ from privateConnection");
+	}
 	if (sameConnection(privateConnection, wrongConnection)) {
 		throw new Error("live MCP probe wrongConnection must differ from privateConnection");
 	}
 	const offDomainPeerAddress = options.offDomainPeerAddress ?? "10.255.255.254";
+	const offDomainAuthority =
+		options.offDomainAuthority ?? defaultOffDomainAuthority(offDomainConnection);
+	assertSocialOffDomainAuthority(offDomainAuthority);
 
 	const privateGrant = options.registry.register({
 		connection: privateConnection,
 		authority: options.privateAuthority,
+		nowMs,
+		ttlMs,
+	});
+	const offDomainGrant = options.registry.register({
+		connection: offDomainConnection,
+		authority: offDomainAuthority,
 		nowMs,
 		ttlMs,
 	});
@@ -87,8 +111,8 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 		...(options.peerAddress ? { peerAddress: options.peerAddress } : {}),
 	});
 	const offDomainPeer = options.resolver.issueProbePeerBypass({
-		authorityHandle: privateGrant.handle,
-		connection: privateConnection,
+		authorityHandle: offDomainGrant.handle,
+		connection: offDomainConnection,
 		nowMs,
 		ttlMs,
 		peerAddress: offDomainPeerAddress,
@@ -124,6 +148,11 @@ export function createTelclaudeLiveMcpProbeTokenBundle(
 			peerBound: Boolean(options.peerAddress?.trim()),
 			offDomainPeerBound: true,
 			privateConnection: connectionMetadata(privateConnection),
+			offDomainConnection: connectionMetadata(offDomainConnection),
+			offDomainAuthority: {
+				domain: "social",
+				memorySource: "social",
+			},
 			wrongConnection: connectionMetadata(wrongConnection),
 		},
 	};
@@ -150,6 +179,41 @@ function connectionMetadata(
 		endpointId: connection.endpointId,
 		networkNamespace: connection.networkNamespace,
 	};
+}
+
+function defaultOffDomainConnection(
+	privateConnection: TelclaudeMcpAuthorityConnection,
+): TelclaudeMcpAuthorityConnection {
+	return {
+		sessionKey: "probe:social",
+		profileId: "social",
+		endpointId: "tc-hermes-social",
+		networkNamespace: privateConnection.networkNamespace,
+	};
+}
+
+function defaultOffDomainAuthority(
+	connection: TelclaudeMcpAuthorityConnection,
+): TelclaudeMcpAuthority {
+	return {
+		actorId: "social:probe",
+		profileId: connection.profileId,
+		domain: "social",
+		memorySource: "social",
+		writableNamespace: "social:probe",
+		providerScopes: [],
+		outboundChannels: [],
+		endpointId: connection.endpointId,
+		networkNamespace: connection.networkNamespace,
+	};
+}
+
+function assertSocialOffDomainAuthority(authority: TelclaudeMcpAuthority): void {
+	if (authority.domain !== "social" || authority.memorySource !== "social") {
+		throw new Error(
+			"live MCP probe offDomainAuthority must use social domain and social memory source",
+		);
+	}
 }
 
 function normalizeConnection(

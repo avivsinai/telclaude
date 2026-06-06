@@ -52,9 +52,13 @@ describe("Telclaude live MCP probe tokens", () => {
 			resolver.resolveConnection(
 				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.2"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: expect.stringMatching(/^tc_mcp_/),
 			connection: privateConnection,
+			authority: {
+				domain: "private",
+				memorySource: "telegram:ops",
+			},
 		});
 		expect(
 			resolver.resolveConnection(
@@ -70,9 +74,13 @@ describe("Telclaude live MCP probe tokens", () => {
 			resolver.resolveConnection(
 				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.255.255.254"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: expect.stringMatching(/^tc_mcp_/),
-			connection: privateConnection,
+			connection: defaultOffDomainConnection(privateConnection),
+			authority: {
+				domain: "social",
+				memorySource: "social",
+			},
 		});
 		expect(
 			resolver.resolveConnection(
@@ -86,13 +94,27 @@ describe("Telclaude live MCP probe tokens", () => {
 		).toBeNull();
 
 		const metadata = JSON.stringify(bundle.metadata);
-		for (const secret of [bundle.allowed, bundle.wrongConnection, bundle.forged]) {
+		for (const secret of [
+			bundle.allowed,
+			bundle.offDomainPeer,
+			bundle.wrongConnection,
+			bundle.forged,
+		]) {
 			expect(metadata).not.toContain(secret.token);
 			expect(metadata).not.toContain(secret.authorizationHeader);
 		}
 		expect(bundle.metadata.tokenMaterial).toBe("omitted");
 		expect(bundle.metadata.peerBound).toBe(true);
 		expect(bundle.metadata.offDomainPeerBound).toBe(true);
+		expect(bundle.metadata.offDomainConnection).toEqual({
+			profileId: "social",
+			endpointId: "tc-hermes-social",
+			networkNamespace: privateConnection.networkNamespace,
+		});
+		expect(bundle.metadata.offDomainAuthority).toEqual({
+			domain: "social",
+			memorySource: "social",
+		});
 	});
 
 	it("uses a probe-only bypass only for off-domain peer-bound smoke tokens", () => {
@@ -124,9 +146,13 @@ describe("Telclaude live MCP probe tokens", () => {
 			resolver.resolveConnection(
 				request({ authorization: bundle.allowed.authorizationHeader }, "10.0.0.2"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: expect.stringMatching(/^tc_mcp_/),
 			connection: privateConnection,
+			authority: {
+				domain: "private",
+				memorySource: "telegram:ops",
+			},
 		});
 		expect(
 			resolver.resolveConnection(
@@ -142,9 +168,13 @@ describe("Telclaude live MCP probe tokens", () => {
 			resolver.resolveConnection(
 				request({ authorization: bundle.offDomainPeer.authorizationHeader }, "10.0.0.4"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: expect.stringMatching(/^tc_mcp_/),
-			connection: privateConnection,
+			connection: defaultOffDomainConnection(privateConnection),
+			authority: {
+				domain: "social",
+				memorySource: "social",
+			},
 		});
 		expect(() =>
 			createTelclaudeLiveMcpProbeTokenBundle({
@@ -260,6 +290,17 @@ function connection(
 		endpointId: "endpoint-private",
 		networkNamespace: "netns-private",
 		...overrides,
+	};
+}
+
+function defaultOffDomainConnection(
+	privateConnection: TelclaudeMcpAuthorityConnection,
+): TelclaudeMcpAuthorityConnection {
+	return {
+		sessionKey: "probe:social",
+		profileId: "social",
+		endpointId: "tc-hermes-social",
+		networkNamespace: privateConnection.networkNamespace,
 	};
 }
 

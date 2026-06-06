@@ -35,6 +35,8 @@ function validEvidence(): ServedMcpMemoryEvidence {
 					sentinelSeedObservedPeerSource: "server-peer-echo",
 					sentinelSeedExpectedPeerAddress: "172.30.92.12",
 					sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+					sentinelSeedAuthorityDomain: "social",
+					sentinelSeedMemorySource: "social",
 				}
 			: {}),
 	}));
@@ -195,6 +197,25 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 			checks: ev.checks.map((c) =>
 				c.name === "cross_source_read_denied"
 					? { name: c.name, status: c.status, detail: c.detail, observedResultCount: 0 }
+					: c,
+			),
+		});
+		expect(report.gates.find((g) => g.name === "memory.cross_source_read_denied")?.status).toBe(
+			"fail",
+		);
+	});
+
+	it("requires proof that the off-domain sentinel was seeded by social authority", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied"
+					? {
+							...c,
+							sentinelSeedAuthorityDomain: undefined,
+							sentinelSeedMemorySource: undefined,
+						}
 					: c,
 			),
 		});

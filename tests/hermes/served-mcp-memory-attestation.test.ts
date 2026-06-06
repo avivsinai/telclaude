@@ -78,6 +78,8 @@ function unsignedEvidence(): ServedMcpMemoryEvidence {
 						sentinelSeedObservedPeerSource: "server-peer-echo",
 						sentinelSeedExpectedPeerAddress: "172.30.92.12",
 						sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+						sentinelSeedAuthorityDomain: "social",
+						sentinelSeedMemorySource: "social",
 					}
 				: {}),
 		})),
@@ -140,5 +142,18 @@ describe("served-MCP memory attestation gate (live cutover)", () => {
 			now: new Date(),
 		});
 		expect(report.gates.find((gate) => gate.name === "memory.attestation")).toBeUndefined();
+	});
+
+	it("requires an attestation when strict archival validation asks for one", () => {
+		const report = evaluateServedMcpMemoryEvidence(unsignedEvidence(), {
+			allowStaleAttestations: true,
+			requireRunnerAttestation: true,
+			now: new Date(),
+		});
+		expect(report.productionEnable).toBe(false);
+		expect(report.gates.find((gate) => gate.name === "memory.attestation")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("runnerAttestation is missing"),
+		});
 	});
 });

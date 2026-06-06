@@ -269,6 +269,17 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 		expect(emptyAllowlist.decision).toBe("deny");
 	});
 
+	it("probes nested user-authored Skill names through the registered matcher", async () => {
+		writeCatalogSkill("software-development/plan");
+		const allowed = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "software-development/plan",
+			allowedSkills: ["software-development/plan"],
+		});
+		expect(allowed).toMatchObject({ hookRegistered: true, decision: "allow" });
+	});
+
 	it("reports no registered PreToolUse Skill matcher when skills are disabled", async () => {
 		const result = await probeSkillAllowlistPreToolUse({
 			cwd: tempDir ?? "/tmp",

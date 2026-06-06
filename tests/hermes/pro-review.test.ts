@@ -1058,6 +1058,32 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
+	it("rejects current cutover-check context that is not complete parity", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const cutoverReportPath = "artifacts/hermes/pro-review-current-cutover-check.json";
+			writeJson(canaryPath, proReviewCanary());
+			const scopedReport = currentCutoverCheckReport("safe");
+			writeJson(cutoverReportPath, {
+				...scopedReport,
+				mode: { ...(scopedReport.mode as Record<string, unknown>), completeParityCutover: false },
+			});
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.status).toBe("fail");
+			expect(
+				report.gates.find((gate) => gate.name === "request.semanticEvidence.currentCutoverCheck"),
+			).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("mode.completeParityCutover must be true"),
+			});
+		});
+	});
+
 	it("rejects stale current cutover-check context reports", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-cutover-context-"));
 		await withCwd(tempDir, async () => {
@@ -1569,17 +1595,25 @@ function currentCutoverCheckReport(
 		generatedAt,
 		status,
 		exitCode: ok ? 0 : 1,
-		mode: {
-			strict: true,
-			dryRun,
-		},
-		gates: [
-			{
-				name: "workflow.scope",
-				status: ok ? "pass" : "fail",
-				detail: ok ? "included workflows are scoped" : "no included workflows",
+			mode: {
+				strict: true,
+				dryRun,
+				completeParityCutover: true,
 			},
-		],
+			gates: [
+				{
+					name: "workflow.scope",
+					status: ok ? "pass" : "fail",
+					detail: ok ? "included workflows are scoped" : "no included workflows",
+				},
+				{
+					name: "parity.rosterCovered",
+					status: ok ? "pass" : "fail",
+					detail: ok
+						? "complete parity roster covered by proof bundle"
+						: "complete parity roster is not covered",
+				},
+			],
 		workflowIds: ok ? ["workflow.private.telegram"] : [],
 		evidencePaths: [],
 		decisionIds: [],

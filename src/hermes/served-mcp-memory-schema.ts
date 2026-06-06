@@ -74,6 +74,8 @@ const ServedMcpMemoryCheckSchema = z
 		sentinelSeedObservedPeerSource: z.literal("server-peer-echo").optional(),
 		sentinelSeedExpectedPeerAddress: NonEmptyString.optional(),
 		sentinelSeedExpectedPeerSource: z.literal("configured-off-domain-ip").optional(),
+		sentinelSeedAuthorityDomain: z.literal("social").optional(),
+		sentinelSeedMemorySource: z.literal("social").optional(),
 	})
 	.strict();
 

@@ -6,6 +6,7 @@ import {
 	type HermesSignedEvidenceValidationOptions,
 	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
+	hermesRequiresRunnerAttestation,
 } from "./attestation-validation.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
@@ -146,6 +147,8 @@ function offDomainSentinelEvidence(
 		!expected ||
 		check.sentinelSeedObservedPeerSource !== "server-peer-echo" ||
 		check.sentinelSeedExpectedPeerSource !== "configured-off-domain-ip" ||
+		check.sentinelSeedAuthorityDomain !== "social" ||
+		check.sentinelSeedMemorySource !== "social" ||
 		net.isIP(observed) === 0 ||
 		net.isIP(expected) === 0 ||
 		observed !== expected
@@ -177,7 +180,7 @@ function servedMcpMemoryRunnerAttestationFailure(
 ): string | null {
 	const attestation = data.runnerAttestation;
 	if (!attestation) {
-		return hermesAllowsStaleAttestations(options) ? null : "runnerAttestation is missing";
+		return hermesRequiresRunnerAttestation(options) ? "runnerAttestation is missing" : null;
 	}
 	const signatureFailure = servedMcpMemoryAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),
@@ -404,6 +407,13 @@ type MemoryRpcObservation = {
 	readonly body?: unknown;
 	readonly transportError?: string;
 	readonly observedPeerAddress?: string;
+	readonly probeAuthority?: {
+		readonly domain?: string;
+		readonly memorySource?: string;
+		readonly profileId?: string;
+		readonly endpointId?: string;
+		readonly networkNamespace?: string;
+	};
 };
 
 function memToolCall(name: string, args: Record<string, unknown>): Record<string, unknown> {
@@ -444,7 +454,12 @@ async function postMemory(
 		}
 		const observedPeerAddress =
 			response.headers.get("x-telclaude-live-mcp-observed-peer-address") ?? undefined;
-		return { body, ...(observedPeerAddress ? { observedPeerAddress } : {}) };
+		const probeAuthority = extractProbeAuthority(body);
+		return {
+			body,
+			...(observedPeerAddress ? { observedPeerAddress } : {}),
+			...(probeAuthority ? { probeAuthority } : {}),
+		};
 	} catch (error) {
 		return {
 			transportError: redactSecrets(error instanceof Error ? error.message : String(error)),
@@ -452,6 +467,30 @@ async function postMemory(
 	} finally {
 		if (timeout) clearTimeout(timeout);
 	}
+}
+
+function extractProbeAuthority(body: unknown): MemoryRpcObservation["probeAuthority"] | undefined {
+	if (typeof body !== "object" || body === null) return undefined;
+	const result = (body as { result?: unknown }).result;
+	if (typeof result !== "object" || result === null) return undefined;
+	const authority = (result as { telclaudeProbeAuthority?: unknown }).telclaudeProbeAuthority;
+	if (typeof authority !== "object" || authority === null) return undefined;
+	const fields = authority as {
+		domain?: unknown;
+		memorySource?: unknown;
+		profileId?: unknown;
+		endpointId?: unknown;
+		networkNamespace?: unknown;
+	};
+	return {
+		...(typeof fields.domain === "string" ? { domain: fields.domain } : {}),
+		...(typeof fields.memorySource === "string" ? { memorySource: fields.memorySource } : {}),
+		...(typeof fields.profileId === "string" ? { profileId: fields.profileId } : {}),
+		...(typeof fields.endpointId === "string" ? { endpointId: fields.endpointId } : {}),
+		...(typeof fields.networkNamespace === "string"
+			? { networkNamespace: fields.networkNamespace }
+			: {}),
+	};
 }
 
 function memError(
@@ -704,6 +743,9 @@ export async function runServedMcpMemoryProbe(
 	const sentinelSeeded = sentinelSeed !== undefined && memResultOk(sentinelSeed);
 	const sentinelSeedObservedPeerAddress =
 		sentinelInit?.observedPeerAddress ?? sentinelSeed?.observedPeerAddress;
+	const sentinelSeedAuthority = sentinelInit?.probeAuthority ?? sentinelSeed?.probeAuthority;
+	const sentinelSeedAuthorityIsSocial =
+		sentinelSeedAuthority?.domain === "social" && sentinelSeedAuthority.memorySource === "social";
 	const crossSource = await postMemory(
 		fetcher,
 		endpoint,
@@ -716,15 +758,20 @@ export async function runServedMcpMemoryProbe(
 	const crossSearchOk = crossCount !== undefined && memError(crossSource) === undefined;
 	checks.push({
 		name: "cross_source_read_denied",
-		status: crossSearchOk && crossCount === 0 && sentinelSeeded ? "pass" : "fail",
+		status:
+			crossSearchOk && crossCount === 0 && sentinelSeeded && sentinelSeedAuthorityIsSocial
+				? "pass"
+				: "fail",
 		detail:
-			crossSearchOk && crossCount === 0 && sentinelSeeded
+			crossSearchOk && crossCount === 0 && sentinelSeeded && sentinelSeedAuthorityIsSocial
 				? "telegram-domain search of social sentinel returned an empty result (server-scoped)"
 				: !sentinelSeeded
 					? "off-domain social sentinel was not machine-observed as seeded before the search"
-					: !crossSearchOk
-						? "cross-source search response did not contain a successful result.entries array"
-						: `telegram-domain search returned ${crossCount} cross-source row(s)`,
+					: !sentinelSeedAuthorityIsSocial
+						? "off-domain social sentinel did not report social authority metadata"
+						: !crossSearchOk
+							? "cross-source search response did not contain a successful result.entries array"
+							: `telegram-domain search returned ${crossCount} cross-source row(s)`,
 		...(crossCount !== undefined ? { observedResultCount: crossCount } : {}),
 		sentinelSeeded,
 		...(sentinelSeedObservedPeerAddress
@@ -738,6 +785,12 @@ export async function runServedMcpMemoryProbe(
 					sentinelSeedExpectedPeerAddress: options.expectedSocialSentinelPeerAddress,
 					sentinelSeedExpectedPeerSource: "configured-off-domain-ip" as const,
 				}
+			: {}),
+		...(sentinelSeedAuthority?.domain === "social"
+			? { sentinelSeedAuthorityDomain: "social" as const }
+			: {}),
+		...(sentinelSeedAuthority?.memorySource === "social"
+			? { sentinelSeedMemorySource: "social" as const }
 			: {}),
 	});
 
