@@ -1578,8 +1578,6 @@ const DESCOPED_TEST_PARITY_ROWS = [
 	"clalit-health",
 	"government-identity",
 	"google-provider",
-	"memory",
-	"skills",
 	"social-public",
 	"whatsapp",
 	"household-whatsapp",
@@ -1930,6 +1928,18 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 		"artifacts/hermes/probes/identity-migration.json",
 	);
 	writeIdentityMigrationProbeEvidence(identityProbeEvidencePath);
+	// memory + skills are non-descopable: production cutover must carry the signed
+	// air-gap and allowlist proofs instead of narrowing them away in the safe fixture.
+	const memoryEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/served-mcp-memory.json",
+	);
+	writeServedMcpMemoryFeatureEvidence(memoryEvidencePath);
+	const skillsEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/skills-allowlist.json",
+	);
+	writeSkillsAllowlistFeatureEvidence(skillsEvidencePath);
 	const baseFeatureProbeMatrix: FeatureProbeMatrix = {
 		schemaVersion: 1,
 		probes: [
@@ -1950,6 +1960,8 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 				identityProbeEvidencePath,
 				"featureProbes.identity.migration",
 			),
+			simpleFeatureProbe("served_mcp.memory", memoryEvidencePath, "featureProbes.servedMcpMemory"),
+			simpleFeatureProbe("skills.allowlist", skillsEvidencePath, "featureProbes.skillsAllowlist"),
 		],
 	};
 	const lockfile = {
@@ -1994,6 +2006,8 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 						"execution.approval_continuation",
 						"providers.approval-binding",
 						"identity.migration",
+						"served_mcp.memory",
+						"skills.allowlist",
 					],
 					unresolved_decision_ids: [],
 				},
@@ -5619,7 +5633,7 @@ describe("Hermes wrapper foundation", () => {
 			decisionLog: {
 				...base.decisionLog,
 				decisions: base.decisionLog.decisions.filter(
-					(decision) => decision.id !== "parity-descope:skills",
+					(decision) => decision.id !== "parity-descope:banking",
 				),
 			},
 		});
