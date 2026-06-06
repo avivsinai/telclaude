@@ -76,18 +76,53 @@ describe("persona skill load plans", () => {
 		);
 	});
 
-	it("loads nested user-authored skills by relative path", () => {
+	it("loads nested user-authored skills by SDK runtime name", () => {
 		writeSkill(skillCatalog, "software-development/plan");
 
 		const inventory = listSkillInventory(projectRoot);
-		expect(inventory.find((entry) => entry.name === "software-development/plan")).toMatchObject({
-			name: "software-development/plan",
+		expect(inventory.find((entry) => entry.relativeDir === "software-development/plan")).toMatchObject({
+			name: "plan",
 			relativeDir: "software-development/plan",
 			provenance: { kind: "user" },
 		});
 
 		const plan = buildSkillLoadPlan({ kind: "social", serviceId: "xtwitter" }, { cwd: projectRoot });
-		expect(plan.names).toContain("software-development/plan");
+		expect(plan.names).toContain("plan");
+		expect(plan.names).not.toContain("software-development/plan");
+	});
+
+	it("blocks colliding runtime names in the active persona", () => {
+		writeSkill(skillCatalog, "software-development/plan");
+		writeSkill(skillCatalog, "agent/telegram/plan");
+
+		const plan = buildSkillLoadPlan({ kind: "telegram" }, { cwd: projectRoot });
+		expect(plan.names).not.toContain("plan");
+		expect(
+			plan.blocked
+				.filter((entry) => entry.name === "plan")
+				.map((entry) => ({ relativeDir: entry.relativeDir, reason: entry.reason }))
+				.sort((left, right) => left.relativeDir.localeCompare(right.relativeDir)),
+		).toEqual([
+			{ relativeDir: "agent/telegram/plan", reason: "name_collision" },
+			{ relativeDir: "software-development/plan", reason: "name_collision" },
+		]);
+	});
+
+	it("blocks colliding runtime names even when the other identity is persona-blocked", () => {
+		writeSkill(skillCatalog, "software-development/plan");
+		writeSkill(skillCatalog, "agent/social/xtwitter/plan");
+
+		const plan = buildSkillLoadPlan({ kind: "telegram" }, { cwd: projectRoot });
+		expect(plan.names).not.toContain("plan");
+		expect(
+			plan.blocked
+				.filter((entry) => entry.name === "plan")
+				.map((entry) => ({ relativeDir: entry.relativeDir, reason: entry.reason }))
+				.sort((left, right) => left.relativeDir.localeCompare(right.relativeDir)),
+		).toEqual([
+			{ relativeDir: "agent/social/xtwitter/plan", reason: "name_collision" },
+			{ relativeDir: "software-development/plan", reason: "name_collision" },
+		]);
 	});
 
 	it("loads social agent skills only for the matching service and explicit allowlist", () => {

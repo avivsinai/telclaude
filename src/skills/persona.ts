@@ -28,7 +28,7 @@ export type SkillInventoryEntry = {
 };
 
 export type BlockedSkillEntry = SkillInventoryEntry & {
-	reason: "persona_mismatch" | "service_mismatch" | "agent_skill_not_allowed";
+	reason: "persona_mismatch" | "service_mismatch" | "agent_skill_not_allowed" | "name_collision";
 };
 
 export type SkillLoadPlan = {
@@ -75,7 +75,7 @@ function addIfSkill(
 	if (!hasSkillMd(dir)) return;
 	const normalizedRelativeDir = relativeDir.split(path.sep).join("/");
 	out.push({
-		name: provenance.kind === "user" ? normalizedRelativeDir : path.basename(dir),
+		name: path.basename(dir),
 		root,
 		dir,
 		relativeDir: normalizedRelativeDir,
@@ -180,6 +180,16 @@ function dedupeByName(entries: readonly SkillInventoryEntry[]): SkillInventoryEn
 	return deduped.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function skillProvenanceKey(provenance: SkillProvenance): string {
+	if (provenance.kind === "user") return "user";
+	if (provenance.persona === "telegram") return "agent:telegram";
+	return `agent:social:${provenance.serviceId}`;
+}
+
+function skillIdentityKey(entry: SkillInventoryEntry): string {
+	return `${skillProvenanceKey(entry.provenance)}\0${entry.relativeDir}`;
+}
+
 export function buildSkillLoadPlan(
 	context: SkillPersonaContext,
 	options?: { cwd?: string; requestedSkillNames?: readonly string[] | null },
@@ -188,13 +198,30 @@ export function buildSkillLoadPlan(
 	const userAuthored: SkillInventoryEntry[] = [];
 	const agentAuthored: SkillInventoryEntry[] = [];
 	const blocked: BlockedSkillEntry[] = [];
+	const inventory = listSkillInventory(options?.cwd);
+	const inventoryByName = new Map<string, SkillInventoryEntry[]>();
+	for (const entry of inventory) {
+		const prior = inventoryByName.get(entry.name);
+		if (prior) {
+			prior.push(entry);
+		} else {
+			inventoryByName.set(entry.name, [entry]);
+		}
+	}
+	const collidingNames = new Set(
+		Array.from(inventoryByName.entries())
+			.filter(([, entries]) => new Set(entries.map(skillIdentityKey)).size > 1)
+			.map(([name]) => name),
+	);
 
-	for (const entry of listSkillInventory(options?.cwd)) {
-		const reason = classifyBlockReason(entry, context);
+	for (const entry of inventory) {
+		const reason = collidingNames.has(entry.name)
+			? "name_collision"
+			: classifyBlockReason(entry, context);
 		if (reason) {
 			const blockedEntry = { ...entry, reason };
 			blocked.push(blockedEntry);
-			if (requested?.has(entry.name)) {
+			if (requested?.has(entry.name) || requested?.has(entry.relativeDir)) {
 				logger.warn(
 					{
 						skillName: entry.name,

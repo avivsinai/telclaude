@@ -2659,9 +2659,14 @@ const result = await probe({
   allowedSkills,
   omitAllowedSkills
 });
+const allowlistDenialProven = result.decision === "deny"
+  && typeof result.reason === "string"
+  && result.reason.includes("not in the allowedSkills");
 const passed = prop === "pretooluse_hook_registered"
   ? result.hookRegistered === true
-  : result.hookRegistered === true && result.decision === expectedDecision;
+  : result.hookRegistered === true
+    && result.decision === expectedDecision
+    && (prop !== "nonallowlisted_skill_invocation_denied" || allowlistDenialProven);
 const detail = prop === "pretooluse_hook_registered"
   ? (passed ? "PreToolUse Skill matcher registered" : "PreToolUse Skill matcher missing")
   : (passed
