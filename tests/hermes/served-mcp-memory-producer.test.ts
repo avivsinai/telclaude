@@ -63,8 +63,7 @@ function containsClientMemoryAuthority(value: unknown): boolean {
 	if (Array.isArray(value)) return value.some(containsClientMemoryAuthority);
 	if (typeof value !== "object" || value === null) return false;
 	return Object.entries(value as Record<string, unknown>).some(
-		([key, child]) =>
-			CLIENT_MEMORY_AUTHORITY_KEYS.has(key) || containsClientMemoryAuthority(child),
+		([key, child]) => CLIENT_MEMORY_AUTHORITY_KEYS.has(key) || containsClientMemoryAuthority(child),
 	);
 }
 
@@ -123,7 +122,16 @@ function bridgeFetcher(): typeof fetch {
 		}
 		if (tool === "tc_memory_search") {
 			const query = String(args.query ?? "");
-			if (query.includes("social-sentinel")) return fakeResponse({ result: { entries: [] } });
+			if (query.includes("social-sentinel")) {
+				const social = String(url).includes("agent-social");
+				return fakeResponse({
+					result: {
+						entries: social
+							? [{ id: "probe.memory.social-sentinel", content: "social sentinel" }]
+							: [],
+					},
+				});
+			}
 			return fakeResponse({
 				result: { entries: [{ id: "probe.memory.positive", content: "clean" }] },
 			});
@@ -164,6 +172,9 @@ describe("runServedMcpMemoryProbe", () => {
 		});
 		const cross = evidence.checks.find((c) => c.name === "cross_source_read_denied");
 		expect(cross?.observedResultCount).toBe(0);
+		expect(cross?.privateObservedResultCount).toBe(0);
+		expect(cross?.offDomainObservedResultCount).toBeGreaterThan(0);
+		expect(cross?.offDomainObservedEntryHashes?.[0]).toMatch(/^sha256:[a-f0-9]{64}$/);
 		expect(cross?.sentinelSeeded).toBe(true);
 		expect(cross).toMatchObject({
 			sentinelSeedObservedPeerAddress: "172.30.92.12",
@@ -243,6 +254,38 @@ describe("runServedMcpMemoryProbe", () => {
 		expect(evidence.checks.find((c) => c.name === "cross_source_read_denied")).toMatchObject({
 			status: "fail",
 			sentinelSeeded: true,
+		});
+		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
+	});
+
+	it("fails cross-source denial if the off-domain sentinel is not searchable", async () => {
+		const droppedOffDomainSentinel = (async (url: unknown, init?: { body?: unknown }) => {
+			const payload = JSON.parse(String(init?.body ?? "{}")) as {
+				params?: { name?: string; arguments?: Record<string, unknown> };
+			};
+			if (
+				String(url).includes("agent-social") &&
+				payload.params?.name === "tc_memory_search" &&
+				String(payload.params.arguments?.query ?? "").includes("social-sentinel")
+			) {
+				return fakeResponse({ result: { entries: [] } });
+			}
+			return bridgeFetcher()(url as RequestInfo | URL, init as RequestInit);
+		}) as unknown as typeof fetch;
+		const evidence = await runServedMcpMemoryProbe({
+			allowRun: true,
+			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			fetchImpl: droppedOffDomainSentinel,
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+		expect(evidence.checks.find((c) => c.name === "cross_source_read_denied")).toMatchObject({
+			status: "fail",
+			sentinelSeeded: true,
+			offDomainObservedResultCount: 0,
+			observedResultCount: 0,
 		});
 		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
 	});

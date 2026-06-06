@@ -60,11 +60,9 @@ function unsignedEvidence(): ServedMcpMemoryEvidence {
 			...(name === "memory_source_resolved_server_side"
 				? {
 						clientSourceWriteRpcErrorCode: -32001,
-						clientSourceWriteRpcErrorMessage:
-							"MCP client cannot supply memory authority fields",
+						clientSourceWriteRpcErrorMessage: "MCP client cannot supply memory authority fields",
 						clientSourceSearchRpcErrorCode: -32001,
-						clientSourceSearchRpcErrorMessage:
-							"MCP client cannot supply memory authority fields",
+						clientSourceSearchRpcErrorMessage: "MCP client cannot supply memory authority fields",
 					}
 				: {}),
 			...(rpcDenial.has(name)
@@ -72,7 +70,12 @@ function unsignedEvidence(): ServedMcpMemoryEvidence {
 				: {}),
 			...(name === "cross_source_read_denied"
 				? {
+						privateObservedResultCount: 0,
 						observedResultCount: 0,
+						offDomainObservedResultCount: 1,
+						offDomainObservedEntryHashes: [
+							"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+						],
 						sentinelSeeded: true,
 						sentinelSeedObservedPeerAddress: "172.30.92.12",
 						sentinelSeedObservedPeerSource: "server-peer-echo",

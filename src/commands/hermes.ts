@@ -2471,40 +2471,43 @@ function buildDockerExecFetch(options: {
 		const url = typeof input === "string" || input instanceof URL ? input.toString() : input.url;
 		const headers = Object.fromEntries(new Headers(init?.headers).entries());
 		const body = typeof init?.body === "string" ? init.body : String(init?.body ?? "");
-		const timeoutSeconds = Math.max(1, Math.ceil((options.timeoutMs ?? 10_000) / 1000));
+		const timeoutMs = options.timeoutMs ?? 10_000;
 		const script = `
-import json
-import sys
-import urllib.error
-import urllib.request
-
-request = json.loads(sys.stdin.read())
-timeout = float(sys.argv[1])
-headers = {str(k): str(v) for k, v in request.get("headers", {}).items()}
-body = str(request.get("body", ""))
-req = urllib.request.Request(
-    str(request["url"]),
-    data=body.encode("utf-8"),
-    headers=headers,
-    method=str(request.get("method") or "POST"),
-)
-try:
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        status = resp.getcode()
-        text = resp.read().decode("utf-8", "replace")
-        response_headers = dict(resp.headers.items())
-except urllib.error.HTTPError as exc:
-    status = exc.code
-    text = exc.read().decode("utf-8", "replace")
-    response_headers = dict(exc.headers.items())
-except Exception as exc:
-    print(json.dumps({"transportError": str(exc)}))
-    sys.exit(42)
-print(json.dumps({"status": status, "body": text, "headers": response_headers}))
+const chunks = [];
+for await (const chunk of process.stdin) chunks.push(chunk);
+const request = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+const timeoutMs = Number.parseInt(process.argv[1] ?? "10000", 10);
+const controller = new AbortController();
+const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+  ? setTimeout(() => controller.abort(new Error(\`request timed out after \${timeoutMs}ms\`)), timeoutMs)
+  : undefined;
+try {
+  const response = await fetch(String(request.url), {
+    method: String(request.method || "POST"),
+    headers: Object.fromEntries(
+      Object.entries(request.headers || {}).map(([key, value]) => [String(key), String(value)]),
+    ),
+    body: String(request.body || ""),
+    signal: controller.signal,
+  });
+  const text = await response.text();
+  console.log(JSON.stringify({
+    status: response.status,
+    body: text,
+    headers: Object.fromEntries(response.headers.entries()),
+  }));
+} catch (error) {
+  console.log(JSON.stringify({
+    transportError: error instanceof Error ? error.message : String(error),
+  }));
+  process.exit(42);
+} finally {
+  if (timer) clearTimeout(timer);
+}
 `;
 		const result = spawnSync(
 			dockerBin,
-			["exec", "-i", containerName, "python", "-c", script, String(timeoutSeconds)],
+			["exec", "-i", containerName, "node", "--input-type=module", "-e", script, String(timeoutMs)],
 			{
 				input: JSON.stringify({
 					url,

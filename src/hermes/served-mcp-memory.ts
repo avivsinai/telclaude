@@ -1,5 +1,7 @@
+import crypto from "node:crypto";
 import net from "node:net";
 import type { ZodError } from "zod";
+import { sortKeysDeep } from "../crypto/canonical-hash.js";
 import { memorySourceFamily, validateMemorySource } from "../memory/source.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
@@ -141,10 +143,16 @@ function offDomainSentinelEvidence(
 ): boolean {
 	const observed = check.sentinelSeedObservedPeerAddress;
 	const expected = check.sentinelSeedExpectedPeerAddress;
+	const offDomainHashes = check.offDomainObservedEntryHashes;
 	if (
 		check.sentinelSeeded !== true ||
 		!observed ||
 		!expected ||
+		check.privateObservedResultCount !== 0 ||
+		typeof check.offDomainObservedResultCount !== "number" ||
+		check.offDomainObservedResultCount <= 0 ||
+		!offDomainHashes ||
+		offDomainHashes.length === 0 ||
 		check.sentinelSeedObservedPeerSource !== "server-peer-echo" ||
 		check.sentinelSeedExpectedPeerSource !== "configured-off-domain-ip" ||
 		check.sentinelSeedAuthorityDomain !== "social" ||
@@ -155,6 +163,7 @@ function offDomainSentinelEvidence(
 	) {
 		return false;
 	}
+	if (offDomainHashes.some((hash) => !/^sha256:[a-f0-9]{64}$/i.test(hash))) return false;
 	if (origin.observedPeerAddress && observed === origin.observedPeerAddress) return false;
 	if (origin.expectedPeerAddress && expected === origin.expectedPeerAddress) return false;
 	return true;
@@ -281,7 +290,7 @@ export function evaluateServedMcpMemoryEvidence(
 		) {
 			rpcDenialEvidence.set(check.name, true);
 		}
-		if (thisPass && check.observedResultCount === 0) {
+		if (thisPass && check.observedResultCount === 0 && check.privateObservedResultCount === 0) {
 			emptyResultEvidence.set(check.name, true);
 		}
 		if (thisPass && check.sentinelSeeded === true) {
@@ -333,7 +342,7 @@ export function evaluateServedMcpMemoryEvidence(
 						? `memory property ${property} bit is set but lacks a passing backing check`
 						: !denialOk
 							? isEmptyResultDenial
-								? `memory denial property ${property} requires a passing check proving a distinct server-observed off-domain sentinel peer and an empty result`
+								? `memory denial property ${property} requires a passing check proving a searchable off-domain sentinel from a distinct server-observed peer and an empty private result`
 								: isClientSourceDenial
 									? `memory denial property ${property} requires passing write and search RPC-denial evidence for client-supplied source authority`
 									: `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
@@ -373,9 +382,9 @@ function flattenZodError(error: ZodError): string {
 // endpoint.headers); tests inject a fetcher that simulates the bridge. Request
 // param shapes are confirmed (MemoryWriteInputSchema / MemorySearchInputSchema);
 // responses use the standard MCP {result}|{error:{code,message}} envelope and
-// are verified live by the integration run. HARNESS DEPENDENCY: a social-source
-// sentinel entry must be pre-seeded so the contained telegram-domain search can
-// prove cross-source denial by returning zero matches.
+// are verified live by the integration run. The harness first writes and searches
+// an off-domain social sentinel, then proves the contained telegram-domain search
+// for that exact sentinel returns zero matches.
 
 export const SECRET_WRITE_PROBE_CONTENT = "probe secret AKIAIOSFODNN7EXAMPLE";
 export const INSTRUCTION_WRITE_PROBE_CONTENT =
@@ -520,6 +529,22 @@ function memResultRowCount(observation: MemoryRpcObservation): number | undefine
 	if (typeof result !== "object" || result === null) return undefined;
 	const entries = (result as { entries?: unknown }).entries;
 	return Array.isArray(entries) ? entries.length : undefined;
+}
+
+function memResultEntryHashes(observation: MemoryRpcObservation): string[] | undefined {
+	const body = observation.body;
+	if (typeof body !== "object" || body === null) return undefined;
+	const result = (body as { result?: unknown }).result;
+	if (typeof result !== "object" || result === null) return undefined;
+	const entries = (result as { entries?: unknown }).entries;
+	if (!Array.isArray(entries)) return undefined;
+	return entries.map(
+		(entry) =>
+			`sha256:${crypto
+				.createHash("sha256")
+				.update(JSON.stringify(sortKeysDeep(entry)))
+				.digest("hex")}`,
+	);
 }
 
 function memResultOk(observation: MemoryRpcObservation): boolean {
@@ -713,8 +738,8 @@ export async function runServedMcpMemoryProbe(
 			: "recall returned no rows or contained raw secret-shaped text",
 	});
 
-	// Cross-source denial: seed an off-domain sentinel, then prove a telegram-domain
-	// search for that exact sentinel returns a successful empty result.
+	// Cross-source denial: seed and search an off-domain sentinel, then prove a
+	// telegram-domain search for that exact sentinel returns a successful empty result.
 	const sentinelQuery =
 		options.socialSentinelQuery ?? `social-sentinel-probe-${Date.now().toString(36)}`;
 	const sentinelInit = options.socialSentinelEndpoint
@@ -744,6 +769,29 @@ export async function runServedMcpMemoryProbe(
 			)
 		: undefined;
 	const sentinelSeeded = sentinelSeed !== undefined && memResultOk(sentinelSeed);
+	const offDomainSentinelSearch = options.socialSentinelEndpoint
+		? await postMemory(
+				socialSentinelFetcher,
+				options.socialSentinelEndpoint,
+				memToolCall("tc_memory_search", {
+					query: sentinelQuery,
+				}),
+				timeoutMs,
+			)
+		: undefined;
+	const offDomainSentinelCount = offDomainSentinelSearch
+		? memResultRowCount(offDomainSentinelSearch)
+		: undefined;
+	const offDomainSentinelHashes = offDomainSentinelSearch
+		? memResultEntryHashes(offDomainSentinelSearch)
+		: undefined;
+	const offDomainSentinelSearchOk =
+		offDomainSentinelSearch !== undefined &&
+		offDomainSentinelCount !== undefined &&
+		offDomainSentinelCount > 0 &&
+		memError(offDomainSentinelSearch) === undefined &&
+		offDomainSentinelHashes !== undefined &&
+		offDomainSentinelHashes.length > 0;
 	const sentinelSeedObservedPeerAddress =
 		sentinelInit?.observedPeerAddress ?? sentinelSeed?.observedPeerAddress;
 	const sentinelSeedAuthority = sentinelInit?.probeAuthority ?? sentinelSeed?.probeAuthority;
@@ -762,20 +810,36 @@ export async function runServedMcpMemoryProbe(
 	checks.push({
 		name: "cross_source_read_denied",
 		status:
-			crossSearchOk && crossCount === 0 && sentinelSeeded && sentinelSeedAuthorityIsSocial
+			crossSearchOk &&
+			crossCount === 0 &&
+			sentinelSeeded &&
+			offDomainSentinelSearchOk &&
+			sentinelSeedAuthorityIsSocial
 				? "pass"
 				: "fail",
 		detail:
-			crossSearchOk && crossCount === 0 && sentinelSeeded && sentinelSeedAuthorityIsSocial
+			crossSearchOk &&
+			crossCount === 0 &&
+			sentinelSeeded &&
+			offDomainSentinelSearchOk &&
+			sentinelSeedAuthorityIsSocial
 				? "telegram-domain search of social sentinel returned an empty result (server-scoped)"
 				: !sentinelSeeded
 					? "off-domain social sentinel was not machine-observed as seeded before the search"
-					: !sentinelSeedAuthorityIsSocial
-						? "off-domain social sentinel did not report social authority metadata"
-						: !crossSearchOk
-							? "cross-source search response did not contain a successful result.entries array"
-							: `telegram-domain search returned ${crossCount} cross-source row(s)`,
-		...(crossCount !== undefined ? { observedResultCount: crossCount } : {}),
+					: !offDomainSentinelSearchOk
+						? "off-domain social sentinel was not machine-observed as searchable before the private search"
+						: !sentinelSeedAuthorityIsSocial
+							? "off-domain social sentinel did not report social authority metadata"
+							: !crossSearchOk
+								? "cross-source search response did not contain a successful result.entries array"
+								: `telegram-domain search returned ${crossCount} cross-source row(s)`,
+		...(crossCount !== undefined
+			? { observedResultCount: crossCount, privateObservedResultCount: crossCount }
+			: {}),
+		...(offDomainSentinelCount !== undefined
+			? { offDomainObservedResultCount: offDomainSentinelCount }
+			: {}),
+		...(offDomainSentinelHashes ? { offDomainObservedEntryHashes: offDomainSentinelHashes } : {}),
 		sentinelSeeded,
 		...(sentinelSeedObservedPeerAddress
 			? {
