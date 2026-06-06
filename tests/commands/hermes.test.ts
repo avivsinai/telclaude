@@ -11581,17 +11581,27 @@ if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
   printf '%s\\n' '{"Internal":true,"Containers":{"contained":{"Name":"tc-hermes-contained"},"relay":{"Name":"tc-hermes-relay"}}}'
   exit 0
 fi
-if [ "$1" = "exec" ] && [ "$2" = "tc-hermes-contained" ]; then
-  if [ "$3" = "node" ]; then
-    prop="$7"
+if [ "$1" = "exec" ]; then
+  shift
+  while [ "$1" = "-e" ]; do
+    shift 2
+  done
+  container="$1"
+  shift
+  if [ "$container" = "tc-hermes-contained" ] && [ "$1" = "node" ]; then
+    prop="$5"
     case "$prop" in
       pretooluse_hook_registered|allowlisted_skill_invocation_allowed|nonallowlisted_skill_invocation_denied|social_missing_allowlist_denied|social_empty_allowlist_denied)
+        printf '%s\\n' '{"level":30,"msg":"structured runtime log before proof JSON"}'
+        printf '%s\\n' '{malformed runtime log before proof JSON}'
+        printf '%s\\n' '{"passed":false,"detail":"stale structured runtime proof before final proof"}'
         printf '%s\\n' '{"passed":true,"detail":"docker exec PreToolUse proof","enforcementLayer":"pretooluse"}'
+        printf '%s\\n' 'node warning emitted after proof JSON'
         exit 0
         ;;
     esac
   fi
-  prop="$6"
+  prop="$4"
   case "$prop" in
     allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist)
       printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
@@ -11663,7 +11673,12 @@ exit 99
 		);
 		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
 		expect(fs.readFileSync(callsPath, "utf8")).toContain("network inspect telclaude-hermes-relay");
-		expect(fs.readFileSync(callsPath, "utf8")).toContain("exec tc-hermes-contained python -c");
+		expect(fs.readFileSync(callsPath, "utf8")).toContain(
+			"exec -e HERMES_HOME=/home/hermes/.hermes tc-hermes-contained python -c",
+		);
+		expect(fs.readFileSync(callsPath, "utf8")).toContain(
+			"exec -e HERMES_HOME=/home/hermes/.hermes -e CLAUDE_CONFIG_DIR=/home/hermes/.hermes -e TELCLAUDE_CLAUDE_HOME=/home/hermes/.hermes tc-hermes-contained node",
+		);
 	});
 
 	it("writes a passing cli-headless artifact only with runtime and relay proof", async () => {

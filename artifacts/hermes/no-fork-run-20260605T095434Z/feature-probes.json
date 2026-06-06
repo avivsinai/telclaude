@@ -334,6 +334,36 @@
       "status": "pass"
     },
     {
+      "surface_id": "served_mcp.memory",
+      "documented_seam": "Served-MCP memory tools (tc_memory_search/write) are server-source-stamped from the connection domain and enforce the private/public air-gap.",
+      "probe_command": "pnpm dev hermes probe served_mcp.memory --allow-run --mcp-url \"$TELCLAUDE_HERMES_SERVED_MCP_URL\" --mcp-auth \"$TELCLAUDE_HERMES_SERVED_MCP_AUTH\" --mcp-off-domain-peer-auth \"$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH\" --container-name tc-hermes-contained --expected-peer-address \"$TELCLAUDE_HERMES_CONTAINED_IP\" --mcp-off-domain-container \"$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER\" --mcp-off-domain-peer-address \"$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP\" --out artifacts/hermes/probes/served-mcp-memory.json",
+      "expected_result": "Memory write/recall work for the server-resolved private source; cross-source read is denied by scoping (empty result); secret/instruction writes are rejected; recall is sanitized.",
+      "negative_probe": "Cross-source read, secret/instruction write, a client-chosen source, and non-contained origin fail closed.",
+      "evidence_path": "artifacts/hermes/probes/served-mcp-memory.json",
+      "lockfile_key": "featureProbes.served_mcp.memory",
+      "approval_equivalent": false,
+      "failure_outcome": "disable",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "status": "pass"
+    },
+    {
+      "surface_id": "skills.allowlist",
+      "documented_seam": "Skill allowlist is enforced by the SDK PreToolUse hook in the contained runtime; SOCIAL fail-closes without an explicit allowlist (architecture invariant #9).",
+      "probe_command": "pnpm dev hermes probe skills.allowlist --allow-run --out artifacts/hermes/probes/skills-allowlist.json",
+      "expected_result": "An allowlisted skill reaches the runtime; non-allowlisted and SOCIAL omitted/empty-allowlist Skill calls are denied by the PreToolUse hook.",
+      "negative_probe": "A non-allowlisted skill, a SOCIAL service without an allowlist, or a denial recorded only by the canUseTool fallback fail closed.",
+      "evidence_path": "artifacts/hermes/probes/skills-allowlist.json",
+      "lockfile_key": "featureProbes.skills.allowlist",
+      "approval_equivalent": false,
+      "failure_outcome": "disable",
+      "hermes_pin": {
+        "version": "0.15.1"
+      },
+      "status": "pass"
+    },
+    {
       "surface_id": "providers.google",
       "documented_seam": "Google sidecar owns Gmail/Calendar/Drive credentials and exposes only scoped provider tools to Hermes.",
       "probe_command": "pnpm dev hermes probe providers.google --allow-run --out artifacts/hermes/probes/providers-google.json",

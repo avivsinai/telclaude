@@ -72,6 +72,7 @@ services:
     volumes:
       - ./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro
       - ./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro
+      - ..:/opt/data/telclaude-runner:ro
     user: "10000:10000"
     cap_drop:
       - ALL

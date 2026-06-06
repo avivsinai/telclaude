@@ -1,10 +1,11 @@
 {
-  "generatedAt": "2026-06-05T22:12:07.760Z",
+  "generatedAt": "2026-06-06T14:15:22.022Z",
   "status": "safe",
   "exitCode": 0,
   "mode": {
     "strict": true,
-    "dryRun": false
+    "dryRun": true,
+    "completeParityCutover": true
   },
   "gates": [
     {
@@ -111,6 +112,11 @@
       "name": "rollback.rehearsed",
       "status": "pass",
       "detail": "rollback rehearsal passed from schema-valid evidence"
+    },
+    {
+      "name": "parity.rosterCovered",
+      "status": "pass",
+      "detail": "every spec parity row is backed (25) or descoped (1): proof OR accepted parity-descope decision"
     }
   ],
   "workflowIds": [
@@ -132,6 +138,7 @@
     "artifacts/hermes/fixtures/fixture.household.provider.strong-link-read.json",
     "artifacts/hermes/fixtures/fixture.household.whatsapp.benign.json",
     "artifacts/hermes/fixtures/fixture.household.whatsapp.provider-unscoped-deny.json",
+    "artifacts/hermes/fixtures/fixture.identity.migration.relink.json",
     "artifacts/hermes/fixtures/fixture.longrun.approval-resume.json",
     "artifacts/hermes/fixtures/fixture.longrun.stale-resume-deny.json",
     "artifacts/hermes/fixtures/fixture.private.telegram.basic.deny.json",
@@ -202,20 +209,24 @@
     "artifacts/hermes/probes/providers-government.json",
     "artifacts/hermes/probes/providers-release-policy.json",
     "artifacts/hermes/probes/public-social-isolation.json",
+    "artifacts/hermes/probes/served-mcp-memory.json",
     "artifacts/hermes/probes/served-mcp-provider-tools.json",
     "artifacts/hermes/probes/sideeffect-ledger.json",
+    "artifacts/hermes/probes/skills-allowlist.json",
     "artifacts/hermes/probes/workflow-cron.json",
     "artifacts/hermes/probes/workflow-longrun.json"
   ],
   "decisionIds": [
     "D-first-cutover-workflow-set",
     "D-private-execution-contract",
-    "D-profile-generation"
+    "D-profile-generation",
+    "parity-descope:chief-of-staff"
   ],
   "downgradeNotes": [
     "No downgrade accepted for generated-profile provenance.",
     "No downgrade accepted for private Telegram production cutover.",
-    "No downgrade: direct native Hermes channel credentials remain excluded; Telclaude edge/private-runtime custody remains required."
+    "No downgrade: direct native Hermes channel credentials remain excluded; Telclaude edge/private-runtime custody remains required.",
+    "Temporary scope decision for the first private Telegram cutover; remove when a fixture.profile.chief-of-staff production fixture is added."
   ],
   "remediationOwners": [
     "operator",

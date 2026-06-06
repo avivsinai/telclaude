@@ -265,6 +265,11 @@
       "id": "fixture.household.cross-recipient-deny",
       "status": "pass",
       "evidence_path": "artifacts/hermes/fixtures/fixture.household.cross-recipient-deny.json"
+    },
+    {
+      "id": "fixture.identity.migration.relink",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/fixtures/fixture.identity.migration.relink.json"
     }
   ]
 }

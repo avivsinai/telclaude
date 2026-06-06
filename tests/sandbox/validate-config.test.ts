@@ -210,6 +210,7 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(listValues(hermes, "volumes")).toEqual([
 			"./hermes-contained-entrypoint.sh:/tmp/telclaude-hermes-contained-entrypoint.sh:ro",
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
+			"..:/opt/data/telclaude-runner:ro",
 		]);
 		expect(hermes).not.toMatch(/^\s+env_file:/m);
 		expect(listValues(hermes, "extra_hosts")).toEqual([
