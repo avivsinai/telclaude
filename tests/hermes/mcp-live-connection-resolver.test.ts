@@ -64,7 +64,7 @@ describe("Telclaude live MCP connection resolver", () => {
 					"x-telclaude-mcp-profile": socialConnection.profileId,
 				}),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: privateGrant.handle,
 			connection: privateConnection,
 		});
@@ -163,7 +163,7 @@ describe("Telclaude live MCP connection resolver", () => {
 			unscopedResolver.resolveConnection(
 				request({ authorization: `Bearer ${peerBound.token}` }, "10.0.0.2"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: authorityGrant.handle,
 			connection: authorityConnection,
 		});
@@ -188,7 +188,7 @@ describe("Telclaude live MCP connection resolver", () => {
 			allowlistedResolver.resolveConnection(
 				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, "10.0.0.2"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: authorityGrant.handle,
 			connection: authorityConnection,
 		});
@@ -196,7 +196,7 @@ describe("Telclaude live MCP connection resolver", () => {
 			allowlistedResolver.resolveConnection(
 				request({ authorization: `Bearer ${allowlistedUnbound.token}` }, "::ffff:10.0.0.2"),
 			),
-		).toEqual({
+		).toMatchObject({
 			authorityHandle: authorityGrant.handle,
 			connection: authorityConnection,
 		});
@@ -289,12 +289,12 @@ describe("Telclaude live MCP connection resolver", () => {
 		expect(
 			resolver.resolveConnection(request({ authorization: `Bearer ${second.token}` })),
 		).toBeNull();
-		expect(resolver.resolveConnection(request({ authorization: `Bearer ${other.token}` }))).toEqual(
-			{
-				authorityHandle: otherGrant.handle,
-				connection: otherConnection,
-			},
-		);
+		expect(
+			resolver.resolveConnection(request({ authorization: `Bearer ${other.token}` })),
+		).toMatchObject({
+			authorityHandle: otherGrant.handle,
+			connection: otherConnection,
+		});
 	});
 });
 

@@ -73,21 +73,41 @@ function addIfSkill(
 	provenance: SkillProvenance,
 ): void {
 	if (!hasSkillMd(dir)) return;
+	const normalizedRelativeDir = relativeDir.split(path.sep).join("/");
 	out.push({
-		name: path.basename(dir),
+		name: provenance.kind === "user" ? normalizedRelativeDir : path.basename(dir),
 		root,
 		dir,
-		relativeDir,
+		relativeDir: normalizedRelativeDir,
 		provenance,
 	});
 }
 
-function collectUserSkills(root: string, out: SkillInventoryEntry[]): void {
-	for (const entry of readDirSafe(root)) {
-		if (entry.name === AGENT_DIR) continue;
-		if (!isVisibleDirEntry(root, entry)) continue;
-		const dir = path.join(root, entry.name);
-		addIfSkill(out, root, dir, entry.name, { kind: "user" });
+function realPathSafe(dir: string): string {
+	try {
+		return fs.realpathSync.native(dir);
+	} catch {
+		return dir;
+	}
+}
+
+function collectUserSkills(
+	root: string,
+	out: SkillInventoryEntry[],
+	relativeRoot = "",
+	seen = new Set<string>(),
+): void {
+	const dirRoot = relativeRoot ? path.join(root, relativeRoot) : root;
+	const realDirRoot = realPathSafe(dirRoot);
+	if (seen.has(realDirRoot)) return;
+	seen.add(realDirRoot);
+	for (const entry of readDirSafe(dirRoot)) {
+		if (!relativeRoot && entry.name === AGENT_DIR) continue;
+		if (!isVisibleDirEntry(dirRoot, entry)) continue;
+		const relativeDir = relativeRoot ? path.join(relativeRoot, entry.name) : entry.name;
+		const dir = path.join(root, relativeDir);
+		addIfSkill(out, root, dir, relativeDir, { kind: "user" });
+		collectUserSkills(root, out, relativeDir, seen);
 	}
 }
 

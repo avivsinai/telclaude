@@ -124,4 +124,17 @@ describe("skills-allowlist attestation gate (live cutover)", () => {
 		});
 		expect(report.gates.find((gate) => gate.name === "skills.attestation")).toBeUndefined();
 	});
+
+	it("requires an attestation when strict archival validation asks for one", () => {
+		const report = evaluateSkillsAllowlistEvidence(unsignedEvidence(), {
+			allowStaleAttestations: true,
+			requireRunnerAttestation: true,
+			now: new Date(),
+		});
+		expect(report.productionEnable).toBe(false);
+		expect(report.gates.find((gate) => gate.name === "skills.attestation")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("runnerAttestation is missing"),
+		});
+	});
 });

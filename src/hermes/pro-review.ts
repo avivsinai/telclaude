@@ -1605,6 +1605,9 @@ function currentCutoverCheckContextFailure(
 	if (!isRecord(value.mode)) return "mode object is missing";
 	if (value.mode.strict !== true) return "mode.strict must be true";
 	if (typeof value.mode.dryRun !== "boolean") return "mode.dryRun must be boolean";
+	if (value.mode.completeParityCutover !== true) {
+		return "mode.completeParityCutover must be true";
+	}
 	if (value.status === "pass" && value.mode.dryRun !== true) {
 		return "mode.dryRun must be true for diagnostic pass reports";
 	}
@@ -1622,6 +1625,13 @@ function currentCutoverCheckContextFailure(
 		if (typeof gate.detail !== "string" || gate.detail.length === 0) {
 			return `gate ${index} is missing detail`;
 		}
+	}
+	const parityGate = value.gates.find(
+		(gate) => isRecord(gate) && gate.name === "parity.rosterCovered",
+	);
+	if (!parityGate) return "parity.rosterCovered gate is missing";
+	if ((value.status === "safe" || value.status === "pass") && parityGate.status !== "pass") {
+		return "parity.rosterCovered gate must pass for accepted safe/pass reports";
 	}
 	if (value.status === "safe") {
 		const nonPassGate = value.gates.find((gate) => isRecord(gate) && gate.status !== "pass");

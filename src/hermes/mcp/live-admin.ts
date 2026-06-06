@@ -83,8 +83,10 @@ const AuthoritySchema = z
 const ProbeTokensRequestSchema = z
 	.object({
 		privateConnection: ConnectionSchema,
+		offDomainConnection: ConnectionSchema.optional(),
 		wrongConnection: ConnectionSchema,
 		privateAuthority: AuthoritySchema,
+		offDomainAuthority: AuthoritySchema.optional(),
 		nowMs: z.number().finite().nonnegative().optional(),
 		ttlMs: z.number().finite().positive().optional(),
 		peerAddress: NonEmptyString.optional(),
@@ -271,11 +273,20 @@ function toProbeTokenInput(
 ): TelclaudeLiveMcpRuntimeProbeTokenInput {
 	return {
 		privateConnection: input.privateConnection,
+		...(input.offDomainConnection ? { offDomainConnection: input.offDomainConnection } : {}),
 		wrongConnection: input.wrongConnection,
 		privateAuthority: {
 			...input.privateAuthority,
 			domain: input.privateAuthority.domain as TelclaudeMcpDomain,
 		},
+		...(input.offDomainAuthority
+			? {
+					offDomainAuthority: {
+						...input.offDomainAuthority,
+						domain: input.offDomainAuthority.domain as TelclaudeMcpDomain,
+					},
+				}
+			: {}),
 		...(input.nowMs !== undefined ? { nowMs: input.nowMs } : {}),
 		...(input.ttlMs !== undefined ? { ttlMs: input.ttlMs } : {}),
 		...(input.peerAddress ? { peerAddress: input.peerAddress } : {}),

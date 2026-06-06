@@ -1804,13 +1804,15 @@ function writeServedMcpMemoryFeatureEvidence(evidencePath: string): void {
 				? {
 						observedResultCount: 0,
 						sentinelSeeded: true,
-						sentinelSeedObservedPeerAddress: "172.30.92.12",
-						sentinelSeedObservedPeerSource: "server-peer-echo",
-						sentinelSeedExpectedPeerAddress: "172.30.92.12",
-						sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
-					}
-				: {}),
-		})),
+							sentinelSeedObservedPeerAddress: "172.30.92.12",
+							sentinelSeedObservedPeerSource: "server-peer-echo",
+							sentinelSeedExpectedPeerAddress: "172.30.92.12",
+							sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+							sentinelSeedAuthorityDomain: "social",
+							sentinelSeedMemorySource: "social",
+						}
+					: {}),
+			})),
 	};
 	writeJson(evidencePath, {
 		...evidence,
@@ -2745,15 +2747,16 @@ function writeProfileProofForBundle(tempDir: string, bundle: CutoverInputBundle)
 
 async function runCutoverCheckWithBundle(
 	bundle: CutoverInputBundle,
-	options: { readonly scoped?: boolean } = {},
+	options: { readonly scoped?: boolean; readonly dryRun?: boolean } = {},
 ) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-"));
 	const paths = writeCutoverBundleArtifacts(tempDir, bundle);
+	const dryRun = options.dryRun ?? true;
 	return runHermesCommand([
 		"hermes",
 		"cutover-check",
 		"--strict",
-		"--dry-run",
+		...(dryRun ? ["--dry-run"] : []),
 		"--json",
 		...(options.scoped ? ["--scoped"] : []),
 		"--inventory",
@@ -2785,6 +2788,10 @@ async function runCutoverCheckWithBundle(
 
 async function runScopedCutoverCheckWithBundle(bundle: CutoverInputBundle) {
 	return runCutoverCheckWithBundle(bundle, { scoped: true });
+}
+
+async function runScopedLiveCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+	return runCutoverCheckWithBundle(bundle, { scoped: true, dryRun: false });
 }
 
 type CliHeadlessEvidenceFixture = Record<string, unknown> & {
@@ -3543,17 +3550,25 @@ function currentCutoverCheckReport(
 		generatedAt,
 		status,
 		exitCode: ok ? 0 : 1,
-		mode: {
-			strict: true,
-			dryRun,
-		},
-		gates: [
-			{
-				name: "workflow.scope",
-				status: ok ? "pass" : "fail",
-				detail: ok ? "included workflows are scoped" : "no included workflows",
+			mode: {
+				strict: true,
+				dryRun,
+				completeParityCutover: true,
 			},
-		],
+			gates: [
+				{
+					name: "workflow.scope",
+					status: ok ? "pass" : "fail",
+					detail: ok ? "included workflows are scoped" : "no included workflows",
+				},
+				{
+					name: "parity.rosterCovered",
+					status: ok ? "pass" : "fail",
+					detail: ok
+						? "complete parity roster covered by proof bundle"
+						: "complete parity roster is not covered",
+				},
+			],
 		workflowIds: ok ? ["workflow.private.telegram"] : [],
 		evidencePaths: [],
 		decisionIds: [],
@@ -6243,10 +6258,12 @@ describe("Hermes wrapper foundation", () => {
 			for (const [surface, filename] of [
 				["edge.whatsapp", "edge-whatsapp.json"],
 				["sideeffect.ledger", "sideeffect-ledger.json"],
-				["providers.approval-binding", "providers-approval-binding.json"],
-				["workflow.cron", "workflow-cron.json"],
-				["workflow.longrun", "workflow-longrun.json"],
-			] as const) {
+					["providers.approval-binding", "providers-approval-binding.json"],
+					["workflow.cron", "workflow-cron.json"],
+					["workflow.longrun", "workflow-longrun.json"],
+					["served_mcp.memory", "served-mcp-memory.json"],
+					["skills.allowlist", "skills-allowlist.json"],
+				] as const) {
 				const evidencePath = path.join(tempDir, filename);
 				const result = await runHermesCommand([
 					"hermes",
@@ -6288,10 +6305,12 @@ describe("Hermes wrapper foundation", () => {
 			process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
 			delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 			for (const [surface, filename] of [
-				["edge.whatsapp", "edge-whatsapp.json"],
-				["workflow.cron", "workflow-cron.json"],
-				["workflow.longrun", "workflow-longrun.json"],
-			] as const) {
+					["edge.whatsapp", "edge-whatsapp.json"],
+					["workflow.cron", "workflow-cron.json"],
+					["workflow.longrun", "workflow-longrun.json"],
+					["served_mcp.memory", "served-mcp-memory.json"],
+					["skills.allowlist", "skills-allowlist.json"],
+				] as const) {
 				const evidencePath = path.join(tempDir, filename);
 				const result = await runHermesCommand([
 					"hermes",
@@ -6964,6 +6983,27 @@ describe("Hermes wrapper foundation", () => {
 			status: "fail",
 			detail: expect.stringContaining("missing feature probe evidence execution.cli_headless"),
 		});
+	});
+
+	it("rejects scoped mode for strict live cutover", async () => {
+		const result = await runScopedLiveCutoverCheckWithBundle(safeCutoverBundle());
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			exitCode: number;
+			mode: { completeParityCutover: boolean; dryRun: boolean };
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(2);
+		expect(report.status).toBe("input_error");
+		expect(report.mode).toMatchObject({ dryRun: false, completeParityCutover: false });
+		expect(report.gates).toEqual([
+			expect.objectContaining({
+				name: "mode.completeParityCutover",
+				status: "fail",
+				detail: expect.stringContaining("--scoped is only allowed for dry-run"),
+			}),
+		]);
 	});
 
 	it.each([
@@ -12655,7 +12695,18 @@ function hasClientSourceAuthority(value) {
 
 if (container === "tc-hermes-contained") {
   if (auth !== "Bearer private") rpcError("private auth header missing");
-  else if (payload.method === "initialize") emit({result: {ok: true}}, "${CLI_HEADLESS_TEST_CONTAINED_IP}");
+  else if (payload.method === "initialize") emit({
+    result: {
+      ok: true,
+      telclaudeProbeAuthority: {
+        domain: "private",
+        memorySource: "telegram:default",
+        profileId: "default",
+        endpointId: "tc-hermes-private",
+        networkNamespace: "telclaude-hermes-relay"
+      }
+    }
+  }, "${CLI_HEADLESS_TEST_CONTAINED_IP}");
   else if (tool === "tc_memory_write") {
     const content = String(args.content || "");
     if (content.includes("off-domain sentinel")) rpcError("private container must not seed social sentinel");
@@ -12672,7 +12723,18 @@ if (container === "tc-hermes-contained") {
   }
 } else if (container === "telclaude-agent-social") {
   if (auth !== "Bearer social") rpcError("social auth header missing");
-  else if (payload.method === "initialize") emit({result: {ok: true}}, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
+  else if (payload.method === "initialize") emit({
+    result: {
+      ok: true,
+      telclaudeProbeAuthority: {
+        domain: "social",
+        memorySource: "social",
+        profileId: "social",
+        endpointId: "tc-hermes-social",
+        networkNamespace: "telclaude-hermes-relay"
+      }
+    }
+  }, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
   else if (tool === "tc_memory_write" && String(args.content || "").includes("off-domain sentinel")) {
     emit({result: {id: args.id}}, "${CLI_HEADLESS_WRONG_CONTAINED_IP}");
   } else {
@@ -12718,19 +12780,23 @@ NODE
 			checks: Array<{
 				name: string;
 				status: string;
-				sentinelSeedObservedPeerAddress?: string;
-				sentinelSeedExpectedPeerAddress?: string;
-			}>;
-		};
+					sentinelSeedObservedPeerAddress?: string;
+					sentinelSeedExpectedPeerAddress?: string;
+					sentinelSeedAuthorityDomain?: string;
+					sentinelSeedMemorySource?: string;
+				}>;
+			};
 		const calls = fs.readFileSync(callsPath, "utf8");
 
 		expect(result.exitCode, result.stdout).toBe(0);
 		expect(report.status).toBe("pass");
 		expect(report.checks.find((check) => check.name === "cross_source_read_denied")).toMatchObject({
-			status: "pass",
-			sentinelSeedObservedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
-			sentinelSeedExpectedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
-		});
+				status: "pass",
+				sentinelSeedObservedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
+				sentinelSeedExpectedPeerAddress: CLI_HEADLESS_WRONG_CONTAINED_IP,
+				sentinelSeedAuthorityDomain: "social",
+				sentinelSeedMemorySource: "social",
+			});
 		expect(calls).toContain("exec -i tc-hermes-contained python -c");
 		expect(calls).toContain("exec -i telclaude-agent-social python -c");
 		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
@@ -12926,19 +12992,33 @@ NODE
 					endpointId: "tc-hermes-private",
 					networkNamespace: "telclaude-hermes-relay",
 				},
-				wrongConnection: {
-					sessionKey: "probe:wrong",
-					profileId: "social",
-					endpointId: "tc-hermes-wrong",
-					networkNamespace: "telclaude-hermes-relay",
-				},
-				privateAuthority: {
-					actorId: "operator:probe",
-					memorySource: "telegram:default",
-					providerScopes: ["bank"],
-					outboundChannels: ["whatsapp"],
-				},
-			});
+					wrongConnection: {
+						sessionKey: "probe:wrong",
+						profileId: "social",
+						endpointId: "tc-hermes-wrong",
+						networkNamespace: "telclaude-hermes-relay",
+					},
+					offDomainConnection: {
+						sessionKey: "probe:social",
+						profileId: "social",
+						endpointId: "tc-hermes-social",
+						networkNamespace: "telclaude-hermes-relay",
+					},
+					privateAuthority: {
+						actorId: "operator:probe",
+						memorySource: "telegram:default",
+						providerScopes: ["bank"],
+						outboundChannels: ["whatsapp"],
+					},
+					offDomainAuthority: {
+						actorId: "social:probe",
+						domain: "social",
+						memorySource: "social",
+						writableNamespace: "social:probe",
+						providerScopes: [],
+						outboundChannels: [],
+					},
+				});
 		} finally {
 			await admin.close();
 		}

@@ -4,6 +4,7 @@ import {
 	type HermesSignedEvidenceValidationOptions,
 	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
+	hermesRequiresRunnerAttestation,
 } from "./attestation-validation.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
@@ -106,7 +107,7 @@ function skillsAllowlistRunnerAttestationFailure(
 ): string | null {
 	const attestation = data.runnerAttestation;
 	if (!attestation) {
-		return hermesAllowsStaleAttestations(options) ? null : "runnerAttestation is missing";
+		return hermesRequiresRunnerAttestation(options) ? "runnerAttestation is missing" : null;
 	}
 	const signatureFailure = skillsAllowlistAttestationSignatureFailure(attestation, {
 		allowStale: hermesAllowsStaleAttestations(options),

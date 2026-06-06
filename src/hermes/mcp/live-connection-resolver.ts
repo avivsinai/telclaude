@@ -142,6 +142,7 @@ export function createTelclaudeLiveMcpConnectionResolver(
 			return {
 				authorityHandle: record.authorityHandle,
 				connection: { ...record.connection },
+				authority: authority.authority,
 			};
 		},
 

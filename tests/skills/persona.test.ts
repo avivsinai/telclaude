@@ -76,6 +76,20 @@ describe("persona skill load plans", () => {
 		);
 	});
 
+	it("loads nested user-authored skills by relative path", () => {
+		writeSkill(skillCatalog, "software-development/plan");
+
+		const inventory = listSkillInventory(projectRoot);
+		expect(inventory.find((entry) => entry.name === "software-development/plan")).toMatchObject({
+			name: "software-development/plan",
+			relativeDir: "software-development/plan",
+			provenance: { kind: "user" },
+		});
+
+		const plan = buildSkillLoadPlan({ kind: "social", serviceId: "xtwitter" }, { cwd: projectRoot });
+		expect(plan.names).toContain("software-development/plan");
+	});
+
 	it("loads social agent skills only for the matching service and explicit allowlist", () => {
 		writeSkill(skillCatalog, "memory");
 		writeSkill(skillCatalog, "agent/telegram/private-helper");

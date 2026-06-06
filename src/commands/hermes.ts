@@ -735,6 +735,13 @@ type LiveMcpProbeTokenOption = JsonOption & {
 	wrongProfile?: string;
 	wrongEndpointId?: string;
 	wrongNetworkNamespace?: string;
+	offDomainSessionKey?: string;
+	offDomainProfile?: string;
+	offDomainEndpointId?: string;
+	offDomainNetworkNamespace?: string;
+	offDomainActor?: string;
+	offDomainMemorySource?: string;
+	offDomainWritableNamespace?: string;
 	actor?: string;
 	memorySource?: string;
 	writableNamespace?: string;
@@ -2888,6 +2895,12 @@ function buildLiveMcpProbeTokenRequest(
 	);
 	const wrongEndpointId = nonEmptyOption(options.wrongEndpointId, "tc-hermes-wrong");
 	const wrongNetworkNamespace = nonEmptyOption(options.wrongNetworkNamespace, networkNamespace);
+	const offDomainProfileId = nonEmptyOption(options.offDomainProfile, "social");
+	const offDomainEndpointId = nonEmptyOption(options.offDomainEndpointId, "tc-hermes-social");
+	const offDomainNetworkNamespace = nonEmptyOption(
+		options.offDomainNetworkNamespace,
+		networkNamespace,
+	);
 	const providerScopes = parseCsvOption(options.providerScopes ?? options.providerScope ?? "bank");
 	const outboundChannels = parseCsvOption(
 		options.outboundChannels ?? options.outboundChannel ?? "whatsapp",
@@ -2899,6 +2912,12 @@ function buildLiveMcpProbeTokenRequest(
 			profileId,
 			endpointId,
 			networkNamespace,
+		},
+		offDomainConnection: {
+			sessionKey: nonEmptyOption(options.offDomainSessionKey, "probe:social"),
+			profileId: offDomainProfileId,
+			endpointId: offDomainEndpointId,
+			networkNamespace: offDomainNetworkNamespace,
 		},
 		wrongConnection: {
 			sessionKey: nonEmptyOption(options.wrongSessionKey, "probe:wrong"),
@@ -2916,6 +2935,17 @@ function buildLiveMcpProbeTokenRequest(
 			outboundChannels,
 			endpointId,
 			networkNamespace,
+		},
+		offDomainAuthority: {
+			actorId: nonEmptyOption(options.offDomainActor, "social:probe"),
+			profileId: offDomainProfileId,
+			domain: "social" as const,
+			memorySource: nonEmptyOption(options.offDomainMemorySource, "social"),
+			writableNamespace: nonEmptyOption(options.offDomainWritableNamespace, "social:probe"),
+			providerScopes: [],
+			outboundChannels: [],
+			endpointId: offDomainEndpointId,
+			networkNamespace: offDomainNetworkNamespace,
 		},
 		ttlMs: parsePositiveIntegerOption(options.ttlMs, "--ttl-ms"),
 		peerAddress: options.peerAddress?.trim() || undefined,
@@ -3802,9 +3832,25 @@ export function registerHermesCommand(program: Command): void {
 		.option("--wrong-profile <id>", "Wrong-connection probe profile id")
 		.option("--wrong-endpoint-id <id>", "Wrong-connection probe endpoint id")
 		.option("--wrong-network-namespace <id>", "Wrong-connection probe network namespace")
+		.option("--off-domain-session-key <key>", "Social/off-domain sentinel probe session key")
+		.option("--off-domain-profile <id>", "Social/off-domain sentinel probe profile id")
+		.option("--off-domain-endpoint-id <id>", "Social/off-domain sentinel MCP endpoint id")
+		.option(
+			"--off-domain-network-namespace <id>",
+			"Social/off-domain sentinel probe network namespace",
+		)
 		.option("--actor <id>", "Private authority actor id")
 		.option("--memory-source <source>", "Private authority memory source")
 		.option("--writable-namespace <namespace>", "Private authority writable namespace")
+		.option("--off-domain-actor <id>", "Social/off-domain sentinel authority actor id")
+		.option(
+			"--off-domain-memory-source <source>",
+			"Social/off-domain sentinel authority memory source",
+		)
+		.option(
+			"--off-domain-writable-namespace <namespace>",
+			"Social/off-domain sentinel authority writable namespace",
+		)
 		.option("--provider-scope <csv>", "Private authority provider scopes")
 		.option("--provider-scopes <csv>", "Private authority provider scopes")
 		.option("--outbound-channel <csv>", "Private authority outbound channels")
@@ -4257,6 +4303,13 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (surface === "served_mcp.memory") {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
 				const timeoutMs = parseTimeoutMs(options.timeoutMs);
 				const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth, SERVED_MCP_AUTH_ENV);
 				const origin =
@@ -4339,6 +4392,13 @@ export function registerHermesCommand(program: Command): void {
 			}
 
 			if (surface === "skills.allowlist") {
+				if (options.allowRun === true) {
+					const relaySigningFailure = operatorRelaySigningEnvFailure();
+					if (relaySigningFailure) {
+						failHermesProbeInput(surface, options, relaySigningFailure);
+						return;
+					}
+				}
 				const timeoutMs = parseTimeoutMs(options.timeoutMs);
 				const containerName =
 					options.containerName?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
@@ -5788,6 +5848,30 @@ export function registerHermesCommand(program: Command): void {
 				const completeParityCutover = options.scoped !== true;
 				const liveCutover = strict && !dryRun;
 				const now = new Date();
+				if (liveCutover && options.scoped === true) {
+					const report = {
+						generatedAt: now.toISOString(),
+						status: "input_error",
+						exitCode: 2,
+						mode: { strict, dryRun, completeParityCutover },
+						gates: [
+							{
+								name: "mode.completeParityCutover",
+								status: "fail",
+								detail:
+									"--scoped is only allowed for dry-run diagnostics; strict live cutover requires complete parity",
+							},
+						],
+					};
+					if (options.json) {
+						printJson(report);
+					} else {
+						console.log(`Hermes cutover-check: ${report.status}`);
+						console.log(`- FAIL ${report.gates[0].name}: ${report.gates[0].detail}`);
+					}
+					process.exitCode = report.exitCode;
+					return;
+				}
 				let input: unknown;
 				try {
 					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
@@ -5800,6 +5884,7 @@ export function registerHermesCommand(program: Command): void {
 						featureProbeMatrix,
 						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix, {
 							allowStaleAttestations: !liveCutover,
+							requireRunnerAttestation: strict,
 							now,
 						}),
 						fixtureResults: readCutoverFixtureResults(options.fixtures, { dryRun }),

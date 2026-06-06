@@ -8,6 +8,7 @@ import {
 } from "./authority-registry.js";
 import {
 	TELCLAUDE_MCP_TOOL_NAMES,
+	type TelclaudeMcpAuthority,
 	type TelclaudeMcpBridge,
 	type TelclaudeMcpBridgeDependencies,
 	type TelclaudeMcpToolName,
@@ -44,6 +45,7 @@ export type TelclaudeLiveMcpRelayClients = Omit<
 export type TelclaudeLiveMcpConnectionContext = {
 	readonly authorityHandle: string;
 	readonly connection: TelclaudeMcpAuthorityConnection;
+	readonly authority?: TelclaudeMcpAuthority;
 	readonly observedPeerAddress?: string;
 };
 
@@ -190,6 +192,9 @@ export function createTelclaudeLiveMcpRelayHttpServer(
 					capabilities: {
 						tools: { listChanged: false },
 					},
+					...(context?.authority
+						? { telclaudeProbeAuthority: probeAuthorityMetadata(context.authority) }
+						: {}),
 				});
 			}
 
@@ -297,6 +302,22 @@ export function createTelclaudeLiveMcpNodeHttpServer(
 		const observationHeaders = liveMcpObservationHeaders(request, server);
 		writeHttpJson(response, httpStatusForRpcResponse(rpcResponse), rpcResponse, observationHeaders);
 	});
+}
+
+function probeAuthorityMetadata(authority: TelclaudeMcpAuthority): {
+	readonly domain: TelclaudeMcpAuthority["domain"];
+	readonly memorySource: string;
+	readonly profileId: string;
+	readonly endpointId: string;
+	readonly networkNamespace: string;
+} {
+	return {
+		domain: authority.domain,
+		memorySource: authority.memorySource,
+		profileId: authority.profileId,
+		endpointId: authority.endpointId,
+		networkNamespace: authority.networkNamespace,
+	};
 }
 
 function parseJsonRpcRequest(value: unknown):

@@ -3940,12 +3940,14 @@ function isStaleEvidenceTimestamp(timestamp: string, now: Date): boolean {
 }
 
 function cutoverValidationOptions(
+	strict: boolean,
 	liveCutover: boolean,
 	now?: Date,
 ): HermesSignedEvidenceValidationOptions {
 	const trustedRelayPublicKey = trustedRelayPublicKeyForValidation({ liveCutover });
 	return {
 		allowStaleAttestations: !liveCutover,
+		requireRunnerAttestation: strict,
 		...(now ? { now } : {}),
 		...(trustedRelayPublicKey.valid ? { relayPublicKey: trustedRelayPublicKey.value } : {}),
 	};
@@ -4043,7 +4045,7 @@ export function evaluateCutoverCheck(
 
 	const bundle = parsed.data;
 	const gates: CutoverReport["gates"] = [];
-	const validationOptions = cutoverValidationOptions(liveCutover, options.now);
+	const validationOptions = cutoverValidationOptions(strict, liveCutover, options.now);
 	const proofBundleResult = checkCutoverProofBundle({
 		bundle: bundle.cutoverProofBundle,
 		cutover: bundle,
