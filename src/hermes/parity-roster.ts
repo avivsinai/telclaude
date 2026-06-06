@@ -128,6 +128,11 @@ export const NON_DESCOPABLE_PARITY_ROWS: ReadonlySet<string> = new Set([
 	"private-chat",
 	"approval-tokens",
 	"identity-migration",
+	// Air-gap (invariant #1) and skill-allowlist (invariant #9): now backed by signed
+	// runner attestations plus off-domain-origin and client-source-rejection proofs,
+	// so production cutover must require them instead of allowing a silent descope.
+	"memory",
+	"skills",
 ]);
 
 export type ParityRosterGateInput = {
