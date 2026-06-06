@@ -1,23 +1,30 @@
 import { z } from "zod";
 
 // Evidence schema for the skills-allowlist parity probe. The probe exercises the
-// wrapper's skill-invocation path in the contained runtime and records whether the
-// allowlist is enforced fail-closed: an allowlisted skill loads, a non-allowlisted
-// one is denied, and a SOCIAL service with enableSkills but no (or empty)
-// allowedSkills denies ALL skills (architecture invariant #9). This file is the
-// schema + required-check catalog; skills-allowlist-probe.ts holds the evaluator.
+// contained Hermes profile, not a host-side SDK simulation: the runtime allowlist
+// manifest must be present, an allowlisted skill must be installed, a known
+// non-allowlisted skill must be absent, and the runtime skills tree must match
+// the manifest exactly. This file is the schema + required-check catalog;
+// skills-allowlist-probe.ts holds the evaluator.
 
 export const SKILLS_ALLOWLIST_SCHEMA_VERSION = "telclaude.hermes.skills-allowlist.v1";
 
 export const SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES = [
-	// An explicitly allowlisted skill is invocable.
-	"positive_allowlisted_skill_allowed",
-	// A skill NOT on the allowlist is denied at runtime (fail-closed), not silently run.
-	"nonallowlisted_skill_denied",
-	// SOCIAL + enableSkills:true + allowedSkills OMITTED -> every Skill call denied.
-	"social_omitted_allowlist_denies_all",
-	// SOCIAL + enableSkills:true + allowedSkills:[] -> every Skill call denied.
-	"social_empty_allowlist_denies_all",
+	// The runtime profile carries the copied allowlist manifest.
+	"allowlist_manifest_present",
+	// An explicitly allowlisted skill is present in HERMES_HOME/skills.
+	"allowlisted_skill_present",
+	// A known non-allowlisted skill is absent from the runtime profile.
+	"nonallowlisted_skill_absent",
+	// The installed runtime skills with SKILL.md match the manifest exactly.
+	"runtime_skills_match_allowlist",
+	// The production PreToolUse skill hook is registered in runtime SDK options.
+	"pretooluse_hook_registered",
+	// Positive/negative controls prove hook behavior, not only profile files.
+	"allowlisted_skill_invocation_allowed",
+	"nonallowlisted_skill_invocation_denied",
+	"social_missing_allowlist_denied",
+	"social_empty_allowlist_denied",
 	// The evidence artifact bytes carry no unredacted secret-shaped material.
 	"artifact_redacted",
 ] as const;
@@ -29,10 +36,15 @@ const SkillsAllowlistPropertyNameSchema = z.enum(SKILLS_ALLOWLIST_REQUIRED_PROPE
 
 const SkillsAllowlistPropertiesSchema = z
 	.object({
-		positive_allowlisted_skill_allowed: z.boolean().optional(),
-		nonallowlisted_skill_denied: z.boolean().optional(),
-		social_omitted_allowlist_denies_all: z.boolean().optional(),
-		social_empty_allowlist_denies_all: z.boolean().optional(),
+		allowlist_manifest_present: z.boolean().optional(),
+		allowlisted_skill_present: z.boolean().optional(),
+		nonallowlisted_skill_absent: z.boolean().optional(),
+		runtime_skills_match_allowlist: z.boolean().optional(),
+		pretooluse_hook_registered: z.boolean().optional(),
+		allowlisted_skill_invocation_allowed: z.boolean().optional(),
+		nonallowlisted_skill_invocation_denied: z.boolean().optional(),
+		social_missing_allowlist_denied: z.boolean().optional(),
+		social_empty_allowlist_denied: z.boolean().optional(),
 		artifact_redacted: z.boolean().optional(),
 	})
 	.strict();
@@ -42,17 +54,19 @@ const SkillsAllowlistCheckSchema = z
 		name: SkillsAllowlistPropertyNameSchema,
 		status: z.enum(["pass", "fail"]),
 		detail: NonEmptyString,
-		// Which enforcement layer observed the denial, when applicable
-		// (PreToolUse hook is primary; canUseTool is the fallback).
-		enforcementLayer: z.enum(["pretooluse_hook", "can_use_tool", "both"]).optional(),
+		// Every runtime/profile check must be observed through docker exec inside the
+		// contained Hermes runtime. The redaction check is evaluator-owned and may omit it.
+		observationLayer: z.literal("docker_exec").optional(),
+		// Enforcement checks must prove the primary SDK hook, not canUseTool fallback.
+		enforcementLayer: z.literal("pretooluse").optional(),
 	})
 	.strict();
 
-// Runtime-grounded origin: skill-allowlist enforcement is the SDK PreToolUse
-// hook in the contained runtime, NOT a network endpoint, so origin is proven by
-// the docker internal-network topology + container identity (mirroring the
-// api-server-containment runtime probe), not a server-peer-echo header. (Network
-// surfaces like served-MCP/memory keep server-peer-echo.)
+// Runtime-grounded origin: skill-allowlist evidence is produced from the
+// contained Hermes runtime and origin is proven by docker internal-network
+// topology + container identity (mirroring the api-server-containment runtime
+// probe), not a server-peer-echo header. (Network surfaces like
+// served-MCP/memory keep server-peer-echo.)
 const SkillsAllowlistOriginSchema = z
 	.object({
 		kind: z.enum(["contained-runtime", "unknown"]),

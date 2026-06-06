@@ -60,6 +60,9 @@ const ServedMcpMemoryCheckSchema = z
 		// a contained telegram-domain search returns zero rows even though a
 		// social/sibling sentinel entry exists, with no raw cross-source payload.
 		observedResultCount: z.number().int().nonnegative().optional(),
+		// The empty result is only meaningful when the harness also proves the
+		// off-domain sentinel existed before the search.
+		sentinelSeeded: z.boolean().optional(),
 	})
 	.strict();
 

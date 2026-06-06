@@ -432,6 +432,21 @@ export const EDGE_FIXTURE_REQUIREMENTS = [
 		],
 	},
 	{
+		id: "fixture.identity.migration.relink",
+		fixtureClass: "positive",
+		requiredProbes: [
+			{
+				probeId: "identity.migration",
+				requiredChecks: [
+					"identity.private-authorized-allowed",
+					"identity.authorization-denied-enforced",
+					"identity.revocation-enforced",
+					"identity.cross-channel-denied",
+				],
+			},
+		],
+	},
+	{
 		id: "fixture.public.social.timeline",
 		fixtureClass: "positive",
 		requiredProbes: [

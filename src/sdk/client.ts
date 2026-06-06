@@ -1195,6 +1195,72 @@ function createSkillAllowlistHook(
 	};
 }
 
+export type SkillAllowlistPreToolUseProbeResult = {
+	readonly hookRegistered: boolean;
+	readonly decision: "allow" | "deny";
+	readonly reason?: string;
+};
+
+export async function probeSkillAllowlistPreToolUse(options: {
+	readonly cwd: string;
+	readonly tier: PermissionTier;
+	readonly skillName: string;
+	readonly allowedSkills?: readonly string[];
+	readonly omitAllowedSkills?: boolean;
+	readonly agentSkillsAllowed?: readonly string[];
+	readonly enableSkills?: boolean;
+}): Promise<SkillAllowlistPreToolUseProbeResult> {
+	const sdkOptions = await buildSdkOptions({
+		cwd: options.cwd,
+		tier: options.tier,
+		userId: "hermes:skills-allowlist-probe",
+		enableSkills: options.enableSkills ?? true,
+		telemetrySource: options.tier === "SOCIAL" ? "social" : "telegram",
+		telemetryServiceId: options.tier === "SOCIAL" ? "hermes-probe" : undefined,
+		...(options.omitAllowedSkills ? {} : { allowedSkills: [...(options.allowedSkills ?? [])] }),
+		...(options.agentSkillsAllowed ? { agentSkillsAllowed: [...options.agentSkillsAllowed] } : {}),
+	});
+	const skillHookMatchers = (sdkOptions.hooks?.PreToolUse ?? []).filter(
+		(matcher) => matcher.matcher === "Skill",
+	);
+	if (skillHookMatchers.length === 0) {
+		return {
+			hookRegistered: false,
+			decision: "deny",
+			reason: "no PreToolUse Skill matcher registered",
+		};
+	}
+
+	const abortController = new AbortController();
+	const hookInput: HookInput = {
+		hook_event_name: "PreToolUse",
+		session_id: "hermes-skills-allowlist-probe",
+		transcript_path: "/tmp/hermes-skills-allowlist-probe.jsonl",
+		cwd: options.cwd,
+		tool_name: "Skill",
+		tool_input: { skill: options.skillName },
+		tool_use_id: "hermes-skills-allowlist-probe",
+	};
+
+	for (const matcher of skillHookMatchers) {
+		for (const hook of matcher.hooks) {
+			const output = await hook(hookInput, hookInput.tool_use_id, {
+				signal: abortController.signal,
+			});
+			const specific = "hookSpecificOutput" in output ? output.hookSpecificOutput : undefined;
+			if (specific?.hookEventName === "PreToolUse" && specific.permissionDecision === "deny") {
+				return {
+					hookRegistered: true,
+					decision: "deny",
+					reason: specific.permissionDecisionReason,
+				};
+			}
+		}
+	}
+
+	return { hookRegistered: true, decision: "allow" };
+}
+
 /**
  * Create a PreToolUse hook for sensitive path protection on filesystem tools.
  *

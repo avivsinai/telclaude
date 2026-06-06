@@ -17,7 +17,9 @@ function validEvidence(): ServedMcpMemoryEvidence {
 		...(rpcDenial.has(name)
 			? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
 			: {}),
-		...(name === "cross_source_read_denied" ? { observedResultCount: 0 } : {}),
+		...(name === "cross_source_read_denied"
+			? { observedResultCount: 0, sentinelSeeded: true }
+			: {}),
 	}));
 	return {
 		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
@@ -148,7 +150,22 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.status).toBe("fail");
 		const gate = report.gates.find((g) => g.name === "memory.cross_source_read_denied");
 		expect(gate?.status).toBe("fail");
-		expect(gate?.detail).toContain("empty result");
+		expect(gate?.detail).toContain("seeded off-domain sentinel");
+	});
+
+	it("requires proof that the off-domain sentinel was seeded", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied"
+					? { name: c.name, status: c.status, detail: c.detail, observedResultCount: 0 }
+					: c,
+			),
+		});
+		expect(report.gates.find((g) => g.name === "memory.cross_source_read_denied")?.status).toBe(
+			"fail",
+		);
 	});
 
 	it("fails cross-source denial when the search returned rows (not actually denied)", () => {
@@ -195,5 +212,13 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 			"fail",
 		);
 		expect(evaluateServedMcpMemoryEvidence({ ...validEvidence(), ran: false }).status).toBe("fail");
+	});
+
+	it("rejects stale generatedAt when strict validation disallows stale attestations", () => {
+		const report = evaluateServedMcpMemoryEvidence(validEvidence(), {
+			allowStaleAttestations: false,
+			now: new Date("2026-06-20T00:00:00.000Z"),
+		});
+		expect(report.gates.find((g) => g.name === "memory.freshness")?.status).toBe("fail");
 	});
 });

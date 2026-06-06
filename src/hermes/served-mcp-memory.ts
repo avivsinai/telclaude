@@ -2,6 +2,10 @@ import net from "node:net";
 import type { ZodError } from "zod";
 import { memorySourceFamily, validateMemorySource } from "../memory/source.js";
 import { redactSecrets } from "../security/output-filter.js";
+import {
+	type HermesSignedEvidenceValidationOptions,
+	hermesAttestationFreshnessFailure,
+} from "./attestation-validation.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
 
@@ -133,7 +137,7 @@ function sourceGate(memorySource: string): ServedMcpMemoryGate {
  */
 export function evaluateServedMcpMemoryEvidence(
 	evidence: unknown,
-	options: { missingPath?: string } = {},
+	options: { missingPath?: string } & HermesSignedEvidenceValidationOptions = {},
 ): ServedMcpMemoryReport {
 	if (evidence === undefined) {
 		return inputError(
@@ -148,6 +152,18 @@ export function evaluateServedMcpMemoryEvidence(
 	const gates: ServedMcpMemoryGate[] = [];
 	gates.push(originGate(parsed.data.origin));
 	gates.push(sourceGate(parsed.data.memorySource));
+	const freshnessFailure = hermesAttestationFreshnessFailure(
+		"served-MCP memory generatedAt",
+		parsed.data.generatedAt,
+		options,
+	);
+	if (freshnessFailure) {
+		gates.push({
+			name: "memory.freshness",
+			status: "fail",
+			detail: freshnessFailure,
+		});
+	}
 
 	if (parsed.data.status !== "pass") {
 		gates.push({
@@ -171,6 +187,7 @@ export function evaluateServedMcpMemoryEvidence(
 	const checkPass = new Map<string, boolean>();
 	const rpcDenialEvidence = new Map<string, boolean>();
 	const emptyResultEvidence = new Map<string, boolean>();
+	const seededSentinelEvidence = new Map<string, boolean>();
 	for (const check of parsed.data.checks) {
 		const prior = checkPass.get(check.name);
 		const thisPass = check.status === "pass";
@@ -184,6 +201,9 @@ export function evaluateServedMcpMemoryEvidence(
 		}
 		if (thisPass && check.observedResultCount === 0) {
 			emptyResultEvidence.set(check.name, true);
+		}
+		if (thisPass && check.sentinelSeeded === true) {
+			seededSentinelEvidence.set(check.name, true);
 		}
 	}
 
@@ -201,7 +221,9 @@ export function evaluateServedMcpMemoryEvidence(
 		const isEmptyResultDenial = MEMORY_EMPTY_RESULT_DENIAL_PROPERTY_NAMES.has(property);
 		const denialOk =
 			(!isRpcDenial || rpcDenialEvidence.get(property) === true) &&
-			(!isEmptyResultDenial || emptyResultEvidence.get(property) === true);
+			(!isEmptyResultDenial ||
+				(emptyResultEvidence.get(property) === true &&
+					seededSentinelEvidence.get(property) === true));
 		const proven = bit && backed && !leaked && denialOk;
 		gates.push({
 			name: `memory.${property}`,
@@ -214,7 +236,7 @@ export function evaluateServedMcpMemoryEvidence(
 						? `memory property ${property} bit is set but lacks a passing backing check`
 						: !denialOk
 							? isEmptyResultDenial
-								? `memory denial property ${property} requires a passing check proving an empty result (observedResultCount === 0)`
+								? `memory denial property ${property} requires a passing check proving a seeded off-domain sentinel and an empty result (sentinelSeeded === true, observedResultCount === 0)`
 								: `memory denial property ${property} requires a passing check carrying denial evidence (rpcErrorCode + rpcErrorMessage)`
 							: `memory property ${property} is proven and check-backed`,
 		});
@@ -267,6 +289,13 @@ export type RunServedMcpMemoryProbeOptions = {
 	readonly memorySource?: string;
 	/** A query that matches only the harness-seeded social-source sentinel. */
 	readonly socialSentinelQuery?: string;
+	/** Off-domain endpoint used to machine-seed the sentinel before the private search. */
+	readonly socialSentinelEndpoint?: {
+		readonly url: string;
+		readonly headers?: Readonly<Record<string, string>>;
+	};
+	/** Configured contained peer address; must not be derived from the relay echo. */
+	readonly expectedPeerAddress?: string;
 	readonly fetchImpl?: typeof fetch;
 	readonly now?: Date;
 	readonly timeoutMs?: number;
@@ -416,17 +445,25 @@ export async function runServedMcpMemoryProbe(
 		timeoutMs,
 	);
 	const origin: ServedMcpMemoryEvidence["origin"] =
-		init.observedPeerAddress && net.isIP(init.observedPeerAddress) !== 0
+		init.observedPeerAddress &&
+		net.isIP(init.observedPeerAddress) !== 0 &&
+		options.expectedPeerAddress &&
+		net.isIP(options.expectedPeerAddress) !== 0
 			? {
 					kind: "contained-peer",
 					containerName: DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME,
 					observedPeerAddress: init.observedPeerAddress,
 					observedPeerSource: "server-peer-echo",
-					expectedPeerAddress: init.observedPeerAddress,
+					expectedPeerAddress: options.expectedPeerAddress,
 					expectedPeerSource: "configured-contained-ip",
 					detail: "server-echoed contained peer",
 				}
-			: { kind: "unknown", detail: "no server-echoed peer address observed" };
+			: {
+					kind: "unknown",
+					detail: options.expectedPeerAddress
+						? "no server-echoed peer address observed"
+						: "configured contained peer address is missing",
+				};
 
 	// Positive write (no client source — server stamps from the connection domain).
 	const writeOk = await postMemory(
@@ -462,15 +499,21 @@ export async function runServedMcpMemoryProbe(
 		memToolCall("tc_memory_search", { query: "served-mcp memory probe positive" }),
 		timeoutMs,
 	);
-	const recallCount = memResultRowCount(recall) ?? 0;
+	const recallCount = memResultRowCount(recall);
 	checks.push({
 		name: "positive_memory_recall_returned",
-		status: recallCount > 0 ? "pass" : "fail",
-		detail: `recall returned ${recallCount} row(s)`,
+		status: recallCount !== undefined && recallCount > 0 ? "pass" : "fail",
+		detail:
+			recallCount === undefined
+				? "recall response did not contain a result.entries array"
+				: `recall returned ${recallCount} row(s)`,
 	});
 	// Sanitization: the recalled payload must carry no raw secret-shaped text.
 	const recallSerialized = JSON.stringify(recall.body ?? {});
-	const recallSanitized = recallCount > 0 && redactSecrets(recallSerialized) === recallSerialized;
+	const recallSanitized =
+		recallCount !== undefined &&
+		recallCount > 0 &&
+		redactSecrets(recallSerialized) === recallSerialized;
 	checks.push({
 		name: "episodic_recall_sanitized",
 		status: recallSanitized ? "pass" : "fail",
@@ -479,24 +522,48 @@ export async function runServedMcpMemoryProbe(
 			: "recall returned no rows or contained raw secret-shaped text",
 	});
 
-	// Cross-source denial: a telegram-domain search for the social sentinel returns 0.
+	// Cross-source denial: seed an off-domain sentinel, then prove a telegram-domain
+	// search for that exact sentinel returns a successful empty result.
+	const sentinelQuery =
+		options.socialSentinelQuery ?? `social-sentinel-probe-${Date.now().toString(36)}`;
+	const sentinelSeed = options.socialSentinelEndpoint
+		? await postMemory(
+				fetcher,
+				options.socialSentinelEndpoint,
+				memToolCall("tc_memory_write", {
+					id: `probe.memory.social-sentinel.${Date.now().toString(36)}`,
+					category: "meta",
+					content: `${sentinelQuery} off-domain sentinel`,
+					metadata: {},
+					provenance: { source: "machine-observed" },
+				}),
+				timeoutMs,
+			)
+		: undefined;
+	const sentinelSeeded = sentinelSeed !== undefined && memResultOk(sentinelSeed);
 	const crossSource = await postMemory(
 		fetcher,
 		endpoint,
 		memToolCall("tc_memory_search", {
-			query: options.socialSentinelQuery ?? "social-sentinel-probe",
+			query: sentinelQuery,
 		}),
 		timeoutMs,
 	);
-	const crossCount = memResultRowCount(crossSource) ?? 0;
+	const crossCount = memResultRowCount(crossSource);
+	const crossSearchOk = crossCount !== undefined && memError(crossSource) === undefined;
 	checks.push({
 		name: "cross_source_read_denied",
-		status: crossCount === 0 ? "pass" : "fail",
+		status: crossSearchOk && crossCount === 0 && sentinelSeeded ? "pass" : "fail",
 		detail:
-			crossCount === 0
+			crossSearchOk && crossCount === 0 && sentinelSeeded
 				? "telegram-domain search of social sentinel returned an empty result (server-scoped)"
-				: `telegram-domain search returned ${crossCount} cross-source row(s)`,
-		observedResultCount: crossCount,
+				: !sentinelSeeded
+					? "off-domain social sentinel was not machine-observed as seeded before the search"
+					: !crossSearchOk
+						? "cross-source search response did not contain a successful result.entries array"
+						: `telegram-domain search returned ${crossCount} cross-source row(s)`,
+		...(crossCount !== undefined ? { observedResultCount: crossCount } : {}),
+		sentinelSeeded,
 	});
 
 	// Write-rejection negative controls (expect an RPC error).
@@ -538,19 +605,28 @@ export async function runServedMcpMemoryProbe(
 		detail: "producer redacted all observed detail; evaluator re-scans the artifact bytes",
 	});
 
-	const allPass = checks.every((check) => check.status === "pass");
-	return {
+	const draft: ServedMcpMemoryEvidence = {
 		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
 		probeId: "served_mcp.memory",
-		status: allPass ? "pass" : "fail",
+		status: "pass",
 		ran: true,
 		generatedAt,
-		summary: allPass
-			? "served-MCP memory parity proven from contained peer"
-			: "served-MCP memory parity probe recorded failing checks",
+		summary: "served-MCP memory parity proven from contained peer",
 		memorySource,
 		origin,
 		properties,
 		checks,
+	};
+	const evaluated = evaluateServedMcpMemoryEvidence(draft, {
+		allowStaleAttestations: true,
+		now: options.now,
+	});
+	const allPass = evaluated.status === "pass" && evaluated.productionEnable;
+	return {
+		...draft,
+		status: allPass ? "pass" : "fail",
+		summary: allPass
+			? "served-MCP memory parity proven from contained peer"
+			: "served-MCP memory parity probe recorded failing checks",
 	};
 }

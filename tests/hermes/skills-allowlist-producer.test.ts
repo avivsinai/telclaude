@@ -11,18 +11,18 @@ const containedTopology = async () => ({
 	relayContainerPresent: true,
 });
 
-// Simulates the contained runtime: an allowlisted skill is allowed; everything
-// else is denied by the primary PreToolUse hook.
-const hookRunner: SkillsAllowlistRunner = async (scenario) => {
-	const allowed = scenario.allowedSkills?.includes(scenario.skill) ?? false;
-	return allowed ? { allowed: true } : { allowed: false, enforcementLayer: "pretooluse_hook" };
-};
+// Simulates docker-exec observations from the contained Hermes runtime profile.
+const dockerRunner: SkillsAllowlistRunner = async (scenario) => ({
+	passed: true,
+	observationLayer: "docker_exec",
+	...(scenario.kind === "pretooluse" ? { enforcementLayer: "pretooluse" as const } : {}),
+});
 
 describe("runSkillsAllowlistProbe", () => {
 	it("produces evidence the evaluator accepts (round-trip)", async () => {
 		const evidence = await runSkillsAllowlistProbe({
 			allowRun: true,
-			runner: hookRunner,
+			runner: dockerRunner,
 			observeTopology: containedTopology,
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -33,26 +33,22 @@ describe("runSkillsAllowlistProbe", () => {
 		expect(report.productionEnable).toBe(true);
 	});
 
-	it("yields evaluator-REJECTED evidence when denials come only from the canUseTool fallback", async () => {
-		const fallbackRunner: SkillsAllowlistRunner = async (scenario) => {
-			const allowed = scenario.allowedSkills?.includes(scenario.skill) ?? false;
-			return allowed ? { allowed: true } : { allowed: false, enforcementLayer: "can_use_tool" };
-		};
+	it("yields evaluator-REJECTED evidence when checks are not docker-exec observed", async () => {
+		const localRunner: SkillsAllowlistRunner = async () => ({ passed: true });
 		const evidence = await runSkillsAllowlistProbe({
 			allowRun: true,
-			runner: fallbackRunner,
+			runner: localRunner,
 			observeTopology: containedTopology,
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
-		// The producer records the fallback layer; the evaluator's primary-layer gate
-		// (skills-1) must reject it — the two halves agree end-to-end.
+		expect(evidence.status).toBe("fail");
 		expect(evaluateSkillsAllowlistEvidence(evidence).status).toBe("fail");
 	});
 
 	it("fails origin when the runtime topology is not contained", async () => {
 		const evidence = await runSkillsAllowlistProbe({
 			allowRun: true,
-			runner: hookRunner,
+			runner: dockerRunner,
 			observeTopology: async () => ({
 				containerName: "tc-hermes-contained",
 				topologyInternal: false,
@@ -61,6 +57,7 @@ describe("runSkillsAllowlistProbe", () => {
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
 		expect(evidence.origin.kind).toBe("unknown");
+		expect(evidence.status).toBe("fail");
 		expect(evaluateSkillsAllowlistEvidence(evidence).status).toBe("fail");
 	});
 

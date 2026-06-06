@@ -213,6 +213,11 @@ import {
 import {
 	DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH,
 	evaluateSkillsAllowlistEvidence,
+	runSkillsAllowlistProbe,
+	type SkillsAllowlistRunner,
+	type SkillsAllowlistScenario,
+	type SkillsTopologyObservation,
+	writeSkillsAllowlistEvidence,
 } from "../hermes/skills-allowlist-probe.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
@@ -2498,6 +2503,286 @@ print(json.dumps({"status": status, "body": text, "headers": response_headers}))
 	};
 }
 
+function buildDockerSkillsTopologyObserver(options: {
+	dockerBin?: string;
+	containerName: string;
+	network?: string;
+	relayContainerName?: string;
+	timeoutMs?: number;
+}): () => Promise<SkillsTopologyObservation> {
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const containerName = options.containerName.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+	const networkName =
+		options.network?.trim() ||
+		process.env.TELCLAUDE_HERMES_NETWORK?.trim() ||
+		DEFAULT_TELCLAUDE_LIVE_MCP_NETWORK;
+	const relayContainerName =
+		options.relayContainerName?.trim() ||
+		process.env.TELCLAUDE_HERMES_RELAY_CONTAINER_NAME?.trim() ||
+		DEFAULT_HERMES_RELAY_CONTAINER_NAME;
+	return async () => {
+		const result = spawnSync(
+			dockerBin,
+			["network", "inspect", networkName, "--format", "{{json .}}"],
+			{
+				encoding: "utf8",
+				env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+				timeout: options.timeoutMs,
+			},
+		);
+		if (result.status !== 0 || result.error) {
+			return {
+				containerName,
+				topologyInternal: false,
+				relayContainerPresent: false,
+			};
+		}
+		try {
+			const parsed = JSON.parse(result.stdout) as {
+				Internal?: boolean;
+				Containers?: Record<string, { Name?: string }>;
+			};
+			const containerNames = new Set(
+				Object.entries(parsed.Containers ?? {}).flatMap(([id, value]) => [
+					id,
+					value.Name ?? "",
+					(value.Name ?? "").replace(/^\/+/, ""),
+				]),
+			);
+			const containedPresent = containerNames.has(containerName);
+			const relayContainerPresent = containerNames.has(relayContainerName);
+			return {
+				containerName,
+				topologyInternal: parsed.Internal === true && containedPresent,
+				relayContainerPresent,
+			};
+		} catch {
+			return {
+				containerName,
+				topologyInternal: false,
+				relayContainerPresent: false,
+			};
+		}
+	};
+}
+
+function buildDockerExecSkillsAllowlistRunner(options: {
+	dockerBin?: string;
+	containerName: string;
+	timeoutMs?: number;
+}): SkillsAllowlistRunner {
+	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
+	const containerName = options.containerName.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+	return async (scenario: SkillsAllowlistScenario) => {
+		if (scenario.kind === "pretooluse") {
+			const script = `
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+const [prop, allowlistedSkill, nonAllowlistedSkill, expectedDecision, omitAllowedSkillsRaw, allowedSkillsRaw] = process.argv.slice(1);
+const allowedSkills = JSON.parse(allowedSkillsRaw || "[]");
+const omitAllowedSkills = omitAllowedSkillsRaw === "true";
+
+async function loadProbe() {
+  const cwd = process.cwd();
+  const candidates = [
+    process.env.TELCLAUDE_SDK_CLIENT_MODULE,
+    path.join(cwd, "dist/sdk/client.js"),
+    "/app/dist/sdk/client.js",
+    "/opt/telclaude/dist/sdk/client.js",
+    "/workspace/dist/sdk/client.js"
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      const mod = await import(pathToFileURL(candidate).href);
+      if (typeof mod.probeSkillAllowlistPreToolUse === "function") {
+        return mod.probeSkillAllowlistPreToolUse;
+      }
+    }
+  }
+  throw new Error("probeSkillAllowlistPreToolUse helper not found in runtime");
+}
+
+const probe = await loadProbe();
+const skillName = prop === "nonallowlisted_skill_invocation_denied" ? nonAllowlistedSkill : allowlistedSkill;
+const result = await probe({
+  cwd: process.env.TELCLAUDE_HERMES_SDK_CWD || process.cwd(),
+  tier: "SOCIAL",
+  skillName,
+  allowedSkills,
+  omitAllowedSkills
+});
+const passed = prop === "pretooluse_hook_registered"
+  ? result.hookRegistered === true
+  : result.hookRegistered === true && result.decision === expectedDecision;
+const detail = prop === "pretooluse_hook_registered"
+  ? (passed ? "PreToolUse Skill matcher registered" : "PreToolUse Skill matcher missing")
+  : (passed
+      ? "PreToolUse Skill hook produced expected " + expectedDecision + " decision for " + skillName
+      : "PreToolUse Skill hook decision mismatch for " + skillName + ": " + JSON.stringify(result));
+console.log(JSON.stringify({ passed, detail, enforcementLayer: "pretooluse" }, null, 0));
+`;
+			const result = spawnSync(
+				dockerBin,
+				[
+					"exec",
+					containerName,
+					"node",
+					"--input-type=module",
+					"-e",
+					script,
+					scenario.property,
+					scenario.allowlistedSkill,
+					scenario.nonAllowlistedSkill,
+					scenario.expectedDecision ?? "allow",
+					scenario.omitAllowedSkills === true ? "true" : "false",
+					JSON.stringify(scenario.allowedSkills ?? []),
+				],
+				{
+					encoding: "utf8",
+					env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+					timeout: options.timeoutMs,
+				},
+			);
+			const stdout = result.stdout?.trim() ?? "";
+			if (result.status !== 0 || result.error) {
+				return {
+					passed: false,
+					detail: redactSecrets(
+						result.stderr?.trim() ||
+							result.error?.message ||
+							"docker exec skills hook probe failed",
+					),
+				};
+			}
+			try {
+				const parsed = JSON.parse(stdout) as { passed?: unknown; detail?: unknown };
+				return {
+					passed: parsed.passed === true,
+					observationLayer: "docker_exec",
+					enforcementLayer: "pretooluse",
+					detail:
+						typeof parsed.detail === "string"
+							? redactSecrets(parsed.detail)
+							: "docker exec skills hook probe completed",
+				};
+			} catch (error) {
+				return {
+					passed: false,
+					detail: redactSecrets(
+						`failed to parse docker exec skills hook probe output: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					),
+				};
+			}
+		}
+		const script = `
+import json
+import os
+import pathlib
+import sys
+
+prop = sys.argv[1]
+allowlisted_skill = sys.argv[2]
+non_allowlisted_skill = sys.argv[3]
+home = pathlib.Path(os.environ.get("HERMES_HOME", "/home/hermes/.hermes"))
+manifest = home / "telclaude-contained-skills.allowlist"
+skills_dir = home / "skills"
+
+def read_manifest():
+    if not manifest.is_file():
+        return None
+    entries = []
+    for raw in manifest.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            entries.append(line)
+    return sorted(set(entries))
+
+def skill_present(rel):
+    return (skills_dir / rel / "SKILL.md").is_file()
+
+def installed_skills():
+    if not skills_dir.is_dir():
+        return None
+    found = []
+    for skill_md in skills_dir.rglob("SKILL.md"):
+        found.append(skill_md.parent.relative_to(skills_dir).as_posix())
+    return sorted(set(found))
+
+entries = read_manifest()
+installed = installed_skills()
+passed = False
+detail = ""
+if prop == "allowlist_manifest_present":
+    passed = entries is not None and len(entries) > 0
+    detail = f"runtime allowlist manifest has {len(entries or [])} entries"
+elif prop == "allowlisted_skill_present":
+    passed = entries is not None and allowlisted_skill in entries and skill_present(allowlisted_skill)
+    detail = f"allowlisted skill {allowlisted_skill} present={skill_present(allowlisted_skill)}"
+elif prop == "nonallowlisted_skill_absent":
+    passed = entries is not None and non_allowlisted_skill not in entries and not skill_present(non_allowlisted_skill)
+    detail = f"non-allowlisted skill {non_allowlisted_skill} absent={not skill_present(non_allowlisted_skill)}"
+elif prop == "runtime_skills_match_allowlist":
+    passed = entries is not None and installed is not None and entries == installed
+    detail = f"manifest_count={len(entries or [])} installed_count={len(installed or [])}"
+else:
+    detail = f"unknown skills allowlist property: {prop}"
+
+print(json.dumps({"passed": passed, "detail": detail}, sort_keys=True))
+`;
+		const result = spawnSync(
+			dockerBin,
+			[
+				"exec",
+				containerName,
+				"python",
+				"-c",
+				script,
+				scenario.property,
+				scenario.allowlistedSkill,
+				scenario.nonAllowlistedSkill,
+			],
+			{
+				encoding: "utf8",
+				env: { PATH: process.env.PATH ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" },
+				timeout: options.timeoutMs,
+			},
+		);
+		const stdout = result.stdout?.trim() ?? "";
+		if (result.status !== 0 || result.error) {
+			return {
+				passed: false,
+				detail: redactSecrets(
+					result.stderr?.trim() || result.error?.message || "docker exec skills probe failed",
+				),
+			};
+		}
+		try {
+			const parsed = JSON.parse(stdout) as { passed?: unknown; detail?: unknown };
+			return {
+				passed: parsed.passed === true,
+				observationLayer: "docker_exec",
+				detail:
+					typeof parsed.detail === "string"
+						? redactSecrets(parsed.detail)
+						: "docker exec skills probe completed",
+			};
+		} catch (error) {
+			return {
+				passed: false,
+				detail: redactSecrets(
+					`failed to parse docker exec skills probe output: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				),
+			};
+		}
+	};
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2699,7 +2984,7 @@ function collectHermesFeatureProbeEvidence(
 		surfaceId: string,
 		evaluate: (
 			evidence: unknown,
-			opts: { missingPath: string },
+			opts: { missingPath: string } & HermesSignedEvidenceValidationOptions,
 		) => { status: string; productionEnable: boolean; gates: ReadonlyArray<{ detail: string }> },
 		passDetail: string,
 	) =>
@@ -2715,7 +3000,10 @@ function collectHermesFeatureProbeEvidence(
 			)
 			.map((probe) => {
 				const evidencePath = resolveHermesArtifactPath(probe.evidence_path);
-				const report = evaluate(readOptionalJsonFile(evidencePath), { missingPath: evidencePath });
+				const report = evaluate(readOptionalJsonFile(evidencePath), {
+					...options,
+					missingPath: evidencePath,
+				});
 				const ok = report.status === "pass" && report.productionEnable;
 				return {
 					surface_id: probe.surface_id,
@@ -3966,6 +4254,17 @@ export function registerHermesCommand(program: Command): void {
 				const report = await runServedMcpMemoryProbe({
 					allowRun: options.allowRun === true,
 					...(endpoint ? { endpoint } : {}),
+					...(origin?.expectedPeerAddress
+						? { expectedPeerAddress: origin.expectedPeerAddress }
+						: {}),
+					...(options.mcpOffDomainPeerAuth
+						? {
+								socialSentinelEndpoint: servedMcpEndpoint(
+									options.mcpUrl,
+									options.mcpOffDomainPeerAuth,
+								),
+							}
+						: {}),
 					fetchImpl:
 						options.allowRun === true && origin?.containerName
 							? buildDockerExecFetch({
@@ -3993,7 +4292,73 @@ export function registerHermesCommand(program: Command): void {
 					}
 					if (outPath) console.log(`- evidence: ${outPath}`);
 				}
-				process.exitCode = report.status === "pass" ? 0 : 1;
+				const verdict = evaluateServedMcpMemoryEvidence(report, {
+					allowStaleAttestations: true,
+				});
+				process.exitCode =
+					report.status === "pending"
+						? 2
+						: verdict.status === "pass" && verdict.productionEnable
+							? 0
+							: verdict.status === "input_error"
+								? 2
+								: 1;
+				return;
+			}
+
+			if (surface === "skills.allowlist") {
+				const timeoutMs = parseTimeoutMs(options.timeoutMs);
+				const containerName =
+					options.containerName?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+				const report = await runSkillsAllowlistProbe({
+					allowRun: options.allowRun === true,
+					runner:
+						options.allowRun === true
+							? buildDockerExecSkillsAllowlistRunner({
+									dockerBin: options.dockerBin,
+									containerName,
+									timeoutMs,
+								})
+							: undefined,
+					observeTopology:
+						options.allowRun === true
+							? buildDockerSkillsTopologyObserver({
+									dockerBin: options.dockerBin,
+									containerName,
+									network: options.network,
+									relayContainerName: options.relayContainer,
+									timeoutMs,
+								})
+							: undefined,
+				});
+				let outPath: string | undefined;
+				if (options.allowRun === true && report.status !== "pending") {
+					outPath = resolveHermesArtifactPath(
+						options.out ?? DEFAULT_SKILLS_ALLOWLIST_EVIDENCE_PATH,
+					);
+					writeSkillsAllowlistEvidence(report, outPath, trackedSeedWriteOptions(options));
+				}
+				if (options.json) {
+					printJson(report);
+				} else {
+					console.log(`Hermes probe ${surface}: ${report.status}`);
+					console.log(`- ${report.status.toUpperCase()} ${surface}: ${report.summary}`);
+					for (const check of report.checks) {
+						console.log(`- ${check.status.toUpperCase()} ${check.name}: ${check.detail}`);
+					}
+					if (outPath) console.log(`- evidence: ${outPath}`);
+				}
+				const verdict = evaluateSkillsAllowlistEvidence(report, {
+					allowStaleAttestations: true,
+				});
+				process.exitCode =
+					report.status === "pending"
+						? 2
+						: verdict.status === "pass" && verdict.productionEnable
+							? 0
+							: verdict.status === "input_error"
+								? 2
+								: 1;
 				return;
 			}
 
@@ -5323,6 +5688,10 @@ export function registerHermesCommand(program: Command): void {
 		.description("Evaluate strict Hermes wrapper cutover evidence")
 		.option("--strict", "Fail closed for missing or unsafe evidence")
 		.option("--dry-run", "Evaluate evidence without changing runtime state")
+		.option(
+			"--scoped",
+			"Evaluate only the included workflow set; production complete-parity roster is default",
+		)
 		.option("--json", "Emit structured JSON")
 		.option(
 			"--inventory <path>",
@@ -5379,10 +5748,12 @@ export function registerHermesCommand(program: Command): void {
 					rollback: string;
 					strict?: boolean;
 					dryRun?: boolean;
+					scoped?: boolean;
 				},
 			) => {
 				const strict = options.strict ?? true;
 				const dryRun = options.dryRun ?? false;
+				const completeParityCutover = options.scoped !== true;
 				const liveCutover = strict && !dryRun;
 				const now = new Date();
 				let input: unknown;
@@ -5415,7 +5786,7 @@ export function registerHermesCommand(program: Command): void {
 						generatedAt: now.toISOString(),
 						status: "input_error",
 						exitCode: 2,
-						mode: { strict, dryRun },
+						mode: { strict, dryRun, completeParityCutover },
 						gates: [
 							{
 								name: "inputs.readable",
@@ -5440,6 +5811,7 @@ export function registerHermesCommand(program: Command): void {
 						strict,
 						dryRun,
 						liveCutover,
+						completeParityCutover,
 						now,
 					}),
 				};
