@@ -52,6 +52,8 @@ describe("runServedMcpMemoryProbe", () => {
 		const evidence = await runServedMcpMemoryProbe({
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
@@ -68,14 +70,79 @@ describe("runServedMcpMemoryProbe", () => {
 		const evidence = await runServedMcpMemoryProbe({
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
 		});
 		const cross = evidence.checks.find((c) => c.name === "cross_source_read_denied");
 		expect(cross?.observedResultCount).toBe(0);
+		expect(cross?.sentinelSeeded).toBe(true);
 		const secret = evidence.checks.find((c) => c.name === "secret_write_rejected");
 		expect(typeof secret?.rpcErrorCode).toBe("number");
 		expect(typeof secret?.rpcErrorMessage).toBe("string");
+	});
+
+	it("does not self-anchor origin to the observed peer echo", async () => {
+		const evidence = await runServedMcpMemoryProbe({
+			allowRun: true,
+			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.99",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			fetchImpl: bridgeFetcher(),
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+		expect(evidence.origin).toMatchObject({
+			observedPeerAddress: "172.30.92.11",
+			expectedPeerAddress: "172.30.92.99",
+		});
+		expect(evidence.status).toBe("fail");
+		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
+	});
+
+	it("fails cross-source denial if the sentinel was not seeded", async () => {
+		const evidence = await runServedMcpMemoryProbe({
+			allowRun: true,
+			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			fetchImpl: bridgeFetcher(),
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+		expect(evidence.checks.find((c) => c.name === "cross_source_read_denied")).toMatchObject({
+			status: "fail",
+			sentinelSeeded: false,
+		});
+		expect(evidence.status).toBe("fail");
+		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
+	});
+
+	it("fails cross-source denial on malformed private search even after seeding", async () => {
+		const malformedCrossSearch = (async (url: unknown, init?: { body?: unknown }) => {
+			const payload = JSON.parse(String(init?.body ?? "{}")) as {
+				params?: { name?: string; arguments?: Record<string, unknown> };
+			};
+			if (
+				String(url).includes("tc-hermes-contained") &&
+				payload.params?.name === "tc_memory_search" &&
+				String(payload.params.arguments?.query ?? "").includes("social-sentinel")
+			) {
+				return fakeResponse({ result: { malformed: true } });
+			}
+			return bridgeFetcher()(url as RequestInfo | URL, init as RequestInit);
+		}) as unknown as typeof fetch;
+		const evidence = await runServedMcpMemoryProbe({
+			allowRun: true,
+			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			fetchImpl: malformedCrossSearch,
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+		expect(evidence.checks.find((c) => c.name === "cross_source_read_denied")).toMatchObject({
+			status: "fail",
+			sentinelSeeded: true,
+		});
+		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
 	});
 
 	it("returns a fail-closed pending artifact without --allow-run", async () => {

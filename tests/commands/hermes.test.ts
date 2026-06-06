@@ -24,6 +24,12 @@ import {
 	buildEdgeAdapterProbeEvidence,
 	type EdgeAdapterFeatureSurfaceId,
 } from "../../src/hermes/edge-adapter-probes.js";
+import { signEdgeAdapterAttestation } from "../../src/hermes/edge-adapter-attestation.js";
+import {
+	EDGE_ADAPTER_CONTRACT_VERSION,
+	EDGE_ADAPTER_OPERATION_NAMES,
+	EdgeAdapterSchemaVersions,
+} from "../../src/hermes/edge-adapter-contract.js";
 import {
 	buildCompatibilityLockfileDraft,
 	buildCutoverInputBundleFromArtifacts,
@@ -91,6 +97,7 @@ import { noForkSha256Digest } from "../../src/hermes/no-fork-proof.js";
 import { signPrivateTelegramFixtureEvidenceAttestation } from "../../src/hermes/private-telegram-fixture-attestation.js";
 import { buildProReviewShardPlan, REQUIRED_PRO_REVIEW_FILES } from "../../src/hermes/pro-review.js";
 import { runTelclaudeProviderApprovalBindingProbe } from "../../src/hermes/provider-approval-binding-probe.js";
+import { signProviderApprovalBindingAttestation } from "../../src/hermes/provider-approval-binding-attestation.js";
 import {
 	buildProviderDomainFixtureEvidenceBundle,
 	DEFAULT_PROVIDER_DOMAIN_EVIDENCE_PATHS,
@@ -133,6 +140,39 @@ const ORIGINAL_HERMES_RUNTIME_IP_ENV = {
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
 const cliHeadlessRelaySigningKeys = generateKeyPair();
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
+
+const HERMES_COMMAND_TEST_ENV_KEYS = [
+	"OPERATOR_RPC_AGENT_PRIVATE_KEY",
+	"OPERATOR_RPC_AGENT_PUBLIC_KEY",
+	"OPERATOR_RPC_RELAY_PRIVATE_KEY",
+	"OPERATOR_RPC_RELAY_PUBLIC_KEY",
+	"TELCLAUDE_CAPABILITIES_URL",
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
+] as const;
+
+let hermesCommandTestEnvSnapshot: Record<string, string | undefined> = {};
+
+function snapshotHermesCommandTestEnv(): void {
+	hermesCommandTestEnvSnapshot = Object.fromEntries(
+		HERMES_COMMAND_TEST_ENV_KEYS.map((key) => [key, process.env[key]]),
+	);
+}
+
+function restoreHermesCommandTestEnv(): void {
+	for (const [key, value] of Object.entries(hermesCommandTestEnvSnapshot)) {
+		restoreEnv(key, value);
+	}
+	hermesCommandTestEnvSnapshot = {};
+}
+
+function freshHermesFixtureTimestamp(offsetMs = 60_000): string {
+	return new Date(Date.now() - offsetMs).toISOString();
+}
+
+function addMs(timestamp: string, ms: number): string {
+	return new Date(Date.parse(timestamp) + ms).toISOString();
+}
 
 const featureProbeMatrix: FeatureProbeMatrix = {
 	schemaVersion: 1,
@@ -891,7 +931,8 @@ function writeFixtureResults() {
 		.createHash("sha256")
 		.update(fs.readFileSync(reportPath))
 		.digest("hex")}`;
-	const invocation = privateTelegramFixtureInvocation(reportPath, reportDigest);
+	const observedAt = freshHermesFixtureTimestamp();
+	const invocation = privateTelegramFixtureInvocation(reportPath, reportDigest, observedAt);
 	const fixtures = PRIVATE_TELEGRAM_FIXTURE_REQUIREMENTS.map((requirement) => {
 		const evidencePath = path.join(tempDir, `${requirement.id}.json`);
 		const checks = requirement.requiredTests.map((testName) => ({
@@ -905,7 +946,7 @@ function writeFixtureResults() {
 			status: "pass",
 			ran: true,
 			evidence_path: evidencePath,
-			observedAt: "2026-05-30T00:00:00.000Z",
+			observedAt,
 			provenance: {
 				runner: "vitest-json",
 				source: "machine-observed-test-report",
@@ -940,7 +981,11 @@ function writeFixtureResults() {
 	return { schemaVersion: 1 as const, results: fixtures };
 }
 
-function privateTelegramFixtureInvocation(reportPath: string, reportDigest: string) {
+function privateTelegramFixtureInvocation(
+	reportPath: string,
+	reportDigest: string,
+	startedAt = freshHermesFixtureTimestamp(),
+) {
 	return {
 		command: [
 			"pnpm",
@@ -954,8 +999,8 @@ function privateTelegramFixtureInvocation(reportPath: string, reportDigest: stri
 		],
 		cwd: testCwd ?? process.cwd(),
 		exitCode: 0,
-		startedAt: "2026-05-30T00:00:00.000Z",
-		endedAt: "2026-05-30T00:00:01.000Z",
+		startedAt,
+		endedAt: addMs(startedAt, 1000),
 		reportPath,
 		reportSha256: reportDigest,
 		sourceDigests: Object.fromEntries(
@@ -1011,7 +1056,7 @@ function passingNetworkProbeEvidence(id: string, evidencePath: string) {
 			id === "network.relay-control-allowed"
 				? `${id} observed expected relay reachability`
 				: `${id} observed only expected denials`,
-		generatedAt: "2026-05-30T00:00:00.000Z",
+		generatedAt: freshHermesFixtureTimestamp(),
 		evidence_path: evidencePath,
 		attempts:
 			id === "network.direct-provider-denied"
@@ -1329,28 +1374,447 @@ function proofArtifact(artifactPath: string, sourceCommand: string, gateIds: str
 	return { artifactPath, sourceCommand, gateIds, checkIds: gateIds };
 }
 
+function simpleFeatureProbe(
+	surfaceId: string,
+	evidencePath: string,
+	lockfileKey = `featureProbes.${surfaceId}`,
+): FeatureProbeMatrix["probes"][number] {
+	return {
+		surface_id: surfaceId,
+		hermes_pin: hermesPin,
+		documented_seam: `${surfaceId} test seam`,
+		probe_command: `pnpm dev hermes probe ${surfaceId} --allow-run`,
+		expected_result: `${surfaceId} passes`,
+		negative_probe: `${surfaceId} negative controls fail closed`,
+		evidence_path: evidencePath,
+		lockfile_key: lockfileKey,
+		approval_equivalent: false,
+		failure_outcome: "disable",
+		status: "pass",
+	};
+}
+
+function writeIdentityMigrationProbeEvidence(evidencePath: string): void {
+	ensureOperatorRelayKeys();
+	const observedAt = freshHermesFixtureTimestamp();
+	const controls = [
+		"contract.actor-ref.validates",
+		"contract.conversation-ref.validates",
+		"identity.private-authorized-allowed",
+		"identity.authorization-denied-enforced",
+		"identity.unpaired-sender-denied",
+		"identity.forged-actor-denied",
+		"identity.revocation-enforced",
+		"identity.session-id-not-authority",
+		"identity.cross-channel-denied",
+		"identity.wrong-thread-denied",
+	].map((name) => ({
+		name,
+		status: "pass" as const,
+		detail: `${name} passed in deterministic identity migration fixture`,
+	}));
+	const evidence = {
+		schemaVersion: "telclaude.hermes.edge-adapter-probe.v1",
+		probeId: "identity.migration",
+		status: "pass" as const,
+		ran: true,
+		observedAt,
+		source: "telclaude-edge-runtime-harness",
+		summary: "Edge runtime harness passed for identity.migration",
+		surface: {
+			id: "identity.migration",
+			channels: ["whatsapp", "email", "agentmail", "social"],
+			trustDomains: ["private", "household", "public", "public-social"],
+		},
+		contract: {
+			version: EDGE_ADAPTER_CONTRACT_VERSION,
+			operations: [...EDGE_ADAPTER_OPERATION_NAMES],
+			schemaVersions: Object.values(EdgeAdapterSchemaVersions),
+		},
+		custody: {
+			credentialOwner: "telclaude-edge",
+			hermesRawCredentialAccess: "denied",
+			attachmentRawAccess: "denied",
+			outboundExecutionOwner: "telclaude-edge",
+		},
+		controls,
+		runtime: {
+			source: "telclaude-edge-runtime-harness",
+			operationTrace: [...EDGE_ADAPTER_OPERATION_NAMES],
+			checks: controls,
+			observations: {
+				ingestedAttachments: 1,
+				deniedAttempts: 10,
+				ledgerEntries: 1,
+				receiptRefs: 1,
+			},
+		},
+	};
+	writeJson(evidencePath, {
+		...evidence,
+		runnerAttestation: signEdgeAdapterAttestation(evidence),
+	});
+}
+
+const PROVIDER_APPROVAL_BINDING_TEST_CHECKS = [
+	"provider.approval-binding.prepare-hashes",
+	"provider.approval-binding.content-hash",
+	"provider.approval-binding.valid-token-executes",
+	"provider.approval-binding.proxy-relay",
+	"provider.approval-binding.hermes-approval-token-input-denied",
+	"provider.approval-binding.invalid-token-denied",
+	"provider.approval-binding.params-mutation-denied",
+	"provider.approval-binding.wrong-actor-denied",
+	"provider.approval-binding.service-action-mismatch-denied",
+	"provider.approval-binding.wrong-account-denied",
+	"provider.approval-binding.wrong-approval-request-denied",
+	"provider.approval-binding.wrong-card-revision-denied",
+	"provider.approval-binding.wrong-approver-denied",
+	"provider.approval-binding.wysiwys-render-mismatch-denied",
+	"provider.approval-binding.expired-ref-denied",
+	"provider.approval-binding.revoked-ref-denied",
+	"provider.approval-binding.approved-then-revoked-ref-denied",
+	"provider.approval-binding.executed-ref-replay-denied",
+	"provider.approval-binding.duplicate-jti-denied",
+	"provider.approval-binding.google-sidecar-token-roundtrip",
+	"provider.approval-binding.hermes-token-sidecar-rejected",
+] as const;
+
+function writeProviderApprovalBindingProbeEvidence(evidencePath: string): void {
+	ensureOperatorRelayKeys();
+	const evidence = {
+		schemaVersion: "telclaude.hermes.provider-approval-binding-probe.v1",
+		probeId: "providers.approval-binding",
+		status: "pass" as const,
+		ran: true,
+		observedAt: freshHermesFixtureTimestamp(),
+		source: "telclaude-provider-approval-binding-harness",
+		summary: "Provider approval-binding probe passed",
+		checks: PROVIDER_APPROVAL_BINDING_TEST_CHECKS.map((name) => ({
+			name,
+			status: "pass" as const,
+			detail: `${name} passed in deterministic approval-binding fixture`,
+		})),
+		observations: {
+			actionRef: "provider-approval-probe-1",
+			paramsHash: `sha256:${"1".repeat(64)}`,
+			bodyHash: `sha256:${"2".repeat(64)}`,
+			contentHash: `sha256:${"3".repeat(64)}`,
+			verifierCallCount: 12,
+			providerProxyCallCount: 1,
+			googleSidecarParamsHash: `sha256:${"4".repeat(64)}`,
+			hermesTokenSidecarRejectCode: "invalid_grant",
+		},
+	};
+	writeJson(evidencePath, {
+		...evidence,
+		runnerAttestation: signProviderApprovalBindingAttestation(evidence),
+	});
+}
+
+function writeApprovalContinuationEvidence(evidencePath: string): void {
+	const fixtureDir = path.dirname(evidencePath);
+	writeJson(evidencePath, {
+		schemaVersion: 1,
+		hermes: hermesPin,
+		native: {
+			events_wait: true,
+			permissions_list_open: true,
+			permissions_respond: true,
+			responds_to_blocked_run: true,
+			wrong_actor_denied: true,
+			stale_request_denied: true,
+			replay_denied: true,
+			mutated_decision_denied: true,
+			evidence_path: evidencePath,
+		},
+		fallback: {
+			strategy: "cross_turn_prepare_approve_execute",
+			fixtures: REQUIRED_APPROVAL_FALLBACK_FIXTURE_IDS.map((id) => ({
+				id,
+				status: "pass",
+				evidence_path: path.join(fixtureDir, `${id}.json`),
+			})),
+		},
+	});
+}
+
+function writeSafeParityFixtures(
+	root: string,
+	privateFixtureResults: ReturnType<typeof writeFixtureResults>,
+): ReturnType<typeof writeFixtureResults> {
+	const identityProbePath = path.join(root, "artifacts/hermes/probes/identity-migration.json");
+	writeIdentityMigrationProbeEvidence(identityProbePath);
+	const observedAt = freshHermesFixtureTimestamp();
+	const edgeFixtures = buildEdgeAdapterFixtureEvidenceBundle({
+		evidenceDir: path.join(root, "artifacts/hermes/fixtures"),
+		observedAt,
+		probePaths: { "identity.migration": identityProbePath },
+	});
+	for (const evidence of edgeFixtures.evidence) {
+		writeJson(evidence.evidence_path, evidence);
+	}
+	const identityFixture = edgeFixtures.results.find(
+		(result) => result.id === "fixture.identity.migration.relink",
+	);
+	if (!identityFixture) throw new Error("identity migration relink fixture was not generated");
+	return {
+		schemaVersion: 1,
+		results: [...privateFixtureResults.results, identityFixture],
+	};
+}
+
+const DESCOPED_TEST_PARITY_ROWS = [
+	"approvals-cards",
+	"providers",
+	"banking",
+	"clalit-health",
+	"government-identity",
+	"google-provider",
+	"memory",
+	"skills",
+	"social-public",
+	"whatsapp",
+	"household-whatsapp",
+	"email",
+	"household-email",
+	"agentmail",
+	"edge-adapters",
+	"model-provider-relay",
+	"cron",
+	"long-lived-workflows",
+	"chief-of-staff",
+	"browser-web-computer",
+	"web-browser-broker",
+] as const;
+
+type TestInventoryWorkflow = {
+	readonly workflow_id: string;
+	readonly owner: string;
+	readonly trust_domain: string;
+	readonly active: boolean;
+};
+
+function completeTestInventory(
+	workflows: readonly TestInventoryWorkflow[],
+	generatedAt = "2026-05-29T00:00:00Z",
+) {
+	const queueSummary = pendingQueues();
+	return {
+		generatedAt,
+		status: "complete" as const,
+		summary: {
+			pendingQueues: queueSummary,
+		},
+		queues: queueDetailsFromPending(queueSummary),
+		workflows: [...workflows],
+	};
+}
+
+function moduleTestWorkflow(workflowId: string): TestInventoryWorkflow {
+	return {
+		workflow_id: workflowId,
+		owner: "operator",
+		trust_domain: "module-test",
+		active: true,
+	};
+}
+
+function privateChatWorkflow(): TestInventoryWorkflow {
+	return {
+		workflow_id: "private.telegram.basic",
+		owner: "operator",
+		trust_domain: "private",
+		active: true,
+	};
+}
+
+function providerWorkflow(workflowId: string, owner: string): TestInventoryWorkflow {
+	return {
+		workflow_id: workflowId,
+		owner,
+		trust_domain: "provider",
+		active: true,
+	};
+}
+
+function householdWorkflow(workflowId: string): TestInventoryWorkflow {
+	return {
+		workflow_id: workflowId,
+		owner: "household:family",
+		trust_domain: "household",
+		active: true,
+	};
+}
+
+function profileDecisionLogFor(workflowIds: readonly string[], impact = "test module cutover") {
+	return {
+		schemaVersion: 1 as const,
+		decisions: [
+			{
+				id: "D-profile-generation",
+				status: "accepted" as const,
+				owner: "operator",
+				deadline_phase: "Phase 1",
+				accepted_answer:
+					"Generated Hermes profiles are produced by the checked profile generator.",
+				affected_workflows: [...workflowIds],
+				cutover_impact: impact,
+			},
+		],
+	};
+}
+
+function mergeFeatureProbeMatrix(
+	base: FeatureProbeMatrix,
+	probes: readonly FeatureProbeMatrix["probes"][number][],
+): FeatureProbeMatrix {
+	const bySurfaceId = new Map<string, FeatureProbeMatrix["probes"][number]>();
+	for (const probe of base.probes) bySurfaceId.set(probe.surface_id, probe);
+	for (const probe of probes) bySurfaceId.set(probe.surface_id, probe);
+	return {
+		schemaVersion: 1,
+		probes: [...bySurfaceId.values()],
+	};
+}
+
+function featureProbeEvidenceForMatrix(matrix: FeatureProbeMatrix) {
+	return {
+		schemaVersion: 1 as const,
+		results: matrix.probes.map((probe) => ({
+			surface_id: probe.surface_id,
+			status: "pass" as const,
+			evidence_path: probe.evidence_path,
+			detail: "test fixture observed feature probe pass",
+		})),
+	};
+}
+
+function cutoverBundleWithAdditionalWorkflow(options: {
+	readonly base: CutoverInputBundle;
+	readonly inventoryWorkflow: TestInventoryWorkflow;
+	readonly scopeWorkflow: CutoverInputBundle["scopeManifest"]["workflows"][number];
+	readonly probes: readonly FeatureProbeMatrix["probes"][number][];
+	readonly adapterApiSignatures?: Record<string, string>;
+	readonly decisionImpact?: string;
+}): Partial<CutoverInputBundle> {
+	const featureProbeMatrix = mergeFeatureProbeMatrix(options.base.featureProbeMatrix, options.probes);
+	return {
+		inventory: completeTestInventory([privateChatWorkflow(), options.inventoryWorkflow]),
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [options.base.scopeManifest.workflows[0], options.scopeWorkflow],
+		},
+		featureProbeMatrix,
+		featureProbeEvidence: featureProbeEvidenceForMatrix(featureProbeMatrix),
+		noForkProof: options.base.noForkProof,
+		decisionLog: profileDecisionLogFor([], options.decisionImpact),
+		lockfile: {
+			...options.base.lockfile,
+			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+			featureProbes: featureProbeMatrix.probes.map((probe) => ({
+				surface_id: probe.surface_id,
+				status: probe.status ?? "fail",
+				evidence_path: probe.evidence_path,
+			})),
+			adapterApiSignatures: {
+				...options.base.lockfile.adapterApiSignatures,
+				...(options.adapterApiSignatures ?? {}),
+			},
+			noForkProofEvidencePath: options.base.noForkProof.evidence_path,
+		},
+	};
+}
+
+function freshCutoverTimingOverrides(bundle: CutoverInputBundle) {
+	const generatedAt = freshHermesFixtureTimestamp();
+	const pendingQueues = bundle.inventory.summary.pendingQueues;
+	const rollbackRehearsal = {
+		...bundle.rollbackRehearsal,
+		observedAt: generatedAt,
+	};
+	writeJson(rollbackRehearsal.evidence_path, rollbackRehearsal);
+	return {
+		inventory: {
+			...bundle.inventory,
+			generatedAt,
+		},
+		queueSnapshot: queueSnapshotFromPending(pendingQueues, generatedAt),
+		rollbackRehearsal,
+	};
+}
+
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
 	const noForkProof = writeNoForkProof();
-	const lockfile = { ...compatLockfile, noForkProofEvidencePath: noForkProof.evidence_path };
+	const parityRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-parity-safe-"));
+	const cliHeadlessEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/execution-cli-headless.json",
+	);
+	writeJson(cliHeadlessEvidencePath, cliHeadlessEvidence());
+	writeHeadlessEntrypointGreenEvidence(parityRoot);
+	const headlessEntrypointEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/execution-headless-entrypoint.json",
+	);
+	const providerApprovalEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/providers-approval-binding.json",
+	);
+	writeProviderApprovalBindingProbeEvidence(providerApprovalEvidencePath);
+	const approvalContinuationEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/execution-approval-continuation.json",
+	);
+	writeApprovalContinuationEvidence(approvalContinuationEvidencePath);
+	const identityProbeEvidencePath = path.join(
+		parityRoot,
+		"artifacts/hermes/probes/identity-migration.json",
+	);
+	writeIdentityMigrationProbeEvidence(identityProbeEvidencePath);
+	const baseFeatureProbeMatrix: FeatureProbeMatrix = {
+		schemaVersion: 1,
+		probes: [
+			cliHeadlessProbe(cliHeadlessEvidencePath),
+			simpleFeatureProbe(
+				"execution.headless_entrypoint",
+				headlessEntrypointEvidencePath,
+				"featureProbes.execution.headlessEntrypoint",
+			),
+			simpleFeatureProbe(
+				"providers.approval-binding",
+				providerApprovalEvidencePath,
+				"featureProbes.providers.approvalBinding",
+			),
+			approvalContinuationProbe(approvalContinuationEvidencePath),
+			simpleFeatureProbe(
+				"identity.migration",
+				identityProbeEvidencePath,
+				"featureProbes.identity.migration",
+			),
+		],
+	};
+	const lockfile = {
+		...compatLockfile,
+		noForkProofEvidencePath: noForkProof.evidence_path,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(baseFeatureProbeMatrix),
+		featureProbes: baseFeatureProbeMatrix.probes.map((probe) => ({
+			surface_id: probe.surface_id,
+			status: probe.status,
+			evidence_path: probe.evidence_path,
+		})),
+	};
 	const basePendingQueues = pendingQueues();
 	const baseGeneratedAt = "2026-05-29T00:00:00Z";
+	const baseFixtureResults = writeSafeParityFixtures(parityRoot, writeFixtureResults());
 	const base: CutoverBundleWithoutProof = {
 		schemaVersion: 1,
 		inventory: {
-			generatedAt: baseGeneratedAt,
-			status: "complete",
+			...completeTestInventory([privateChatWorkflow()], baseGeneratedAt),
 			summary: {
 				pendingQueues: basePendingQueues,
 			},
 			queues: queueDetailsFromPending(basePendingQueues),
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
 		},
 		scopeManifest: {
 			schemaVersion: 1,
@@ -1365,26 +1829,45 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 					cutover_requirement: "Pinned Hermes wrapper parity fixture must pass.",
 					status: "included",
 					rollback_owner: "operator",
-					fixture_ids: ["fixture.private.telegram.basic"],
+					fixture_ids: [
+						"fixture.private.telegram.basic",
+						"fixture.identity.migration.relink",
+					],
 					negative_fixture_ids: ["fixture.private.telegram.basic.deny"],
-					required_surface_ids: ["edge.whatsapp.plugin-adapter"],
+					required_surface_ids: [
+						"execution.cli_headless",
+						"execution.approval_continuation",
+						"providers.approval-binding",
+						"identity.migration",
+					],
 					unresolved_decision_ids: [],
 				},
 			],
 		},
-		decisionLog: { schemaVersion: 1, decisions: [] },
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: DESCOPED_TEST_PARITY_ROWS.map((row) => ({
+				id: `parity-descope:${row}`,
+				status: "accepted" as const,
+				owner: "operator",
+				deadline_phase: "test",
+				accepted_answer: `${row} intentionally descoped in the narrow cutover fixture`,
+				affected_workflows: ["private.telegram.basic"],
+				cutover_impact: "test fixture only",
+			})),
+		},
 		lockfile,
-		featureProbeMatrix,
+		featureProbeMatrix: baseFeatureProbeMatrix,
 		featureProbeEvidence: {
 			schemaVersion: 1,
-			results: featureProbeMatrix.probes.map((probe) => ({
+			results: baseFeatureProbeMatrix.probes.map((probe) => ({
 				surface_id: probe.surface_id,
 				status: "pass" as const,
 				evidence_path: probe.evidence_path,
 				detail: "test fixture observed feature probe pass",
 			})),
 		},
-		fixtureResults: writeFixtureResults(),
+		fixtureResults: baseFixtureResults,
 		noForkProof,
 		networkProbes: writePassingNetworkProbeBundle(),
 		queueSnapshot: queueSnapshotFromPending(basePendingQueues, baseGeneratedAt),
@@ -1409,17 +1892,26 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 				now: "2026-05-29T00:00:00Z",
 			});
 	const hasDecisionOverride = Object.hasOwn(overrides, "decisionLog");
-	const withoutProof: CutoverBundleWithoutProof = {
-		...merged,
-		profileGenerationProof,
-		decisionLog: hasDecisionOverride
-			? merged.decisionLog
-			: {
-					schemaVersion: 1,
-					decisions: [
+	const decisionLogWithParityDescopes = {
+		schemaVersion: 1 as const,
+		decisions: [
+			...(hasDecisionOverride
+				? []
+				: DESCOPED_TEST_PARITY_ROWS.map((row) => ({
+						id: `parity-descope:${row}`,
+						status: "accepted" as const,
+						owner: "operator",
+						deadline_phase: "test",
+						accepted_answer: `${row} intentionally descoped in the narrow cutover fixture`,
+						affected_workflows: ["private.telegram.basic"],
+						cutover_impact: "test fixture only",
+					}))),
+			...(hasDecisionOverride
+				? merged.decisionLog.decisions
+				: [
 						{
 							id: "D-profile-generation",
-							status: "accepted",
+							status: "accepted" as const,
 							owner: "operator",
 							deadline_phase: "Phase 1",
 							accepted_answer:
@@ -1428,8 +1920,13 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 							affected_workflows: ["private.telegram.basic"],
 							cutover_impact: "Profile generation proof is required before private cutover.",
 						},
-					],
-				},
+					]),
+		],
+	};
+	const withoutProof: CutoverBundleWithoutProof = {
+		...merged,
+		profileGenerationProof,
+		decisionLog: decisionLogWithParityDescopes,
 	};
 	return {
 		...withoutProof,
@@ -1465,32 +1962,21 @@ function cliHeadlessCutoverBundle(
 	};
 	const base = safeCutoverBundle();
 	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
-			},
-		},
+		inventory: completeTestInventory([moduleTestWorkflow("execution.cli_headless.module")]),
 		scopeManifest: {
 			schemaVersion: 1,
 			workflows: [
 				{
 					...base.scopeManifest.workflows[0],
+					workflow_id: "execution.cli_headless.module",
+					trust_domain: "module-test",
 					required_surface_ids: ["execution.cli_headless"],
 				},
 			],
 		},
 		featureProbeMatrix,
 		noForkProof: base.noForkProof,
+		decisionLog: profileDecisionLogFor(["execution.cli_headless.module"]),
 		lockfile: {
 			...compatLockfile,
 			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
@@ -1551,52 +2037,25 @@ function edgeAdapterCutoverBundleFromEvidence(
 	const probes = evidence.map(({ surfaceId, evidencePath }) =>
 		edgeAdapterProbe(surfaceId, evidencePath, matrixStatus),
 	);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes,
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: moduleTestWorkflow("edge.runtime.module"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "edge.runtime.module",
+				trust_domain: "module-test",
+				required_surface_ids: evidence.map(({ surfaceId }) => surfaceId),
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					required_surface_ids: evidence.map(({ surfaceId }) => surfaceId),
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: evidence.map(({ surfaceId, evidencePath }) => ({
-				surface_id: surfaceId,
-				status: "pass" as const,
-				evidence_path: evidencePath,
-			})),
+			probes,
 			adapterApiSignatures: Object.fromEntries(
 				evidence.map(({ surfaceId }) => [surfaceId, `sha256:${"e".repeat(64)}`]),
 			),
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
+			decisionImpact: "Edge runtime module cutover proof extends the private P0 bundle.",
 		},
-	});
+		),
+	);
 }
 
 function edgeAdapterCutoverBundle(
@@ -1638,54 +2097,25 @@ function approvalContinuationCutoverBundle(
 	surfaceId = "execution.approval_continuation",
 ) {
 	const probe = approvalContinuationProbe(evidencePath, matrixStatus, surfaceId);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: moduleTestWorkflow("approval.continuation.module"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "approval.continuation.module",
+				trust_domain: "module-test",
+				required_surface_ids: [surfaceId],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					required_surface_ids: [surfaceId],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: surfaceId,
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				[surfaceId]: `sha256:${"d".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
+			decisionImpact: "Approval-continuation module cutover proof extends the private P0 bundle.",
 		},
-	});
+		),
+	);
 }
 
 function sideEffectLedgerProbe(evidencePath: string, status: "pass" | "fail" | "skip" = "pass") {
@@ -1713,54 +2143,25 @@ function sideEffectLedgerCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = sideEffectLedgerProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: moduleTestWorkflow("sideeffect.ledger.module"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "sideeffect.ledger.module",
+				trust_domain: "module-test",
+				required_surface_ids: ["sideeffect.ledger"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					required_surface_ids: ["sideeffect.ledger"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "sideeffect.ledger",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"sideeffect.ledger": `sha256:${"9".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
+			decisionImpact: "Side-effect ledger module cutover proof extends the private P0 bundle.",
 		},
-	});
+		),
+	);
 }
 
 function providerApprovalBindingProbe(
@@ -1791,72 +2192,25 @@ function providerApprovalBindingCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = providerApprovalBindingProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "providers.bank",
-					owner: "provider:bank",
-					trust_domain: "provider",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: providerWorkflow("providers.bank", "provider:bank"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "providers.bank",
+				owner: "provider:bank",
+				trust_domain: "provider",
+				required_surface_ids: ["providers.approval-binding"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: "providers.bank",
-					owner: "provider:bank",
-					trust_domain: "provider",
-					required_surface_ids: ["providers.approval-binding"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact: "Profile generation proof is required before provider cutover.",
-				},
-			],
-		},
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "providers.approval-binding",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"providers.approval-binding": `sha256:${"8".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
+			decisionImpact: "Profile generation proof is required before provider cutover.",
+		}),
+	);
 }
 
 function providerReleasePolicyProbe(
@@ -1886,72 +2240,25 @@ function providerReleasePolicyCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = providerReleasePolicyProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "household.assistant",
-					owner: "household:family",
-					trust_domain: "household",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: householdWorkflow("household.assistant"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "household.assistant",
+				owner: "household:family",
+				trust_domain: "household",
+				required_surface_ids: ["providers.release-policy"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: "household.assistant",
-					owner: "household:family",
-					trust_domain: "household",
-					required_surface_ids: ["providers.release-policy"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact: "Profile generation proof is required before provider cutover.",
-				},
-			],
-		},
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "providers.release-policy",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"providers.release-policy": `sha256:${"5".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
+			decisionImpact: "Profile generation proof is required before provider cutover.",
+		}),
+	);
 }
 
 function googleProviderProbe(evidencePath: string, status: "pass" | "fail" | "skip" = "pass") {
@@ -2038,72 +2345,25 @@ function providerDomainCutoverBundle(
 ) {
 	const probe = providerDomainProbe(surfaceId, evidencePath, matrixStatus);
 	const details = providerDomainDetails[surfaceId];
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: surfaceId,
-					owner: details.owner,
-					trust_domain: "provider",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: providerWorkflow(surfaceId, details.owner),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: surfaceId,
+				owner: details.owner,
+				trust_domain: "provider",
+				required_surface_ids: [surfaceId],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: surfaceId,
-					owner: details.owner,
-					trust_domain: "provider",
-					required_surface_ids: [surfaceId],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact: "Profile generation proof is required before provider cutover.",
-				},
-			],
-		},
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: surfaceId,
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				[surfaceId]: `sha256:${"7".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
+			decisionImpact: "Profile generation proof is required before provider cutover.",
+		}),
+	);
 }
 
 function googleProviderCutoverBundle(
@@ -2111,72 +2371,25 @@ function googleProviderCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = googleProviderProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "providers.google",
-					owner: "provider:google",
-					trust_domain: "provider",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: providerWorkflow("providers.google", "provider:google"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "providers.google",
+				owner: "provider:google",
+				trust_domain: "provider",
+				required_surface_ids: ["providers.google"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: "providers.google",
-					owner: "provider:google",
-					trust_domain: "provider",
-					required_surface_ids: ["providers.google"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact: "Profile generation proof is required before provider cutover.",
-				},
-			],
-		},
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "providers.google",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"providers.google": `sha256:${"6".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
+			decisionImpact: "Profile generation proof is required before provider cutover.",
+		}),
+	);
 }
 
 function servedMcpContainmentProbe(
@@ -2228,54 +2441,25 @@ function apiServerContainmentCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = apiServerContainmentProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: moduleTestWorkflow("execution.api_server.module"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "execution.api_server.module",
+				trust_domain: "module-test",
+				required_surface_ids: ["execution.api_server_containment"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					required_surface_ids: ["execution.api_server_containment"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "execution.api_server_containment",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"execution.api_server_containment": `sha256:${"e".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
+			decisionImpact: "API-server containment module cutover proof extends the private P0 bundle.",
 		},
-	});
+		),
+	);
 }
 
 function servedMcpContainmentCutoverBundle(
@@ -2283,54 +2467,25 @@ function servedMcpContainmentCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = servedMcpContainmentProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "private.telegram.basic",
-					owner: "operator",
-					trust_domain: "private",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: moduleTestWorkflow("execution.served_mcp.module"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "execution.served_mcp.module",
+				trust_domain: "module-test",
+				required_surface_ids: ["execution.served_mcp_containment"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					required_surface_ids: ["execution.served_mcp_containment"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "execution.served_mcp_containment",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"execution.served_mcp_containment": `sha256:${"f".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
+			decisionImpact: "Served-MCP containment module cutover proof extends the private P0 bundle.",
 		},
-	});
+		),
+	);
 }
 
 function servedMcpProviderToolsProbe(
@@ -2361,73 +2516,25 @@ function servedMcpProviderToolsCutoverBundle(
 	matrixStatus: "pass" | "fail" | "skip" = "pass",
 ) {
 	const probe = servedMcpProviderToolsProbe(evidencePath, matrixStatus);
-	const featureProbeMatrix = {
-		schemaVersion: 1 as const,
-		probes: [probe],
-	};
 	const base = safeCutoverBundle();
-	return safeCutoverBundle({
-		inventory: {
-			generatedAt: "2026-05-29T00:00:00Z",
-			workflows: [
-				{
-					workflow_id: "providers.bank",
-					owner: "provider:bank",
-					trust_domain: "provider",
-					active: true,
-				},
-			],
-			status: "complete",
-			summary: {
-				pendingQueues: pendingQueues(),
+	return safeCutoverBundle(
+		cutoverBundleWithAdditionalWorkflow({
+			base,
+			inventoryWorkflow: providerWorkflow("providers.bank", "provider:bank"),
+			scopeWorkflow: {
+				...base.scopeManifest.workflows[0],
+				workflow_id: "providers.bank",
+				owner: "provider:bank",
+				trust_domain: "provider",
+				required_surface_ids: ["served_mcp.provider-tools"],
 			},
-		},
-		scopeManifest: {
-			schemaVersion: 1,
-			workflows: [
-				{
-					...base.scopeManifest.workflows[0],
-					workflow_id: "providers.bank",
-					owner: "provider:bank",
-					trust_domain: "provider",
-					required_surface_ids: ["served_mcp.provider-tools"],
-				},
-			],
-		},
-		featureProbeMatrix,
-		noForkProof: base.noForkProof,
-		decisionLog: {
-			schemaVersion: 1,
-			decisions: [
-				{
-					id: "D-profile-generation",
-					status: "accepted",
-					owner: "operator",
-					deadline_phase: "Phase 1",
-					accepted_answer:
-						"Generated Hermes profiles are produced by the checked profile generator.",
-					affected_workflows: [],
-					cutover_impact:
-						"Profile generation proof is required before served-MCP provider cutover.",
-				},
-			],
-		},
-		lockfile: {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "served_mcp.provider-tools",
-					status: "pass",
-					evidence_path: evidencePath,
-				},
-			],
+			probes: [probe],
 			adapterApiSignatures: {
 				"served_mcp.provider-tools": `sha256:${"7".repeat(64)}`,
 			},
-			noForkProofEvidencePath: base.noForkProof.evidence_path,
-		},
-	});
+			decisionImpact: "Profile generation proof is required before served-MCP provider cutover.",
+		}),
+	);
 }
 
 function writeCutoverBundleArtifacts(tempDir: string, bundle: CutoverInputBundle) {
@@ -2472,7 +2579,10 @@ function writeProfileProofForBundle(tempDir: string, bundle: CutoverInputBundle)
 	});
 }
 
-async function runCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+async function runCutoverCheckWithBundle(
+	bundle: CutoverInputBundle,
+	options: { readonly scoped?: boolean } = {},
+) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-"));
 	const paths = writeCutoverBundleArtifacts(tempDir, bundle);
 	return runHermesCommand([
@@ -2481,6 +2591,7 @@ async function runCutoverCheckWithBundle(bundle: CutoverInputBundle) {
 		"--strict",
 		"--dry-run",
 		"--json",
+		...(options.scoped ? ["--scoped"] : []),
 		"--inventory",
 		paths.inventory,
 		"--scope",
@@ -2508,6 +2619,10 @@ async function runCutoverCheckWithBundle(bundle: CutoverInputBundle) {
 	]);
 }
 
+async function runScopedCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+	return runCutoverCheckWithBundle(bundle, { scoped: true });
+}
+
 type CliHeadlessEvidenceFixture = Record<string, unknown> & {
 	invocation: Record<string, unknown>;
 	provenance?: Record<string, unknown>;
@@ -2515,6 +2630,8 @@ type CliHeadlessEvidenceFixture = Record<string, unknown> & {
 };
 
 function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadlessEvidenceFixture {
+	const startedAt = freshHermesFixtureTimestamp();
+	const endedAt = addMs(startedAt, 1000);
 	const invocation = {
 		command: "/usr/local/bin/hermes",
 		args: ["chat", "-q", "telclaude probe ok"],
@@ -2543,7 +2660,7 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		observedPeerAddress: CLI_HEADLESS_TEST_CONTAINED_IP,
 		provenanceSource: "docker-inspect-container-dns-and-relay-peer",
 	};
-	const relayProof = cliHeadlessRelayProof();
+	const relayProof = cliHeadlessRelayProof({ observedAt: addMs(startedAt, 500) });
 	const base = {
 		schemaVersion: "telclaude.hermes.probe-result.v1",
 		probeId: "execution.cli_headless",
@@ -2569,8 +2686,8 @@ function cliHeadlessEvidence(overrides: Record<string, unknown> = {}): CliHeadle
 		provenance: {
 			runner: "telclaude-hermes-cli-probe",
 			source: "live-allow-run",
-			startedAt: "2026-05-30T00:00:00.000Z",
-			endedAt: "2026-05-30T00:00:01.000Z",
+			startedAt,
+			endedAt,
 			expectedProofToken: "telclaude probe ok",
 			proofTokenObserved: true,
 			invocationSha256: computeHermesArtifactDigest(invocation),
@@ -2619,7 +2736,7 @@ function cliHeadlessRelayProof(
 		model: "gpt-5.3-codex",
 		requestBodySha256: `sha256:${"a".repeat(64)}`,
 		proofTokenSha256: openAiCodexRelayProofTokenSha256("telclaude probe ok"),
-		observedAt: "2026-05-30T00:00:00.500Z",
+		observedAt: freshHermesFixtureTimestamp(30_000),
 		...overrides,
 	});
 }
@@ -3234,10 +3351,10 @@ function writeHeadlessEntrypointGreenEvidence(root: string): void {
 			reportPath,
 			reportSha256: computeFileDigest(reportPath),
 			sourceDigests: Object.fromEntries(
-				HEADLESS_ENTRYPOINT_SOURCE_FILES.map((sourcePath) => [
-					sourcePath,
-					computeFileDigest(rootArtifact(root, sourcePath)),
-				]),
+				HEADLESS_ENTRYPOINT_SOURCE_FILES.map((sourcePath) => {
+					const resolvedSourcePath = rootArtifact(root, sourcePath);
+					return [resolvedSourcePath, computeFileDigest(resolvedSourcePath)];
+				}),
 			),
 		},
 		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
@@ -3669,6 +3786,8 @@ function liveMcpProbeTokenResponse(): TelclaudeLiveMcpProbeTokenBundle {
 
 describe("Hermes wrapper foundation", () => {
 	beforeEach(() => {
+		snapshotHermesCommandTestEnv();
+		process.exitCode = undefined;
 		process.env.TELCLAUDE_HERMES_RELAY_IP = CLI_HEADLESS_TEST_RELAY_IP;
 		process.env.TELCLAUDE_HERMES_CONTAINED_IP = CLI_HEADLESS_TEST_CONTAINED_IP;
 	});
@@ -3682,6 +3801,8 @@ describe("Hermes wrapper foundation", () => {
 			"TELCLAUDE_HERMES_CONTAINED_IP",
 			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_CONTAINED_IP,
 		);
+		restoreHermesCommandTestEnv();
+		process.exitCode = undefined;
 		// Let Vitest worker RPCs flush between the heavy synchronous fixture checks.
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	});
@@ -4483,10 +4604,21 @@ describe("Hermes wrapper foundation", () => {
 		const fixtureResults = buildMissingDefaultCutoverFixtureResults();
 		const networkProbes = buildMissingDefaultCutoverNetworkProbes();
 		const rollbackRehearsal = buildMissingDefaultRollbackRehearsal();
+		const generatedAt = freshHermesFixtureTimestamp();
+		const baseSource = safeCutoverBundle({
+			fixtureResults,
+			networkProbes,
+			rollbackRehearsal,
+		});
 		const source = safeCutoverBundle({
 			fixtureResults,
 			networkProbes,
 			rollbackRehearsal,
+			inventory: {
+				...baseSource.inventory,
+				generatedAt,
+			},
+			queueSnapshot: queueSnapshotFromPending(pendingQueues(), generatedAt),
 		});
 
 		await withCwd(tempDir, async () => {
@@ -5305,7 +5437,12 @@ describe("Hermes wrapper foundation", () => {
 	});
 
 	it("returns cutover exit code 0 only when all strict evidence gates pass", () => {
-		expect(evaluateCutoverCheck(safeCutoverBundle()).exitCode).toBe(0);
+		const report = evaluateCutoverCheck(safeCutoverBundle());
+		expect(report.exitCode).toBe(0);
+		expect(report.mode.completeParityCutover).toBe(true);
+		expect(report.gates.find((gate) => gate.name === "parity.rosterCovered")).toMatchObject({
+			status: "pass",
+		});
 
 		const failed = evaluateCutoverCheck(
 			safeCutoverBundle({
@@ -5324,6 +5461,24 @@ describe("Hermes wrapper foundation", () => {
 		expect(failed.status).toBe("fail");
 		expect(failed.exitCode).toBe(1);
 		expect(failed.gates.find((gate) => gate.name === "nofork.clean")?.status).toBe("fail");
+	});
+
+	it("fails production cutover when a missing parity row is not descoped", () => {
+		const base = safeCutoverBundle();
+		const bundle = safeCutoverBundle({
+			decisionLog: {
+				...base.decisionLog,
+				decisions: base.decisionLog.decisions.filter(
+					(decision) => decision.id !== "parity-descope:skills",
+				),
+			},
+		});
+		const report = evaluateCutoverCheck(bundle);
+		expect(report.mode.completeParityCutover).toBe(true);
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "parity.rosterCovered")).toMatchObject({
+			status: "fail",
+		});
 	});
 
 	it("fails strict cutover when no-fork proof evidence is missing", () => {
@@ -5631,7 +5786,7 @@ describe("Hermes wrapper foundation", () => {
 
 		expect(failed.status).toBe("fail");
 		expect(failed.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
-			"feature probe edge.whatsapp.plugin-adapter requires observed evidence",
+			"feature probe providers.approval-binding requires observed evidence",
 		);
 	});
 
@@ -5713,7 +5868,7 @@ describe("Hermes wrapper foundation", () => {
 			],
 		};
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			safeCutoverBundle({
 				inventory: base.inventory,
 				scopeManifest: base.scopeManifest,
@@ -6116,7 +6271,9 @@ describe("Hermes wrapper foundation", () => {
 			evidence.push({ surfaceId: surface, evidencePath });
 		}
 
-		const result = await runCutoverCheckWithBundle(edgeAdapterCutoverBundleFromEvidence(evidence));
+		const result = await runScopedCutoverCheckWithBundle(
+			edgeAdapterCutoverBundleFromEvidence(evidence),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -6147,7 +6304,7 @@ describe("Hermes wrapper foundation", () => {
 			runtime: undefined,
 		});
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			edgeAdapterCutoverBundle("attachment.quarantine", evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6540,7 +6697,7 @@ describe("Hermes wrapper foundation", () => {
 		]);
 
 		expect(probeResult.exitCode, probeResult.stdout).toBe(0);
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			servedMcpProviderToolsCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6577,7 +6734,7 @@ describe("Hermes wrapper foundation", () => {
 		]);
 
 		expect(probeResult.exitCode, probeResult.stdout).toBe(1);
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			servedMcpProviderToolsCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6594,12 +6751,15 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
 		const evidencePath = path.join(tempDir, "missing-execution-cli-headless.json");
 
-		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
 		const report = JSON.parse(result.stdout) as {
+			mode: { completeParityCutover: boolean };
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
 
 		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.mode.completeParityCutover).toBe(false);
+		expect(report.gates.find((gate) => gate.name === "parity.rosterCovered")).toBeUndefined();
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("missing feature probe evidence execution.cli_headless"),
@@ -6922,7 +7082,7 @@ describe("Hermes wrapper foundation", () => {
 		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
 		writeJson(evidencePath, evidence);
 
-		const result = await runCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -7131,23 +7291,17 @@ describe("Hermes wrapper foundation", () => {
 		const report = evaluateCutoverCheck(
 			safeCutoverBundle({
 				lockfile: base.lockfile,
+				featureProbeMatrix: base.featureProbeMatrix,
+				featureProbeEvidence: base.featureProbeEvidence,
 				noForkProof: base.noForkProof,
 				profileGenerationProof: proof,
 				decisionLog: {
 					schemaVersion: 1,
-					decisions: [
-						{
-							id: "D-profile-generation",
-							status: "accepted",
-							owner: "operator",
-							deadline_phase: "Phase 1",
-							accepted_answer:
-								"Generated Hermes profiles are produced by the checked profile generator.",
-							evidence_path: proof.evidence_path,
-							affected_workflows: ["private.telegram.basic"],
-							cutover_impact: "Profile generation proof is required before private cutover.",
-						},
-					],
+					decisions: base.decisionLog.decisions.map((decision) =>
+						decision.id === "D-profile-generation"
+							? { ...decision, evidence_path: proof.evidence_path }
+							: decision,
+					),
 				},
 			}),
 		);
@@ -8779,7 +8933,7 @@ describe("Hermes wrapper foundation", () => {
 				});
 			}
 			const fixturesGate = evaluateCutoverCheck(
-				safeCutoverBundle({ fixtureResults: bundle }),
+				safeCutoverBundle({ fixtureResults: writeSafeParityFixtures(tempDir, bundle) }),
 			).gates.find((gate) => gate.name === "fixtures.pass");
 			expect(fixturesGate, JSON.stringify(fixturesGate)).toMatchObject({ status: "pass" });
 		} finally {
@@ -9346,13 +9500,7 @@ describe("Hermes wrapper foundation", () => {
 		const paths = writeCutoverBundleArtifacts(
 			tempDir,
 			safeCutoverBundle({
-				inventory: {
-					...base.inventory,
-					status: "complete",
-					summary: {
-						pendingQueues: pendingQueues(),
-					},
-				},
+				...freshCutoverTimingOverrides(base),
 			}),
 		);
 
@@ -9410,55 +9558,20 @@ describe("Hermes wrapper foundation", () => {
 		initPinnedHermesCheckout(checkoutPathRaw);
 		const checkoutPath = fs.realpathSync(checkoutPathRaw);
 		const noForkPath = path.join(tempDir, "nofork.json");
-		const cliHeadlessPath = path.join(tempDir, "cli-headless.json");
-		writeJson(cliHeadlessPath, cliHeadlessEvidence());
-		const featureProbeMatrix = {
-			schemaVersion: 1 as const,
-			probes: [cliHeadlessProbe(cliHeadlessPath)],
-		};
 		const noForkProof = writeNoForkProof({ evidence_path: noForkPath });
+		const base = safeCutoverBundle();
 		const lockfile = {
-			...compatLockfile,
-			featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
-			featureProbes: [
-				{
-					surface_id: "execution.cli_headless",
-					status: "pass",
-					evidence_path: cliHeadlessPath,
-				},
-			],
-			adapterApiSignatures: {
-				"execution.cli_headless": `sha256:${"c".repeat(64)}`,
-			},
+			...base.lockfile,
 			noForkProofEvidencePath: noForkProof.evidence_path,
 		};
 		const paths = writeCutoverBundleArtifacts(
 			tempDir,
 			safeCutoverBundle({
-				scopeManifest: {
-					schemaVersion: 1,
-					workflows: [
-						{
-							workflow_id: "private.telegram.basic",
-							owner: "operator",
-							trust_domain: "private",
-							current_behavior: "Telclaude handles a private Telegram chat through the relay.",
-							hermes_target_behavior:
-								"Hermes runs behind the Telclaude edge with relay-owned secrets.",
-							cutover_class: "P0",
-							cutover_requirement: "Pinned Hermes wrapper parity fixture must pass.",
-							status: "included",
-							rollback_owner: "operator",
-							fixture_ids: ["fixture.private.telegram.basic"],
-							negative_fixture_ids: ["fixture.private.telegram.basic.deny"],
-							required_surface_ids: ["execution.cli_headless"],
-							unresolved_decision_ids: [],
-						},
-					],
-				},
 				lockfile,
-				featureProbeMatrix,
+				featureProbeMatrix: base.featureProbeMatrix,
+				featureProbeEvidence: base.featureProbeEvidence,
 				noForkProof,
+				...freshCutoverTimingOverrides(base),
 			}),
 		);
 
@@ -11218,6 +11331,103 @@ echo should-not-run
 		expect(fs.existsSync(evidencePath)).toBe(false);
 	});
 
+	it("runs skills.allowlist through the CLI handler with docker-exec profile proof", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-skills-allowlist-"));
+		const evidencePath = path.join(tempDir, "skills-allowlist.json");
+		const callsPath = path.join(tempDir, "docker-calls.txt");
+		const dockerBin = writeExecutable(
+			tempDir,
+			`#!/bin/sh
+printf '%s\\n' "$*" >> "${callsPath}"
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+  printf '%s\\n' '{"Internal":true,"Containers":{"contained":{"Name":"tc-hermes-contained"},"relay":{"Name":"tc-hermes-relay"}}}'
+  exit 0
+fi
+if [ "$1" = "exec" ] && [ "$2" = "tc-hermes-contained" ]; then
+  if [ "$3" = "node" ]; then
+    prop="$7"
+    case "$prop" in
+      pretooluse_hook_registered|allowlisted_skill_invocation_allowed|nonallowlisted_skill_invocation_denied|social_missing_allowlist_denied|social_empty_allowlist_denied)
+        printf '%s\\n' '{"passed":true,"detail":"docker exec PreToolUse proof","enforcementLayer":"pretooluse"}'
+        exit 0
+        ;;
+    esac
+  fi
+  prop="$6"
+  case "$prop" in
+    allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist)
+      printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
+      exit 0
+      ;;
+  esac
+fi
+printf '%s\\n' "unexpected docker args: $*" >&2
+exit 99
+`,
+		);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"probe",
+			"skills.allowlist",
+			"--allow-run",
+			"--json",
+			"--docker-bin",
+			dockerBin,
+			"--container-name",
+			"tc-hermes-contained",
+			"--network",
+			"telclaude-hermes-relay",
+			"--relay-container",
+			"tc-hermes-relay",
+			"--out",
+			evidencePath,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			origin: Record<string, unknown>;
+			checks: Array<{ name: string; status: string; observationLayer?: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("pass");
+		expect(report.origin).toMatchObject({
+			kind: "contained-runtime",
+			containerName: "tc-hermes-contained",
+			topologyInternal: true,
+			relayContainerPresent: true,
+		});
+		expect(report.checks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					name: "nonallowlisted_skill_absent",
+					status: "pass",
+					observationLayer: "docker_exec",
+				}),
+				expect.objectContaining({
+					name: "runtime_skills_match_allowlist",
+					status: "pass",
+					observationLayer: "docker_exec",
+				}),
+				expect.objectContaining({
+					name: "nonallowlisted_skill_invocation_denied",
+					status: "pass",
+					observationLayer: "docker_exec",
+					enforcementLayer: "pretooluse",
+				}),
+				expect.objectContaining({
+					name: "social_missing_allowlist_denied",
+					status: "pass",
+					observationLayer: "docker_exec",
+					enforcementLayer: "pretooluse",
+				}),
+			]),
+		);
+		expect(readJson(evidencePath)).toMatchObject({ status: "pass", ran: true });
+		expect(fs.readFileSync(callsPath, "utf8")).toContain("network inspect telclaude-hermes-relay");
+		expect(fs.readFileSync(callsPath, "utf8")).toContain("exec tc-hermes-contained python -c");
+	});
+
 	it("writes a passing cli-headless artifact only with runtime and relay proof", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cli-probe-"));
 		const evidencePath = path.join(tempDir, "evidence.json");
@@ -11645,7 +11855,9 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			approvalContinuationCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -11672,7 +11884,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath, "pass", "approval.continuation"),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11699,7 +11911,9 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(sideEffectLedgerCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			sideEffectLedgerCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -11729,7 +11943,9 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "ledger.replay-denied"),
 		});
 
-		const result = await runCutoverCheckWithBundle(sideEffectLedgerCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			sideEffectLedgerCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -11755,7 +11971,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerApprovalBindingCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11789,7 +12005,7 @@ sleep 5
 			),
 		});
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerApprovalBindingCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11819,7 +12035,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerReleasePolicyCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11853,7 +12069,7 @@ sleep 5
 			),
 		});
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerReleasePolicyCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11883,7 +12099,9 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			googleProviderCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -11913,7 +12131,9 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "google.wrong-actor-denied"),
 		});
 
-		const result = await runCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			googleProviderCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -11945,7 +12165,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerDomainCutoverBundle(surfaceId, evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11977,7 +12197,7 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "bank.wrong-provider-scope-denied"),
 		});
 
-		const result = await runCutoverCheckWithBundle(
+		const result = await runScopedCutoverCheckWithBundle(
 			providerDomainCutoverBundle("providers.bank", evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -11995,7 +12215,9 @@ sleep 5
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
 		const evidencePath = path.join(tempDir, "missing-approval-continuation.json");
 
-		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			approvalContinuationCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12023,7 +12245,9 @@ sleep 5
 			},
 		});
 
-		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			approvalContinuationCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12061,7 +12285,9 @@ sleep 5
 			},
 		});
 
-		const result = await runCutoverCheckWithBundle(approvalContinuationCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			approvalContinuationCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12078,7 +12304,9 @@ sleep 5
 		const evidencePath = path.join(tempDir, "execution-api-server-containment.json");
 		writeJson(evidencePath, apiServerContainmentEvidence());
 
-		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			apiServerContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12093,7 +12321,9 @@ sleep 5
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
 		const evidencePath = path.join(tempDir, "missing-api-server-containment.json");
 
-		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			apiServerContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12119,7 +12349,9 @@ sleep 5
 		});
 		writeJson(evidencePath, evidence);
 
-		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			apiServerContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12142,7 +12374,9 @@ sleep 5
 			}),
 		);
 
-		const result = await runCutoverCheckWithBundle(apiServerContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			apiServerContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12185,7 +12419,9 @@ sleep 5
 		const evidencePath = path.join(tempDir, "execution-served-mcp-containment.json");
 		writeJson(evidencePath, servedMcpContainmentEvidence());
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12212,7 +12448,9 @@ sleep 5
 			}),
 		);
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12242,7 +12480,9 @@ sleep 5
 			}),
 		);
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12264,7 +12504,9 @@ sleep 5
 			}),
 		);
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12287,7 +12529,9 @@ sleep 5
 		delete evidence.properties[property];
 		writeJson(evidencePath, evidence);
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12310,7 +12554,9 @@ sleep 5
 		evidence.properties[property] = false;
 		writeJson(evidencePath, evidence);
 
-		const result = await runCutoverCheckWithBundle(servedMcpContainmentCutoverBundle(evidencePath));
+		const result = await runScopedCutoverCheckWithBundle(
+			servedMcpContainmentCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};

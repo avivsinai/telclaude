@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { buildSdkOptions } from "../../src/sdk/client.js";
+import { buildSdkOptions, probeSkillAllowlistPreToolUse } from "../../src/sdk/client.js";
 import { closeDb, resetDatabase } from "../../src/storage/db.js";
 import { listSkillInvocations } from "../../src/storage/skill-telemetry.js";
 
@@ -229,6 +229,55 @@ describe("createSkillAllowlistHook (PreToolUse)", () => {
 			source: "social",
 			serviceId: "xtwitter",
 		});
+	});
+
+	it("probes the registered PreToolUse Skill matcher directly", async () => {
+		writeCatalogSkill("memory");
+		const allowed = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "memory",
+			allowedSkills: ["memory"],
+		});
+		expect(allowed).toMatchObject({ hookRegistered: true, decision: "allow" });
+
+		const nonAllowlisted = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "external-provider",
+			allowedSkills: ["memory"],
+		});
+		expect(nonAllowlisted.hookRegistered).toBe(true);
+		expect(nonAllowlisted.decision).toBe("deny");
+
+		const missingAllowlist = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "memory",
+			omitAllowedSkills: true,
+		});
+		expect(missingAllowlist.hookRegistered).toBe(true);
+		expect(missingAllowlist.decision).toBe("deny");
+
+		const emptyAllowlist = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "memory",
+			allowedSkills: [],
+		});
+		expect(emptyAllowlist.hookRegistered).toBe(true);
+		expect(emptyAllowlist.decision).toBe("deny");
+	});
+
+	it("reports no registered PreToolUse Skill matcher when skills are disabled", async () => {
+		const result = await probeSkillAllowlistPreToolUse({
+			cwd: tempDir ?? "/tmp",
+			tier: "SOCIAL",
+			skillName: "memory",
+			allowedSkills: ["memory"],
+			enableSkills: false,
+		});
+		expect(result).toMatchObject({ hookRegistered: false, decision: "deny" });
 	});
 
 	it("allows all skills for non-SOCIAL tier without allowedSkills (private agent)", async () => {

@@ -62,6 +62,7 @@ import {
 	noForkProofEvidenceSha256,
 	noForkRunnerAttestationSignatureFailure,
 } from "./no-fork-attestation.js";
+import { parityRosterCoverageGate } from "./parity-roster.js";
 import {
 	PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_RUNNER,
 	PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCHEMA_VERSION,
@@ -85,7 +86,9 @@ import {
 import { providerReleasePolicyProbeEvidenceFailure } from "./provider-release-policy-probe.js";
 import { DEFAULT_HERMES_CONTAINED_IP, DEFAULT_HERMES_RELAY_IP } from "./runtime-network.js";
 import { evaluateServedMcpContainmentEvidence } from "./served-mcp-containment.js";
+import { evaluateServedMcpMemoryEvidence } from "./served-mcp-memory.js";
 import { servedMcpProviderToolsProbeEvidenceFailure } from "./served-mcp-provider-tools-probe.js";
+import { evaluateSkillsAllowlistEvidence } from "./skills-allowlist-probe.js";
 import {
 	HERMES_WORKFLOW_FIXTURE_REQUIREMENTS,
 	isHermesWorkflowSurfaceId,
@@ -1922,7 +1925,7 @@ export type HermesGenerateDryRun = {
 export type CutoverReport = {
 	status: "safe" | "fail" | "input_error";
 	exitCode: 0 | 1 | 2;
-	mode: { strict: true; dryRun: boolean };
+	mode: { strict: true; dryRun: boolean; completeParityCutover: boolean };
 	gates: Array<{ name: string; status: "pass" | "fail"; detail: string }>;
 	workflowIds: string[];
 	evidencePaths: string[];
@@ -2502,6 +2505,12 @@ export function collectFeatureProbeEvidence(
 		}
 		if (probe.surface_id === "served_mcp.provider-tools") {
 			return [collectServedMcpProviderToolsProbeEvidence(probe)];
+		}
+		if (probe.surface_id === "served_mcp.memory") {
+			return [collectServedMcpMemoryProbeEvidence(probe, options)];
+		}
+		if (probe.surface_id === "skills.allowlist") {
+			return [collectSkillsAllowlistProbeEvidence(probe, options)];
 		}
 		if (probe.surface_id === "providers.google") {
 			return [collectGoogleProviderProbeEvidence(probe)];
@@ -3993,16 +4002,23 @@ function writeTextFileAtomic(
 
 export function evaluateCutoverCheck(
 	input: unknown,
-	options: { strict?: boolean; dryRun?: boolean; liveCutover?: boolean; now?: Date } = {},
+	options: {
+		strict?: boolean;
+		dryRun?: boolean;
+		liveCutover?: boolean;
+		completeParityCutover?: boolean;
+		now?: Date;
+	} = {},
 ): CutoverReport {
 	const dryRun = options.dryRun ?? false;
 	const strict = options.strict ?? true;
+	const completeParityCutover = options.completeParityCutover ?? true;
 	const liveCutover = options.liveCutover ?? (strict && !dryRun);
 	if (!strict) {
 		return {
 			status: "input_error",
 			exitCode: 2,
-			mode: { strict: true, dryRun },
+			mode: { strict: true, dryRun, completeParityCutover },
 			...emptyCutoverReportMetadata(),
 			gates: [
 				{
@@ -4019,7 +4035,7 @@ export function evaluateCutoverCheck(
 		return {
 			status: "input_error",
 			exitCode: 2,
-			mode: { strict: true, dryRun },
+			mode: { strict: true, dryRun, completeParityCutover },
 			...emptyCutoverReportMetadata(),
 			gates: [{ name: "inputs.valid", status: "fail", detail: flattenZodError(parsed.error) }],
 		};
@@ -4313,12 +4329,26 @@ export function evaluateCutoverCheck(
 				? "rollback rehearsal passed from schema-valid evidence"
 				: unique(rollbackRehearsalFailures).join("; "),
 	});
+	if (completeParityCutover) {
+		gates.push(
+			parityRosterCoverageGate({
+				requiredSurfaceIds,
+				requiredFixtureIds,
+				presentRequiredChecks: collectPresentCutoverRequiredCheckIds(
+					bundle.featureProbeMatrix,
+					validationOptions,
+				),
+				evaluatedGateNames: gates.map((gate) => gate.name),
+				decisions: bundle.decisionLog.decisions,
+			}),
+		);
+	}
 
 	const safe = gates.every((gate) => gate.status === "pass");
 	return {
 		status: invalidEvidence ? "input_error" : safe ? "safe" : "fail",
 		exitCode: invalidEvidence ? 2 : safe ? 0 : 1,
-		mode: { strict: true, dryRun },
+		mode: { strict: true, dryRun, completeParityCutover },
 		gates,
 		...cutoverReportMetadata(bundle, included),
 	};
@@ -7016,6 +7046,84 @@ function collectServedMcpProviderToolsProbeEvidence(
 	};
 }
 
+function collectServedMcpMemoryProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	const report = evaluateServedMcpMemoryEvidence(evidence, {
+		...options,
+		missingPath: resolvedPath,
+	});
+	if (report.status !== "pass" || !report.productionEnable) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(
+				report.gates
+					.filter((gate) => gate.status !== "pass")
+					.map((gate) => gate.detail)
+					.join("; ") || report.status,
+			)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed served-MCP memory controls`,
+	};
+}
+
+function collectSkillsAllowlistProbeEvidence(
+	probe: FeatureProbeMatrix["probes"][number],
+	options: HermesSignedEvidenceValidationOptions = {},
+): FeatureProbeEvidenceBundle["results"][number] {
+	const resolvedPath = resolveHermesArtifactPath(probe.evidence_path);
+	let evidence: unknown;
+	try {
+		evidence = readOptionalJsonFile(resolvedPath);
+	} catch (error) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`unreadable feature probe evidence ${probe.surface_id}: ${redactDetail(
+				String(error instanceof Error ? error.message : error),
+			)}`,
+		);
+	}
+	const report = evaluateSkillsAllowlistEvidence(evidence, {
+		...options,
+		missingPath: resolvedPath,
+	});
+	if (report.status !== "pass" || !report.productionEnable) {
+		return featureProbeEvidenceFailure(
+			probe,
+			`feature probe evidence ${probe.surface_id} did not pass: ${redactDetail(
+				report.gates
+					.filter((gate) => gate.status !== "pass")
+					.map((gate) => gate.detail)
+					.join("; ") || report.status,
+			)}`,
+		);
+	}
+	return {
+		surface_id: probe.surface_id,
+		status: "pass",
+		evidence_path: probe.evidence_path,
+		detail: `feature probe evidence ${probe.surface_id} observed contained skills allowlist controls`,
+	};
+}
+
 function collectApiServerContainmentProbeEvidence(
 	probe: FeatureProbeMatrix["probes"][number],
 ): FeatureProbeEvidenceBundle["results"][number] {
@@ -7396,7 +7504,9 @@ function isObservedFeatureProbeSurface(surfaceId: string): boolean {
 	return (
 		surfaceId === "execution.cli_headless" ||
 		surfaceId === HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID ||
-		surfaceId === "model.relay"
+		surfaceId === "model.relay" ||
+		surfaceId === "served_mcp.memory" ||
+		surfaceId === "skills.allowlist"
 	);
 }
 
@@ -7411,7 +7521,11 @@ function collectedFeatureProbeFailures(
 				? collectHeadlessEntrypointProbeEvidence(probe, options)
 				: probe.surface_id === "model.relay"
 					? collectModelRelayProbeEvidence(probe, options)
-					: null;
+					: probe.surface_id === "served_mcp.memory"
+						? collectServedMcpMemoryProbeEvidence(probe, options)
+						: probe.surface_id === "skills.allowlist"
+							? collectSkillsAllowlistProbeEvidence(probe, options)
+							: null;
 	return observed && observed.status !== "pass"
 		? [`feature probe ${probe.surface_id} evidence failed: ${observed.detail}`]
 		: [];
@@ -7426,6 +7540,28 @@ function requiredCutoverSurfaceIds(declaredSurfaceIds: readonly string[]): strin
 		required.push(HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID);
 	}
 	return unique(required);
+}
+
+function collectPresentCutoverRequiredCheckIds(
+	featureProbeMatrix: FeatureProbeMatrix,
+	options: HermesSignedEvidenceValidationOptions = {},
+): string[] {
+	const checks = new Set<string>();
+	for (const probe of featureProbeMatrix.probes) {
+		if (probe.surface_id !== HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID) continue;
+		const evidenceResult = collectHeadlessEntrypointProbeEvidence(probe, options);
+		if (evidenceResult.status !== "pass") continue;
+		try {
+			const parsed = HeadlessEntrypointProofSchema.safeParse(
+				readJsonFile(resolveHermesArtifactPath(probe.evidence_path)),
+			);
+			if (!parsed.success) continue;
+			for (const check of parsed.data.checks) {
+				if (check.status === "pass") checks.add(check.name);
+			}
+		} catch {}
+	}
+	return [...checks].sort((left, right) => left.localeCompare(right));
 }
 
 function formatValidationResult(
