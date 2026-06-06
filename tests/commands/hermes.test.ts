@@ -114,7 +114,12 @@ import {
 	SERVED_MCP_CONTAINMENT_SCHEMA_VERSION,
 	SERVED_MCP_REQUIRED_PROPERTY_NAMES,
 } from "../../src/hermes/served-mcp-containment.js";
+import { SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES } from "../../src/hermes/served-mcp-memory.js";
 import { buildServedMcpProviderToolsProbeEvidence } from "../../src/hermes/served-mcp-provider-tools-probe.js";
+import {
+	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
+	type SkillsAllowlistPropertyName,
+} from "../../src/hermes/skills-allowlist-probe.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	runHermesWorkflowProbe,
@@ -1742,6 +1747,128 @@ function freshCutoverTimingOverrides(bundle: CutoverInputBundle) {
 		queueSnapshot: queueSnapshotFromPending(pendingQueues, generatedAt),
 		rollbackRehearsal,
 	};
+}
+
+const SKILLS_ALLOWLIST_PRETOOLUSE_TEST_PROPERTIES = new Set<SkillsAllowlistPropertyName>([
+	"pretooluse_hook_registered",
+	"allowlisted_skill_invocation_allowed",
+	"nonallowlisted_skill_invocation_denied",
+	"social_missing_allowlist_denied",
+	"social_empty_allowlist_denied",
+]);
+
+function writeServedMcpMemoryFeatureEvidence(evidencePath: string): void {
+	const properties = Object.fromEntries(
+		SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
+	);
+	const rpcDenials = new Set(["secret_write_rejected", "instruction_like_write_rejected"]);
+	writeJson(evidencePath, {
+		schemaVersion: "telclaude.hermes.served-mcp-memory.v1",
+		probeId: "served_mcp.memory",
+		status: "pass",
+		ran: true,
+		generatedAt: freshHermesFixtureTimestamp(),
+		summary: "memory parity proven from contained peer",
+		memorySource: "telegram:default",
+		origin: {
+			kind: "contained-peer",
+			containerName: "tc-hermes-contained",
+			observedPeerAddress: "172.30.92.11",
+			observedPeerSource: "server-peer-echo",
+			expectedPeerAddress: "172.30.92.11",
+			expectedPeerSource: "configured-contained-ip",
+			detail: "server-echoed contained peer",
+		},
+		properties,
+		checks: SERVED_MCP_MEMORY_REQUIRED_PROPERTY_NAMES.map((name) => ({
+			name,
+			status: "pass",
+			detail: `${name} proven`,
+			...(rpcDenials.has(name)
+				? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
+				: {}),
+			...(name === "cross_source_read_denied"
+				? { observedResultCount: 0, sentinelSeeded: true }
+				: {}),
+		})),
+	});
+}
+
+function writeSkillsAllowlistFeatureEvidence(evidencePath: string): void {
+	const properties = Object.fromEntries(
+		SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES.map((name) => [name, true]),
+	);
+	writeJson(evidencePath, {
+		schemaVersion: "telclaude.hermes.skills-allowlist.v1",
+		probeId: "skills.allowlist",
+		status: "pass",
+		ran: true,
+		generatedAt: freshHermesFixtureTimestamp(),
+		summary: "skills allowlist profile proven in contained runtime",
+		origin: {
+			kind: "contained-runtime",
+			containerName: "tc-hermes-contained",
+			topologyInternal: true,
+			relayContainerPresent: true,
+			authoritativeBoundary: "docker_internal_network",
+			detail: "docker internal-network topology proof",
+		},
+		properties,
+		checks: SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES.map((name) => ({
+			name,
+			status: "pass",
+			detail: `${name} proven`,
+			...(name === "artifact_redacted" ? {} : { observationLayer: "docker_exec" }),
+			...(SKILLS_ALLOWLIST_PRETOOLUSE_TEST_PROPERTIES.has(name)
+				? { enforcementLayer: "pretooluse" }
+				: {}),
+		})),
+	});
+}
+
+function cutoverBundleWithMemoryAndSkillsFeatureProbes(): CutoverInputBundle {
+	const base = safeCutoverBundle();
+	const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-memory-skills-"));
+	const memoryEvidencePath = path.join(evidenceRoot, "served-mcp-memory.json");
+	const skillsEvidencePath = path.join(evidenceRoot, "skills-allowlist.json");
+	writeServedMcpMemoryFeatureEvidence(memoryEvidencePath);
+	writeSkillsAllowlistFeatureEvidence(skillsEvidencePath);
+	const featureProbeMatrix = mergeFeatureProbeMatrix(base.featureProbeMatrix, [
+		simpleFeatureProbe("served_mcp.memory", memoryEvidencePath, "featureProbes.servedMcpMemory"),
+		simpleFeatureProbe("skills.allowlist", skillsEvidencePath, "featureProbes.skillsAllowlist"),
+	]);
+	const lockfile = {
+		...base.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+		featureProbes: featureProbeMatrix.probes.map((probe) => ({
+			surface_id: probe.surface_id,
+			status: probe.status,
+			evidence_path: probe.evidence_path,
+		})),
+	};
+	const profileGenerationProof = writeHermesProfileGenerationProof({
+		pin: lockfile.hermes,
+		outDir: path.join(evidenceRoot, "profile"),
+		lockfile,
+		evidencePath: path.join(evidenceRoot, "profile-generation-proof.json"),
+		now: "2026-05-29T00:00:00Z",
+	});
+	const decisionLog = {
+		...base.decisionLog,
+		decisions: base.decisionLog.decisions.map((decision) =>
+			decision.id === "D-profile-generation"
+				? { ...decision, evidence_path: profileGenerationProof.evidence_path }
+				: decision,
+		),
+	};
+	return refreshCutoverProofBundle({
+		...base,
+		lockfile,
+		decisionLog,
+		featureProbeMatrix,
+		featureProbeEvidence: featureProbeEvidenceForMatrix(featureProbeMatrix),
+		profileGenerationProof,
+	});
 }
 
 function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
@@ -5788,6 +5915,42 @@ describe("Hermes wrapper foundation", () => {
 		expect(failed.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).toContain(
 			"feature probe providers.approval-binding requires observed evidence",
 		);
+	});
+
+	it("does not duplicate first-class memory and skills feature evidence in cutover-check", async () => {
+		const result = await runScopedCutoverCheckWithBundle(
+			cutoverBundleWithMemoryAndSkillsFeatureProbes(),
+		);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).not.toContain(
+			"duplicate feature probe evidence",
+		);
+	});
+
+	it("fails strict cutover when feature evidence repeats the same surface", () => {
+		const bundle = cutoverBundleWithMemoryAndSkillsFeatureProbes();
+		const duplicateEvidence = bundle.featureProbeEvidence.results.find(
+			(result) => result.surface_id === "served_mcp.memory",
+		);
+		expect(duplicateEvidence).toBeDefined();
+		bundle.featureProbeEvidence.results.push({ ...duplicateEvidence! });
+
+		const report = evaluateCutoverCheck(bundle);
+
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("duplicate feature probe evidence served_mcp.memory"),
+		});
 	});
 
 	it("does not pass the feature-probe gate from cli-headless availability evidence alone", async () => {
