@@ -301,6 +301,34 @@ describe("Hermes Pro review gate", () => {
 		});
 	});
 
+	it("fails native canary evidence below the Yoetz interim-turn contract version", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
+		await withCwd(tempDir, async () => {
+			writeRequiredProReviewWorkspace(tempDir);
+			const canaryPath = "artifacts/hermes/pro-review-native-canary.json";
+			const baseCanary = proReviewCanary();
+			writeJson(
+				canaryPath,
+				proReviewCanary({
+					extensionVersion: "0.5.25",
+					nativeStatus: {
+						...(baseCanary.nativeStatus as Record<string, unknown>),
+						extensionVersion: "0.5.25",
+					},
+				}),
+			);
+			writeJson("docs/hermes/pro-review-request.json", proReviewRequest(canaryPath));
+
+			const report = evaluateProReviewCheck();
+
+			expect(report.status).toBe("fail");
+			expect(report.gates.find((gate) => gate.name === "nativeCanary.yoetzVersion")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("0.5.26"),
+			});
+		});
+	});
+
 	it("fails instance-bound native reconnect and dry canary commands for the wrong extension", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-gate-"));
 		await withCwd(tempDir, async () => {
@@ -567,6 +595,56 @@ describe("Hermes Pro review gate", () => {
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining("transport is dev-browser"),
+		});
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					status: "ok",
+					transport: "chrome-extension-native",
+					model_used: "extended-pro",
+					model_selection_status: "selected",
+					warnings: [],
+					fallback_used: false,
+					auto_paste_fallback: false,
+					is_final: false,
+					response: [
+						`payloadSha256: ${approvedPayloadSha256}`,
+						"Findings:",
+						"- This progress-shaped fixture must not be accepted as final.",
+						"Residual risk:",
+						"- Caller must wait for Yoetz final completion.",
+					].join("\n"),
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("is_final is false"),
+		});
+
+		expect(
+			validateProReviewYoetzSendOutput({
+				stdout: JSON.stringify({
+					type: "job_progress",
+					payload: {
+						phase: "response_observed",
+						is_final: false,
+						response_in_progress: true,
+						response_tail: "I",
+					},
+				}),
+				expectedExtensionInstanceId: "ext_test",
+				expectedBundlePath: bundlePath,
+				expectedPayloadSha256: approvedPayloadSha256,
+				expectedBundleSha256: bundleSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("job_progress"),
 		});
 	});
 
@@ -888,6 +966,49 @@ describe("Hermes Pro review gate", () => {
 		).toMatchObject({
 			status: "fail",
 			detail: expect.stringContaining(`response does not echo payloadSha256: ${payloadSha256}`),
+		});
+
+		const inProgressOutput = JSON.parse(inspectOutput(responseText)) as Record<string, unknown>;
+		const response = inProgressOutput.response as { tabs: Array<Record<string, unknown>> };
+		response.tabs[0] = {
+			...response.tabs[0],
+			response_in_progress: true,
+			note: "response still generating; extraction.text is a partial/interim assistant turn, not the final answer",
+		};
+
+		expect(
+			validateProReviewYoetzInspectCompletedResponseOutput({
+				stdout: JSON.stringify(inProgressOutput),
+				expectedRunId: "hermes_run_full_context",
+				expectedPayloadSha256: payloadSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("response_in_progress is true"),
+		});
+
+		const generatingExtractionOutput = JSON.parse(inspectOutput(responseText)) as Record<
+			string,
+			unknown
+		>;
+		const generatingResponse = generatingExtractionOutput.response as {
+			tabs: Array<Record<string, unknown>>;
+		};
+		const inspection = generatingResponse.tabs[0]?.inspection as Record<string, unknown>;
+		inspection.extraction = {
+			...(inspection.extraction as Record<string, unknown>),
+			is_generating: true,
+		};
+
+		expect(
+			validateProReviewYoetzInspectCompletedResponseOutput({
+				stdout: JSON.stringify(generatingExtractionOutput),
+				expectedRunId: "hermes_run_full_context",
+				expectedPayloadSha256: payloadSha256,
+			}),
+		).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("inspection extraction is_generating is true"),
 		});
 	});
 
@@ -1337,7 +1458,7 @@ function proReviewCanary(overrides: Record<string, unknown> = {}): Record<string
 		conversationId: "conv_test",
 		conversationUrl: "https://chatgpt.com/c/conv_test",
 		extensionInstanceId: "ext_test",
-		extensionVersion: "0.5.19",
+		extensionVersion: "0.5.26",
 		promptClass: "non-private transport canary",
 		expectedResponse: "OK",
 		response: "OK",
@@ -1370,7 +1491,7 @@ function proReviewCanary(overrides: Record<string, unknown> = {}): Record<string
 			detail: "native host socket is reachable and extension hello was observed",
 			extensionId: "njdakhppfigmloihiikbjmheejfndbfa",
 			extensionInstanceId: "ext_test",
-			extensionVersion: "0.5.19",
+			extensionVersion: "0.5.26",
 			nativeHostName: "com.yoetz.chatgpt_native",
 			protocolVersion: 1,
 			socketReachable: true,

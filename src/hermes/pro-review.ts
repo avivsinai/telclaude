@@ -46,6 +46,7 @@ export const PRO_REVIEW_NATIVE_CANARY_SCHEMA_VERSION =
 	"telclaude.hermes.pro-review-native-canary.v1";
 export const PRO_REVIEW_SHARD_PLAN_SCHEMA_VERSION = "telclaude.hermes.pro-review-shard-plan.v1";
 export const PRO_REVIEW_NATIVE_CANARY_MAX_AGE_MS = 15 * 60 * 1000;
+const PRO_REVIEW_MIN_YOETZ_NATIVE_VERSION = "0.5.26";
 const PRO_REVIEW_CURRENT_CUTOVER_CHECK_MAX_AGE_MS = 15 * 60 * 1000;
 const PRO_REVIEW_PAYLOAD_BINDING_FIELDS = [
 	"reviewer",
@@ -1276,6 +1277,15 @@ function canaryPolicyGates(
 					"native status extension version differs from canary",
 				),
 	);
+	const yoetzVersionFailures = yoetzNativeContractVersionFailures(canary);
+	gates.push(
+		yoetzVersionFailures.length === 0
+			? pass(
+					"nativeCanary.yoetzVersion",
+					`Yoetz native extension is at or above ${PRO_REVIEW_MIN_YOETZ_NATIVE_VERSION}`,
+				)
+			: fail("nativeCanary.yoetzVersion", yoetzVersionFailures.join("; ")),
+	);
 	gates.push(
 		canary.warnings.length === 0
 			? pass("nativeCanary.warnings", "native canary emitted no warnings")
@@ -1310,6 +1320,39 @@ function canaryPolicyGates(
 			: fail("nativeCanary.noFallback", "request allows fallback"),
 	);
 	return gates;
+}
+
+function yoetzNativeContractVersionFailures(canary: ProReviewNativeCanary): string[] {
+	const fields = [
+		["extensionVersion", canary.extensionVersion],
+		["nativeStatus.extensionVersion", canary.nativeStatus.extensionVersion],
+	] as const;
+	return fields.flatMap(([field, version]) =>
+		yoetzVersionAtLeast(version, PRO_REVIEW_MIN_YOETZ_NATIVE_VERSION)
+			? []
+			: [
+					`${field} ${version} is below required Yoetz ${PRO_REVIEW_MIN_YOETZ_NATIVE_VERSION} interim-turn/final-response contract`,
+				],
+	);
+}
+
+function yoetzVersionAtLeast(actual: string, minimum: string): boolean {
+	const actualParts = parseYoetzVersion(actual);
+	const minimumParts = parseYoetzVersion(minimum);
+	if (!actualParts || !minimumParts) return false;
+	for (let index = 0; index < minimumParts.length; index += 1) {
+		const actualPart = actualParts[index] ?? 0;
+		const minimumPart = minimumParts[index] ?? 0;
+		if (actualPart > minimumPart) return true;
+		if (actualPart < minimumPart) return false;
+	}
+	return true;
+}
+
+function parseYoetzVersion(value: string): readonly number[] | null {
+	const normalized = value.trim().replace(/^v/i, "");
+	if (!/^\d+(?:\.\d+){1,3}$/.test(normalized)) return null;
+	return normalized.split(".").map((part) => Number(part));
 }
 
 function nativeCanaryFreshnessGate(reverifiedAtMs: number, now: Date): ProReviewGate {
@@ -2233,7 +2276,7 @@ export function validateProReviewYoetzSendOutput(input: {
 	if (!isRecord(parsed)) {
 		return { status: "fail", detail: "Yoetz native send stdout is not a JSON object" };
 	}
-	const failures: string[] = [];
+	const failures: string[] = [...proReviewYoetzFinalContractFailures(parsed)];
 	if (parsed.status !== "ok") {
 		failures.push(`status is ${String(parsed.status)}`);
 	}
@@ -2407,6 +2450,53 @@ export function validateProReviewYoetzInspectCompletedResponseOutput(input: {
 		: { status: "fail", detail: failures.join("; ") };
 }
 
+function proReviewYoetzFinalContractFailures(parsed: Record<string, unknown>): string[] {
+	const failures: string[] = [];
+	const envelopeType = parsed.type ?? parsed.kind;
+	if (envelopeType === "job_progress") {
+		failures.push("Yoetz output is job_progress, not final job_complete");
+	}
+	if (parsed.is_final === false) {
+		failures.push("is_final is false");
+	}
+	if (parsed.response_in_progress === true) {
+		failures.push("response_in_progress is true");
+	}
+	if (parsed.interim_assistant_turn === true) {
+		failures.push("interim_assistant_turn is true");
+	}
+	const payload = parsed.payload;
+	if (isRecord(payload)) {
+		if (payload.is_final === false) {
+			failures.push("payload.is_final is false");
+		}
+		if (payload.response_in_progress === true) {
+			failures.push("payload.response_in_progress is true");
+		}
+		if (payload.interim_assistant_turn === true) {
+			failures.push("payload.interim_assistant_turn is true");
+		}
+	}
+	return failures;
+}
+
+function proReviewInspectInProgressFailures(
+	tab: Record<string, unknown>,
+	extraction: Record<string, unknown> | null,
+): string[] {
+	const failures: string[] = [];
+	if (tab.response_in_progress === true) {
+		failures.push("response_in_progress is true");
+	}
+	if (tab.interim_assistant_turn === true) {
+		failures.push("interim_assistant_turn is true");
+	}
+	if (extraction?.is_generating === true) {
+		failures.push("inspection extraction is_generating is true");
+	}
+	return failures;
+}
+
 function inspectTabCompletedResponseFailures(
 	tab: Record<string, unknown>,
 	binding: {
@@ -2419,11 +2509,14 @@ function inspectTabCompletedResponseFailures(
 	if (!isRecord(inspection)) return ["response.tabs[0].inspection is missing or not an object"];
 	failures.push(...inspectTabOwnershipFailures(inspection, binding.expectedRunId));
 	const extraction = inspection.extraction;
+	failures.push(
+		...proReviewInspectInProgressFailures(tab, isRecord(extraction) ? extraction : null),
+	);
 	const extractionText = isRecord(extraction) ? extraction.text : undefined;
 	if (!isRecord(extraction)) {
 		failures.push("response.tabs[0].inspection.extraction is missing or not an object");
 	} else {
-		if (extraction.is_generating !== false) {
+		if (extraction.is_generating !== false && extraction.is_generating !== true) {
 			failures.push(`inspection extraction is_generating is ${String(extraction.is_generating)}`);
 		}
 		failures.push(
