@@ -197,14 +197,17 @@ describe("Telclaude MCP authority registry", () => {
 				profileId: "social",
 				domain: "social",
 			}),
+		).rejects.toThrow("MCP clients may not supply MCP authority field: actorId");
+		await expect(
+			bridgeResult.bridge.tc_provider_read({
+				service: "bank",
+				action: "balances.list",
+			}),
 		).rejects.toThrow("provider scope denied: bank");
 		await expect(
 			bridgeResult.bridge.tc_provider_read({
 				service: "calendar",
 				action: "events.list",
-				actorId: "social-agent",
-				profileId: "social",
-				domain: "social",
 			}),
 		).resolves.toEqual({ ok: true });
 		expect(calls).toEqual([
