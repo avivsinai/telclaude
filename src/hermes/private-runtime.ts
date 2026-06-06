@@ -439,7 +439,8 @@ export async function runHermesCliHeadlessProbe(input: {
 	runProcess?: (invocation: HermesLaunchInvocation) => Promise<HermesLaunchResult>;
 }): Promise<HermesCliProbeReport> {
 	const findings = findHermesLaunchSecretFindings(input.invocation);
-	const readiness = input.readiness ?? evaluateHermesCliHeadlessReadiness(input.invocation, findings);
+	const readiness =
+		input.readiness ?? evaluateHermesCliHeadlessReadiness(input.invocation, findings);
 	if (findings.length > 0) {
 		return probeReport({
 			status: "fail",

@@ -1014,10 +1014,7 @@ export async function runHermesApiServerContainerHttpProbe(input: {
 		input.timeoutMs,
 	);
 	return {
-		ok:
-			input.expectation === "allow"
-				? result.exitCode === 0
-				: result.exitCode !== 0,
+		ok: input.expectation === "allow" ? result.exitCode === 0 : result.exitCode !== 0,
 	};
 }
 

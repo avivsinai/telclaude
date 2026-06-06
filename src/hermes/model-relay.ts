@@ -1,8 +1,8 @@
-import fs from "node:fs";
-import os from "node:os";
-import net from "node:net";
-import path from "node:path";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { verifyOpenAiCodexPeerBoundProxyToken } from "../relay/openai-codex-proxy.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
@@ -209,7 +209,7 @@ export async function runHermesModelRelayProbe(
 					dockerBin: options.dockerBin,
 					profileDir,
 					timeoutMs: options.timeoutMs,
-			})
+				})
 			: undefined;
 	try {
 		const fetchImpl = options.fetchImpl ?? contained?.fetchImpl;
@@ -643,7 +643,8 @@ function scanProfileDir(
 	}
 
 	const custodyGate =
-		custodyGateOverride ?? runtimeProfileCustodyGate(resolved, runtimeCustodyProfileDir, reportedRoot);
+		custodyGateOverride ??
+		runtimeProfileCustodyGate(resolved, runtimeCustodyProfileDir, reportedRoot);
 	const findings: string[] = [];
 	const directHostFindings: string[] = [];
 	const scannedFiles: string[] = [];
@@ -1121,11 +1122,17 @@ function hasOnlyKeys(record: Record<string, unknown>, expectedKeys: readonly str
 	return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-function hasRequiredKeys(record: Record<string, unknown>, requiredKeys: readonly string[]): boolean {
-	return requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(record, key));
+function hasRequiredKeys(
+	record: Record<string, unknown>,
+	requiredKeys: readonly string[],
+): boolean {
+	return requiredKeys.every((key) => Object.hasOwn(record, key));
 }
 
-function hasOnlyAllowedKeys(record: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+function hasOnlyAllowedKeys(
+	record: Record<string, unknown>,
+	allowedKeys: readonly string[],
+): boolean {
 	const allowed = new Set(allowedKeys);
 	return Object.keys(record).every((key) => allowed.has(key));
 }
@@ -1184,28 +1191,28 @@ function listProfileFiles(root: string): { scannedFiles: string[]; skippedFiles:
 			if (!entry.isFile()) {
 				skippedFiles.push(path.relative(root, fullPath));
 				continue;
-				}
-				const stat = fs.statSync(fullPath);
-				if (stat.size > MAX_PROFILE_FILE_BYTES) {
-					if (
-						isBoundedRuntimeStateProfileFile(path.relative(root, fullPath)) &&
-						stat.size <= MAX_PROFILE_RUNTIME_STATE_FILE_BYTES
-					) {
-						scannedFiles.push(fullPath);
-						continue;
-					}
-					skippedFiles.push(path.relative(root, fullPath));
+			}
+			const stat = fs.statSync(fullPath);
+			if (stat.size > MAX_PROFILE_FILE_BYTES) {
+				if (
+					isBoundedRuntimeStateProfileFile(path.relative(root, fullPath)) &&
+					stat.size <= MAX_PROFILE_RUNTIME_STATE_FILE_BYTES
+				) {
+					scannedFiles.push(fullPath);
 					continue;
 				}
-				scannedFiles.push(fullPath);
+				skippedFiles.push(path.relative(root, fullPath));
+				continue;
+			}
+			scannedFiles.push(fullPath);
 		}
 	};
 	visit(root);
 	return {
 		scannedFiles: scannedFiles.sort((left, right) => left.localeCompare(right)),
 		skippedFiles: skippedFiles.sort((left, right) => left.localeCompare(right)),
-		};
-	}
+	};
+}
 
 function isBoundedRuntimeStateProfileFile(relativePath: string): boolean {
 	const portablePath = toPortablePath(relativePath);
