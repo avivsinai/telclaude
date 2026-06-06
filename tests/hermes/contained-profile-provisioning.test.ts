@@ -73,10 +73,10 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain(
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		);
-		expect(compose).toContain('user: "0:0"');
-		for (const cap of ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETPCAP", "SETGID", "SETUID"]) {
-			expect(compose).toContain(`      - ${cap}`);
-		}
+		expect(compose).toContain('user: "10000:10000"');
+		expect(compose).toContain("cap_drop:");
+		expect(compose).toContain("      - ALL");
+		expect(compose).not.toContain("cap_add:");
 		expect(compose).toMatch(
 			/TELCLAUDE_HERMES_LIVE_MCP_HOST=\$\{TELCLAUDE_HERMES_RELAY_IP:-192\.0\.2\.10\}/,
 		);
