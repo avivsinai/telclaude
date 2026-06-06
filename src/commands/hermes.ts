@@ -464,7 +464,7 @@ function allHermesFeatureProbeDefinitions(): readonly FeatureProbeDefinition[] {
 			surface_id: "served_mcp.memory",
 			documented_seam:
 				"Served-MCP memory tools (tc_memory_search/write) are server-source-stamped from the connection domain and enforce the private/public air-gap.",
-			probe_command: `pnpm dev hermes probe served_mcp.memory --allow-run --out ${DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH}`,
+			probe_command: `pnpm dev hermes probe served_mcp.memory --allow-run --mcp-url "$TELCLAUDE_HERMES_SERVED_MCP_URL" --mcp-auth "$TELCLAUDE_HERMES_SERVED_MCP_AUTH" --mcp-off-domain-peer-auth "$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH" --container-name ${DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME} --expected-peer-address "$TELCLAUDE_HERMES_CONTAINED_IP" --mcp-off-domain-container "$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER" --mcp-off-domain-peer-address "$TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP" --out ${DEFAULT_SERVED_MCP_MEMORY_EVIDENCE_PATH}`,
 			expected_result:
 				"Memory write/recall work for the server-resolved private source; cross-source read is denied by scoping (empty result); secret/instruction writes are rejected; recall is sanitized.",
 			negative_probe:
@@ -586,6 +586,8 @@ type ProbeOption = JsonOption & {
 	hermesHome?: string;
 	mcpAuth?: string;
 	mcpForgedAuth?: string;
+	mcpOffDomainContainer?: string;
+	mcpOffDomainPeerAddress?: string;
 	mcpOffDomainPeerAuth?: string;
 	mcpUrl?: string;
 	mcpWrongConnectionAuth?: string;
@@ -745,6 +747,13 @@ type LiveMcpProbeTokenOption = JsonOption & {
 	offDomainPeerAddress?: string;
 	timeoutMs?: string;
 };
+
+const SERVED_MCP_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_AUTH";
+const SERVED_MCP_OFF_DOMAIN_PEER_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH";
+const SERVED_MCP_WRONG_CONNECTION_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH";
+const SERVED_MCP_FORGED_AUTH_ENV = "TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH";
+const SERVED_MCP_OFF_DOMAIN_CONTAINER_ENV = "TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER";
+const SERVED_MCP_OFF_DOMAIN_PEER_IP_ENV = "TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP";
 
 function printJson(value: unknown): void {
 	console.log(JSON.stringify(value, null, 2));
@@ -2378,13 +2387,16 @@ function parseCsvOption(value: string | undefined): string[] {
 		.filter((entry) => entry.length > 0);
 }
 
-function resolveServedMcpOriginConfig(containerNameInput?: string): {
+function resolveServedMcpOriginConfig(
+	containerNameInput?: string,
+	expectedPeerAddressInput?: string,
+): {
 	containerName: string;
 	expectedPeerAddress?: string;
 	relayPeerAddress?: string;
 } {
 	const containerName = containerNameInput?.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
-	const expectedPeerAddress = resolveServedMcpExpectedPeerAddress();
+	const expectedPeerAddress = resolveServedMcpExpectedPeerAddress(expectedPeerAddressInput);
 	const relayPeerAddress = optionalConfiguredIp(
 		process.env.TELCLAUDE_HERMES_RELAY_IP,
 		"TELCLAUDE_HERMES_RELAY_IP",
@@ -2396,7 +2408,9 @@ function resolveServedMcpOriginConfig(containerNameInput?: string): {
 	};
 }
 
-function resolveServedMcpExpectedPeerAddress(): string | undefined {
+function resolveServedMcpExpectedPeerAddress(input?: string): string | undefined {
+	const explicit = optionalConfiguredIp(input, "--expected-peer-address");
+	if (explicit) return explicit;
 	const containedIp = optionalConfiguredIp(
 		process.env.TELCLAUDE_HERMES_CONTAINED_IP,
 		"TELCLAUDE_HERMES_CONTAINED_IP",
@@ -2410,6 +2424,31 @@ function resolveServedMcpExpectedPeerAddress(): string | undefined {
 		);
 	}
 	return requiredConfiguredIp(allowedPeers[0], "TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS");
+}
+
+function resolveServedMcpOffDomainOriginConfig(options: {
+	readonly enabled: boolean;
+	readonly privateContainerName?: string;
+	readonly containerNameInput?: string;
+	readonly expectedPeerAddressInput?: string;
+}): { readonly containerName: string; readonly expectedPeerAddress: string } | undefined {
+	if (!options.enabled) return undefined;
+	const containerName =
+		options.containerNameInput?.trim() || process.env[SERVED_MCP_OFF_DOMAIN_CONTAINER_ENV]?.trim();
+	if (!containerName) {
+		throw new Error(
+			`served_mcp.memory off-domain sentinel requires --mcp-off-domain-container or ${SERVED_MCP_OFF_DOMAIN_CONTAINER_ENV}`,
+		);
+	}
+	if (containerName === options.privateContainerName) {
+		throw new Error("served_mcp.memory off-domain container must differ from --container-name");
+	}
+	const expectedPeerAddress = requiredConfiguredIp(
+		options.expectedPeerAddressInput?.trim() ||
+			process.env[SERVED_MCP_OFF_DOMAIN_PEER_IP_ENV]?.trim(),
+		`--mcp-off-domain-peer-address or ${SERVED_MCP_OFF_DOMAIN_PEER_IP_ENV}`,
+	);
+	return { containerName, expectedPeerAddress };
 }
 
 function buildDockerExecFetch(options: {
@@ -2929,10 +2968,13 @@ function shellQuote(value: string): string {
 function servedMcpEndpoint(
 	url: string | undefined,
 	header: string | undefined,
+	headerEnvName?: string,
 ): ServedMcpEndpoint | undefined {
 	const resolvedUrl = url?.trim() || process.env.TELCLAUDE_HERMES_SERVED_MCP_URL?.trim();
 	if (!resolvedUrl) return undefined;
-	return { url: resolvedUrl, headers: parseHeaderOption(header) };
+	const resolvedHeader =
+		header?.trim() || (headerEnvName ? process.env[headerEnvName]?.trim() : "");
+	return { url: resolvedUrl, headers: parseHeaderOption(resolvedHeader) };
 }
 
 function collectHermesFeatureProbeEvidence(
@@ -3819,6 +3861,14 @@ export function registerHermesCommand(program: Command): void {
 			"Off-domain/wrong-peer served MCP context header as 'Name: value'",
 		)
 		.option(
+			"--mcp-off-domain-container <name>",
+			"Docker container that issues served_mcp.memory off-domain sentinel writes",
+		)
+		.option(
+			"--mcp-off-domain-peer-address <ip>",
+			"Expected off-domain sentinel peer IP echoed by the served MCP endpoint",
+		)
+		.option(
 			"--mcp-forged-auth <header>",
 			"Forged/unregistered served MCP context header as 'Name: value'",
 		)
@@ -4090,19 +4140,28 @@ export function registerHermesCommand(program: Command): void {
 				let outPath: string | undefined;
 				try {
 					const timeoutMs = parseTimeoutMs(options.timeoutMs);
-					const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth);
+					const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth, SERVED_MCP_AUTH_ENV);
 					const origin =
 						options.allowRun === true
-							? resolveServedMcpOriginConfig(options.containerName)
+							? resolveServedMcpOriginConfig(options.containerName, options.expectedPeerAddress)
 							: undefined;
 					report = await runServedMcpContainmentProbe({
 						allowRun: options.allowRun === true,
 						endpoint,
-						offDomainPeerEndpoint: servedMcpEndpoint(options.mcpUrl, options.mcpOffDomainPeerAuth),
-						forgedAuthorityEndpoint: servedMcpEndpoint(options.mcpUrl, options.mcpForgedAuth),
+						offDomainPeerEndpoint: servedMcpEndpoint(
+							options.mcpUrl,
+							options.mcpOffDomainPeerAuth,
+							SERVED_MCP_OFF_DOMAIN_PEER_AUTH_ENV,
+						),
+						forgedAuthorityEndpoint: servedMcpEndpoint(
+							options.mcpUrl,
+							options.mcpForgedAuth,
+							SERVED_MCP_FORGED_AUTH_ENV,
+						),
 						wrongConnectionEndpoint: servedMcpEndpoint(
 							options.mcpUrl,
 							options.mcpWrongConnectionAuth,
+							SERVED_MCP_WRONG_CONNECTION_AUTH_ENV,
 						),
 						unauthenticatedEndpoint: endpoint ? { url: endpoint.url } : undefined,
 						origin,
@@ -4199,24 +4258,35 @@ export function registerHermesCommand(program: Command): void {
 
 			if (surface === "served_mcp.memory") {
 				const timeoutMs = parseTimeoutMs(options.timeoutMs);
-				const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth);
+				const endpoint = servedMcpEndpoint(options.mcpUrl, options.mcpAuth, SERVED_MCP_AUTH_ENV);
 				const origin =
 					options.allowRun === true
-						? resolveServedMcpOriginConfig(options.containerName)
+						? resolveServedMcpOriginConfig(options.containerName, options.expectedPeerAddress)
 						: undefined;
+				const socialSentinelEndpoint = servedMcpEndpoint(
+					options.mcpUrl,
+					options.mcpOffDomainPeerAuth,
+					SERVED_MCP_OFF_DOMAIN_PEER_AUTH_ENV,
+				);
+				const offDomainOrigin = resolveServedMcpOffDomainOriginConfig({
+					enabled: options.allowRun === true && socialSentinelEndpoint !== undefined,
+					privateContainerName: origin?.containerName,
+					containerNameInput: options.mcpOffDomainContainer,
+					expectedPeerAddressInput: options.mcpOffDomainPeerAddress,
+				});
 				const report = await runServedMcpMemoryProbe({
 					allowRun: options.allowRun === true,
 					...(endpoint ? { endpoint } : {}),
 					...(origin?.expectedPeerAddress
 						? { expectedPeerAddress: origin.expectedPeerAddress }
 						: {}),
-					...(options.mcpOffDomainPeerAuth
+					...(socialSentinelEndpoint
 						? {
-								socialSentinelEndpoint: servedMcpEndpoint(
-									options.mcpUrl,
-									options.mcpOffDomainPeerAuth,
-								),
+								socialSentinelEndpoint,
 							}
+						: {}),
+					...(offDomainOrigin?.expectedPeerAddress
+						? { expectedSocialSentinelPeerAddress: offDomainOrigin.expectedPeerAddress }
 						: {}),
 					fetchImpl:
 						options.allowRun === true && origin?.containerName
@@ -4226,6 +4296,15 @@ export function registerHermesCommand(program: Command): void {
 									timeoutMs,
 								})
 							: undefined,
+					...(options.allowRun === true && offDomainOrigin?.containerName
+						? {
+								socialSentinelFetchImpl: buildDockerExecFetch({
+									dockerBin: options.dockerBin,
+									containerName: offDomainOrigin.containerName,
+									timeoutMs,
+								}),
+							}
+						: {}),
 					timeoutMs,
 				});
 				let outPath: string | undefined;

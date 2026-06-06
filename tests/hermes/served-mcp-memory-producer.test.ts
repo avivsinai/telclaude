@@ -34,20 +34,65 @@ function fakeResponse(body: unknown, peerHeader?: string): Response {
 	} as unknown as Response;
 }
 
+const CLIENT_MEMORY_AUTHORITY_KEYS = new Set([
+	"authority",
+	"authorityHandle",
+	"connection",
+	"sessionKey",
+	"actorId",
+	"profileId",
+	"domain",
+	"memorySource",
+	"source",
+	"sources",
+	"sourceFamilies",
+	"trust",
+	"writableNamespace",
+	"providerAuthority",
+	"endpointId",
+	"networkNamespace",
+	"turnConversationRef",
+	"turnId",
+	"inboundTurnId",
+	"inboundTurnRef",
+	"namespace",
+	"peerAddress",
+]);
+
+function containsClientMemoryAuthority(value: unknown): boolean {
+	if (Array.isArray(value)) return value.some(containsClientMemoryAuthority);
+	if (typeof value !== "object" || value === null) return false;
+	return Object.entries(value as Record<string, unknown>).some(
+		([key, child]) =>
+			CLIENT_MEMORY_AUTHORITY_KEYS.has(key) || containsClientMemoryAuthority(child),
+	);
+}
+
 // Simulates the served-MCP bridge: server-stamps the source, rejects
 // secret/instruction writes with an RPC error, and returns an empty result for a
 // cross-source (social-sentinel) search.
 function bridgeFetcher(): typeof fetch {
-	return (async (_url: unknown, init?: { body?: unknown }) => {
+	return (async (url: unknown, init?: { body?: unknown }) => {
 		const payload = JSON.parse(String(init?.body ?? "{}")) as {
 			method?: string;
 			params?: { name?: string; arguments?: Record<string, unknown> };
 		};
 		if (payload.method === "initialize") {
-			return fakeResponse({ result: { ok: true } }, "172.30.92.11");
+			const peerAddress = String(url).includes("agent-social")
+				? "172.30.92.12"
+				: "172.30.92.11";
+			return fakeResponse({ result: { ok: true } }, peerAddress);
 		}
 		const tool = payload.params?.name;
 		const args = payload.params?.arguments ?? {};
+		if (
+			(tool === "tc_memory_write" || tool === "tc_memory_search") &&
+			containsClientMemoryAuthority(args)
+		) {
+			return fakeResponse({
+				error: { code: -32001, message: "MCP client cannot supply memory authority fields" },
+			});
+		}
 		if (tool === "tc_memory_write") {
 			const content = String(args.content ?? "");
 			if (content.includes("AKIA") || /ignore all previous/i.test(content)) {
@@ -72,6 +117,7 @@ describe("runServedMcpMemoryProbe", () => {
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
 			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
@@ -90,6 +136,7 @@ describe("runServedMcpMemoryProbe", () => {
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
 			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
@@ -97,9 +144,20 @@ describe("runServedMcpMemoryProbe", () => {
 		const cross = evidence.checks.find((c) => c.name === "cross_source_read_denied");
 		expect(cross?.observedResultCount).toBe(0);
 		expect(cross?.sentinelSeeded).toBe(true);
+		expect(cross).toMatchObject({
+			sentinelSeedObservedPeerAddress: "172.30.92.12",
+			sentinelSeedObservedPeerSource: "server-peer-echo",
+			sentinelSeedExpectedPeerAddress: "172.30.92.12",
+			sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+		});
 		const secret = evidence.checks.find((c) => c.name === "secret_write_rejected");
 		expect(typeof secret?.rpcErrorCode).toBe("number");
 		expect(typeof secret?.rpcErrorMessage).toBe("string");
+		const source = evidence.checks.find((c) => c.name === "memory_source_resolved_server_side");
+		expect(source).toMatchObject({
+			clientSourceWriteRpcErrorCode: -32001,
+			clientSourceSearchRpcErrorCode: -32001,
+		});
 	});
 
 	it("does not self-anchor origin to the observed peer echo", async () => {
@@ -107,6 +165,7 @@ describe("runServedMcpMemoryProbe", () => {
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.99",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
 			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: bridgeFetcher(),
 			now: new Date("2026-06-05T20:00:00.000Z"),
@@ -153,6 +212,7 @@ describe("runServedMcpMemoryProbe", () => {
 			allowRun: true,
 			endpoint: { url: "http://tc-hermes-contained/mcp" },
 			expectedPeerAddress: "172.30.92.11",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
 			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
 			fetchImpl: malformedCrossSearch,
 			now: new Date("2026-06-05T20:00:00.000Z"),
@@ -169,5 +229,41 @@ describe("runServedMcpMemoryProbe", () => {
 		expect(evidence.ran).toBe(false);
 		expect(evidence.status).toBe("pending");
 		expect(evaluateServedMcpMemoryEvidence(evidence).status).toBe("fail");
+	});
+
+	it("uses the off-domain fetcher for sentinel seed traffic", async () => {
+		const privateUrls: string[] = [];
+		const socialUrls: string[] = [];
+		const privateFetcher = (async (url: unknown, init?: RequestInit) => {
+			privateUrls.push(String(url));
+			if (String(url).includes("agent-social")) {
+				return fakeResponse({ error: { code: -32001, message: "wrong origin" } });
+			}
+			return bridgeFetcher()(url as RequestInfo | URL, init);
+		}) as unknown as typeof fetch;
+		const socialFetcher = (async (url: unknown, init?: RequestInit) => {
+			socialUrls.push(String(url));
+			if (!String(url).includes("agent-social")) {
+				return fakeResponse({ error: { code: -32001, message: "wrong origin" } });
+			}
+			return bridgeFetcher()(url as RequestInfo | URL, init);
+		}) as unknown as typeof fetch;
+
+		const evidence = await runServedMcpMemoryProbe({
+			allowRun: true,
+			endpoint: { url: "http://tc-hermes-contained/mcp" },
+			expectedPeerAddress: "172.30.92.11",
+			expectedSocialSentinelPeerAddress: "172.30.92.12",
+			socialSentinelEndpoint: { url: "http://agent-social/mcp" },
+			fetchImpl: privateFetcher,
+			socialSentinelFetchImpl: socialFetcher,
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+
+		expect(evidence.status).toBe("pass");
+		expect(privateUrls.length).toBeGreaterThan(0);
+		expect(privateUrls.every((url) => url.includes("tc-hermes-contained"))).toBe(true);
+		expect(socialUrls.length).toBeGreaterThan(0);
+		expect(socialUrls.every((url) => url.includes("agent-social"))).toBe(true);
 	});
 });

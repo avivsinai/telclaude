@@ -129,11 +129,15 @@ const CLIENT_AUTHORITY_KEYS = new Set([
 	"domain",
 	"memorySource",
 	"source",
+	"sources",
+	"sourceFamilies",
 	"trust",
+	"namespace",
 	"writableNamespace",
 	"providerAuthority",
 	"endpointId",
 	"networkNamespace",
+	"peerAddress",
 ]);
 
 const PROTOTYPE_POLLUTION_KEYS = new Set(["__proto__", "prototype", "constructor"]);

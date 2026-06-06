@@ -14,11 +14,28 @@ function validEvidence(): ServedMcpMemoryEvidence {
 		name,
 		status: "pass" as const,
 		detail: `${name} proven`,
+		...(name === "memory_source_resolved_server_side"
+			? {
+					clientSourceWriteRpcErrorCode: -32001,
+					clientSourceWriteRpcErrorMessage:
+						"MCP client cannot supply memory authority fields",
+					clientSourceSearchRpcErrorCode: -32001,
+					clientSourceSearchRpcErrorMessage:
+						"MCP client cannot supply memory authority fields",
+				}
+			: {}),
 		...(rpcDenial.has(name)
 			? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
 			: {}),
 		...(name === "cross_source_read_denied"
-			? { observedResultCount: 0, sentinelSeeded: true }
+			? {
+					observedResultCount: 0,
+					sentinelSeeded: true,
+					sentinelSeedObservedPeerAddress: "172.30.92.12",
+					sentinelSeedObservedPeerSource: "server-peer-echo",
+					sentinelSeedExpectedPeerAddress: "172.30.92.12",
+					sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+				}
 			: {}),
 	}));
 	return {
@@ -150,7 +167,25 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 		expect(report.status).toBe("fail");
 		const gate = report.gates.find((g) => g.name === "memory.cross_source_read_denied");
 		expect(gate?.status).toBe("fail");
-		expect(gate?.detail).toContain("seeded off-domain sentinel");
+		expect(gate?.detail).toContain("off-domain sentinel");
+	});
+
+	it("requires write and search denial proof for client-supplied memory source", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "memory_source_resolved_server_side"
+					? { name: c.name, status: c.status, detail: c.detail }
+					: c,
+			),
+		});
+		expect(report.status).toBe("fail");
+		const gate = report.gates.find(
+			(g) => g.name === "memory.memory_source_resolved_server_side",
+		);
+		expect(gate?.status).toBe("fail");
+		expect(gate?.detail).toContain("client-supplied source authority");
 	});
 
 	it("requires proof that the off-domain sentinel was seeded", () => {
@@ -160,6 +195,25 @@ describe("evaluateServedMcpMemoryEvidence", () => {
 			checks: ev.checks.map((c) =>
 				c.name === "cross_source_read_denied"
 					? { name: c.name, status: c.status, detail: c.detail, observedResultCount: 0 }
+					: c,
+			),
+		});
+		expect(report.gates.find((g) => g.name === "memory.cross_source_read_denied")?.status).toBe(
+			"fail",
+		);
+	});
+
+	it("requires the sentinel seed peer to differ from the private contained peer", () => {
+		const ev = validEvidence();
+		const report = evaluateServedMcpMemoryEvidence({
+			...ev,
+			checks: ev.checks.map((c) =>
+				c.name === "cross_source_read_denied"
+					? {
+							...c,
+							sentinelSeedObservedPeerAddress: "172.30.92.11",
+							sentinelSeedExpectedPeerAddress: "172.30.92.11",
+						}
 					: c,
 			),
 		});

@@ -57,11 +57,28 @@ function unsignedEvidence(): ServedMcpMemoryEvidence {
 			name,
 			status: "pass" as const,
 			detail: `${name} proven`,
+			...(name === "memory_source_resolved_server_side"
+				? {
+						clientSourceWriteRpcErrorCode: -32001,
+						clientSourceWriteRpcErrorMessage:
+							"MCP client cannot supply memory authority fields",
+						clientSourceSearchRpcErrorCode: -32001,
+						clientSourceSearchRpcErrorMessage:
+							"MCP client cannot supply memory authority fields",
+					}
+				: {}),
 			...(rpcDenial.has(name)
 				? { rpcErrorCode: -32602, rpcErrorMessage: "memory entry rejected" }
 				: {}),
 			...(name === "cross_source_read_denied"
-				? { observedResultCount: 0, sentinelSeeded: true }
+				? {
+						observedResultCount: 0,
+						sentinelSeeded: true,
+						sentinelSeedObservedPeerAddress: "172.30.92.12",
+						sentinelSeedObservedPeerSource: "server-peer-echo",
+						sentinelSeedExpectedPeerAddress: "172.30.92.12",
+						sentinelSeedExpectedPeerSource: "configured-off-domain-ip",
+					}
 				: {}),
 		})),
 	};
