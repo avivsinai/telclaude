@@ -125,6 +125,30 @@ describe("persona skill load plans", () => {
 		]);
 	});
 
+	it("keeps same-path trusted overlays loadable and below catalog precedence", () => {
+		writeSkill(skillCatalog, "memory");
+		writeSkill(path.join(projectRoot, ".claude"), "memory");
+
+		const plan = buildSkillLoadPlan({ kind: "telegram" }, { cwd: projectRoot });
+		expect(plan.names).toContain("memory");
+		expect(plan.userAuthored.find((entry) => entry.name === "memory")?.root).toBe(
+			path.join(skillCatalog, "skills"),
+		);
+		expect(plan.blocked.filter((entry) => entry.name === "memory")).toEqual([]);
+	});
+
+	it("keeps workspace same-path skills from shadowing trusted bundled skills", () => {
+		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
+		writeSkill(path.join(projectRoot, ".claude"), "memory");
+
+		const plan = buildSkillLoadPlan({ kind: "telegram" }, { cwd: projectRoot });
+		expect(plan.names).toContain("memory");
+		expect(plan.userAuthored.find((entry) => entry.name === "memory")?.root).not.toBe(
+			path.join(projectRoot, ".claude", "skills"),
+		);
+		expect(plan.blocked.filter((entry) => entry.name === "memory")).toEqual([]);
+	});
+
 	it("loads social agent skills only for the matching service and explicit allowlist", () => {
 		writeSkill(skillCatalog, "memory");
 		writeSkill(skillCatalog, "agent/telegram/private-helper");

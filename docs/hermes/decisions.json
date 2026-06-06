@@ -37,6 +37,18 @@
       ],
       "cutover_impact": "Allows profile-generation proof to satisfy the no-fork/P0 cutover gate only when the run-local proof artifact validates against the pinned lockfile.",
       "downgrade_note": "No downgrade accepted for generated-profile provenance."
+    },
+    {
+      "id": "parity-descope:chief-of-staff",
+      "status": "accepted",
+      "owner": "operator-delegated-codex",
+      "deadline_phase": "pre-cutover",
+      "accepted_answer": "The first private Telegram Hermes cutover does not include the chief-of-staff profile workflow. Complete-parity accounting must record that row explicitly as descoped rather than leaving it invisible.",
+      "affected_workflows": [
+        "telegram-chat.telegram-chat-eafeee3bce50006d5d19"
+      ],
+      "cutover_impact": "Allows the complete parity roster gate to distinguish the intentionally out-of-scope chief-of-staff row from missing production evidence; does not descope private execution, identity migration, memory, skills, redaction, or cutover safety rows.",
+      "downgrade_note": "Temporary scope decision for the first private Telegram cutover; remove when a fixture.profile.chief-of-staff production fixture is added."
     }
   ]
 }

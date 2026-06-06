@@ -15,7 +15,7 @@ import {
 	type CutoverInputBundle,
 	collectFeatureProbeEvidence,
 	computeHermesArtifactDigest,
-	evaluateCutoverCheck,
+	evaluateCutoverCheck as evaluateCutoverCheckWithLiveClock,
 	type FeatureProbeMatrix,
 	HERMES_HEADLESS_ENTRYPOINT_PROOF_SCHEMA_VERSION,
 	HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
@@ -49,9 +49,21 @@ import {
 } from "../../src/relay/openai-codex-relay-proof.js";
 
 const hermesPin = { version: "0.15.1" };
+const CUTOVER_TEST_NOW = new Date("2026-05-31T09:02:00.000Z");
 const CLI_HEADLESS_TEST_RELAY_IP = "10.88.93.10";
 const CLI_HEADLESS_TEST_CONTAINED_IP = "10.88.93.11";
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
+
+function evaluateCutoverCheck(
+	input: Parameters<typeof evaluateCutoverCheckWithLiveClock>[0],
+	options: Parameters<typeof evaluateCutoverCheckWithLiveClock>[1] = {},
+) {
+	return evaluateCutoverCheckWithLiveClock(input, {
+		now: CUTOVER_TEST_NOW,
+		completeParityCutover: false,
+		...options,
+	});
+}
 
 const featureProbeMatrix: FeatureProbeMatrix = {
 	schemaVersion: 1,
@@ -1479,7 +1491,7 @@ function writeHeadlessEntrypointEvidence(evidencePath: string): void {
 		probeId: HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
 		status: "pass",
 		ran: true,
-		generatedAt: new Date().toISOString(),
+		generatedAt: "2026-05-31T09:01:00.000Z",
 		summary: "Hermes API adapter and private runtime semantic headless entrypoint checks passed",
 		testReport: {
 			runner: "vitest-json",

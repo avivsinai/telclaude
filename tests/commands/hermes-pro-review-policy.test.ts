@@ -15,6 +15,7 @@ const REQUIRED_PRO_REVIEW_CONTROL_FILES = [
 	"CLAUDE.md",
 	"SECURITY.md",
 	"docs/architecture.md",
+	"docs/hermes/cutover-proof-bundle.json",
 	"docs/hermes/cutover-scope.json",
 	"docs/hermes/decisions.json",
 	"docs/hermes/feature-probes.json",

@@ -574,6 +574,9 @@ export async function runServedMcpMemoryProbe(
 	const socialSentinelFetcher = options.socialSentinelFetchImpl ?? fetcher;
 	const endpoint = options.endpoint;
 	const timeoutMs = options.timeoutMs;
+	const runNonce = Date.now().toString(36);
+	const positiveMemoryId = `probe.memory.positive.${runNonce}`;
+	const positiveMemoryContent = `served-mcp memory probe positive ${runNonce}`;
 	const checks: ServedMcpMemoryEvidence["checks"] = [];
 
 	// Origin via the initialize peer-echo header.
@@ -609,9 +612,9 @@ export async function runServedMcpMemoryProbe(
 		fetcher,
 		endpoint,
 		memToolCall("tc_memory_write", {
-			id: "probe.memory.positive",
+			id: positiveMemoryId,
 			category: "meta",
-			content: "served-mcp memory probe positive write",
+			content: positiveMemoryContent,
 			metadata: {},
 			provenance: { note: "machine-observed" },
 		}),
@@ -645,7 +648,7 @@ export async function runServedMcpMemoryProbe(
 		fetcher,
 		endpoint,
 		memToolCall("tc_memory_search", {
-			query: "served-mcp memory probe positive",
+			query: positiveMemoryContent,
 			source: "social",
 			memorySource: "social",
 			namespace: "social:probe",
@@ -684,7 +687,7 @@ export async function runServedMcpMemoryProbe(
 	const recall = await postMemory(
 		fetcher,
 		endpoint,
-		memToolCall("tc_memory_search", { query: "served-mcp memory probe positive" }),
+		memToolCall("tc_memory_search", { query: positiveMemoryContent }),
 		timeoutMs,
 	);
 	const recallCount = memResultRowCount(recall);

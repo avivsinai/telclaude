@@ -3,7 +3,7 @@
   "hermes": {
     "version": "0.15.1"
   },
-  "featureProbeMatrixDigest": "sha256:e48712f6a8c9f1b0cc4c62c73b2be53e9a798f2b190c2bbe73ac68024bb58b1c",
+  "featureProbeMatrixDigest": "sha256:61a0c9e8412a9fb7f967da3e90f4f6fa156a77ea0c730c06f6bf43ae428ed772",
   "featureProbes": [
     {
       "surface_id": "execution.cli_headless",
@@ -111,6 +111,16 @@
       "evidence_path": "artifacts/hermes/probes/served-mcp-provider-tools.json"
     },
     {
+      "surface_id": "served_mcp.memory",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/served-mcp-memory.json"
+    },
+    {
+      "surface_id": "skills.allowlist",
+      "status": "pass",
+      "evidence_path": "artifacts/hermes/probes/skills-allowlist.json"
+    },
+    {
       "surface_id": "providers.google",
       "status": "pass",
       "evidence_path": "artifacts/hermes/probes/providers-google.json"
@@ -152,35 +162,37 @@
     }
   ],
   "adapterApiSignatures": {
-    "execution.cli_headless": "sha256:ad2e42a29dc776f6d8f1c91e4b661d3457f3dcceb0b70dd1831c817d8d0a14c3",
-    "execution.headless_entrypoint": "sha256:a41cabec493d9f50cb425da9e45dca0f250c8aef247849257bd5a0bfca286751",
+    "execution.cli_headless": "sha256:4e6eb8288c3b4a75f7c1854da2353f5a18ad0925185d8154e42d57fafaa5a64d",
+    "execution.headless_entrypoint": "sha256:1ae7e9de715878eb4461bb8a2a9baac1470aff96fdcf4e2073a73acc2115f487",
     "execution.approval_continuation": "sha256:a50338354492dfaf1554b6724e0892e2807a90927a09dfde87206458512afb27",
-    "execution.api_server_containment": "sha256:6dc046219578e409e022012ce9f7efc216c8af61d5b8fe8d1833475f71d96a6b",
-    "execution.served_mcp_containment": "sha256:d1648e502acba4fb22eb6deb56f1afbda3355931bba3bec53c601d42e05b330d",
-    "model.relay": "sha256:8bc519a914e0d02fd082a76bace9f51f6055aa7f3aff7b8b6d3f660b3ef25050",
-    "edge.whatsapp": "sha256:122e7c6b51e3fc5b397b78b607a68670e332832b1d0047a564a6462991cff5a5",
-    "edge.email": "sha256:1b24467c95360bd5ef66c41061dab0dbbfd42369df294973dfadd5db179c616d",
-    "edge.agentmail": "sha256:efadc605a7c62fc52d8587a894f4c81561530bae7f24b23d6b91a81b9f55c2ba",
-    "edge.social": "sha256:99761910fbc2ad30ddc1b7bc4620a4b3577a32b0a1ce4a0c6c1f074577aa163a",
-    "identity.migration": "sha256:de7564b43292ad029466434488e6606ee6ed956e7e0fd70c0948e3be44576421",
-    "household.scopes": "sha256:6f13c60e4102ba1815556859d15c823e9377defa021591a147e758b55f71a079",
-    "attachment.quarantine": "sha256:2da4c760572e1f9a44e8d33fba36f8ade248de7ee3e1010881e9d64168730305",
-    "outbound.policy": "sha256:95b8a93161aafa8a946c67d3ff613076865d46b7319f2d7de45838dd402374c9",
-    "public.social.isolation": "sha256:845709276e2883e923742e4608b3aebfbf3b66a0644dc63273321b5dc2479d73",
-    "providers.release-policy": "sha256:0149d318213d5b884f8e590258317e9cbe255e15c0d2eda3a53b01cb94c4889a",
-    "providers.bank": "sha256:5b604fa5877cc06dd6e39797ff78b96530f6d44420f807848294c9d8c379d340",
-    "providers.clalit": "sha256:dbafa827c2148d2cc763aa85529ea8127ccfd3c4cf533d645cccb55bda410546",
-    "providers.government": "sha256:efb188948d1ab2cd80347e32c95e0a8411b8247a433d9edcb9eb402bf07dff9c",
+    "execution.api_server_containment": "sha256:5f093c9c4aa6a42734ed2adbd22cf5005e0be0e6dbe53feb7e26544318bd2fd2",
+    "execution.served_mcp_containment": "sha256:02d83ffacf86fb373daf21cacc233e2a076edf39efe374a43a2497d6b71e2a48",
+    "model.relay": "sha256:7dd94dca3e3caeb89878a3dfddd15465533744aedf9b48c4c59fd3f899573124",
+    "edge.whatsapp": "sha256:edf58de101d042444c73344167f692d040b5fc6cc6477f366a26a06ccda893e2",
+    "edge.email": "sha256:2cba6c593f9e5b3e4d77ac158cb93d2392e3660e35b8ddbf0abf6a192fbbbbad",
+    "edge.agentmail": "sha256:91e690d3e7ba2a7a478a1ebb78e267954fd1986e830c214cb4d271a4261aad3b",
+    "edge.social": "sha256:e79e837df7591b8c3603840d9100d40b1747b493ed68985307953a9af354e1de",
+    "identity.migration": "sha256:a366245d5188c88985619b4888570869f2f1c0fc55aae948817d0fbadc8bd6d9",
+    "household.scopes": "sha256:a4bebf7ac953f623eede47b9a9526ed9ccb76c099d61a876d6614eb2a1f1e08d",
+    "attachment.quarantine": "sha256:8a98cca32038b34d846021e79bf372f0733d775cec810dfb11f62085bf56d9c9",
+    "outbound.policy": "sha256:38c9ae515f39b160acc88f1edc3a07404897621af3f076e8f049745c93761de9",
+    "public.social.isolation": "sha256:268fb5ad1079570436d1ed0bd05b92b3c38cb3505fde0e3803a6a92788d11516",
+    "providers.release-policy": "sha256:839dd37517e01ab53ad941464e4018eba6d97d40450b56feb3fb3ab39fff4cdf",
+    "providers.bank": "sha256:c471d4c5e25e8034efe24b87a98072829d5bcec4f2bb7a339bf9a56239e2cd5b",
+    "providers.clalit": "sha256:b97a0dfac39aec2204b1cc85516af1859f4607284987616ae20300275abf283a",
+    "providers.government": "sha256:e255db5ea34eb3bacd85058f1a34cab1f17e0b23166f4703aecae0413ce79c8e",
     "providers.approval-binding": "sha256:8cedcd579ffdda35045435e0c40f6b54e58f3a2464db521db713f17ac8126355",
-    "served_mcp.provider-tools": "sha256:9565a6de3b6d81358d0e54356a1a15cf4dc8d66b4a926000803167bda1297b77",
-    "providers.google": "sha256:93e1f3d861371ec29672d1e89839d6530c0f71586983f6a8cfaf3517d719eee8",
+    "served_mcp.provider-tools": "sha256:01e4a3ea7a353bb6d53f2418394ffd1990207bf39b87698d0a3a40730b5e70aa",
+    "served_mcp.memory": "sha256:1f044faf2eb3707e34a0ce5d4fe80423d4be3a97f29637c20d51a0627cfb292b",
+    "skills.allowlist": "sha256:5e2a9efd8a0fe4ad00c6a9b503ad26f9ca2ae0f8c7894a6342589cbb591e1407",
+    "providers.google": "sha256:15706fd2c599f8c28b3d490ffe0bf68bf744f2b4f81f824f42a569f2e275d7eb",
     "workflow.cron": "sha256:203c3a470796ed0dd42faa949f8989c0fc66dc2c6c044cc7cc6d0bfeb0fa6302",
     "workflow.longrun": "sha256:ac288f7c6d207a4906f668e8923713645e482c70ccc1aae4391cd66326007e9f",
     "approval.continuation": "sha256:4bfa3b6f6db98ce41662011b8508e93479ffe4a8e881ff7b982137b26935f7ab",
     "sideeffect.ledger": "sha256:42ce05d83f47efe66b575e99d556e9342f4c9e8e7991e128977f60b4d598bddf",
     "browser.profiles": "sha256:7e7b7f7471f4be356da564d0346870c7abbb0881fb8c4522a43b35846d76ecc0",
     "computer.broker": "sha256:2495e49975e67a5cb486926b2a3c282992b8276bf598375351574fe28311b4dc",
-    "network.egress-broker": "sha256:319f3ad032ed9820d7b02174ee10528f01338d1e4f1d7cb44e4ba384f125d6f8"
+    "network.egress-broker": "sha256:0218bc380047e0ce71b90d90c5f0275a780243a4133cb921c2ab6cdea7335b97"
   },
   "capabilities": {
     "plugins": [
@@ -211,11 +223,11 @@
   "generatedProfileSchemaVersion": "1",
   "wrapperPackageVersion": "0.7.1",
   "paritySuiteDigests": {
-    "p0": "sha256:0043314b2af1c765d9763c5759a08e6ddcc598dee1340c801403ea4caea5faef"
+    "p0": "sha256:d7c890b7ebe8260463e1b76aa9fb5047c754b05cbdc314cb9fe464fe83335c15"
   },
   "noForkProofEvidencePath": "artifacts/hermes/no-fork-run-20260605T095434Z/no-fork.p0.json",
   "sourceDriftSignals": {
-    "sourceCommit": "72215272d208965caceb0dc9e22cd8ee01360fdf",
-    "docsCommit": "72215272d208965caceb0dc9e22cd8ee01360fdf"
+    "sourceCommit": "897f88e5e84a573118d9a829afc019cea9f044b1",
+    "docsCommit": "897f88e5e84a573118d9a829afc019cea9f044b1"
   }
 }

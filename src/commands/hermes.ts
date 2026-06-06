@@ -10,6 +10,7 @@ import {
 	DEFAULT_HERMES_API_SERVER_CONTAINER_NAME,
 	DEFAULT_HERMES_API_SERVER_CONTAINMENT_EVIDENCE_PATH,
 	DEFAULT_HERMES_API_SERVER_DOCKER_IMAGE,
+	DEFAULT_HERMES_API_SERVER_HERMES_HOME,
 	DEFAULT_HERMES_API_SERVER_NETWORK,
 	DEFAULT_HERMES_API_SERVER_PORT,
 	DEFAULT_HERMES_RELAY_CONTAINER_NAME,
@@ -2615,10 +2616,12 @@ function buildDockerSkillsTopologyObserver(options: {
 function buildDockerExecSkillsAllowlistRunner(options: {
 	dockerBin?: string;
 	containerName: string;
+	hermesHome?: string;
 	timeoutMs?: number;
 }): SkillsAllowlistRunner {
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
 	const containerName = options.containerName.trim() || DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME;
+	const hermesHome = options.hermesHome?.trim() || DEFAULT_HERMES_API_SERVER_HERMES_HOME;
 	return async (scenario: SkillsAllowlistScenario) => {
 		if (scenario.kind === "pretooluse") {
 			const script = `
@@ -2635,6 +2638,7 @@ async function loadProbe() {
   const candidates = [
     process.env.TELCLAUDE_SDK_CLIENT_MODULE,
     path.join(cwd, "dist/sdk/client.js"),
+    "/opt/data/telclaude-runner/dist/sdk/client.js",
     "/app/dist/sdk/client.js",
     "/opt/telclaude/dist/sdk/client.js",
     "/workspace/dist/sdk/client.js"
@@ -2678,6 +2682,12 @@ console.log(JSON.stringify({ passed, detail, enforcementLayer: "pretooluse" }, n
 				dockerBin,
 				[
 					"exec",
+					"-e",
+					`HERMES_HOME=${hermesHome}`,
+					"-e",
+					`CLAUDE_CONFIG_DIR=${hermesHome}`,
+					"-e",
+					`TELCLAUDE_CLAUDE_HOME=${hermesHome}`,
 					containerName,
 					"node",
 					"--input-type=module",
@@ -2708,7 +2718,7 @@ console.log(JSON.stringify({ passed, detail, enforcementLayer: "pretooluse" }, n
 				};
 			}
 			try {
-				const parsed = JSON.parse(stdout) as { passed?: unknown; detail?: unknown };
+				const parsed = parseDockerSkillsRunnerJson(stdout);
 				return {
 					passed: parsed.passed === true,
 					observationLayer: "docker_exec",
@@ -2788,6 +2798,8 @@ print(json.dumps({"passed": passed, "detail": detail}, sort_keys=True))
 			dockerBin,
 			[
 				"exec",
+				"-e",
+				`HERMES_HOME=${hermesHome}`,
 				containerName,
 				"python",
 				"-c",
@@ -2812,7 +2824,7 @@ print(json.dumps({"passed": passed, "detail": detail}, sort_keys=True))
 			};
 		}
 		try {
-			const parsed = JSON.parse(stdout) as { passed?: unknown; detail?: unknown };
+			const parsed = parseDockerSkillsRunnerJson(stdout);
 			return {
 				passed: parsed.passed === true,
 				observationLayer: "docker_exec",
@@ -2832,6 +2844,23 @@ print(json.dumps({"passed": passed, "detail": detail}, sort_keys=True))
 			};
 		}
 	};
+}
+
+function parseDockerSkillsRunnerJson(stdout: string): { passed?: unknown; detail?: unknown } {
+	let latest: { passed?: unknown; detail?: unknown } | null = null;
+	for (const line of stdout.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed) as unknown;
+		} catch {
+			continue;
+		}
+		if (isRecord(parsed) && "passed" in parsed) latest = parsed;
+	}
+	if (latest) return latest;
+	throw new Error("no JSON object found in docker exec skills probe output");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -4414,6 +4443,7 @@ export function registerHermesCommand(program: Command): void {
 							? buildDockerExecSkillsAllowlistRunner({
 									dockerBin: options.dockerBin,
 									containerName,
+									hermesHome: options.hermesHome,
 									timeoutMs,
 								})
 							: undefined,

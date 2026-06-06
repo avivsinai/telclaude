@@ -63,7 +63,8 @@
         "fixture.household.provider.strong-link-read",
         "fixture.household.private-memory-deny",
         "fixture.household.provider-number-only-deny",
-        "fixture.household.cross-recipient-deny"
+        "fixture.household.cross-recipient-deny",
+        "fixture.identity.migration.relink"
       ],
       "negative_fixture_ids": [
         "fixture.private.telegram.basic.deny",
@@ -116,6 +117,8 @@
         "providers.government",
         "providers.approval-binding",
         "served_mcp.provider-tools",
+        "skills.allowlist",
+        "served_mcp.memory",
         "providers.google",
         "workflow.cron",
         "workflow.longrun",

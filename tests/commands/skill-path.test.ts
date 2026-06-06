@@ -64,7 +64,7 @@ describe("resolveSkillAssetPath", () => {
 		}
 	});
 
-	it("prefers project-local skill files over configured Claude home", () => {
+	it("prefers configured Claude home over project-local skill files", () => {
 		process.env.CLAUDE_CONFIG_DIR = claudeHome;
 
 		const projectFile = path.join(
@@ -77,10 +77,10 @@ describe("resolveSkillAssetPath", () => {
 		);
 		fs.mkdirSync(path.dirname(projectFile), { recursive: true });
 		fs.writeFileSync(projectFile, "project", "utf8");
-		writeSkillFile(claudeHome, "weather", "scripts/weather.sh", "configured");
+		const configuredFile = writeSkillFile(claudeHome, "weather", "scripts/weather.sh", "configured");
 
 		expect(resolveSkillAssetPath("weather", "scripts/weather.sh", { cwd: projectRoot })).toBe(
-			projectFile,
+			configuredFile,
 		);
 	});
 
@@ -263,10 +263,8 @@ describe("getSkillRoot / getDraftSkillRoot", () => {
 		delete process.env.TELCLAUDE_SKILL_CATALOG_DIR;
 
 		const roots = getAllSkillRoots(projectRoot);
-		// First root should be project-local.
-		expect(roots[0]).toBe(path.join(projectRoot, ".claude", "skills"));
-		// At least one bundled root at the end (resolved inside the telclaude package).
-		expect(roots.length).toBeGreaterThanOrEqual(1);
+		expect(roots.at(-1)).toBe(path.join(projectRoot, ".claude", "skills"));
+		expect(roots[0]).toContain(`${path.sep}.claude${path.sep}skills`);
 	});
 
 	it("returns all draft roots including the managed catalog when configured", () => {

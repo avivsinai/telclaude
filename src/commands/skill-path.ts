@@ -67,9 +67,8 @@ function dedupePaths(paths: readonly (string | null | undefined)[]): string[] {
 
 /**
  * Build the ordered list of candidate skill roots (writable or not),
- * used for READING skill assets. In catalog mode the managed catalog wins,
- * with project-local skills treated as external overlays. Otherwise we keep
- * the historical project-local → configured home → bundled order.
+ * used for READING skill assets. Curated roots win over project-local skills
+ * so a workspace checkout can add new skills but cannot shadow trusted ones.
  */
 export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
 	const configuredClaudeHome = getConfiguredClaudeHome();
@@ -77,14 +76,14 @@ export function getAllSkillRoots(cwd: string = process.cwd()): string[] {
 	if (configuredSkillCatalog) {
 		return dedupePaths([
 			path.join(configuredSkillCatalog, "skills"),
-			path.join(cwd, ".claude", "skills"),
 			getBundledSkillsRoot(),
+			path.join(cwd, ".claude", "skills"),
 		]);
 	}
 	return dedupePaths([
-		path.join(cwd, ".claude", "skills"),
 		configuredClaudeHome ? path.join(configuredClaudeHome, "skills") : null,
 		getBundledSkillsRoot(),
+		path.join(cwd, ".claude", "skills"),
 	]);
 }
 

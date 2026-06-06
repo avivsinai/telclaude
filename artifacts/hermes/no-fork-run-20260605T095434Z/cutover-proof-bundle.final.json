@@ -1,6 +1,6 @@
 {
   "schemaVersion": "telclaude.hermes.cutover-proof-bundle.v1",
-  "generatedAt": "2026-06-05T22:12:01.040Z",
+  "generatedAt": "2026-06-06T13:35:22.659Z",
   "hermes": {
     "version": "0.15.1"
   },
@@ -11,9 +11,9 @@
     "inventory": {
       "key": "inventory",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:08:14.370Z",
+      "generatedAt": "2026-06-05T09:57:58.409Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/inventory.json",
-      "sha256": "sha256:cfbad41f7d062148e29231f62b77fd9d3aecaf8d66e13f580bfaf7751ee32846",
+      "sha256": "sha256:a40c00227508680f6a3b2e371cbd9882b2e5d9dfd39118faebc0bda2f1740774",
       "sourceCommand": "pnpm dev hermes inventory --out artifacts/hermes/no-fork-run-20260605T095434Z/inventory.json --json",
       "status": "pass",
       "redaction": {
@@ -34,9 +34,9 @@
     "scopeManifest": {
       "key": "scopeManifest",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/scope.json",
-      "sha256": "sha256:34b2cfabc2338729d213fe26db87a49264f06df5176c6a52622c69dde6938a56",
+      "sha256": "sha256:24867e83a2b373c4a04654406de61052eb40919ff75dac962184d9d273d34fdd",
       "sourceCommand": "pnpm dev hermes cutover-scope --json",
       "status": "pass",
       "redaction": {
@@ -59,9 +59,9 @@
     "decisionLog": {
       "key": "decisionLog",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/decisions.json",
-      "sha256": "sha256:50d907387913e50eff05872e7c45402329310ac42c82f8b2022c772b379578ae",
+      "sha256": "sha256:6143704a97911f058268d76dcffa062ddb6c1889e21df33e89fbb8d7d35f41ed",
       "sourceCommand": "pnpm dev hermes decision-log --json",
       "status": "pass",
       "redaction": {
@@ -84,9 +84,9 @@
     "compatibilityLockfile": {
       "key": "compatibilityLockfile",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/hermes-compat.lock.json",
-      "sha256": "sha256:0c3514fcb698f66900785e4b3eae1b21d5363b0bd316bae87b0e9cef2b560a0e",
+      "sha256": "sha256:37d112a4438b5969b257d7d5adf876bff90ff6e7951ac852f2bdbacb5ee6bf60",
       "sourceCommand": "pnpm dev hermes compat-lock --dry-run --json",
       "status": "pass",
       "redaction": {
@@ -109,9 +109,9 @@
     "featureProbeMatrix": {
       "key": "featureProbeMatrix",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/feature-probes.json",
-      "sha256": "sha256:fd775e7db0e7e77144d26509fe60033a910100d6475228136b214ac97061cf90",
+      "sha256": "sha256:ea4b813469c58318ae7a1c16b3e50b11893726e959dcff4aba0cc6463d17527c",
       "sourceCommand": "pnpm dev hermes probes --json",
       "status": "pass",
       "redaction": {
@@ -134,9 +134,9 @@
     "fixtureResults": {
       "key": "fixtureResults",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/fixture-results.json",
-      "sha256": "sha256:8526a6f4a32d8c61d796e034771160b9c0a622a4580e613848064402fab6e754",
+      "sha256": "sha256:f687c8355daa3ed7a43f89e474aa58f655346e17094cbd537003ec37b37add07",
       "sourceCommand": "pnpm dev hermes fixtures --json",
       "status": "pass",
       "redaction": {
@@ -159,7 +159,7 @@
     "noForkProof": {
       "key": "noForkProof",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/no-fork.p0.json",
       "sha256": "sha256:fc79405b8333ed67ccab7f03cd396c28a200f7131a9b96107bfae3502d203212",
       "sourceCommand": "pnpm dev hermes prove --upstream-clean --p0 --json",
@@ -184,7 +184,7 @@
     "networkProbeBundle": {
       "key": "networkProbeBundle",
       "schemaVersion": "1",
-      "generatedAt": "2026-06-05T22:12:01.040Z",
+      "generatedAt": "2026-06-06T13:35:22.659Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/network-probes.signed.json",
       "sha256": "sha256:a902e67b4f99a5d4e2f6cd570607465f49a4453714b49e930aec8393143b8fad",
       "sourceCommand": "pnpm dev hermes network-probes --json",
@@ -209,9 +209,9 @@
     "queueSnapshot": {
       "key": "queueSnapshot",
       "schemaVersion": "telclaude.hermes.queue-ownership-snapshot.v1",
-      "generatedAt": "2026-06-05T22:08:14.370Z",
+      "generatedAt": "2026-06-05T09:57:58.409Z",
       "artifactPath": "artifacts/hermes/no-fork-run-20260605T095434Z/queue-snapshot.json",
-      "sha256": "sha256:1aba1541aabd8dfdd78098b113db09deea12c4331758db0b62ca376f2907de1a",
+      "sha256": "sha256:59da93f69a7908d103dd4e7450df6459192b2ae999fbb24752822a63ea568de8",
       "sourceCommand": "pnpm dev hermes queue-snapshot --inventory artifacts/hermes/no-fork-run-20260605T095434Z/inventory.json --out artifacts/hermes/no-fork-run-20260605T095434Z/queue-snapshot.json --json",
       "status": "pass",
       "redaction": {

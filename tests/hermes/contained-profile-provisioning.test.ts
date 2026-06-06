@@ -73,6 +73,7 @@ describe("Hermes contained profile provisioning", () => {
 		expect(compose).toContain(
 			"./hermes-contained-skills.allowlist:/tmp/telclaude-hermes-contained-skills.allowlist:ro",
 		);
+		expect(compose).toContain("..:/opt/data/telclaude-runner:ro");
 		expect(compose).toContain('user: "10000:10000"');
 		expect(compose).toContain("cap_drop:");
 		expect(compose).toContain("      - ALL");
