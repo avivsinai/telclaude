@@ -173,8 +173,7 @@ describe("Hermes Pro review semantic artifact gate", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-pro-review-semantic-"));
 		await withCwd(tempDir, async () => {
 			writeRequiredProReviewWorkspace(tempDir);
-			const servedMcpContainment =
-				"artifacts/hermes/probes/execution-served-mcp-containment.json";
+			const servedMcpContainment = "artifacts/hermes/probes/execution-served-mcp-containment.json";
 			const signedNetworkDependency =
 				"artifacts/hermes/no-fork-run-20260605T095434Z/network-signed/direct-provider-denied.json";
 			const unrelatedArtifact =
@@ -280,7 +279,7 @@ function proReviewCanary(): Record<string, unknown> {
 		conversationId: "conv_test",
 		conversationUrl: "https://chatgpt.com/c/conv_test",
 		extensionInstanceId: "ext_test",
-		extensionVersion: "0.5.19",
+		extensionVersion: "0.5.26",
 		promptClass: "non-private transport canary",
 		expectedResponse: "OK",
 		response: "OK",
@@ -313,7 +312,7 @@ function proReviewCanary(): Record<string, unknown> {
 			detail: "native host socket is reachable and extension hello was observed",
 			extensionId: "njdakhppfigmloihiikbjmheejfndbfa",
 			extensionInstanceId: "ext_test",
-			extensionVersion: "0.5.19",
+			extensionVersion: "0.5.26",
 			nativeHostName: "com.yoetz.chatgpt_native",
 			protocolVersion: 1,
 			socketReachable: true,
