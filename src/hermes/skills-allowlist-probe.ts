@@ -2,10 +2,16 @@ import type { ZodError } from "zod";
 import { redactSecrets } from "../security/output-filter.js";
 import {
 	type HermesSignedEvidenceValidationOptions,
+	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
 } from "./attestation-validation.js";
 import { type HermesArtifactWriteOptions, writeHermesJsonArtifact } from "./foundation.js";
 import { DEFAULT_SERVED_MCP_CONTAINED_CONTAINER_NAME } from "./served-mcp-containment.js";
+import {
+	signSkillsAllowlistAttestation,
+	skillsAllowlistAttestationFieldsForEvidence,
+	skillsAllowlistAttestationSignatureFailure,
+} from "./skills-allowlist-attestation.js";
 
 export {
 	SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES,
@@ -90,6 +96,42 @@ function originGate(origin: SkillsAllowlistEvidence["origin"]): SkillsAllowlistG
  * check of the same name whose every occurrence is "pass". Runtime/profile checks
  * must also be observed through docker exec inside the contained Hermes runtime.
  */
+// Signed runner attestation provenance gate: binds this evidence body to an Ed25519
+// signature from the operator relay key (which contained agents never hold). Under a
+// live cutover (allowStaleAttestations === false) it is REQUIRED; otherwise skipped
+// if absent but still verified if present so a tampered attestation cannot slip.
+function skillsAllowlistRunnerAttestationFailure(
+	data: SkillsAllowlistEvidence,
+	options: HermesSignedEvidenceValidationOptions,
+): string | null {
+	const attestation = data.runnerAttestation;
+	if (!attestation) {
+		return hermesAllowsStaleAttestations(options) ? null : "runnerAttestation is missing";
+	}
+	const signatureFailure = skillsAllowlistAttestationSignatureFailure(attestation, {
+		allowStale: hermesAllowsStaleAttestations(options),
+		relayPublicKey: options.relayPublicKey,
+	});
+	if (signatureFailure) return `runnerAttestation signature is invalid: ${signatureFailure}`;
+	const expected = skillsAllowlistAttestationFieldsForEvidence(data);
+	for (const field of [
+		"probeEvidenceSchemaVersion",
+		"probeId",
+		"status",
+		"ran",
+		"generatedAt",
+		"originSha256",
+		"propertiesSha256",
+		"checksSha256",
+		"evidenceSha256",
+	] as const) {
+		if (attestation[field] !== expected[field]) {
+			return `runnerAttestation ${field} mismatch`;
+		}
+	}
+	return null;
+}
+
 export function evaluateSkillsAllowlistEvidence(
 	evidence: unknown,
 	options: { missingPath?: string } & HermesSignedEvidenceValidationOptions = {},
@@ -116,6 +158,14 @@ export function evaluateSkillsAllowlistEvidence(
 			name: "skills.freshness",
 			status: "fail",
 			detail: freshnessFailure,
+		});
+	}
+	const attestationFailure = skillsAllowlistRunnerAttestationFailure(parsed.data, options);
+	if (attestationFailure) {
+		gates.push({
+			name: "skills.attestation",
+			status: "fail",
+			detail: attestationFailure,
 		});
 	}
 
@@ -424,11 +474,18 @@ export async function runSkillsAllowlistProbe(
 		now: options.now,
 	});
 	const allPass = evaluated.status === "pass" && evaluated.productionEnable;
-	return {
+	const finalEvidence: SkillsAllowlistEvidence = {
 		...draft,
 		status: allPass ? "pass" : "fail",
 		summary: allPass
 			? "skills allowlist profile proven in the contained runtime"
 			: "skills-allowlist probe recorded failing checks",
+	};
+	// Sign the finalized evidence body with the operator relay key so the written
+	// artifact carries provenance the cutover evaluator can verify. The relay signing
+	// key is present in the real --allow-run (relay/operator) context.
+	return {
+		...finalEvidence,
+		runnerAttestation: signSkillsAllowlistAttestation(finalEvidence),
 	};
 }

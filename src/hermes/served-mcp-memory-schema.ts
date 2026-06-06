@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ServedMcpMemoryAttestationSchema } from "./served-mcp-memory-attestation.js";
 
 // Evidence schema for the served-MCP memory parity probe. The probe drives the
 // wrapper's tc_memory_search / tc_memory_write tools through the served-MCP bridge
@@ -93,6 +94,10 @@ export const ServedMcpMemoryEvidenceSchema = z
 		origin: ServedMcpMemoryOriginSchema,
 		properties: ServedMcpMemoryPropertiesSchema,
 		checks: z.array(ServedMcpMemoryCheckSchema),
+		// Signed runner attestation binding this evidence body to the operator relay
+		// key. Optional in the schema (pending/non-live evidence has none); the
+		// evaluator REQUIRES a valid one before productionEnable under a live cutover.
+		runnerAttestation: ServedMcpMemoryAttestationSchema.optional(),
 	})
 	.strict();
 

@@ -1,8 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	evaluateServedMcpMemoryEvidence,
 	runServedMcpMemoryProbe,
 } from "../../src/hermes/served-mcp-memory.js";
+import { generateKeyPair } from "../../src/internal-auth.js";
+
+// The producer signs evidence with the operator relay key; provide a deterministic
+// keypair so signServedMcpMemoryAttestation can sign and the evaluator can verify.
+const savedRelayKeys = {
+	private: process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY,
+	public: process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY,
+};
+beforeEach(() => {
+	const relayKeys = generateKeyPair();
+	process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = relayKeys.privateKey;
+	process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = relayKeys.publicKey;
+});
+afterEach(() => {
+	if (savedRelayKeys.private === undefined) delete process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
+	else process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = savedRelayKeys.private;
+	if (savedRelayKeys.public === undefined) delete process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
+	else process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = savedRelayKeys.public;
+});
 
 function fakeResponse(body: unknown, peerHeader?: string): Response {
 	return {
