@@ -51,6 +51,15 @@ Providers are separate containers that expose REST APIs for domain-specific serv
 1. **Application layer**: PreToolUse hook blocks WebFetch URLs matching provider base URLs; agents must use the relay-proxied CLI command.
 2. **Firewall layer**: Agent containers exclude provider hosts from iptables allowlist. Even `curl` from Bash is blocked at kernel level.
 
+## Two Relay-Side Consumers, One Sidecar Contract
+
+Provider sidecars are runtime-agnostic. The same `/v1/health`, `/v1/schema`, and `/v1/fetch` contract serves both relay-side provider consumers, and neither path changes the sidecar:
+
+1. **SDK-agent CLI path** — the Telegram/social Claude agents issue `telclaude providers query ...`, which the relay's provider proxy (`src/relay/provider-proxy.ts`, `proxyProviderRequest`) forwards to `/v1/fetch` with `x-actor-user-id`. Action-type operations use the inline approval-nonce handshake (`approval_required` → `/approve <nonce>` → retry with token).
+2. **Hermes private-runtime MCP path** — the contained Hermes runtime never calls providers directly. It calls relay-owned served-MCP tools (`tc_provider_read`, `tc_provider_prepare_write`, `tc_provider_execute_write`) on the relay-internal live MCP server. Those tools resolve through `resolveTelclaudeProviderOperation` and reuse the **same** `proxyProviderRequest` / `/v1/fetch` proxy. The only difference is the relay-side authorization: writes are staged in a two-phase side-effect ledger (`src/hermes/mcp/side-effect-ledger.ts`) — `prepare` → human approval → `execute` — rather than the inline nonce handshake. At execute time the relay still mints a per-request sidecar approval token and forwards it to `/v1/fetch`, so the sidecar's verification logic is identical for both paths.
+
+The implications for a provider author: implement the sidecar contract once. Read actions execute immediately on both paths. SDK-agent action operations use the normal sidecar challenge flow: reject the first unsigned action with `approval_required`, then verify the signed, params-bound token on the retry. Hermes ledger execution arrives with `approvalMode: "preapproved-ledger"` and a relay-minted sidecar token at execute time. Provider scoping for the Hermes path is enforced relay-side (`authority.providerScopes` in `src/hermes/mcp/bridge.ts`), not in the sidecar.
+
 ## Required Endpoints
 
 Every provider sidecar must implement these three endpoints:
@@ -106,7 +115,7 @@ Each action specifies:
 Action-type requests require an Ed25519-signed approval token:
 
 1. Agent calls `telclaude providers query` for an action-type operation.
-2. Relay detects `type: "action"` and returns `{ status: "error", errorCode: "APPROVAL_REQUIRED", approvalNonce: "<nonce>" }`.
+2. Relay detects `type: "action"` and returns `{ status: "error", errorCode: "approval_required", approvalNonce: "<nonce>" }`.
 3. Relay sends approval request to operator via Telegram (`/approve <nonce>` or `/deny <nonce>`).
 4. On approval, relay mints a signed token binding: service, action, params hash, actor, expiry.
 5. Agent retries with the approval token. Provider verifies signature, checks JTI replay store, validates params hash.
@@ -116,6 +125,8 @@ Token properties:
 - 5-minute TTL
 - JTI replay protection (SQLite store with automatic cleanup)
 - Params hash binding (SHA-256 of canonical JSON) prevents token reuse for different operations
+
+The sidecar should reject unsigned SDK-agent action attempts with `approval_required`; the relay then obtains approval and retries with `x-approval-token`. When the request originates from the Hermes private runtime, the relay stages the write in its side-effect ledger and mints the same kind of sidecar token at execute time (see "Two Relay-Side Consumers, One Sidecar Contract"). The token verification logic is unchanged either way.
 
 ### 4. Docker integration
 

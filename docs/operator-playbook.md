@@ -4,7 +4,7 @@ How to run telclaude as an operator-control surface for a personal Claude agent.
 
 ## Framing
 
-Telclaude is the secure Telegram-bridged operator-control surface for a personal Claude agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
+Telclaude is the secure Telegram-bridged operator-control surface for a personal Claude agent. The relay holds secrets and enforces tiers; the vault sidecar holds credentials and signs approval tokens; private and social personas are air-gapped at the memory boundary; recurring work is driven by the cron scheduler and signed webhooks. The private agent can run on the default Claude runtime or, once proven, on a contained no-fork Hermes runtime that the relay drives through operator RPC. As an operator you live mostly on Telegram and only drop into the CLI for setup, surgery, and emergency controls.
 
 ## Maturity ladder
 
@@ -182,6 +182,70 @@ TODO. Sketch: `--cron "0 16 * * 5"`, `--prompt` aggregating Codex work-unit resu
 
 Each recipe will note: required profile config, required providers, required skills, expected runtime, and whether a webhook trigger is appropriate.
 
+## Hermes private runtime
+
+The private agent has two execution backends. The default is the Claude runtime described above. The second is the **no-fork Hermes wrapper**: upstream Hermes, pinned and run unmodified inside a contained sidecar, with the relay supplying every credential, provider call, memory read, and outbound action through a relay-internal MCP bridge. The operator surface for this lives under one CLI command group (`pnpm dev hermes ...`, `src/commands/hermes.ts:registerHermesCommand`).
+
+### Switching the runtime mode
+
+Mode is durable relay state, toggled through operator RPC — not a config-file edit:
+
+```
+pnpm dev hermes private-runtime status
+pnpm dev hermes private-runtime status --json
+pnpm dev hermes private-runtime set hermes
+pnpm dev hermes private-runtime set legacy
+```
+
+`set` accepts only `hermes` or `legacy`. `status` reports the relay-observed `effectiveMode`, the control mode/source, and whether rollout is allowed (`src/commands/hermes.ts` `private-runtime` subcommands). The effective runtime also requires `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1`; when that rollout env flag is off, the relay reports `legacy` regardless of durable mode. Treat `set hermes` as the last step of a graduation, after strict cutover evidence is safe and reviewed, because the setter itself only flips durable relay state.
+
+### The contained runtime (Docker)
+
+In Docker the Hermes runtime is a second compose overlay, `docker/docker-compose.hermes.yml`, with exactly two containers on an internal-only bridge network (`telclaude-hermes-relay` — the compose key is `hermes-relay-net`; default subnet `192.0.2.0/24`):
+
+- `telclaude` — the relay (default `192.0.2.10`), hosting the live MCP bridge on port `8793` and the admin socket for probe-token issuance.
+- `tc-hermes-contained` — pinned upstream Hermes (image digest in the compose file), default `192.0.2.11`, running its API server on port `8642`.
+
+The contained container is hardened: non-root `10000:10000`, all capabilities dropped, read-only root filesystem, `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`, 2GB / 2 CPU / 256 PID caps. Its entrypoint (`docker/hermes-contained-entrypoint.sh`) curates skills from the source tree into `HERMES_HOME` against the read-only allowlist in `docker/hermes-contained-skills.allowlist` — rejecting path traversal and any entry missing a `SKILL.md` — and mints a peer-bound OpenAI Codex relay token so model traffic only reaches the relay's proxy route (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). Model-provider hosts are routed to a blackhole address; the container has no path to providers, vault, or the public internet except through the relay.
+
+Operator-supplied inputs to the overlay (`docker/.env` or shell):
+
+- `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1` — enable the overlay.
+- `TELCLAUDE_HERMES_API_SERVER_KEY=<ephemeral>` — shared Bearer between relay and contained API server (generate per `compose up`, e.g. `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`).
+- `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=<relay-scoped>` — the relay-owned OpenAI Codex subscription token.
+- `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used to sign the proof attestations below.
+
+### Proving parity before cutover
+
+Cutover is all-or-nothing: operators only enter `hermes` mode once a strict evidence chain proves the contained runtime is at parity with the Claude path. The artifacts are produced by the `hermes` subcommands and then byte-bound into a single bundle:
+
+```
+pnpm dev hermes doctor --probes --compat-lock
+pnpm dev hermes inventory --out <inventory>
+pnpm dev hermes prove --upstream-clean --out <nofork>
+pnpm dev hermes network-probes --allow-run
+pnpm dev hermes proof-bundle \
+  --inventory <inventory> --scope-manifest <scope> --decision-log <decisions> \
+  --compatibility-lockfile <lockfile> --feature-probe-matrix <probes> \
+  --fixture-results <fixtures> --nofork-proof-file <nofork> \
+  --network-probe-bundle <netprobes> --queue-snapshot <queue> \
+  --rollback-evidence <rollback> --out <bundle>
+pnpm dev hermes cutover-check \
+  --inventory <inventory> --scope <scope> --decisions <decisions> \
+  --proof-bundle <bundle> --lockfile <lockfile> --feature-probes <probes> \
+  --fixtures <fixtures> --nofork <nofork> --network-probes <netprobes> \
+  --queue-snapshot <queue> --rollback <rollback>
+```
+
+What the chain proves:
+
+- **`prove --upstream-clean`** — the pinned Hermes checkout is byte-identical to upstream: no diff, no patch, no monkeypatch, no runtime source replacement. `--p0` is a follow-up classifier after the proof bundle and P0 evidence inputs already exist; it reads that bundle, so do not run it before `proof-bundle` has been built.
+- **`network-probes`** — gated egress isolation: the relay/control URL stays reachable while direct calls to providers, the vault, the model provider, and DNS exfil targets are all denied. `--posture` is `agent-iptables` or `contained-internal`; `--allow-run` permits real probes (otherwise it emits a pending matrix). Use `--defer-attestation` to capture an unsigned run report on the runner and `--from-report` to promote it into signed artifacts later.
+- **`proof-bundle`** — byte-binds all ten required artifacts (inventory, scope, decisions, lockfile, feature-probe matrix, fixtures, no-fork proof, network probes, queue snapshot, rollback rehearsal). Every flag is required; the bundle records the exact `pnpm dev hermes ...` command that regenerates each input.
+- **`cutover-check`** — the gate. `--strict` is the default; non-strict input fails closed. It evaluates the full gate pipeline (workflow scope, resolved decisions, profile-generation proof, feature probes, lockfile consistency, fixtures, no-fork cleanliness, network posture, queue ownership, rollback rehearsal) plus, for a complete-parity cutover, the parity roster. `--scoped` evaluates only the included workflow set and is allowed for dry-run diagnostics only — strict live cutover rejects `--scoped` because production demands the full roster. Exit codes: `0` safe, `1` gate failure, `2` input error. Add `--dry-run` to evaluate evidence without touching runtime state.
+
+Roster rows can be explicitly descoped with an accepted decision-log entry (`parity-descope:<row>`), but the non-descopable core (cutover, redaction, private-chat, approval-tokens, identity-migration, memory, skills) fails loudly if you try (`src/hermes/parity-roster.ts`). The proof evidence itself is signed Ed25519 attestations from the operator relay key — the contained agent cannot hold that key, so it cannot forge its own parity proof.
+
 ## Security stays on at every level
 
-Levels 1 through 4 add capability, not authority. The vault still gates credentials, approval tokens still bind writes to a specific request, persona memory air-gap still keeps social timeline content out of the private agent. No level skips security — see `docs/architecture.md` for the invariants.
+Levels 1 through 4 add capability, not authority. The vault still gates credentials, approval tokens still bind writes to a specific request, persona memory air-gap still keeps social timeline content out of the private agent. The Hermes runtime inherits the same envelope: it never sees raw credentials, model traffic stays on the relay proxy path, and production procedure refuses promotion until parity is proven and signed. No level skips security — see `docs/architecture.md` for the invariants.

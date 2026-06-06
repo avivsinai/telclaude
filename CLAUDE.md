@@ -5,6 +5,7 @@
 ## Intent
 - Status: alpha (0.x); breaking changes allowed until 1.0.
 - Goal: keep this file lean for project memory; use imports for depth.
+- Hermes wrapper: telclaude is becoming a pristine **no-fork wrapper** around upstream Hermes (pinned `nousresearch/hermes-agent`), not a fork or patch set. The relay stays the security envelope; the private runtime can route to a contained Hermes process via the relay-owned MCP bridge instead of the Claude SDK. Production cutover is all-or-nothing per workflow bundle, gated by strict parity + no-fork proof (`src/hermes/`, `telclaude hermes cutover-check`).
 
 ## Ground rules
 - Write clean TypeScript; remove dead code.
@@ -48,10 +49,10 @@
 5) Ask before destructive ops.
 
 ## Repo map
-- `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter, streaming redactor.
+- `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter, streaming redactor, external-content (untrusted-input injection detection + risk wrapping for inbound/social/web content).
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
 - `src/sdk/` — Claude SDK integration, session manager, message guards.
-- `src/relay/` — Anthropic proxy, HTTP credential proxy, git proxy, provider proxy, token manager, capabilities.
+- `src/relay/` — Anthropic proxy, HTTP credential proxy, git proxy, provider proxy, token manager, capabilities. Hermes additions: `openai-codex-proxy` + `openai-codex-relay-proof` (relay-mediated model route with per-request peer-bound tokens), `edge-channel-connector` / `whatsapp-edge-channel-connector` (channel layer), `outbound-delivery-dispatcher` (the only executor of an authorized `PreparedOutbound`).
 - `src/agent/` — agent server/client, memory client, token client.
 - `src/services/` — dual-mode service layer (memory, summarize, image-gen, TTS, transcription, git credentials, video processing).
 - `src/telegram/` — inbound/outbound bot, mention/command gating, streaming state machine.
@@ -75,12 +76,15 @@
 - `src/storage/` — SQLite storage layer.
 - `src/config/` — configuration loading.
 - `src/infra/` — infrastructure utilities (network errors, retry, timeout, unhandled rejections).
+- `src/hermes/` — no-fork Hermes wrapper: `foundation` (artifact schemas + `evaluateCutoverCheck`), `parity-roster` (canonical parity rows + descope), `no-fork-proof` / `no-fork-attestation` (pinned-checkout-clean proof + runner attestation), `inventory`, `private-runtime` / `private-execute` / `private-runtime-control` (relay-driven hermes|legacy mode), `api-adapter` (`HermesApiRuntimeAdapter` → contained Hermes API server), `api-server-containment`, `relay-conversation-store` / `session-map` (relay-owned conversation + session authority), `model-relay`, `approval-continuation*`, edge probes (`edge-adapter-contract` with `PreparedOutbound`/`AttachmentRef`/`DeliveryReceipt`, `edge-adapter-runtime`/`-probes`/`-attestation`), `served-mcp-*` (memory/provider/containment evidence + attestations), `skills-allowlist-*`, `network-probe*`, `provider-*-probe`, `workflow-*` / `*-ledger*` (run + side-effect ledgers), `rollback-rehearsal`, `pro-review`, `attestation-validation`.
+- `src/hermes/mcp/` — relay-owned MCP bridge (NOT an agent tool allowlist): `live-server` / `live-runtime` / `live-listen` (relay-internal HTTP `/mcp`, 9 `tc_*` tools), `authority-registry` (opaque handle ↔ actor/domain/scope binding), `bridge` (per-connection request validation + dispatch), `side-effect-ledger` (+`-attestation`/`-probe`) (two-phase prepare→approve→execute for provider/outbound side effects), `approval-token` (Ed25519 one-time JTI side-effect tokens), `side-effect-human-approval`, `ledger-execute`, `provider-routing` / `provider-sidecar-token`, `live-connection-resolver` / `live-admin` / `live-probe-tokens` (connection auth + adversarial probe tokens), `policy`.
 - `src/commands/` — CLI commands; `src/cli/` — CLI program entry.
 - `.claude/skills/` and `.agents/skills/` — operator skills, including codex-work-unit, security-gate, telegram-reply, image-generator, text-to-speech, browser-automation, integration-test, memory, summarize, external-provider, social-posting, weather, video-frames, gifgrep.
 - `docs/architecture.md` — design rationale & security invariants.
 - `docs/soul.md` — agent identity (personality, voice, interests); injected into both personas.
 - `docs/providers.md` — provider integration guide (sidecar pattern, adding new providers).
-- `docker/` — container stack.
+- `docs/hermes/` — generated Hermes artifacts (feature-probe matrices, compat lockfiles); not hand-edited.
+- `docker/` — container stack, including `docker-compose.hermes.yml` (contained Hermes overlay) + `hermes-contained-*` (entrypoint, curated skill allowlist).
 
 ## Common commands
 
@@ -112,6 +116,23 @@
 | `pnpm dev curator sign-producer --item item.json --producer-kind codex --producer-id codex:<id>` | Sign a Codex/Claude Curator item through the vault |
 | `pnpm dev curator submit-signed --item item.json --envelope envelope.json` | Verify and submit a signed producer Curator item |
 | `pnpm dev sessions [--active <min>] [--json]` | List active sessions |
+
+### Hermes wrapper commands
+The `hermes` group builds and evaluates the no-fork cutover proof spine. Most subcommands support `--json`; cutover evaluators such as `cutover-check` use exit 0 (safe), 1 (semantic fail), and 2 (input error), while generator commands report their own status in JSON.
+
+| Command | Description |
+|---------|-------------|
+| `pnpm dev hermes doctor [--pin <p>] [--probes] [--compat-lock]` | Pinned Hermes wrapper readiness |
+| `pnpm dev hermes prove --upstream-clean [--p0]` | No-fork proof; `--p0` requires an existing proof bundle and evidence inputs |
+| `pnpm dev hermes inventory` | Phase-0 workflow roster |
+| `pnpm dev hermes probes` / `probe <surface> [--allow-run]` | Feature-probe matrix / single-surface probe |
+| `pnpm dev hermes network-probes [--allow-run] [--posture <p>]` | Egress isolation probes (deny direct provider/model/vault/DNS) |
+| `pnpm dev hermes fixtures` / `generate` | Parity fixture results / profile artifacts |
+| `pnpm dev hermes proof-bundle --inventory <path> --scope-manifest <path> --decision-log <path> --compatibility-lockfile <path> --feature-probe-matrix <path> --fixture-results <path> --nofork-proof-file <path> --network-probe-bundle <path> --queue-snapshot <path> --rollback-evidence <path>` | Byte-bind all required proof artifacts into one bundle |
+| `pnpm dev hermes cutover-check [--strict] [--scoped] [--dry-run]` | Strict cutover evidence evaluation (parity-roster closure) |
+| `pnpm dev hermes private-runtime status [--json]` | Relay-observed private-runtime mode (hermes\|legacy) |
+| `pnpm dev hermes private-runtime set <hermes\|legacy>` | Switch private-runtime mode via operator RPC |
+| `pnpm dev hermes live-mcp probe-tokens` | Issue MCP probe tokens via relay admin socket |
 
 ## Auth & control plane
 
@@ -166,3 +187,5 @@ API keys (OpenAI, GitHub) are exposed for FULL_ACCESS tier only. READ_ONLY and W
     | ssh <server> "docker load"
   ssh <server> "cd telclaude/docker && docker compose up -d"
   ```
+- **Hermes overlay** (`docker-compose.hermes.yml`): adds the contained private-runtime topology on an internal-only `telclaude-hermes-relay` network (default `192.0.2.0/24`). Two containers: `telclaude` (relay, `192.0.2.10`, live MCP on port 8793) and `tc-hermes-contained` (pinned `nousresearch/hermes-agent` digest, `192.0.2.11`, API server on port 8642). To start it, set `TELCLAUDE_HERMES_PRIVATE_RUNTIME=1`, an ephemeral `TELCLAUDE_HERMES_API_SERVER_KEY`, operator RPC public/signing keys, and `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN`. Model-provider hostnames are routed to a blocked address; egress goes through the relay's `openai-codex-proxy` only.
+- **Contained posture**: `tc-hermes-contained` runs non-root `10000:10000`, `cap_drop ALL`, `no-new-privileges`, read-only root with noexec tmpfs (`/tmp`, `/home/hermes`, `/run`). The entrypoint curates `docker/hermes-contained-skills.allowlist` into `$HERMES_HOME/skills` (rejects path traversal); the relay code mounts read-only and credentials never enter the container.

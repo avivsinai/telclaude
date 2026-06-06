@@ -33,6 +33,11 @@ mounts the standalone skill catalog read-only; social-specific restrictions are
 enforced at runtime policy plus the container boundary, not by copying skills
 into a separate catalog.
 
+The contained Hermes private runtime is a separate, narrower skill surface and
+does not draw from this writable catalog — see
+[The contained Hermes skill allowlist](#the-contained-hermes-skill-allowlist)
+below.
+
 ## `telclaude skills scaffold <name>`
 
 Creates a new draft skill under the canonical draft root from a template. The
@@ -151,3 +156,50 @@ Those go through the official profile-scoped lifecycle:
 ```bash
 telclaude plugins install <plugin@marketplace> --persona private
 ```
+
+## The contained Hermes skill allowlist
+
+The no-fork Hermes private runtime runs inside the `tc-hermes-contained`
+container and does **not** share the writable catalog described above. Its skills
+are fixed at the container boundary by a checked-in allowlist rather than the
+scaffold → draft → promote lifecycle.
+
+- The allowlist lives at `docker/hermes-contained-skills.allowlist` (88 curated
+  relative paths such as `apple/apple-notes`, `autonomous-ai-agents/codex`,
+  `software-development/test-driven-development`). Comment (`#`) and blank lines
+  are ignored.
+- It is mounted read-only into the container as
+  `/tmp/telclaude-hermes-contained-skills.allowlist`
+  (`TELCLAUDE_HERMES_SKILL_ALLOWLIST`). The upstream Hermes bundled skills tree
+  ships inside the image at `/opt/hermes/skills`
+  (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR`).
+- At startup, `docker/hermes-contained-entrypoint.sh` curates only the
+  allowlisted skills from the source tree into `$HERMES_HOME/skills`. Each entry
+  must resolve to a real directory containing `SKILL.md`; unsafe paths
+  (leading `/`, any `..`, `//`, a leading or post-slash `.`, whitespace) are
+  rejected, and an empty allowlist fails the container closed.
+
+Because this list is operator-fixed and version-controlled, there is no
+Telegram `/skills promote` path into the contained runtime. To change what the
+private Hermes runtime can load, edit `hermes-contained-skills.allowlist` and
+redeploy.
+
+### Proving allowlist enforcement (`skills.allowlist` probe)
+
+The Hermes cutover evidence bundle includes a `skills.allowlist` feature probe
+that proves the allowlist is enforced *inside* the contained runtime, not just
+present on disk:
+
+```bash
+telclaude hermes probe skills.allowlist --allow-run \
+  --out artifacts/hermes/probes/skills-allowlist.json
+```
+
+The probe runs its profile and runtime checks via `docker exec` against
+`tc-hermes-contained` (observation layer `docker_exec`) and confirms that the
+SDK PreToolUse hook — the primary enforcement layer (`pretooluse`), not the
+`canUseTool` fallback — allows an allowlisted skill, denies a non-allowlisted
+one, and fail-closes a SOCIAL service whose allowlist is missing or empty
+(architecture invariant #9). The resulting evidence is signed with the operator
+relay key; `telclaude hermes cutover-check` rejects the bundle if the attestation
+is missing, stale, or unbound.

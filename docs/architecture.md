@@ -47,6 +47,26 @@ The relay connects to the Google sidecar via the `relay-google` Docker network. 
 
 The relay is the security boundary — it holds all secrets, enforces tiers/rate limits, and mediates every interaction between Telegram, external APIs, memory, and agent workers. Agents are untrusted compute: they see only their allowed tools, never touch raw credentials, and do not own memory as a source of truth.
 
+### Hermes Private Runtime (no-fork wrapper)
+
+The private Telegram persona can run either as a direct Claude Agent SDK worker (legacy) or through a **pinned, no-fork wrapper around upstream Hermes**. The relay picks the path per `shouldUseHermesPrivateRuntime()`; when Hermes mode is active, private replies and heartbeats route through `HermesApiRuntimeAdapter` to a contained Hermes API server instead of initializing the SDK directly.
+
+```
+┌──────────────────────── telclaude-hermes-relay (internal, 192.0.2.0/24) ────────────────────────┐
+│                                                                                                  │
+│  telclaude (relay, 192.0.2.10)                          tc-hermes-contained (192.0.2.11)         │
+│  • Live MCP server  :8793  ──── tools/call ───▶         • Hermes API server  :8642               │
+│    (relay-internal HTTP, peer-bound to .11)             • non-root uid 10000, cap_drop ALL       │
+│  • Live MCP admin (Unix socket)                         • read-only root, noexec tmpfs           │
+│  • Relay conversation store (owns thread authority)     • curated skill allowlist only           │
+│  • Side-effect ledger + approval tokens                 • model traffic ──┐                       │
+│  • OpenAI Codex proxy  :8790  ◀── inference ────────────────────────────┘ (relay-only egress)    │
+│                                                         model-provider hosts → 192.0.2.1 (blocked)│
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Hermes is pinned to upstream ref `v2026.5.29` (version `0.15.1`) by image digest and proven unmodified before any cutover (see the no-fork proof below). The contained Hermes process never holds raw credentials, never reaches model providers directly, and exposes no agent-to-agent path: its only outward routes are the relay's live MCP server (for memory, providers, attachments, outbound) and the relay's OpenAI Codex proxy (for inference).
+
 ## Trust Boundaries
 
 ### Relay ↔ Agent Split
@@ -60,6 +80,17 @@ In Docker, this maps to separate containers on isolated networks. In native mode
 Codex is a peer runtime, not a second stateful conversation loop. The `/codex` command and `telclaude background codex` create bounded background jobs that run `codex exec` with an explicit sandbox, confined working directory, `--ephemeral`, and `--ignore-user-config`. Results come back as background job output wrapped as untrusted data; they are not fed into the active Claude session unless the operator explicitly asks for a follow-up.
 
 Write-capable Codex work requires FULL_ACCESS and still runs with workspace-write network access disabled. Model overrides are allowlisted to known executable Codex models so an invalid but syntactically plausible token fails before a job is queued.
+
+### Relay ↔ Hermes Private Runtime Split
+
+When the private persona runs as Hermes, the upstream agent is a **pinned, unmodified checkout** that the relay wraps rather than forks. The relay does not trust Hermes to enforce policy; instead it confines Hermes and keeps every privileged capability behind relay-owned APIs:
+
+- **No-fork posture.** The wrapper proves the Hermes checkout matches the pinned upstream ref and version with no diff, patch, monkeypatch, or runtime source replacement. The proof (`no-fork-proof.ts`) runs git checks before and after a P0 wrapper run (`checkout.present/head/expectedRef/pinned/statusClean/diffClean/indexClean` plus post-run repeats) and binds them to a signed runner attestation. `hermesCheckoutClean` must be true.
+- **Containment.** In Docker, Hermes runs in `tc-hermes-contained` on the isolated `telclaude-hermes-relay` network as a non-root user (uid 10000) with `cap_drop ALL`, no-new-privileges, a read-only root filesystem, and `noexec` tmpfs mounts. Model-provider hostnames resolve to a blackhole address (`192.0.2.1`), so direct egress fails at the network layer.
+- **Served MCP, not a tool allowlist.** Hermes does not get raw tools for privileged work. The relay hosts a relay-internal **live MCP server** that exposes nine scoped tools (`tc_provider_read`, `tc_provider_prepare_write`, `tc_provider_execute_write`, `tc_memory_search`, `tc_memory_write`, `tc_attachment_get`, `tc_outbound_prepare`, `tc_outbound_execute`, `tc_audit_note`). The server strips any client-supplied authority/connection/provenance fields and resolves the caller's authority from an opaque, peer-bound handle — Hermes cannot name its own scope, memory source, or outbound channels.
+- **Internal RPC auth, not network trust.** Relay ↔ Hermes control traffic is authenticated with bidirectional Ed25519 internal-response proofs (operator/relay keypairs), not by trusting the shared network.
+
+*Why wrap instead of fork*: a fork accumulates drift and silently diverges from upstream security assumptions. Proving the checkout is byte-for-byte upstream means the security envelope — not patched agent code — is the only thing that changed, so the parity and cutover proofs reason about a known runtime.
 
 ### Private ↔ Public Persona Split
 
@@ -282,6 +313,79 @@ The signing uses domain separation: the Ed25519 signature covers `approval-v1\n<
 
 Per-service health tracking: `ok` ↔ `degraded` (after 3+ consecutive failures), `ok` → `auth_expired` (sticky until re-auth via `providers setup google`). The `auth_expired` state is sticky because it indicates a permanent credential problem (revoked refresh token) that cannot self-heal.
 
+## Hermes MCP Bridge
+
+When the private persona runs as Hermes, the relay exposes its privileged capabilities through a relay-internal MCP server rather than as agent tools. This is the seam where a contained, untrusted Hermes runtime asks the relay to act on its behalf — and where every side effect is bound to a human approval.
+
+### Authority Handles, Not Claimed Authority
+
+Each Hermes connection is bound to an opaque authority handle (`tc_mcp_…`, stored as a SHA-256 hash) issued by an in-memory registry with a TTL (default 15 min). The handle carries the actor identity, domain, memory boundary, provider scopes, and outbound channels. On every request the live MCP server strips client-supplied authority/connection/provenance fields and re-resolves authority from the handle plus the validated connection — and, for HTTP transport, the peer address. A connection or peer mismatch fails resolution.
+
+*Why opaque handles*: if the model could name its own scope (domain, memory source, provider list, outbound channel), a prompt injection could escalate by simply asserting a broader authority. Binding authority to a server-issued handle means the runtime can only exercise the scope the relay already decided it has. The registry also enforces the memory boundary directly — a social-domain handle can only touch social memory, a private-domain handle only the matching `telegram:<profile>` source.
+
+### Two-Phase Side Effects
+
+Provider writes and outbound messages are never executed inline. They flow through a side-effect ledger with a `prepare → approve → execute` lifecycle:
+
+1. **Prepare.** `tc_provider_prepare_write` / `tc_outbound_prepare` stage an immutable record (`effect-<uuid>`) capturing the actor, approver slot, domain, target, and canonical `paramsHash`/`bodyHash`. Records carry a short TTL (default 5 min) and are `prepared` until executed or revoked.
+2. **Approve.** The relay raises a human approval. The approval token (`v1.<claims>.<sig>`, Ed25519 via the vault, ≤60s TTL) binds the exact prepared record: actor, approver, domain, target, and the params/body/content hashes. The actor and approver must differ — self-approval is rejected.
+3. **Execute.** `tc_provider_execute_write` / `tc_outbound_execute` reference the prepared record by `actionRef`. The ledger re-verifies the approval token against the record's binding, records the JTI in SQLite for one-time use, and only then dispatches to the provider sidecar or the outbound delivery dispatcher.
+
+*Why two phases with hash binding*: a compromised runtime that intercepts an approval token cannot redirect or mutate the action. Changing any parameter changes the canonical hash, which no longer matches the token binding; replaying the token is blocked by the JTI store; and a prepared record that expires or is revoked fails closed at execute time. This is the same defense-in-depth as the Google sidecar approval tokens, extended to all Hermes-mediated writes and outbound sends.
+
+### Cutover Proof Spine
+
+Because the runtime is wrapped rather than forked, telclaude does not "trust the diff" — it proves complete parity before any production cutover. `telclaude hermes cutover-check` evaluates a strict gate pipeline (`evaluateCutoverCheck()`); all gates must pass for `status="safe"` (exit 0), any gate failure yields `status="fail"` (exit 1), and unparseable evidence yields `status="input_error"` (exit 2). The gates are:
+
+- **workflow.scope / decisions.resolved** — every included workflow maps to live inventory, declares positive and negative fixtures plus required surfaces, and has no unresolved blocking decisions.
+- **profileGeneration.proven** — the reproducible `HERMES_HOME` profile tree matches its digests and contains no Hermes source-replacement artifacts.
+- **featureProbes.pass / lockfile.consistent** — a feature-probe matrix (CLI-headless launch, headless entrypoint streaming/session/approval/cancellation/redaction checks, approval continuation, API-server containment, model relay, edge adapters, providers, served-MCP, skills allowlist, workflows, network egress) is locked to the Hermes pin, with every required surface proven `pass`.
+- **fixtures.pass** — every required positive and negative fixture declared by an included workflow has a recorded `pass` result with valid evidence (declaring a fixture in scope is not enough; it must actually have passed).
+- **nofork.clean** — the no-fork proof's git and runner-attestation checks all pass and `hermesCheckoutClean` is true.
+- **networkProbes.pass** — the five required isolation probes (`network.relay-control-allowed`, `network.direct-provider-denied`, `network.direct-vault-denied`, `network.direct-model-provider-denied`, `network.dns-exfil-denied`) all pass with posture `contained-internal`, backed by a firewall sentinel.
+- **queues.owned / rollback.rehearsed** — no unowned pending work (approvals, cards, cron, social, provider, background jobs) and a rehearsed rollback path.
+- **parity.rosterCovered** — for a complete (non-`--scoped`) cutover, every canonical row in the parity roster is either backed by acceptance proofs or explicitly descoped via an accepted `parity-descope:<row>` decision. A set of rows (`cutover`, `redaction`, `private-chat`, `approval-tokens`, `identity-migration`, `memory`, `skills`) is **non-descopable** — attempting to descope them fails loudly. A live strict cutover cannot be `--scoped`.
+
+### Signed Evidence & Attestations
+
+Cutover evidence is not self-asserted by the runtime. Sensitive probes (served-MCP memory air-gap, skills allowlist, network probes, edge adapters) carry an Ed25519 **runner attestation** signed with the operator relay key — which a contained agent cannot hold — over canonical-JSON digests of the evidence body. The evaluator independently re-runs a redaction/leak scan over the artifact bytes, checks attestation freshness (artifacts stale after 7 days), and, under a live cutover (`allowStaleAttestations=false`), requires the attestation to be present and valid.
+
+Two probes deserve note because their *origin* is part of the proof:
+
+- **served_mcp.memory** proves the cross-domain air gap from a contained peer: a social sentinel write is searchable on the social endpoint but returns zero on the private telegram endpoint, the server-observed peer IP matches the configured contained IP (not client-claimed), and secret/instruction writes are rejected with RPC errors.
+- **skills.allowlist** proves PreToolUse enforcement from *inside* the container via docker-exec (not a host simulation): the allowlisted skill is present and invocable, non-allowlisted skills are absent and denied, and SOCIAL missing/empty allowlists fail closed.
+
+*Why signed, origin-bound evidence*: a wrapped runtime is only as trustworthy as the proof that it is contained. Binding each probe to a relay-signed attestation and a server-observed origin means the cutover decision rests on evidence the contained agent could not have forged.
+
+## Hermes Edge Channels & Trust Domains
+
+Beyond Telegram and social, the Hermes runtime reaches WhatsApp, email, and AgentMail. These non-Telegram surfaces are mediated by **edge adapters** — a relay-owned layer that the contained agent talks to through the served MCP, never directly. The adapter contract (`src/hermes/edge-adapter-contract.ts`) pins five operations (`ingest`, `prepareOutbound`, `executeOutbound`, `status`, `ack`) and a fixed set of strict, versioned ref types (`ActorRef`, `ConversationRef`, `AttachmentRef`, `InboundEvent`, `PreparedOutbound`, `DeliveryReceipt`, `StatusView`). The agent only ever sees these refs: it never holds raw channel credentials, raw attachment bytes, or a raw transport handle.
+
+### Trust Domains
+
+Edge traffic is classified into four trust domains (`TrustDomainSchema`): `private` (operator), `household` (named family members on WhatsApp/email), `public` (untrusted inbound on public channels), and `public-social` (the isolated social persona, profile `tc-public-social`). The domain is part of the `ConversationRef` and drives authorization, not a claim the agent can assert. Domain boundaries are enforced in `TelclaudeEdgeRuntime` (`src/hermes/edge-adapter-runtime.ts`): household actors must carry a `strong_link` identity assurance and a strong-link provider account binding to release provider PII (a phone-number-only binding is rejected), cannot read private operator memory (`household.private-memory-denied`), and cannot reach another recipient's context (`household.cross-recipient-denied`); the `public-social` domain may not mount the private workspace, read private memory, or receive private provider scopes (`public-social.*-denied`). Attachments are domain-scoped — a quarantine ref authorized for one domain cannot be reused in another (`attachment.cross-domain-reuse-denied`).
+
+### Channel Layer Split (CL-0 / CL-1)
+
+The relay's channel layer separates authorization from transport at the `markExecuted` seam (`src/relay/edge-channel-connector.ts`):
+
+- **CL-0 (authorization + delivery seam)** owns everything up to and including the side-effect commit, then dispatches to a pure transport sink. The `OutboundDeliveryDispatcher` (`src/relay/outbound-delivery-dispatcher.ts`) is the *only* thing `executeOutbound` calls after authorization; it imports neither the side-effect ledger nor ledger-execute. A connector (e.g. `whatsapp-edge-channel-connector.ts`) receives an already-authorized `PreparedOutbound`, takes recipients **verbatim** from `resolvedDestination` (never re-derived from the model body or conversation members), and resolves attachment bytes only through an owner-bound resolver pre-scoped to the prepared outbound's conversation — content drift or a wrong-conversation ref fails closed. Transports are pure sinks; authorization, hash re-derivation, replay, and idempotency are all decided upstream.
+- **CL-1 (inbound ingress)** is the risk-wrap + pairing + air-gap layer that turns authenticated inbound transport messages into model-visible content. It is deliberately **dark** until wired: a connector's `startListener` throws rather than feed unwrapped inbound to the agent (`WHATSAPP_INBOUND_RISK_WRAP_REQUIRED`). Untrusted external content is wrapped before it reaches any model by `wrapExternalContent` / `assessRisk` (`src/security/external-content.ts`), which scan for injection patterns and homoglyphs, score risk, and emit a labelled envelope instructing the model to treat the content as data and never execute instructions found inside it.
+
+*Why split authorization from transport*: a transport that could resolve its own recipients or read arbitrary quarantine bytes would let a compromised connector exfiltrate or misdeliver. Pinning recipients to the edge-validated `resolvedDestination` and binding attachment release to the prepared outbound means the delivery sink has no discretion — it can only send exactly what was authorized, exactly where it was authorized.
+
+### Two-Phase Outbound
+
+Edge outbound is the same `prepare → approve → execute` shape as the served-MCP side effects. `prepareOutbound` validates the request against the contract (rejecting any agent-supplied `authorizingActor`, `transportCredentials`, `policyResult`, `approvalToken`, or raw media fields), binds the destination to the conversation, and emits a `PreparedOutbound` carrying an `edgePreparedHash` over channel + resolved destination + body + media refs, plus an `idempotencyKey` and `sideEffectLedgerRef`. `executeOutbound` re-derives that hash and refuses if the binding was mutated (`outbound.recipient-body-bound`), refuses a replayed idempotency key (`outbound.replay-denied`), records the key in an in-memory ledger, and only then hands the prepared record to the dispatcher, which returns a contract-valid `DeliveryReceipt`. The agent cannot supply its own approval token to edge execution — edge-supplied tokens are rejected outright.
+
+Each edge surface ships a probe (`src/hermes/edge-adapter-probes.ts`) that runs the real runtime through positive and negative fixtures and, on pass, signs the evidence with an Ed25519 **runner attestation** (`src/hermes/edge-adapter-attestation.ts`) over canonical digests of the surface, contract, custody, controls, and runtime observations — the same signed-evidence discipline as the rest of the cutover spine, so edge containment is proven, not asserted.
+
+### Long-Lived & Cron Workflows
+
+Cron and long-running workflows persist across the approval-gated boundary through a workflow-run ledger (`src/hermes/workflow-run-ledger.ts`, schema `telclaude.hermes.workflow-run-ledger.v1`). A run record pins a **server-derived** `authorityActor` (a `start` whose `authorityActorSource` is not `"server-derived"` is rejected), the profile, domain, scope, capabilities, budget, an immutable `idempotencyKey`, and a `freshnessDeadlineMs`. Starting with a duplicate idempotency key returns the existing run rather than a second one, so a re-fired cron tick (e.g. `cron.private.daily_brief`) delivers at most once; the run carries checkpoints and reaches a terminal `completed`/`failed`/`cancelled` state. A long-running workflow that hits an approval registers an authority-bound `approvalWaiter` against a `sideEffectLedgerRef` and moves to `waiting_approval`; on approval it is resumed **only from ledger state** (`resume`), which re-checks the freshness deadline (a stale resume fails closed) and re-checks authority (a revoked authority fails the run and clears queued capabilities and open waiters) before resolving the open waiters and returning the run to `running`. Retries record a backoff and bump the attempt counter; human takeover and compensation are first-class lifecycle states distinct from the terminal `completed`/`failed`/`cancelled` set. The `workflow.cron` and `workflow.longrun` feature probes (`src/hermes/workflow-probes.ts`) exercise exactly these paths — server-derived authority, background-delivery dedup, approval-waiter binding, approval-resume resolution, and stale-resume denial — as part of the cutover feature-probe matrix.
+
+*Why a ledger across the boundary*: a long-lived run that paused for human approval cannot keep live in-process state across a relay restart or a multi-minute approval wait without becoming an authority the agent could replay or extend. Persisting the run as a server-owned record — with the authority server-derived, the resume gated on freshness and revocation, and side effects bound to ledger refs — means a paused workflow resumes with exactly the authority it had, and no more.
+
 ## Message Flow (strict profile)
 
 The 13-step inbound pipeline defines the security architecture in action:
@@ -297,10 +401,10 @@ The 13-step inbound pipeline defines the security architecture in action:
 9. Approval gate (per tier/classification).
 10. Session lookup/resume.
 11. Tier lookup (identity links/admin claim).
-12. SDK query with tiered allowedTools.
+12. Model dispatch — either an SDK query with tiered `allowedTools`, or, when `shouldUseHermesPrivateRuntime()` is active, a Hermes API runtime call whose privileged capabilities are served through the relay-internal MCP bridge.
 13. Streaming reply to Telegram; audit logged.
 
-*Why this order*: cheap checks first (ban, auth, rate limit), expensive checks later (LLM observer). Infrastructure secret blocking (step 6) runs before the observer (step 8) because the observer itself uses an LLM — if the message contains a secret, we must block it before it reaches any model. Tier lookup (step 11) runs after approval (step 9) so that approval decisions can factor in the classification without yet knowing the tier.
+*Why this order*: cheap checks first (ban, auth, rate limit), expensive checks later (LLM observer). Infrastructure secret blocking (step 6) runs before the observer (step 8) because the observer itself uses an LLM — if the message contains a secret, we must block it before it reaches any model. Tier lookup (step 11) runs after approval (step 9) so that approval decisions can factor in the classification without yet knowing the tier. The two model-dispatch paths at step 12 share every preceding gate — the wrapper does not move the security boundary, only the runtime behind it.
 
 ## Design Decisions
 
@@ -330,6 +434,12 @@ Key decisions and the alternatives that were rejected:
 
 **Two-layer provider enforcement (hook + firewall)**: Application-layer hooks provide clear error messages but can be bypassed by creative Bash usage (subshells, environment manipulation). The firewall is kernel-level and cannot be circumvented from userspace. Neither layer alone is sufficient — together they provide both UX and hard enforcement.
 
+**No-fork wrapper instead of a Hermes fork**: Forking upstream Hermes would let agent code drift from the security assumptions the envelope was designed around, and every upstream bump would be a merge. Wrapping a pinned, proven-unmodified checkout means the only thing that changed is the relay envelope, so parity and cutover proofs reason about a known runtime — and the no-fork proof fails closed if any diff, patch, monkeypatch, or runtime source replacement is detected.
+
+**Served MCP instead of agent tool grants for Hermes**: Granting the contained Hermes runtime raw tools (and a tool allowlist) would put policy enforcement inside an untrusted process. Serving a fixed set of relay-owned MCP tools behind opaque, peer-bound authority handles keeps scope resolution, memory boundaries, and outbound channels in the relay. The runtime can only exercise the authority the relay already issued it.
+
+**Strict all-or-nothing cutover with signed evidence**: Gradually swapping individual workflows onto Hermes would create a split runtime where some traffic is proven and some is not, and self-asserted evidence could be forged by a compromised runtime. Requiring a complete parity roster, relay-signed origin-bound attestations, and an independent redaction re-scan before `status="safe"` means cutover is a single, auditable, reversible decision over a fully proven surface.
+
 ## Invariants
 
 Things that must always be true, regardless of configuration:
@@ -344,3 +454,8 @@ Things that must always be true, regardless of configuration:
 8. **Memory source boundaries are enforced at runtime.** Assertions verify that telegram contexts contain only telegram memory and social contexts contain only social memory. Mismatches throw in dev, warn in prod.
 9. **SOCIAL skill invocations require an explicit allowlist.** When `enableSkills` is true for a SOCIAL service, `allowedSkills` must be set. Omitting it denies all Skill calls at runtime (fail-closed). Enforced by PreToolUse hook (primary) and canUseTool (fallback).
 10. **Google sidecar approval tokens are one-time use.** JTI replay prevention via SQLite atomic insert. Time-limited (≤5 min TTL), actor-bound, request-bound (params hash), cryptographically signed (Ed25519 with domain separation).
+11. **The Hermes runtime is the pinned upstream checkout, unmodified.** The no-fork proof requires `hermesCheckoutClean=true` (all git checks clean before and after a P0 run) and a signed runner attestation proving no diff, patch, monkeypatch, or runtime source replacement. Cutover fails closed otherwise.
+12. **Hermes exercises only relay-served authority.** The contained runtime acts solely through the nine relay-owned MCP tools, bound to an opaque, peer-bound authority handle. Client-supplied authority/connection/provenance fields are stripped; a connection or peer mismatch fails resolution.
+13. **Hermes-mediated side effects are two-phase and approval-bound.** Provider writes and outbound sends are prepared as immutable ledger records and executed only against a fresh, one-time (JTI-checked) approval token whose binding matches the record's canonical params/body/content hashes. Actor and approver must differ.
+14. **Hermes model traffic is relay-mediated only.** Inference reaches the relay's OpenAI Codex proxy via a peer-bound token; model-provider hostnames resolve to a blackhole address inside the contained network, so direct egress fails at the network layer.
+15. **Cutover evidence is signed and origin-bound.** Sensitive cutover probes carry an Ed25519 runner attestation signed with the operator relay key (which contained agents cannot hold), pass an independent redaction re-scan, and — under a live cutover — must be present, fresh (≤7 days), and valid. The served-MCP memory air gap and skills-allowlist enforcement are proven from the contained runtime's own observed origin.
