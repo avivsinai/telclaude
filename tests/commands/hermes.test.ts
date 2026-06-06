@@ -4938,6 +4938,105 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("cutover-check follows proof-bundle artifact paths for default inputs", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-bundle-defaults-"));
+		const source = safeCutoverBundle();
+		const proofBundlePath = path.join(tempDir, "proof-bundle.json");
+		writeJson(proofBundlePath, source.cutoverProofBundle);
+		if (!source.profileGenerationProof) throw new Error("missing profile generation proof");
+
+		const result = await runHermesCommand([
+			"hermes",
+			"cutover-check",
+			"--strict",
+			"--dry-run",
+			"--json",
+			"--proof-bundle",
+			proofBundlePath,
+			"--profile-proof",
+			source.profileGenerationProof.evidence_path,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "proofBundle.complete")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "fixtures.pass")).toMatchObject({
+			status: "pass",
+		});
+	});
+
+	it("cutover-check ignores stale generated defaults when proof-bundle artifacts are explicit", async () => {
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-stale-defaults-"));
+		const source = safeCutoverBundle();
+		const proofBundlePath = path.join(tempDir, "proof-bundle.json");
+		writeJson(proofBundlePath, source.cutoverProofBundle);
+		if (!source.profileGenerationProof) throw new Error("missing profile generation proof");
+		const fixtureSourceFiles = PRIVATE_TELEGRAM_FIXTURE_DIGEST_PATHS.map((sourcePath) => ({
+			sourcePath,
+			bytes: fs.readFileSync(resolveTestPath(sourcePath)),
+		}));
+
+		await withCwd(tempDir, async () => {
+			for (const { sourcePath, bytes } of fixtureSourceFiles) {
+				const resolved = resolveTestPath(sourcePath);
+				fs.mkdirSync(path.dirname(resolved), { recursive: true });
+				fs.writeFileSync(resolved, bytes);
+			}
+			for (const defaultPath of [
+				DEFAULT_INVENTORY_PATH,
+				DEFAULT_CUTOVER_SCOPE_PATH,
+				DEFAULT_DECISION_LOG_PATH,
+				DEFAULT_COMPAT_LOCKFILE_PATH,
+				DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+				DEFAULT_FIXTURE_RESULTS_PATH,
+				DEFAULT_NO_FORK_PROOF_PATH,
+				DEFAULT_NETWORK_PROBES_PATH,
+				DEFAULT_QUEUE_SNAPSHOT_PATH,
+				DEFAULT_ROLLBACK_REHEARSAL_PATH,
+			]) {
+				const resolved = resolveTestPath(defaultPath);
+				fs.mkdirSync(path.dirname(resolved), { recursive: true });
+				fs.writeFileSync(resolved, '{"poisoned":', "utf8");
+			}
+
+			const result = await runHermesCommand([
+				"hermes",
+				"cutover-check",
+				"--strict",
+				"--dry-run",
+				"--json",
+				"--proof-bundle",
+				proofBundlePath,
+				"--queue-snapshot",
+				DEFAULT_QUEUE_SNAPSHOT_PATH,
+				"--profile-proof",
+				source.profileGenerationProof.evidence_path,
+			]);
+			const report = JSON.parse(result.stdout) as {
+				status: string;
+				gates: Array<{ name: string; status: string }>;
+			};
+
+			expect(result.exitCode, result.stdout).toBe(0);
+			expect(report.status).toBe("safe");
+			expect(report.gates.find((gate) => gate.name === "proofBundle.complete")).toMatchObject({
+				status: "pass",
+			});
+			expect(report.gates.find((gate) => gate.name === "queues.owned")).toMatchObject({
+				status: "pass",
+			});
+		});
+	});
+
 	it("fails cutover when explicit queue snapshots underreport inventory queues", () => {
 		const source = safeCutoverBundle();
 		const queueSummary = pendingQueues({

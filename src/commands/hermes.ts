@@ -57,6 +57,7 @@ import {
 	buildMissingDefaultCutoverFixtureResults,
 	buildMissingDefaultCutoverNetworkProbes,
 	buildMissingDefaultRollbackRehearsal,
+	type CutoverProofBundle,
 	CutoverProofBundleSchema,
 	collectFeatureProbeEvidence,
 	DEFAULT_COMPAT_LOCKFILE_PATH,
@@ -86,6 +87,7 @@ import {
 	readJsonFile,
 	readOptionalJsonFile,
 	resolveHermesArtifactPath,
+	trustedRelayPublicKeyForValidation,
 	writeHermesJsonArtifact,
 	writeHermesProfileGenerationProof,
 } from "../hermes/foundation.js";
@@ -894,6 +896,134 @@ function readInventorySnapshot(explicitPath?: string): unknown {
 function defaultCutoverArtifactIsMissing(filePath: string, defaultPath: string): boolean {
 	const resolvedPath = resolveHermesArtifactPath(filePath);
 	return resolvedPath === resolveHermesArtifactPath(defaultPath) && !fs.existsSync(resolvedPath);
+}
+
+function cutoverPathIsDefault(filePath: string, defaultPath: string): boolean {
+	return resolveHermesArtifactPath(filePath) === resolveHermesArtifactPath(defaultPath);
+}
+
+function proofBundlePathForDefault(
+	proofBundle: CutoverProofBundle,
+	key: keyof CutoverProofBundle["artifacts"],
+	filePath: string,
+	defaultPath: string,
+): string {
+	return cutoverPathIsDefault(filePath, defaultPath)
+		? proofBundle.artifacts[key].artifactPath
+		: filePath;
+}
+
+function optionalProofBundlePathForDefault(
+	proofBundle: CutoverProofBundle,
+	key: keyof CutoverProofBundle["artifacts"],
+	filePath: string | undefined,
+	defaultPath?: string,
+): string {
+	if (!filePath) return proofBundle.artifacts[key].artifactPath;
+	return defaultPath
+		? proofBundlePathForDefault(proofBundle, key, filePath, defaultPath)
+		: filePath;
+}
+
+type CutoverCheckInputPaths = {
+	readonly inventory: string;
+	readonly scope: string;
+	readonly decisions: string;
+	readonly featureProbes: string;
+	readonly lockfile: string;
+	readonly fixtures: string;
+	readonly queueSnapshot: string;
+	readonly networkProbes: string;
+	readonly nofork: string;
+	readonly rollback: string;
+};
+
+function resolveCutoverCheckInputPathsFromProofBundle(
+	proofBundle: CutoverProofBundle,
+	options: {
+		readonly inventory?: string;
+		readonly scope: string;
+		readonly decisions: string;
+		readonly featureProbes: string;
+		readonly lockfile: string;
+		readonly fixtures: string;
+		readonly queueSnapshot?: string;
+		readonly networkProbes: string;
+		readonly nofork: string;
+		readonly rollback: string;
+	},
+): CutoverCheckInputPaths {
+	return {
+		inventory: optionalProofBundlePathForDefault(proofBundle, "inventory", options.inventory),
+		scope: proofBundlePathForDefault(
+			proofBundle,
+			"scopeManifest",
+			options.scope,
+			DEFAULT_CUTOVER_SCOPE_PATH,
+		),
+		decisions: proofBundlePathForDefault(
+			proofBundle,
+			"decisionLog",
+			options.decisions,
+			DEFAULT_DECISION_LOG_PATH,
+		),
+		featureProbes: proofBundlePathForDefault(
+			proofBundle,
+			"featureProbeMatrix",
+			options.featureProbes,
+			DEFAULT_FEATURE_PROBE_MATRIX_PATH,
+		),
+		lockfile: proofBundlePathForDefault(
+			proofBundle,
+			"compatibilityLockfile",
+			options.lockfile,
+			DEFAULT_COMPAT_LOCKFILE_PATH,
+		),
+		fixtures: proofBundlePathForDefault(
+			proofBundle,
+			"fixtureResults",
+			options.fixtures,
+			DEFAULT_FIXTURE_RESULTS_PATH,
+		),
+		queueSnapshot: optionalProofBundlePathForDefault(
+			proofBundle,
+			"queueSnapshot",
+			options.queueSnapshot,
+			DEFAULT_QUEUE_SNAPSHOT_PATH,
+		),
+		networkProbes: proofBundlePathForDefault(
+			proofBundle,
+			"networkProbeBundle",
+			options.networkProbes,
+			DEFAULT_NETWORK_PROBES_PATH,
+		),
+		nofork: proofBundlePathForDefault(
+			proofBundle,
+			"noForkProof",
+			options.nofork,
+			DEFAULT_NO_FORK_PROOF_PATH,
+		),
+		rollback: proofBundlePathForDefault(
+			proofBundle,
+			"rollbackEvidence",
+			options.rollback,
+			DEFAULT_ROLLBACK_REHEARSAL_PATH,
+		),
+	};
+}
+
+function cutoverFeatureEvidenceValidationOptions(
+	strict: boolean,
+	liveCutover: boolean,
+	now: Date,
+): HermesSignedEvidenceValidationOptions {
+	const trustedRelayPublicKey = trustedRelayPublicKeyForValidation({ liveCutover });
+	return {
+		allowStaleAttestations: !liveCutover,
+		requireRunnerAttestation: strict,
+		now,
+		...(trustedRelayPublicKey.valid ? { relayPublicKey: trustedRelayPublicKey.value } : {}),
+	};
 }
 
 function readCutoverFixtureResults(filePath: string, options: { dryRun: boolean }): unknown {
@@ -5825,11 +5955,11 @@ export function registerHermesCommand(program: Command): void {
 		.option("--json", "Emit structured JSON")
 		.option(
 			"--inventory <path>",
-			"Inventory snapshot JSON path; collects live inventory when omitted",
+			"Inventory snapshot JSON path; uses the proof-bundle artifact when omitted",
 		)
 		.option(
 			"--queue-snapshot <path>",
-			"Queue ownership snapshot JSON path; derives from inventory when omitted",
+			"Queue ownership snapshot JSON path; uses the proof-bundle artifact when omitted",
 		)
 		.option("--scope <path>", "Cutover scope manifest JSON path", DEFAULT_CUTOVER_SCOPE_PATH)
 		.option("--decisions <path>", "Decision log JSON path", DEFAULT_DECISION_LOG_PATH)
@@ -5912,29 +6042,35 @@ export function registerHermesCommand(program: Command): void {
 				}
 				let input: unknown;
 				try {
-					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(options.featureProbes));
+					const cutoverProofBundle = CutoverProofBundleSchema.parse(
+						readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
+					);
+					const paths = resolveCutoverCheckInputPathsFromProofBundle(cutoverProofBundle, options);
+					const featureProbeMatrix = readJsonFile(resolveHermesArtifactPath(paths.featureProbes));
+					const validationOptions = cutoverFeatureEvidenceValidationOptions(
+						strict,
+						liveCutover,
+						now,
+					);
 					input = buildCutoverInputBundleFromArtifacts({
-						inventory: readInventorySnapshot(options.inventory),
-						scopeManifest: readJsonFile(resolveHermesArtifactPath(options.scope)),
-						decisionLog: readJsonFile(resolveHermesArtifactPath(options.decisions)),
-						cutoverProofBundle: readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
-						lockfile: readJsonFile(resolveHermesArtifactPath(options.lockfile)),
+						inventory: readJsonFile(resolveHermesArtifactPath(paths.inventory)),
+						scopeManifest: readJsonFile(resolveHermesArtifactPath(paths.scope)),
+						decisionLog: readJsonFile(resolveHermesArtifactPath(paths.decisions)),
+						cutoverProofBundle,
+						lockfile: readJsonFile(resolveHermesArtifactPath(paths.lockfile)),
 						featureProbeMatrix,
-						featureProbeEvidence: collectHermesFeatureProbeEvidence(featureProbeMatrix, {
-							allowStaleAttestations: !liveCutover,
-							requireRunnerAttestation: strict,
-							now,
-						}),
-						fixtureResults: readCutoverFixtureResults(options.fixtures, { dryRun }),
-						noForkProof: readJsonFile(resolveHermesArtifactPath(options.nofork)),
+						featureProbeEvidence: collectHermesFeatureProbeEvidence(
+							featureProbeMatrix,
+							validationOptions,
+						),
+						fixtureResults: readCutoverFixtureResults(paths.fixtures, { dryRun }),
+						noForkProof: readJsonFile(resolveHermesArtifactPath(paths.nofork)),
 						profileGenerationProof: readOptionalJsonFile(
 							resolveHermesArtifactPath(options.profileProof),
 						),
-						networkProbes: readCutoverNetworkProbes(options.networkProbes, { dryRun }),
-						queueSnapshot: options.queueSnapshot
-							? readJsonFile(resolveHermesArtifactPath(options.queueSnapshot))
-							: undefined,
-						rollbackRehearsal: readCutoverRollbackRehearsal(options.rollback, { dryRun }),
+						networkProbes: readCutoverNetworkProbes(paths.networkProbes, { dryRun }),
+						queueSnapshot: readJsonFile(resolveHermesArtifactPath(paths.queueSnapshot)),
+						rollbackRehearsal: readCutoverRollbackRehearsal(paths.rollback, { dryRun }),
 					});
 				} catch (error) {
 					const report = {
