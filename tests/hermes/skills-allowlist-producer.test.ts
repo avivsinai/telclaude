@@ -37,6 +37,76 @@ const dockerRunner: SkillsAllowlistRunner = async (scenario) => ({
 	...(scenario.kind === "pretooluse" ? { enforcementLayer: "pretooluse" as const } : {}),
 });
 
+// Canonical contract every probe scenario MUST satisfy. A blanket passed:true runner
+// would still accept a producer that drifted to the wrong skill, allowlist, decision,
+// kind, or dropped/added a scenario; asserting each field (and the full property set)
+// makes that drift break the test instead of silently passing.
+type ScenarioContract = {
+	kind: "profile" | "pretooluse";
+	allowlistedSkill: string;
+	nonAllowlistedSkill: string;
+	expectedDecision?: "allow" | "deny";
+	omitAllowedSkills?: boolean;
+	allowedSkills?: readonly string[];
+};
+const EXPECTED_SCENARIOS: Record<string, ScenarioContract> = {
+	allowlist_manifest_present: {
+		kind: "profile",
+		allowlistedSkill: "software-development/plan",
+		nonAllowlistedSkill: "red-teaming/godmode",
+	},
+	allowlisted_skill_present: {
+		kind: "profile",
+		allowlistedSkill: "software-development/plan",
+		nonAllowlistedSkill: "red-teaming/godmode",
+	},
+	nonallowlisted_skill_absent: {
+		kind: "profile",
+		allowlistedSkill: "software-development/plan",
+		nonAllowlistedSkill: "red-teaming/godmode",
+	},
+	runtime_skills_match_allowlist: {
+		kind: "profile",
+		allowlistedSkill: "software-development/plan",
+		nonAllowlistedSkill: "red-teaming/godmode",
+	},
+	pretooluse_hook_registered: {
+		kind: "pretooluse",
+		allowlistedSkill: "plan",
+		nonAllowlistedSkill: "godmode",
+		expectedDecision: "allow",
+		allowedSkills: ["plan"],
+	},
+	allowlisted_skill_invocation_allowed: {
+		kind: "pretooluse",
+		allowlistedSkill: "plan",
+		nonAllowlistedSkill: "godmode",
+		expectedDecision: "allow",
+		allowedSkills: ["plan"],
+	},
+	nonallowlisted_skill_invocation_denied: {
+		kind: "pretooluse",
+		allowlistedSkill: "plan",
+		nonAllowlistedSkill: "test-driven-development",
+		expectedDecision: "deny",
+		allowedSkills: ["plan"],
+	},
+	social_missing_allowlist_denied: {
+		kind: "pretooluse",
+		allowlistedSkill: "plan",
+		nonAllowlistedSkill: "godmode",
+		expectedDecision: "deny",
+		omitAllowedSkills: true,
+	},
+	social_empty_allowlist_denied: {
+		kind: "pretooluse",
+		allowlistedSkill: "plan",
+		nonAllowlistedSkill: "godmode",
+		expectedDecision: "deny",
+		allowedSkills: [],
+	},
+};
+
 describe("runSkillsAllowlistProbe", () => {
 	it("produces evidence the evaluator accepts (round-trip)", async () => {
 		const evidence = await runSkillsAllowlistProbe({
@@ -61,9 +131,7 @@ describe("runSkillsAllowlistProbe", () => {
 				return {
 					passed: true,
 					observationLayer: "docker_exec",
-					...(scenario.kind === "pretooluse"
-						? { enforcementLayer: "pretooluse" as const }
-						: {}),
+					...(scenario.kind === "pretooluse" ? { enforcementLayer: "pretooluse" as const } : {}),
 				};
 			},
 			observeTopology: containedTopology,
@@ -126,5 +194,57 @@ describe("runSkillsAllowlistProbe", () => {
 		expect(evidence.ran).toBe(false);
 		expect(evidence.status).toBe("pending");
 		expect(evaluateSkillsAllowlistEvidence(evidence).status).toBe("fail");
+	});
+
+	it("asserts every producer scenario matches its contract (drift-proof)", async () => {
+		const seen: string[] = [];
+		const violations: string[] = [];
+		const strictRunner: SkillsAllowlistRunner = async (scenario) => {
+			seen.push(scenario.property);
+			const expected = EXPECTED_SCENARIOS[scenario.property];
+			if (!expected) {
+				violations.push(`unexpected scenario property: ${scenario.property}`);
+			} else {
+				// Compare the full contract, key order fixed so the JSON match is exact;
+				// undefined fields drop out of both sides, while [] stays distinct from undefined.
+				const actual = JSON.stringify({
+					kind: scenario.kind,
+					allowlistedSkill: scenario.allowlistedSkill,
+					nonAllowlistedSkill: scenario.nonAllowlistedSkill,
+					expectedDecision: scenario.expectedDecision,
+					omitAllowedSkills: scenario.omitAllowedSkills,
+					allowedSkills: scenario.allowedSkills,
+				});
+				const want = JSON.stringify({
+					kind: expected.kind,
+					allowlistedSkill: expected.allowlistedSkill,
+					nonAllowlistedSkill: expected.nonAllowlistedSkill,
+					expectedDecision: expected.expectedDecision,
+					omitAllowedSkills: expected.omitAllowedSkills,
+					allowedSkills: expected.allowedSkills,
+				});
+				if (actual !== want) {
+					violations.push(`${scenario.property} contract drift: got ${actual} want ${want}`);
+				}
+			}
+			return {
+				passed: true,
+				observationLayer: "docker_exec",
+				...(scenario.kind === "pretooluse" ? { enforcementLayer: "pretooluse" as const } : {}),
+			};
+		};
+
+		const evidence = await runSkillsAllowlistProbe({
+			allowRun: true,
+			runner: strictRunner,
+			observeTopology: containedTopology,
+			now: new Date("2026-06-05T20:00:00.000Z"),
+		});
+
+		expect(violations).toEqual([]);
+		// Set equality catches a dropped OR added scenario, not just a mutated one.
+		expect([...seen].sort()).toEqual(Object.keys(EXPECTED_SCENARIOS).sort());
+		expect(evidence.status).toBe("pass");
+		expect(evaluateSkillsAllowlistEvidence(evidence).status).toBe("pass");
 	});
 });
