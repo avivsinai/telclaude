@@ -46,6 +46,16 @@ The Google services sidecar (Gmail, Calendar, Drive, Contacts) adds provider-spe
 7. **Approval Forgery** — Forging an approval token without user consent. Mitigated by: Ed25519 signing via vault (agent never sees signing key), domain-separated signatures (`approval-v1\n<payload>`).
 8. **Direct API Access** — Agent bypassing the relay to call Google APIs directly. Mitigated by: `google-egress` network only routes from the sidecar container; agents have no network path to `googleapis.com`; PreToolUse hook blocks WebFetch to `googleapis.com`.
 
+#### Hermes Private Runtime
+
+The no-fork Hermes wrapper runs a pinned upstream Hermes runtime as the private persona's execution engine. The contained runtime is untrusted compute, which adds runtime-specific threats:
+
+9. **Upstream Tampering** — Modifying the pinned Hermes checkout (a fork, patch, monkeypatch, or runtime source replacement) to defeat the security envelope. Mitigated by: the no-fork proof (`src/hermes/no-fork-proof.ts`) — Ed25519 runner-attested git checks (`checkout.present`, `checkout.pinned`, `checkout.statusClean`/`diffClean`/`indexClean`, plus post-run equivalents) require the checkout to match the pinned ref (default `hermes-agent` @ `v2026.5.29`) byte-for-byte, with `runner.noRuntimeSourceReplacement` and `runner.noMonkeypatch` checks.
+10. **Client Authority Injection** — The contained runtime forging its own permission scope by supplying authority fields on MCP calls. Mitigated by: the live MCP relay server strips client-supplied authority/connection fields (`authority`, `authorityHandle`, `connection`, `sessionKey`, `profileId`, `memorySource`, `peerAddress`, etc.) and resolves authority only from an opaque, connection-bound handle in the relay-side registry.
+11. **Side-Effect Abuse** — The runtime executing provider writes or outbound messages without operator consent. Mitigated by: two-phase side-effect ledger (prepare → human approval token → execute) with per-record params/body hash binding, 60s approval-token TTL, JTI replay prevention (`hermes_mcp_side_effect_approval_jti.sqlite`), and a self-approval block (actor cannot be its own approver).
+12. **Model-Credential Exfiltration / Direct Model Egress** — The runtime reaching model providers directly or extracting model secrets. Mitigated by: model traffic is relay-mediated through the OpenAI Codex proxy with peer-bound tokens; the contained container has model-provider hostnames pinned to a blocked address (`192.0.2.1`) and no raw model credentials in its environment.
+13. **Cross-Domain Memory Leakage** — The private runtime reading or persisting public/social memory. Mitigated by: the served-MCP memory bridge enforces a memory-source gate — a private (telegram-profile) authority cannot read social rows, and a social/bare-legacy source cannot satisfy a private read.
+
 ### Security Layers
 
 | Layer | Component | Protection |
@@ -54,6 +64,7 @@ The Google services sidecar (Gmail, Calendar, Drive, Contacts) adds provider-spe
 | **2. Policy** | Rate Limiter + Approvals | Prevents abuse, human-in-loop for risky ops |
 | **3. Permissions** | Tier System | Controls which tools Claude can use |
 | **4. Enforcement** | Isolation boundary | SDK sandbox (native) or relay+agent containers + firewall |
+| **5. Runtime attestation** | No-fork proof + served-MCP authority | Hermes runtime is pinned and unmodified; its capabilities and side effects flow only through relay-owned MCP tools |
 
 ---
 
@@ -124,6 +135,39 @@ In Docker mode, the relay container does not mount the workspace; the agent cont
 
 ---
 
+## Hermes Private Runtime (No-Fork Wrapper)
+
+When the private-runtime overlay is enabled (`TELCLAUDE_HERMES_PRIVATE_RUNTIME=1`), the relay routes private-persona work to a pinned upstream Hermes runtime instead of executing the Claude SDK directly. The relay remains the security boundary; Hermes is treated as untrusted compute. Enforcement rests on four mechanisms:
+
+### 1. No-Fork Proof
+
+The wrapper must prove the Hermes checkout is unmodified upstream — not a fork, patch, monkeypatch, or runtime source replacement. The proof (`src/hermes/no-fork-proof.ts`) emits Ed25519 runner-attested git checks: the checkout is present, `HEAD` matches the pinned ref commit, the working tree/index/diff are clean before and after the wrapper run, and the run produced no runtime source replacement or monkeypatch. `cutover-check` fails closed unless every check passes and the runner attestation is signed and bound to the evidence.
+
+### 2. Contained Runtime Posture (Docker)
+
+The `docker-compose.hermes.yml` overlay runs only two containers — `telclaude` (relay) and `tc-hermes-contained` (Hermes) — on an **internal**, non-routable bridge network (`192.0.2.0/24`). The contained runtime:
+
+- Uses a pinned image digest (`nousresearch/hermes-agent@sha256:…`), runs as non-root (`10000:10000`), drops all capabilities, and sets `no-new-privileges`.
+- Has a read-only root filesystem with `noexec` tmpfs for `/tmp`, `/home/hermes`, and `/run`.
+- Mounts the relay source read-only and a curated skill allowlist read-only; it never mounts the workspace or any credential volume.
+- Has model-provider hostnames (`api.openai.com`, `api.anthropic.com`, `chatgpt.com`, `generativelanguage.googleapis.com`, etc.) pinned to a blocked address (`192.0.2.1`), so direct model egress fails at the network layer.
+
+### 3. Served-MCP Authority Model
+
+Hermes does not receive an SDK tool allowlist. Instead, the relay hosts a **live MCP server** (HTTP, `transport: http_relay_internal_network`, relay-internal only, `runsInHermesContainer: false`) exposing a fixed set of relay-owned tools — provider read/prepare-write/execute-write, memory search/write, attachment get, outbound prepare/execute, and audit note. Every call is bound to an opaque, connection-scoped authority handle resolved in the relay-side registry (15-minute default TTL). The server strips any client-supplied authority, connection, session, profile, or `memorySource` fields, so the runtime cannot widen its own scope. Provider scope, outbound channels, and memory trust level are derived from the authority, never from runtime input. A private (telegram-profile) authority cannot read social memory; a social or bare-legacy source cannot satisfy a private read.
+
+### 4. Two-Phase Side Effects
+
+Provider writes and outbound messages are first-class ledger records, not inline tool calls. The flow is **prepare → human approval → execute**:
+
+- `prepare` stages a record with canonical params/body hashes.
+- Execution requires a signed approval token (`v1.<claims>.<sig>`, Ed25519 via vault) whose binding must match the staged record exactly. Tokens carry a 60-second max TTL, are single-use via a JTI store (`hermes_mcp_side_effect_approval_jti.sqlite`), and are rejected if expired, future-issued, replayed, or rebound.
+- The ledger enforces a **self-approval block**: the approver actor must differ from the requesting actor.
+
+This is the Hermes-side analogue of the Google sidecar's approval-token model — a compromised runtime cannot reuse, mutate, or self-approve an action.
+
+---
+
 ## TOTP 2FA
 
 Two-factor authentication secrets are stored in a separate process:
@@ -183,6 +227,9 @@ When deploying telclaude:
 - [ ] **Google services**: Run `setup-google` to store OAuth credentials in vault
 - [ ] **Google services**: Verify `google-services` container uses `google-egress` network (googleapis.com only)
 - [ ] **Google services**: Confirm agents have no route to `google-services` container
+- [ ] **Hermes runtime**: Run `telclaude hermes prove --upstream-clean` (no-fork proof) — checkout pinned, clean, no source replacement
+- [ ] **Hermes runtime**: Run `telclaude hermes cutover-check --strict` before any production cutover; resolve every gate (no-fork, network probes, parity roster) rather than scoping around it
+- [ ] **Hermes runtime**: Generate `TELCLAUDE_HERMES_API_SERVER_KEY` as an ephemeral per-deploy secret; confirm `tc-hermes-contained` runs on the internal network with model-provider hosts blocked and no credential volumes mounted
 
 ### Admin Claim Security
 

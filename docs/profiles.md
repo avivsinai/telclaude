@@ -33,6 +33,8 @@ Per-chat binding lives in the sessions table and survives restarts. Operators sw
 
 Memory is scoped per profile (`source: "telegram:<profile-id>"`). Switching profiles switches what memory the agent sees. Cross-profile reads are runtime-asserted off — the assertion is the invariant, not a check we want to relax.
 
+The profile binding is backend-independent. A profile resolves the same SOUL append, skill allowlist, default model, and `telegram:<profile-id>` memory source whether the private turn runs through the Claude SDK or the contained Hermes private runtime (`shouldUseHermesPrivateRuntime()` in `src/hermes/private-execute.ts`, applied in `src/telegram/auto-reply.ts`). Profiles are a Telclaude-side overlay above the execution backend, not part of it.
+
 ## Router profile convention
 
 Adopt this once you have two or more specialist profiles configured and you start typing the same "switch + here's the context" paragraph repeatedly.
@@ -43,7 +45,7 @@ Adopt this once you have two or more specialist profiles configured and you star
 - You want a single Telegram chat to default to "tell me what you want and I'll route you," not "act on my behalf."
 - You explicitly do not want agent-driven cross-profile delegation. The operator stays in the loop on every domain change.
 
-If you have one profile, you don't need this. If you want agent-driven delegation, see `docs/plans/2026-05-16-orchestrator-as-profile.md` for the deferred options.
+If you have one profile, you don't need this. If you want agent-driven delegation, see the deferred options under "What's deferred" below.
 
 ### How to wire it
 
@@ -86,7 +88,7 @@ If you have one profile, you don't need this. If you want agent-driven delegatio
 
 ### What's deferred
 
-The "Tiny" option above is the convention only. Two further options are designed in `docs/plans/2026-05-16-orchestrator-as-profile.md` but not implemented:
+The "Tiny" option above is the convention only. Two further options were designed but are not implemented:
 
 - **Small (Option B)** — adds a `handoff_recommendation` curator kind so the router can emit a signed inbox item with a one-tap "switch + prime first message" button. Still operator-mediated; one tap instead of a copy-paste.
 - **Medium (Option C)** — adds an agent-callable `delegate_to_profile` tool, per-job profile override on cron, and a `profile_delegations` audit table. Closer to a Hermes Level 3 orchestrator but a new subsystem with new invariants.

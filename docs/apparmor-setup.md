@@ -49,6 +49,21 @@ cat /home/telclaude-auth/credentials
 - **`aa-status` missing**: Install `apparmor-utils`.
 - **Running on a host without AppArmor**: Remove the `apparmor:` security_opt or run on a host with AppArmor enabled.
 
+## Hermes private-runtime overlay
+
+The `docker/docker-compose.hermes.yml` overlay adds the contained Hermes runtime (`tc-hermes-contained`) on the isolated `telclaude-hermes-relay` network. The relay container in this overlay is the same `telclaude` service from the base compose, so it keeps its `apparmor:telclaude-relay` profile. The contained Hermes container, however, runs the pinned upstream `nousresearch/hermes-agent` image (`@sha256:192a4078...`), which is **not** covered by a telclaude AppArmor profile and is therefore not in `install.sh`.
+
+Instead of AppArmor, `tc-hermes-contained` is hardened with kernel/runtime primitives declared directly in the overlay:
+
+- `cap_drop: ALL` and `no-new-privileges:true`.
+- Non-root `user: "10000:10000"`.
+- `read_only: true` root filesystem; the only writable surfaces are `noexec` tmpfs mounts (`/tmp`, `/run`, `/home/hermes`).
+- `pids_limit: 256`, `mem_limit: 2G`, `cpus: 2`.
+- Internal-only bridge network (`internal: true`) with model-provider hosts (`api.openai.com`, `api.anthropic.com`, etc.) pinned to a blackhole address via `extra_hosts`, so direct model egress fails. All model traffic must go through the relay's OpenAI Codex proxy.
+- The telclaude code is mounted into the contained runtime read-only (`..:/opt/data/telclaude-runner:ro`).
+
+Because there is no `telclaude-hermes` profile, `aa-status | rg telclaude` will not list anything for the contained runtime — that is expected. Hermes egress is constrained by the `internal: true` bridge, model-provider `extra_hosts` blackholing, and relay-only routing rather than by the agent-container firewall path.
+
 ## Notes
 
-The container firewall remains the **primary** network enforcement layer. AppArmor denies raw sockets but does not replace firewall policy.
+For the standard agent containers, the container firewall remains the **primary** network enforcement layer. AppArmor denies raw sockets but does not replace firewall policy. The Hermes contained runtime uses the overlay constraints described above instead of the agent-container firewall path.

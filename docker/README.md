@@ -22,8 +22,10 @@ See `docs/architecture.md` for the full system design. At a glance:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**5 containers**: relay, telegram agent, social agent, TOTP sidecar, vault sidecar.
-**4 images**: `telclaude:latest`, `telclaude-agent:latest`, `telclaude-totp:latest`, `telclaude-vault:latest`.
+**6 containers** (base stack): relay, telegram agent, social agent, Google services sidecar, TOTP sidecar, vault sidecar.
+**5 images**: `telclaude:latest`, `telclaude-agent:latest`, `telclaude-google-services:latest`, `telclaude-totp:latest`, `telclaude-vault:latest`.
+
+The optional Hermes private-runtime overlay adds a 7th container (`tc-hermes-contained`, pinned upstream image) on its own internal network — see [Hermes Private Runtime](#hermes-private-runtime-optional-overlay).
 
 ## Security Features
 
@@ -330,6 +332,57 @@ Telclaude can communicate with private REST APIs (sidecars) for services like he
 
 See `telclaude.json.example` and `telclaude-private.json.example` for safe templates.
 Use local `docker-compose.override.yml` for host-specific services or volumes; keep private sidecars out of tracked compose files.
+
+## Hermes Private Runtime (Optional Overlay)
+
+Telclaude can drive a pinned, unmodified upstream Hermes runtime instead of the Claude Agent SDK for the private persona. The relay stays the security envelope; Hermes is the agent loop behind it. This is an **opt-in** overlay — the base stack above does not start any Hermes container.
+
+The overlay (`docker-compose.hermes.yml`) adds one container, `tc-hermes-contained` (pinned upstream image digest), on a dedicated **internal-only** bridge network, `telclaude-hermes-relay` (default subnet `192.0.2.0/24`), that holds exactly two members: the relay (`192.0.2.10`) and the Hermes container (`192.0.2.11`). Do not attach sidecars, vault, providers, or egress helpers to this network.
+
+### Containment posture
+
+| Control | `tc-hermes-contained` |
+|---------|------------------------|
+| **User** | Non-root `10000:10000` |
+| **Capabilities** | `cap_drop: ALL`, `no-new-privileges` |
+| **Filesystem** | Read-only root; `noexec` tmpfs for `/tmp`, `/home/hermes`, `/run` |
+| **Resources** | 2GB memory, 2 CPUs, 256 PIDs |
+| **Model egress** | Model-provider hostnames (OpenAI, Anthropic, Google, OpenRouter, x.ai) pinned to a blackhole IP (`192.0.2.1`) — direct inference egress fails at the network layer |
+
+Inference is routed only through the relay's OpenAI Codex proxy (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). The entrypoint (`hermes-contained-entrypoint.sh`) curates skills from the upstream Hermes skills directory (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills`) into `HERMES_HOME` against the read-only allowlist (`hermes-contained-skills.allowlist`, 88 entries) — rejecting path traversal and any entry missing a `SKILL.md` — and mints a peer-bound Codex relay token so model traffic can only reach the relay's proxy route.
+
+### Relay live MCP bridge
+
+When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-owned MCP bridge (memory search/write, provider read/prepare/execute, attachment get, outbound prepare/execute, audit note) over a relay-internal HTTP endpoint on port **8793** (path `/mcp`), reachable only from the contained peer. It is not an agent tool allowlist: each connection binds to an opaque, TTL-limited authority handle, memory access is domain-scoped (the private Hermes runtime can never read social memory), and provider/outbound writes are two-phase (prepare → human approval → execute) with one-time, Ed25519-signed, request-bound approval tokens.
+
+### Bring it up
+
+```bash
+TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+TELCLAUDE_HERMES_PRIVATE_RUNTIME=1 \
+docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaude tc-hermes-contained
+```
+
+### Overlay environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `TELCLAUDE_HERMES_PRIVATE_RUNTIME` | Yes (set `1`) | Enables the overlay; defaults to `0` (off) |
+| `TELCLAUDE_HERMES_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the contained API server (port `8642`). Generate per `compose up`: `openssl rand -base64 48 \| tr '+/' '-_' \| tr -d '='` |
+| `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN` | Yes | Relay-scoped OpenAI Codex subscription token (relay owns the credential; Hermes only sees a peer-bound relay token) |
+| `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator RPC public key (`pnpm dev keygen operator`); relay verifies operator RPC mutations |
+| `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key; signs relay-observed RPC responses such as rollback evidence |
+| `TELCLAUDE_HERMES_IMAGE` | No | Override the pinned Hermes image digest (default pinned in the compose file) |
+| `TELCLAUDE_HERMES_INFERENCE_MODEL` | No | Hermes inference model (default `gpt-5.5`) |
+| `TELCLAUDE_HERMES_LIVE_MCP_ENABLED` | No | Enable the relay live MCP bridge (default `0`) |
+| `TELCLAUDE_HERMES_RELAY_IP` / `TELCLAUDE_HERMES_CONTAINED_IP` | No | Override the relay/contained IPs (defaults `192.0.2.10` / `192.0.2.11`) |
+| `TELCLAUDE_HERMES_RELAY_SUBNET` | No | Override the internal network CIDR (default `192.0.2.0/24`) |
+
+The overlay default for `TELCLAUDE_INTERNAL_HOSTS` includes `tc-hermes-contained` so the relay firewall allows the contained peer. If you override that variable, include the contained host explicitly.
+
+### Proof spine
+
+Cutover from the SDK runtime to Hermes is gated by signed evidence, not trust. The runtime mode switch is operator-RPC controlled; production procedure requires a strict evidence chain before setting it to `hermes`. The `telclaude hermes` command group (`pnpm dev hermes ...`) generates and evaluates these artifacts — no-fork proof (`prove --upstream-clean`), feature probes (`probes` / `probe <surface>`), network-isolation probes (`network-probes`), and a byte-bound `proof-bundle` evaluated by `cutover-check`. Strict cutover is all-or-nothing per approved workflow bundle. See `docs/operator-playbook.md` and `docs/architecture.md` for the full proof-spine and trust-boundary rationale.
 
 ## Commands
 
