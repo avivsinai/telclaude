@@ -140,20 +140,51 @@ const hermesPin = { version: "0.15.1" };
 const CLI_HEADLESS_TEST_RELAY_IP = "10.88.93.10";
 const CLI_HEADLESS_TEST_CONTAINED_IP = "10.88.93.11";
 const CLI_HEADLESS_WRONG_CONTAINED_IP = "10.88.93.12";
-const ORIGINAL_HERMES_RUNTIME_IP_ENV = {
-	TELCLAUDE_HERMES_RELAY_IP: process.env.TELCLAUDE_HERMES_RELAY_IP,
-	TELCLAUDE_HERMES_CONTAINED_IP: process.env.TELCLAUDE_HERMES_CONTAINED_IP,
-};
 const requiredNetworkProbeIds = [...REQUIRED_CUTOVER_NETWORK_PROBE_IDS];
 const cliHeadlessRelaySigningKeys = generateKeyPair();
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
 
 const HERMES_COMMAND_TEST_ENV_KEYS = [
+	"DOCKER_BIN",
+	"HERMES_INFERENCE_MODEL",
 	"OPERATOR_RPC_AGENT_PRIVATE_KEY",
 	"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 	"OPERATOR_RPC_RELAY_PRIVATE_KEY",
 	"OPERATOR_RPC_RELAY_PUBLIC_KEY",
 	"TELCLAUDE_CAPABILITIES_URL",
+	"TELCLAUDE_HERMES_BIN",
+	"TELCLAUDE_HERMES_CONTAINED_CONTAINER_NAME",
+	"TELCLAUDE_HERMES_CONTAINED_IP",
+	"TELCLAUDE_HERMES_FIREWALL_SENTINEL",
+	"TELCLAUDE_HERMES_HOME",
+	"TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET",
+	"TELCLAUDE_HERMES_LIVE_MCP_ALLOWED_PEERS",
+	"TELCLAUDE_HERMES_LIVE_MCP_NETWORK",
+	"TELCLAUDE_HERMES_MODEL_RELAY_POSTURE",
+	"TELCLAUDE_HERMES_MODEL_RELAY_URL",
+	"TELCLAUDE_HERMES_NETWORK",
+	"TELCLAUDE_HERMES_NETWORK_DNS_URL",
+	"TELCLAUDE_HERMES_NETWORK_MODEL_URL",
+	"TELCLAUDE_HERMES_NETWORK_POSTURE",
+	"TELCLAUDE_HERMES_NETWORK_PROBE_POSTURE",
+	"TELCLAUDE_HERMES_NETWORK_PROVIDER_URL",
+	"TELCLAUDE_HERMES_NETWORK_RELAY_URL",
+	"TELCLAUDE_HERMES_NETWORK_VAULT_URL",
+	"TELCLAUDE_HERMES_PIN",
+	"TELCLAUDE_HERMES_PROFILE_DIR",
+	"TELCLAUDE_HERMES_RELAY_CONTAINER_NAME",
+	"TELCLAUDE_HERMES_RELAY_IP",
+	"TELCLAUDE_HERMES_RUNTIME_GID",
+	"TELCLAUDE_HERMES_RUNTIME_UID",
+	"TELCLAUDE_HERMES_SDK_CWD",
+	"TELCLAUDE_HERMES_SERVED_MCP_AUTH",
+	"TELCLAUDE_HERMES_SERVED_MCP_FORGED_AUTH",
+	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_CONTAINER",
+	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_AUTH",
+	"TELCLAUDE_HERMES_SERVED_MCP_OFF_DOMAIN_PEER_IP",
+	"TELCLAUDE_HERMES_SERVED_MCP_URL",
+	"TELCLAUDE_HERMES_SERVED_MCP_WRONG_CONNECTION_AUTH",
+	"TELCLAUDE_SDK_CLIENT_MODULE",
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
 	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
 ] as const;
@@ -394,21 +425,24 @@ async function runHermesCommandWithEnv(
 	env: Record<string, string>,
 	options: HermesCommandTestOptions = {},
 ): Promise<{ exitCode: unknown; stdout: string }> {
+	return withHermesCommandTestEnv(env, () => runHermesCommand(args, options));
+}
+
+async function withHermesCommandTestEnv<T>(
+	env: Record<string, string | undefined>,
+	callback: () => T | Promise<T>,
+): Promise<T> {
 	const original = Object.fromEntries(
 		Object.keys(env).map((key) => [key, process.env[key] as string | undefined]),
 	);
 	for (const [key, value] of Object.entries(env)) {
-		process.env[key] = value;
+		restoreEnv(key, value);
 	}
 	try {
-		return await runHermesCommand(args, options);
+		return await callback();
 	} finally {
 		for (const [key, value] of Object.entries(original)) {
-			if (value === undefined) {
-				delete process.env[key];
-			} else {
-				process.env[key] = value;
-			}
+			restoreEnv(key, value);
 		}
 	}
 }
@@ -2046,9 +2080,6 @@ function safeCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): Cutover
 	};
 	const { cutoverProofBundle, ...bundleOverrides } = overrides;
 	const merged: CutoverBundleWithoutProof = { ...base, ...bundleOverrides };
-	if (typeof merged.rollbackRehearsal.relayPublicKey?.value === "string") {
-		process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY = merged.rollbackRehearsal.relayPublicKey.value;
-	}
 	const hasProfileProofOverride = Object.hasOwn(overrides, "profileGenerationProof");
 	const profileGenerationProof = hasProfileProofOverride
 		? merged.profileGenerationProof
@@ -2786,12 +2817,22 @@ async function runCutoverCheckWithBundle(
 	]);
 }
 
-async function runScopedCutoverCheckWithBundle(bundle: CutoverInputBundle) {
-	return runCutoverCheckWithBundle(bundle, { scoped: true });
+async function runScopedDryRunCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+	const result = await runCutoverCheckWithBundle(bundle, { scoped: true, dryRun: true });
+	const report = JSON.parse(result.stdout) as {
+		mode?: { completeParityCutover?: boolean; dryRun?: boolean };
+	};
+	expect(report.mode).toMatchObject({ completeParityCutover: false, dryRun: true });
+	return result;
 }
 
 async function runScopedLiveCutoverCheckWithBundle(bundle: CutoverInputBundle) {
-	return runCutoverCheckWithBundle(bundle, { scoped: true, dryRun: false });
+	const result = await runCutoverCheckWithBundle(bundle, { scoped: true, dryRun: false });
+	const report = JSON.parse(result.stdout) as {
+		mode?: { completeParityCutover?: boolean; dryRun?: boolean };
+	};
+	expect(report.mode).toMatchObject({ completeParityCutover: false, dryRun: false });
+	return result;
 }
 
 type CliHeadlessEvidenceFixture = Record<string, unknown> & {
@@ -3972,14 +4013,6 @@ describe("Hermes wrapper foundation", () => {
 	});
 
 	afterEach(async () => {
-		restoreEnv(
-			"TELCLAUDE_HERMES_RELAY_IP",
-			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_RELAY_IP,
-		);
-		restoreEnv(
-			"TELCLAUDE_HERMES_CONTAINED_IP",
-			ORIGINAL_HERMES_RUNTIME_IP_ENV.TELCLAUDE_HERMES_CONTAINED_IP,
-		);
 		restoreHermesCommandTestEnv();
 		process.exitCode = undefined;
 		// Let Vitest worker RPCs flush between the heavy synchronous fixture checks.
@@ -5816,6 +5849,36 @@ describe("Hermes wrapper foundation", () => {
 		}
 	});
 
+	it("does not rewrite the trusted relay public-key env from rollback rehearsal overrides", async () => {
+		const trustedKeys = generateKeyPair();
+		const attackerKeys = generateKeyPair();
+
+		await withHermesCommandTestEnv(
+			{
+				OPERATOR_RPC_RELAY_PRIVATE_KEY: trustedKeys.privateKey,
+				OPERATOR_RPC_RELAY_PUBLIC_KEY: trustedKeys.publicKey,
+			},
+			() => {
+				const rehearsal = writeRollbackRehearsal();
+				const attackerRelayPublicKey = {
+					...rehearsal.relayPublicKey,
+					value: attackerKeys.publicKey,
+					sha256: `sha256:${crypto
+						.createHash("sha256")
+						.update(attackerKeys.publicKey)
+						.digest("hex")}`,
+					source: "attacker-fixture",
+				};
+				const forged = { ...rehearsal, relayPublicKey: attackerRelayPublicKey };
+				writeJson(rehearsal.evidence_path, forged);
+
+				safeCutoverBundle({ rollbackRehearsal: forged });
+
+				expect(process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY).toBe(trustedKeys.publicKey);
+			},
+		);
+	});
+
 	it("rejects archived rollback transcript proofs without the trusted relay public-key env", () => {
 		const originalRelayPublicKey = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV];
 		const originalRelayPublicKeyLock = process.env[HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV];
@@ -5970,7 +6033,7 @@ describe("Hermes wrapper foundation", () => {
 	});
 
 	it("does not duplicate first-class memory and skills feature evidence in cutover-check", async () => {
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			cutoverBundleWithMemoryAndSkillsFeatureProbes(),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6083,7 +6146,7 @@ describe("Hermes wrapper foundation", () => {
 			],
 		};
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			safeCutoverBundle({
 				inventory: base.inventory,
 				scopeManifest: base.scopeManifest,
@@ -6490,7 +6553,7 @@ describe("Hermes wrapper foundation", () => {
 			evidence.push({ surfaceId: surface, evidencePath });
 		}
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			edgeAdapterCutoverBundleFromEvidence(evidence),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6523,7 +6586,7 @@ describe("Hermes wrapper foundation", () => {
 			runtime: undefined,
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			edgeAdapterCutoverBundle("attachment.quarantine", evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6916,7 +6979,7 @@ describe("Hermes wrapper foundation", () => {
 		]);
 
 		expect(probeResult.exitCode, probeResult.stdout).toBe(0);
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpProviderToolsCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6953,7 +7016,7 @@ describe("Hermes wrapper foundation", () => {
 		]);
 
 		expect(probeResult.exitCode, probeResult.stdout).toBe(1);
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpProviderToolsCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -6970,7 +7033,9 @@ describe("Hermes wrapper foundation", () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-cli-"));
 		const evidencePath = path.join(tempDir, "missing-execution-cli-headless.json");
 
-		const result = await runScopedCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const result = await runScopedDryRunCutoverCheckWithBundle(
+			cliHeadlessCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			mode: { completeParityCutover: boolean };
 			gates: Array<{ name: string; status: string; detail: string }>;
@@ -7322,7 +7387,9 @@ describe("Hermes wrapper foundation", () => {
 		const evidencePath = path.join(tempDir, "execution-cli-headless.json");
 		writeJson(evidencePath, evidence);
 
-		const result = await runScopedCutoverCheckWithBundle(cliHeadlessCutoverBundle(evidencePath));
+		const result = await runScopedDryRunCutoverCheckWithBundle(
+			cliHeadlessCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12180,7 +12247,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12209,7 +12276,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath, "pass", "approval.continuation"),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12236,7 +12303,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			sideEffectLedgerCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12268,7 +12335,7 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "ledger.replay-denied"),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			sideEffectLedgerCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12296,7 +12363,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerApprovalBindingCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12330,7 +12397,7 @@ sleep 5
 			),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerApprovalBindingCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12360,7 +12427,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerReleasePolicyCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12394,7 +12461,7 @@ sleep 5
 			),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerReleasePolicyCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12424,7 +12491,9 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const result = await runScopedDryRunCutoverCheckWithBundle(
+			googleProviderCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12454,7 +12523,9 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "google.wrong-actor-denied"),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(googleProviderCutoverBundle(evidencePath));
+		const result = await runScopedDryRunCutoverCheckWithBundle(
+			googleProviderCutoverBundle(evidencePath),
+		);
 		const report = JSON.parse(result.stdout) as {
 			gates: Array<{ name: string; status: string; detail: string }>;
 		};
@@ -12486,7 +12557,7 @@ sleep 5
 		]);
 		expect(probeResult.exitCode).toBe(0);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerDomainCutoverBundle(surfaceId, evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12518,7 +12589,7 @@ sleep 5
 			checks: evidence.checks.filter((check) => check.name !== "bank.wrong-provider-scope-denied"),
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			providerDomainCutoverBundle("providers.bank", evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12536,7 +12607,7 @@ sleep 5
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-approval-"));
 		const evidencePath = path.join(tempDir, "missing-approval-continuation.json");
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12566,7 +12637,7 @@ sleep 5
 			},
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12606,7 +12677,7 @@ sleep 5
 			},
 		});
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			approvalContinuationCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12625,7 +12696,7 @@ sleep 5
 		const evidencePath = path.join(tempDir, "execution-api-server-containment.json");
 		writeJson(evidencePath, apiServerContainmentEvidence());
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			apiServerContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12642,7 +12713,7 @@ sleep 5
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-api-server-"));
 		const evidencePath = path.join(tempDir, "missing-api-server-containment.json");
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			apiServerContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12670,7 +12741,7 @@ sleep 5
 		});
 		writeJson(evidencePath, evidence);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			apiServerContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12695,7 +12766,7 @@ sleep 5
 			}),
 		);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			apiServerContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12907,7 +12978,7 @@ NODE
 		const evidencePath = path.join(tempDir, "execution-served-mcp-containment.json");
 		writeJson(evidencePath, servedMcpContainmentEvidence());
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12936,7 +13007,7 @@ NODE
 			}),
 		);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12968,7 +13039,7 @@ NODE
 			}),
 		);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -12992,7 +13063,7 @@ NODE
 			}),
 		);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -13017,7 +13088,7 @@ NODE
 		delete evidence.properties[property];
 		writeJson(evidencePath, evidence);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {
@@ -13042,7 +13113,7 @@ NODE
 		evidence.properties[property] = false;
 		writeJson(evidencePath, evidence);
 
-		const result = await runScopedCutoverCheckWithBundle(
+		const result = await runScopedDryRunCutoverCheckWithBundle(
 			servedMcpContainmentCutoverBundle(evidencePath),
 		);
 		const report = JSON.parse(result.stdout) as {

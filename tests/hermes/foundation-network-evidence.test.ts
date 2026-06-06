@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildEdgeAdapterProbeEvidence,
 	EDGE_ADAPTER_CONTRACT_PROBE_SOURCE,
@@ -53,6 +53,30 @@ const CUTOVER_TEST_NOW = new Date("2026-05-31T09:02:00.000Z");
 const CLI_HEADLESS_TEST_RELAY_IP = "10.88.93.10";
 const CLI_HEADLESS_TEST_CONTAINED_IP = "10.88.93.11";
 type CutoverBundleWithoutProof = Omit<CutoverInputBundle, "cutoverProofBundle">;
+
+const FOUNDATION_NETWORK_TEST_ENV_KEYS = [
+	"OPERATOR_RPC_RELAY_PRIVATE_KEY",
+	"OPERATOR_RPC_RELAY_PUBLIC_KEY",
+	"TELCLAUDE_HERMES_CONTAINED_IP",
+	"TELCLAUDE_HERMES_RELAY_IP",
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_ENV,
+	HERMES_ROLLBACK_RELAY_PUBLIC_KEY_LOCK_ENV,
+] as const;
+
+let foundationNetworkTestEnvSnapshot: Record<string, string | undefined> = {};
+
+function snapshotFoundationNetworkTestEnv(): void {
+	foundationNetworkTestEnvSnapshot = Object.fromEntries(
+		FOUNDATION_NETWORK_TEST_ENV_KEYS.map((key) => [key, process.env[key]]),
+	);
+}
+
+function restoreFoundationNetworkTestEnv(): void {
+	for (const [key, value] of Object.entries(foundationNetworkTestEnvSnapshot)) {
+		restoreEnv(key, value);
+	}
+	foundationNetworkTestEnvSnapshot = {};
+}
 
 function evaluateCutoverCheck(
 	input: Parameters<typeof evaluateCutoverCheckWithLiveClock>[0],
@@ -638,6 +662,15 @@ function restoreEnv(name: string, value: string | undefined): void {
 		process.env[name] = value;
 	}
 }
+
+beforeEach(() => {
+	snapshotFoundationNetworkTestEnv();
+});
+
+afterEach(async () => {
+	restoreFoundationNetworkTestEnv();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+});
 
 function withCliHeadlessRuntimeIpEnv<T>(callback: () => T): T {
 	const originalRelayIp = process.env.TELCLAUDE_HERMES_RELAY_IP;
