@@ -74,6 +74,8 @@ tags = ["key", "HTTP", "bearer"]
 description = "Credential proxy builds bearer headers from vault (not hardcoded secrets)"
 paths = [
   '''src/relay/http-credential-proxy\.ts$''',
+  # Hermes API adapter / foundation build `Bearer ${var}` headers from runtime values, not literals
+  '''src/hermes/.*\.ts$''',
 ]
 
 [[rules]]
@@ -98,6 +100,10 @@ description = "Vault test fixtures and credential proxy rate limit keys"
 paths = [
   '''tests/vault-daemon/.*\.ts$''',
   '''src/relay/http-credential-proxy\.ts$''',
+  # Hermes probe/runtime sources use sentinel token CONSTANTS (e.g. *_WITHOUT_LEDGER_TOKEN)
+  # to drive redaction/ledger denial tests — fake values, not real secrets. AWS/GitHub/
+  # private-key default rules remain active here.
+  '''src/hermes/.*\.ts$''',
 ]
 
 [[rules]]
@@ -117,6 +123,12 @@ regex = '''(?i)(?:secret|key|password|pwd|pass|token)(?:.{0,20})(?:=){1}(?:\s)*?
 secretGroup = 1
 entropy = 3
 tags = ["credentials", "hardcoded", "shell"]
+[[rules.allowlists]]
+description = "Hermes contained entrypoint/probe scripts: env-var passthrough + image refs, not hardcoded secrets"
+paths = [
+  '''docker/hermes-contained-entrypoint\.sh$''',
+  '''scripts/hermes-contained-cli-probe\.sh$''',
+]
 
 [[rules]]
 description = "Hardcoded credentials in YAML files (quoted)"
@@ -164,6 +176,10 @@ paths = [
   '''package\.json$''',
   '''package-lock\.json$''',
   '''tsconfig\.json$''',
+  # Hermes signed cutover evidence: proof bundles are public attestation data
+  # ({"key":"inventory"}-style fields, hashes, signatures, pubkeys), not secrets.
+  '''docs/hermes/.*\.json$''',
+  '''artifacts/hermes/.*\.json$''',
 ]
 
 [[rules]]
@@ -218,12 +234,17 @@ tags = ["credentials", "auth-tuple"]
 [[rules.allowlists]]
 paths = [
   '''tests\/''',
+  # Hermes compose/probe pin the upstream image by `name@sha256:<digest>` — a content
+  # digest read as a user:pass@host tuple, not credentials.
+  '''docker/docker-compose\.hermes\.yml$''',
+  '''scripts/hermes-contained-cli-probe\.sh$''',
 ]
 regexes = [
   '''@gmail\.com''',
   '''@github\.com''',
   '''@example\.com''',
   '''@example\.test''',
+  '''@sha256:''',
 ]
 
 [[rules]]
@@ -254,4 +275,9 @@ paths = [
   '''README\.md$''',
   '''docker/.*\.example$''',
   '''docker/init-firewall\.sh$''',
+  # Hermes containment/egress-broker code references RFC1918 ranges by design
+  # (it blocks them); compose + probe script declare the contained subnet.
+  '''src/hermes/''',
+  '''docker/docker-compose\.hermes\.yml$''',
+  '''scripts/hermes-contained-cli-probe\.sh$''',
 ]
