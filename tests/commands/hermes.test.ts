@@ -725,6 +725,8 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 			? overrides.evidence_path
 			: path.join(tempDir, "no-fork.json");
 	const relayKeys = ensureOperatorRelayKeys();
+	const startedAt = freshHermesFixtureTimestamp();
+	const endedAt = addMs(startedAt, 1000);
 	const proof = {
 		schemaVersion: 1,
 		hermesCheckoutClean: true,
@@ -818,8 +820,8 @@ function writeNoForkProof(overrides: Record<string, unknown> = {}) {
 				schemaVersion: "telclaude.hermes.no-fork-runner-attestation.v1",
 				source: "telclaude-no-fork-proof-runner",
 				runner: "telclaude-hermes-no-fork-runner",
-				startedAt: "2026-05-31T09:00:00.000Z",
-				endedAt: "2026-05-31T09:01:00.000Z",
+				startedAt,
+				endedAt,
 				checkoutPath: String(proof.checkoutPath),
 				expectedRef: String(proof.expectedRef),
 				expectedVersion: String(proof.expectedVersion),
@@ -3352,7 +3354,7 @@ async function writeRequiredProReviewWorkspace(
 }
 
 async function writeGreenProReviewSemanticArtifacts(root: string): Promise<void> {
-	const observedAt = "2026-06-01T09:00:00.000Z";
+	const observedAt = freshHermesFixtureTimestamp();
 	writeJson(
 		rootArtifact(root, "artifacts/hermes/probes/execution-cli-headless.json"),
 		cliHeadlessEvidence(),
@@ -3517,7 +3519,7 @@ function headlessEntrypointReadinessFailureEvidence(): Record<string, unknown> {
 		probeId: "execution.headless_entrypoint",
 		status: "fail",
 		ran: false,
-		generatedAt: "2026-06-01T09:00:00.000Z",
+		generatedAt: freshHermesFixtureTimestamp(),
 		summary: "headless entrypoint proof was not run in this fixture",
 		checks: HEADLESS_ENTRYPOINT_CHECKS.map((name) => ({
 			name,
@@ -3528,6 +3530,7 @@ function headlessEntrypointReadinessFailureEvidence(): Record<string, unknown> {
 }
 
 function writeHeadlessEntrypointGreenEvidence(root: string): void {
+	const generatedAt = freshHermesFixtureTimestamp();
 	for (const sourcePath of HEADLESS_ENTRYPOINT_SOURCE_FILES) {
 		const resolved = rootArtifact(root, sourcePath);
 		if (!fs.existsSync(resolved)) {
@@ -3545,7 +3548,7 @@ function writeHeadlessEntrypointGreenEvidence(root: string): void {
 		probeId: "execution.headless_entrypoint",
 		status: "pass",
 		ran: true,
-		generatedAt: "2026-06-01T09:00:00.000Z",
+		generatedAt,
 		summary: "Hermes API adapter and private runtime semantic headless entrypoint checks passed",
 		testReport: {
 			runner: "vitest-json",
@@ -3737,7 +3740,7 @@ function isSignedProReviewProbeArtifact(file: string): boolean {
 
 async function signedProReviewProbeEvidence(file: string): Promise<Record<string, unknown>> {
 	ensureOperatorRelaySigningKeys();
-	const observedAt = "2026-06-01T09:00:00.000Z";
+	const observedAt = freshHermesFixtureTimestamp();
 	const edgeSurfaceId = PRO_REVIEW_EDGE_PROBE_ARTIFACTS[file];
 	if (edgeSurfaceId) {
 		return await buildEdgeAdapterProbeEvidence({
@@ -5749,7 +5752,7 @@ describe("Hermes wrapper foundation", () => {
 
 	it("returns cutover exit code 0 only when all strict evidence gates pass", () => {
 		const report = evaluateCutoverCheck(safeCutoverBundle());
-		expect(report.exitCode).toBe(0);
+		expect(report.exitCode, JSON.stringify(report, null, 2)).toBe(0);
 		expect(report.mode.completeParityCutover).toBe(true);
 		expect(report.gates.find((gate) => gate.name === "parity.rosterCovered")).toMatchObject({
 			status: "pass",
@@ -8358,6 +8361,7 @@ describe("Hermes wrapper foundation", () => {
 			writeJson(canaryPath, proReviewCanary());
 			const request = proReviewRequest(canaryPath);
 			const payloadSha256 = (request.payloadBinding as Record<string, string>).payloadSha256;
+			const approvedAt = freshHermesFixtureTimestamp();
 			writeJson(requestPath, request);
 
 			const approval = await runHermesCommand([
@@ -8372,7 +8376,7 @@ describe("Hermes wrapper foundation", () => {
 				"--operator",
 				"aviv",
 				"--approved-at",
-				"2026-06-03T13:36:35.321Z",
+				approvedAt,
 				"--payload-sha256",
 				payloadSha256,
 			]);
@@ -8396,7 +8400,7 @@ describe("Hermes wrapper foundation", () => {
 					approved: true,
 					approvalId: "aviv-ofc-drive-it",
 					operator: "aviv",
-					approvedAt: "2026-06-03T13:36:35.321Z",
+					approvedAt,
 					payloadSha256,
 				},
 			});
@@ -8417,7 +8421,7 @@ describe("Hermes wrapper foundation", () => {
 					approved: true,
 					approvalId: "aviv-ofc-drive-it",
 					operator: "aviv",
-					approvedAt: "2026-06-03T13:36:35.321Z",
+					approvedAt,
 					payloadSha256,
 				},
 			});
@@ -9279,6 +9283,7 @@ describe("Hermes wrapper foundation", () => {
 		const testReportPath = path.join(tempDir, "private-telegram-vitest.json");
 		const outPath = path.join(tempDir, "fixture-results.json");
 		const evidenceDir = path.join(tempDir, "evidence");
+		const observedAt = freshHermesFixtureTimestamp();
 		const originalPrivateKey = process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY;
 		const originalPublicKey = process.env.OPERATOR_RPC_RELAY_PUBLIC_KEY;
 		const relayKeys = generateKeyPair();
@@ -9298,7 +9303,7 @@ describe("Hermes wrapper foundation", () => {
 				"--evidence-dir",
 				evidenceDir,
 				"--observed-at",
-				"2026-05-31T00:00:00.000Z",
+				observedAt,
 			]);
 			const report = JSON.parse(result.stdout) as {
 				status: string;
