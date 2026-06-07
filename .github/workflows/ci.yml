@@ -19,7 +19,11 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The Hermes wrapper suite adds heavy crypto/containment tests; tests/commands/hermes.test.ts
+    # alone runs ~15 min as a single file (vitest can't parallelize within one file), which set a
+    # floor above the old 10-min cap. Deploy needs:[verify], so this must complete post-merge too.
+    # Follow-up: split hermes.test.ts so vitest parallelizes it and this can come back down.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
