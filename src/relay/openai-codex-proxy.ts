@@ -19,10 +19,14 @@ import { SlidingWindowRateLimiter } from "./shared-rate-limiter.js";
 
 const logger = getChildLogger({ module: "openai-codex-proxy" });
 
-const PROXY_PREFIX = "/v1/openai-codex-proxy";
+export const PROXY_PREFIX = "/v1/openai-codex-proxy";
 const PROXY_PROOF_LATEST_PATH = `${PROXY_PREFIX}/_telclaude/relay-proof/latest`;
 const PEER_BOUND_PROXY_TOKEN_PREFIX = "tc-openai-codex-relay-v1";
 export const OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS = 5 * 60_000;
+// Upper bound for an agent-requested per-job codex relay token TTL. The agent
+// requests a TTL that covers its whole work-unit (so the bearer can't expire
+// mid-run); we clamp it so a token never long-outlives the job that needs it.
+export const OPENAI_CODEX_RELAY_TOKEN_MAX_TTL_MS = 15 * 60_000;
 const CODEX_ORIGIN = "https://chatgpt.com";
 const CODEX_BASE_PATH = "/backend-api/codex";
 const CODEX_VAULT_TARGET = process.env.TELCLAUDE_OPENAI_CODEX_VAULT_TARGET ?? "openai-codex";
@@ -598,6 +602,64 @@ export function mintOpenAiCodexPeerBoundProxyToken(input: {
 	const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 	const signature = signPeerBoundProxyToken(encodedPayload, input.secret);
 	return `${PEER_BOUND_PROXY_TOKEN_PREFIX}.${encodedPayload}.${signature}`;
+}
+
+/**
+ * Mint a short-lived, peer-bound Codex relay-proxy token for the calling agent.
+ *
+ * The relay is the sole holder of the HMAC signing secret (PROXY_TOKEN_ENV); the
+ * agent never holds it. The token is bound to THIS request's peer address — the
+ * same agent-container IP the proxy will observe on /responses (both the mint
+ * route and the proxy run on the relay capabilities server, same port), so the
+ * peer binding matches. The caller requests a TTL covering its whole work-unit
+ * (so the bearer can't expire mid-run); we clamp it to [1m, MAX].
+ *
+ * Internal-auth + telegram-scope gating happen in the capabilities request
+ * pipeline before this handler runs.
+ */
+export function handleCodexRelayTokenMint(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+	body: string,
+): void {
+	const secret = process.env[PROXY_TOKEN_ENV];
+	if (!secret) {
+		logger.warn(
+			"[openai-codex-proxy] codex relay token mint requested but proxy token not configured",
+		);
+		writeJson(res, 500, { error: "Codex relay proxy token not configured." });
+		return;
+	}
+	const peerAddress = normalizeObservedPeerAddress(req.socket.remoteAddress);
+	if (!peerAddress) {
+		writeJson(res, 400, { error: "Could not determine peer address for token binding." });
+		return;
+	}
+	let parsed: { runId?: unknown; ttlMs?: unknown };
+	try {
+		parsed = JSON.parse(body || "{}") as { runId?: unknown; ttlMs?: unknown };
+	} catch {
+		writeJson(res, 400, { error: "Invalid JSON." });
+		return;
+	}
+	const runId = typeof parsed.runId === "string" ? parsed.runId.trim() : "";
+	if (!runId) {
+		writeJson(res, 400, { error: "runId is required." });
+		return;
+	}
+	const requestedTtl =
+		typeof parsed.ttlMs === "number" && Number.isFinite(parsed.ttlMs)
+			? parsed.ttlMs
+			: OPENAI_CODEX_CONTAINED_RELAY_TOKEN_TTL_MS;
+	const ttlMs = Math.min(Math.max(requestedTtl, 60_000), OPENAI_CODEX_RELAY_TOKEN_MAX_TTL_MS);
+	const token = mintOpenAiCodexPeerBoundProxyToken({
+		secret,
+		peerAddress,
+		runId,
+		tokenScope: "run",
+		ttlMs,
+	});
+	writeJson(res, 200, { token, expiresInMs: ttlMs });
 }
 
 export function verifyOpenAiCodexPeerBoundProxyToken(

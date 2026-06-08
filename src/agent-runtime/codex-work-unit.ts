@@ -27,7 +27,23 @@ export type CodexWorkUnitExecutorOptions = {
 	rootCwd?: string;
 	codexCommand?: string;
 	spawn?: SpawnLike;
+	/** Relay-minted, short-lived, peer-bound proxy token (the codex provider bearer). */
+	relayProxyToken?: string;
+	/** Relay codex-proxy base URL the codex provider points at (e.g. http://telclaude:8790/v1/openai-codex-proxy). */
+	relayProxyBaseUrl?: string;
 };
+
+// Codex custom-provider id + the env var that carries the relay bearer. Verified
+// against codex 0.137.0 source: model_providers.<id>.env_key resolves $env_key
+// and sends it as `Authorization: Bearer <value>`; wire_api="responses" +
+// supports_websockets=false force plain HTTP POST {base_url}/responses (no wss);
+// requires_openai_auth=false skips the ChatGPT OAuth refresh loop.
+const CODEX_RELAY_PROVIDER_ID = "telclaude_relay";
+const CODEX_RELAY_TOKEN_ENV = "CODEX_TELCLAUDE_RELAY_TOKEN";
+// base_url is interpolated into a `-c` TOML string; reject anything that could
+// break out of the quoted value (the spawn is shell:false, so this guards TOML,
+// not the shell).
+const CODEX_RELAY_BASE_URL_PATTERN = /^https?:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+$/;
 
 function validateToken(value: string, label: string, max = 200): string {
 	const trimmed = value.trim();
@@ -148,7 +164,10 @@ function wrapUntrustedCodexOutput(text: string): string {
 	].join("\n");
 }
 
-function buildCodexEnv(): NodeJS.ProcessEnv {
+function buildCodexEnv(relayProxyToken?: string): NodeJS.ProcessEnv {
+	// Minimal env — everything is stripped except these. The relay bearer is the
+	// ONLY job-scoped secret added; durable creds (OPENAI_API_KEY, the relay HMAC
+	// secret) never reach the codex child. Keep this allowlist tight.
 	return {
 		PATH: process.env.PATH ?? "/usr/bin:/bin",
 		LANG: process.env.LANG ?? "C.UTF-8",
@@ -156,7 +175,37 @@ function buildCodexEnv(): NodeJS.ProcessEnv {
 		TERM: "dumb",
 		NO_COLOR: "1",
 		...(process.env.CODEX_HOME ? { CODEX_HOME: process.env.CODEX_HOME } : {}),
+		...(relayProxyToken ? { [CODEX_RELAY_TOKEN_ENV]: relayProxyToken } : {}),
 	};
+}
+
+/**
+ * `-c` overrides defining a custom HTTP model provider pointed at the relay
+ * codex-proxy, with the relay bearer sourced from CODEX_RELAY_TOKEN_ENV. Empty
+ * when no relay base URL is configured (native/dev path uses local codex auth).
+ */
+function buildRelayProviderArgs(relayProxyBaseUrl?: string): string[] {
+	if (!relayProxyBaseUrl) return [];
+	if (!CODEX_RELAY_BASE_URL_PATTERN.test(relayProxyBaseUrl)) {
+		throw new Error("relay proxy base URL is malformed");
+	}
+	const p = `model_providers.${CODEX_RELAY_PROVIDER_ID}`;
+	return [
+		"-c",
+		`model_provider="${CODEX_RELAY_PROVIDER_ID}"`,
+		"-c",
+		`${p}.name="Telclaude Relay"`,
+		"-c",
+		`${p}.base_url="${relayProxyBaseUrl}"`,
+		"-c",
+		`${p}.wire_api="responses"`,
+		"-c",
+		`${p}.env_key="${CODEX_RELAY_TOKEN_ENV}"`,
+		"-c",
+		`${p}.requires_openai_auth=false`,
+		"-c",
+		`${p}.supports_websockets=false`,
+	];
 }
 
 async function runCodexProcess(params: {
@@ -186,6 +235,11 @@ async function runCodexProcess(params: {
 		// Pin false so user config cannot widen background peer network access.
 		"-c",
 		CODEX_WORKSPACE_WRITE_NETWORK_CONFIG,
+		// Route model inference through the relay codex-proxy (no-op in native/dev
+		// when no relay base URL is configured). Codex's own provider HTTP runs in
+		// this agent process, not the model-generated shell, so the network_access
+		// pin above (which only governs workspace-write shell egress) does not block it.
+		...buildRelayProviderArgs(params.options?.relayProxyBaseUrl),
 		"--sandbox",
 		params.payload.sandbox,
 		"--cd",
@@ -199,7 +253,7 @@ async function runCodexProcess(params: {
 	return new Promise((resolve, reject) => {
 		const child = spawner(command, args, {
 			cwd: params.cwd,
-			env: buildCodexEnv(),
+			env: buildCodexEnv(params.options?.relayProxyToken),
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
 		});

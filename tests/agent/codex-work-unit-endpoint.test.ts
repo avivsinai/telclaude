@@ -1,6 +1,7 @@
 import { once } from "node:events";
-import path from "node:path";
+import http from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -118,9 +119,7 @@ describe("agent codex-work-unit endpoint", () => {
 		});
 
 		await post(body, "telegram");
-		const [job] = codexExecImpl.mock.calls[0] as [
-			{ payload: { sandbox: string; model?: string } },
-		];
+		const [job] = codexExecImpl.mock.calls[0] as [{ payload: { sandbox: string; model?: string } }];
 		expect(job.payload.sandbox).toBe("workspace-write");
 		expect(job.payload.model).toBe("gpt-5.5");
 	});
@@ -155,5 +154,102 @@ describe("agent codex-work-unit endpoint", () => {
 		});
 		expect(res.status).toBe(401);
 		expect(codexExecImpl).not.toHaveBeenCalled();
+	});
+});
+
+describe("agent codex-work-unit endpoint — relay brokering", () => {
+	let server: ReturnType<typeof startAgentServer> | null = null;
+	let relay: http.Server | null = null;
+	let baseUrl = "";
+	let relayUrl = "";
+	let relayHandler: (req: http.IncomingMessage, res: http.ServerResponse) => void = () => {};
+	const original: Record<string, string | undefined> = {};
+	const CAP = "TELCLAUDE_CAPABILITIES_URL";
+
+	beforeEach(async () => {
+		for (const key of [...ENV_KEYS, CAP]) original[key] = process.env[key];
+		const telegram = generateKeyPair();
+		process.env.TELEGRAM_RPC_AGENT_PRIVATE_KEY = telegram.privateKey;
+		process.env.TELEGRAM_RPC_AGENT_PUBLIC_KEY = telegram.publicKey;
+
+		relay = http.createServer((req, res) => relayHandler(req, res));
+		relay.listen(0, "127.0.0.1");
+		await once(relay, "listening");
+		relayUrl = `http://127.0.0.1:${(relay.address() as AddressInfo).port}`;
+
+		server = startAgentServer({ port: 0, host: "127.0.0.1" });
+		await once(server, "listening");
+		baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+	});
+
+	afterEach(() => {
+		server?.close();
+		relay?.close();
+		server = null;
+		relay = null;
+		codexExecImpl.mockReset();
+		for (const key of [...ENV_KEYS, CAP]) {
+			if (original[key] === undefined) delete process.env[key];
+			else process.env[key] = original[key];
+		}
+	});
+
+	function post(body: string) {
+		return fetch(`${baseUrl}${PATH}`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				...buildInternalAuthHeaders("POST", PATH, body, { scope: "telegram" }),
+			},
+			body,
+		});
+	}
+
+	it("delegates with a relay-minted token when CAPABILITIES_URL is set", async () => {
+		process.env[CAP] = relayUrl;
+		relayHandler = (_req, res) => {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ token: "tc-openai-codex-relay-v1.p.s", expiresInMs: 120_000 }));
+		};
+		codexExecImpl.mockResolvedValueOnce({ ok: true, result: { message: "ok" } });
+
+		const res = await post(JSON.stringify({ prompt: "go", tier: "WRITE_LOCAL" }));
+		expect(res.status).toBe(200);
+		expect(codexExecImpl).toHaveBeenCalledTimes(1);
+		const [, , options] = codexExecImpl.mock.calls[0] as [
+			unknown,
+			AbortSignal,
+			{ relayProxyToken?: string; relayProxyBaseUrl?: string },
+		];
+		expect(options.relayProxyToken).toBe("tc-openai-codex-relay-v1.p.s");
+		expect(options.relayProxyBaseUrl).toBe(`${relayUrl}/v1/openai-codex-proxy`);
+	});
+
+	it("fails closed (does not run codex) when the relay mint returns non-2xx", async () => {
+		process.env[CAP] = relayUrl;
+		relayHandler = (_req, res) => {
+			res.writeHead(500);
+			res.end("nope");
+		};
+
+		const res = await post(JSON.stringify({ prompt: "go", tier: "WRITE_LOCAL" }));
+		expect(res.status).toBe(200);
+		expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+		expect(codexExecImpl).not.toHaveBeenCalled();
+	});
+
+	it("runs without relay options in native mode (no CAPABILITIES_URL)", async () => {
+		delete process.env[CAP];
+		codexExecImpl.mockResolvedValueOnce({ ok: true, result: { message: "ok" } });
+
+		const res = await post(JSON.stringify({ prompt: "go", tier: "WRITE_LOCAL" }));
+		expect(res.status).toBe(200);
+		const [, , options] = codexExecImpl.mock.calls[0] as [
+			unknown,
+			AbortSignal,
+			{ relayProxyToken?: string; relayProxyBaseUrl?: string },
+		];
+		expect(options.relayProxyToken).toBeUndefined();
+		expect(options.relayProxyBaseUrl).toBeUndefined();
 	});
 });

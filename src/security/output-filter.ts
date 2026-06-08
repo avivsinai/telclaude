@@ -50,6 +50,16 @@ export const CORE_SECRET_PATTERNS: SecretPattern[] = [
 		description: "Anthropic API key - would allow unauthorized API usage",
 		core: true,
 	},
+	{
+		name: "codex_relay_proxy_token",
+		// tc-openai-codex-relay-v1.<payload_b64url>.<sig_b64url> — short-lived,
+		// peer-bound bearer the agent's codex child uses; redact so a codex run
+		// can't echo its own bearer back through the wrapped output to Telegram.
+		pattern: /\btc-openai-codex-relay-v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+		severity: "critical",
+		description: "Codex relay proxy bearer - would allow relay-brokered inference within TTL",
+		core: true,
+	},
 
 	// === CRITICAL: Private keys ===
 	{

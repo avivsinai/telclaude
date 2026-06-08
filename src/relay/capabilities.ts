@@ -77,7 +77,11 @@ import {
 	isAnthropicTokenRequest,
 } from "./anthropic-proxy.js";
 import { buildAttachmentFilename, ensureDocumentsDir } from "./attachment-helpers.js";
-import { handleOpenAiCodexProxyRequest, isOpenAiCodexProxyRequest } from "./openai-codex-proxy.js";
+import {
+	handleCodexRelayTokenMint,
+	handleOpenAiCodexProxyRequest,
+	isOpenAiCodexProxyRequest,
+} from "./openai-codex-proxy.js";
 import { type ProviderProxyRequest, proxyProviderRequest } from "./provider-proxy.js";
 import {
 	handleTokenExchange,
@@ -1026,6 +1030,15 @@ export function startCapabilityServer(options: CapabilityServerOptions = {}): ht
 				{ scope: authResult.scope, url: req.url, method: req.method },
 				"capability request authenticated",
 			);
+
+			// ── Codex relay-proxy token mint (private agent only) ─────────────
+			// The agent mints a short-lived, peer-bound token here (relay holds the
+			// HMAC secret) and presents it to the openai-codex proxy. telegram-only:
+			// non-telegram scopes are already rejected by the allowedPaths gate above.
+			if (req.method === "POST" && requestPath === "/v1/codex-relay-token") {
+				handleCodexRelayTokenMint(req, res, body);
+				return;
+			}
 
 			// ── Agent Ready Notification ─────────────────────────────────────
 			if (requestPath === "/v1/agent.ready") {

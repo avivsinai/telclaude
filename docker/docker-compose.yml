@@ -58,6 +58,11 @@ services:
       # Anthropic proxy token — agents use this to authenticate with the relay's Anthropic proxy
       - ANTHROPIC_PROXY_TOKEN=${ANTHROPIC_PROXY_TOKEN:-}
 
+      # OpenAI Codex relay-proxy HMAC signing secret — RELAY ONLY (never mounted
+      # into agent containers). The relay mints short-lived, peer-bound per-job
+      # tokens for /codex work units; the agent never holds this secret.
+      - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:-}
+
       # Secrets encryption — enables keychain fallback (decrypts secrets.json for vault import)
       # Defaults to TOTP key when SECRETS_ENCRYPTION_KEY is not explicitly set
       - SECRETS_ENCRYPTION_KEY=${SECRETS_ENCRYPTION_KEY:-${TOTP_ENCRYPTION_KEY}}

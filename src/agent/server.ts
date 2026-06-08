@@ -23,6 +23,8 @@ import { executePooledQuery, type StreamChunk } from "../sdk/client.js";
 import { loadSocialContractPrompt } from "../social-contract.js";
 import { loadSoul } from "../soul.js";
 import { buildRuntimeSnapshot } from "../system-metadata.js";
+import { stripTrailingSlash } from "../utils.js";
+import { buildRpcAuthHeaders } from "./token-client.js";
 
 const logger = getChildLogger({ module: "agent-server" });
 
@@ -161,6 +163,50 @@ async function readRequestBody(
 	});
 }
 
+// Must match PROXY_PREFIX in src/relay/openai-codex-proxy.ts (asserted by tests).
+const CODEX_PROXY_PATH_PREFIX = "/v1/openai-codex-proxy";
+const CODEX_RELAY_TOKEN_TTL_BUFFER_MS = 60_000;
+
+/**
+ * Mint a short-lived, peer-bound codex relay-proxy token from the relay so the
+ * codex child can route model inference through the relay proxy (the durable
+ * ChatGPT/Codex credential stays relay/vault-side; the agent never holds it).
+ *
+ * Returns null in native/dev mode (no TELCLAUDE_CAPABILITIES_URL) — codex then
+ * uses whatever local auth exists. THROWS in Docker mode if the relay is
+ * configured but minting fails, so the caller can fail closed rather than run
+ * codex with no working inference auth.
+ */
+async function mintCodexRelayToken(
+	runId: string,
+	ttlMs: number,
+): Promise<{ token: string; baseUrl: string } | null> {
+	const capabilitiesUrl = process.env.TELCLAUDE_CAPABILITIES_URL;
+	if (!capabilitiesUrl) return null;
+	const path = "/v1/codex-relay-token";
+	const payload = JSON.stringify({ runId, ttlMs });
+	const base = stripTrailingSlash(capabilitiesUrl);
+	const response = await fetch(`${base}${path}`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			...buildRpcAuthHeaders("POST", path, payload, "telegram"),
+		},
+		body: payload,
+	});
+	if (!response.ok) {
+		const detail = (await response.text()).slice(0, 300);
+		throw new Error(
+			`codex relay token mint failed (${response.status} ${response.statusText}): ${detail}`,
+		);
+	}
+	const data = (await response.json()) as { token?: unknown };
+	if (typeof data.token !== "string" || !data.token) {
+		throw new Error("codex relay token mint returned no token");
+	}
+	return { token: data.token, baseUrl: `${base}${CODEX_PROXY_PATH_PREFIX}` };
+}
+
 /**
  * Execute a Codex work unit inside the agent container, where the workspace is
  * mounted and the tool/network boundary applies. The relay holds no workspace,
@@ -251,17 +297,35 @@ async function handleCodexWorkUnit(
 		cancelledAtMs: null,
 	};
 
+	const jobTimeoutMs = clampTimeout(request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+	// Mint a per-job, peer-bound relay proxy token so codex routes inference
+	// through the relay. Fail closed in Docker mode: if the relay is configured
+	// but minting fails, do NOT run codex (it would have no working inference
+	// auth). The TTL covers the whole job so the bearer can't expire mid-run.
+	let relayAuth: { token: string; baseUrl: string } | null;
+	try {
+		relayAuth = await mintCodexRelayToken(job.id, jobTimeoutMs + CODEX_RELAY_TOKEN_TTL_BUFFER_MS);
+	} catch (err) {
+		logger.warn({ error: String(err) }, "codex relay token mint failed; refusing to run codex");
+		writeJson(res, 200, { ok: false, error: "Failed to obtain codex relay credentials." });
+		return;
+	}
+
 	// Bind the response lifecycle to the Codex child: a client disconnect aborts
 	// the work unit so the relay can propagate cancellation end to end.
 	const controller = new AbortController();
 	const abort = () => controller.abort();
 	res.on("close", abort);
-	const timer = setTimeout(abort, clampTimeout(request.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+	const timer = setTimeout(abort, jobTimeoutMs);
 	timer.unref?.();
 
 	try {
 		const outcome: BackgroundExecutorResult = await codexWorkUnitExecutor(job, controller.signal, {
 			rootCwd: RESOLVED_AGENT_WORKDIR,
+			...(relayAuth
+				? { relayProxyToken: relayAuth.token, relayProxyBaseUrl: relayAuth.baseUrl }
+				: {}),
 		});
 		writeJson(res, 200, outcome);
 	} catch (err) {
