@@ -146,12 +146,30 @@ describe("buildReport", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("checkConfigLoaded", () => {
+	const ORIGINAL_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+	beforeEach(() => {
+		delete process.env.TELEGRAM_BOT_TOKEN;
+	});
+	afterEach(() => {
+		if (ORIGINAL_BOT_TOKEN === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+		else process.env.TELEGRAM_BOT_TOKEN = ORIGINAL_BOT_TOKEN;
+	});
+
 	it("fails when botToken is missing", () => {
 		const cfg = makeMinimalConfig();
 		const results = checkConfigLoaded(cfg);
 		const tokenCheck = results.find((r) => r.name === "config.telegram.botToken");
 		expect(tokenCheck?.status).toBe("fail");
 		expect(tokenCheck?.remediation).toMatch(/telclaude onboard/);
+	});
+
+	it("passes when botToken is provided via TELEGRAM_BOT_TOKEN env", () => {
+		process.env.TELEGRAM_BOT_TOKEN = "98765:ZYXWV";
+		const cfg = makeMinimalConfig({ telegram: { allowedChats: [42], heartbeatSeconds: 60 } });
+		const results = checkConfigLoaded(cfg);
+		const tokenCheck = results.find((r) => r.name === "config.telegram.botToken");
+		expect(tokenCheck?.status).toBe("pass");
+		expect(tokenCheck?.summary).toMatch(/env/);
 	});
 
 	it("fails on malformed botToken", () => {

@@ -291,7 +291,10 @@ export function checkConfigLoaded(cfg: TelclaudeConfig): CheckResult[] {
 
 	checks.push(pass("config.loaded", "Config", "config parsed successfully"));
 
-	const bot = cfg.telegram?.botToken;
+	// Secrets are commonly provided via env (Docker) rather than the config file,
+	// so honor TELEGRAM_BOT_TOKEN the same way the relay does at runtime.
+	const bot = cfg.telegram?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
+	const fromEnv = !cfg.telegram?.botToken && !!process.env.TELEGRAM_BOT_TOKEN;
 	if (!bot) {
 		checks.push(
 			fail(
@@ -299,7 +302,7 @@ export function checkConfigLoaded(cfg: TelclaudeConfig): CheckResult[] {
 				"Config",
 				"telegram.botToken is not set",
 				"Without a bot token, telclaude cannot connect to the Telegram Bot API.",
-				"telclaude onboard  # or edit telclaude.json directly",
+				"telclaude onboard  # or set TELEGRAM_BOT_TOKEN / edit telclaude.json",
 			),
 		);
 	} else if (!/:/.test(bot)) {
@@ -313,7 +316,13 @@ export function checkConfigLoaded(cfg: TelclaudeConfig): CheckResult[] {
 			),
 		);
 	} else {
-		checks.push(pass("config.telegram.botToken", "Config", "bot token is present"));
+		checks.push(
+			pass(
+				"config.telegram.botToken",
+				"Config",
+				fromEnv ? "bot token is present (from TELEGRAM_BOT_TOKEN env)" : "bot token is present",
+			),
+		);
 	}
 
 	const allowed = cfg.telegram?.allowedChats;
