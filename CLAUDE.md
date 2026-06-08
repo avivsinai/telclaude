@@ -48,6 +48,11 @@
 4) Summarize changes and call out risks/todos.
 5) Ask before destructive ops.
 
+## Yoetz / ChatGPT Pro review
+- Use the native Yoetz browser extension for ChatGPT Pro review when available; do not run a canary first if the extension is already connected.
+- Send a fresh, full-context bundle with the actual code, artifacts, commands, and current status. Do not send stale shards or context-light excerpts.
+- Ask for an open-ended review by default. Avoid steering Pro toward expected findings unless doing a narrow follow-up on a specific issue.
+
 ## Repo map
 - `src/security/` — pipeline, permissions, observer, approvals, rate limits, output filter, streaming redactor, external-content (untrusted-input injection detection + risk wrapping for inbound/social/web content).
 - `src/sandbox/` — mode detection, constants, SDK settings builder.
