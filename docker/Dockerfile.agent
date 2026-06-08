@@ -25,6 +25,14 @@ RUN npx playwright install --with-deps chromium \
 # Package: https://github.com/vercel-labs/agent-browser
 RUN npm install -g agent-browser@latest
 
+# Install the OpenAI Codex CLI (exact pin) for the /codex work-unit runtime.
+# Codex work units execute in the agent container (the workspace is mounted
+# here, not in the relay) and are delegated from the relay over internal auth.
+# Exact pin + version assertion — never @latest — so the image is reproducible.
+ARG CODEX_CLI_VERSION=0.137.0
+RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}" \
+    && codex --version | grep -F "codex-cli ${CODEX_CLI_VERSION}"
+
 # Install gifgrep for GIF search (Tenor/Giphy).
 # https://github.com/steipete/gifgrep
 # Bookworm ships Go 1.19; gifgrep v0.3.0 needs Go 1.25+.

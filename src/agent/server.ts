@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 
 import type { OutputFormat, SdkBeta } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
+import { codexWorkUnitExecutor } from "../agent-runtime/codex-work-unit.js";
+import type { BackgroundExecutorResult } from "../background/runner.js";
+import type { BackgroundJob } from "../background/types.js";
 import type { PermissionTier } from "../config/config.js";
 import { isExecutableModelId } from "../config/model-routing.js";
 import { verifyInternalAuth } from "../internal-auth.js";
@@ -117,6 +122,154 @@ function resolveCwd(requested?: string): string {
 	}
 
 	return candidate;
+}
+
+const CodexWorkUnitRequestSchema = z.object({
+	prompt: z.string().min(1).max(24_000),
+	tier: z.enum(["READ_ONLY", "WRITE_LOCAL", "FULL_ACCESS", "SOCIAL"]),
+	cwd: z.string().optional(),
+	sandbox: z.enum(["read-only", "workspace-write"]).default("read-only"),
+	model: z.string().min(1).max(120).optional(),
+	timeoutMs: z.number().int().positive().optional(),
+});
+
+async function readRequestBody(
+	req: http.IncomingMessage,
+): Promise<{ ok: true; body: string } | { ok: false; status: number; error: string }> {
+	return new Promise((resolve) => {
+		let received = 0;
+		const chunks: Buffer[] = [];
+		let settled = false;
+		const finish = (
+			result: { ok: true; body: string } | { ok: false; status: number; error: string },
+		) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+		req.on("data", (chunk: Buffer) => {
+			received += chunk.length;
+			if (received > MAX_BODY_BYTES) {
+				finish({ ok: false, status: 413, error: "Request body too large." });
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => finish({ ok: true, body: Buffer.concat(chunks).toString("utf-8") }));
+		req.on("error", () => finish({ ok: false, status: 400, error: "Request stream error." }));
+	});
+}
+
+/**
+ * Execute a Codex work unit inside the agent container, where the workspace is
+ * mounted and the tool/network boundary applies. The relay holds no workspace,
+ * so it delegates here via an internal-auth'd POST. Codex output is returned as
+ * a BackgroundExecutorResult, already redacted + wrapped as untrusted data by
+ * the executor. Telegram scope only: Codex work units are a private-agent
+ * capability, and SOCIAL is rejected (matching the executor's own guard).
+ */
+async function handleCodexWorkUnit(
+	req: http.IncomingMessage,
+	res: http.ServerResponse,
+): Promise<void> {
+	const contentType = req.headers["content-type"] ?? "";
+	if (!contentType.includes("application/json")) {
+		writeJson(res, 415, { error: "Content-Type must be application/json." });
+		return;
+	}
+
+	const read = await readRequestBody(req);
+	if (!read.ok) {
+		writeJson(res, read.status, { error: read.error });
+		return;
+	}
+
+	const authResult = verifyInternalAuth(req, read.body);
+	if (!authResult.ok) {
+		logger.warn(
+			{ reason: authResult.reason, url: req.url },
+			"codex work unit request failed internal auth",
+		);
+		writeJson(res, authResult.status, { error: authResult.error });
+		return;
+	}
+	if (authResult.scope !== "telegram") {
+		writeJson(res, 403, { error: "Codex work units require the telegram scope." });
+		return;
+	}
+
+	let json: unknown;
+	try {
+		json = JSON.parse(read.body);
+	} catch {
+		writeJson(res, 400, { error: "Invalid JSON." });
+		return;
+	}
+	const parsed = CodexWorkUnitRequestSchema.safeParse(json);
+	if (!parsed.success) {
+		writeJson(res, 400, {
+			error: `Invalid codex work unit request: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`,
+		});
+		return;
+	}
+	const request = parsed.data;
+	// Mirror the Telegram queue's policy: only WRITE_LOCAL and FULL_ACCESS may run
+	// Codex work units. SOCIAL is rejected by the executor too; READ_ONLY is
+	// rejected before enqueue on the Telegram side, so reject it here for symmetry.
+	if (request.tier !== "WRITE_LOCAL" && request.tier !== "FULL_ACCESS") {
+		writeJson(res, 403, {
+			error: "Codex work units require the WRITE_LOCAL or FULL_ACCESS tier.",
+		});
+		return;
+	}
+
+	const now = Date.now();
+	const job: BackgroundJob = {
+		id: randomUUID(),
+		shortId: randomUUID().slice(0, 8),
+		userId: "relay-delegated",
+		chatId: null,
+		threadId: null,
+		tier: request.tier,
+		title: "codex work unit",
+		description: null,
+		status: "running",
+		payload: {
+			kind: "codex-work-unit",
+			prompt: request.prompt,
+			cwd: request.cwd,
+			sandbox: request.sandbox,
+			...(request.model ? { model: request.model } : {}),
+			...(request.timeoutMs ? { timeoutMs: request.timeoutMs } : {}),
+		},
+		result: null,
+		error: null,
+		createdAtMs: now,
+		startedAtMs: now,
+		completedAtMs: null,
+		cancelledAtMs: null,
+	};
+
+	// Bind the response lifecycle to the Codex child: a client disconnect aborts
+	// the work unit so the relay can propagate cancellation end to end.
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	res.on("close", abort);
+	const timer = setTimeout(abort, clampTimeout(request.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+	timer.unref?.();
+
+	try {
+		const outcome: BackgroundExecutorResult = await codexWorkUnitExecutor(job, controller.signal, {
+			rootCwd: RESOLVED_AGENT_WORKDIR,
+		});
+		writeJson(res, 200, outcome);
+	} catch (err) {
+		writeJson(res, 200, { ok: false, error: err instanceof Error ? err.message : String(err) });
+	} finally {
+		clearTimeout(timer);
+		res.off("close", abort);
+	}
 }
 
 let lastProviderEpoch: string | null = null;
@@ -280,6 +433,11 @@ export function startAgentServer(options: AgentServerOptions = {}): http.Server 
 				service: "agent",
 				runtime: buildRuntimeSnapshot(AGENT_STARTED_AT),
 			});
+			return;
+		}
+
+		if (req.method === "POST" && req.url === "/v1/codex-work-unit") {
+			await handleCodexWorkUnit(req, res);
 			return;
 		}
 
