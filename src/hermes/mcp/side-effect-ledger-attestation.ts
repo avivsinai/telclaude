@@ -5,6 +5,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "../attestation-validation.js";
 
 export const SIDE_EFFECT_LEDGER_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.sideeffect-ledger-attestation.v1";
@@ -98,6 +99,7 @@ export function sideEffectLedgerAttestationSignatureFailure(
 		{
 			scope: SIDE_EFFECT_LEDGER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);
