@@ -5934,6 +5934,10 @@ export function registerHermesCommand(program: Command): void {
 			"--scoped",
 			"Evaluate only the included workflow set; production complete-parity roster is default",
 		)
+		.option(
+			"--p0-first",
+			"Evaluate the approved first private Telegram P0 scope in strict live mode",
+		)
 		.option("--json", "Emit structured JSON")
 		.option(
 			"--inventory <path>",
@@ -5991,19 +5995,48 @@ export function registerHermesCommand(program: Command): void {
 					strict?: boolean;
 					dryRun?: boolean;
 					scoped?: boolean;
+					p0First?: boolean;
 				},
 			) => {
 				const strict = options.strict ?? true;
 				const dryRun = options.dryRun ?? false;
-				const completeParityCutover = options.scoped !== true;
+				const cutoverScope = options.p0First
+					? "p0-first"
+					: options.scoped
+						? "scoped-diagnostic"
+						: "complete-parity";
+				const completeParityCutover = cutoverScope === "complete-parity";
 				const liveCutover = strict && !dryRun;
 				const now = new Date();
+				if (options.p0First === true && options.scoped === true) {
+					const report = {
+						generatedAt: now.toISOString(),
+						status: "input_error",
+						exitCode: 2,
+						mode: { strict, dryRun, completeParityCutover, scope: cutoverScope },
+						gates: [
+							{
+								name: "mode.scope",
+								status: "fail",
+								detail: "--p0-first and --scoped are mutually exclusive",
+							},
+						],
+					};
+					if (options.json) {
+						printJson(report);
+					} else {
+						console.log(`Hermes cutover-check: ${report.status}`);
+						console.log(`- FAIL ${report.gates[0].name}: ${report.gates[0].detail}`);
+					}
+					process.exitCode = report.exitCode;
+					return;
+				}
 				if (liveCutover && options.scoped === true) {
 					const report = {
 						generatedAt: now.toISOString(),
 						status: "input_error",
 						exitCode: 2,
-						mode: { strict, dryRun, completeParityCutover },
+						mode: { strict, dryRun, completeParityCutover, scope: cutoverScope },
 						gates: [
 							{
 								name: "mode.completeParityCutover",
@@ -6059,7 +6092,7 @@ export function registerHermesCommand(program: Command): void {
 						generatedAt: now.toISOString(),
 						status: "input_error",
 						exitCode: 2,
-						mode: { strict, dryRun, completeParityCutover },
+						mode: { strict, dryRun, completeParityCutover, scope: cutoverScope },
 						gates: [
 							{
 								name: "inputs.readable",
@@ -6085,6 +6118,7 @@ export function registerHermesCommand(program: Command): void {
 						dryRun,
 						liveCutover,
 						completeParityCutover,
+						cutoverScope,
 						now,
 					}),
 				};

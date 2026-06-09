@@ -1925,7 +1925,12 @@ export type HermesGenerateDryRun = {
 export type CutoverReport = {
 	status: "safe" | "fail" | "input_error";
 	exitCode: 0 | 1 | 2;
-	mode: { strict: true; dryRun: boolean; completeParityCutover: boolean };
+	mode: {
+		strict: true;
+		dryRun: boolean;
+		completeParityCutover: boolean;
+		scope: CutoverScopeMode;
+	};
 	gates: Array<{ name: string; status: "pass" | "fail"; detail: string }>;
 	workflowIds: string[];
 	evidencePaths: string[];
@@ -1933,6 +1938,24 @@ export type CutoverReport = {
 	downgradeNotes: string[];
 	remediationOwners: string[];
 };
+
+export type CutoverScopeMode = "complete-parity" | "scoped-diagnostic" | "p0-first";
+
+const P0_FIRST_CUTOVER_REQUIRED_SURFACE_IDS = [
+	"execution.cli_headless",
+	HERMES_HEADLESS_ENTRYPOINT_SURFACE_ID,
+	"execution.approval_continuation",
+	"execution.api_server_containment",
+	"execution.served_mcp_containment",
+	"served_mcp.memory",
+	"model.relay",
+	"skills.allowlist",
+] as const;
+const P0_FIRST_CUTOVER_REQUIRED_FIXTURE_IDS = [
+	"fixture.private.telegram.basic",
+	"fixture.private.telegram.basic.deny",
+] as const;
+const P0_FIRST_CUTOVER_REQUIRED_CHECK_IDS = ["redaction.secret_outputs"] as const;
 
 export function parseHermesPin(rawPin: string | undefined): HermesPin | null {
 	const pin = rawPin?.trim();
@@ -2351,6 +2374,10 @@ function cutoverProofArtifactSemanticFailures(
 	key: CutoverProofArtifactKey,
 	value: unknown,
 	options: HermesSignedEvidenceValidationOptions = {},
+	scope?: {
+		readonly featureSurfaceIds?: ReadonlySet<string>;
+		readonly fixtureIds?: ReadonlySet<string>;
+	},
 ): string[] {
 	if (key === "noForkProof") {
 		const parsed = NoForkProofSchema.safeParse(value);
@@ -2383,12 +2410,15 @@ function cutoverProofArtifactSemanticFailures(
 		if (!parsed.success) {
 			return [`feature probe matrix schema invalid: ${flattenZodError(parsed.error)}`];
 		}
+		const probes = scope?.featureSurfaceIds
+			? parsed.data.probes.filter((probe) => scope.featureSurfaceIds?.has(probe.surface_id))
+			: parsed.data.probes;
 		return [
-			...(parsed.data.probes.length === 0 ? ["feature probe matrix is empty"] : []),
-			...findDuplicates(parsed.data.probes.map((probe) => probe.surface_id)).map(
+			...(probes.length === 0 ? ["feature probe matrix is empty"] : []),
+			...findDuplicates(probes.map((probe) => probe.surface_id)).map(
 				(surfaceId) => `duplicate feature probe ${surfaceId}`,
 			),
-			...parsed.data.probes.flatMap((probe) => {
+			...probes.flatMap((probe) => {
 				if (probe.status !== "pass") {
 					return [`feature probe ${probe.surface_id} status is ${probe.status ?? "missing"}`];
 				}
@@ -2434,12 +2464,15 @@ function cutoverProofArtifactSemanticFailures(
 		if (!parsed.success) {
 			return [`fixture result bundle schema invalid: ${flattenZodError(parsed.error)}`];
 		}
+		const results = scope?.fixtureIds
+			? parsed.data.results.filter((result) => scope.fixtureIds?.has(result.id))
+			: parsed.data.results;
 		return [
-			...(parsed.data.results.length === 0 ? ["fixture result bundle is empty"] : []),
-			...findDuplicates(parsed.data.results.map((result) => result.id)).map(
+			...(results.length === 0 ? ["fixture result bundle is empty"] : []),
+			...findDuplicates(results.map((result) => result.id)).map(
 				(fixtureId) => `duplicate fixture result ${fixtureId}`,
 			),
-			...parsed.data.results.flatMap((result) => {
+			...results.flatMap((result) => {
 				if (result.status !== "pass") return [`fixture ${result.id} status is ${result.status}`];
 				const evidenceFailure = fixtureEvidenceFailure(result, options);
 				return evidenceFailure ? [evidenceFailure] : [];
@@ -4009,18 +4042,21 @@ export function evaluateCutoverCheck(
 		dryRun?: boolean;
 		liveCutover?: boolean;
 		completeParityCutover?: boolean;
+		cutoverScope?: CutoverScopeMode;
 		now?: Date;
 	} = {},
 ): CutoverReport {
 	const dryRun = options.dryRun ?? false;
 	const strict = options.strict ?? true;
 	const completeParityCutover = options.completeParityCutover ?? true;
+	const cutoverScope =
+		options.cutoverScope ?? (completeParityCutover ? "complete-parity" : "scoped-diagnostic");
 	const liveCutover = options.liveCutover ?? (strict && !dryRun);
 	if (!strict) {
 		return {
 			status: "input_error",
 			exitCode: 2,
-			mode: { strict: true, dryRun, completeParityCutover },
+			mode: { strict: true, dryRun, completeParityCutover, scope: cutoverScope },
 			...emptyCutoverReportMetadata(),
 			gates: [
 				{
@@ -4037,7 +4073,7 @@ export function evaluateCutoverCheck(
 		return {
 			status: "input_error",
 			exitCode: 2,
-			mode: { strict: true, dryRun, completeParityCutover },
+			mode: { strict: true, dryRun, completeParityCutover, scope: cutoverScope },
 			...emptyCutoverReportMetadata(),
 			gates: [{ name: "inputs.valid", status: "fail", detail: flattenZodError(parsed.error) }],
 		};
@@ -4046,15 +4082,6 @@ export function evaluateCutoverCheck(
 	const bundle = parsed.data;
 	const gates: CutoverReport["gates"] = [];
 	const validationOptions = cutoverValidationOptions(strict, liveCutover, options.now);
-	const proofBundleResult = checkCutoverProofBundle({
-		bundle: bundle.cutoverProofBundle,
-		cutover: bundle,
-		liveCutover,
-		now: options.now,
-		validationOptions,
-	});
-	const invalidEvidence = proofBundleResult.invalidEvidence;
-	gates.push(...proofBundleResult.gates);
 	const included = bundle.scopeManifest.workflows.filter(
 		(workflow) => workflow.status === "included",
 	);
@@ -4124,14 +4151,26 @@ export function evaluateCutoverCheck(
 		included.flatMap((workflow) => workflow.required_surface_ids),
 	);
 	const requiredSurfaceIds = requiredCutoverSurfaceIds(declaredRequiredSurfaceIds);
+	const p0FirstScope = cutoverScope === "p0-first";
+	const scopedFeatureSurfaceIds = p0FirstScope ? new Set(requiredSurfaceIds) : undefined;
 	const probeBySurfaceId = new Map(
 		bundle.featureProbeMatrix.probes.map((probe) => [probe.surface_id, probe]),
 	);
+	const featureProbesForValidation = p0FirstScope
+		? bundle.featureProbeMatrix.probes.filter((probe) =>
+				scopedFeatureSurfaceIds?.has(probe.surface_id),
+			)
+		: bundle.featureProbeMatrix.probes;
 	const featureProbeEvidenceBySurfaceId = new Map(
 		(bundle.featureProbeEvidence?.results ?? []).map((result) => [result.surface_id, result]),
 	);
+	const featureProbeEvidenceForValidation = p0FirstScope
+		? (bundle.featureProbeEvidence?.results ?? []).filter((result) =>
+				scopedFeatureSurfaceIds?.has(result.surface_id),
+			)
+		: (bundle.featureProbeEvidence?.results ?? []);
 	const featureProbeEvidenceDuplicates = findDuplicates(
-		(bundle.featureProbeEvidence?.results ?? []).map((result) => result.surface_id),
+		featureProbeEvidenceForValidation.map((result) => result.surface_id),
 	);
 	const requiredSurfaceFailures = requiredSurfaceIds.flatMap((surfaceId) => {
 		const probe = probeBySurfaceId.get(surfaceId);
@@ -4151,7 +4190,7 @@ export function evaluateCutoverCheck(
 			(surfaceId) => `duplicate feature probe evidence ${surfaceId}`,
 		),
 		...requiredSurfaceFailures,
-		...bundle.featureProbeMatrix.probes.flatMap((probe) => {
+		...featureProbesForValidation.flatMap((probe) => {
 			const failure = featureProbeFailure(
 				probe,
 				featureProbeEvidenceBySurfaceId.get(probe.surface_id),
@@ -4163,6 +4202,11 @@ export function evaluateCutoverCheck(
 	const lockfileProbeBySurfaceId = new Map(
 		bundle.lockfile.featureProbes.map((probe) => [probe.surface_id, probe]),
 	);
+	const lockfileFeatureProbesForValidation = p0FirstScope
+		? bundle.lockfile.featureProbes.filter((probe) =>
+				scopedFeatureSurfaceIds?.has(probe.surface_id),
+			)
+		: bundle.lockfile.featureProbes;
 	const matrixProbeBySurfaceId = new Map(
 		bundle.featureProbeMatrix.probes.map((probe) => [probe.surface_id, probe]),
 	);
@@ -4172,12 +4216,12 @@ export function evaluateCutoverCheck(
 		computeHermesArtifactDigest(bundle.featureProbeMatrix)
 			? []
 			: ["lockfile feature-probe matrix digest does not match current matrix"]),
-		...bundle.lockfile.featureProbes.flatMap((probe) =>
+		...lockfileFeatureProbesForValidation.flatMap((probe) =>
 			probe.status === "pass"
 				? []
 				: [`lockfile feature probe ${probe.surface_id} status is ${probe.status}`],
 		),
-		...bundle.lockfile.featureProbes.flatMap((probe) => {
+		...lockfileFeatureProbesForValidation.flatMap((probe) => {
 			const matrixProbe = matrixProbeBySurfaceId.get(probe.surface_id);
 			if (!matrixProbe) return [];
 			return matrixProbe.status === probe.status
@@ -4186,7 +4230,7 @@ export function evaluateCutoverCheck(
 						`lockfile feature probe ${probe.surface_id} status ${probe.status} does not match feature matrix status ${matrixProbe.status ?? "missing"}`,
 					];
 		}),
-		...bundle.featureProbeMatrix.probes.flatMap((probe) =>
+		...featureProbesForValidation.flatMap((probe) =>
 			sameJson(probe.hermes_pin, bundle.lockfile.hermes)
 				? []
 				: [`feature probe ${probe.surface_id} is not tied to the lockfile Hermes pin`],
@@ -4202,7 +4246,24 @@ export function evaluateCutoverCheck(
 	const requiredFixtureIds = unique(
 		included.flatMap((workflow) => [...workflow.fixture_ids, ...workflow.negative_fixture_ids]),
 	);
+	const scopedFixtureIds = p0FirstScope ? new Set(requiredFixtureIds) : undefined;
+	const proofBundleResult = checkCutoverProofBundle({
+		bundle: bundle.cutoverProofBundle,
+		cutover: bundle,
+		liveCutover,
+		now: options.now,
+		validationOptions,
+		semanticScope: {
+			featureSurfaceIds: scopedFeatureSurfaceIds,
+			fixtureIds: scopedFixtureIds,
+		},
+	});
+	const invalidEvidence = proofBundleResult.invalidEvidence;
+	gates.push(...proofBundleResult.gates);
 	const fixtureById = new Map(bundle.fixtureResults.results.map((result) => [result.id, result]));
+	const fixtureResultsForValidation = p0FirstScope
+		? bundle.fixtureResults.results.filter((result) => scopedFixtureIds?.has(result.id))
+		: bundle.fixtureResults.results;
 	const fixtureFailures = [
 		...(bundle.fixtureResults.results.length === 0 ? ["fixture result bundle is empty"] : []),
 		...(requiredFixtureIds.length === 0 ? ["no required fixtures declared"] : []),
@@ -4214,7 +4275,7 @@ export function evaluateCutoverCheck(
 			if (evidenceFailure) return [evidenceFailure];
 			return [];
 		}),
-		...bundle.fixtureResults.results.flatMap((result) => {
+		...fixtureResultsForValidation.flatMap((result) => {
 			if (result.status !== "pass") return [`fixture ${result.id} status is ${result.status}`];
 			const evidenceFailure = fixtureEvidenceFailure(result, validationOptions);
 			return evidenceFailure ? [evidenceFailure] : [];
@@ -4244,6 +4305,18 @@ export function evaluateCutoverCheck(
 			networkProbeEvidenceFailures(probe, validationOptions),
 		),
 	];
+	const presentRequiredCheckIds = collectPresentCutoverRequiredCheckIds(
+		bundle.featureProbeMatrix,
+		validationOptions,
+	);
+	const p0FirstScopeFailures = p0FirstScope
+		? p0FirstCutoverScopeFailures({
+				included,
+				requiredSurfaceIds,
+				requiredFixtureIds,
+				presentRequiredCheckIds,
+			})
+		: [];
 
 	gates.push({
 		name: "workflow.scope",
@@ -4337,15 +4410,22 @@ export function evaluateCutoverCheck(
 				? "rollback rehearsal passed from schema-valid evidence"
 				: unique(rollbackRehearsalFailures).join("; "),
 	});
+	if (p0FirstScope) {
+		gates.push({
+			name: "p0First.scope",
+			status: p0FirstScopeFailures.length === 0 ? "pass" : "fail",
+			detail:
+				p0FirstScopeFailures.length === 0
+					? "first cutover is limited to private Telegram P0 runtime, model relay, served-MCP memory, skills, redaction, and private Telegram fixtures"
+					: unique(p0FirstScopeFailures).join("; "),
+		});
+	}
 	if (completeParityCutover) {
 		gates.push(
 			parityRosterCoverageGate({
 				requiredSurfaceIds,
 				requiredFixtureIds,
-				presentRequiredChecks: collectPresentCutoverRequiredCheckIds(
-					bundle.featureProbeMatrix,
-					validationOptions,
-				),
+				presentRequiredChecks: presentRequiredCheckIds,
 				evaluatedGateNames: gates.map((gate) => gate.name),
 				decisions: bundle.decisionLog.decisions,
 			}),
@@ -4356,10 +4436,65 @@ export function evaluateCutoverCheck(
 	return {
 		status: invalidEvidence ? "input_error" : safe ? "safe" : "fail",
 		exitCode: invalidEvidence ? 2 : safe ? 0 : 1,
-		mode: { strict: true, dryRun, completeParityCutover },
+		mode: { strict: true, dryRun, completeParityCutover, scope: cutoverScope },
 		gates,
 		...cutoverReportMetadata(bundle, included),
 	};
+}
+
+function p0FirstCutoverScopeFailures(input: {
+	included: CutoverScopeManifest["workflows"];
+	requiredSurfaceIds: readonly string[];
+	requiredFixtureIds: readonly string[];
+	presentRequiredCheckIds: readonly string[];
+}): string[] {
+	const allowedSurfaces = new Set(P0_FIRST_CUTOVER_REQUIRED_SURFACE_IDS);
+	const allowedFixtures = new Set(P0_FIRST_CUTOVER_REQUIRED_FIXTURE_IDS);
+	const presentChecks = new Set(input.presentRequiredCheckIds);
+	const failures: string[] = [];
+	if (input.included.length !== 1) {
+		failures.push(
+			`P0-first cutover requires exactly one included workflow, got ${input.included.length}`,
+		);
+	}
+	for (const workflow of input.included) {
+		if (workflow.cutover_class !== "P0") {
+			failures.push(
+				`${workflow.workflow_id} cutover_class is ${workflow.cutover_class}, expected P0`,
+			);
+		}
+		if (workflow.trust_domain !== "private") {
+			failures.push(
+				`${workflow.workflow_id} trust_domain is ${workflow.trust_domain}, expected private`,
+			);
+		}
+	}
+	for (const surfaceId of P0_FIRST_CUTOVER_REQUIRED_SURFACE_IDS) {
+		if (!input.requiredSurfaceIds.includes(surfaceId)) {
+			failures.push(`P0-first scope missing required surface ${surfaceId}`);
+		}
+	}
+	for (const surfaceId of input.requiredSurfaceIds) {
+		if (!allowedSurfaces.has(surfaceId as (typeof P0_FIRST_CUTOVER_REQUIRED_SURFACE_IDS)[number])) {
+			failures.push(`P0-first scope includes non-P0 surface ${surfaceId}`);
+		}
+	}
+	for (const fixtureId of P0_FIRST_CUTOVER_REQUIRED_FIXTURE_IDS) {
+		if (!input.requiredFixtureIds.includes(fixtureId)) {
+			failures.push(`P0-first scope missing required fixture ${fixtureId}`);
+		}
+	}
+	for (const fixtureId of input.requiredFixtureIds) {
+		if (!allowedFixtures.has(fixtureId as (typeof P0_FIRST_CUTOVER_REQUIRED_FIXTURE_IDS)[number])) {
+			failures.push(`P0-first scope includes non-P0 fixture ${fixtureId}`);
+		}
+	}
+	for (const checkId of P0_FIRST_CUTOVER_REQUIRED_CHECK_IDS) {
+		if (!presentChecks.has(checkId)) {
+			failures.push(`P0-first scope missing required check ${checkId}`);
+		}
+	}
+	return failures;
 }
 
 function checkCutoverProofBundle(input: {
@@ -4368,6 +4503,10 @@ function checkCutoverProofBundle(input: {
 	liveCutover?: boolean;
 	now?: Date;
 	validationOptions?: HermesSignedEvidenceValidationOptions;
+	semanticScope?: {
+		readonly featureSurfaceIds?: ReadonlySet<string>;
+		readonly fixtureIds?: ReadonlySet<string>;
+	};
 }): { gates: CutoverReport["gates"]; invalidEvidence: boolean } {
 	const gates: CutoverReport["gates"] = [];
 	let invalidEvidence = false;
@@ -4429,6 +4568,7 @@ function checkCutoverProofBundle(input: {
 				key,
 				loaded.value,
 				input.validationOptions,
+				input.semanticScope,
 			);
 			const expectedStatus =
 				loaded.redaction.status === "pass" &&

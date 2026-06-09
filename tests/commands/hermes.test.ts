@@ -1323,13 +1323,16 @@ function passingHttpDenialAttempt(name: string, target: string) {
 	};
 }
 
-function makeCutoverProofBundle(bundle: CutoverBundleWithoutProof) {
+function makeCutoverProofBundle(
+	bundle: CutoverBundleWithoutProof,
+	now = new Date("2026-05-31T00:00:00.000Z"),
+) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-proof-bundle-"));
 	const paths = writeCutoverProofSourceArtifacts(tempDir, bundle);
 	return buildCutoverProofBundle({
 		hermes: bundle.lockfile.hermes,
 		wrapperVersion: bundle.lockfile.wrapperPackageVersion,
-		now: new Date("2026-05-31T00:00:00.000Z"),
+		now,
 		artifacts: {
 			inventory: proofArtifact(paths.inventory, "pnpm dev hermes inventory --json", [
 				"inputs.inventory",
@@ -1378,13 +1381,13 @@ function makeCutoverProofBundle(bundle: CutoverBundleWithoutProof) {
 	});
 }
 
-function refreshCutoverProofBundle(bundle: CutoverInputBundle): CutoverInputBundle {
+function refreshCutoverProofBundle(bundle: CutoverInputBundle, now?: Date): CutoverInputBundle {
 	const withoutProof = { ...bundle } as Partial<CutoverInputBundle>;
 	const staleProof = withoutProof.cutoverProofBundle;
 	if (!staleProof) throw new Error("missing cutover proof bundle");
 	delete withoutProof.cutoverProofBundle;
 	const cutover = withoutProof as CutoverBundleWithoutProof;
-	return { ...cutover, cutoverProofBundle: makeCutoverProofBundle(cutover) };
+	return { ...cutover, cutoverProofBundle: makeCutoverProofBundle(cutover, now) };
 }
 
 function writeCutoverProofSourceArtifacts(tempDir: string, bundle: CutoverBundleWithoutProof) {
@@ -2687,6 +2690,137 @@ function servedMcpContainmentCutoverBundle(
 	);
 }
 
+function modelRelayProbe(evidencePath: string, status: "pass" | "fail" | "skip" = "pass") {
+	return {
+		surface_id: "model.relay",
+		hermes_pin: hermesPin,
+		documented_seam: "Hermes model provider configuration is relay-owned",
+		probe_command: "pnpm dev hermes probe model.relay --allow-run",
+		expected_result: "Model traffic reaches only the Telclaude relay",
+		negative_probe: "Direct model provider egress and writable profile overrides fail",
+		evidence_path: evidencePath,
+		lockfile_key: "featureProbes.model.relay",
+		security_scope: "model-relay" as const,
+		approval_equivalent: false,
+		failure_outcome: "disable" as const,
+		status,
+	};
+}
+
+function p0FirstCutoverBundle(overrides: Partial<CutoverInputBundle> = {}): CutoverInputBundle {
+	const base = safeCutoverBundle();
+	const probeBySurface = new Map(
+		base.featureProbeMatrix.probes.map((probe) => [probe.surface_id, probe]),
+	);
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-p0-first-"));
+	const apiServerEvidencePath = path.join(root, "execution-api-server-containment.json");
+	const servedMcpEvidencePath = path.join(root, "execution-served-mcp-containment.json");
+	const modelRelayEvidencePath = path.join(root, "model-relay.json");
+	writeJson(apiServerEvidencePath, apiServerContainmentEvidence());
+	writeJson(servedMcpEvidencePath, {
+		...servedMcpContainmentEvidence(),
+		generatedAt: freshHermesFixtureTimestamp(),
+	});
+	writeJson(
+		modelRelayEvidencePath,
+		passingModelRelayEvidence({ generatedAt: freshHermesFixtureTimestamp() }),
+	);
+	const requiredSurfaceIds = [
+		"execution.cli_headless",
+		"execution.headless_entrypoint",
+		"execution.approval_continuation",
+		"execution.api_server_containment",
+		"execution.served_mcp_containment",
+		"served_mcp.memory",
+		"model.relay",
+		"skills.allowlist",
+	] as const;
+	const featureProbeMatrix = {
+		schemaVersion: 1 as const,
+		probes: [
+			...requiredSurfaceIds.flatMap((surfaceId) => {
+				const existing = probeBySurface.get(surfaceId);
+				return existing ? [existing] : [];
+			}),
+			apiServerContainmentProbe(apiServerEvidencePath),
+			servedMcpContainmentProbe(servedMcpEvidencePath),
+			modelRelayProbe(modelRelayEvidencePath),
+		],
+	};
+	const lockfile = {
+		...base.lockfile,
+		featureProbeMatrixDigest: computeHermesArtifactDigest(featureProbeMatrix),
+		featureProbes: featureProbeMatrix.probes.map((probe) => ({
+			surface_id: probe.surface_id,
+			status: probe.status,
+			evidence_path: probe.evidence_path,
+		})),
+		adapterApiSignatures: {
+			...base.lockfile.adapterApiSignatures,
+			"execution.api_server_containment": `sha256:${"e".repeat(64)}`,
+			"execution.served_mcp_containment": `sha256:${"f".repeat(64)}`,
+			"model.relay": `sha256:${"5".repeat(64)}`,
+		},
+	};
+	const profileGenerationProof = writeHermesProfileGenerationProof({
+		pin: lockfile.hermes,
+		outDir: path.join(root, "profile"),
+		lockfile,
+		evidencePath: path.join(root, "profile-generation-proof.json"),
+		now: freshHermesFixtureTimestamp(),
+	});
+	const generatedAt = freshHermesFixtureTimestamp();
+	const pendingQueueSummary = pendingQueues();
+	const withoutProof: CutoverBundleWithoutProof = {
+		...base,
+		inventory: {
+			...completeTestInventory([privateChatWorkflow()], generatedAt),
+			summary: { pendingQueues: pendingQueueSummary },
+			queues: queueDetailsFromPending(pendingQueueSummary),
+		},
+		scopeManifest: {
+			schemaVersion: 1,
+			workflows: [
+				{
+					...base.scopeManifest.workflows[0],
+					workflow_id: "private.telegram.basic",
+					trust_domain: "private",
+					cutover_class: "P0",
+					fixture_ids: ["fixture.private.telegram.basic"],
+					negative_fixture_ids: ["fixture.private.telegram.basic.deny"],
+					required_surface_ids: [...requiredSurfaceIds],
+				},
+			],
+		},
+		decisionLog: {
+			schemaVersion: 1,
+			decisions: [
+				{
+					id: "D-profile-generation",
+					status: "accepted" as const,
+					owner: "operator",
+					deadline_phase: "Phase 1",
+					accepted_answer:
+						"Generated Hermes profiles are produced by the checked profile generator.",
+					evidence_path: profileGenerationProof.evidence_path,
+					affected_workflows: ["private.telegram.basic"],
+					cutover_impact: "Profile generation proof is required before private P0 cutover.",
+				},
+			],
+		},
+		lockfile,
+		featureProbeMatrix,
+		featureProbeEvidence: featureProbeEvidenceForMatrix(featureProbeMatrix),
+		fixtureResults: writeFixtureResults(),
+		profileGenerationProof,
+		queueSnapshot: queueSnapshotFromPending(pendingQueueSummary, generatedAt),
+		rollbackRehearsal: writeRollbackRehearsal({
+			observedAt: freshHermesFixtureTimestamp(),
+		}),
+	};
+	return refreshCutoverProofBundle({ ...withoutProof, ...overrides }, new Date());
+}
+
 function servedMcpProviderToolsProbe(
 	evidencePath: string,
 	status: "pass" | "fail" | "skip" = "pass",
@@ -2780,7 +2914,11 @@ function writeProfileProofForBundle(tempDir: string, bundle: CutoverInputBundle)
 
 async function runCutoverCheckWithBundle(
 	bundle: CutoverInputBundle,
-	options: { readonly scoped?: boolean; readonly dryRun?: boolean } = {},
+	options: {
+		readonly scoped?: boolean;
+		readonly dryRun?: boolean;
+		readonly p0First?: boolean;
+	} = {},
 ) {
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-cutover-"));
 	const paths = writeCutoverBundleArtifacts(tempDir, bundle);
@@ -2792,6 +2930,7 @@ async function runCutoverCheckWithBundle(
 		...(dryRun ? ["--dry-run"] : []),
 		"--json",
 		...(options.scoped ? ["--scoped"] : []),
+		...(options.p0First ? ["--p0-first"] : []),
 		"--inventory",
 		paths.inventory,
 		"--scope",
@@ -2834,6 +2973,19 @@ async function runScopedLiveCutoverCheckWithBundle(bundle: CutoverInputBundle) {
 		mode?: { completeParityCutover?: boolean; dryRun?: boolean };
 	};
 	expect(report.mode).toMatchObject({ completeParityCutover: false, dryRun: false });
+	return result;
+}
+
+async function runP0FirstLiveCutoverCheckWithBundle(bundle: CutoverInputBundle) {
+	const result = await runCutoverCheckWithBundle(bundle, { p0First: true, dryRun: false });
+	const report = JSON.parse(result.stdout) as {
+		mode?: { completeParityCutover?: boolean; dryRun?: boolean; scope?: string };
+	};
+	expect(report.mode).toMatchObject({
+		completeParityCutover: false,
+		dryRun: false,
+		scope: "p0-first",
+	});
 	return result;
 }
 
@@ -6151,6 +6303,52 @@ describe("Hermes wrapper foundation", () => {
 		expect(report.gates.find((gate) => gate.name === "featureProbes.pass")?.detail).not.toContain(
 			"duplicate feature probe evidence",
 		);
+	});
+
+	it("allows strict live cutover for the explicit P0-first private Telegram scope", async () => {
+		const result = await runP0FirstLiveCutoverCheckWithBundle(p0FirstCutoverBundle());
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.status).toBe("safe");
+		expect(report.gates.find((gate) => gate.name === "p0First.scope")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.gates.find((gate) => gate.name === "parity.rosterCovered")).toBeUndefined();
+	});
+
+	it("rejects P0-first cutover scope when non-P0 product surfaces are required", async () => {
+		const baseP0 = p0FirstCutoverBundle();
+		const bundle = p0FirstCutoverBundle({
+			scopeManifest: {
+				schemaVersion: 1,
+				workflows: [
+					{
+						...baseP0.scopeManifest.workflows[0],
+						required_surface_ids: [
+							...baseP0.scopeManifest.workflows[0].required_surface_ids,
+							"providers.bank",
+						],
+					},
+				],
+			},
+		});
+
+		const result = await runP0FirstLiveCutoverCheckWithBundle(bundle);
+		const report = JSON.parse(result.stdout) as {
+			status: string;
+			gates: Array<{ name: string; status: string; detail: string }>;
+		};
+
+		expect(result.exitCode, result.stdout).toBe(1);
+		expect(report.status).toBe("fail");
+		expect(report.gates.find((gate) => gate.name === "p0First.scope")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("P0-first scope includes non-P0 surface providers.bank"),
+		});
 	});
 
 	it("fails strict cutover when feature evidence repeats the same surface", () => {
