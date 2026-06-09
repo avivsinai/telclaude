@@ -6,6 +6,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 // Signed runner attestation for the served-MCP memory parity probe. Without it,
 // `evaluateServedMcpMemoryEvidence` accepts any self-consistent JSON as production
@@ -150,6 +151,7 @@ export function servedMcpMemoryAttestationSignatureFailure(
 		{
 			scope: SERVED_MCP_MEMORY_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

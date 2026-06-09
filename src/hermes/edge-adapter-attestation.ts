@@ -5,6 +5,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const EDGE_ADAPTER_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.edge-adapter-attestation.v1";
@@ -105,6 +106,7 @@ export function edgeAdapterAttestationSignatureFailure(
 		{
 			scope: EDGE_ADAPTER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

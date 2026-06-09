@@ -6,6 +6,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 // Signed runner attestation for the skills-allowlist parity probe. Without it,
 // `evaluateSkillsAllowlistEvidence` accepts any self-consistent JSON as production
@@ -147,6 +148,7 @@ export function skillsAllowlistAttestationSignatureFailure(
 		{
 			scope: SKILLS_ALLOWLIST_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

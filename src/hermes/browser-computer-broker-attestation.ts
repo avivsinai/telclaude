@@ -5,6 +5,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const BROWSER_COMPUTER_BROKER_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.browser-computer-broker-attestation.v1";
@@ -107,6 +108,7 @@ export function browserComputerBrokerAttestationSignatureFailure(
 		{
 			scope: BROWSER_COMPUTER_BROKER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

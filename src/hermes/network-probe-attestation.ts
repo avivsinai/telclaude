@@ -4,6 +4,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const NETWORK_PROBE_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.network-probe-attestation.v1";
@@ -105,6 +106,7 @@ export function networkProbeAttestationSignatureFailure(
 		{
 			scope: NETWORK_PROBE_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

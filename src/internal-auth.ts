@@ -66,6 +66,12 @@ type InternalAuthOptions = {
 type InternalResponseProofVerifyOptions = InternalAuthOptions & {
 	allowStale?: boolean;
 	relayPublicKey?: string;
+	/**
+	 * Override the proof-timestamp freshness window (default DEFAULT_SKEW_MS).
+	 * Live RPC anti-replay keeps the tight default; evidence-artifact validation
+	 * passes a wider window so a multi-step capture is not a 5-minute speedrun.
+	 */
+	maxSkewMs?: number;
 };
 
 function getHeader(req: http.IncomingMessage, name: string): string | undefined {
@@ -331,9 +337,14 @@ export function internalResponseProofVerificationFailure(
 	if (proof.requestBodySha256 !== sha256Hex(requestBody)) return "request body digest mismatch";
 	if (proof.responseBodySha256 !== sha256Hex(responseBody)) return "response body digest mismatch";
 	const timestampMs = Number.parseInt(proof.timestamp, 10);
+	const skewOverride = options?.maxSkewMs;
+	const maxSkewMs =
+		skewOverride !== undefined && Number.isFinite(skewOverride) && skewOverride > 0
+			? skewOverride
+			: DEFAULT_SKEW_MS;
 	if (
 		!Number.isFinite(timestampMs) ||
-		(options?.allowStale !== true && Math.abs(Date.now() - timestampMs) > DEFAULT_SKEW_MS)
+		(options?.allowStale !== true && Math.abs(Date.now() - timestampMs) > maxSkewMs)
 	) {
 		return "timestamp outside allowed skew";
 	}

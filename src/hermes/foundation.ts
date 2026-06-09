@@ -18,6 +18,7 @@ import {
 } from "../relay/openai-codex-relay-proof.js";
 import { redactSecrets } from "../security/output-filter.js";
 import {
+	HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 	type HermesSignedEvidenceValidationOptions,
 	hermesAllowsStaleAttestations,
 	hermesAttestationFreshnessFailure,
@@ -6068,6 +6069,7 @@ function rollbackRelayTranscriptFailure(
 		{
 			scope: "operator",
 			allowStale: hermesAllowsStaleAttestations(options),
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: trustedRelayPublicKey,
 		},
 	);
@@ -6565,6 +6567,7 @@ function collectCliHeadlessProbeEvidence(
 			relayProof as OpenAiCodexRelayProof,
 			{
 				allowStale: hermesAllowsStaleAttestations(options),
+				maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 				relayPublicKey: options.relayPublicKey,
 			},
 		);

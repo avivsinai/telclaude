@@ -49,6 +49,7 @@ export function openAiCodexRelayProofSignatureFailure(
 	options?: {
 		readonly allowStale?: boolean;
 		readonly relayPublicKey?: string;
+		readonly maxSkewMs?: number;
 	},
 ): string | null {
 	if (!proof.signature) return "signature is missing";
@@ -62,6 +63,7 @@ export function openAiCodexRelayProofSignatureFailure(
 		{
 			scope: OPENAI_CODEX_RELAY_PROOF_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: options?.maxSkewMs,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

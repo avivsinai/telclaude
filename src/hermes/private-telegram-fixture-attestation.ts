@@ -4,6 +4,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.private-telegram-fixture-attestation.v1";
@@ -162,6 +163,7 @@ export function privateTelegramFixtureAttestationSignatureFailure(
 		{
 			scope: PRIVATE_TELEGRAM_FIXTURE_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

@@ -5,6 +5,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const PROVIDER_APPROVAL_BINDING_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.provider-approval-binding-attestation.v1";
@@ -101,6 +102,7 @@ export function providerApprovalBindingAttestationSignatureFailure(
 		{
 			scope: PROVIDER_APPROVAL_BINDING_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signSkillsAllowlistAttestation } from "../../src/hermes/skills-allowlist-attestation.js";
 import {
 	evaluateSkillsAllowlistEvidence,
@@ -123,6 +123,32 @@ describe("skills-allowlist attestation gate (live cutover)", () => {
 			now: new Date(),
 		});
 		expect(report.gates.find((gate) => gate.name === "skills.attestation")).toBeUndefined();
+	});
+
+	it("accepts evidence signed within the evidence-freshness window (multi-step capture)", () => {
+		// The evidence window (HERMES_EVIDENCE_PROOF_MAX_SKEW_MS, 60 min) is wider
+		// than the RPC anti-replay skew (5 min): a capture step signed 30 minutes
+		// before cutover-check must still verify under live validation.
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
+			const evidence = signedEvidence();
+			vi.setSystemTime(new Date("2000-01-01T00:30:00.000Z"));
+			const report = evaluateSkillsAllowlistEvidence(evidence, liveOptions());
+			expect(report.gates.find((gate) => gate.name === "skills.attestation")).toBeUndefined();
+			expect(report.productionEnable).toBe(true);
+
+			// Beyond the window it still fails closed.
+			vi.setSystemTime(new Date("2000-01-01T01:00:01.000Z"));
+			const stale = evaluateSkillsAllowlistEvidence(evidence, liveOptions());
+			expect(stale.productionEnable).toBe(false);
+			expect(stale.gates.find((gate) => gate.name === "skills.attestation")).toMatchObject({
+				status: "fail",
+				detail: expect.stringContaining("timestamp outside allowed skew"),
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("requires an attestation when strict archival validation asks for one", () => {

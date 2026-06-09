@@ -55,6 +55,53 @@ describe("internal response proof verification", () => {
 		).toBe(false);
 	});
 
+	it("widens the freshness window only when maxSkewMs is supplied", () => {
+		installOperatorRelayKeys();
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2000-01-01T00:00:00.000Z"));
+		const proof = buildInternalResponseProof("POST", "/v1/probe", "{}", '{"ok":true}', {
+			scope: "operator",
+		});
+
+		vi.setSystemTime(new Date("2000-01-01T00:30:00.000Z"));
+
+		// RPC anti-replay default stays tight: 30-minute-old proofs fail.
+		expect(
+			verifyInternalResponseProof(proof, "POST", "/v1/probe", "{}", '{"ok":true}', {
+				scope: "operator",
+			}),
+		).toBe(false);
+		// Evidence validation passes a wider window explicitly.
+		expect(
+			verifyInternalResponseProof(proof, "POST", "/v1/probe", "{}", '{"ok":true}', {
+				scope: "operator",
+				maxSkewMs: 60 * 60 * 1000,
+			}),
+		).toBe(true);
+		// The widened window is still a bound, and signature binding still applies.
+		vi.setSystemTime(new Date("2000-01-01T01:00:01.000Z"));
+		expect(
+			verifyInternalResponseProof(proof, "POST", "/v1/probe", "{}", '{"ok":true}', {
+				scope: "operator",
+				maxSkewMs: 60 * 60 * 1000,
+			}),
+		).toBe(false);
+		vi.setSystemTime(new Date("2000-01-01T00:30:00.000Z"));
+		expect(
+			verifyInternalResponseProof(proof, "POST", "/v1/probe", "{}", '{"ok":false}', {
+				scope: "operator",
+				maxSkewMs: 60 * 60 * 1000,
+			}),
+		).toBe(false);
+		// Non-positive overrides fall back to the tight default instead of widening.
+		expect(
+			verifyInternalResponseProof(proof, "POST", "/v1/probe", "{}", '{"ok":true}', {
+				scope: "operator",
+				maxSkewMs: 0,
+			}),
+		).toBe(false);
+	});
+
 	it("reports the missing relay public key when archived proofs cannot be verified", () => {
 		const keys = generateKeyPair();
 		process.env.OPERATOR_RPC_RELAY_PRIVATE_KEY = keys.privateKey;

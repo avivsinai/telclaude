@@ -5,6 +5,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.workflow-run-ledger-attestation.v1";
@@ -102,6 +103,7 @@ export function hermesWorkflowRunLedgerAttestationSignatureFailure(
 		{
 			scope: HERMES_WORKFLOW_RUN_LEDGER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);

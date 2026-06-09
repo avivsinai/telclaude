@@ -4,6 +4,7 @@ import {
 	type InternalResponseProof,
 	internalResponseProofVerificationFailure,
 } from "../internal-auth.js";
+import { HERMES_EVIDENCE_PROOF_MAX_SKEW_MS } from "./attestation-validation.js";
 
 export const NO_FORK_RUNNER_ATTESTATION_SCHEMA_VERSION =
 	"telclaude.hermes.no-fork-runner-attestation.v1";
@@ -102,6 +103,7 @@ export function noForkRunnerAttestationSignatureFailure(
 		{
 			scope: NO_FORK_RUNNER_ATTESTATION_SCOPE,
 			allowStale: options?.allowStale,
+			maxSkewMs: HERMES_EVIDENCE_PROOF_MAX_SKEW_MS,
 			relayPublicKey: options?.relayPublicKey,
 		},
 	);
