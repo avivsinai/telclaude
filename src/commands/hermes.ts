@@ -1260,6 +1260,7 @@ function buildNoForkP0Command(options: {
 	readonly expectedRef: string;
 	readonly expectedVersion: string;
 	readonly out: string;
+	readonly p0First?: boolean;
 	readonly inventory?: string;
 	readonly scope: string;
 	readonly decisions: string;
@@ -1277,6 +1278,7 @@ function buildNoForkP0Command(options: {
 		"prove",
 		"--upstream-clean",
 		"--p0",
+		...(options.p0First ? ["--p0-first"] : []),
 		"--checkout",
 		options.checkout,
 		"--expected-ref",
@@ -3651,6 +3653,7 @@ export function registerHermesCommand(program: Command): void {
 		.option("--json", "Emit structured JSON")
 		.option("--upstream-clean", "Prove the pinned upstream Hermes checkout is clean")
 		.option("--p0", "Evaluate P0 migration proof gates")
+		.option("--p0-first", "Evaluate P0 proof gates using the explicit P0-first cutover scope")
 		.option(
 			"--checkout <path>",
 			"Upstream Hermes checkout path",
@@ -3706,6 +3709,7 @@ export function registerHermesCommand(program: Command): void {
 				options: JsonOption & {
 					upstreamClean?: boolean;
 					p0?: boolean;
+					p0First?: boolean;
 					checkout: string;
 					expectedRef: string;
 					expectedVersion: string;
@@ -3797,6 +3801,8 @@ export function registerHermesCommand(program: Command): void {
 							readJsonFile(resolveHermesArtifactPath(options.proofBundle)),
 						);
 						const evaluateP0Cutover = (noForkPath: string) => {
+							const cutoverScope = options.p0First ? "p0-first" : "complete-parity";
+							const completeParityCutover = cutoverScope === "complete-parity";
 							const cutoverProofBundle = buildCutoverProofBundle({
 								hermes: proofTemplate.hermes,
 								wrapperVersion: proofTemplate.wrapper.version,
@@ -3833,7 +3839,13 @@ export function registerHermesCommand(program: Command): void {
 									networkProbes: readJsonFile(resolveHermesArtifactPath(options.networkProbes)),
 									rollbackRehearsal: readJsonFile(resolveHermesArtifactPath(options.rollback)),
 								}),
-								{ strict, dryRun, liveCutover: false },
+								{
+									strict,
+									dryRun,
+									liveCutover: false,
+									completeParityCutover,
+									cutoverScope,
+								},
 							);
 						};
 						const preliminaryCutover = evaluateP0Cutover(preliminaryNoForkPath);

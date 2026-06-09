@@ -10246,6 +10246,112 @@ describe("Hermes wrapper foundation", () => {
 		});
 	});
 
+	it("uses P0-first scope for no-fork runner attestation when prove --p0-first is set", async () => {
+		ensureOperatorRelayKeys();
+		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-prove-p0-first-"));
+		const checkoutPathRaw = path.join(tempDir, "upstream");
+		initPinnedHermesCheckout(checkoutPathRaw);
+		const checkoutPath = fs.realpathSync(checkoutPathRaw);
+		const noForkPath = path.join(tempDir, "nofork.json");
+		const base = p0FirstCutoverBundle();
+		const lockfile = {
+			...base.lockfile,
+			noForkProofEvidencePath: noForkPath,
+		};
+		const profileGenerationProof = writeHermesProfileGenerationProof({
+			pin: lockfile.hermes,
+			outDir: path.join(tempDir, "profile"),
+			lockfile,
+			evidencePath: path.join(tempDir, "profile-generation-proof.json"),
+			now: freshHermesFixtureTimestamp(),
+		});
+		const bundle = refreshCutoverProofBundle({
+			...base,
+			lockfile,
+			decisionLog: {
+				...base.decisionLog,
+				decisions: base.decisionLog.decisions.map((decision) =>
+					decision.id === "D-profile-generation"
+						? { ...decision, evidence_path: profileGenerationProof.evidence_path }
+						: decision,
+				),
+			},
+			noForkProof: {
+				...base.noForkProof,
+				evidence_path: noForkPath,
+			},
+			profileGenerationProof,
+		});
+		const paths = writeCutoverBundleArtifacts(tempDir, bundle);
+
+		const result = await runHermesCommand([
+			"hermes",
+			"prove",
+			"--upstream-clean",
+			"--p0",
+			"--p0-first",
+			"--json",
+			"--checkout",
+			checkoutPath,
+			"--out",
+			paths.nofork,
+			"--inventory",
+			paths.inventory,
+			"--scope",
+			paths.scope,
+			"--decisions",
+			paths.decisions,
+			"--proof-bundle",
+			paths.proofBundle,
+			"--feature-probes",
+			paths.featureProbes,
+			"--lockfile",
+			paths.lockfile,
+			"--fixtures",
+			paths.fixtures,
+			"--network-probes",
+			paths.networkProbes,
+			"--profile-proof",
+			paths.profileProof,
+			"--rollback",
+			paths.rollback,
+		]);
+		const report = JSON.parse(result.stdout) as {
+			noForkProof: {
+				hermesCheckoutClean: boolean;
+				runnerAttestation?: {
+					p0Command: string[];
+					p0ExitCode: number;
+					p0Status: string;
+				};
+			};
+			p0: {
+				status: string;
+				mode: { completeParityCutover: boolean; scope: string };
+				gates: Array<{ name: string; status: string }>;
+			};
+		};
+
+		expect(result.exitCode, result.stdout).toBe(0);
+		expect(report.noForkProof.hermesCheckoutClean).toBe(true);
+		expect(report.noForkProof.runnerAttestation).toMatchObject({
+			p0ExitCode: 0,
+			p0Status: "pass",
+		});
+		expect(report.noForkProof.runnerAttestation?.p0Command).toEqual(
+			expect.arrayContaining(["--p0", "--p0-first"]),
+		);
+		expect(report.p0.status).toBe("safe");
+		expect(report.p0.mode).toMatchObject({
+			completeParityCutover: false,
+			scope: "p0-first",
+		});
+		expect(report.p0.gates.find((gate) => gate.name === "p0First.scope")).toMatchObject({
+			status: "pass",
+		});
+		expect(report.p0.gates.find((gate) => gate.name === "parity.rosterCovered")).toBeUndefined();
+	});
+
 	it("does not execute or write network-probe artifacts without --allow-run", async () => {
 		const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-network-probe-"));
 		const relay = await startProbeServer();
