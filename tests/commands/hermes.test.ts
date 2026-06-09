@@ -12076,7 +12076,7 @@ if [ "$1" = "exec" ]; then
   fi
   prop="$4"
   case "$prop" in
-    allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist)
+    allowlist_manifest_present|allowlisted_skill_present|nonallowlisted_skill_absent|runtime_skills_match_allowlist|skill_creation_nudge_disabled)
       printf '%s\\n' '{"passed":true,"detail":"docker exec profile proof"}'
       exit 0
       ;;
@@ -12127,6 +12127,11 @@ exit 99
 				}),
 				expect.objectContaining({
 					name: "runtime_skills_match_allowlist",
+					status: "pass",
+					observationLayer: "docker_exec",
+				}),
+				expect.objectContaining({
+					name: "skill_creation_nudge_disabled",
 					status: "pass",
 					observationLayer: "docker_exec",
 				}),

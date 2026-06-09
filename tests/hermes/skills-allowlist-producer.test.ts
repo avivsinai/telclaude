@@ -70,6 +70,11 @@ const EXPECTED_SCENARIOS: Record<string, ScenarioContract> = {
 		allowlistedSkill: "software-development/plan",
 		nonAllowlistedSkill: "red-teaming/godmode",
 	},
+	skill_creation_nudge_disabled: {
+		kind: "profile",
+		allowlistedSkill: "software-development/plan",
+		nonAllowlistedSkill: "red-teaming/godmode",
+	},
 	pretooluse_hook_registered: {
 		kind: "pretooluse",
 		allowlistedSkill: "plan",

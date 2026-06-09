@@ -21,6 +21,13 @@ copy_description_chain() {
 	done
 }
 
+restore_owner_write_if_present() {
+	target=$1
+	if [ -d "$target" ]; then
+		chmod -R u+w "$target" 2>/dev/null || true
+	fi
+}
+
 SOURCE_SKILLS_DIR=${TELCLAUDE_HERMES_SOURCE_SKILLS_DIR:-/opt/hermes/skills}
 ALLOWLIST_PATH=${TELCLAUDE_HERMES_SKILL_ALLOWLIST:-/tmp/telclaude-hermes-contained-skills.allowlist}
 HERMES_HOME=${HERMES_HOME:-/home/hermes/.hermes}
@@ -46,6 +53,8 @@ case "$CURATED_SKILLS_DIR" in
 	*) die "refusing to build curated skills outside /home/hermes: $CURATED_SKILLS_DIR" ;;
 esac
 
+restore_owner_write_if_present "$CURATED_SKILLS_DIR"
+restore_owner_write_if_present "$DEST_SKILLS_DIR"
 rm -rf "$CURATED_SKILLS_DIR" "$DEST_SKILLS_DIR"
 mkdir -p "$CURATED_SKILLS_DIR" "$HERMES_HOME"
 if [ "$(id -u)" = "0" ]; then
@@ -83,11 +92,17 @@ done < "$ALLOWLIST_PATH"
 mkdir -p "$DEST_SKILLS_DIR"
 cp -R "${CURATED_SKILLS_DIR}/." "$DEST_SKILLS_DIR"
 cp "$ALLOWLIST_PATH" "${HERMES_HOME}/telclaude-contained-skills.allowlist"
+find "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
+find "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
+chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 if [ "$(id -u)" = "0" ]; then
 	chown -R "$HERMES_RUNTIME_UID:$HERMES_RUNTIME_GID" \
 		"$CURATED_SKILLS_DIR" \
 		"$DEST_SKILLS_DIR" \
 		"${HERMES_HOME}/telclaude-contained-skills.allowlist"
+	find "$DEST_SKILLS_DIR" -type d -exec chmod 0550 {} +
+	find "$DEST_SKILLS_DIR" -type f -exec chmod 0440 {} +
+	chmod 0440 "${HERMES_HOME}/telclaude-contained-skills.allowlist"
 fi
 export HERMES_BUNDLED_SKILLS="$CURATED_SKILLS_DIR"
 
@@ -148,6 +163,8 @@ model:
   default: ${CODEX_MODEL}
   api_mode: codex_responses
   openai_runtime: auto
+skills:
+  creation_nudge_interval: 0
 EOF
 	cat > "${HERMES_HOME}/secret-manifest.json" <<'EOF'
 {

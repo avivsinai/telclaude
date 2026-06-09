@@ -19,6 +19,8 @@ export const SKILLS_ALLOWLIST_REQUIRED_PROPERTY_NAMES = [
 	"nonallowlisted_skill_absent",
 	// The installed runtime skills with SKILL.md match the manifest exactly.
 	"runtime_skills_match_allowlist",
+	// Upstream Hermes self-improvement skill creation is disabled at the source.
+	"skill_creation_nudge_disabled",
 	// The production PreToolUse skill hook is registered in runtime SDK options.
 	"pretooluse_hook_registered",
 	// Positive/negative controls prove hook behavior, not only profile files.
@@ -41,6 +43,7 @@ const SkillsAllowlistPropertiesSchema = z
 		allowlisted_skill_present: z.boolean().optional(),
 		nonallowlisted_skill_absent: z.boolean().optional(),
 		runtime_skills_match_allowlist: z.boolean().optional(),
+		skill_creation_nudge_disabled: z.boolean().optional(),
 		pretooluse_hook_registered: z.boolean().optional(),
 		allowlisted_skill_invocation_allowed: z.boolean().optional(),
 		nonallowlisted_skill_invocation_denied: z.boolean().optional(),

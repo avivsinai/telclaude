@@ -309,6 +309,7 @@ function falseSkillProperties(): SkillsAllowlistEvidence["properties"] {
 		allowlisted_skill_present: false,
 		nonallowlisted_skill_absent: false,
 		runtime_skills_match_allowlist: false,
+		skill_creation_nudge_disabled: false,
 		pretooluse_hook_registered: false,
 		allowlisted_skill_invocation_allowed: false,
 		nonallowlisted_skill_invocation_denied: false,
@@ -383,6 +384,13 @@ export async function runSkillsAllowlistProbe(
 		{
 			label: "runtime skills match manifest",
 			property: "runtime_skills_match_allowlist",
+			allowlistedSkill: "software-development/plan",
+			nonAllowlistedSkill: "red-teaming/godmode",
+			kind: "profile",
+		},
+		{
+			label: "skill creation nudge disabled",
+			property: "skill_creation_nudge_disabled",
 			allowlistedSkill: "software-development/plan",
 			nonAllowlistedSkill: "red-teaming/godmode",
 			kind: "profile",

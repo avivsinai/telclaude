@@ -136,6 +136,18 @@ describe("evaluateSkillsAllowlistEvidence", () => {
 		);
 	});
 
+	it("fails when runtime skill creation nudges are not proven disabled", () => {
+		const ev = validEvidence();
+		const report = evaluateSkillsAllowlistEvidence({
+			...ev,
+			properties: { ...ev.properties, skill_creation_nudge_disabled: false },
+		});
+		expect(report.status).toBe("fail");
+		expect(
+			report.gates.find((g) => g.name === "skills.skill_creation_nudge_disabled")?.status,
+		).toBe("fail");
+	});
+
 	it("fails a runtime property not observed through docker exec", () => {
 		const ev = validEvidence();
 		const localOnly = evaluateSkillsAllowlistEvidence({

@@ -2867,6 +2867,7 @@ allowlisted_skill = sys.argv[2]
 non_allowlisted_skill = sys.argv[3]
 home = pathlib.Path(os.environ.get("HERMES_HOME", "/home/hermes/.hermes"))
 manifest = home / "telclaude-contained-skills.allowlist"
+config = home / "config.yaml"
 skills_dir = home / "skills"
 
 def read_manifest():
@@ -2890,6 +2891,22 @@ def installed_skills():
         found.append(skill_md.parent.relative_to(skills_dir).as_posix())
     return sorted(set(found))
 
+def skill_creation_nudge_disabled():
+    if not config.is_file():
+        return False
+    in_skills = False
+    for raw in config.read_text(encoding="utf-8").splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            in_skills = stripped == "skills:"
+            continue
+        if in_skills and stripped == "creation_nudge_interval: 0":
+            return True
+    return False
+
 entries = read_manifest()
 installed = installed_skills()
 passed = False
@@ -2906,6 +2923,9 @@ elif prop == "nonallowlisted_skill_absent":
 elif prop == "runtime_skills_match_allowlist":
     passed = entries is not None and installed is not None and entries == installed
     detail = f"manifest_count={len(entries or [])} installed_count={len(installed or [])}"
+elif prop == "skill_creation_nudge_disabled":
+    passed = skill_creation_nudge_disabled()
+    detail = f"skills.creation_nudge_interval disabled={passed}"
 else:
     detail = f"unknown skills allowlist property: {prop}"
 
