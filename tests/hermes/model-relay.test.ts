@@ -7,6 +7,7 @@ import {
 	DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 	type HermesModelRelayReport,
 	MODEL_RELAY_OBSERVED_PEER_HEADER,
+	removeReadOnlyTreeSync,
 	runHermesModelRelayProbe,
 } from "../../src/hermes/model-relay.js";
 import { mintOpenAiCodexPeerBoundProxyToken } from "../../src/relay/openai-codex-proxy.js";
@@ -1296,4 +1297,24 @@ exit 99
 		if (!found) throw new Error(`missing gate ${name}`);
 		return found;
 	}
+});
+
+describe("removeReadOnlyTreeSync", () => {
+	it("removes an extracted profile tree that preserves read-only skill modes", () => {
+		// Mirrors the curated contained skills tree: 0550 directories and 0440
+		// files, which plain fs.rmSync cannot unlink (EACCES on the parent dir).
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "tc-readonly-tree-"));
+		const skillDir = path.join(root, "profile", "skills", "demo");
+		fs.mkdirSync(skillDir, { recursive: true });
+		fs.writeFileSync(path.join(skillDir, "SKILL.md"), "demo");
+		fs.chmodSync(path.join(skillDir, "SKILL.md"), 0o440);
+		fs.chmodSync(skillDir, 0o550);
+		fs.chmodSync(path.join(root, "profile", "skills"), 0o550);
+
+		expect(() => fs.rmSync(root, { recursive: true, force: true })).toThrow();
+		expect(fs.existsSync(root)).toBe(true);
+
+		removeReadOnlyTreeSync(root);
+		expect(fs.existsSync(root)).toBe(false);
+	});
 });

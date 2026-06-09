@@ -423,6 +423,7 @@ function prepareContainedModelRelayProbe(options: {
 	const dockerBin = options.dockerBin?.trim() || process.env.DOCKER_BIN?.trim() || "docker";
 	const reportedProfileDir = options.profileDir?.trim();
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-model-relay-profile-"));
+	const removeTempDir = () => removeReadOnlyTreeSync(tempDir);
 	let hostProfileDir: string | undefined;
 	let custodyGate: ModelRelayGate | undefined;
 	if (reportedProfileDir) {
@@ -445,7 +446,7 @@ function prepareContainedModelRelayProbe(options: {
 			},
 		);
 		if (archive.status !== 0) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeTempDir();
 			throw new Error(
 				`failed to archive contained Hermes profile: ${redactSecrets(
 					spawnFailureDetail(archive.stderr, archive.error),
@@ -459,7 +460,7 @@ function prepareContainedModelRelayProbe(options: {
 			timeout: options.timeoutMs,
 		});
 		if (extract.status !== 0) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
+			removeTempDir();
 			throw new Error(
 				`failed to extract contained Hermes profile: ${redactSecrets(
 					spawnFailureDetail(extract.stderr, extract.error),
@@ -472,7 +473,7 @@ function prepareContainedModelRelayProbe(options: {
 		...(hostProfileDir ? { hostProfileDir } : {}),
 		...(reportedProfileDir ? { reportedProfileDir } : {}),
 		...(custodyGate ? { custodyGate } : {}),
-		cleanup: () => fs.rmSync(tempDir, { recursive: true, force: true }),
+		cleanup: removeTempDir,
 	};
 }
 
@@ -1175,6 +1176,32 @@ function containedRuntimeProfileCustodyFailures(
 
 function formatMode(mode: number): string {
 	return `0${(mode & 0o777).toString(8)}`;
+}
+
+// The extracted profile copy preserves read-only modes (the curated skills
+// tree ships 0550 dirs / 0440 files), which blocks unlink inside those
+// directories. Re-own our temp copy before removal; rmSync reports any
+// remaining failure.
+export function removeReadOnlyTreeSync(root: string): void {
+	try {
+		makeTreeOwnerWritable(root);
+	} catch {
+		// best effort — fs.rmSync below surfaces the real failure
+	}
+	fs.rmSync(root, { recursive: true, force: true });
+}
+
+function makeTreeOwnerWritable(entryPath: string): void {
+	const stat = fs.lstatSync(entryPath);
+	if (stat.isSymbolicLink()) return;
+	if (stat.isDirectory()) {
+		fs.chmodSync(entryPath, stat.mode | 0o700);
+		for (const name of fs.readdirSync(entryPath)) {
+			makeTreeOwnerWritable(path.join(entryPath, name));
+		}
+		return;
+	}
+	fs.chmodSync(entryPath, stat.mode | 0o600);
 }
 
 function hasOnlyKeys(record: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
