@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
 	type HermesModelRelayReport,
@@ -31,6 +31,7 @@ describe("Hermes model-relay probe", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		for (const dir of tempDirs.splice(0)) {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
@@ -178,6 +179,58 @@ describe("Hermes model-relay probe", () => {
 		expect(report.status).toBe("pass");
 		expect(gate(report, "profile.relayCredentialReference")).toMatchObject({ status: "pass" });
 		expect(gate(report, "profile.noRawModelCredentials")).toMatchObject({ status: "pass" });
+	});
+
+	it("passes runtime custody for the contained non-root private profile", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir } = makeCleanProfile();
+		mockProfileCustodyStats(profileDir, { uid: 10_000, directoryMode: 0o700, fileMode: 0o600 });
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			runtimeCustodyProfileDir: profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("pass");
+		expect(gate(report, "profile.runtimeCustody")).toMatchObject({
+			status: "pass",
+			detail: expect.stringContaining("contained runtime uid"),
+		});
+	});
+
+	it("fails contained non-root custody when credential files are group or world readable", async () => {
+		const relayUrl = relayProbeUrl;
+		const { profileDir } = makeCleanProfile();
+		mockProfileCustodyStats(profileDir, { uid: 10_000, directoryMode: 0o700, fileMode: 0o644 });
+
+		const report = await runHermesModelRelayProbe({
+			allowRun: true,
+			posture: "contained-internal",
+			relayUrl,
+			directModelUrl,
+			profileDir,
+			runtimeCustodyProfileDir: profileDir,
+			containerName: DEFAULT_MODEL_RELAY_CONTAINED_CONTAINER_NAME,
+			expectedPeerAddress: containedIp,
+			relayPeerAddress: relayIp,
+			fetchImpl: modelRelayFetch("denied"),
+			timeoutMs: 200,
+		});
+
+		expect(report.status).toBe("fail");
+		expect(gate(report, "profile.runtimeCustody")).toMatchObject({
+			status: "fail",
+			detail: expect.stringContaining("auth.json is not private 0644"),
+		});
 	});
 
 	it("fails runtime custody when the claimed runtime profile is writable by the runtime group", async () => {
@@ -1088,6 +1141,28 @@ exit 99
 		const sentinel = path.join(tempDir, "firewall-active");
 		fs.writeFileSync(sentinel, "active\n");
 		return { profileDir, sentinel };
+	}
+
+	function mockProfileCustodyStats(
+		profileDir: string,
+		options: { uid: number; directoryMode: number; fileMode: number },
+	): void {
+		const realLstatSync = fs.lstatSync.bind(fs);
+		vi.spyOn(fs, "lstatSync").mockImplementation((filePath, statOptions?: fs.StatSyncOptions) => {
+			const stat = realLstatSync(filePath, statOptions as never) as fs.Stats;
+			const normalized = String(filePath);
+			if (normalized !== profileDir && !normalized.startsWith(`${profileDir}${path.sep}`)) {
+				return stat;
+			}
+			const mode = stat.isDirectory() ? options.directoryMode : options.fileMode;
+			return {
+				...stat,
+				uid: options.uid,
+				mode: (stat.mode & ~0o7777) | mode,
+				isDirectory: () => stat.isDirectory(),
+				isFile: () => stat.isFile(),
+			} as fs.Stats;
+		});
 	}
 
 	function writeRelayCredentialProfile(profileDir: string, peerAddress = containedIp): void {

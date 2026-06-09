@@ -1061,41 +1061,74 @@ function runtimeProfileCustodyGate(
 }
 
 function runtimeProfileCustodyEntriesGate(entries: readonly ProfileCustodyEntry[]): ModelRelayGate {
-	const failures: string[] = [];
+	const commonFailures: string[] = [];
 	const byPath = new Map(entries.map((entry) => [entry.relativePath, entry]));
 	const profileStat = byPath.get(".");
 	if (!profileStat) {
-		failures.push("profile directory stat missing");
+		commonFailures.push("profile directory stat missing");
 	} else if (profileStat.error) {
-		failures.push(`profile directory stat failed: ${profileStat.error}`);
+		commonFailures.push(`profile directory stat failed: ${profileStat.error}`);
 	} else {
 		if (profileStat.kind !== "directory") {
-			failures.push("profile directory is not a directory");
-		}
-		if (profileStat.uid !== 0) {
-			failures.push(`profile directory is uid ${String(profileStat.uid)}, expected root`);
+			commonFailures.push("profile directory is not a directory");
 		}
 		const mode = profileStat.mode ?? 0;
 		if ((mode & 0o002) !== 0) {
-			failures.push(`profile directory is world-writable ${formatMode(mode)}`);
+			commonFailures.push(`profile directory is world-writable ${formatMode(mode)}`);
 		}
 		if ((mode & 0o020) !== 0 && (mode & 0o1000) === 0) {
-			failures.push(`profile directory is group-writable without sticky bit ${formatMode(mode)}`);
+			commonFailures.push(
+				`profile directory is group-writable without sticky bit ${formatMode(mode)}`,
+			);
 		}
 	}
 	for (const relativePath of RUNTIME_CUSTODY_PROFILE_FILES) {
 		const stat = byPath.get(relativePath);
 		if (!stat) {
-			failures.push(`${relativePath} stat missing`);
+			commonFailures.push(`${relativePath} stat missing`);
 			continue;
 		}
 		if (stat.error) {
-			failures.push(`${relativePath} stat failed: ${stat.error}`);
+			commonFailures.push(`${relativePath} stat failed: ${stat.error}`);
 			continue;
 		}
 		if (stat.kind !== "file") {
-			failures.push(`${relativePath} is not a regular file`);
+			commonFailures.push(`${relativePath} is not a regular file`);
 		}
+	}
+	const rootFailures = rootOwnedProfileCustodyFailures(byPath);
+	const containedFailures = containedRuntimeProfileCustodyFailures(byPath);
+	if (commonFailures.length === 0 && rootFailures.length === 0) {
+		return pass(
+			"profile.runtimeCustody",
+			"runtime credential custody files are root-owned and read-only",
+		);
+	}
+	if (commonFailures.length === 0 && containedFailures.length === 0) {
+		return pass(
+			"profile.runtimeCustody",
+			"runtime credential custody files are owned by the contained runtime uid and private",
+		);
+	}
+	return fail(
+		"profile.runtimeCustody",
+		unique([...commonFailures, ...rootFailures, ...containedFailures]).join("; "),
+	);
+}
+
+function rootOwnedProfileCustodyFailures(
+	byPath: ReadonlyMap<string, ProfileCustodyEntry>,
+): string[] {
+	const failures: string[] = [];
+	const profileStat = byPath.get(".");
+	if (profileStat && !profileStat.error) {
+		if (profileStat.uid !== 0) {
+			failures.push(`profile directory is uid ${String(profileStat.uid)}, expected root`);
+		}
+	}
+	for (const relativePath of RUNTIME_CUSTODY_PROFILE_FILES) {
+		const stat = byPath.get(relativePath);
+		if (!stat || stat.error) continue;
 		if (stat.uid !== 0) {
 			failures.push(`${relativePath} is uid ${String(stat.uid)}, expected root`);
 		}
@@ -1104,12 +1137,40 @@ function runtimeProfileCustodyEntriesGate(entries: readonly ProfileCustodyEntry[
 			failures.push(`${relativePath} has writable mode ${formatMode(mode)}`);
 		}
 	}
-	return failures.length === 0
-		? pass(
-				"profile.runtimeCustody",
-				"runtime credential custody files are root-owned and read-only",
-			)
-		: fail("profile.runtimeCustody", failures.join("; "));
+	return failures;
+}
+
+function containedRuntimeProfileCustodyFailures(
+	byPath: ReadonlyMap<string, ProfileCustodyEntry>,
+): string[] {
+	const failures: string[] = [];
+	const containedUid = 10_000;
+	const profileStat = byPath.get(".");
+	if (profileStat && !profileStat.error) {
+		if (profileStat.uid !== containedUid) {
+			failures.push(
+				`profile directory is uid ${String(profileStat.uid)}, expected contained uid ${String(containedUid)}`,
+			);
+		}
+		const mode = profileStat.mode ?? 0;
+		if ((mode & 0o077) !== 0) {
+			failures.push(`profile directory is not private ${formatMode(mode)}`);
+		}
+	}
+	for (const relativePath of RUNTIME_CUSTODY_PROFILE_FILES) {
+		const stat = byPath.get(relativePath);
+		if (!stat || stat.error) continue;
+		if (stat.uid !== containedUid) {
+			failures.push(
+				`${relativePath} is uid ${String(stat.uid)}, expected contained uid ${String(containedUid)}`,
+			);
+		}
+		const mode = stat.mode ?? 0;
+		if ((mode & 0o077) !== 0) {
+			failures.push(`${relativePath} is not private ${formatMode(mode)}`);
+		}
+	}
+	return failures;
 }
 
 function formatMode(mode: number): string {
