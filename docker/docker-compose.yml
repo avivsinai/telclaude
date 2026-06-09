@@ -270,6 +270,8 @@ services:
       - TELCLAUDE_INTERNAL_HOSTS=${TELCLAUDE_INTERNAL_HOSTS:-telclaude,telclaude-agent}
       # Skip provider hosts in firewall — agents must route through relay proxy
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
+      # Skip operator-added domains — model/provider egress must remain relay-owned
+      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
 
       # Drop privileges after firewall init
       - TELCLAUDE_RUN_AS_ROOT=0
@@ -369,6 +371,7 @@ services:
       - TELCLAUDE_DATA_DIR=/home/node/.telclaude
       - TELCLAUDE_FIREWALL=${TELCLAUDE_FIREWALL:-1}
       - TELCLAUDE_FIREWALL_SKIP_PROVIDERS=1
+      - TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1
       - TELCLAUDE_RUN_AS_ROOT=0
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       # Opt-in permissive network for social browsing (default: restricted)

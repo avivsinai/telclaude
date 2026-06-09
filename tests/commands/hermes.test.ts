@@ -11364,17 +11364,15 @@ printf '%s\\n' 'HERMES_OK_DOCKEREXEC'
 		expect(dockerCalls).toContain("secret-manifest.json");
 		expect(dockerCalls).toContain("shutil.rmtree(skills_path)");
 		expect(dockerCalls).toContain("shutil.copytree(curated_skills, skills_path)");
-		expect(dockerCalls).toContain("os.chown(home, 0, runtime_gid)");
-		expect(dockerCalls).toContain("os.chmod(home, 0o1770)");
+		expect(dockerCalls).not.toContain("os.chown(");
+		expect(dockerCalls).toContain("os.chmod(home, 0o700)");
 		expect(dockerCalls).toContain("runtime_dirs = ('sessions', 'logs', 'cron'");
 		expect(dockerCalls).toContain("harden_runtime_dirs()");
-		expect(dockerCalls).toContain("os.chown(runtime_path, runtime_uid, runtime_gid)");
 		expect(dockerCalls).toContain("os.chmod(runtime_path, 0o700)");
 		expect(dockerCalls).toContain("Hermes home is missing before docker exec launch");
 		expect(dockerCalls).toContain("auth.lock");
 		expect(dockerCalls).toContain("os.unlink(lock_path)");
-		expect(dockerCalls).toContain("os.chown(path, 0, runtime_gid)");
-		expect(dockerCalls).toContain("os.chmod(path, 0o440)");
+		expect(dockerCalls).toContain("os.chmod(path, 0o400)");
 		expect(readJson(evidencePath)).toMatchObject({
 			status: "fail",
 			summary: "Hermes CLI oneshot probe lacks relay-backed model proof: relay proof is missing",

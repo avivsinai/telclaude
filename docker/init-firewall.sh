@@ -60,7 +60,9 @@ append_allowed_domain() {
 }
 
 ADDITIONAL_DOMAINS_RAW=""
-if [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
+if [ "${TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS:-0}" = "1" ]; then
+    echo "[firewall] skipping additional domains (TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1)"
+elif [ -f "$TELCLAUDE_CONFIG_PATH" ] && command -v node &> /dev/null; then
     ADDITIONAL_DOMAINS_RAW="$(
         TELCLAUDE_CONFIG_PATH="$TELCLAUDE_CONFIG_PATH" node <<'NODE'
 const fs = require("fs");

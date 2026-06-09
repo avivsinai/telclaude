@@ -351,6 +351,8 @@ The overlay (`docker-compose.hermes.yml`) adds one container, `tc-hermes-contain
 
 Inference is routed only through the relay's OpenAI Codex proxy (`HERMES_CODEX_BASE_URL=http://telclaude:8790/v1/openai-codex-proxy`). The entrypoint (`hermes-contained-entrypoint.sh`) curates skills from the upstream Hermes skills directory (`TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills`) into `HERMES_HOME` against the read-only allowlist (`hermes-contained-skills.allowlist`, 88 entries) — rejecting path traversal and any entry missing a `SKILL.md` — and mints a peer-bound Codex relay token so model traffic can only reach the relay's proxy route.
 
+When the relay firewall is enabled, configure `security.network.additionalDomains` in the deployment config with `chatgpt.com` for the relay. Do not add `chatgpt.com` to the shared generated firewall allowlist: the base image is also used by agent containers, and compose sets `TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1` on agents so they keep reaching Codex only through the relay proxy.
+
 ### Relay live MCP bridge
 
 When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-owned MCP bridge (memory search/write, provider read/prepare/execute, attachment get, outbound prepare/execute, audit note) over a relay-internal HTTP endpoint on port **8793** (path `/mcp`), reachable only from the contained peer. It is not an agent tool allowlist: each connection binds to an opaque, TTL-limited authority handle, memory access is domain-scoped (the private Hermes runtime can never read social memory), and provider/outbound writes are two-phase (prepare → human approval → execute) with one-time, Ed25519-signed, request-bound approval tokens.

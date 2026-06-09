@@ -10,6 +10,8 @@ import {
 import { DEFAULT_ALLOWED_DOMAIN_NAMES } from "../../src/sandbox/domains.js";
 
 const initFirewallPath = path.resolve("docker/init-firewall.sh");
+const composePath = path.resolve("docker/docker-compose.yml");
+const deployComposePath = path.resolve("docker/docker-compose.deploy.yml");
 
 function extractShellFunction(source: string, name: string): string {
 	const match = source.match(new RegExp(`${name}\\(\\) \\{[\\s\\S]*?\\n\\}`));
@@ -25,6 +27,18 @@ function runShellHarness(script: string, args: string[]): string[] {
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean);
+}
+
+function extractComposeService(source: string, serviceName: string): string {
+	const lines = source.split("\n");
+	const start = lines.findIndex((line) => line === `  ${serviceName}:`);
+	if (start < 0) throw new Error(`Missing compose service: ${serviceName}`);
+	const end = lines.findIndex(
+		(line, index) =>
+			index > start &&
+			(line === "volumes:" || line === "networks:" || /^  [a-zA-Z0-9_-]+:$/.test(line)),
+	);
+	return lines.slice(start, end < 0 ? undefined : end).join("\n");
 }
 
 describe("firewall domain generation", () => {
@@ -57,6 +71,20 @@ describe("firewall domain generation", () => {
 		expect(initScript).toContain("security?.network?.additionalDomains");
 		expect(initScript).toContain("append_allowed_domain");
 		expect(initScript).toContain('ALLOWED_DOMAINS+=("$normalized")');
+	});
+
+	it("lets agent containers ignore configured additional domains", () => {
+		const initScript = fs.readFileSync(initFirewallPath, "utf8");
+		expect(initScript).toContain("TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS");
+
+		for (const composeFile of [composePath, deployComposePath]) {
+			const compose = fs.readFileSync(composeFile, "utf8");
+			for (const serviceName of ["telclaude-agent", "agent-social"]) {
+				expect(extractComposeService(compose, serviceName)).toContain(
+					"TELCLAUDE_FIREWALL_SKIP_ADDITIONAL_DOMAINS=1",
+				);
+			}
+		}
 	});
 
 	it("validates additional firewall domains before appending them", () => {
