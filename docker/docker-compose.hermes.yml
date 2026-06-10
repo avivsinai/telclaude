@@ -3,6 +3,7 @@
 # Usage:
 #   TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 #   TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+#   TELCLAUDE_HERMES_MCP_RELAY_TOKEN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.hermes.yml up -d telclaude tc-hermes-contained tc-hermes-social
 #
 # The dedicated telclaude-hermes-private and telclaude-hermes-social networks

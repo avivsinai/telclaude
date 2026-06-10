@@ -360,6 +360,7 @@ When enabled (`TELCLAUDE_HERMES_LIVE_MCP_ENABLED=1`), the relay serves a relay-o
 ```bash
 TELCLAUDE_HERMES_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
+TELCLAUDE_HERMES_MCP_RELAY_TOKEN="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')" \
 docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaude tc-hermes-contained tc-hermes-social
 ```
 
@@ -369,6 +370,7 @@ docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d telclaud
 |----------|----------|-------------|
 | `TELCLAUDE_HERMES_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the private contained API server (port `8642`). Generate per `compose up`: `openssl rand -base64 48 \| tr '+/' '-_' \| tr -d '='` |
 | `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY` | Yes | Ephemeral Bearer shared between relay and the social contained API server (port `8642`). Generate separately from the private runtime key |
+| `TELCLAUDE_HERMES_MCP_RELAY_TOKEN` | Yes | Ephemeral relay-to-Hermes live MCP transport token. Generate per `compose up` and rotate with the API-server keys |
 | `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN` | Yes | Relay-scoped OpenAI Codex subscription token (relay owns the credential; Hermes only sees a peer-bound relay token) |
 | `OPERATOR_RPC_AGENT_PUBLIC_KEY` | Yes | Operator RPC public key (`pnpm dev keygen operator`); relay verifies operator RPC mutations |
 | `OPERATOR_RPC_RELAY_PRIVATE_KEY` | Yes | Operator relay private key; signs relay-observed RPC responses such as rollback evidence |
@@ -461,7 +463,7 @@ This bypass is logged to the audit log.
 
 ### "Hermes unavailable"
 
-LLM/persona execution requires `tc-hermes-contained`, `tc-hermes-social`, and relay live MCP/model proxy configuration. Confirm `TELCLAUDE_HERMES_API_BASE_URL`, `TELCLAUDE_HERMES_API_KEY`, `TELCLAUDE_HERMES_SOCIAL_API_BASE_URL`, `TELCLAUDE_HERMES_SOCIAL_API_KEY`, `TELCLAUDE_HERMES_LIVE_MCP_ENABLED`, and the Hermes overlay are set and running.
+LLM/persona execution requires `tc-hermes-contained`, `tc-hermes-social`, and relay live MCP/model proxy configuration. Confirm `TELCLAUDE_HERMES_API_BASE_URL`, `TELCLAUDE_HERMES_API_KEY`, `TELCLAUDE_HERMES_SOCIAL_API_BASE_URL`, `TELCLAUDE_HERMES_SOCIAL_API_KEY`, `TELCLAUDE_HERMES_MCP_RELAY_TOKEN`, `TELCLAUDE_HERMES_LIVE_MCP_ENABLED`, and the Hermes overlay are set and running.
 
 ### "Permission denied" on workspace
 

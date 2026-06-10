@@ -212,6 +212,7 @@ Operator-supplied inputs to the overlay (`docker/.env` or shell):
 
 - `TELCLAUDE_HERMES_API_SERVER_KEY=<ephemeral>` — shared Bearer between relay and private contained API server (generate per `compose up`, e.g. `openssl rand -base64 48 | tr '+/' '-_' | tr -d '='`).
 - `TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=<ephemeral>` — separate shared Bearer between relay and social contained API server.
+- `TELCLAUDE_HERMES_MCP_RELAY_TOKEN=<ephemeral>` — shared live-MCP transport token between the relay and contained Hermes peers.
 - `TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=<relay-scoped>` — the relay-owned OpenAI Codex subscription token.
 - `OPERATOR_RPC_AGENT_PUBLIC_KEY` / `OPERATOR_RPC_RELAY_PRIVATE_KEY` — operator RPC keypair from `pnpm dev keygen operator`, used to sign the proof attestations below.
 

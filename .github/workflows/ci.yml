@@ -72,11 +72,14 @@ jobs:
         run: |
           private_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
           social_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+          mcp_relay_token="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
           echo "::add-mask::${private_key}"
           echo "::add-mask::${social_key}"
+          echo "::add-mask::${mcp_relay_token}"
           {
             echo "TELCLAUDE_HERMES_API_SERVER_KEY=${private_key}"
             echo "TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=${social_key}"
+            echo "TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${mcp_relay_token}"
           } >> "$GITHUB_ENV"
 
       - name: Persist William Hermes deploy keys
@@ -86,22 +89,26 @@ jobs:
           tmp_file="$(mktemp)"
           touch "$shell_env_file" "$compose_env_file"
           chmod 600 "$shell_env_file" "$compose_env_file"
-          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$shell_env_file" > "$tmp_file" || true
+          hermes_key_pattern='^(export[[:space:]]+)?TELCLAUDE_HERMES_(API_SERVER_KEY|SOCIAL_API_SERVER_KEY|MCP_RELAY_TOKEN)='
+          grep -Ev "$hermes_key_pattern" "$shell_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'export TELCLAUDE_HERMES_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'export TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%q\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
+            printf 'export TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%q\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
           } > "$shell_env_file"
-          grep -Ev '^(export[[:space:]]+)?TELCLAUDE_HERMES(_SOCIAL)?_API_SERVER_KEY=' "$compose_env_file" > "$tmp_file" || true
+          grep -Ev "$hermes_key_pattern" "$compose_env_file" > "$tmp_file" || true
           {
             cat "$tmp_file"
             printf 'TELCLAUDE_HERMES_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_API_SERVER_KEY"
             printf 'TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=%s\n' "$TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY"
+            printf 'TELCLAUDE_HERMES_MCP_RELAY_TOKEN=%s\n' "$TELCLAUDE_HERMES_MCP_RELAY_TOKEN"
           } > "$compose_env_file"
           rm -f "$tmp_file"
 
       - name: Build and deploy
         run: |
+          set -euo pipefail
           cd ~/telclaude
           if ! ./docker/build.sh; then
             echo "Initial Docker build failed; pruning BuildKit cache and retrying once"
@@ -110,4 +117,18 @@ jobs:
             ./docker/build.sh
           fi
           cd docker
-          docker compose -f docker-compose.yml -f docker-compose.hermes.yml up -d --remove-orphans --wait --wait-timeout 480
+          compose_files=(-f docker-compose.yml -f docker-compose.hermes.yml)
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker compose "${compose_files[@]}" ps || true; docker network ls || true; fi; exit "$status"' EXIT
+          docker compose "${compose_files[@]}" down --remove-orphans || true
+          docker rm -f tc-hermes-contained tc-hermes-social telclaude-agent telclaude-agent-social >/dev/null 2>&1 || true
+          for network in telclaude-hermes-private telclaude-hermes-social docker_hermes-private-net docker_hermes-social-net; do
+            docker network rm "$network" >/dev/null 2>&1 || true
+          done
+          while IFS= read -r network_id; do
+            [ -n "$network_id" ] || continue
+            subnet="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$network_id" 2>/dev/null || true)"
+            case "$subnet" in
+              *192.0.2.0/24*|*192.0.3.0/24*) docker network rm "$network_id" >/dev/null 2>&1 || true ;;
+            esac
+          done < <(docker network ls -q)
+          docker compose "${compose_files[@]}" up -d --remove-orphans --wait --wait-timeout 480
