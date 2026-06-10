@@ -58,6 +58,7 @@ export type TelclaudeLiveMcpConnectionResolver = {
 		input: TelclaudeLiveMcpRuntimeAuthorityActivationInput,
 	): TelclaudeLiveMcpRuntimeAuthorityActivation;
 	revokeRuntimeAuthority(id: string, reason?: string, nowMs?: number): boolean;
+	hasActiveRuntimeAuthority(nowMs?: number): boolean;
 	resolveConnection(request: http.IncomingMessage): TelclaudeLiveMcpConnectionContext | null;
 	revoke(token: string, reason?: string, nowMs?: number): boolean;
 	revokeConnection(
@@ -191,6 +192,14 @@ export function createTelclaudeLiveMcpConnectionResolver(
 			record.revokedAtMs = normalizeNowMs(nowMs);
 			if (reason?.trim()) record.revokeReason = reason.trim();
 			return true;
+		},
+
+		hasActiveRuntimeAuthority(nowMs = now()) {
+			const resolvedNow = normalizeNowMs(nowMs);
+			for (const record of runtimeAuthorityActivations.values()) {
+				if (record.revokedAtMs === undefined && record.expiresAtMs > resolvedNow) return true;
+			}
+			return false;
 		},
 
 		resolveConnection(request) {

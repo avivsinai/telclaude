@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import net from "node:net";
 import type { OutboundDeliveryDispatcher } from "../../relay/outbound-delivery-dispatcher.js";
 import type {
@@ -65,8 +66,56 @@ export type TelclaudeLiveMcpRuntime = {
 		},
 	): TelclaudeLiveMcpRuntimeAuthorityActivation;
 	revokeRuntimeAuthority(id: string, reason?: string, nowMs?: number): boolean;
+	openCanaryWindow(input?: TelclaudeLiveMcpCanaryWindowInput): TelclaudeLiveMcpCanaryWindow;
+	closeCanaryWindow(
+		input: TelclaudeLiveMcpCanaryWindowCloseInput,
+	): TelclaudeLiveMcpCanaryWindowCloseResult;
 	stop(): Promise<void>;
 };
+
+/**
+ * A canary window is a scoped, short-lived runtime-authority activation used
+ * by `hermes verify-live` to prove the served-MCP path with a real turn. It is
+ * never long-lived or global: it registers a minimal private-domain grant in
+ * an inert memory namespace, refuses to open while any other runtime
+ * authority is active (so it can never degrade a live user turn), and the
+ * grant + activation are revoked together on close, with the activation TTL
+ * as the fail-safe.
+ */
+export type TelclaudeLiveMcpCanaryWindowInput = {
+	readonly profileId?: string;
+	readonly providerScopes?: readonly string[];
+	readonly ttlMs?: number;
+	readonly nowMs?: number;
+};
+
+export type TelclaudeLiveMcpCanaryWindow = {
+	readonly activationId: string;
+	readonly authorityHandle: string;
+	readonly issuedAtMs: number;
+	readonly expiresAtMs: number;
+};
+
+export type TelclaudeLiveMcpCanaryWindowCloseInput = {
+	readonly activationId: string;
+	readonly authorityHandle: string;
+	readonly reason?: string;
+	readonly nowMs?: number;
+};
+
+export type TelclaudeLiveMcpCanaryWindowCloseResult = {
+	readonly revokedActivation: boolean;
+	readonly revokedAuthority: boolean;
+};
+
+export class TelclaudeLiveMcpCanaryWindowBusyError extends Error {
+	constructor() {
+		super("live MCP canary window refused: another runtime authority is active");
+	}
+}
+
+const DEFAULT_CANARY_WINDOW_TTL_MS = 240_000;
+const MAX_CANARY_WINDOW_TTL_MS = 15 * 60 * 1_000;
 
 export type TelclaudeLiveMcpRuntimeProbeTokenInput = {
 	readonly privateConnection: TelclaudeMcpAuthorityConnection;
@@ -90,6 +139,10 @@ export type TelclaudeLiveMcpRuntimeAdminStarter = {
 		issueProbeTokenBundle(
 			input: TelclaudeLiveMcpRuntimeProbeTokenInput,
 		): TelclaudeLiveMcpProbeTokenBundle;
+		openCanaryWindow(input?: TelclaudeLiveMcpCanaryWindowInput): TelclaudeLiveMcpCanaryWindow;
+		closeCanaryWindow(
+			input: TelclaudeLiveMcpCanaryWindowCloseInput,
+		): TelclaudeLiveMcpCanaryWindowCloseResult;
 	}): TelclaudeLiveMcpRuntimeAdminHandle | Promise<TelclaudeLiveMcpRuntimeAdminHandle>;
 };
 
@@ -199,9 +252,75 @@ export async function startTelclaudeLiveMcpRuntime(
 		});
 	};
 
+	const openCanaryWindow = (
+		input: TelclaudeLiveMcpCanaryWindowInput = {},
+	): TelclaudeLiveMcpCanaryWindow => {
+		if (stopped) throw new Error("live MCP runtime is stopped");
+		const nowMs = input.nowMs ?? options.nowMs?.() ?? Date.now();
+		if (resolver.hasActiveRuntimeAuthority(nowMs)) {
+			throw new TelclaudeLiveMcpCanaryWindowBusyError();
+		}
+		const profileId = input.profileId?.trim() || "verify-live";
+		const ttlMs = Math.min(
+			input.ttlMs && input.ttlMs > 0 ? Math.trunc(input.ttlMs) : DEFAULT_CANARY_WINDOW_TTL_MS,
+			MAX_CANARY_WINDOW_TTL_MS,
+		);
+		const connection: TelclaudeMcpAuthorityConnection = {
+			sessionKey: `canary-${crypto.randomUUID()}`,
+			profileId,
+			endpointId: "tc-hermes-private",
+			networkNamespace: options.config.networkName,
+		};
+		const authority: TelclaudeMcpAuthority = {
+			actorId: "verify-live-canary",
+			profileId,
+			domain: "private",
+			memorySource: `telegram:${profileId}`,
+			writableNamespace: `telegram:${profileId}`,
+			providerScopes: [...(input.providerScopes ?? [])],
+			outboundChannels: [],
+			endpointId: connection.endpointId,
+			networkNamespace: connection.networkNamespace,
+		};
+		const grant = registry.register({ connection, authority, nowMs, ttlMs });
+		try {
+			const activation = resolver.activateRuntimeAuthority({
+				authorityHandle: grant.handle,
+				connection,
+				nowMs,
+				ttlMs,
+				peerAddress: singleAllowedPeerAddress(options.config.allowedPeerAddresses),
+			});
+			return {
+				activationId: activation.id,
+				authorityHandle: grant.handle,
+				issuedAtMs: activation.issuedAtMs,
+				expiresAtMs: activation.expiresAtMs,
+			};
+		} catch (error) {
+			registry.revoke(grant.handle, "canary window activation failed", nowMs);
+			throw error;
+		}
+	};
+
+	const closeCanaryWindow = (
+		input: TelclaudeLiveMcpCanaryWindowCloseInput,
+	): TelclaudeLiveMcpCanaryWindowCloseResult => {
+		const nowMs = input.nowMs ?? options.nowMs?.() ?? Date.now();
+		const reason = input.reason?.trim() || "canary window closed";
+		const revokedActivation = resolver.revokeRuntimeAuthority(input.activationId, reason, nowMs);
+		const revokedAuthority = registry.revoke(input.authorityHandle, reason, nowMs);
+		return { revokedActivation, revokedAuthority };
+	};
+
 	try {
 		adminHandle = options.admin
-			? await options.admin.start({ endpoint, issueProbeTokenBundle })
+			? await options.admin.start({
+					endpoint,
+					issueProbeTokenBundle,
+					openCanaryWindow,
+					closeCanaryWindow,
+				})
 			: null;
 	} catch (error) {
 		await endpoint.close();
@@ -227,6 +346,8 @@ export async function startTelclaudeLiveMcpRuntime(
 		revokeRuntimeAuthority(id, reason, nowMs) {
 			return resolver.revokeRuntimeAuthority(id, reason, nowMs);
 		},
+		openCanaryWindow,
+		closeCanaryWindow,
 		async stop() {
 			if (stopped) return;
 			stopped = true;
@@ -283,6 +404,12 @@ function disabledRuntime(): TelclaudeLiveMcpRuntime {
 		},
 		revokeRuntimeAuthority() {
 			return false;
+		},
+		openCanaryWindow() {
+			throw new Error("live MCP runtime is disabled");
+		},
+		closeCanaryWindow() {
+			return { revokedActivation: false, revokedAuthority: false };
 		},
 		async stop() {
 			// no-op

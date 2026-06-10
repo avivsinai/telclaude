@@ -8,12 +8,19 @@ import { getChildLogger } from "../../logging.js";
 import { CONFIG_DIR } from "../../utils.js";
 import type { TelclaudeMcpDomain } from "./bridge.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "./live-probe-tokens.js";
-import type {
-	TelclaudeLiveMcpRuntimeAdminStarter,
-	TelclaudeLiveMcpRuntimeProbeTokenInput,
+import {
+	type TelclaudeLiveMcpCanaryWindow,
+	TelclaudeLiveMcpCanaryWindowBusyError,
+	type TelclaudeLiveMcpCanaryWindowCloseInput,
+	type TelclaudeLiveMcpCanaryWindowCloseResult,
+	type TelclaudeLiveMcpCanaryWindowInput,
+	type TelclaudeLiveMcpRuntimeAdminStarter,
+	type TelclaudeLiveMcpRuntimeProbeTokenInput,
 } from "./live-runtime.js";
 
 export const TELCLAUDE_LIVE_MCP_ADMIN_PROBE_TOKENS_PATH = "/v1/probe-tokens";
+export const TELCLAUDE_LIVE_MCP_ADMIN_CANARY_OPEN_PATH = "/v1/canary-window/open";
+export const TELCLAUDE_LIVE_MCP_ADMIN_CANARY_CLOSE_PATH = "/v1/canary-window/close";
 export const TELCLAUDE_LIVE_MCP_ADMIN_SOCKET_ENV = "TELCLAUDE_HERMES_LIVE_MCP_ADMIN_SOCKET";
 export const DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET = path.join(
 	CONFIG_DIR,
@@ -49,12 +56,30 @@ export type StartTelclaudeLiveMcpAdminServerOptions = {
 	readonly issueProbeTokenBundle: (
 		input: TelclaudeLiveMcpRuntimeProbeTokenInput,
 	) => TelclaudeLiveMcpProbeTokenBundle;
+	readonly openCanaryWindow?: (
+		input?: TelclaudeLiveMcpCanaryWindowInput,
+	) => TelclaudeLiveMcpCanaryWindow;
+	readonly closeCanaryWindow?: (
+		input: TelclaudeLiveMcpCanaryWindowCloseInput,
+	) => TelclaudeLiveMcpCanaryWindowCloseResult;
 	readonly logger?: LiveMcpAdminLogger;
 };
 
 export type RequestTelclaudeLiveMcpProbeTokensOptions = {
 	readonly socketPath?: string;
 	readonly input: TelclaudeLiveMcpRuntimeProbeTokenInput;
+	readonly timeoutMs?: number;
+};
+
+export type RequestTelclaudeLiveMcpCanaryWindowOpenOptions = {
+	readonly socketPath?: string;
+	readonly input?: TelclaudeLiveMcpCanaryWindowInput;
+	readonly timeoutMs?: number;
+};
+
+export type RequestTelclaudeLiveMcpCanaryWindowCloseOptions = {
+	readonly socketPath?: string;
+	readonly input: TelclaudeLiveMcpCanaryWindowCloseInput;
 	readonly timeoutMs?: number;
 };
 
@@ -93,6 +118,20 @@ const ProbeTokensRequestSchema = z
 		offDomainPeerAddress: NonEmptyString.optional(),
 	})
 	.strip();
+const CanaryWindowOpenRequestSchema = z
+	.object({
+		profileId: NonEmptyString.optional(),
+		providerScopes: z.array(NonEmptyString).max(8).optional(),
+		ttlMs: z.number().finite().positive().optional(),
+	})
+	.strip();
+const CanaryWindowCloseRequestSchema = z
+	.object({
+		activationId: NonEmptyString,
+		authorityHandle: NonEmptyString,
+		reason: NonEmptyString.optional(),
+	})
+	.strip();
 
 export function readTelclaudeLiveMcpAdminSocketPath(env: NodeJS.ProcessEnv = process.env): string {
 	const configured = env[TELCLAUDE_LIVE_MCP_ADMIN_SOCKET_ENV]?.trim();
@@ -124,6 +163,8 @@ export function createTelclaudeLiveMcpProbeAdminStarter(
 				socketPath: config.socketPath,
 				logger: options.logger,
 				issueProbeTokenBundle: context.issueProbeTokenBundle,
+				openCanaryWindow: context.openCanaryWindow,
+				closeCanaryWindow: context.closeCanaryWindow,
 			});
 		},
 	};
@@ -140,7 +181,7 @@ export async function startTelclaudeLiveMcpAdminServer(
 
 	const sockets = new Set<Socket>();
 	const server = http.createServer((request, response) => {
-		handleAdminRequest(request, response, options.issueProbeTokenBundle, log).catch((error) => {
+		handleAdminRequest(request, response, options, log).catch((error) => {
 			log.warn({ error: errorMessage(error) }, "Hermes live MCP admin request failed");
 			writeJson(response, 500, { error: "Internal server error." });
 		});
@@ -185,22 +226,56 @@ export async function startTelclaudeLiveMcpAdminServer(
 export async function requestTelclaudeLiveMcpProbeTokens(
 	options: RequestTelclaudeLiveMcpProbeTokensOptions,
 ): Promise<TelclaudeLiveMcpProbeTokenBundle> {
-	const socketPath = normalizeAbsoluteSocketPath(
-		options.socketPath ?? readTelclaudeLiveMcpAdminSocketPath(),
-	);
-	const body = JSON.stringify(options.input);
-	const authHeaders = buildInternalAuthHeaders(
-		"POST",
+	const body = await postAdminJson(
 		TELCLAUDE_LIVE_MCP_ADMIN_PROBE_TOKENS_PATH,
-		body,
-		{ scope: OPERATOR_SCOPE },
+		options.input,
+		options.socketPath,
+		options.timeoutMs,
 	);
+	return body as TelclaudeLiveMcpProbeTokenBundle;
+}
+
+export async function requestTelclaudeLiveMcpCanaryWindowOpen(
+	options: RequestTelclaudeLiveMcpCanaryWindowOpenOptions = {},
+): Promise<TelclaudeLiveMcpCanaryWindow> {
+	const body = await postAdminJson(
+		TELCLAUDE_LIVE_MCP_ADMIN_CANARY_OPEN_PATH,
+		options.input ?? {},
+		options.socketPath,
+		options.timeoutMs,
+	);
+	return body as TelclaudeLiveMcpCanaryWindow;
+}
+
+export async function requestTelclaudeLiveMcpCanaryWindowClose(
+	options: RequestTelclaudeLiveMcpCanaryWindowCloseOptions,
+): Promise<TelclaudeLiveMcpCanaryWindowCloseResult> {
+	const body = await postAdminJson(
+		TELCLAUDE_LIVE_MCP_ADMIN_CANARY_CLOSE_PATH,
+		options.input,
+		options.socketPath,
+		options.timeoutMs,
+	);
+	return body as TelclaudeLiveMcpCanaryWindowCloseResult;
+}
+
+async function postAdminJson(
+	path: string,
+	input: unknown,
+	socketPath?: string,
+	timeoutMs?: number,
+): Promise<unknown> {
+	const resolvedSocketPath = normalizeAbsoluteSocketPath(
+		socketPath ?? readTelclaudeLiveMcpAdminSocketPath(),
+	);
+	const body = JSON.stringify(input);
+	const authHeaders = buildInternalAuthHeaders("POST", path, body, { scope: OPERATOR_SCOPE });
 	const response = await postJsonOverUnixSocket({
-		socketPath,
-		path: TELCLAUDE_LIVE_MCP_ADMIN_PROBE_TOKENS_PATH,
+		socketPath: resolvedSocketPath,
+		path,
 		body,
 		headers: authHeaders,
-		timeoutMs: options.timeoutMs,
+		timeoutMs,
 	});
 	if (response.statusCode !== 200) {
 		const reason = responseJsonReason(response.body);
@@ -208,16 +283,23 @@ export async function requestTelclaudeLiveMcpProbeTokens(
 			`Hermes live MCP admin request failed (${response.statusCode})${reason ? `: ${reason}` : ""}`,
 		);
 	}
-	return response.body as TelclaudeLiveMcpProbeTokenBundle;
+	return response.body;
 }
+
+const ADMIN_PATHS = new Set([
+	TELCLAUDE_LIVE_MCP_ADMIN_PROBE_TOKENS_PATH,
+	TELCLAUDE_LIVE_MCP_ADMIN_CANARY_OPEN_PATH,
+	TELCLAUDE_LIVE_MCP_ADMIN_CANARY_CLOSE_PATH,
+]);
 
 async function handleAdminRequest(
 	request: http.IncomingMessage,
 	response: http.ServerResponse,
-	issueProbeTokenBundle: StartTelclaudeLiveMcpAdminServerOptions["issueProbeTokenBundle"],
+	options: StartTelclaudeLiveMcpAdminServerOptions,
 	log: LiveMcpAdminLogger,
 ): Promise<void> {
-	if (request.method !== "POST" || request.url !== TELCLAUDE_LIVE_MCP_ADMIN_PROBE_TOKENS_PATH) {
+	const url = request.url ?? "";
+	if (request.method !== "POST" || !ADMIN_PATHS.has(url)) {
 		writeJson(response, 404, { error: "Not found." });
 		return;
 	}
@@ -248,13 +330,60 @@ async function handleAdminRequest(
 		return;
 	}
 
+	if (url === TELCLAUDE_LIVE_MCP_ADMIN_CANARY_OPEN_PATH) {
+		if (!options.openCanaryWindow) {
+			writeJson(response, 501, { error: "Canary window is not supported by this relay." });
+			return;
+		}
+		const parsed = CanaryWindowOpenRequestSchema.safeParse(parsedJson);
+		if (!parsed.success) {
+			writeJson(response, 400, { error: "Invalid canary window open request." });
+			return;
+		}
+		try {
+			const window = options.openCanaryWindow(parsed.data);
+			log.info(
+				{
+					issuedAtMs: window.issuedAtMs,
+					expiresAtMs: window.expiresAtMs,
+					profileId: parsed.data.profileId ?? "verify-live",
+				},
+				"Hermes live MCP canary window opened",
+			);
+			writeJson(response, 200, window);
+		} catch (error) {
+			if (error instanceof TelclaudeLiveMcpCanaryWindowBusyError) {
+				writeJson(response, 409, { error: "Busy.", reason: error.message });
+				return;
+			}
+			throw error;
+		}
+		return;
+	}
+
+	if (url === TELCLAUDE_LIVE_MCP_ADMIN_CANARY_CLOSE_PATH) {
+		if (!options.closeCanaryWindow) {
+			writeJson(response, 501, { error: "Canary window is not supported by this relay." });
+			return;
+		}
+		const parsed = CanaryWindowCloseRequestSchema.safeParse(parsedJson);
+		if (!parsed.success) {
+			writeJson(response, 400, { error: "Invalid canary window close request." });
+			return;
+		}
+		const result = options.closeCanaryWindow(parsed.data);
+		log.info(result, "Hermes live MCP canary window closed");
+		writeJson(response, 200, result);
+		return;
+	}
+
 	const parsed = ProbeTokensRequestSchema.safeParse(parsedJson);
 	if (!parsed.success) {
 		writeJson(response, 400, { error: "Invalid probe token request." });
 		return;
 	}
 
-	const bundle = issueProbeTokenBundle(toProbeTokenInput(parsed.data));
+	const bundle = options.issueProbeTokenBundle(toProbeTokenInput(parsed.data));
 	log.info(
 		{
 			issuedAtMs: bundle.metadata.issuedAtMs,

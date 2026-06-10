@@ -94,6 +94,8 @@ import {
 import { collectHermesInventory } from "../hermes/inventory.js";
 import {
 	DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET,
+	requestTelclaudeLiveMcpCanaryWindowClose,
+	requestTelclaudeLiveMcpCanaryWindowOpen,
 	requestTelclaudeLiveMcpProbeTokens,
 } from "../hermes/mcp/live-admin.js";
 import type { TelclaudeLiveMcpProbeTokenBundle } from "../hermes/mcp/live-probe-tokens.js";
@@ -222,6 +224,18 @@ import {
 	type SkillsTopologyObservation,
 	writeSkillsAllowlistEvidence,
 } from "../hermes/skills-allowlist-probe.js";
+import {
+	buildHermesVerifyLiveReport,
+	createHermesVerifyLiveDockerExecTransport,
+	createHermesVerifyLiveFetchTransport,
+	type HermesVerifyLiveCanaryWindowClient,
+	type HermesVerifyLiveCheck,
+	HermesVerifyLiveInputError,
+	type HermesVerifyLiveProviderCanary,
+	readHermesContainedStaticAuthorizationHeader,
+	runHermesVerifyLiveMcpChecks,
+	runHermesVerifyLiveTurnChecks,
+} from "../hermes/verify-live.js";
 import {
 	buildHermesWorkflowFixtureEvidenceBundle,
 	DEFAULT_HERMES_WORKFLOW_EVIDENCE_PATHS,
@@ -3051,6 +3065,14 @@ function resolveLiveMcpAdminSocket(value: string | undefined): string {
 	);
 }
 
+function defaultLiveMcpEndpointUrl(): string | null {
+	const host = process.env.TELCLAUDE_HERMES_LIVE_MCP_HOST?.trim();
+	if (!host) return null;
+	const port = process.env.TELCLAUDE_HERMES_LIVE_MCP_PORT?.trim() || "8793";
+	const path = process.env.TELCLAUDE_HERMES_LIVE_MCP_PATH?.trim() || "/mcp";
+	return `http://${host}:${port}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 function buildLiveMcpProbeTokenRequest(
 	options: LiveMcpProbeTokenOption,
 ): TelclaudeLiveMcpRuntimeProbeTokenInput {
@@ -4061,6 +4083,192 @@ export function registerHermesCommand(program: Command): void {
 				process.exitCode = 1;
 			}
 		});
+
+	hermes
+		.command("verify-live")
+		.description(
+			"Behavioral verification of the live Hermes private runtime: exact tc_ tool surface with usable schemas, plus a real canary turn through the contained API server",
+		)
+		.option("--json", "Emit structured JSON")
+		.option(
+			"--mcp-url <url>",
+			"Live MCP endpoint URL (default: http://$TELCLAUDE_HERMES_LIVE_MCP_HOST:8793/mcp)",
+		)
+		.option(
+			"--socket <path>",
+			`Relay-local admin socket for probe-token issuance (default: ${DEFAULT_TELCLAUDE_LIVE_MCP_ADMIN_SOCKET})`,
+		)
+		.option(
+			"--container <name>",
+			"Contained Hermes container used as the request origin",
+			"tc-hermes-contained",
+		)
+		.option("--docker-bin <path>", "Docker executable for the docker-exec transport", "docker")
+		.option(
+			"--direct",
+			"Issue MCP requests directly from this process instead of docker exec (requires an allowed peer address)",
+		)
+		.option(
+			"--mcp-bearer-from-container",
+			"Authenticate the MCP surface checks with the static transport bearer read from the contained container's own config.yaml (replicates Hermes's discovery path; no admin socket needed)",
+		)
+		.option("--skip-mcp", "Skip the MCP tool-surface checks")
+		.option("--skip-turn", "Skip the behavioral canary turn")
+		.option(
+			"--api-base-url <url>",
+			"Hermes API server base URL override (default: TELCLAUDE_HERMES_API_BASE_URL; key always from TELCLAUDE_HERMES_API_KEY)",
+		)
+		.option(
+			"--provider-canary <spec>",
+			"Also require a read-only tc_provider_read canary, as providerId:service:action",
+		)
+		.option("--timeout-ms <ms>", "Per-step timeout in milliseconds")
+		.action(
+			async (
+				options: JsonOption & {
+					mcpUrl?: string;
+					socket?: string;
+					container: string;
+					dockerBin: string;
+					direct?: boolean;
+					mcpBearerFromContainer?: boolean;
+					skipMcp?: boolean;
+					skipTurn?: boolean;
+					apiBaseUrl?: string;
+					providerCanary?: string;
+					timeoutMs?: string;
+				},
+			) => {
+				const checks: HermesVerifyLiveCheck[] = [];
+				const timeoutMs = parseTimeoutMs(options.timeoutMs);
+
+				let providerCanary: HermesVerifyLiveProviderCanary | undefined;
+				if (options.providerCanary) {
+					const parts = options.providerCanary.split(":");
+					if (parts.length !== 3 || parts.some((part) => !part.trim())) {
+						console.error("Error: --provider-canary must be providerId:service:action");
+						process.exitCode = 2;
+						return;
+					}
+					providerCanary = {
+						providerId: parts[0].trim(),
+						service: parts[1].trim(),
+						action: parts[2].trim(),
+					};
+				}
+
+				if (!options.skipMcp) {
+					const mcpUrl = options.mcpUrl ?? defaultLiveMcpEndpointUrl();
+					if (!mcpUrl) {
+						console.error(
+							"Error: live MCP endpoint unknown — pass --mcp-url or set TELCLAUDE_HERMES_LIVE_MCP_HOST",
+						);
+						process.exitCode = 2;
+						return;
+					}
+					let authorizationHeader: string | undefined;
+					if (options.mcpBearerFromContainer) {
+						try {
+							authorizationHeader = await readHermesContainedStaticAuthorizationHeader({
+								containerName: options.container,
+								dockerBin: options.dockerBin,
+							});
+						} catch (error) {
+							checks.push({
+								id: "mcp.static_bearer",
+								status: "fail",
+								detail: `static MCP bearer read failed: ${String(
+									error instanceof Error ? error.message : error,
+								)}`,
+							});
+						}
+					} else {
+						try {
+							const bundle = await requestTelclaudeLiveMcpProbeTokens({
+								socketPath: resolveLiveMcpAdminSocket(options.socket),
+								input: buildLiveMcpProbeTokenRequest({}),
+								timeoutMs,
+							});
+							authorizationHeader = bundle.allowed.authorizationHeader;
+						} catch (error) {
+							checks.push({
+								id: "mcp.probe_token",
+								status: "fail",
+								detail: `probe-token issuance failed (is the relay live MCP admin socket enabled?): ${String(
+									error instanceof Error ? error.message : error,
+								)}`,
+							});
+						}
+					}
+					if (authorizationHeader) {
+						const transport = options.direct
+							? createHermesVerifyLiveFetchTransport()
+							: createHermesVerifyLiveDockerExecTransport({
+									containerName: options.container,
+									dockerBin: options.dockerBin,
+								});
+						checks.push(
+							...(await runHermesVerifyLiveMcpChecks({
+								endpointUrl: mcpUrl,
+								transport,
+								authorizationHeader,
+								timeoutMs,
+							})),
+						);
+					}
+				}
+
+				if (!options.skipTurn) {
+					const adminSocketPath = resolveLiveMcpAdminSocket(options.socket);
+					const canaryWindow: HermesVerifyLiveCanaryWindowClient = {
+						open: (input) =>
+							requestTelclaudeLiveMcpCanaryWindowOpen({
+								socketPath: adminSocketPath,
+								input,
+								timeoutMs,
+							}),
+						close: (input) =>
+							requestTelclaudeLiveMcpCanaryWindowClose({
+								socketPath: adminSocketPath,
+								input,
+								timeoutMs,
+							}),
+					};
+					try {
+						checks.push(
+							...(await runHermesVerifyLiveTurnChecks({
+								env: options.apiBaseUrl
+									? { ...process.env, TELCLAUDE_HERMES_API_BASE_URL: options.apiBaseUrl }
+									: process.env,
+								timeoutMs,
+								providerCanary,
+								canaryWindow,
+							})),
+						);
+					} catch (error) {
+						if (error instanceof HermesVerifyLiveInputError) {
+							console.error(`Error: ${error.message}`);
+							process.exitCode = 2;
+							return;
+						}
+						throw error;
+					}
+				}
+
+				const report = buildHermesVerifyLiveReport(checks);
+				if (options.json) {
+					printJson(report);
+				} else {
+					for (const check of report.checks) {
+						console.log(`${check.status.toUpperCase().padEnd(4)} ${check.id} — ${check.detail}`);
+					}
+					console.log(
+						`\nverify-live: ${report.status.toUpperCase()} (${report.checks.length} checks)`,
+					);
+				}
+				process.exitCode = report.status === "pass" ? 0 : 1;
+			},
+		);
 
 	hermes
 		.command("probe")
