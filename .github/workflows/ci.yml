@@ -68,5 +68,16 @@ jobs:
       - name: Pull latest
         run: git -C ~/telclaude fetch origin +refs/heads/main:refs/remotes/origin/main && git -C ~/telclaude reset --hard origin/main
 
+      - name: Generate Hermes deploy keys
+        run: |
+          private_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+          social_key="$(openssl rand -base64 48 | tr '+/' '-_' | tr -d '=')"
+          echo "::add-mask::${private_key}"
+          echo "::add-mask::${social_key}"
+          {
+            echo "TELCLAUDE_HERMES_API_SERVER_KEY=${private_key}"
+            echo "TELCLAUDE_HERMES_SOCIAL_API_SERVER_KEY=${social_key}"
+          } >> "$GITHUB_ENV"
+
       - name: Build and deploy
-        run: cd ~/telclaude && ./docker/build.sh && cd docker && docker compose up -d --wait --wait-timeout 180
+        run: cd ~/telclaude && ./docker/build.sh && cd docker && COMPOSE_FILE=docker-compose.yml docker compose up -d --wait --wait-timeout 180
