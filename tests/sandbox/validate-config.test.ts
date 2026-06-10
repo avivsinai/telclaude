@@ -175,6 +175,9 @@ TELCLAUDE_LOG_LEVEL=info
 		expect(telclaudeEnv.TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN).toBe(
 			"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
 		);
+		expect(telclaudeEnv.TELCLAUDE_HERMES_MCP_RELAY_TOKEN).toBe(
+			"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}",
+		);
 		expect(hermesEnv).toEqual({
 			API_SERVER_ENABLED: "true",
 			API_SERVER_HOST: "0.0.0.0",
@@ -185,6 +188,9 @@ TELCLAUDE_LOG_LEVEL=info
 			HERMES_INFERENCE_PROVIDER: "openai-codex",
 			HERMES_INFERENCE_MODEL: "${TELCLAUDE_HERMES_INFERENCE_MODEL:-gpt-5.5}",
 			HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
+			TELCLAUDE_HERMES_MCP_RELAY_TOKEN:
+				"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}",
+			TELCLAUDE_HERMES_MCP_URL: "http://telclaude:8793/mcp",
 			TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:
 				"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
 			TELCLAUDE_INTERNAL_HOSTS: "telclaude",
@@ -248,6 +254,13 @@ TELCLAUDE_LOG_LEVEL=info
 			) {
 				continue;
 			}
+			if (
+				key === "TELCLAUDE_HERMES_MCP_RELAY_TOKEN" &&
+				hermesEnv[key] ===
+					"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}"
+			) {
+				continue;
+			}
 			expect(forbiddenEnvKeys).not.toContain(key);
 		}
 		for (const interpolation of compose.matchAll(/\$\{([^}:]+)(?::[^}]*)?\}/g)) {
@@ -255,6 +268,8 @@ TELCLAUDE_LOG_LEVEL=info
 			if (/(KEY|SECRET|TOKEN|OAUTH|VAULT|PROVIDER)/.test(variableName)) {
 				expect([
 					"TELCLAUDE_HERMES_API_SERVER_KEY",
+					"TELCLAUDE_HERMES_MCP_RELAY_TOKEN",
+					"TELCLAUDE_HERMES_PROVIDER_WRITE_APPROVER_ACTOR_ID",
 					"OPERATOR_RPC_AGENT_PUBLIC_KEY",
 					"OPERATOR_RPC_RELAY_PRIVATE_KEY",
 					"TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN",
