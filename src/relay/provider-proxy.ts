@@ -20,6 +20,9 @@ const logger = getChildLogger({ module: "provider-proxy" });
 
 const MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024; // 20MB
 const DEFAULT_PROXY_TIMEOUT_MS = 30_000;
+const CANONICAL_PROVIDER_SERVICE_ALIASES: Record<string, readonly string[]> = {
+	bank: ["poalim", "massad"],
+};
 
 export type ProviderProxyRequest = {
 	providerId: string;
@@ -62,6 +65,11 @@ type RewrittenAttachment = {
 	ref: string;
 	textContent?: string;
 	expiresAt?: string;
+};
+
+type ConfiguredProviderResolution = {
+	readonly provider: ExternalProviderConfig;
+	readonly serviceAlias?: string;
 };
 
 /**
@@ -225,12 +233,16 @@ export async function proxyProviderRequest(
 	// Normalize path
 	const normalizedPath = requestPath.startsWith("/") ? requestPath : `/${requestPath}`;
 
-	// Look up provider
+	// Look up provider. Hermes authority scopes use canonical provider ids such as
+	// "bank", while a configured sidecar can expose implementation-specific
+	// services such as "poalim".
 	const config = loadConfig();
-	const provider = config.providers?.find((p: ExternalProviderConfig) => p.id === providerId);
-	if (!provider) {
+	const resolvedProvider = resolveConfiguredProvider(config.providers, providerId);
+	if (!resolvedProvider) {
 		return { status: "error", error: "Provider not found" };
 	}
+	const { provider, serviceAlias } = resolvedProvider;
+	const requestBody = rewriteProviderRequestBody(body, providerId, serviceAlias);
 
 	// Validate and resolve provider URL
 	let providerUrl: URL;
@@ -270,7 +282,7 @@ export async function proxyProviderRequest(
 		response = await fetch(providerUrl.toString(), {
 			method: method.toUpperCase(),
 			headers,
-			body: method.toUpperCase() !== "GET" ? body : undefined,
+			body: method.toUpperCase() !== "GET" ? requestBody : undefined,
 			signal: controller.signal,
 		});
 	} catch (err) {
@@ -312,7 +324,7 @@ export async function proxyProviderRequest(
 		) {
 			const { createProviderApproval } = await import("./provider-approval.js");
 			try {
-				const parsedBody = body ? JSON.parse(body) : {};
+				const parsedBody = requestBody ? JSON.parse(requestBody) : {};
 				// Derive service/action from body fields or URL path (/v1/:service/:action)
 				let service = parsedBody.service as string | undefined;
 				let action = parsedBody.action as string | undefined;
@@ -358,5 +370,51 @@ export async function proxyProviderRequest(
 	} catch (err) {
 		logger.error({ providerId, error: String(err) }, "failed to rewrite response");
 		return { status: "error", error: "Failed to process attachments" };
+	}
+}
+
+function resolveConfiguredProvider(
+	providers: readonly ExternalProviderConfig[] | undefined,
+	providerId: string,
+): ConfiguredProviderResolution | undefined {
+	const exactProvider = providers?.find((provider) => provider.id === providerId);
+	if (exactProvider) return { provider: exactProvider };
+
+	const directServiceProvider = providers?.find((provider) =>
+		providerHandlesService(provider, providerId),
+	);
+	if (directServiceProvider) return { provider: directServiceProvider };
+
+	for (const serviceAlias of CANONICAL_PROVIDER_SERVICE_ALIASES[providerId] ?? []) {
+		const aliasProvider = providers?.find(
+			(provider) => provider.id === serviceAlias || providerHandlesService(provider, serviceAlias),
+		);
+		if (aliasProvider) return { provider: aliasProvider, serviceAlias };
+	}
+
+	return undefined;
+}
+
+function providerHandlesService(provider: ExternalProviderConfig, service: string): boolean {
+	return Array.isArray(provider.services) && provider.services.includes(service);
+}
+
+function rewriteProviderRequestBody(
+	body: string | undefined,
+	providerId: string,
+	serviceAlias: string | undefined,
+): string | undefined {
+	if (!body || !serviceAlias) return body;
+	try {
+		const parsed = JSON.parse(body) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return body;
+		const fields = parsed as Record<string, unknown>;
+		if (fields.service !== providerId) return body;
+		return JSON.stringify({
+			...fields,
+			service: serviceAlias,
+		});
+	} catch {
+		return body;
 	}
 }
