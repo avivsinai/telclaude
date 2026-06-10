@@ -142,7 +142,8 @@ TELCLAUDE_LOG_LEVEL=info
 			"${TELCLAUDE_HERMES_API_SERVER_KEY:?generate an ephemeral key for this compose up}";
 
 		expect(telclaude).toContain("tc-hermes-contained:");
-		expect(telclaude).toContain("condition: service_healthy");
+		expect(telclaude).toContain("condition: service_started");
+		expect(telclaude).not.toContain("condition: service_healthy");
 		expect(telclaude).toContain("hermes-relay-net:");
 		expect(telclaude).toContain("ipv4_address: ${TELCLAUDE_HERMES_RELAY_IP:-192.0.2.10}");
 		expect(listValues(telclaude, "tmpfs")).toEqual([
@@ -190,6 +191,7 @@ TELCLAUDE_LOG_LEVEL=info
 			HERMES_CODEX_BASE_URL: "http://telclaude:8790/v1/openai-codex-proxy",
 			TELCLAUDE_HERMES_MCP_RELAY_TOKEN:
 				"${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}",
+			TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS: `\${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}`,
 			TELCLAUDE_HERMES_MCP_URL: "http://telclaude:8793/mcp",
 			TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:
 				"${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}",
@@ -233,6 +235,7 @@ TELCLAUDE_LOG_LEVEL=info
 			"/run:size=16M,uid=10000,gid=10000,mode=0755,noexec",
 			"/home/hermes:size=512M,uid=10000,gid=10000,mode=0700,noexec",
 		]);
+		expect(hermes).toContain("start_period: 360s");
 		expect(hermes).toContain("http://127.0.0.1:8642/health");
 
 		const forbiddenEnvKeys = [

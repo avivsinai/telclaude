@@ -66,6 +66,20 @@ describe("Hermes contained profile provisioning", () => {
 		);
 	});
 
+	it("waits for the relay MCP listener before launching upstream Hermes", () => {
+		const script = fs.readFileSync(entrypointPath, "utf8");
+
+		expect(script).toContain("wait_for_telclaude_mcp_relay()");
+		expect(script).toContain("socket.create_connection((host, port), timeout=2)");
+		expect(script).toContain("continuing");
+		expect(script).toContain(
+			`wait_for_telclaude_mcp_relay telclaude 8793 "\${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}"`,
+		);
+		expect(script.indexOf("wait_for_telclaude_mcp_relay telclaude 8793")).toBeLessThan(
+			script.indexOf('exec /opt/hermes/hermes "$@"'),
+		);
+	});
+
 	it("wires the curated provisioning script into the no-fork Hermes compose overlay", () => {
 		const compose = fs.readFileSync(composePath, "utf8");
 

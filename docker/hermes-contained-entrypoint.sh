@@ -137,6 +137,44 @@ process.stdout.write(`tc-openai-codex-relay-v1.${encodedPayload}.${signature}`);
 NODE
 }
 
+wait_for_telclaude_mcp_relay() {
+	host=$1
+	port=$2
+	timeout_seconds=${3:-300}
+	python - "$host" "$port" "$timeout_seconds" <<'PY'
+import socket
+import sys
+import time
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+timeout_seconds = float(sys.argv[3])
+deadline = time.monotonic() + timeout_seconds
+last_error = None
+
+while True:
+	try:
+		with socket.create_connection((host, port), timeout=2):
+			print(
+				f"telclaude hermes contained entrypoint: MCP relay reachable at {host}:{port}",
+				flush=True,
+			)
+			sys.exit(0)
+	except OSError as exc:
+		last_error = exc
+		if time.monotonic() >= deadline:
+			print(
+				"telclaude hermes contained entrypoint: MCP relay "
+				f"{host}:{port} not reachable after {int(timeout_seconds)}s "
+				f"({last_error}); continuing",
+				file=sys.stderr,
+				flush=True,
+			)
+			sys.exit(0)
+		time.sleep(1)
+PY
+}
+
 if [ "$CODEX_PROVIDER" = "openai-codex" ]; then
 	[ -n "$CODEX_MODEL" ] || die "HERMES_INFERENCE_MODEL is required for openai-codex"
 	[ "$CODEX_BASE_URL" = "http://telclaude:8790/v1/openai-codex-proxy" ] || \
@@ -255,6 +293,8 @@ EOF
 		chmod 600 "${HERMES_HOME}/config.yaml" "${HERMES_HOME}/secret-manifest.json" "${HERMES_HOME}/auth.json"
 	fi
 	unset TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN CODEX_RELAY_TOKEN CODEX_PEER_BOUND_TOKEN CODEX_TOKEN_SCOPE TELCLAUDE_HERMES_MCP_RELAY_TOKEN TELCLAUDE_MCP_RELAY_TOKEN
+
+	wait_for_telclaude_mcp_relay telclaude 8793 "${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}"
 fi
 
 if [ "$(id -u)" = "0" ]; then

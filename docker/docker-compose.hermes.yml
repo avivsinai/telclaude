@@ -13,7 +13,7 @@ services:
   telclaude:
     depends_on:
       tc-hermes-contained:
-        condition: service_healthy
+        condition: service_started
     environment:
       # OFF by default. Set to 1 only for the explicit Hermes private-runtime live run.
       - TELCLAUDE_HERMES_PRIVATE_RUNTIME=${TELCLAUDE_HERMES_PRIVATE_RUNTIME:-0}
@@ -70,6 +70,7 @@ services:
       - TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN=${TELCLAUDE_OPENAI_CODEX_PROXY_TOKEN:?set relay-scoped OpenAI Codex proxy token}
       - TELCLAUDE_HERMES_MCP_URL=http://telclaude:8793/mcp
       - TELCLAUDE_HERMES_MCP_RELAY_TOKEN=${TELCLAUDE_HERMES_MCP_RELAY_TOKEN:?set relay-scoped Hermes MCP transport token}
+      - TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS=${TELCLAUDE_HERMES_MCP_STARTUP_WAIT_SECONDS:-300}
       - TELCLAUDE_INTERNAL_HOSTS=telclaude
       - TELCLAUDE_HERMES_SKILL_ALLOWLIST=/tmp/telclaude-hermes-contained-skills.allowlist
       - TELCLAUDE_HERMES_SOURCE_SKILLS_DIR=/opt/hermes/skills
@@ -106,7 +107,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 30s
+      start_period: 360s
 
 networks:
   hermes-relay-net:
